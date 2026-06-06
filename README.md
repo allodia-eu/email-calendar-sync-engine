@@ -1,8 +1,8 @@
 # email-calendar-sync-engine
 
-> ⚠️ **Work in progress — early design draft.** No working code yet, and the
-> design may still change. This repository currently holds the architecture and
-> domain-model specification, not an implementation.
+> ⚠️ **Work in progress — early implementation.** The RFC-backed domain model
+> (`engine-core`) is implemented and tested; the remaining crates are still
+> design-stage and may change. Treat every interface as provisional.
 
 A standalone **Rust engine for personal information management (PIM)**:
 local-first mail and calendar sync, search, indexing, and durable writes,
@@ -15,9 +15,13 @@ the host stays useful offline. Mail and calendar are the focus (contacts later).
 
 ## Status
 
-Design stage. The architecture and domain model live under
-[`docs/agent-guidance/`](docs/agent-guidance/); implementation has not started,
-so treat every interface and crate below as provisional.
+Build order **step 1** is done: the workspace skeleton, strict lint/test policy,
+and the RFC-backed domain model in [`crates/engine-core/`](crates/engine-core/) —
+identities, the time model, normalized mail and calendar types, scheduling, and
+the cross-crate sync/search/write contracts — are implemented and tested
+(I/O-free and async-free, per the north star). The remaining crates in the map
+below have not been built yet, so treat their interfaces as provisional. The
+architecture lives under [`docs/agent-guidance/`](docs/agent-guidance/).
 
 ## How the pieces fit (envisioned)
 
@@ -65,6 +69,19 @@ In words:
 - **Bindings** — `bindings-uniffi` (Kotlin/Swift, for Android/iOS) and
   `bindings-ffi-c` (C ABI, for desktop/daemon hosts).
 - A **headless CLI** for fixtures, sync debugging, search, and outbox replay.
+
+## Building
+
+See [`BUILDING.md`](BUILDING.md) for prerequisites and the build/test/lint/docs/
+coverage commands. In short:
+
+```sh
+cargo build --workspace --all-features
+cargo test --workspace --all-features
+```
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs formatting,
+clippy (`-D warnings`), tests, docs, and code coverage on every push and PR.
 
 ## Design docs
 
