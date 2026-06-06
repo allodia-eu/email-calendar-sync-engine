@@ -21,14 +21,15 @@ jobs:
     name: Format, lint, build, test, docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Format
         run: cargo fmt --all --check
@@ -45,21 +46,99 @@ jobs:
       - name: Docs
         run: cargo doc --workspace --all-features --no-deps
 
+  # Tier A: build + run tests on real runners. Linux x64 is covered by `verify`
+  # above; this matrix adds the remaining 64-bit desktop targets. We only support
+  # x64/arm64, so no 32-bit runners appear here.
+  test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04-arm # Linux arm64
+          - windows-latest # Windows x64
+          - windows-11-arm # Windows arm64
+          - macos-latest # macOS arm64
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Build
+        run: cargo build --workspace --all-features
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+  # Tier B: cross-compile only (these targets can't run tests on CI without
+  # emulators/simulators). engine-core is a pure rlib, so a plain `cargo build`
+  # needs no app linking — hence no Android NDK / Xcode setup. The iOS 17 and
+  # Android 12 (API 31) floors are set by the host app's link/build config, not
+  # by compiling this library.
+  #
+  # One runner per host OS builds all of its targets, so we spin up two VMs
+  # rather than one per target.
+  cross:
+    name: Cross-compile (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: iOS (arm64 device + simulator)
+            os: macos-latest
+            targets: aarch64-apple-ios,aarch64-apple-ios-sim
+          - label: Android (arm64 + x86_64)
+            os: ubuntu-latest
+            targets: aarch64-linux-android,x86_64-linux-android
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.targets }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Cross-compile (build only)
+        shell: bash
+        env:
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          for target in ${TARGETS//,/ }; do
+            echo "::group::cargo build --target $target"
+            cargo build --workspace --all-features --target "$target"
+            echo "::endgroup::"
+          done
+
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
+          toolchain: stable
           components: llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@56545b37b57562edd73171cb6c62cc509db4c34e # v2.81.7
         with:
           tool: cargo-llvm-cov
 
@@ -82,7 +161,7 @@ jobs:
         run: cargo llvm-cov report --fail-under-lines 99
 
       - name: Upload lcov report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: lcov-coverage
           path: lcov.info
