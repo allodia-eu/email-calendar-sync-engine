@@ -1,6 +1,37 @@
-[package]
-name = "email-calendar-sync-engine"
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# Shared package metadata. Member crates opt in with `field.workspace = true`.
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96"
+publish = false
 
-[dependencies]
+# Centralized dependency versions so every crate agrees on one version.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+time = { version = "0.3", features = ["macros", "parsing", "formatting"] }
+
+# Strict, workspace-wide lint policy (AGENTS.md / rust.md). Member crates inherit
+# via `[lints] workspace = true`. Verification runs clippy with `-D warnings`, so
+# every lint below is effectively an error in CI.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Our module/type naming (e.g. `mail::MailboxId`) intentionally repeats the module
+# name for clarity at the call site; this pedantic lint fights that convention.
+module_name_repetitions = "allow"
+# `doc_markdown` flags domain proper nouns (CalDAV, JMAP, JSCalendar, VTIMEZONE,
+# RFC/protocol names) as if they were unticked code identifiers. Our docs are
+# protocol-heavy prose where these are proper nouns, not code, so the lint fires
+# almost entirely on false positives.
+doc_markdown = "allow"

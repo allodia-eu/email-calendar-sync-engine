@@ -1,3 +1,4 @@
 /target
 *.local.md
 .local/
+.DS_Store
