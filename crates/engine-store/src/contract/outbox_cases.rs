@@ -3,10 +3,11 @@
 
 use core::time::Duration;
 
+use engine_core::error::FailureClass;
 use engine_core::write::{PendingOpId, PendingOutcome};
 
 use crate::error::StoreError;
-use crate::lease::ManualClock;
+use crate::lease::{FenceToken, ManualClock, OpLease, WorkerId};
 use crate::outbox::PendingOpState;
 use crate::store::{Store, StoreRead};
 
@@ -149,4 +150,101 @@ pub(super) async fn enqueue_is_idempotent<S: Store + StoreRead>(store: &S, _cloc
         .unwrap();
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].id, first);
+}
+
+/// `mark_pending_op` records the failure and ambiguous outcomes distinctly, not
+/// only success — the outbox state machine's whole point.
+pub(super) async fn outcomes_record_failure_and_ambiguity<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-outcomes");
+    // Two ops on separate resources, so both are runnable in one claim.
+    store
+        .enqueue_pending_op(account.clone(), pending_op("fail-1", "res-fail"))
+        .await
+        .unwrap();
+    store
+        .enqueue_pending_op(account.clone(), pending_op("amb-1", "res-amb"))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_pending_ops(account.clone(), lease_request("worker", 300), 10)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 2);
+
+    for leased in &claimed {
+        let is_failure = leased.op.idempotency_key.as_str() == "fail-1";
+        let outcome = if is_failure {
+            PendingOutcome::Failed {
+                class: FailureClass::Retryable,
+                retry_after: None,
+            }
+        } else {
+            PendingOutcome::NeedsConfirmation {
+                detail: "post-DATA timeout".to_owned(),
+            }
+        };
+        store.mark_pending_op(&leased.lease, outcome).await.unwrap();
+        let expected = if is_failure {
+            PendingOpState::Failed
+        } else {
+            PendingOpState::NeedsConfirmation
+        };
+        assert_eq!(
+            store.pending_op_state(leased.id).await.unwrap(),
+            Some(expected)
+        );
+    }
+}
+
+/// An op id with no row has no state and cannot be marked: a lease naming it is
+/// rejected as stale rather than silently applied.
+pub(super) async fn unknown_op_is_rejected_and_stateless<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-unknown-op");
+    let missing = PendingOpId::new(4_242);
+    assert_eq!(store.pending_op_state(missing).await.unwrap(), None);
+
+    // A lease minted for an op that never persisted (e.g. a resurrected worker
+    // holding a stale handle) must be rejected, not applied.
+    let lease = OpLease::new(
+        account,
+        missing,
+        FenceToken::initial().bump(),
+        WorkerId::new("ghost"),
+        "2026-01-01T00:00:00Z".parse().expect("valid instant"),
+    );
+    let rejected = store
+        .mark_pending_op(
+            &lease,
+            PendingOutcome::Succeeded {
+                provider_key: pk("server-x"),
+            },
+        )
+        .await
+        .expect_err("marking an unknown op must be rejected");
+    assert_eq!(rejected, StoreError::StaleLease);
+}
+
+/// `claim_pending_ops` returns at most `limit` ops even when more are runnable.
+pub(super) async fn claim_respects_limit<S: Store + StoreRead>(store: &S, _clock: &ManualClock) {
+    let account = acct("acct-limit");
+    store
+        .enqueue_pending_op(account.clone(), pending_op("a", "res-a"))
+        .await
+        .unwrap();
+    store
+        .enqueue_pending_op(account.clone(), pending_op("b", "res-b"))
+        .await
+        .unwrap();
+    // Both are runnable (distinct resources, no deps), but the limit caps the batch.
+    let claimed = store
+        .claim_pending_ops(account.clone(), lease_request("worker", 300), 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
 }

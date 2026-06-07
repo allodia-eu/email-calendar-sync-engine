@@ -109,9 +109,19 @@ where
     let (store, clock) = make();
     scope_cases::maintenance_is_lease_gated(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::reconciliation_resolves_matching_op(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::release_with_stale_token_is_noop(&store, &clock).await;
+    let (store, clock) = make();
     outbox_cases::expired_op_lease_is_rejected(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::claim_filters_dependencies_and_resources(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::enqueue_is_idempotent(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::outcomes_record_failure_and_ambiguity(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::unknown_op_is_rejected_and_stateless(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::claim_respects_limit(&store, &clock).await;
 }

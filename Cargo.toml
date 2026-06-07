@@ -17,9 +17,14 @@ thiserror = "2"
 time = { version = "0.3", features = ["macros", "parsing", "formatting"] }
 async-trait = "0.1"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+# SQLite backend: `bundled` compiles a pinned SQLite amalgamation (FTS5 enabled),
+# so the build needs no system libsqlite3 and every platform agrees on one engine.
+rusqlite = { version = "0.40", features = ["bundled"] }
+tempfile = "3"
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
+engine-store = { path = "crates/engine-store" }
 
 # Strict, workspace-wide lint policy (AGENTS.md / rust.md). Member crates inherit
 # via `[lints] workspace = true`. Verification runs clippy with `-D warnings`, so

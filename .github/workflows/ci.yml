@@ -79,10 +79,11 @@ jobs:
         run: cargo test --workspace --all-features
 
   # Tier B: cross-compile only (these targets can't run tests on CI without
-  # emulators/simulators). engine-core is a pure rlib, so a plain `cargo build`
-  # needs no app linking — hence no Android NDK / Xcode setup. The iOS 17 and
-  # Android 12 (API 31) floors are set by the host app's link/build config, not
-  # by compiling this library.
+  # emulators/simulators). store-sqlite bundles SQLite (compiled from C), so the
+  # `cc` crate needs a cross C toolchain: Android uses the NDK clang configured
+  # below, while iOS relies on the cc crate's built-in Apple support via the Xcode
+  # already on the macOS runner. The iOS 17 and Android 12 (API 31) floors match
+  # the host app's build config.
   #
   # One runner per host OS builds all of its targets, so we spin up two VMs
   # rather than one per target.
@@ -111,6 +112,23 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.os }}
+
+      # Point the cc crate and cargo at the NDK clang/ar/linker so the bundled
+      # SQLite C sources cross-compile for Android (API 31 floor). iOS needs no
+      # equivalent — the cc crate drives Xcode's clang itself.
+      - name: Configure Android NDK toolchain
+        if: contains(matrix.targets, 'android')
+        shell: bash
+        run: |
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo "CC_aarch64-linux-android=$bin/aarch64-linux-android31-clang"
+            echo "AR_aarch64-linux-android=$bin/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android31-clang"
+            echo "CC_x86_64-linux-android=$bin/x86_64-linux-android31-clang"
+            echo "AR_x86_64-linux-android=$bin/llvm-ar"
+            echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$bin/x86_64-linux-android31-clang"
+          } >> "$GITHUB_ENV"
 
       - name: Cross-compile (build only)
         shell: bash

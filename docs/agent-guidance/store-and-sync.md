@@ -261,8 +261,11 @@ Lock these as failing tests before implementing the store:
   writer's data is intact.
 - `mark_pending_op` under an expired `OpLease` is rejected after the op was
   re-claimed.
+- `mark_pending_op` records `Failed` and `NeedsConfirmation` outcomes distinctly,
+  and a lease naming an op with no row is rejected as `StaleLease` (not silently
+  applied); an unknown op id reads back no state.
 - `claim_pending_ops` never returns an op with unsatisfied `depends_on`, nor two
-  ops sharing a `resource_key`.
+  ops sharing a `resource_key`, and returns at most `limit` runnable ops.
 - Re-enqueue with a duplicate `idempotency_key` returns the original id and
   creates no second op.
 - Replaying an identical `ApplyBatch` after simulated crash leaves identical
@@ -270,7 +273,10 @@ Lock these as failing tests before implementing the store:
 - A snapshot `SyncUpdate` tombstones exactly the local rows absent from its id
   set, and nothing else.
 - A `PendingReconciliation` whose op changed state between planning and apply is
-  skipped, and the incoming object is stored without loss.
+  skipped, and the incoming object is stored without loss; one whose op is still
+  in its expected state resolves the op to `Succeeded` in the apply transaction.
+- A `release_sync_scope` under a superseded lease is a no-op and does not free a
+  scope a newer lease holds.
 - Container-before-member apply ordering holds, including under snapshot
   tombstoning. (The store enforces per-scope snapshot tombstoning and keeps
   scopes independent; the cross-scope *apply order* itself is an orchestrator
