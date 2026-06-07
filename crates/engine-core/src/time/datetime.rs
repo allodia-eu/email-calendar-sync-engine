@@ -194,6 +194,21 @@ impl UtcDateTime {
     pub fn nanosecond(self) -> u32 {
         self.0.nanosecond()
     }
+
+    /// Returns this instant advanced by `span`, or `None` on overflow.
+    ///
+    /// Infrastructural spans — lease TTLs, retry backoff, confirmation timeouts —
+    /// are elapsed wall-clock [`core::time::Duration`]s, distinct from the
+    /// calendar [`super::Duration`] used for event lengths. The store and sync
+    /// layers use this to derive a lease expiry from an injected clock.
+    #[must_use]
+    pub fn checked_add(self, span: core::time::Duration) -> Option<Self> {
+        let secs = i64::try_from(span.as_secs()).ok()?;
+        let nanos = i32::try_from(span.subsec_nanos()).ok()?;
+        self.0
+            .checked_add(time::Duration::new(secs, nanos))
+            .map(Self)
+    }
 }
 
 impl fmt::Display for UtcDateTime {
@@ -284,5 +299,28 @@ mod tests {
         let j = serde_json::to_string(&a).unwrap();
         assert_eq!(j, "\"2021-01-01T00:00:00Z\"");
         assert_eq!(serde_json::from_str::<UtcDateTime>(&j).unwrap(), a);
+    }
+
+    #[test]
+    fn checked_add_advances_and_saturates_on_overflow() {
+        let t: UtcDateTime = "2021-01-01T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            t.checked_add(core::time::Duration::from_secs(61))
+                .unwrap()
+                .to_string(),
+            "2021-01-01T00:01:01Z"
+        );
+        // Sub-second spans advance the nanosecond component.
+        assert_eq!(
+            t.checked_add(core::time::Duration::from_millis(250))
+                .unwrap()
+                .to_string(),
+            "2021-01-01T00:00:00.25Z"
+        );
+        // A span too large to represent returns None rather than wrapping.
+        assert!(
+            t.checked_add(core::time::Duration::from_secs(u64::MAX))
+                .is_none()
+        );
     }
 }
