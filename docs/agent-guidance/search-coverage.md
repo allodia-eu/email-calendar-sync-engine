@@ -109,6 +109,17 @@ cap reports `Bounded { covered }`, naming the sub-range that is trustworthy. The
 engine never silently returns empty for an out-of-horizon range, and never
 expands an unbounded `RRULE` past the cap.
 
+**Implementation status.** Occurrence materialization within the host horizon now
+exists (`engine-recurrence` → `event_occurrence`; horizon advance via
+`apply_maintenance`). The read-path half of this axis — on-demand expansion for a
+range past the materialized horizon, `Bounded` reporting, and per-scope
+horizon-state tracking — is **not yet wired**: the SQLite executor still answers
+calendar ranges from materialized rows and reports `TemporalCoverage::Full`. Until
+that follow-up lands, a range beyond the materialized horizon under-returns rather
+than reporting `Bounded`; hosts should keep the horizon ahead of their query
+window. Closing this is the temporal-axis task that composes in through `assemble`
+without changing callers.
+
 ### Remote
 
 Records whether a provider search ran and whether the provider called its own

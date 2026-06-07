@@ -47,7 +47,9 @@ pim-sync-engine/
 │   ├── engine-store/            # Store trait and contract tests.
 │   ├── store-sqlite/            # SQLite, at-rest seam (plain or SQLCipher), FTS5, vectors.
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
+│   ├── engine-recurrence/       # Deterministic recurrence -> occurrence expansion (bundled tzdb).
 │   ├── engine-index/            # Text extraction, chunks, embedding seam.
+│   ├── engine-cli/              # Headless ingestion/search/maintenance harness (CLI host).
 │   ├── crypto-keystore/         # Platform credential/key abstraction.
 │   ├── engine-api/              # Stable facade consumed by hosts.
 │   └── bindings/

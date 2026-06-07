@@ -26,7 +26,9 @@ Contract). This document only constrains *when and under what lock* those land.
   tombstones for one scope commit together or not at all.
 - **The store is mechanical.** It performs no normalization, text extraction, or
   recurrence expansion. All such work is done by pure `engine-core` /
-  `engine-index` functions *before* the store call; the store writes the result.
+  `engine-recurrence` functions *before* the store call; the store writes the
+  result. (Occurrence expansion is `engine_recurrence::expand`; text/structured
+  projection is `engine_core::search_index`.)
 - `engine-core` stays I/O-free and async-free. Async and I/O live only in store
   implementations and provider crates.
 
@@ -142,6 +144,15 @@ These go through `apply_maintenance`, which writes only derived rows under the
 A cross-cutting trigger (a tzdata bump) fans out by acquiring each affected
 scope's lease in turn.
 
+For the occurrence triggers, the per-scope step is: re-run `engine_recurrence::expand`
+for the scope's events over the (advanced) horizon with the current tzdata, then
+commit `{ removed: [event keys], occurrences: [fresh] }` through `apply_maintenance`
+(`removed`-before-upserts makes the replace atomic, and unchanged instants stay
+byte-stable). `engine-cli`'s `reexpand_calendar` implements this per-scope driver
+and is the worked example; the cross-scope fan-out driven from sync state (and the
+tzdata-version index to find *only* stale scopes) is the sync orchestrator's job, a
+later step.
+
 On-demand fetched bodies **are** indexed (resolving the "does opening old mail
 make it searchable?" question: yes). Search coverage metadata must therefore
 reflect that local coverage can grow over time; it is not a static property of
@@ -245,9 +256,14 @@ Supporting types (abbreviated):
   computes them. The full-text and structured rows are projected by pure
   `engine-core` functions (`engine_core::search_index::{project_message, project_event}`,
   carried in via `DerivedWrite::push_mail`/`push_event`); occurrence rows come from
-  the recurrence/index layer. Junction and scalar rows **replace** per object on
-  replay (idempotent); a small `StoreRead::index_row_counts` inspection backs the
-  shared contract's structured-row parity case.
+  `engine_recurrence::expand`, and each carries the `tzdata_version` it was expanded
+  under (so a tzdata bump can find and re-expand exactly the affected rows). Junction
+  and scalar rows **replace** per object on replay (idempotent), and
+  `DerivedWrite::removed` is applied **before** the upserts, so a re-expansion batch
+  (`{ removed: [event], occurrences: [fresh] }`) clears an event's stale occurrences
+  and writes the fresh ones in one transaction. A small
+  `StoreRead::index_row_counts` inspection backs the shared contract's structured-row
+  parity case.
 - `LeaseRequest { owner: WorkerId, ttl: Duration }`.
 - `PendingOp { idempotency_key, depends_on: Vec<PendingOpId>, resource_key: ResourceKey, payload }`.
 - `PendingOutcome` — `Succeeded { provider_key }` | `Failed { class, retry_after }` | `NeedsConfirmation { .. }`.

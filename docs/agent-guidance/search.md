@@ -72,10 +72,11 @@ Projection decisions (settled with the user):
   trimmed + lowercased) on **both** the storage and query sides, so a query
   address matches the stored one. Matching is exact-normalized (substring is a
   future refinement).
-- **`OccurrenceRow`s are not projected** — expanding recurrence to UTC instants
-  needs tzdata and is a separate step (`calendar-semantics.md`); until it lands,
-  calendar `before:`/`after:` matches only occurrences that were materialized
-  some other way.
+- **`OccurrenceRow`s are not projected by `search_index`** — expanding recurrence
+  to UTC instants needs bundled tzdata, so it lives in `engine_recurrence::expand`
+  (`calendar-semantics.md`), which the ingest/maintenance path runs before the store
+  call. The executor consumes the materialized `event_occurrence` rows unchanged;
+  calendar `before:`/`after:` matches occurrences within the host horizon.
 
 ## FTS5
 
@@ -118,6 +119,9 @@ in without changing callers.
   (`vec0` KNN, per-platform bundling, `load_extension`) is a later **Cargo-feature
   -gated** source that joins the same RRF fusion. "FTS works before vectors"
   (`north-star.md`).
-- **Coverage gap detection** and **occurrence/horizon expansion** (the latter is
-  the remaining step-2 item: recurrence fixtures + ingestion CLI).
+- **Coverage gap detection** and **on-demand beyond-horizon expansion** with
+  `TemporalCoverage::Bounded` reporting. Occurrence materialization within the
+  horizon now exists (`engine-recurrence`, ingest/maintenance via `engine-cli`); the
+  read-path expansion past the horizon and the temporal-coverage reporting are the
+  follow-up (`search-coverage.md`).
 - **Substring/prefix address matching** (currently exact-normalized).

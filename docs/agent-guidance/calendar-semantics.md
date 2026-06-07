@@ -12,7 +12,11 @@ expansion, or scheduling.
 - **IANA tzdata is the single source of truth, bundled and version-pinned** —
   not the host OS database. A user's devices must expand recurrence identically,
   so determinism beats matching the local OS. The bundled tzdata version is
-  recorded.
+  recorded. Expansion lives in the `engine-recurrence` crate and resolves zones
+  through `jiff` + `jiff-tzdb`, pinned with `default-features = false` +
+  `tzdb-bundle-always` so jiff never reads `/usr/share/zoneinfo`, `TZDIR`, or the
+  system zone (the bundle-only mode jiff's own docs prescribe — its system source
+  otherwise takes precedence). The recorded version is `jiff_tzdb::VERSION`.
 - Each materialized occurrence records the tzdata version it was expanded under.
   A version bump invalidates and re-expands affected occurrences through the
   store maintenance path (`store-and-sync.md`); occurrences whose zones did not
@@ -25,10 +29,12 @@ expansion, or scheduling.
     rules.
   - Record which source was used. A `VTIMEZONE`-disagrees-with-IANA fixture is
     required.
-- **Floating time** (no zone) is stored as wall-clock and resolved to instants at
-  query/display time in the observer's current zone. Floating occurrences are
-  therefore stored wall-clock and compared in the host zone, so a floating
-  event's membership in a time range can shift with the host zone — that is
+- **Floating time** (no zone) is wall-clock on the master event, resolved to an
+  instant in the observer's (host) zone. Because `event_occurrence` rows are UTC
+  instants, the expander resolves a floating series through the host zone supplied
+  at materialization; a host-zone change re-expands the floating events through the
+  maintenance path (the same mechanism as a tzdata bump). A floating event's
+  membership in a time range can therefore shift with the host zone — that is
   inherent to floating time, not a defect.
 - **All-day / date-only** values are zoneless calendar dates: no DST, never
   attach a zone.
@@ -93,6 +99,32 @@ recognizing and reconciling scheduling messages that arrive through sync.
   never by re-serializing the lossy projection. The projection exists for
   display, search, and engine logic and is explicitly **not**
   round-trip-authoritative.
+
+## Supported recurrence subset
+
+The model stores recurrence structurally (all of RFC 5545 `RRULE`), but the
+`engine-recurrence` expander implements a subset and **rejects** the rest with a
+typed error so a caller can preserve the master event without silently dropping
+instances (the crate docs are the authoritative list). Consumers must treat an
+expansion error as "store the event, materialize no occurrences for it (yet)",
+not as a hard failure.
+
+Implemented: `FREQ` ∈ {`DAILY`, `WEEKLY`, `MONTHLY`, `YEARLY`}; `INTERVAL`;
+`COUNT`/`UNTIL`/unbounded (the unbounded case capped by the horizon); `BYDAY`
+including an nth-of-period (e.g. last Friday) for `MONTHLY`, and for `YEARLY` when
+scoped by `BYMONTH`; `BYMONTHDAY` including negatives; `BYMONTH`; `WKST`; and
+per-instance overrides (exclusion, cancellation, a moved `start`/`duration`, and
+an RDATE-like addition on a non-rule instant). Every event — recurring or not —
+materializes occurrences, so time-range search matches single events too.
+
+Staged (return an error, not expanded): `BYYEARDAY`, `BYWEEKNO`, `BYSETPOS`,
+year-relative nth `BYDAY`; sub-daily frequencies; `RSCALE` (preserved, never
+expanded, per above); custom/embedded-`VTIMEZONE` zones (need the iCalendar
+parser, a later provider step); and cross-object master/override-instance
+reconciliation (the expander is a pure single-`Event` function — a recurring
+master expands its inline overrides, a standalone override-instance object
+expands to its own occurrence; deduplicating a master against sibling override
+objects is the sync layer's job).
 
 ## Required tests
 

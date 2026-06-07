@@ -21,11 +21,20 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 # so the build needs no system libsqlite3 and every platform agrees on one engine.
 rusqlite = { version = "0.40", features = ["bundled"] }
 tempfile = "3"
+# Recurrence expansion resolves wall-clock times through IANA zones. We force the
+# bundled, version-pinned tzdb and disable jiff's defaults so it never reads the
+# host's `/usr/share/zoneinfo`/`TZDIR`/system zone: expansion must be identical
+# across a user's devices (`calendar-semantics.md`). `jiff_tzdb::VERSION` is the
+# pinned release recorded on each occurrence.
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
+jiff-tzdb = "0.1"
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
 engine-store = { path = "crates/engine-store" }
 engine-search = { path = "crates/engine-search" }
+engine-recurrence = { path = "crates/engine-recurrence" }
+store-sqlite = { path = "crates/store-sqlite" }
 
 # Strict, workspace-wide lint policy (AGENTS.md / rust.md). Member crates inherit
 # via `[lints] workspace = true`. Verification runs clippy with `-D warnings`, so

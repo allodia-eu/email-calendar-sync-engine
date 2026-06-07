@@ -1,0 +1,18 @@
+[package]
+name = "engine-recurrence"
+description = "Deterministic recurrence/occurrence expansion for the PIM sync engine: pure Event -> Vec<OccurrenceRow> over a host horizon, resolving wall-clock times through a bundled, version-pinned IANA tzdb (jiff/jiff-tzdb). No I/O, no system tzdb reads."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-store = { workspace = true }
+jiff = { workspace = true }
+jiff-tzdb = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

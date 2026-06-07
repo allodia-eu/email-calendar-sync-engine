@@ -20,6 +20,10 @@
 //! FTS5 external-content index over it, and adds the normalized structured-filter
 //! tables and junctions plus the per-chunk embedding table.
 //!
+//! Migration [`V3`] adds `event_occurrence.tzdata_version`: the bundled IANA
+//! tzdata release each occurrence was expanded under, so a tzdata-version bump can
+//! find and re-expand exactly the affected occurrences (`calendar-semantics.md`).
+//!
 //! `STRICT` enforces column types; the composite-key tables are `WITHOUT ROWID`
 //! (clustered by their key), while `pending_op` keeps a rowid so it maps onto
 //! `PendingOpId`. Time is ISO-8601 `TEXT` (sortable and exact to nanoseconds);
@@ -186,4 +190,19 @@ CREATE TABLE embedding (
     vector       BLOB    NOT NULL,
     PRIMARY KEY (scope_key, provider_key, chunk_ix)
 ) STRICT, WITHOUT ROWID;
+";
+
+/// Migration v3: per-occurrence tzdata version.
+///
+/// Each materialized occurrence records the bundled IANA tzdata release it was
+/// expanded under (`OccurrenceRow::tzdata_version`). A tzdata-version bump
+/// re-expands the affected occurrences through the maintenance path
+/// (`store-and-sync.md`); the index lets that pass find occurrences expanded under
+/// a stale release without a full scan. The column is **not** part of the primary
+/// key — re-expansion updates it in place. The `''` default applies only to
+/// hypothetical pre-V3 rows (occurrence materialization did not exist before this).
+pub(crate) const V3: &str = "\
+ALTER TABLE event_occurrence ADD COLUMN tzdata_version TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX event_occurrence_tzdata ON event_occurrence (tzdata_version);
 ";
