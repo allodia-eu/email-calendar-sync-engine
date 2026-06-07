@@ -5,7 +5,7 @@ use core::time::Duration;
 use std::collections::BTreeSet;
 
 use engine_core::sync::{SyncState, SyncUpdate};
-use engine_core::write::PendingOutcome;
+use engine_core::write::{PendingOpId, PendingOutcome};
 
 use crate::apply::{ApplyBatch, DerivedWrite, FtsField, FtsRow, PendingReconciliation};
 use crate::error::StoreError;
@@ -369,4 +369,97 @@ pub(super) async fn maintenance_is_lease_gated<S: Store + StoreRead>(
         .await
         .expect_err("stale maintenance must be rejected");
     assert_eq!(rejected, StoreError::StaleLease);
+}
+
+/// A reconciliation whose op is still in its expected state resolves the op to
+/// `Succeeded` inside the apply transaction; one naming an unknown op is skipped.
+/// Either way the incoming object is stored (the success counterpart to
+/// [`reconciliation_skips_regressed_op`]).
+pub(super) async fn reconciliation_resolves_matching_op<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-reconcile-ok");
+    let scope = email_scope(&account);
+
+    // Claim an op into flight — the state the reconciliation will expect.
+    let op_id = store
+        .enqueue_pending_op(account.clone(), pending_op("submit-ok", "draft-ok"))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_pending_ops(account.clone(), lease_request("worker", 300), 10)
+        .await
+        .unwrap();
+    assert_eq!(claimed[0].id, op_id);
+
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+    let incoming = SyncUpdate::delta(vec![TestObject::new("m-ok", "synced")], vec![]);
+    let derived = DerivedWrite::empty();
+    let reconcile = vec![
+        PendingReconciliation::new(op_id, PendingOpState::InFlight, pk("m-ok")),
+        // An unknown op is skipped, not an error.
+        PendingReconciliation::new(
+            PendingOpId::new(9_999),
+            PendingOpState::InFlight,
+            pk("m-ok"),
+        ),
+    ];
+    let applied = store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(
+                &incoming,
+                &derived,
+                &reconcile,
+                &SyncState::new("cursor-ok"),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(applied.reconciled, 1);
+    assert_eq!(
+        store.pending_op_state(op_id).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+    assert!(
+        store
+            .object_payload(&scope, &pk("m-ok"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// Releasing under a superseded lease is a no-op: it must not free a scope that a
+/// newer lease now holds.
+pub(super) async fn release_with_stale_token_is_noop<S: Store + StoreRead>(
+    store: &S,
+    clock: &ManualClock,
+) {
+    let account = acct("acct-release-stale");
+    let scope = email_scope(&account);
+
+    let stale = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker-old", 30))
+        .await
+        .unwrap();
+    // The old lease expires; a new worker re-claims and bumps the generation.
+    clock.advance(Duration::from_secs(90));
+    store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker-new", 30))
+        .await
+        .unwrap();
+
+    // Releasing the stale lease must not free the scope the live lease holds.
+    store.release_sync_scope(stale.lease).await.unwrap();
+    let contended = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker-other", 30))
+        .await
+        .expect_err("the live new lease still holds the scope");
+    assert_eq!(contended, StoreError::ScopeHeld);
 }

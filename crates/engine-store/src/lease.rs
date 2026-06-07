@@ -57,6 +57,18 @@ impl FenceToken {
         Self(0)
     }
 
+    /// Reconstructs a token from a persisted generation value.
+    ///
+    /// A durable store (`store-sqlite`, a future `store-postgres`) round-trips the
+    /// fencing generation through storage as an integer and rebuilds the token on
+    /// read, then [`bump`](Self::bump)s it on the next claim. The in-memory
+    /// reference store keeps the token live and never needs this; `from_generation(0)`
+    /// equals [`initial`](Self::initial).
+    #[must_use]
+    pub const fn from_generation(generation: u64) -> Self {
+        Self(generation)
+    }
+
     /// Returns the next, strictly-greater generation (minted by a new claim).
     #[must_use]
     pub const fn bump(self) -> Self {
@@ -303,6 +315,16 @@ mod tests {
         assert_eq!(t0.get(), 0);
         assert_eq!(t0.bump().get(), 1);
         assert!(t0 < t0.bump());
+    }
+
+    #[test]
+    fn fence_token_rehydrates_from_persisted_generation() {
+        // A durable store reads the generation back as an integer and rebuilds the
+        // token; the zero generation is exactly `initial`.
+        assert_eq!(FenceToken::from_generation(0), FenceToken::initial());
+        assert_eq!(FenceToken::from_generation(5).get(), 5);
+        // Rehydrate-then-claim is the next strictly-greater generation.
+        assert_eq!(FenceToken::from_generation(5).bump().get(), 6);
     }
 
     #[test]
