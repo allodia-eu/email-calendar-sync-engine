@@ -27,6 +27,14 @@ Read before relevant work:
 - Use newtypes for identities and protocol-specific references. Do not pass raw strings where a type can prevent mixing account ids, provider ids, mailboxes, events, or cursors.
 - Avoid `unsafe`. If unavoidable, isolate it, document `# Safety`, and add tests around the safe boundary.
 
+## Documentation Currency
+
+`docs/agent-guidance/` is the durable baseline, not a one-time sketch. A large or architectural change MUST update the affected guidance docs in the same change, so code and docs never drift:
+
+- When a change alters a decision, a trait or type signature, a crate's responsibility, an invariant, or where something lives, reconcile every guidance doc that states otherwise (north-star, store-and-sync, modeling, providers, search-coverage, calendar-semantics).
+- If a new decision supersedes a doc's wording, rewrite the wording and record the rationale when it is non-obvious. Treat the docs as authoritative for the next agent: code and docs disagreeing is a bug to fix, not a discrepancy to leave.
+- In the final summary, list which guidance docs you updated and why — or state explicitly that none needed changes.
+
 ## Test-Driven Workflow
 
 - For Rust behavior changes, write or update tests before implementation.

@@ -37,7 +37,7 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
 - Thread ids carry provenance: provider-assigned or locally-derived.
 - Writes are represented as durable pending operations before any provider side effect.
 - Pending operations may have dependencies and local-id to provider-id resolution.
-- Model types for sync/store contracts live in `engine-core` or a dedicated async-free contracts crate, not in `engine-sync`.
+- Model types for sync/store contracts live in `engine-core` (provider-neutral data shapes) or `engine-store` (the lease, batch, and fencing vocabulary, beside the `Store` trait), never in `engine-sync`.
 
 ## Test Requirements
 

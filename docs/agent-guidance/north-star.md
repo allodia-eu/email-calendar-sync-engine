@@ -23,7 +23,7 @@ The engine models mail and calendar (and later contacts) objects, sync, search, 
 - **JMAP Mail is a first-class model spine.** Its account-global object ids, per-type state changes, batched requests, and submission semantics force a cleaner generic mail model.
 - **JSCalendar is the calendar data spine.** JSCalendar is the stable normalized calendar projection. JMAP Calendars is treated as a transport while it remains less widely deployed than CalDAV/iCalendar.
 - **Stalwart Docker is the primary protocol test target.** It supports JMAP, IMAP, SMTP, CalDAV, and CardDAV, letting one deterministic fixture validate both modern and legacy protocol paths in local and CI tests.
-- **SQLite is the first store.** SQLCipher, FTS5, and a vector extension seam cover local encrypted storage and search. Other stores are host adapters.
+- **SQLite is the first store.** At-rest encryption is a host-selected seam, not a fixed choice: plain SQLite over OS file encryption (Android FBE / iOS Data-Protection) by default, with SQLCipher as an opt-in whole-database layer. FTS5 and a vector-extension seam cover local search, and the store trait stays encryption-agnostic. Other stores are host adapters.
 - **Partial sync is the default.** Headers, metadata, and recent bodies are local first; old bodies and attachments are fetched on demand. Search results must expose coverage metadata so callers can tell a complete answer from a windowed one.
 - **FTS works before vectors.** Full-text and structured search must be useful without embeddings. Vector search is local-only by default and remote embedding requires explicit host policy.
 - **Provider adapters are isolated crates.** Protocol quirks stay inside provider crates and surface as capabilities, changes, cursors, and transport operations.
@@ -45,7 +45,7 @@ pim-sync-engine/
 │   ├── provider-gmail/          # Future Gmail adapter.
 │   ├── provider-graph/          # Future Microsoft Graph adapter.
 │   ├── engine-store/            # Store trait and contract tests.
-│   ├── store-sqlite/            # SQLite, SQLCipher seam, FTS5, vectors.
+│   ├── store-sqlite/            # SQLite, at-rest seam (plain or SQLCipher), FTS5, vectors.
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
 │   ├── engine-index/            # Text extraction, chunks, embedding seam.
 │   ├── crypto-keystore/         # Platform credential/key abstraction.
@@ -136,7 +136,7 @@ Mail and calendar data are hostile input and sensitive data:
 - Attachments are quota-managed and opened through host policy.
 - Logs, crash reports, snippets, and telemetry are redacted by default.
 - Provider credentials never enter the SQL store.
-- The SQLCipher database key is wrapped by the host platform keystore; FTS content and snippets are protected only by database encryption.
+- At-rest protection is host-selected: bulk data relies on OS file encryption by default, with SQLCipher as an opt-in whole-database layer whose key is wrapped by the host platform keystore. High-value secrets (tokens, passwords, key material) are always field-encrypted with a keystore-wrapped key and never stored in cleartext. FTS content and snippets are protected only by whichever at-rest layer is in force.
 - Remote embedding is disabled unless an explicit host policy allows content to leave the device/process.
 - Export, schema migration, account deletion, credential wipe, and local database compaction are first-class flows.
 

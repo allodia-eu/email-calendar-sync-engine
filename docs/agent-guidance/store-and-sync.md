@@ -99,8 +99,8 @@ the batch; the store does not compute them. This keeps the transaction short
 the atomic set is self-documenting:
 
 ```rust
-pub struct ApplyBatch<'a> {
-    pub update: &'a SyncUpdate,                 // provider-normalized objects, raw, membership
+pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObject
+    pub update: &'a SyncUpdate<T>,              // provider-normalized objects, raw, membership
     pub derived: &'a DerivedWrite,              // FTS + occurrence rows, from pure engine fns
     pub reconcile: &'a [PendingReconciliation],
     pub next_state: &'a SyncState,
@@ -187,11 +187,13 @@ pub trait Store: Send + Sync {
         req: LeaseRequest,
     ) -> Result<SyncClaim>; // { lease, state: Option<SyncState> }
 
-    async fn apply_sync_update(
+    async fn apply_sync_update<T>(
         &self,
         lease: &SyncLease,
-        batch: ApplyBatch<'_>,
-    ) -> Result<SyncApplied>;
+        batch: ApplyBatch<'_, T>,
+    ) -> Result<SyncApplied>
+    where
+        T: StorableObject + Serialize + Send + Sync;
 
     async fn apply_maintenance(
         &self,
@@ -202,7 +204,11 @@ pub trait Store: Send + Sync {
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()>;
 
     // Outbox.
-    async fn enqueue_pending_op(&self, op: PendingOp) -> Result<PendingOpId>; // idempotent by op key
+    async fn enqueue_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOp,
+    ) -> Result<PendingOpId>; // idempotent by (account, op key); PendingOp carries no account
     async fn claim_pending_ops(
         &self,
         account: AccountId,
@@ -218,10 +224,20 @@ pub trait Store: Send + Sync {
 }
 ```
 
-Supporting types (abbreviated; full shapes live in `engine-core`):
+The provider-neutral sync data shapes (`SyncScope`, `SyncState`, `SyncUpdate`,
+`PendingOp`, `PendingOutcome`) live in `engine-core`; the lease, batch, and
+fencing vocabulary lives in `engine-store`, beside the trait that issues it. The
+trait is **encryption-agnostic** — at-rest encryption is a `store-sqlite`
+construction detail (plain SQLite over OS file encryption by default, SQLCipher
+opt-in), so the same contract holds either way. A small `StoreRead` companion
+(lease-free object/key inspection) backs the contract suite and early reads.
+
+Supporting types (abbreviated):
 
 - `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailbox { account, mailbox }`, `DavCollection { account, collection }`.
 - `SyncLease` / `OpLease` — opaque, store-issued; expose fencing token, bound identity, and expiry.
+- `StorableObject` — the trait domain objects implement so the store keys and persists them mechanically; `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
+- `DerivedWrite` — precomputed FTS rows + bounded `event_occurrence` rows + their tombstones; the store writes them, never computes them.
 - `LeaseRequest { owner: WorkerId, ttl: Duration }`.
 - `PendingOp { idempotency_key, depends_on: Vec<PendingOpId>, resource_key: ResourceKey, payload }`.
 - `PendingOutcome` — `Succeeded { provider_key }` | `Failed { class, retry_after }` | `NeedsConfirmation { .. }`.
@@ -256,4 +272,6 @@ Lock these as failing tests before implementing the store:
 - A `PendingReconciliation` whose op changed state between planning and apply is
   skipped, and the incoming object is stored without loss.
 - Container-before-member apply ordering holds, including under snapshot
-  tombstoning.
+  tombstoning. (The store enforces per-scope snapshot tombstoning and keeps
+  scopes independent; the cross-scope *apply order* itself is an orchestrator
+  invariant, locked in `engine-sync` rather than in the store.)
