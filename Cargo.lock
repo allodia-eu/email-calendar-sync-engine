@@ -67,6 +67,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-search"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "engine-store"
 version = "0.1.0"
 dependencies = [
@@ -448,6 +458,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "engine-core",
+ "engine-search",
  "engine-store",
  "rusqlite",
  "serde",

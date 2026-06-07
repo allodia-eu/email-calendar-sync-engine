@@ -1,0 +1,18 @@
+[package]
+name = "engine-search"
+description = "Store-agnostic search layer for the PIM sync engine: the mail/calendar query AST and DSL parser, reciprocal-rank fusion, and search-coverage assembly. Native FTS/vector execution is per-store; this crate holds only the portable pieces."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

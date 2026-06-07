@@ -15,10 +15,10 @@
 //! no such constraint either. The object→derived tombstone cascade is therefore
 //! explicit (see `scope_ops::tombstone`), not a `FOREIGN KEY … ON DELETE CASCADE`.
 //!
-//! The searchable FTS5 virtual table and the structured filter index are layered
-//! over `fts_doc`/`object` in the search sub-step as later migration versions;
-//! `fts_doc` is the FTS5 external-content source, so storing the field text now
-//! needs no schema change later.
+//! The search layer is migration [`V2`]: it reshapes `fts_doc` to carry a stable
+//! integer rowid and typed text columns (`subject`/`body`/`location`), builds the
+//! FTS5 external-content index over it, and adds the normalized structured-filter
+//! tables and junctions plus the per-chunk embedding table.
 //!
 //! `STRICT` enforces column types; the composite-key tables are `WITHOUT ROWID`
 //! (clustered by their key), while `pending_op` keeps a rowid so it maps onto
@@ -75,4 +75,115 @@ CREATE TABLE pending_op (
     lease_expiry    TEXT,
     UNIQUE (account, idempotency_key)
 ) STRICT;
+";
+
+/// Migration v2: the search layer.
+///
+/// Reshapes `fts_doc` into an FTS5 external-content source (a stable integer
+/// rowid plus typed `subject`/`body`/`location` columns), builds the `fts_index`
+/// virtual table over it with triggers that keep the index in sync, and adds the
+/// normalized structured-filter tables (`mail_index`/`event_index` scalars and the
+/// `mail_address`/`membership`/`event_participant` junctions) plus the per-chunk
+/// `embedding` table. The DSL→table mapping is `north-star.md`'s Search Contract.
+///
+/// `fts_doc` is a re-derivable cache, so the forward-only reshape drops and
+/// recreates it (a re-sync or re-index repopulates) rather than copying data — the
+/// discipline `migrations.rs` documents.
+pub(crate) const V2: &str = "\
+DROP TABLE fts_doc;
+
+CREATE TABLE fts_doc (
+    rowid        INTEGER PRIMARY KEY,
+    scope_key    TEXT NOT NULL,
+    provider_key TEXT NOT NULL,
+    subject      TEXT NOT NULL DEFAULT '',
+    body         TEXT NOT NULL DEFAULT '',
+    location     TEXT NOT NULL DEFAULT '',
+    UNIQUE (scope_key, provider_key)
+) STRICT;
+
+CREATE VIRTUAL TABLE fts_index USING fts5 (
+    subject, body, location,
+    content = 'fts_doc',
+    content_rowid = 'rowid',
+    tokenize = 'porter unicode61'
+);
+
+CREATE TRIGGER fts_doc_ai AFTER INSERT ON fts_doc BEGIN
+    INSERT INTO fts_index (rowid, subject, body, location)
+    VALUES (new.rowid, new.subject, new.body, new.location);
+END;
+
+CREATE TRIGGER fts_doc_ad AFTER DELETE ON fts_doc BEGIN
+    INSERT INTO fts_index (fts_index, rowid, subject, body, location)
+    VALUES ('delete', old.rowid, old.subject, old.body, old.location);
+END;
+
+CREATE TRIGGER fts_doc_au AFTER UPDATE ON fts_doc BEGIN
+    INSERT INTO fts_index (fts_index, rowid, subject, body, location)
+    VALUES ('delete', old.rowid, old.subject, old.body, old.location);
+    INSERT INTO fts_index (rowid, subject, body, location)
+    VALUES (new.rowid, new.subject, new.body, new.location);
+END;
+
+CREATE TABLE mail_index (
+    scope_key      TEXT    NOT NULL,
+    provider_key   TEXT    NOT NULL,
+    date_utc       TEXT,
+    has_attachment INTEGER NOT NULL,
+    thread_id      TEXT,
+    PRIMARY KEY (scope_key, provider_key)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX mail_index_date ON mail_index (scope_key, date_utc);
+
+CREATE TABLE mail_address (
+    scope_key    TEXT NOT NULL,
+    provider_key TEXT NOT NULL,
+    field        TEXT NOT NULL,
+    addr         TEXT NOT NULL,
+    name         TEXT,
+    PRIMARY KEY (scope_key, provider_key, field, addr)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX mail_address_lookup ON mail_address (scope_key, field, addr);
+
+CREATE TABLE membership (
+    scope_key    TEXT NOT NULL,
+    provider_key TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    value        TEXT NOT NULL,
+    PRIMARY KEY (scope_key, provider_key, kind, value)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX membership_lookup ON membership (scope_key, kind, value);
+
+CREATE TABLE event_index (
+    scope_key      TEXT    NOT NULL,
+    provider_key   TEXT    NOT NULL,
+    has_conference INTEGER NOT NULL,
+    my_partstat    TEXT,
+    PRIMARY KEY (scope_key, provider_key)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE event_participant (
+    scope_key    TEXT NOT NULL,
+    provider_key TEXT NOT NULL,
+    role         TEXT NOT NULL,
+    addr         TEXT NOT NULL,
+    partstat     TEXT NOT NULL,
+    PRIMARY KEY (scope_key, provider_key, role, addr)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX event_participant_lookup ON event_participant (scope_key, role, addr);
+
+CREATE TABLE embedding (
+    scope_key    TEXT    NOT NULL,
+    provider_key TEXT    NOT NULL,
+    chunk_ix     INTEGER NOT NULL,
+    model        TEXT    NOT NULL,
+    dim          INTEGER NOT NULL,
+    vector       BLOB    NOT NULL,
+    PRIMARY KEY (scope_key, provider_key, chunk_ix)
+) STRICT, WITHOUT ROWID;
 ";

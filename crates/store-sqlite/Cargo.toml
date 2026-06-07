@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 engine-core = { workspace = true }
 engine-store = { workspace = true }
+engine-search = { workspace = true }
 rusqlite = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

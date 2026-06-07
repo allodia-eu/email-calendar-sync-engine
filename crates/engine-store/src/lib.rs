@@ -29,4 +29,4 @@ pub use lease::{
     Clock, FenceToken, LeaseRequest, ManualClock, OpLease, SyncClaim, SyncLease, WorkerId,
 };
 pub use outbox::{LeasedPendingOp, PendingOpState};
-pub use store::{Store, StoreRead};
+pub use store::{IndexRowCounts, Store, StoreRead};

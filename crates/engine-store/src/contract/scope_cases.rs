@@ -7,11 +7,17 @@ use std::collections::BTreeSet;
 use engine_core::sync::{SyncState, SyncUpdate};
 use engine_core::write::{PendingOpId, PendingOutcome};
 
+use engine_core::calendar::ParticipationStatus;
+use engine_core::search_index::{
+    AddressField, EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow, MembershipKind,
+    MembershipRow, ParticipantField,
+};
+
 use crate::apply::{ApplyBatch, DerivedWrite, FtsField, FtsRow, PendingReconciliation};
 use crate::error::StoreError;
 use crate::lease::ManualClock;
 use crate::outbox::PendingOpState;
-use crate::store::{Store, StoreRead};
+use crate::store::{IndexRowCounts, Store, StoreRead};
 
 use super::{TestObject, acct, email_scope, lease_request, mailbox_scope, pending_op, pk};
 
@@ -462,4 +468,148 @@ pub(super) async fn release_with_stale_token_is_noop<S: Store + StoreRead>(
         .await
         .expect_err("the live new lease still holds the scope");
     assert_eq!(contended, StoreError::ScopeHeld);
+}
+
+/// The mixed mail+event derived-row fixture the structured-index case applies:
+/// an FTS doc, a mail scalar row, two addresses, a mailbox membership (key `m1`),
+/// plus an event scalar row with my RSVP and two participants (key `e1`).
+fn structured_index_fixture() -> DerivedWrite {
+    let mail = pk("m1");
+    let event = pk("e1");
+    let mut derived = DerivedWrite::empty();
+    derived.fts.push(FtsRow::new(
+        mail.clone(),
+        vec![FtsField::new("subject", "hello")],
+    ));
+    derived.mail_index.push(MailIndexRow {
+        key: mail.clone(),
+        date_utc: Some("2026-01-01T00:00:00Z".parse().unwrap()),
+        has_attachment: true,
+        thread_id: None,
+    });
+    derived.addresses.push(MailAddressRow {
+        key: mail.clone(),
+        field: AddressField::From,
+        addr: "alice@example.com".into(),
+        name: Some("Alice".into()),
+    });
+    derived.addresses.push(MailAddressRow {
+        key: mail.clone(),
+        field: AddressField::To,
+        addr: "bob@example.com".into(),
+        name: None,
+    });
+    derived.memberships.push(MembershipRow {
+        key: mail,
+        kind: MembershipKind::Mailbox,
+        value: "inbox".into(),
+    });
+    derived.event_index.push(EventIndexRow {
+        key: event.clone(),
+        has_conference: true,
+        my_partstat: Some(ParticipationStatus::Accepted),
+    });
+    derived.participants.push(EventParticipantRow {
+        key: event.clone(),
+        field: ParticipantField::Organizer,
+        addr: "me@example.com".into(),
+        partstat: ParticipationStatus::Accepted,
+    });
+    derived.participants.push(EventParticipantRow {
+        key: event,
+        field: ParticipantField::Attendee,
+        addr: "guest@example.com".into(),
+        partstat: ParticipationStatus::NeedsAction,
+    });
+    derived
+}
+
+/// Structured index rows (scalars + junctions) commit with the object, **replace**
+/// on replay (no duplication), and clear together when the key's derived rows are
+/// removed. Every backend stores them identically — verified through
+/// [`StoreRead::index_row_counts`], so the contract holds the SQLite executor's
+/// inputs to the same shape as the reference store.
+pub(super) async fn structured_index_rows_replace_and_clear<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-index");
+    let scope = email_scope(&account);
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+
+    let mail = pk("m1");
+    let event = pk("e1");
+    let derived = structured_index_fixture();
+
+    let update = SyncUpdate::delta(vec![TestObject::new("m1", "x")], vec![]);
+    let cursor = SyncState::new("idx-1");
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&update, &derived, &[], &cursor),
+        )
+        .await
+        .unwrap();
+
+    let mail_counts = IndexRowCounts {
+        fts: 1,
+        mail_index: 1,
+        addresses: 2,
+        memberships: 1,
+        ..IndexRowCounts::default()
+    };
+    let event_counts = IndexRowCounts {
+        event_index: 1,
+        participants: 2,
+        ..IndexRowCounts::default()
+    };
+    assert_eq!(
+        store.index_row_counts(&scope, &mail).await.unwrap(),
+        mail_counts
+    );
+    assert_eq!(
+        store.index_row_counts(&scope, &event).await.unwrap(),
+        event_counts
+    );
+
+    // Replay the identical batch: structured rows replace per object, so the
+    // junction counts do not grow.
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&update, &derived, &[], &cursor),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.index_row_counts(&scope, &mail).await.unwrap(),
+        mail_counts
+    );
+    assert_eq!(
+        store.index_row_counts(&scope, &event).await.unwrap(),
+        event_counts
+    );
+
+    // Removing the keys' derived rows (e.g. re-index) clears every kind together.
+    let mut clear = DerivedWrite::empty();
+    clear.removed.push(mail.clone());
+    clear.removed.push(event.clone());
+    store.apply_maintenance(&claim.lease, &clear).await.unwrap();
+    assert!(
+        store
+            .index_row_counts(&scope, &mail)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .index_row_counts(&scope, &event)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

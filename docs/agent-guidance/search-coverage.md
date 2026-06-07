@@ -144,6 +144,13 @@ on-demand occurrence expansion was needed and how far it reached, and whether a
 provider search was invoked and what it reported. The store and providers supply
 facts; the search executor rolls them up.
 
+The assembly point is `engine_search::coverage::assemble` (per-scope remote
+compensation, then `SearchCoverage::roll_up`). The current SQLite executor
+(`search.md`) reports each searched scope as locally complete: real gap detection
+(partial-sync object/index state, recurrence-horizon bounds, provider
+augmentation) arrives with sync-state and horizon integration, and composes in
+through `assemble` without changing callers.
+
 ## Required tests
 
 Lock these before implementing the executor:

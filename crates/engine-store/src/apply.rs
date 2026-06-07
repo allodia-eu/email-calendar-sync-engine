@@ -2,20 +2,34 @@
 //!
 //! `apply_sync_update` commits exactly one transaction for one scope, gated by a
 //! lease token (`store-and-sync.md`). Everything it writes is bundled here so the
-//! all-or-nothing set is self-documenting: normalized objects, precomputed FTS
-//! and occurrence rows, pending-op reconciliations, and the next cursor.
+//! all-or-nothing set is self-documenting: normalized objects, precomputed
+//! full-text, structured-filter, and occurrence rows, pending-op reconciliations,
+//! and the next cursor.
 //!
 //! The store is mechanical — it never computes the derived rows. Recurrence
-//! expansion and text extraction run in pure engine code *before* the call, which
-//! keeps the write transaction short (no expansion under lock).
+//! expansion and text/structured extraction run in pure engine code *before* the
+//! call: the full-text and structured rows come from
+//! [`engine_core::search_index`] (re-exported below and assembled with
+//! [`DerivedWrite::push_mail`]/[`DerivedWrite::push_event`]), and occurrence
+//! expansion comes from the recurrence layer. This keeps the write transaction
+//! short (no expansion under lock).
 
 use engine_core::ids::ProviderKey;
+use engine_core::search_index::{
+    EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailIndexRow,
+    MailProjection, MembershipRow,
+};
 use engine_core::sync::{SyncState, SyncUpdate};
 use engine_core::time::UtcDateTime;
 use engine_core::write::PendingOpId;
 use serde::{Deserialize, Serialize};
 
 use crate::outbox::PendingOpState;
+
+// The full-text row types are defined in engine-core, beside the projection that
+// produces them; they are re-exported here so the store's `DerivedWrite`
+// vocabulary stays discoverable in one place.
+pub use engine_core::search_index::{FtsField, FtsRow};
 
 /// An object the store can persist mechanically.
 ///
@@ -30,43 +44,15 @@ pub trait StorableObject {
     fn provider_key(&self) -> &ProviderKey;
 }
 
-/// Field-tagged searchable text for one object — one logical FTS document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FtsField {
-    /// The field name (e.g. `subject`, `body`; later `attachment:report.pdf`).
-    pub name: String,
-    /// The field's text.
-    pub text: String,
-}
-
-impl FtsField {
-    /// Creates a named full-text field.
-    #[must_use]
-    pub fn new(name: impl Into<String>, text: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            text: text.into(),
-        }
+impl StorableObject for engine_core::mail::Message {
+    fn provider_key(&self) -> &ProviderKey {
+        self.id.key()
     }
 }
 
-/// A full-text row to upsert: the searchable text for one object.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FtsRow {
-    /// The object this text belongs to.
-    pub key: ProviderKey,
-    /// Field-tagged text segments, mapped by the store onto its native FTS engine
-    /// (SQLite FTS5 columns, Postgres `tsvector`). Open-ended so indexed
-    /// attachment text — a later, server-side capability — can be added as
-    /// further fields without a schema change.
-    pub fields: Vec<FtsField>,
-}
-
-impl FtsRow {
-    /// Creates a full-text row for an object key.
-    #[must_use]
-    pub fn new(key: ProviderKey, fields: Vec<FtsField>) -> Self {
-        Self { key, fields }
+impl StorableObject for engine_core::calendar::Event {
+    fn provider_key(&self) -> &ProviderKey {
+        self.id.key()
     }
 }
 
@@ -76,7 +62,10 @@ impl FtsRow {
 /// Range queries use these rows, not the master event (`store-and-sync.md`).
 /// `start`/`end` are resolved UTC instants for indexing; the floating/zoned
 /// semantics stay on the master event. `recurrence_id` is set for an overridden
-/// instance.
+/// instance. Unlike the full-text and structured rows, occurrences are **not**
+/// produced by [`engine_core::search_index`]: expanding recurrence to UTC instants
+/// needs bundled tzdata and lives in the recurrence/index layer, so this carrier
+/// type stays here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OccurrenceRow {
     /// The master event this occurrence expands from.
@@ -93,15 +82,27 @@ pub struct OccurrenceRow {
 ///
 /// Written atomically with the objects (inside [`ApplyBatch`]) or alone via
 /// maintenance (horizon advance, tzdata change, on-demand body fetch). The store
-/// writes these mechanically and never computes them.
+/// writes these mechanically and never computes them. All rows are keyed by their
+/// object's [`ProviderKey`], so replay is idempotent (upsert/replace, not append)
+/// and [`Self::removed`] clears every derived kind for a key together.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedWrite {
     /// Full-text rows to upsert.
     pub fts: Vec<FtsRow>,
     /// Expanded calendar occurrences to upsert.
     pub occurrences: Vec<OccurrenceRow>,
-    /// Object keys whose derived rows (FTS and occurrences) must be removed —
-    /// e.g. on tombstone, recurrence-rule change, or timezone-data change.
+    /// Mail scalar-index rows to upsert.
+    pub mail_index: Vec<MailIndexRow>,
+    /// Mail address-junction rows to replace (per object).
+    pub addresses: Vec<MailAddressRow>,
+    /// Mailbox/keyword/calendar membership rows to replace (per object).
+    pub memberships: Vec<MembershipRow>,
+    /// Event scalar-index rows to upsert.
+    pub event_index: Vec<EventIndexRow>,
+    /// Event participant-junction rows to replace (per object).
+    pub participants: Vec<EventParticipantRow>,
+    /// Object keys whose derived rows (every kind above) must be removed — e.g. on
+    /// tombstone, recurrence-rule change, or timezone-data change.
     pub removed: Vec<ProviderKey>,
 }
 
@@ -115,7 +116,45 @@ impl DerivedWrite {
     /// Returns `true` if there is nothing to write.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.fts.is_empty() && self.occurrences.is_empty() && self.removed.is_empty()
+        self.fts.is_empty()
+            && self.occurrences.is_empty()
+            && self.mail_index.is_empty()
+            && self.addresses.is_empty()
+            && self.memberships.is_empty()
+            && self.event_index.is_empty()
+            && self.participants.is_empty()
+            && self.removed.is_empty()
+    }
+
+    /// Adds the rows of a mail projection ([`engine_core::search_index::project_message`]):
+    /// its full-text document, scalar row, address junctions, and memberships.
+    pub fn push_mail(&mut self, projection: MailProjection) {
+        let MailProjection {
+            fts,
+            index,
+            addresses,
+            memberships,
+        } = projection;
+        self.fts.push(fts);
+        self.mail_index.push(index);
+        self.addresses.extend(addresses);
+        self.memberships.extend(memberships);
+    }
+
+    /// Adds the rows of an event projection ([`engine_core::search_index::project_event`]):
+    /// its full-text document, scalar row, participant junctions, and memberships.
+    /// Occurrence rows are added separately (they come from recurrence expansion).
+    pub fn push_event(&mut self, projection: EventProjection) {
+        let EventProjection {
+            fts,
+            index,
+            participants,
+            memberships,
+        } = projection;
+        self.fts.push(fts);
+        self.event_index.push(index);
+        self.participants.extend(participants);
+        self.memberships.extend(memberships);
     }
 }
 
@@ -167,14 +206,13 @@ impl PendingReconciliation {
 
 /// The all-or-nothing set committed by `apply_sync_update` for one scope.
 ///
-/// Bundled as one struct so the atomic set is self-documenting. Items 2–4 (the
-/// derived rows and reconciliations) are precomputed by pure engine code before
-/// the call.
+/// Bundled as one struct so the atomic set is self-documenting. The derived rows
+/// and reconciliations are precomputed by pure engine code before the call.
 #[derive(Debug)]
 pub struct ApplyBatch<'a, T> {
     /// Provider-normalized objects for the scope, as a delta or a snapshot.
     pub update: &'a SyncUpdate<T>,
-    /// Precomputed FTS and occurrence rows for the same objects.
+    /// Precomputed full-text, structured, and occurrence rows for the same objects.
     pub derived: &'a DerivedWrite,
     /// Pending-op reconciliations to resolve in the same transaction.
     pub reconcile: &'a [PendingReconciliation],
@@ -203,26 +241,64 @@ impl<'a, T> ApplyBatch<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_core::ids::{EventId, MailboxId, MessageId, Uid};
+    use engine_core::mail::{EmailAddress, Message};
+    use engine_core::membership::Memberships;
+    use engine_core::search_index::{
+        MembershipKind, OwnerAddresses, project_event, project_message,
+    };
+    use engine_core::time::{CalendarDateTime, LocalDateTime, TimeZoneId};
 
     fn key(value: &str) -> ProviderKey {
         ProviderKey::new(value).unwrap()
     }
 
     #[test]
-    fn derived_write_emptiness_tracks_all_three_row_kinds() {
+    fn derived_write_emptiness_tracks_every_row_kind() {
         let mut d = DerivedWrite::empty();
         assert!(d.is_empty());
-        d.fts.push(FtsRow::new(
-            key("m1"),
-            vec![
-                FtsField::new("subject", "hi"),
-                FtsField::new("body", "there"),
-            ],
-        ));
+        d.fts
+            .push(FtsRow::new(key("m1"), vec![FtsField::new("subject", "hi")]));
         assert!(!d.is_empty());
 
         let json = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<DerivedWrite>(&json).unwrap(), d);
+    }
+
+    #[test]
+    fn push_mail_flattens_a_projection_into_the_row_lists() {
+        let mut msg = Message::new(
+            MessageId::try_from("m1").unwrap(),
+            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
+        );
+        msg.envelope.subject = Some("hello".into());
+        msg.envelope.from = vec![EmailAddress::new("a@example.com")];
+
+        let mut d = DerivedWrite::empty();
+        d.push_mail(project_message(&msg));
+        assert_eq!(d.fts.len(), 1);
+        assert_eq!(d.mail_index.len(), 1);
+        assert_eq!(d.addresses.len(), 1);
+        assert_eq!(d.memberships.len(), 1);
+        assert_eq!(d.memberships[0].kind, MembershipKind::Mailbox);
+    }
+
+    #[test]
+    fn push_event_flattens_a_projection_into_the_row_lists() {
+        let event = engine_core::calendar::Event::new(
+            EventId::try_from("e1").unwrap(),
+            Uid::new("uid-1").unwrap(),
+            Memberships::of_one(engine_core::ids::CalendarId::try_from("work").unwrap()),
+            CalendarDateTime::Zoned {
+                local: LocalDateTime::new(2026, 6, 1, 9, 0, 0).unwrap(),
+                zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+            },
+        );
+        let mut d = DerivedWrite::empty();
+        d.push_event(project_event(&event, &OwnerAddresses::default()));
+        assert_eq!(d.event_index.len(), 1);
+        assert_eq!(d.memberships.len(), 1);
+        assert_eq!(d.memberships[0].kind, MembershipKind::Calendar);
     }
 
     #[test]

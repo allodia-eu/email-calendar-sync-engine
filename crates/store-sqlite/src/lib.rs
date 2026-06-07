@@ -21,15 +21,17 @@
 //!   connection (one connection per database — required for `:memory:`, where
 //!   each connection is its own database).
 //!
-//! Content-addressed blob storage and the FTS5 search index layer over this base
-//! in later sub-steps; the schema already stores derived field text so the FTS5
-//! external-content table needs no migration.
+//! The FTS5 search index and the normalized structured-filter tables layer over
+//! this base in migration `V2` (`schema.rs`); content-addressed blob storage is a
+//! later sub-step.
 
 mod convert;
+mod derived_ops;
 mod migrations;
 mod outbox_ops;
 mod schema;
 mod scope_ops;
+mod search_ops;
 
 use core::fmt;
 use std::path::Path;
@@ -43,9 +45,10 @@ use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 
+use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{
-    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, PendingOpState,
-    Result, StorableObject, Store, StoreRead, SyncApplied, SyncClaim, SyncLease,
+    ApplyBatch, Clock, DerivedWrite, IndexRowCounts, LeaseRequest, LeasedPendingOp, OpLease,
+    PendingOpState, Result, StorableObject, Store, StoreRead, SyncApplied, SyncClaim, SyncLease,
 };
 
 use crate::convert::{backend, expiry_after, scope_key};
@@ -134,6 +137,50 @@ impl<C: Clock> SqliteStore<C> {
         })
         .await
         .expect("sqlite blocking task panicked")
+    }
+
+    /// Searches mail across `scopes`, returning ranked hits and the answer's
+    /// coverage. The query compiles to indexed structured filters plus an FTS5
+    /// `bm25()` ranking; pass the account's mail scopes (search is per-account).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`engine_store::StoreError::Backend`] on a backend failure.
+    pub async fn search_mail(
+        &self,
+        scopes: &[SyncScope],
+        query: &MailQuery,
+        limit: usize,
+    ) -> Result<SearchResults> {
+        let scope_keys: Vec<String> = scopes.iter().map(scope_key).collect();
+        let scope_count = scopes.len();
+        let query = query.clone();
+        let ranked = self
+            .call(move |conn| search_ops::search_mail(conn, &scope_keys, &query, limit))
+            .await?;
+        search_ops::assemble_results(ranked, scope_count)
+    }
+
+    /// Searches calendar events across `scopes`, returning ranked hits and
+    /// coverage. Time-range (`before:`/`after:`) filters match materialized
+    /// occurrences.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`engine_store::StoreError::Backend`] on a backend failure.
+    pub async fn search_calendar(
+        &self,
+        scopes: &[SyncScope],
+        query: &CalendarQuery,
+        limit: usize,
+    ) -> Result<SearchResults> {
+        let scope_keys: Vec<String> = scopes.iter().map(scope_key).collect();
+        let scope_count = scopes.len();
+        let query = query.clone();
+        let ranked = self
+            .call(move |conn| search_ops::search_calendar(conn, &scope_keys, &query, limit))
+            .await?;
+        search_ops::assemble_results(ranked, scope_count)
     }
 }
 
@@ -250,6 +297,17 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
 
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {
         self.call(move |conn| outbox_ops::pending_op_state(conn, id))
+            .await
+    }
+
+    async fn index_row_counts(
+        &self,
+        scope: &SyncScope,
+        key: &ProviderKey,
+    ) -> Result<IndexRowCounts> {
+        let scope = scope_key(scope);
+        let provider_key = key.as_str().to_owned();
+        self.call(move |conn| derived_ops::index_row_counts(conn, &scope, &provider_key))
             .await
     }
 }
