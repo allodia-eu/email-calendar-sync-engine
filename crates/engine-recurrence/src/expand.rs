@@ -28,9 +28,6 @@ struct Context {
     zone: jiff::tz::TimeZone,
     date: Date,
     time: Time,
-    hour: u8,
-    minute: u8,
-    second: u8,
 }
 
 /// Expands `event` into the occurrences whose start falls within `horizon`.
@@ -236,25 +233,16 @@ impl Materializer<'_> {
                 zone: zone::utc(),
                 date: zone::calendar_date(*date)?,
                 time: Time::MIN,
-                hour: 0,
-                minute: 0,
-                second: 0,
             }),
             CalendarDateTime::Floating(local) => Ok(Context {
                 zone: resolve_zone_id(self.host_zone)?,
                 date: zone::local_date(*local)?,
                 time: zone::local_time(*local)?,
-                hour: local.hour(),
-                minute: local.minute(),
-                second: local.second(),
             }),
             CalendarDateTime::Zoned { local, zone } => Ok(Context {
                 zone: resolve_zone_id(zone)?,
                 date: zone::local_date(*local)?,
                 time: zone::local_time(*local)?,
-                hour: local.hour(),
-                minute: local.minute(),
-                second: local.second(),
             }),
         }
     }
@@ -288,13 +276,14 @@ impl Materializer<'_> {
 /// The original wall-clock recurrence id of a base instance: its date plus the
 /// master start's time-of-day.
 fn instance_rid(ctx: &Context, date: Date) -> Result<LocalDateTime, ExpandError> {
+    let out_of_range = |_| ExpandError::OutOfRange;
     LocalDateTime::new(
         i32::from(date.year()),
-        u8::try_from(date.month()).map_err(|_| ExpandError::OutOfRange)?,
-        u8::try_from(date.day()).map_err(|_| ExpandError::OutOfRange)?,
-        ctx.hour,
-        ctx.minute,
-        ctx.second,
+        u8::try_from(date.month()).map_err(out_of_range)?,
+        u8::try_from(date.day()).map_err(out_of_range)?,
+        u8::try_from(ctx.time.hour()).map_err(out_of_range)?,
+        u8::try_from(ctx.time.minute()).map_err(out_of_range)?,
+        u8::try_from(ctx.time.second()).map_err(out_of_range)?,
     )
     .map_err(ExpandError::from)
 }
@@ -322,44 +311,35 @@ fn patch_cancelled(patch: &PatchObject) -> bool {
     patch.get("status").and_then(Value::as_str) == Some("cancelled")
 }
 
+/// Reads an optional, non-null string-valued patch field. An absent field and an
+/// explicit `null` (reset-to-default) both yield `Ok(None)`.
+fn patch_str<'a>(patch: &'a PatchObject, field: &str) -> Result<Option<&'a str>, &'static str> {
+    match patch.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(Some)
+            .ok_or("override field must be a string"),
+    }
+}
+
 /// The override's moved `start`, if it patches one.
 fn patch_start(patch: &PatchObject) -> Result<Option<LocalDateTime>, &'static str> {
-    let Some(value) = patch.get("start") else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let text = value.as_str().ok_or("override start must be a string")?;
-    text.parse()
-        .map(Some)
-        .map_err(|_| "malformed override start")
+    patch_str(patch, "start")?
+        .map(|text| text.parse().map_err(|_| "malformed override start"))
+        .transpose()
 }
 
 /// The override's patched `duration`, if any.
 fn patch_duration(patch: &PatchObject) -> Result<Option<Duration>, &'static str> {
-    let Some(value) = patch.get("duration") else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let text = value.as_str().ok_or("override duration must be a string")?;
-    text.parse()
-        .map(Some)
-        .map_err(|_| "malformed override duration")
+    patch_str(patch, "duration")?
+        .map(|text| text.parse().map_err(|_| "malformed override duration"))
+        .transpose()
 }
 
 /// The override's patched `timeZone`, if any (a non-null IANA name).
 fn patch_timezone(patch: &PatchObject) -> Result<Option<TimeZoneId>, &'static str> {
-    let Some(value) = patch.get("timeZone") else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let text = value.as_str().ok_or("override timeZone must be a string")?;
-    TimeZoneId::iana(text)
-        .map(Some)
-        .map_err(|_| "empty override timeZone")
+    patch_str(patch, "timeZone")?
+        .map(|text| TimeZoneId::iana(text).map_err(|_| "empty override timeZone"))
+        .transpose()
 }

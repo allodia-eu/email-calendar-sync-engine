@@ -146,12 +146,16 @@ scope's lease in turn.
 
 For the occurrence triggers, the per-scope step is: re-run `engine_recurrence::expand`
 for the scope's events over the (advanced) horizon with the current tzdata, then
-commit `{ removed: [event keys], occurrences: [fresh] }` through `apply_maintenance`
-(`removed`-before-upserts makes the replace atomic, and unchanged instants stay
-byte-stable). `engine-cli`'s `reexpand_calendar` implements this per-scope driver
-and is the worked example; the cross-scope fan-out driven from sync state (and the
-tzdata-version index to find *only* stale scopes) is the sync orchestrator's job, a
-later step.
+commit a maintenance batch through `apply_maintenance`. Because `DerivedWrite::removed`
+clears **every** derived kind for a key — not just occurrences — the batch re-derives
+each event in full: `removed: [event keys]` plus a fresh projection
+(`push_event`/`push_mail`) **and** the fresh occurrences, so a horizon advance does
+not strip an event's FTS/structured rows. `removed`-before-upserts makes the replace
+atomic, and unchanged occurrence instants stay byte-stable. `engine-cli`'s
+`reexpand_calendar` is the worked example. The cross-scope fan-out driven from sync
+state — plus a `tzdata-version` index to find *only* stale scopes, and an
+occurrence-only clear so a pure horizon advance need not re-project unchanged text —
+is the sync orchestrator's job, a later step.
 
 On-demand fetched bodies **are** indexed (resolving the "does opening old mail
 make it searchable?" question: yes). Search coverage metadata must therefore

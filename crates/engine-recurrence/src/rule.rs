@@ -196,9 +196,10 @@ pub(crate) fn occurrence_dates(
             _ => unreachable!("frequency checked by check_supported"),
         }
     }
+    // `seen` gates every push, so `out` is already duplicate-free; sort to a
+    // defined ascending order so `COUNT` truncation keeps the earliest instances.
     let mut out = acc.out;
     out.sort_unstable();
-    out.dedup();
     if let Some(limit) = count {
         out.truncate(limit);
     }
@@ -305,8 +306,9 @@ fn generate_monthly(
 /// `YEARLY`: every `interval` years, over the `BYMONTH` months (or the start's),
 /// with the days selected per month.
 fn generate_yearly(acc: &mut Acc, interval: u32, rule: &RecurrenceRule) -> Result<(), ExpandError> {
-    let months: Vec<i8> = match parse_by_month(&rule.by_month)? {
-        Some(set) => set.into_iter().collect(),
+    // `occurrence_dates` already parsed `BYMONTH` into `acc.by_month`; reuse it.
+    let months: Vec<i8> = match &acc.by_month {
+        Some(set) => set.iter().copied().collect(),
         None => vec![acc.start.month()],
     };
     let step = i16::try_from(interval).map_err(|_| ExpandError::OutOfRange)?;
