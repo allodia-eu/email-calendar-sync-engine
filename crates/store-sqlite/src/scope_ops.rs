@@ -22,7 +22,7 @@ use engine_store::{
     SyncApplied, SyncClaim, SyncLease, WorkerId,
 };
 
-use crate::convert;
+use crate::{convert, derived_ops};
 
 /// An owned, type-erased projection of a [`SyncUpdate`], built before the work is
 /// offloaded to the blocking thread (where the generic object type `T` is gone).
@@ -208,7 +208,7 @@ pub(crate) fn apply(
         }
     }
 
-    apply_derived(&tx, scope_key, derived)?;
+    derived_ops::apply_derived(&tx, scope_key, derived)?;
 
     for rec in reconcile {
         if reconcile_op(&tx, rec)? {
@@ -239,7 +239,7 @@ pub(crate) fn maintenance(
 ) -> Result<()> {
     let tx = conn.transaction().map_err(convert::backend)?;
     check_token(&tx, scope_key, token)?;
-    apply_derived(&tx, scope_key, derived)?;
+    derived_ops::apply_derived(&tx, scope_key, derived)?;
     tx.commit().map_err(convert::backend)?;
     Ok(())
 }
@@ -354,16 +354,7 @@ fn tombstone(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<bool> {
         )
         .map_err(convert::backend)?
         > 0;
-    tx.execute(
-        "DELETE FROM fts_doc WHERE scope_key = ?1 AND provider_key = ?2",
-        (scope_key, key),
-    )
-    .map_err(convert::backend)?;
-    tx.execute(
-        "DELETE FROM event_occurrence WHERE scope_key = ?1 AND event = ?2",
-        (scope_key, key),
-    )
-    .map_err(convert::backend)?;
+    derived_ops::delete_derived_rows(tx, scope_key, key)?;
     Ok(existed)
 }
 
@@ -377,53 +368,6 @@ fn existing_keys(tx: &Transaction<'_>, scope_key: &str) -> Result<Vec<String>> {
         .map_err(convert::backend)?;
     rows.collect::<rusqlite::Result<Vec<String>>>()
         .map_err(convert::backend)
-}
-
-/// Applies the precomputed derived rows: upsert FTS docs and occurrences, then
-/// clear derived rows for explicitly removed keys (recurrence/tz invalidation).
-fn apply_derived(tx: &Transaction<'_>, scope_key: &str, derived: &DerivedWrite) -> Result<()> {
-    for row in &derived.fts {
-        let fields = serde_json::to_string(&row.fields).map_err(convert::backend)?;
-        tx.execute(
-            "INSERT INTO fts_doc (scope_key, provider_key, fields) VALUES (?1, ?2, ?3)
-             ON CONFLICT(scope_key, provider_key) DO UPDATE SET fields = excluded.fields",
-            (scope_key, row.key.as_str(), fields),
-        )
-        .map_err(convert::backend)?;
-    }
-    for occ in &derived.occurrences {
-        let recurrence_id = occ
-            .recurrence_id
-            .map(convert::instant_to_text)
-            .unwrap_or_default();
-        tx.execute(
-            "INSERT INTO event_occurrence (scope_key, event, start_utc, end_utc, recurrence_id)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(scope_key, event, start_utc, recurrence_id)
-             DO UPDATE SET end_utc = excluded.end_utc",
-            (
-                scope_key,
-                occ.event.as_str(),
-                convert::instant_to_text(occ.start),
-                convert::instant_to_text(occ.end),
-                recurrence_id,
-            ),
-        )
-        .map_err(convert::backend)?;
-    }
-    for key in &derived.removed {
-        tx.execute(
-            "DELETE FROM fts_doc WHERE scope_key = ?1 AND provider_key = ?2",
-            (scope_key, key.as_str()),
-        )
-        .map_err(convert::backend)?;
-        tx.execute(
-            "DELETE FROM event_occurrence WHERE scope_key = ?1 AND event = ?2",
-            (scope_key, key.as_str()),
-        )
-        .map_err(convert::backend)?;
-    }
-    Ok(())
 }
 
 /// Re-validates a planned reconciliation inside the transaction: if the op is
@@ -449,202 +393,4 @@ fn reconcile_op(tx: &Transaction<'_>, rec: &PendingReconciliation) -> Result<boo
         .map_err(convert::backend)?;
     }
     Ok(matches)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use engine_core::sync::JmapDataType;
-    use engine_store::{FtsField, FtsRow, OccurrenceRow};
-
-    fn instant(text: &str) -> UtcDateTime {
-        text.parse().expect("valid instant")
-    }
-
-    fn pk(value: &str) -> ProviderKey {
-        ProviderKey::new(value).expect("valid key")
-    }
-
-    fn open() -> (Connection, String) {
-        let mut conn = Connection::open_in_memory().expect("open");
-        crate::migrations::migrate(&mut conn).expect("schema");
-        (conn, convert::scope_key(&events_scope()))
-    }
-
-    fn events_scope() -> SyncScope {
-        SyncScope::JmapType {
-            account: AccountId::try_from("a").expect("valid account"),
-            data_type: JmapDataType::CalendarEvent,
-        }
-    }
-
-    /// Claims the scope and returns the current fencing token.
-    fn claim_token(conn: &mut Connection, key: &str) -> u64 {
-        claim(
-            conn,
-            AccountId::try_from("a").unwrap(),
-            events_scope(),
-            key,
-            WorkerId::new("w"),
-            instant("2026-01-01T00:00:00Z"),
-            instant("2026-01-01T00:05:00Z"),
-        )
-        .expect("claim")
-        .lease
-        .token()
-        .get()
-    }
-
-    fn count(conn: &Connection, sql: &str) -> i64 {
-        conn.query_row(sql, [], |r| r.get(0)).expect("count")
-    }
-
-    fn delta_change(key: &str) -> OwnedUpdate {
-        OwnedUpdate::Delta {
-            changed: vec![(key.to_owned(), "{}".to_owned())],
-            removed: Vec::new(),
-        }
-    }
-
-    fn occurrence(event: &str) -> OccurrenceRow {
-        OccurrenceRow {
-            event: pk(event),
-            start: instant("2026-03-01T09:00:00Z"),
-            end: instant("2026-03-01T09:15:00Z"),
-            recurrence_id: None,
-        }
-    }
-
-    #[test]
-    fn tombstoning_an_object_cascades_to_its_derived_rows() {
-        let (mut conn, key) = open();
-        let token = claim_token(&mut conn, &key);
-
-        let mut derived = DerivedWrite::empty();
-        derived.fts.push(FtsRow::new(
-            pk("e1"),
-            vec![FtsField::new("summary", "standup")],
-        ));
-        derived.occurrences.push(occurrence("e1"));
-        apply(
-            &mut conn,
-            &key,
-            token,
-            &delta_change("e1"),
-            &derived,
-            &[],
-            "c1",
-        )
-        .unwrap();
-        assert_eq!(count(&conn, "SELECT count(*) FROM object"), 1);
-        assert_eq!(count(&conn, "SELECT count(*) FROM fts_doc"), 1);
-        assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 1);
-
-        // A delta removal tombstones the object and its derived rows together.
-        let remove = OwnedUpdate::Delta {
-            changed: Vec::new(),
-            removed: vec!["e1".to_owned()],
-        };
-        let applied = apply(
-            &mut conn,
-            &key,
-            token,
-            &remove,
-            &DerivedWrite::empty(),
-            &[],
-            "c2",
-        )
-        .unwrap();
-        assert_eq!(applied.tombstoned, 1);
-        assert_eq!(count(&conn, "SELECT count(*) FROM object"), 0);
-        assert_eq!(count(&conn, "SELECT count(*) FROM fts_doc"), 0);
-        assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 0);
-    }
-
-    #[test]
-    fn replaying_occurrences_does_not_duplicate_rows() {
-        let (mut conn, key) = open();
-        let token = claim_token(&mut conn, &key);
-        let mut derived = DerivedWrite::empty();
-        derived.occurrences.push(occurrence("e1"));
-
-        apply(
-            &mut conn,
-            &key,
-            token,
-            &delta_change("e1"),
-            &derived,
-            &[],
-            "c1",
-        )
-        .unwrap();
-        // The store keys occurrences by (event, start, recurrence_id), so a replay
-        // of the same batch is idempotent rather than additive.
-        apply(
-            &mut conn,
-            &key,
-            token,
-            &delta_change("e1"),
-            &derived,
-            &[],
-            "c1",
-        )
-        .unwrap();
-        assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 1);
-    }
-
-    #[test]
-    fn removed_derived_keys_clear_rows_but_keep_the_object() {
-        let (mut conn, key) = open();
-        let token = claim_token(&mut conn, &key);
-        let mut derived = DerivedWrite::empty();
-        derived
-            .fts
-            .push(FtsRow::new(pk("e1"), vec![FtsField::new("summary", "x")]));
-        apply(
-            &mut conn,
-            &key,
-            token,
-            &delta_change("e1"),
-            &derived,
-            &[],
-            "c1",
-        )
-        .unwrap();
-        assert_eq!(count(&conn, "SELECT count(*) FROM fts_doc"), 1);
-
-        // `DerivedWrite.removed` clears derived rows (e.g. recurrence-rule change)
-        // without tombstoning the object itself.
-        let mut clear = DerivedWrite::empty();
-        clear.removed.push(pk("e1"));
-        maintenance(&mut conn, &key, token, &clear).unwrap();
-        assert_eq!(count(&conn, "SELECT count(*) FROM object"), 1);
-        assert_eq!(count(&conn, "SELECT count(*) FROM fts_doc"), 0);
-    }
-
-    #[test]
-    fn overridden_and_base_occurrences_coexist() {
-        let (mut conn, key) = open();
-        let token = claim_token(&mut conn, &key);
-        let mut derived = DerivedWrite::empty();
-        derived.occurrences.push(occurrence("e1"));
-        derived.occurrences.push(OccurrenceRow {
-            event: pk("e1"),
-            start: instant("2026-03-01T09:00:00Z"),
-            end: instant("2026-03-01T10:00:00Z"),
-            recurrence_id: Some(instant("2026-03-01T09:00:00Z")),
-        });
-        apply(
-            &mut conn,
-            &key,
-            token,
-            &delta_change("e1"),
-            &derived,
-            &[],
-            "c1",
-        )
-        .unwrap();
-        // The base row (recurrence_id '') and the override are distinct rows.
-        assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 2);
-    }
 }

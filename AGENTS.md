@@ -12,6 +12,7 @@ Read before relevant work:
 - `docs/agent-guidance/modeling.md` before touching domain models.
 - `docs/agent-guidance/providers.md` before touching protocol/provider code.
 - `docs/agent-guidance/store-and-sync.md` before touching the store trait, sync orchestration, or the outbox.
+- `docs/agent-guidance/search.md` before touching the query AST/DSL, the search executor, or projection→index rows.
 - `docs/agent-guidance/search-coverage.md` before touching search result completeness or provider-search fallback.
 - `docs/agent-guidance/calendar-semantics.md` before touching timezone handling, recurrence, or scheduling (iTIP/iMIP).
 

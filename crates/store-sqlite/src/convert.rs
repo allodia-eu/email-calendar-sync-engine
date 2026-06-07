@@ -7,6 +7,7 @@
 
 use core::time::Duration;
 
+use engine_core::search_index::{AddressField, MembershipKind, ParticipantField};
 use engine_core::sync::SyncScope;
 use engine_core::time::UtcDateTime;
 use engine_core::write::PendingOpId;
@@ -29,6 +30,32 @@ pub(crate) fn scope_key(scope: &SyncScope) -> String {
 /// Renders an instant to its canonical `…Z` text form for storage.
 pub(crate) fn instant_to_text(instant: UtcDateTime) -> String {
     instant.to_string()
+}
+
+/// The stored text for a mail address junction's `field` column.
+pub(crate) fn address_field_text(field: AddressField) -> &'static str {
+    match field {
+        AddressField::From => "from",
+        AddressField::To => "to",
+        AddressField::Cc => "cc",
+    }
+}
+
+/// The stored text for a `membership.kind` column.
+pub(crate) fn membership_kind_text(kind: MembershipKind) -> &'static str {
+    match kind {
+        MembershipKind::Mailbox => "mailbox",
+        MembershipKind::Keyword => "keyword",
+        MembershipKind::Calendar => "calendar",
+    }
+}
+
+/// The stored text for an event participant junction's `role` column.
+pub(crate) fn participant_field_text(field: ParticipantField) -> &'static str {
+    match field {
+        ParticipantField::Attendee => "attendee",
+        ParticipantField::Organizer => "organizer",
+    }
 }
 
 /// Parses a stored instant back from its canonical text form.
@@ -128,6 +155,24 @@ mod tests {
             account: AccountId::try_from("a").expect("valid account"),
             data_type,
         }
+    }
+
+    #[test]
+    fn index_enum_text_maps_every_variant() {
+        assert_eq!(address_field_text(AddressField::From), "from");
+        assert_eq!(address_field_text(AddressField::To), "to");
+        assert_eq!(address_field_text(AddressField::Cc), "cc");
+        assert_eq!(membership_kind_text(MembershipKind::Mailbox), "mailbox");
+        assert_eq!(membership_kind_text(MembershipKind::Keyword), "keyword");
+        assert_eq!(membership_kind_text(MembershipKind::Calendar), "calendar");
+        assert_eq!(
+            participant_field_text(ParticipantField::Attendee),
+            "attendee"
+        );
+        assert_eq!(
+            participant_field_text(ParticipantField::Organizer),
+            "organizer"
+        );
     }
 
     #[test]

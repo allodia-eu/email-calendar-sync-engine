@@ -131,6 +131,44 @@ pub trait Store: Send + Sync {
     async fn mark_pending_op(&self, lease: &OpLease, outcome: PendingOutcome) -> Result<()>;
 }
 
+/// Counts of the derived index rows an object holds, one field per derived kind.
+///
+/// Returned by [`StoreRead::index_row_counts`] for contract verification and
+/// diagnostics — the searchable query path is the per-store executor, not this
+/// surface. `fts`, `mail_index`, and `event_index` are 0 or 1 (one row per
+/// object); the junction counts are unbounded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IndexRowCounts {
+    /// Full-text documents (0 or 1).
+    pub fts: usize,
+    /// Materialized occurrences.
+    pub occurrences: usize,
+    /// Mail scalar-index rows (0 or 1).
+    pub mail_index: usize,
+    /// Mail address-junction rows.
+    pub addresses: usize,
+    /// Membership rows.
+    pub memberships: usize,
+    /// Event scalar-index rows (0 or 1).
+    pub event_index: usize,
+    /// Event participant-junction rows.
+    pub participants: usize,
+}
+
+impl IndexRowCounts {
+    /// Returns `true` if the object has no derived rows of any kind.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.fts == 0
+            && self.occurrences == 0
+            && self.mail_index == 0
+            && self.addresses == 0
+            && self.memberships == 0
+            && self.event_index == 0
+            && self.participants == 0
+    }
+}
+
 /// A minimal lease-free read/inspection surface.
 ///
 /// Enough for the contract suite to verify stored state and for early
@@ -158,4 +196,16 @@ pub trait StoreRead: Send + Sync {
     ///
     /// Returns `StoreError::Backend` on a backend failure.
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>>;
+
+    /// The counts of derived index rows currently stored for an object, across
+    /// every derived kind. Zero for an absent or fully-tombstoned object.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn index_row_counts(
+        &self,
+        scope: &SyncScope,
+        key: &ProviderKey,
+    ) -> Result<IndexRowCounts>;
 }

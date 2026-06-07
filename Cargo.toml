@@ -25,6 +25,7 @@ tempfile = "3"
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
 engine-store = { path = "crates/engine-store" }
+engine-search = { path = "crates/engine-search" }
 
 # Strict, workspace-wide lint policy (AGENTS.md / rust.md). Member crates inherit
 # via `[lints] workspace = true`. Verification runs clippy with `-D warnings`, so

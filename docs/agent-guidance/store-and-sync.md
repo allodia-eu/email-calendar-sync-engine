@@ -87,7 +87,9 @@ lease token. The transaction contains, all-or-nothing:
 
 1. Normalized provider objects and their preserved raw payloads.
 2. Membership rows.
-3. Derived FTS rows (from extracted text).
+3. Derived FTS rows (from extracted text) and structured-filter rows — the scalar
+   index rows and the address/participant/membership junctions that back the
+   non-text filters.
 4. Derived `event_occurrence` rows within the current horizon.
 5. The next `SyncState` (cursor).
 6. Pending-op reconciliations.
@@ -101,7 +103,7 @@ the atomic set is self-documenting:
 ```rust
 pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObject
     pub update: &'a SyncUpdate<T>,              // provider-normalized objects, raw, membership
-    pub derived: &'a DerivedWrite,              // FTS + occurrence rows, from pure engine fns
+    pub derived: &'a DerivedWrite,              // FTS + structured-filter + occurrence rows, pure engine fns
     pub reconcile: &'a [PendingReconciliation],
     pub next_state: &'a SyncState,
 }
@@ -237,7 +239,15 @@ Supporting types (abbreviated):
 - `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailbox { account, mailbox }`, `DavCollection { account, collection }`.
 - `SyncLease` / `OpLease` — opaque, store-issued; expose fencing token, bound identity, and expiry.
 - `StorableObject` — the trait domain objects implement so the store keys and persists them mechanically; `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
-- `DerivedWrite` — precomputed FTS rows + bounded `event_occurrence` rows + their tombstones; the store writes them, never computes them.
+- `DerivedWrite` — precomputed FTS rows, structured-filter rows (scalar index rows
+  plus the address/participant/membership junctions), and bounded
+  `event_occurrence` rows, plus their tombstones; the store writes them, never
+  computes them. The full-text and structured rows are projected by pure
+  `engine-core` functions (`engine_core::search_index::{project_message, project_event}`,
+  carried in via `DerivedWrite::push_mail`/`push_event`); occurrence rows come from
+  the recurrence/index layer. Junction and scalar rows **replace** per object on
+  replay (idempotent); a small `StoreRead::index_row_counts` inspection backs the
+  shared contract's structured-row parity case.
 - `LeaseRequest { owner: WorkerId, ttl: Duration }`.
 - `PendingOp { idempotency_key, depends_on: Vec<PendingOpId>, resource_key: ResourceKey, payload }`.
 - `PendingOutcome` — `Succeeded { provider_key }` | `Failed { class, retry_after }` | `NeedsConfirmation { .. }`.

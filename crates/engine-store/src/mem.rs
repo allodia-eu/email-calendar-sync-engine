@@ -25,17 +25,38 @@ use engine_core::write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome,
 use serde::Serialize;
 use serde_json::Value;
 
+use engine_core::search_index::{
+    EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow, MembershipRow,
+};
+
 use crate::apply::{
     ApplyBatch, DerivedWrite, FtsField, OccurrenceRow, StorableObject, SyncApplied,
 };
 use crate::error::{Result, StoreError};
 use crate::lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease};
 use crate::outbox::{LeasedPendingOp, PendingOpState};
-use crate::store::{Store, StoreRead};
+use crate::store::{IndexRowCounts, Store, StoreRead};
 
 /// Returns `true` if a lease is held and has not expired at `now`.
 fn is_live(expiry: Option<UtcDateTime>, now: UtcDateTime) -> bool {
     expiry.is_some_and(|e| e > now)
+}
+
+/// Groups flat junction rows by their object key, so each object's rows can
+/// *replace* (not append to) the stored set — the idempotent-on-replay semantics
+/// the structured index requires (`store-and-sync.md`).
+fn group_by_key<R: Clone>(
+    rows: &[R],
+    key_of: impl Fn(&R) -> &ProviderKey,
+) -> HashMap<ProviderKey, Vec<R>> {
+    let mut grouped: HashMap<ProviderKey, Vec<R>> = HashMap::new();
+    for row in rows {
+        grouped
+            .entry(key_of(row).clone())
+            .or_default()
+            .push(row.clone());
+    }
+    grouped
 }
 
 /// Per-scope state: the fencing generation, lease expiry, cursor, objects, and
@@ -47,6 +68,11 @@ struct ScopeCell {
     objects: HashMap<ProviderKey, Value>,
     fts: HashMap<ProviderKey, Vec<FtsField>>,
     occurrences: HashMap<ProviderKey, Vec<OccurrenceRow>>,
+    mail_index: HashMap<ProviderKey, MailIndexRow>,
+    addresses: HashMap<ProviderKey, Vec<MailAddressRow>>,
+    memberships: HashMap<ProviderKey, Vec<MembershipRow>>,
+    event_index: HashMap<ProviderKey, EventIndexRow>,
+    participants: HashMap<ProviderKey, Vec<EventParticipantRow>>,
 }
 
 impl ScopeCell {
@@ -58,6 +84,11 @@ impl ScopeCell {
             objects: HashMap::new(),
             fts: HashMap::new(),
             occurrences: HashMap::new(),
+            mail_index: HashMap::new(),
+            addresses: HashMap::new(),
+            memberships: HashMap::new(),
+            event_index: HashMap::new(),
+            participants: HashMap::new(),
         }
     }
 
@@ -65,9 +96,20 @@ impl ScopeCell {
     /// object existed.
     fn tombstone(&mut self, key: &ProviderKey) -> bool {
         let existed = self.objects.remove(key).is_some();
+        self.remove_derived(key);
+        existed
+    }
+
+    /// Removes every derived row kind for one key (tombstone and explicit
+    /// `removed` share this).
+    fn remove_derived(&mut self, key: &ProviderKey) {
         self.fts.remove(key);
         self.occurrences.remove(key);
-        existed
+        self.mail_index.remove(key);
+        self.addresses.remove(key);
+        self.memberships.remove(key);
+        self.event_index.remove(key);
+        self.participants.remove(key);
     }
 
     /// Serializes and upserts an object's normalized payload, keyed by its
@@ -79,6 +121,11 @@ impl ScopeCell {
     }
 
     /// Applies precomputed derived rows (shared by apply and maintenance).
+    ///
+    /// Full-text and structured rows *replace* per object (idempotent on replay);
+    /// occurrences append (the store keys them by instant, so a real backend is
+    /// idempotent — the reference store's append is the known divergence noted in
+    /// `store-and-sync.md`). `removed` clears every derived kind for a key.
     fn apply_derived(&mut self, derived: &DerivedWrite) {
         for row in &derived.fts {
             self.fts.insert(row.key.clone(), row.fields.clone());
@@ -89,9 +136,23 @@ impl ScopeCell {
                 .or_default()
                 .push(occ.clone());
         }
+        for row in &derived.mail_index {
+            self.mail_index.insert(row.key.clone(), row.clone());
+        }
+        for row in &derived.event_index {
+            self.event_index.insert(row.key.clone(), row.clone());
+        }
+        for (key, rows) in group_by_key(&derived.addresses, |r| &r.key) {
+            self.addresses.insert(key, rows);
+        }
+        for (key, rows) in group_by_key(&derived.memberships, |r| &r.key) {
+            self.memberships.insert(key, rows);
+        }
+        for (key, rows) in group_by_key(&derived.participants, |r| &r.key) {
+            self.participants.insert(key, rows);
+        }
         for key in &derived.removed {
-            self.fts.remove(key);
-            self.occurrences.remove(key);
+            self.remove_derived(key);
         }
     }
 }
@@ -405,6 +466,26 @@ impl<C: Clock> StoreRead for MemStore<C> {
 
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {
         Ok(self.lock().ops.get(&id).map(|o| o.state))
+    }
+
+    async fn index_row_counts(
+        &self,
+        scope: &SyncScope,
+        key: &ProviderKey,
+    ) -> Result<IndexRowCounts> {
+        let inner = self.lock();
+        let Some(cell) = inner.scopes.get(scope) else {
+            return Ok(IndexRowCounts::default());
+        };
+        Ok(IndexRowCounts {
+            fts: usize::from(cell.fts.contains_key(key)),
+            occurrences: cell.occurrences.get(key).map_or(0, Vec::len),
+            mail_index: usize::from(cell.mail_index.contains_key(key)),
+            addresses: cell.addresses.get(key).map_or(0, Vec::len),
+            memberships: cell.memberships.get(key).map_or(0, Vec::len),
+            event_index: usize::from(cell.event_index.contains_key(key)),
+            participants: cell.participants.get(key).map_or(0, Vec::len),
+        })
     }
 }
 

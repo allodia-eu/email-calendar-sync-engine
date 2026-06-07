@@ -43,6 +43,7 @@ pub mod membership;
 pub mod patch;
 pub mod raw;
 pub mod scheduling;
+pub mod search_index;
 pub mod sync;
 pub mod time;
 pub mod version;
