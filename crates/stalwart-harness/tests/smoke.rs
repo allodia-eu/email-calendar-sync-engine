@@ -16,18 +16,30 @@ use std::time::Duration;
 
 use stalwart_harness::{GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, run_probe};
 
-/// Return the configured harness, or `None` (skipping) when Stalwart is absent.
-fn gate(test: &str) -> Option<Harness> {
+/// Return the configured harness, or `None` (skipping, with a note labelled by
+/// the current test's name) when Stalwart is absent.
+fn gate() -> Option<Harness> {
     let harness = Harness::from_env();
     if harness.is_none() {
+        let test = std::thread::current().name().unwrap_or("test").to_owned();
         eprintln!("skipping `{test}`: set {GATE_VAR} (and run docker compose) to exercise it");
     }
     harness
 }
 
+/// Like [`gate`], but also block until the server is ready — the precondition
+/// every protocol probe shares. `None` (skipping) when Stalwart is absent.
+fn ready_harness() -> Option<Harness> {
+    let harness = gate()?;
+    harness
+        .wait_until_ready(Duration::from_secs(30))
+        .expect("Stalwart should become ready");
+    Some(harness)
+}
+
 #[test]
 fn server_becomes_ready() {
-    let Some(h) = gate("server_becomes_ready") else {
+    let Some(h) = gate() else {
         return;
     };
     h.wait_until_ready(Duration::from_secs(30))
@@ -36,10 +48,9 @@ fn server_becomes_ready() {
 
 #[test]
 fn jmap_session_advertises_core() {
-    let Some(h) = gate("jmap_session_advertises_core") else {
+    let Some(h) = ready_harness() else {
         return;
     };
-    h.wait_until_ready(Duration::from_secs(30)).unwrap();
     let session = h.jmap_session().expect("JMAP session should be fetchable");
     let caps = session
         .get("capabilities")
@@ -54,10 +65,9 @@ fn jmap_session_advertises_core() {
 
 #[test]
 fn imap_answers_and_seed_present() {
-    let Some(h) = gate("imap_answers_and_seed_present") else {
+    let Some(h) = ready_harness() else {
         return;
     };
-    h.wait_until_ready(Duration::from_secs(30)).unwrap();
     let probe = imap_probe_over_tls(&h);
     assert!(
         probe.greeting.starts_with("* OK"),
@@ -92,20 +102,18 @@ fn imap_answers_and_seed_present() {
 
 #[test]
 fn smtp_banner_greets() {
-    let Some(h) = gate("smtp_banner_greets") else {
+    let Some(h) = ready_harness() else {
         return;
     };
-    h.wait_until_ready(Duration::from_secs(30)).unwrap();
     let banner = h.smtp_banner().expect("SMTP should greet");
     assert!(banner.starts_with("220"), "SMTP banner: {banner:?}");
 }
 
 #[test]
 fn caldav_lists_default_calendar() {
-    let Some(h) = gate("caldav_lists_default_calendar") else {
+    let Some(h) = ready_harness() else {
         return;
     };
-    h.wait_until_ready(Duration::from_secs(30)).unwrap();
     let resp = h
         .caldav_propfind(&h.calendar_collection_path())
         .expect("CalDAV PROPFIND should answer");
@@ -120,10 +128,9 @@ fn caldav_lists_default_calendar() {
 
 #[test]
 fn caldav_one_off_event_present() {
-    let Some(h) = gate("caldav_one_off_event_present") else {
+    let Some(h) = ready_harness() else {
         return;
     };
-    h.wait_until_ready(Duration::from_secs(30)).unwrap();
     let resp = h
         .caldav_get(&h.event_path(ONE_OFF_EVENT_UID))
         .expect("CalDAV GET should answer");
@@ -155,6 +162,9 @@ fn imap_probe_over_tls(h: &Harness) -> ImapProbe {
         rustls::pki_types::ServerName::try_from(host).expect("IMAP host is a valid server name");
     let conn = rustls::ClientConnection::new(Arc::new(config), server_name)
         .expect("rustls client connection");
+    // No socket read timeout, for the same reason as the SMTP probe (see
+    // smtp.rs): a `SO_RCVTIMEO` was observed not to wake through Docker
+    // Desktop's macOS port proxy. The server is health-gated before this runs.
     let tcp = TcpStream::connect(&h.imap_addr).expect("connect IMAP TLS port");
     let tls = rustls::StreamOwned::new(conn, tcp);
     run_probe(tls, &h.account, &h.password).expect("IMAP probe should succeed")

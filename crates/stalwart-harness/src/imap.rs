@@ -69,17 +69,11 @@ pub fn run_probe<S: Read + Write>(
 }
 
 fn protocol(detail: String) -> HarnessError {
-    HarnessError::Protocol {
-        protocol: "imap",
-        detail,
-    }
+    HarnessError::protocol("imap", detail)
 }
 
 fn io_err(source: std::io::Error) -> HarnessError {
-    HarnessError::Io {
-        addr: "imap".to_owned(),
-        source,
-    }
+    HarnessError::io("imap", source)
 }
 
 /// A line-buffered IMAP conversation over a single read+write stream.
@@ -121,10 +115,11 @@ impl<S: Read + Write> ImapStream<S> {
     /// Send a tagged command and read response lines through its completion.
     fn command(&mut self, tag: &str, cmd: &str) -> Result<Vec<String>, HarnessError> {
         self.write_line(&format!("{tag} {cmd}"))?;
+        let mark = format!("{tag} "); // the tagged-completion prefix, built once
         let mut lines = Vec::new();
         loop {
             let line = self.read_line()?;
-            let done = line.starts_with(&format!("{tag} "));
+            let done = line.starts_with(&mark);
             lines.push(line);
             if done {
                 break;

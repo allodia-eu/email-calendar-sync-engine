@@ -13,10 +13,7 @@ use crate::HarnessError;
 ///
 /// Returns the banner line on success.
 pub(crate) fn banner(addr: &str) -> Result<String, HarnessError> {
-    let protocol = |detail| HarnessError::Protocol {
-        protocol: "smtp",
-        detail,
-    };
+    let protocol = |detail| HarnessError::protocol("smtp", detail);
 
     // Plain blocking connect + blocking reads, matching the IMAP probe. A
     // socket read timeout (SO_RCVTIMEO) was observed not to wake on arriving
@@ -56,10 +53,7 @@ pub(crate) fn banner(addr: &str) -> Result<String, HarnessError> {
 }
 
 fn io(addr: &str, source: std::io::Error) -> HarnessError {
-    HarnessError::Io {
-        addr: addr.to_owned(),
-        source,
-    }
+    HarnessError::io(addr, source)
 }
 
 /// Read one CRLF-terminated line from the stream, one byte at a time so no bytes
@@ -70,10 +64,7 @@ fn read_line(stream: &mut TcpStream, addr: &str) -> Result<String, HarnessError>
     loop {
         let n = stream.read(&mut byte).map_err(|s| io(addr, s))?;
         if n == 0 {
-            return Err(HarnessError::Protocol {
-                protocol: "smtp",
-                detail: "connection closed mid-line".to_owned(),
-            });
+            return Err(HarnessError::protocol("smtp", "connection closed mid-line"));
         }
         if byte[0] == b'\n' {
             break;

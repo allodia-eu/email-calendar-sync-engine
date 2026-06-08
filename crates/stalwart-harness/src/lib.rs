@@ -71,6 +71,24 @@ pub enum HarnessError {
     Json(#[from] serde_json::Error),
 }
 
+impl HarnessError {
+    /// Construct an [`HarnessError::Io`] for `addr`.
+    pub(crate) fn io(addr: impl Into<String>, source: std::io::Error) -> Self {
+        Self::Io {
+            addr: addr.into(),
+            source,
+        }
+    }
+
+    /// Construct an [`HarnessError::Protocol`] for `protocol`.
+    pub(crate) fn protocol(protocol: &'static str, detail: impl Into<String>) -> Self {
+        Self::Protocol {
+            protocol,
+            detail: detail.into(),
+        }
+    }
+}
+
 /// Connection coordinates for a running Stalwart harness.
 #[derive(Debug, Clone)]
 pub struct Harness {
@@ -123,6 +141,11 @@ impl Harness {
         format!("{}{uid}.ics", self.calendar_collection_path())
     }
 
+    /// Basic-auth credentials for the seeded account.
+    fn auth(&self) -> (&str, &str) {
+        (self.account.as_str(), self.password.as_str())
+    }
+
     /// `GET /healthz/live` once.
     ///
     /// # Errors
@@ -157,13 +180,19 @@ impl Harness {
     /// Returns [`HarnessError::Protocol`] on a non-200 status and
     /// [`HarnessError::Json`] if the body is not valid JSON.
     pub fn jmap_session(&self) -> Result<serde_json::Value, HarnessError> {
-        let auth = Some((self.account.as_str(), self.password.as_str()));
-        let resp = http::request(&self.http_addr, "GET", "/jmap/session", auth, &[], &[])?;
+        let resp = http::request(
+            &self.http_addr,
+            "GET",
+            "/jmap/session",
+            Some(self.auth()),
+            &[],
+            &[],
+        )?;
         if resp.status != 200 {
-            return Err(HarnessError::Protocol {
-                protocol: "jmap",
-                detail: format!("session returned HTTP {}", resp.status),
-            });
+            return Err(HarnessError::protocol(
+                "jmap",
+                format!("session returned HTTP {}", resp.status),
+            ));
         }
         Ok(serde_json::from_slice(&resp.body)?)
     }
@@ -183,12 +212,11 @@ impl Harness {
     pub fn caldav_propfind(&self, path: &str) -> Result<HttpResponse, HarnessError> {
         let body = br#"<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getetag/></d:prop></d:propfind>"#;
-        let auth = Some((self.account.as_str(), self.password.as_str()));
         http::request(
             &self.http_addr,
             "PROPFIND",
             path,
-            auth,
+            Some(self.auth()),
             &[("Depth", "1"), ("Content-Type", "application/xml")],
             body,
         )
@@ -199,8 +227,7 @@ impl Harness {
     /// # Errors
     /// Propagates transport/parse failures from the HTTP probe.
     pub fn caldav_get(&self, path: &str) -> Result<HttpResponse, HarnessError> {
-        let auth = Some((self.account.as_str(), self.password.as_str()));
-        http::request(&self.http_addr, "GET", path, auth, &[], &[])
+        http::request(&self.http_addr, "GET", path, Some(self.auth()), &[], &[])
     }
 }
 

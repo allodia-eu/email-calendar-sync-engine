@@ -59,19 +59,12 @@ pub(crate) fn request(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> Result<HttpResponse, HarnessError> {
-    let io = |source| HarnessError::Io {
-        addr: addr.to_owned(),
-        source,
-    };
+    let io = |source| HarnessError::io(addr, source);
 
     let socket =
-        addr.to_socket_addrs()
-            .map_err(io)?
-            .next()
-            .ok_or_else(|| HarnessError::Protocol {
-                protocol: "http",
-                detail: format!("no address resolved for {addr}"),
-            })?;
+        addr.to_socket_addrs().map_err(io)?.next().ok_or_else(|| {
+            HarnessError::protocol("http", format!("no address resolved for {addr}"))
+        })?;
     let mut stream = TcpStream::connect_timeout(&socket, IO_TIMEOUT).map_err(io)?;
     stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(io)?;
     stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(io)?;
@@ -109,10 +102,7 @@ fn parse_response(raw: &[u8]) -> Result<HttpResponse, HarnessError> {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| HarnessError::Protocol {
-            protocol: "http",
-            detail: "no header/body delimiter in response".to_owned(),
-        })?;
+        .ok_or_else(|| HarnessError::protocol("http", "no header/body delimiter in response"))?;
     let head = String::from_utf8_lossy(&raw[..split]);
     let mut lines = head.split("\r\n");
     let status_line = lines.next().unwrap_or_default();
@@ -120,9 +110,8 @@ fn parse_response(raw: &[u8]) -> Result<HttpResponse, HarnessError> {
         .split_whitespace()
         .nth(1)
         .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| HarnessError::Protocol {
-            protocol: "http",
-            detail: format!("malformed status line: {status_line:?}"),
+        .ok_or_else(|| {
+            HarnessError::protocol("http", format!("malformed status line: {status_line:?}"))
         })?;
     Ok(HttpResponse {
         status,

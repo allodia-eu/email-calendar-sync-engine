@@ -38,12 +38,10 @@ imap_append() { # file  mailbox
   # whose size curl can stat.
   _tmp=$(mktemp)
   sed 's/$/\r/' "$1" >"$_tmp"
-  if imap --url "$IMAPS/$2" --upload-file "$_tmp"; then
-    rm -f "$_tmp"
-  else
-    rm -f "$_tmp"
-    return 1
-  fi
+  _rc=0
+  imap --url "$IMAPS/$2" --upload-file "$_tmp" || _rc=$?
+  rm -f "$_tmp"
+  return "$_rc"
 }
 
 imap_cmd() { # mailbox  command
