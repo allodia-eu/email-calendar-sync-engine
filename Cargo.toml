@@ -33,6 +33,16 @@ jiff-tzdb = "0.1"
 # TLS. The harness speaks plaintext HTTP, but real providers are HTTPS, so TLS
 # stays in the transport (`docs/agent-guidance/jmap.md`).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset"] }
+# Pure-Rust TLS for the hand-rolled IMAP transport (implicit-TLS on 993). `ring`
+# (not the default `aws-lc-rs`) keeps the workspace on one crypto provider —
+# reqwest's `rustls-tls` above already pulls rustls+ring — so this adds no new
+# C/cross-compile surface for the iOS/Android builds. The transport is generic over
+# any async stream; this only backs the live `connect()` path, with the host
+# injecting trust policy (`docs/agent-guidance/imap-smtp.md`).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# The no-verify verifier for Stalwart's self-signed test cert lives in test code
+# only (a dev-dependency), never the host store — same posture as stalwart-harness.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
@@ -41,6 +51,7 @@ engine-search = { path = "crates/engine-search" }
 engine-recurrence = { path = "crates/engine-recurrence" }
 engine-provider = { path = "crates/engine-provider" }
 provider-jmap = { path = "crates/provider-jmap" }
+provider-imap = { path = "crates/provider-imap" }
 engine-sync = { path = "crates/engine-sync" }
 store-sqlite = { path = "crates/store-sqlite" }
 

@@ -98,15 +98,20 @@ where
             })
         }
         Err(err) => {
-            store
-                .mark_pending_op(
-                    &leased.lease,
-                    PendingOutcome::Failed {
-                        class: err.class(),
-                        retry_after: err.retry_after(),
-                    },
-                )
-                .await?;
+            // An ambiguous send (e.g. a lost post-DATA SMTP ack) is parked for
+            // confirmation, never recorded as a plain retryable failure — so the
+            // outbox does not blind-retry and risk a double-send (`providers.md`).
+            let outcome = if err.requires_confirmation() {
+                PendingOutcome::NeedsConfirmation {
+                    detail: err.detail().to_owned(),
+                }
+            } else {
+                PendingOutcome::Failed {
+                    class: err.class(),
+                    retry_after: err.retry_after(),
+                }
+            };
+            store.mark_pending_op(&leased.lease, outcome).await?;
             Err(SyncError::Provider(err))
         }
     }
