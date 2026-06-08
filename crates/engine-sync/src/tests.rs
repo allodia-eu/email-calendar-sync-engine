@@ -43,6 +43,7 @@ struct FakeMail {
     events: Vec<Event>,
     cursor: SyncState,
     submit_fails: bool,
+    submit_ambiguous: bool,
 }
 
 impl FakeMail {
@@ -58,11 +59,17 @@ impl FakeMail {
             events: Vec::new(),
             cursor: SyncState::new("cursor-1"),
             submit_fails: false,
+            submit_ambiguous: false,
         }
     }
 
     fn failing_submit(mut self) -> Self {
         self.submit_fails = true;
+        self
+    }
+
+    fn ambiguous_submit(mut self) -> Self {
+        self.submit_ambiguous = true;
         self
     }
 
@@ -141,7 +148,11 @@ impl Provider for FakeMail {
         _account: &AccountId,
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
-        if self.submit_fails {
+        if self.submit_ambiguous {
+            Err(ProviderError::needs_confirmation(
+                "post-DATA acknowledgement lost",
+            ))
+        } else if self.submit_fails {
             Err(ProviderError::rate_limited("slow down", None))
         } else {
             Ok(SubmissionReceipt::new(
@@ -452,6 +463,42 @@ async fn submit_mail_records_failure_without_blind_retry() {
     assert_eq!(
         store.pending_op_state(op_id).await.unwrap(),
         Some(PendingOpState::Failed)
+    );
+}
+
+#[tokio::test]
+async fn submit_mail_parks_an_ambiguous_send_for_confirmation() {
+    // A post-DATA ambiguity must be recorded NeedsConfirmation, not Failed — so the
+    // outbox never blind-retries and risks a double-send (`providers.md`).
+    let provider = FakeMail::new(vec![], vec![]).ambiguous_submit();
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    let err = submit_mail(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        &draft("send-3@test.local"),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, super::SyncError::Provider(_)));
+
+    let op_id = store
+        .enqueue_pending_op(
+            account(),
+            PendingOp::new(
+                IdempotencyKey::new("submit:send-3@test.local").unwrap(),
+                ResourceKey::new("draft:send-3@test.local").unwrap(),
+                serde_json::Value::Null,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.pending_op_state(op_id).await.unwrap(),
+        Some(PendingOpState::NeedsConfirmation)
     );
 }
 

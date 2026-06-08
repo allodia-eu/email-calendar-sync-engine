@@ -795,6 +795,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "provider-imap"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "engine-core",
+ "engine-provider",
+ "engine-search",
+ "engine-store",
+ "engine-sync",
+ "rustls",
+ "serde",
+ "serde_json",
+ "stalwart-harness",
+ "store-sqlite",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots",
+]
+
+[[package]]
 name = "provider-jmap"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,48 @@
+[package]
+name = "provider-imap"
+description = "IMAP (RFC 9051) read/sync provider adapter for the PIM sync engine, with SMTP (RFC 5321) submission: a hand-rolled minimal client over a generic async stream (pure-Rust TLS via tokio-rustls), normalizing IMAP mail into the engine's SyncUpdate shapes. Implements the engine-provider contract; IMAP email scope is per-mailbox."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-provider = { workspace = true }
+# `io-util` for the line-protocol reader/writer over any async stream; `net` for
+# the live TCP connect. The protocol is generic over `AsyncRead + AsyncWrite`, so
+# the offline tests drive it over an in-memory duplex with no socket or TLS.
+tokio = { workspace = true, features = ["io-util", "net", "sync"] }
+tokio-rustls = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+# Parsing IMAP `INTERNALDATE` (`dd-Mon-yyyy hh:mm:ss +zzzz`) into a UTC instant
+# needs offset normalization with calendar rollover; `time` (the same crate
+# engine-core wraps) does it correctly.
+time = { workspace = true }
+
+[features]
+# Exposes `fuzz_parse` for the `fuzz/` cargo-fuzz target; off in normal builds.
+fuzzing = []
+
+[dev-dependencies]
+# Tests add the timer/sync/blocking pieces the library does not need at runtime.
+tokio = { workspace = true, features = ["io-util", "net", "time", "sync", "macros", "rt-multi-thread"] }
+# The no-verify verifier for Stalwart's self-signed test cert (live tests only).
+rustls = { workspace = true }
+# Mozilla root certificates for the `imap_explore` example's *verifying* TLS
+# connector against a real IMAP provider. Dev-only: the library itself stays
+# root-store-agnostic — the host injects trust policy.
+webpki-roots = "1"
+# The gated live test deserializes stored objects to assert the seed invariants.
+serde = { workspace = true }
+serde_json = { workspace = true }
+stalwart-harness = { path = "../stalwart-harness" }
+# The offline integration + gated live tests drive the full loop through the store.
+engine-store = { workspace = true }
+engine-search = { workspace = true }
+engine-sync = { workspace = true }
+store-sqlite = { workspace = true }
+
+[lints]
+workspace = true

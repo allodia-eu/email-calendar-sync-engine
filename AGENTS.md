@@ -12,6 +12,7 @@ Read before relevant work:
 - `docs/agent-guidance/modeling.md` before touching domain models.
 - `docs/agent-guidance/providers.md` before touching protocol/provider code.
 - `docs/agent-guidance/jmap.md` before touching the JMAP client (`engine-provider`, `provider-jmap`, `engine-sync`).
+- `docs/agent-guidance/imap-smtp.md` before touching the IMAP/SMTP client (`provider-imap`, and the submission paths in `engine-provider`/`engine-sync`).
 - `docs/agent-guidance/store-and-sync.md` before touching the store trait, sync orchestration, or the outbox.
 - `docs/agent-guidance/search.md` before touching the query AST/DSL, the search executor, or projection→index rows.
 - `docs/agent-guidance/search-coverage.md` before touching search result completeness or provider-search fallback.
