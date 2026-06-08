@@ -227,6 +227,16 @@ jobs:
       - name: Export lcov report
         run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'stalwart-harness/'
 
+      # Upload to Codecov before the threshold gate below so coverage is
+      # recorded even on builds that dip under the bar. `files` points at the
+      # engine-filtered report we just wrote (stalwart-harness already excluded)
+      # rather than letting the CLI auto-search; the token is a repo secret.
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5.5.4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./lcov.info
+
       - name: Coverage summary
         run: cargo llvm-cov report --summary-only --ignore-filename-regex 'stalwart-harness/'
 
