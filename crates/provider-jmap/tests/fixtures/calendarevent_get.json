@@ -1,0 +1,172 @@
+{
+  "accountId": "c",
+  "state": "scy",
+  "list": [
+    {
+      "updated": "2026-01-01T00:00:00Z",
+      "title": "One-off zoned event",
+      "uid": "oneoff-2001@test.local",
+      "duration": "PT1H",
+      "description": "A single non-recurring event in Europe/Amsterdam with an embedded VTIMEZONE.",
+      "start": "2026-03-18T10:00:00",
+      "@type": "Event",
+      "locations": {
+        "9fd8ba3a-180c-57f8-aa46-37c732bcfb8a": {
+          "name": "Amsterdam HQ",
+          "@type": "Location"
+        }
+      },
+      "timeZone": "Europe/Amsterdam",
+      "id": "b",
+      "calendarIds": {
+        "b": true
+      },
+      "isDraft": false,
+      "isOrigin": true
+    },
+    {
+      "title": "Weekly standup",
+      "@type": "Event",
+      "start": "2026-01-05T09:30:00",
+      "duration": "PT30M",
+      "recurrenceRule": {
+        "frequency": "weekly",
+        "count": 8,
+        "byDay": [
+          {
+            "day": "mo"
+          }
+        ]
+      },
+      "recurrenceOverrides": {
+        "2026-01-19T09:30:00": {
+          "excluded": true
+        },
+        "2026-01-26T09:30:00": {
+          "duration": "PT30M",
+          "start": "2026-01-26T14:00:00",
+          "title": "Weekly standup (this instance moved to the afternoon)",
+          "updated": "2026-01-01T00:00:00Z"
+        }
+      },
+      "timeZone": "Europe/Amsterdam",
+      "uid": "weekly-2002@test.local",
+      "updated": "2026-01-01T00:00:00Z",
+      "id": "c",
+      "calendarIds": {
+        "b": true
+      },
+      "isDraft": false,
+      "isOrigin": true
+    },
+    {
+      "start": "2026-03-10T15:00:00",
+      "@type": "Event",
+      "timeZone": "Europe/Amsterdam",
+      "title": "Planning meeting with attendees",
+      "updated": "2026-01-01T00:00:00Z",
+      "participants": {
+        "023bc947-30a2-57c1-a1dc-f0af9d6b8d2f": {
+          "calendarAddress": "mailto:alice@test.local",
+          "@type": "Participant",
+          "name": "Alice Tester",
+          "roles": {
+            "chair": true
+          },
+          "participationStatus": "accepted",
+          "expectReply": false
+        },
+        "2f8d7e3d-802e-536c-ac65-bc1ce89066f4": {
+          "calendarAddress": "mailto:bob@test.local",
+          "@type": "Participant",
+          "name": "Bob Tester",
+          "roles": {
+            "required": true
+          },
+          "expectReply": true,
+          "participationStatus": "needs-action"
+        },
+        "6d913006-a362-580e-a276-72c9beff4d04": {
+          "calendarAddress": "mailto:carol@example.com",
+          "@type": "Participant",
+          "roles": {
+            "optional": true
+          },
+          "name": "Carol External",
+          "expectReply": true,
+          "participationStatus": "tentative"
+        }
+      },
+      "uid": "meeting-2003@test.local",
+      "duration": "PT1H",
+      "organizerCalendarAddress": "mailto:alice@test.local",
+      "id": "d",
+      "calendarIds": {
+        "b": true
+      },
+      "isDraft": false,
+      "isOrigin": true
+    },
+    {
+      "@type": "Event",
+      "updated": "2026-01-01T00:00:00Z",
+      "duration": "PT30M",
+      "start": "2026-03-12T17:00:00",
+      "description": "Carries an RFC 7986 CONFERENCE property (a virtual location / conference link).",
+      "virtualLocations": {
+        "79386478-c7f1-51a3-ad2e-f9f42f5a9415": {
+          "uri": "https://meet.example.com/harness-room",
+          "@type": "VirtualLocation",
+          "features": {
+            "video": true
+          },
+          "name": "Join the meeting"
+        }
+      },
+      "title": "Video call with a virtual location",
+      "timeZone": "Europe/Amsterdam",
+      "uid": "virtual-2004@test.local",
+      "id": "e",
+      "calendarIds": {
+        "b": true
+      },
+      "isDraft": false,
+      "isOrigin": true
+    },
+    {
+      "showWithoutTime": true,
+      "title": "All-day event (zoneless date)",
+      "duration": "P1D",
+      "timeZone": null,
+      "@type": "Event",
+      "start": "2026-04-01T00:00:00",
+      "updated": "2026-01-01T00:00:00Z",
+      "freeBusyStatus": "free",
+      "uid": "allday-2005@test.local",
+      "description": "A date-only all-day event. No timezone, no DST, never zone-attached.",
+      "id": "f",
+      "calendarIds": {
+        "b": true
+      },
+      "isDraft": false,
+      "isOrigin": true
+    },
+    {
+      "updated": "2026-01-01T00:00:00Z",
+      "timeZone": null,
+      "start": "2026-04-15T12:00:00",
+      "duration": "PT1H",
+      "@type": "Event",
+      "uid": "floating-2006@test.local",
+      "title": "Floating-time event (no zone)",
+      "description": "Wall-clock with no TZID and no UTC marker; resolves through the observer's zone.",
+      "id": "g",
+      "calendarIds": {
+        "b": true
+      },
+      "isDraft": false,
+      "isOrigin": true
+    }
+  ],
+  "notFound": []
+}

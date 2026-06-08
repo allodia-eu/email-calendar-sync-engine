@@ -1,0 +1,38 @@
+{
+  "methodResponses": [
+    [
+      "Email/changes",
+      {
+        "accountId": "c",
+        "oldState": "sb2",
+        "newState": "sb2",
+        "hasMoreChanges": false,
+        "created": [],
+        "updated": [],
+        "destroyed": []
+      },
+      "0"
+    ],
+    [
+      "Email/get",
+      {
+        "accountId": "c",
+        "state": "sb2",
+        "list": [],
+        "notFound": []
+      },
+      "1"
+    ],
+    [
+      "Email/get",
+      {
+        "accountId": "c",
+        "state": "sb2",
+        "list": [],
+        "notFound": []
+      },
+      "2"
+    ]
+  ],
+  "sessionState": "2f72d7c8"
+}

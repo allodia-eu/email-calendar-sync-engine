@@ -1,0 +1,34 @@
+# cargo-fuzz target for the JMAP JSON parser (security requirement: JMAP JSON
+# parsing is fuzz-tested — `north-star.md`). This is its **own** workspace (the
+# empty `[workspace]` below) so the root `cargo build/test --workspace` ignores
+# it; it builds only on nightly via cargo-fuzz:
+#
+#   cargo install cargo-fuzz
+#   cargo +nightly fuzz run jmap_parse
+#
+# The in-gate counterpart (running on stable under `cargo test`) is
+# `provider-jmap`'s `parsers_never_panic_on_hostile_json` test.
+[package]
+name = "provider-jmap-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.provider-jmap]
+path = "../crates/provider-jmap"
+features = ["fuzzing"]
+
+[[bin]]
+name = "jmap_parse"
+path = "fuzz_targets/jmap_parse.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

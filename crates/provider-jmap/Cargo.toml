@@ -1,0 +1,33 @@
+[package]
+name = "provider-jmap"
+description = "JMAP (RFC 8620/8621/8984) read/write provider adapter for the PIM sync engine: HTTP transport + session discovery + batched method envelope with result back-references, normalizing JMAP mail/calendar into the engine's SyncUpdate shapes. Implements the engine-provider contract."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-provider = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+# Exposes `fuzz_parse` for the `fuzz/` cargo-fuzz target; off in normal builds.
+fuzzing = []
+
+[dev-dependencies]
+tokio = { workspace = true }
+stalwart-harness = { path = "../stalwart-harness" }
+# The gated live integration test drives the full loop through the real store.
+engine-store = { workspace = true }
+engine-search = { workspace = true }
+engine-recurrence = { workspace = true }
+engine-sync = { workspace = true }
+store-sqlite = { workspace = true }
+
+[lints]
+workspace = true

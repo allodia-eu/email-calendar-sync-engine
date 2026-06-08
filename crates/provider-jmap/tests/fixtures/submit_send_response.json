@@ -1,0 +1,47 @@
+{
+  "methodResponses": [
+    [
+      "Email/set",
+      {
+        "accountId": "c",
+        "oldState": "sde",
+        "newState": "sdi",
+        "created": {
+          "draft": {
+            "id": "bmaaaaal",
+            "threadId": "l",
+            "blobId": "ca9tu99trhhbqde2tupqz1yfhefon7cldwuy00ztab00ps7lidlz2aqabm",
+            "size": 324
+          }
+        }
+      },
+      "0"
+    ],
+    [
+      "EmailSubmission/set",
+      {
+        "accountId": "c",
+        "newState": "sdm",
+        "created": {
+          "sub": {
+            "id": "b"
+          }
+        }
+      },
+      "1"
+    ],
+    [
+      "Email/set",
+      {
+        "accountId": "c",
+        "oldState": "sdi",
+        "newState": "sdq",
+        "updated": {
+          "bmaaaaal": null
+        }
+      },
+      "1"
+    ]
+  ],
+  "sessionState": "2f72d7c8"
+}

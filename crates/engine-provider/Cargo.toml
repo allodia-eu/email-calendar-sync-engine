@@ -1,0 +1,18 @@
+[package]
+name = "engine-provider"
+description = "Provider/transport trait surface for the PIM sync engine: a minimal, provider-neutral contract that adapters (JMAP now; IMAP/SMTP/CalDAV later) implement to return normalized SyncUpdate batches plus opaque cursors, expose capabilities, and classify failures. No network or async-runtime dependencies; those live in the provider crates."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

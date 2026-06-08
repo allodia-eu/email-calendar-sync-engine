@@ -1,0 +1,36 @@
+{
+  "methodResponses": [
+    [
+      "Calendar/get",
+      {
+        "accountId": "c",
+        "state": "sca",
+        "list": [
+          {
+            "id": "b",
+            "name": "Stalwart Calendar (alice@test.local)",
+            "description": null,
+            "color": null,
+            "timeZone": null,
+            "sortOrder": 0,
+            "isDefault": true,
+            "isSubscribed": false,
+            "myRights": {
+              "mayReadFreeBusy": true,
+              "mayReadItems": true,
+              "mayWriteAll": true,
+              "mayWriteOwn": true,
+              "mayUpdatePrivate": true,
+              "mayRSVP": true,
+              "mayShare": true,
+              "mayDelete": true
+            }
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "2f72d7c8"
+}
