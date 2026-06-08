@@ -26,12 +26,12 @@ If product pressure changes the order, the domain model tests still need JMAP an
 
 ## Stalwart Test Spine
 
-Use Stalwart Docker for deterministic local and CI tests across JMAP, IMAP, SMTP, CalDAV, and CardDAV. The harness must seed one shared dataset that every protocol sees:
+Use Stalwart Docker for deterministic local and CI tests across JMAP, IMAP, SMTP, CalDAV, and CardDAV. **Implemented** as build-order step 3 under `docker/stalwart/` (compose + a self-bootstrapping entrypoint that drives Stalwart v0.16's registry setup through its management API, plus a curl seeder) and `crates/stalwart-harness` (readiness + gated smoke suite); `stalwart-harness.md` is authoritative for its design, the bootstrap flow, the per-fixture invariants, the gating contract, and the determinism rules. The harness must seed one shared dataset that every protocol sees:
 - Domain and account credentials.
 - Mailboxes/folders and labels where supported.
 - Messages with duplicate/missing Message-ID cases, attachments, flags/keywords, and moved/copied messages.
 - Calendars with one-off events, recurring events, exceptions, attendees, and virtual locations.
-- Contacts/address book entries if CardDAV is in scope.
+- Contacts/address book entries if CardDAV is in scope. (Deferred: contacts land after step 5, so the step-3 seed covers mail + calendar only; CardDAV is added without rework when contacts arrive.)
 
 The JMAP suite must cover:
 - Session discovery and capability detection.

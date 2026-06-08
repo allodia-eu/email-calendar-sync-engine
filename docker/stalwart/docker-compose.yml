@@ -1,0 +1,62 @@
+# Deterministic Stalwart protocol test harness (Stalwart v0.16).
+#
+# `docker compose up -d --wait` brings up a Stalwart server that self-bootstraps
+# through its management API, creates the test accounts, and seeds one shared
+# dataset every protocol sees (JMAP, IMAP, SMTP, CalDAV) — then reports healthy
+# once seeding is done (the healthcheck gates on a post-seed marker). Tests
+# connect to the host-mapped ports below via the STALWART_* env vars (see
+# docker/stalwart/README.md and crates/stalwart-harness).
+#
+# Transport: JMAP + CalDAV + management on plaintext HTTP 8080; SMTP plaintext on
+# 25; IMAP implicit-TLS on 993 with the server's self-signed test certificate
+# (tests trust-skip explicitly; this never touches a host trust store).
+#
+# Determinism: the image is pinned by sha256 digest and the whole setup is driven
+# from fixed inputs. Start from a clean slate with `docker compose down -v`
+# before `up` (CI always does).
+
+name: stalwart-harness
+
+services:
+  stalwart:
+    # stalwartlabs/stalwart v0.16.8, pinned by multi-arch digest (linux/amd64 +
+    # linux/arm64). Bump deliberately: re-resolve the digest and update CI too.
+    image: stalwartlabs/stalwart:v0.16.8@sha256:154dc1f2895ba8d319817fb37c3c26bac3f3e36e2eb338edcf789a79717a5d49
+    # Self-bootstrapping wrapper: bootstrap via API, restart to full server,
+    # create accounts, seed, then run the server in the foreground.
+    entrypoint: ["/bin/sh", "/harness/entrypoint.sh"]
+    environment:
+      # Fixed fallback-admin credential so the management API has a known login
+      # from first boot (no random password, no wizard).
+      STALWART_RECOVERY_ADMIN: "admin:harness-admin-pw"
+      STALWART_HOSTNAME: "mail.test.local"
+      HARNESS_ADMIN_PW: "harness-admin-pw"
+      HARNESS_ALICE_PW: "harness-alice-pw"
+      HARNESS_BOB_PW: "harness-bob-pw"
+    volumes:
+      - ./entrypoint.sh:/harness/entrypoint.sh:ro
+      - ./seed.sh:/harness/seed.sh:ro
+      - ./seed:/harness/seed:ro
+      - stalwart-etc:/etc/stalwart
+      - stalwart-data:/var/lib/stalwart
+    ports:
+      # host:container, loopback only — never expose a test mail server on all
+      # interfaces. High host ports avoid clashing with a real local server.
+      - "127.0.0.1:18080:8080" # HTTP: JMAP + CalDAV/CardDAV + management
+      - "127.0.0.1:11025:25" # SMTP (plaintext)
+      - "127.0.0.1:11993:993" # IMAP (implicit TLS)
+    # Healthy only once the shared dataset is seeded: the marker is written at
+    # the end of the entrypoint, and HTTP liveness must also answer. This is the
+    # real readiness signal tests wait on — not a sleep.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test -f /var/lib/stalwart/.harness-ready && curl -fsS http://127.0.0.1:8080/healthz/live >/dev/null || exit 1
+      interval: 3s
+      timeout: 5s
+      retries: 80
+      start_period: 10s
+
+volumes:
+  stalwart-etc:
+  stalwart-data:

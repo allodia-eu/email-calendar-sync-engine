@@ -141,6 +141,61 @@ jobs:
             echo "::endgroup::"
           done
 
+  # Protocol harness: the one job that needs a service. It starts the
+  # deterministic Stalwart fixture (image pinned by digest in the compose file),
+  # seeds the shared dataset, and runs the gated connectivity smoke suite
+  # against it. Kept off the offline `verify`/`test` jobs and off the OS matrix
+  # — those must stay service-free (the offline gate). This job is the only one
+  # that sets STALWART_*, so it is the only one whose Stalwart tests execute;
+  # everywhere else they skip.
+  stalwart:
+    name: Stalwart protocol harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: stalwart
+
+      # The Stalwart image is pinned by digest in docker-compose.yml. A
+      # save/load image cache is intentionally omitted: RepoDigests do not
+      # survive `docker save`/`load`, so a digest-pinned `compose up` would
+      # re-pull anyway. The pull is small and deterministic.
+      #
+      # The single service self-bootstraps and seeds inside its entrypoint, then
+      # reports healthy once the post-seed marker exists, so `--wait` returns
+      # only when the shared dataset is ready (real readiness, not a sleep).
+      - name: Start Stalwart and seed the shared dataset
+        working-directory: docker/stalwart
+        run: docker compose up -d --wait
+
+      - name: Run the gated connectivity smoke suite
+        env:
+          STALWART_HTTP_ADDR: 127.0.0.1:18080
+          STALWART_IMAP_ADDR: 127.0.0.1:11993 # IMAP is implicit-TLS
+          STALWART_SMTP_ADDR: 127.0.0.1:11025
+          STALWART_ACCOUNT: alice@test.local
+          STALWART_PASSWORD: harness-alice-pw
+        run: cargo test -p stalwart-harness --test smoke -- --nocapture
+
+      - name: Dump Stalwart logs on failure
+        if: failure()
+        working-directory: docker/stalwart
+        run: |
+          docker compose logs --no-color
+          docker compose exec -T stalwart sh -c 'cat /var/log/stalwart/* 2>/dev/null' || true
+
+      - name: Tear down
+        if: always()
+        working-directory: docker/stalwart
+        run: docker compose down -v
+
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
@@ -164,11 +219,16 @@ jobs:
       - name: Run instrumented tests
         run: cargo llvm-cov --no-report --workspace --all-features
 
+      # `stalwart-harness` is test-support: its pure logic (base64, response
+      # parsing, count parsing) is unit-tested and runs here, but its socket
+      # probes only execute against a live server in the `stalwart` job, never
+      # in this offline coverage run. Excluding the crate keeps the metric about
+      # the engine's own logic; the probes are exercised by the harness job.
       - name: Export lcov report
-        run: cargo llvm-cov report --lcov --output-path lcov.info
+        run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'stalwart-harness/'
 
       - name: Coverage summary
-        run: cargo llvm-cov report --summary-only
+        run: cargo llvm-cov report --summary-only --ignore-filename-regex 'stalwart-harness/'
 
       # The lcov export above is 100% line coverage. llvm-cov's *native* line
       # metric reads a hair under that on macro- and generic-heavy code (region
@@ -176,7 +236,7 @@ jobs:
       # formats count as covered), so the hard gate sits just below to stay
       # reliably green. Tighten to 100 if the native metric ever reaches it.
       - name: Enforce coverage threshold
-        run: cargo llvm-cov report --fail-under-lines 99
+        run: cargo llvm-cov report --fail-under-lines 99 --ignore-filename-regex 'stalwart-harness/'
 
       - name: Upload lcov report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

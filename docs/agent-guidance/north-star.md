@@ -157,7 +157,7 @@ The engine also exposes an injectable clock/time source for recurrence expansion
 
 1. **Repository discipline and RFC-backed model.** Add workspace skeleton, strict lint/test policy, model fixtures, and `engine-core` tests first.
 2. **SQLite store and search without network.** Implement schema, structured query AST, FTS, recurrence fixtures, and ingestion CLI.
-3. **Stalwart Docker harness.** Seed deterministic accounts, messages, calendars, contacts, and protocol endpoints for local/CI tests.
+3. **Stalwart Docker harness.** Seed deterministic accounts, messages, calendars, and protocol endpoints for local/CI tests (contacts/CardDAV deferred until contacts land, after step 5). Implemented under `docker/stalwart/` + `crates/stalwart-harness`; see `stalwart-harness.md`.
 4. **JMAP read/write.** Implement JMAP sync, JSCalendar normalization, mail submission, calendar writes, RSVP patches, and conference links.
 5. **IMAP/SMTP + CalDAV/CardDAV.** Implement legacy protocol adapters against the same Stalwart fixture.
 6. **Bindings and reference host.** Add UniFFI/CLI/desktop seams in small, tested slices.
@@ -168,7 +168,7 @@ Contacts and CardDAV follow the mail and calendar spine rather than leading it: 
 ## Testing Strategy
 
 - Model conformance fixtures for JMAP, JSCalendar, IMAP, SMTP, iCalendar, CalDAV, CardDAV, and MIME.
-- Stalwart Docker protocol suite in local and CI.
+- Stalwart Docker protocol suite in local and CI (the deterministic fixture; see `stalwart-harness.md`).
 - Store contract suite for every store implementation.
 - Sync tests for idempotency, resumability, cursor invalidation, membership changes, and recurrence parity.
 - Write-path tests for ambiguous sends, duplicate prevention, conflict handling, and outbox transitions.

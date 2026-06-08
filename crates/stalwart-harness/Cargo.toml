@@ -1,0 +1,27 @@
+[package]
+name = "stalwart-harness"
+description = "Test-support harness for the deterministic Stalwart protocol fixture: environment-based server discovery, a readiness poller, and minimal JMAP/IMAP/SMTP/CalDAV probes used by the connectivity smoke suite. All Stalwart-touching tests skip when no server is configured, so the offline workspace tests stay green with no Docker."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# No external dependencies on purpose: the probes are hand-rolled over
+# std::net::TcpStream (HTTP/1.0 for JMAP/CalDAV/healthz, raw TCP for IMAP/SMTP)
+# so this crate stays trivially portable across the desktop + mobile
+# cross-compile matrix. serde_json (a workspace dep) parses the JMAP session.
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# Test-only: Stalwart's v0.16 IMAP listener is implicit-TLS, so the smoke suite
+# wraps its TCP stream in rustls (with a probe-only no-verify verifier for the
+# server's self-signed test cert). The `ring` provider keeps this pure Rust with
+# no system OpenSSL — it needs only the C compiler the workspace already
+# requires (store-sqlite bundles C SQLite), so `cargo test --workspace` stays
+# buildable everywhere. Not compiled into the library or the cross-compile build.
+[dev-dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[lints]
+workspace = true
