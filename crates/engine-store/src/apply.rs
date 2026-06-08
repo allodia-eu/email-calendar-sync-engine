@@ -14,6 +14,8 @@
 //! expansion comes from the recurrence layer. This keeps the write transaction
 //! short (no expansion under lock).
 
+use core::fmt;
+
 use engine_core::ids::ProviderKey;
 use engine_core::search_index::{
     EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailIndexRow,
@@ -56,16 +58,48 @@ impl StorableObject for engine_core::calendar::Event {
     }
 }
 
+/// The bundled IANA tzdata release an occurrence was expanded under.
+///
+/// Each materialized occurrence records this so a tzdata-version bump can find
+/// and invalidate exactly the occurrences expanded under an older release, then
+/// re-expand them (`calendar-semantics.md`); occurrences whose zones did not
+/// change stay byte-stable. It is a non-key column — re-expansion updates it in
+/// place. The value is the recurrence layer's bundled tzdb version (e.g.
+/// `"2025b"`, from `jiff-tzdb`); the store treats it as opaque text.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct TzdataVersion(Box<str>);
+
+impl TzdataVersion {
+    /// Wraps a bundled-tzdb version string.
+    #[must_use]
+    pub fn new(version: impl Into<String>) -> Self {
+        Self(version.into().into_boxed_str())
+    }
+
+    /// Returns the version string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for TzdataVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// One materialized occurrence of a (possibly recurring) event, within the
 /// rolling horizon.
 ///
 /// Range queries use these rows, not the master event (`store-and-sync.md`).
 /// `start`/`end` are resolved UTC instants for indexing; the floating/zoned
 /// semantics stay on the master event. `recurrence_id` is set for an overridden
-/// instance. Unlike the full-text and structured rows, occurrences are **not**
-/// produced by [`engine_core::search_index`]: expanding recurrence to UTC instants
-/// needs bundled tzdata and lives in the recurrence/index layer, so this carrier
-/// type stays here.
+/// instance. `tzdata_version` records the bundled tzdb release the resolution used
+/// (`calendar-semantics.md`). Unlike the full-text and structured rows,
+/// occurrences are **not** produced by [`engine_core::search_index`]: expanding
+/// recurrence to UTC instants needs bundled tzdata and lives in the
+/// recurrence/index layer, so this carrier type stays here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OccurrenceRow {
     /// The master event this occurrence expands from.
@@ -76,6 +110,8 @@ pub struct OccurrenceRow {
     pub end: UtcDateTime,
     /// The `RECURRENCE-ID` instant if this is an overridden instance.
     pub recurrence_id: Option<UtcDateTime>,
+    /// The bundled tzdata release this occurrence was expanded under.
+    pub tzdata_version: TzdataVersion,
 }
 
 /// Precomputed derived rows for one scope.
@@ -308,9 +344,11 @@ mod tests {
             start: "2026-03-01T09:00:00Z".parse().unwrap(),
             end: "2026-03-01T10:00:00Z".parse().unwrap(),
             recurrence_id: Some("2026-03-01T09:00:00Z".parse().unwrap()),
+            tzdata_version: TzdataVersion::new("2025b"),
         };
         let json = serde_json::to_string(&occ).unwrap();
         assert_eq!(serde_json::from_str::<OccurrenceRow>(&json).unwrap(), occ);
+        assert_eq!(occ.tzdata_version.as_str(), "2025b");
     }
 
     #[test]

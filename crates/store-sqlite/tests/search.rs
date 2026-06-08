@@ -15,7 +15,8 @@ use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
 use engine_core::time::{CalendarDateTime, LocalDateTime, TimeZoneId};
 use engine_search::{CalendarQuery, MailQuery};
 use engine_store::{
-    ApplyBatch, DerivedWrite, LeaseRequest, ManualClock, OccurrenceRow, Store, WorkerId,
+    ApplyBatch, DerivedWrite, LeaseRequest, ManualClock, OccurrenceRow, Store, TzdataVersion,
+    WorkerId,
 };
 use store_sqlite::SqliteStore;
 
@@ -419,12 +420,14 @@ async fn calendar_structured_filters_and_occurrence_range() {
         start: "2026-06-01T07:00:00Z".parse().unwrap(),
         end: "2026-06-01T07:30:00Z".parse().unwrap(),
         recurrence_id: None,
+        tzdata_version: TzdataVersion::new("2025b"),
     });
     derived.occurrences.push(OccurrenceRow {
         event: pk("e2"),
         start: "2026-06-02T07:00:00Z".parse().unwrap(),
         end: "2026-06-02T07:30:00Z".parse().unwrap(),
         recurrence_id: None,
+        tzdata_version: TzdataVersion::new("2025b"),
     });
     let update = SyncUpdate::delta(vec![review, other], vec![]);
     store

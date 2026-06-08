@@ -19,11 +19,18 @@ use crate::convert;
 
 /// Applies the precomputed derived rows for one scope inside the apply/maintenance
 /// transaction.
+///
+/// `removed` is cleared **first**, then the upserts, so a single re-expansion batch
+/// (`{removed: [event], occurrences: [fresh]}`) clears the stale occurrences and
+/// writes the fresh ones in one transaction without the clear wiping the new rows.
 pub(crate) fn apply_derived(
     tx: &Transaction<'_>,
     scope_key: &str,
     derived: &DerivedWrite,
 ) -> Result<()> {
+    for key in &derived.removed {
+        delete_derived_rows(tx, scope_key, key.as_str())?;
+    }
     for row in &derived.fts {
         let (subject, body, location) = fts_columns(&row.fields);
         tx.execute(
@@ -41,16 +48,18 @@ pub(crate) fn apply_derived(
             .map(convert::instant_to_text)
             .unwrap_or_default();
         tx.execute(
-            "INSERT INTO event_occurrence (scope_key, event, start_utc, end_utc, recurrence_id)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO event_occurrence
+                 (scope_key, event, start_utc, end_utc, recurrence_id, tzdata_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(scope_key, event, start_utc, recurrence_id)
-             DO UPDATE SET end_utc = excluded.end_utc",
+             DO UPDATE SET end_utc = excluded.end_utc, tzdata_version = excluded.tzdata_version",
             (
                 scope_key,
                 occ.event.as_str(),
                 convert::instant_to_text(occ.start),
                 convert::instant_to_text(occ.end),
                 recurrence_id,
+                occ.tzdata_version.as_str(),
             ),
         )
         .map_err(convert::backend)?;
@@ -92,9 +101,6 @@ pub(crate) fn apply_derived(
     replace_addresses(tx, scope_key, &derived.addresses)?;
     replace_memberships(tx, scope_key, &derived.memberships)?;
     replace_participants(tx, scope_key, &derived.participants)?;
-    for key in &derived.removed {
-        delete_derived_rows(tx, scope_key, key.as_str())?;
-    }
     Ok(())
 }
 
@@ -288,7 +294,7 @@ mod tests {
     use engine_core::search_index::FtsRow;
     use engine_core::sync::{JmapDataType, SyncScope};
     use engine_core::time::UtcDateTime;
-    use engine_store::{FtsField, OccurrenceRow, WorkerId};
+    use engine_store::{FtsField, OccurrenceRow, TzdataVersion, WorkerId};
     use rusqlite::Connection;
 
     use crate::scope_ops::{OwnedUpdate, apply, claim, maintenance};
@@ -347,6 +353,7 @@ mod tests {
             start: instant("2026-03-01T09:00:00Z"),
             end: instant("2026-03-01T09:15:00Z"),
             recurrence_id: None,
+            tzdata_version: TzdataVersion::new("2025b"),
         }
     }
 
@@ -479,6 +486,7 @@ mod tests {
             start: instant("2026-03-01T09:00:00Z"),
             end: instant("2026-03-01T10:00:00Z"),
             recurrence_id: Some(instant("2026-03-01T09:00:00Z")),
+            tzdata_version: TzdataVersion::new("2025b"),
         });
         apply(
             &mut conn,
@@ -491,5 +499,56 @@ mod tests {
         )
         .unwrap();
         assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 2);
+    }
+
+    #[test]
+    fn re_expansion_updates_version_and_keeps_instants_byte_stable() {
+        // A tzdata bump re-expands an event: a single maintenance batch clears the
+        // stale occurrence and writes a fresh one. A zone whose rules did not change
+        // resolves to the same instants, so only `tzdata_version` changes.
+        let (mut conn, key) = open();
+        let token = claim_token(&mut conn, &key);
+
+        let mut initial = DerivedWrite::empty();
+        initial.occurrences.push(OccurrenceRow {
+            event: pk("e1"),
+            start: instant("2026-03-01T09:00:00Z"),
+            end: instant("2026-03-01T09:15:00Z"),
+            recurrence_id: None,
+            tzdata_version: TzdataVersion::new("2025a"),
+        });
+        apply(
+            &mut conn,
+            &key,
+            token,
+            &delta_change("e1"),
+            &initial,
+            &[],
+            "c1",
+        )
+        .unwrap();
+
+        let mut re_expand = DerivedWrite::empty();
+        re_expand.removed.push(pk("e1"));
+        re_expand.occurrences.push(OccurrenceRow {
+            event: pk("e1"),
+            start: instant("2026-03-01T09:00:00Z"),
+            end: instant("2026-03-01T09:15:00Z"),
+            recurrence_id: None,
+            tzdata_version: TzdataVersion::new("2025b"),
+        });
+        maintenance(&mut conn, &key, token, &re_expand).unwrap();
+
+        assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 1);
+        let (start, end, version): (String, String, String) = conn
+            .query_row(
+                "SELECT start_utc, end_utc, tzdata_version FROM event_occurrence",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(start, "2026-03-01T09:00:00Z");
+        assert_eq!(end, "2026-03-01T09:15:00Z");
+        assert_eq!(version, "2025b");
     }
 }

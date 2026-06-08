@@ -22,7 +22,7 @@ mod store;
 
 pub use apply::{
     ApplyBatch, DerivedWrite, FtsField, FtsRow, OccurrenceRow, PendingReconciliation,
-    StorableObject, SyncApplied,
+    StorableObject, SyncApplied, TzdataVersion,
 };
 pub use error::{Result, StoreError};
 pub use lease::{

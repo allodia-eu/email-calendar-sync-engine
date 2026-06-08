@@ -1,0 +1,115 @@
+{
+  "events": [
+    {
+      "alerts": [],
+      "calendars": [
+        "work"
+      ],
+      "categories": [],
+      "color": null,
+      "created": null,
+      "description": null,
+      "duration": "PT15M",
+      "extended": {},
+      "free_busy_status": "busy",
+      "id": "daily-standup",
+      "keywords": [],
+      "kind": "default",
+      "locations": [],
+      "participants": [],
+      "priority": 0,
+      "privacy": "public",
+      "raw_ical": null,
+      "raw_jscalendar": null,
+      "recurrence": {
+        "excluded_rules": [],
+        "overrides": {},
+        "rules": [
+          {
+            "bound": "Unbounded",
+            "by_day": [],
+            "by_hour": [],
+            "by_minute": [],
+            "by_month": [],
+            "by_month_day": [],
+            "by_second": [],
+            "by_set_position": [],
+            "by_week_no": [],
+            "by_year_day": [],
+            "first_day_of_week": "mo",
+            "frequency": "daily",
+            "interval": 1,
+            "rscale": null,
+            "skip": "omit"
+          }
+        ]
+      },
+      "recurrence_id": null,
+      "revisions": {
+        "change_key": null,
+        "etag": null,
+        "mod_seq": null,
+        "schedule_tag": null
+      },
+      "sequence": 0,
+      "start": {
+        "Zoned": {
+          "local": "2026-06-01T09:00:00",
+          "zone": {
+            "Iana": "Europe/Amsterdam"
+          }
+        }
+      },
+      "status": "confirmed",
+      "title": "Daily standup",
+      "uid": "uid-standup",
+      "updated": null,
+      "use_default_alerts": false,
+      "virtual_locations": []
+    }
+  ],
+  "messages": [
+    {
+      "attachments": [],
+      "blob_id": null,
+      "envelope": {
+        "bcc": [],
+        "cc": [],
+        "from": [
+          {
+            "email": "team@example.com",
+            "name": null
+          }
+        ],
+        "in_reply_to": [],
+        "message_id": [],
+        "references": [],
+        "reply_to": [],
+        "sender": [],
+        "subject": "Welcome to the engine",
+        "to": []
+      },
+      "extended": {},
+      "has_attachment": false,
+      "id": "welcome",
+      "keywords": [],
+      "last_modified": null,
+      "mailboxes": [
+        "inbox"
+      ],
+      "mime_structure": null,
+      "preview": null,
+      "received_at": null,
+      "reply_unique_text": null,
+      "revisions": {
+        "change_key": null,
+        "etag": null,
+        "mod_seq": null,
+        "schedule_tag": null
+      },
+      "sent_at": null,
+      "size": null,
+      "thread_id": null
+    }
+  ]
+}

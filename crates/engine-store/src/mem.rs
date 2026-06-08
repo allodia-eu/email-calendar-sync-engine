@@ -122,11 +122,17 @@ impl ScopeCell {
 
     /// Applies precomputed derived rows (shared by apply and maintenance).
     ///
-    /// Full-text and structured rows *replace* per object (idempotent on replay);
-    /// occurrences append (the store keys them by instant, so a real backend is
-    /// idempotent — the reference store's append is the known divergence noted in
-    /// `store-and-sync.md`). `removed` clears every derived kind for a key.
+    /// `removed` is cleared **first**, then the upserts, so a single re-expansion
+    /// batch (`{removed: [event], occurrences: [fresh]}`) clears the stale rows and
+    /// writes the fresh ones in one pass without the clear wiping the new rows
+    /// (matches `store-sqlite`). Full-text and structured rows *replace* per object
+    /// (idempotent on replay); occurrences append (the store keys them by instant,
+    /// so a real backend is idempotent — the reference store's append is the known
+    /// divergence noted in `store-and-sync.md`).
     fn apply_derived(&mut self, derived: &DerivedWrite) {
+        for key in &derived.removed {
+            self.remove_derived(key);
+        }
         for row in &derived.fts {
             self.fts.insert(row.key.clone(), row.fields.clone());
         }
@@ -150,9 +156,6 @@ impl ScopeCell {
         }
         for (key, rows) in group_by_key(&derived.participants, |r| &r.key) {
             self.participants.insert(key, rows);
-        }
-        for key in &derived.removed {
-            self.remove_derived(key);
         }
     }
 }
@@ -492,7 +495,7 @@ impl<C: Clock> StoreRead for MemStore<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apply::FtsRow;
+    use crate::apply::{FtsRow, TzdataVersion};
     use crate::lease::{ManualClock, WorkerId};
 
     fn key(value: &str) -> ProviderKey {
@@ -526,6 +529,7 @@ mod tests {
             start: "2026-03-01T09:00:00Z".parse().unwrap(),
             end: "2026-03-01T09:15:00Z".parse().unwrap(),
             recurrence_id: None,
+            tzdata_version: TzdataVersion::new("2025b"),
         });
         cell.apply_derived(&derived);
         assert!(cell.fts.contains_key(&key("e1")));
@@ -537,6 +541,38 @@ mod tests {
         cell.apply_derived(&removal);
         assert!(!cell.fts.contains_key(&key("e1")));
         assert!(!cell.occurrences.contains_key(&key("e1")));
+    }
+
+    #[test]
+    fn re_expansion_batch_clears_then_writes_in_one_pass() {
+        // A tzdata-bump re-expansion arrives as one batch that both removes an
+        // event's stale occurrences and writes the fresh ones. `removed` must be
+        // processed first, or the clear would wipe the fresh rows.
+        let mut cell = ScopeCell::new();
+        let mut stale = DerivedWrite::empty();
+        stale.occurrences.push(OccurrenceRow {
+            event: key("e1"),
+            start: "2026-03-01T09:00:00Z".parse().unwrap(),
+            end: "2026-03-01T09:15:00Z".parse().unwrap(),
+            recurrence_id: None,
+            tzdata_version: TzdataVersion::new("2025a"),
+        });
+        cell.apply_derived(&stale);
+
+        let mut re_expand = DerivedWrite::empty();
+        re_expand.removed.push(key("e1"));
+        re_expand.occurrences.push(OccurrenceRow {
+            event: key("e1"),
+            start: "2026-03-01T09:00:00Z".parse().unwrap(),
+            end: "2026-03-01T09:15:00Z".parse().unwrap(),
+            recurrence_id: None,
+            tzdata_version: TzdataVersion::new("2025b"),
+        });
+        cell.apply_derived(&re_expand);
+
+        let occ = cell.occurrences.get(&key("e1")).unwrap();
+        assert_eq!(occ.len(), 1);
+        assert_eq!(occ[0].tzdata_version.as_str(), "2025b");
     }
 
     #[test]
