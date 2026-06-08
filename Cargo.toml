@@ -28,12 +28,20 @@ tempfile = "3"
 # pinned release recorded on each occurrence.
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 jiff-tzdb = "0.1"
+# Product JMAP client HTTP stack. rustls (pure-Rust TLS) cross-compiles to
+# iOS/Android without OpenSSL; default features are off so we do not pull native
+# TLS. The harness speaks plaintext HTTP, but real providers are HTTPS, so TLS
+# stays in the transport (`docs/agent-guidance/jmap.md`).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset"] }
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
 engine-store = { path = "crates/engine-store" }
 engine-search = { path = "crates/engine-search" }
 engine-recurrence = { path = "crates/engine-recurrence" }
+engine-provider = { path = "crates/engine-provider" }
+provider-jmap = { path = "crates/provider-jmap" }
+engine-sync = { path = "crates/engine-sync" }
 store-sqlite = { path = "crates/store-sqlite" }
 
 # Strict, workspace-wide lint policy (AGENTS.md / rust.md). Member crates inherit

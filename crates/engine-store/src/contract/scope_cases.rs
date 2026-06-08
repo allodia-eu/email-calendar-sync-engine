@@ -70,6 +70,63 @@ pub(super) async fn stale_lease_is_rejected<S: Store + StoreRead>(store: &S, clo
     );
 }
 
+/// A streaming page (`next_state == None`) applies its objects but **leaves the
+/// cursor unchanged**; a later `Some(cursor)` advances it. This is the primitive
+/// that lets a paged fetch commit each page visibly without prematurely marking
+/// the scope synced (a crash mid-stream re-syncs from the prior cursor).
+pub(super) async fn streaming_page_keeps_cursor<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-stream");
+    let scope = email_scope(&account);
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+    let derived = DerivedWrite::empty();
+
+    // Page 1 advances the cursor to c1.
+    let page1 = SyncUpdate::delta(vec![TestObject::new("m1", "one")], vec![]);
+    let c1 = SyncState::new("c1");
+    store
+        .apply_sync_update(&claim.lease, ApplyBatch::new(&page1, &derived, &[], &c1))
+        .await
+        .unwrap();
+
+    // Page 2 is additive with the cursor held (None).
+    let page2 = SyncUpdate::delta(vec![TestObject::new("m2", "two")], vec![]);
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::with_cursor(&page2, &derived, &[], None),
+        )
+        .await
+        .unwrap();
+
+    // Both objects are present, but the cursor is still c1 — page 2 did not advance it.
+    assert_eq!(store.object_keys(&scope).await.unwrap().len(), 2);
+    assert_eq!(
+        store
+            .load_sync_state(account.clone(), &scope)
+            .await
+            .unwrap(),
+        Some(c1)
+    );
+
+    // A final apply advances the cursor to c2.
+    let empty: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![]);
+    let c2 = SyncState::new("c2");
+    store
+        .apply_sync_update(&claim.lease, ApplyBatch::new(&empty, &derived, &[], &c2))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.load_sync_state(account, &scope).await.unwrap(),
+        Some(c2)
+    );
+}
+
 /// Replaying an identical batch under the same live lease leaves identical state.
 pub(super) async fn replay_is_idempotent<S: Store + StoreRead>(store: &S, _clock: &ManualClock) {
     let account = acct("acct-replay");

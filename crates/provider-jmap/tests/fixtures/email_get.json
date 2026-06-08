@@ -1,0 +1,354 @@
+{
+  "accountId": "c",
+  "state": "sb2",
+  "list": [
+    {
+      "id": "eaaaaab",
+      "blobId": "cbcdmz7k7ejz1yits07phiqhvdf3f7uk0z01acaabipmqjix9f1zwaqaae",
+      "threadId": "b",
+      "mailboxIds": {
+        "a": true,
+        "h": true
+      },
+      "keywords": {
+        "$seen": true
+      },
+      "size": 467,
+      "receivedAt": "2026-06-08T11:40:36Z",
+      "sentAt": "2026-01-05T09:00:00Z",
+      "subject": "Harness baseline message",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Bob Tester",
+          "email": "bob@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "baseline-0001@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Baseline plaintext message with a unique Message-ID.\n\nThis one is also COPYed into Archive by the seeder, so the same content has two\nmailbox memberships (two distinct provider objects) \u2014 the IMAP copy invariant.\n"
+    },
+    {
+      "id": "iaaaaac",
+      "blobId": "cc1akhyajvp3o27jvhsnn1svloqd90l0yx1y3ccyvztvbgahturm2aqaai",
+      "threadId": "c",
+      "mailboxIds": {
+        "a": true
+      },
+      "keywords": {
+        "$seen": true
+      },
+      "size": 449,
+      "receivedAt": "2026-06-08T11:40:36Z",
+      "sentAt": "2026-01-06T10:00:00Z",
+      "subject": "Duplicate Message-ID (copy A)",
+      "from": [
+        {
+          "name": "Newsletter",
+          "email": "news@example.com"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "shared-dup-msgid@example.com"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "First of two messages that deliberately share one Message-ID. Message-ID is a\nthreading/reconciliation hint, not hard identity, so these must remain two\ndistinct stored provider objects.\n"
+    },
+    {
+      "id": "maaaaad",
+      "blobId": "cbvznmlmg1u20mqsot03ptgv2kkap7rjmn2hu0mzsfagtjuhehymaaqaam",
+      "threadId": "d",
+      "mailboxIds": {
+        "a": true
+      },
+      "keywords": {
+        "$seen": true
+      },
+      "size": 457,
+      "receivedAt": "2026-06-08T11:40:36Z",
+      "sentAt": "2026-01-07T10:00:00Z",
+      "subject": "Duplicate Message-ID (copy B)",
+      "from": [
+        {
+          "name": "Newsletter",
+          "email": "news@example.com"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "shared-dup-msgid@example.com"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Second of two messages that share the same Message-ID as copy A. Different\nSubject and Date so the two are distinguishable by content the harness controls,\nnever by the server-assigned IMAP UID.\n"
+    },
+    {
+      "id": "qaaaaae",
+      "blobId": "cdf7nld7m0aujctkotsg7mrtl20l3e9rohhanlg9mul27cthsmkjaaqaaq",
+      "threadId": "e",
+      "mailboxIds": {
+        "a": true
+      },
+      "keywords": {
+        "$seen": true
+      },
+      "size": 375,
+      "receivedAt": "2026-06-08T11:40:36Z",
+      "sentAt": "2026-01-08T11:30:00Z",
+      "subject": "Message with no Message-ID",
+      "from": [
+        {
+          "name": "System Notices",
+          "email": "noreply@example.com"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": null,
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "This message intentionally carries no Message-ID header. Threading must fall\nback to a locally-derived id and the object must still be stored distinctly.\n"
+    },
+    {
+      "id": "uaaaaaf",
+      "blobId": "cbvefihwnxkl3ybncfu1wdyvmhap9phe3vtzbjcmz1ha3k3zzr93iaqaau",
+      "threadId": "f",
+      "mailboxIds": {
+        "a": true
+      },
+      "keywords": {
+        "$seen": true
+      },
+      "size": 729,
+      "receivedAt": "2026-06-08T11:40:36Z",
+      "sentAt": "2026-01-09T14:15:00Z",
+      "subject": "Message with a text attachment",
+      "from": [
+        {
+          "name": "Reports",
+          "email": "reports@example.com"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "attachment-0004@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": true,
+      "preview": "Body part. A file attachment follows; attachments span file/item/reference/inline\nkinds and this protects the file-attachment path end to end.\n"
+    },
+    {
+      "id": "yaaaaag",
+      "blobId": "cciuefrd0p9zww9edxysdk3tveaucdvmejxsyyfxnkwzkmgxwedm2aqaay",
+      "threadId": "g",
+      "mailboxIds": {
+        "a": true
+      },
+      "keywords": {
+        "harness": true,
+        "$flagged": true,
+        "$seen": true
+      },
+      "size": 428,
+      "receivedAt": "2026-06-08T11:40:36Z",
+      "sentAt": "2026-01-10T08:45:00Z",
+      "subject": "Message with flags and a custom keyword",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "flagged-0005@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "The seeder APPENDs this with \\Seen and \\Flagged set plus a custom keyword, so the\nflag/keyword mapping (JMAP keywords <-> IMAP flags) has a fixture to protect.\n"
+    },
+    {
+      "id": "2aaaaah",
+      "blobId": "cb2kutmxdlwmghugpo9qcyqe1fj02v92qzibxbfh39hp2nsmvuwoaaqaa2",
+      "threadId": "h",
+      "mailboxIds": {
+        "a": true
+      },
+      "keywords": {
+        "$seen": true
+      },
+      "size": 368,
+      "receivedAt": "2026-06-08T11:40:36Z",
+      "sentAt": "2026-01-12T09:00:00Z",
+      "subject": "Project kickoff",
+      "from": [
+        {
+          "name": "Bob Tester",
+          "email": "bob@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "thread-root-0006@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Thread root. The reply references this Message-ID so threading by References has\na fixture independent of subject matching.\n"
+    },
+    {
+      "id": "2aaaaai",
+      "blobId": "cb11klwbizq9rhhzlaz22ll9qnemyqoxpg791ig3a2bc1ezufazwwaqaba",
+      "threadId": "h",
+      "mailboxIds": {
+        "a": true
+      },
+      "keywords": {
+        "$seen": true
+      },
+      "size": 414,
+      "receivedAt": "2026-06-08T11:40:36Z",
+      "sentAt": "2026-01-12T09:30:00Z",
+      "subject": "Re: Project kickoff",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Bob Tester",
+          "email": "bob@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "thread-reply-0006@test.local"
+      ],
+      "inReplyTo": [
+        "thread-root-0006@test.local"
+      ],
+      "references": [
+        "thread-root-0006@test.local"
+      ],
+      "hasAttachment": false,
+      "preview": "Reply in the same thread, pointing at the root via In-Reply-To and References.\n"
+    },
+    {
+      "id": "beaaaaaj",
+      "blobId": "cccncs0cyo2jcnm1b1at3ox1hy3zcoxywf3k17xdmn1b3juuzs7h7aqabe",
+      "threadId": "j",
+      "mailboxIds": {
+        "i": true
+      },
+      "keywords": {
+        "$seen": true
+      },
+      "size": 445,
+      "receivedAt": "2026-06-08T11:40:36Z",
+      "sentAt": "2026-01-13T16:00:00Z",
+      "subject": "Filed under Projects",
+      "from": [
+        {
+          "name": "Tasks",
+          "email": "tasks@example.com"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "moved-0007@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Appended to INBOX, then MOVEd to Projects by the seeder, so it ends up with a\nsingle membership in Projects only \u2014 the moved-message case (distinct from the\ncopied case, which keeps both memberships).\n"
+    }
+  ],
+  "notFound": []
+}

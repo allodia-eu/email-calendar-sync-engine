@@ -5,8 +5,10 @@ Provider code is allowed to be messy internally, but must present clean capabili
 ## Implementation Order
 
 Recommended first provider spine:
-1. Reproducible Stalwart Docker protocol harness.
-2. JMAP read/write against Stalwart.
+1. Reproducible Stalwart Docker protocol harness. **Implemented** (step 3).
+2. JMAP read/write against Stalwart. **Implemented** (step 4); `jmap.md` is
+   authoritative for the client (`engine-provider`/`provider-jmap`/`engine-sync`).
+   JMAP calendar *writes*/RSVP are deferred to a later slice.
 3. IMAP/SMTP + CalDAV/CardDAV against the same Stalwart fixture.
 4. Optional external-provider smoke tests against real hosted or self-managed servers.
 
@@ -15,8 +17,10 @@ If product pressure changes the order, the domain model tests still need JMAP an
 ## Provider Contract
 
 - Provider adapters return normalized `SyncUpdate` values plus opaque next cursors.
-- Adapters own protocol pagination, retries, throttling, and provider quirks.
-- The store owns atomic application of changes, cursor persistence, and pending-op reconciliation.
+- The paged primitive is `sync_email_page(account, cursor, page, limit) -> SyncPage<Message>`: one page of changes plus how to continue (`next_page`), the cursor to persist once the *whole* pass applies (`next_cursor`, meaningful only on the last page), and the pass `total` when known. `sync_email` is a **default drain** over it, so a new adapter implements one paged method and gets both incremental streaming and whole-scope fetch for free. A `SyncPage` carries `kind` (snapshot/delta, consistent across the pass), `changed`/`removed`, and — for a snapshot — the `present` ids *this page* covers (the orchestrator accumulates them to tombstone at end of pass).
+- `PageToken` is opaque to the engine: the adapter encodes whatever resumes its fetch (JMAP query position or `Email/changes` state, IMAP UID range, Gmail/Graph page token or delta link) and decodes it on the next page. The engine round-trips it without parsing.
+- Adapters own protocol pagination, retries, throttling, and provider quirks. Pages should be ordered so the first ones are the most useful (mail newest-first), since a streaming host renders them as they commit.
+- The store owns atomic application of changes, cursor persistence, and pending-op reconciliation. Streaming commits each page additively with the cursor held (`ApplyBatch::with_cursor(None)`) and advances it only on the final page (`store-and-sync.md`).
 - Capabilities are queried from the adapter. Callers must not switch on provider kind for normal behavior.
 - Provider errors should classify retryable, authentication, rate-limit, invalid-state, conflict, and permanent failures.
 - Provider adapters must expose whether a sync response is a delta or a complete snapshot.
@@ -33,7 +37,8 @@ Use Stalwart Docker for deterministic local and CI tests across JMAP, IMAP, SMTP
 - Calendars with one-off events, recurring events, exceptions, attendees, and virtual locations.
 - Contacts/address book entries if CardDAV is in scope. (Deferred: contacts land after step 5, so the step-3 seed covers mail + calendar only; CardDAV is added without rework when contacts arrive.)
 
-The JMAP suite must cover:
+The JMAP suite must cover (all **implemented** in step 4 — see `jmap.md`; the
+calendar suite is read-only for now):
 - Session discovery and capability detection.
 - `Email/changes` with `Email/get` back-references.
 - `Mailbox/changes`, `Thread/get`, and state cursor persistence.

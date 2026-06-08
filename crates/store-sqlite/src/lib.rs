@@ -224,7 +224,8 @@ impl<C: Clock> Store for SqliteStore<C> {
         let update = OwnedUpdate::from_update(batch.update)?;
         let derived = batch.derived.clone();
         let reconcile = batch.reconcile.to_vec();
-        let next_state = batch.next_state.as_str().to_owned();
+        // `None` (a streaming page) leaves the cursor unchanged.
+        let next_state = batch.next_state.map(|s| s.as_str().to_owned());
         self.call(move |conn| {
             scope_ops::apply(
                 conn,
@@ -233,7 +234,7 @@ impl<C: Clock> Store for SqliteStore<C> {
                 &update,
                 &derived,
                 &reconcile,
-                &next_state,
+                next_state.as_deref(),
             )
         })
         .await

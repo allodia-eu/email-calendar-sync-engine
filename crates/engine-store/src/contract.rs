@@ -99,6 +99,8 @@ where
     let (store, clock) = make();
     scope_cases::replay_is_idempotent(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::streaming_page_keeps_cursor(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::snapshot_tombstones_only_absent(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::reconciliation_skips_regressed_op(&store, &clock).await;

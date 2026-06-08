@@ -107,9 +107,26 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObje
     pub update: &'a SyncUpdate<T>,              // provider-normalized objects, raw, membership
     pub derived: &'a DerivedWrite,              // FTS + structured-filter + occurrence rows, pure engine fns
     pub reconcile: &'a [PendingReconciliation],
-    pub next_state: &'a SyncState,
+    pub next_state: Option<&'a SyncState>,      // Some => advance cursor; None => leave it (streaming page)
 }
 ```
+
+- **Cursor disposition.** `next_state` is `Some(state)` to advance the scope
+  cursor on commit (the normal case; `ApplyBatch::new`), or `None` to apply the
+  objects/derived rows but **leave the cursor unchanged** (`ApplyBatch::with_cursor`).
+  `None` is for **incremental/streaming** applies: a paged fetch commits each page
+  additively (objects become visible immediately) without yet marking the scope
+  synced, then one final apply carries the real `Some(cursor)`. Crucially, a
+  *snapshot* pass must not tombstone against one page's partial id set, so the
+  orchestrator applies intermediate snapshot pages as **additive deltas** (upsert,
+  no removals) while accumulating `present` across pages, and only the final page
+  applies the real `Snapshot` with the complete `present` set — so it tombstones
+  exactly the genuinely-absent rows, never an earlier page's. A crash mid-stream
+  therefore leaves the prior cursor intact, so the next sync re-runs the pass from
+  scratch idempotently rather than skipping the un-applied pages. This orchestration
+  lives in `engine-sync::sync_mail_streamed` (which also reports per-page
+  `SyncProgress` to a `ProgressSink`); the contract suite's
+  `streaming_page_keeps_cursor` locks the store primitive for every backend.
 
 - **Delta vs snapshot.** `SyncUpdate` is either a delta or a bounded/full
   snapshot. A snapshot carries the complete current provider-id set for its

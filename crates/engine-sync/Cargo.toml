@@ -1,0 +1,24 @@
+[package]
+name = "engine-sync"
+description = "Sync orchestration for the PIM sync engine. Step 4 ships the thin per-scope loop (claim → provider fetch → project/derive → atomic apply → release) with StaleLease re-claim and container-before-member ordering; the full cross-scope orchestrator, outbox workers, and tzdata fan-out are later steps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-store = { workspace = true }
+engine-provider = { workspace = true }
+engine-recurrence = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+store-sqlite = { workspace = true }
+
+[lints]
+workspace = true

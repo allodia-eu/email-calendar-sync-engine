@@ -309,7 +309,10 @@ impl<C: Clock> Store for MemStore<C> {
             }
         }
 
-        cell.state = Some(batch.next_state.clone());
+        // A streaming page (`next_state == None`) leaves the cursor unchanged.
+        if let Some(next_state) = batch.next_state {
+            cell.state = Some(next_state.clone());
+        }
         Ok(applied)
     }
 

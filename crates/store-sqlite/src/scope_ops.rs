@@ -175,7 +175,7 @@ pub(crate) fn apply(
     update: &OwnedUpdate,
     derived: &DerivedWrite,
     reconcile: &[PendingReconciliation],
-    next_state: &str,
+    next_state: Option<&str>,
 ) -> Result<SyncApplied> {
     let tx = conn.transaction().map_err(convert::backend)?;
     check_token(&tx, scope_key, token)?;
@@ -216,11 +216,15 @@ pub(crate) fn apply(
         }
     }
 
-    tx.execute(
-        "UPDATE sync_scope SET cursor = ?1 WHERE scope_key = ?2",
-        (next_state, scope_key),
-    )
-    .map_err(convert::backend)?;
+    // A streaming page (`next_state == None`) leaves the cursor unchanged so a
+    // crash mid-stream re-syncs from the prior cursor rather than skipping pages.
+    if let Some(next_state) = next_state {
+        tx.execute(
+            "UPDATE sync_scope SET cursor = ?1 WHERE scope_key = ?2",
+            (next_state, scope_key),
+        )
+        .map_err(convert::backend)?;
+    }
     tx.commit().map_err(convert::backend)?;
     Ok(applied)
 }

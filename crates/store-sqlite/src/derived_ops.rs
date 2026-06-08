@@ -388,7 +388,7 @@ mod tests {
             &delta_change("e1"),
             &derived,
             &[],
-            "c1",
+            Some("c1"),
         )
         .unwrap();
         assert_eq!(count(&conn, "SELECT count(*) FROM object"), 1);
@@ -407,7 +407,7 @@ mod tests {
             &remove,
             &DerivedWrite::empty(),
             &[],
-            "c2",
+            Some("c2"),
         )
         .unwrap();
         assert_eq!(applied.tombstoned, 1);
@@ -432,7 +432,7 @@ mod tests {
             &delta_change("e1"),
             &derived,
             &[],
-            "c1",
+            Some("c1"),
         )
         .unwrap();
         apply(
@@ -442,7 +442,7 @@ mod tests {
             &delta_change("e1"),
             &derived,
             &[],
-            "c1",
+            Some("c1"),
         )
         .unwrap();
         assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 1);
@@ -463,7 +463,7 @@ mod tests {
             &delta_change("e1"),
             &derived,
             &[],
-            "c1",
+            Some("c1"),
         )
         .unwrap();
         assert_eq!(count(&conn, "SELECT count(*) FROM fts_doc"), 1);
@@ -495,7 +495,7 @@ mod tests {
             &delta_change("e1"),
             &derived,
             &[],
-            "c1",
+            Some("c1"),
         )
         .unwrap();
         assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 2);
@@ -524,7 +524,7 @@ mod tests {
             &delta_change("e1"),
             &initial,
             &[],
-            "c1",
+            Some("c1"),
         )
         .unwrap();
 

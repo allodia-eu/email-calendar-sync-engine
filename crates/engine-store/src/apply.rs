@@ -58,6 +58,18 @@ impl StorableObject for engine_core::calendar::Event {
     }
 }
 
+impl StorableObject for engine_core::mail::Mailbox {
+    fn provider_key(&self) -> &ProviderKey {
+        self.id.key()
+    }
+}
+
+impl StorableObject for engine_core::calendar::Calendar {
+    fn provider_key(&self) -> &ProviderKey {
+        self.id.key()
+    }
+}
+
 /// The bundled IANA tzdata release an occurrence was expanded under.
 ///
 /// Each materialized occurrence records this so a tzdata-version bump can find
@@ -252,18 +264,38 @@ pub struct ApplyBatch<'a, T> {
     pub derived: &'a DerivedWrite,
     /// Pending-op reconciliations to resolve in the same transaction.
     pub reconcile: &'a [PendingReconciliation],
-    /// The cursor to advance to on commit.
-    pub next_state: &'a SyncState,
+    /// The cursor to advance to on commit, or `None` to **leave the scope cursor
+    /// unchanged**.
+    ///
+    /// `None` is for **incremental/streaming** applies: a fetch that spans many
+    /// pages commits each page additively (objects + derived rows become visible)
+    /// without yet marking the scope synced, then a final apply carries the real
+    /// `Some(cursor)`. A crash mid-stream therefore leaves the prior cursor intact,
+    /// so the next sync re-runs from it (idempotently) rather than skipping the
+    /// un-applied pages.
+    pub next_state: Option<&'a SyncState>,
 }
 
 impl<'a, T> ApplyBatch<'a, T> {
-    /// Assembles an apply batch from its parts.
+    /// Assembles an apply batch that advances the cursor to `next_state` on commit.
     #[must_use]
     pub fn new(
         update: &'a SyncUpdate<T>,
         derived: &'a DerivedWrite,
         reconcile: &'a [PendingReconciliation],
         next_state: &'a SyncState,
+    ) -> Self {
+        Self::with_cursor(update, derived, reconcile, Some(next_state))
+    }
+
+    /// Assembles an apply batch with an explicit cursor disposition: `Some(state)`
+    /// advances the cursor, `None` leaves it unchanged (a streaming page).
+    #[must_use]
+    pub fn with_cursor(
+        update: &'a SyncUpdate<T>,
+        derived: &'a DerivedWrite,
+        reconcile: &'a [PendingReconciliation],
+        next_state: Option<&'a SyncState>,
     ) -> Self {
         Self {
             update,
@@ -338,6 +370,18 @@ mod tests {
     }
 
     #[test]
+    fn container_objects_are_storable_by_their_id() {
+        use engine_core::calendar::Calendar;
+        use engine_core::ids::CalendarId;
+        use engine_core::mail::Mailbox;
+
+        let mailbox = Mailbox::new(MailboxId::try_from("inbox").unwrap(), "Inbox");
+        assert_eq!(mailbox.provider_key().as_str(), "inbox");
+        let calendar = Calendar::new(CalendarId::try_from("work").unwrap(), "Work");
+        assert_eq!(calendar.provider_key().as_str(), "work");
+    }
+
+    #[test]
     fn occurrence_row_roundtrips_with_optional_override() {
         let occ = OccurrenceRow {
             event: key("evt-1"),
@@ -373,7 +417,11 @@ mod tests {
         let next = SyncState::new("cursor-2");
         let batch = ApplyBatch::new(&update, &derived, &recs, &next);
         assert!(batch.derived.is_empty());
-        assert_eq!(batch.next_state.as_str(), "cursor-2");
+        assert_eq!(batch.next_state.unwrap().as_str(), "cursor-2");
         assert!(batch.reconcile.is_empty());
+
+        // A streaming page leaves the cursor unchanged.
+        let held = ApplyBatch::with_cursor(&update, &derived, &recs, None);
+        assert!(held.next_state.is_none());
     }
 }
