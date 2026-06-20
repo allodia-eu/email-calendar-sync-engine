@@ -18,7 +18,7 @@ use std::time::Duration as StdDuration;
 
 use engine_core::ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey};
 use engine_core::mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword};
-use engine_core::sync::SyncScope;
+use engine_core::sync::{SyncScope, SyncUpdate};
 use engine_provider::{Draft, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::{SyncProgress, submit_mail, sync_mail, sync_mail_streamed};
@@ -108,6 +108,26 @@ async fn messages_in(store: &Store, scope: &SyncScope) -> Vec<Message> {
         out.push(load::<Message>(store, scope, &key).await);
     }
     out
+}
+
+/// Discovers the account's folder carrying `role` (its SPECIAL-USE name — Stalwart
+/// calls Sent "Sent Items"), falling back to `default_name` when the server
+/// advertises none. This mirrors how the provider resolves its filing target, so
+/// the test binds and re-syncs the *same* folder the copy is filed into.
+async fn resolve_role_mailbox(harness: &Harness, role: MailboxRole, default_name: &str) -> String {
+    let provider = connect(harness, "INBOX").await;
+    let account = AccountId::try_from("imap-resolve").unwrap();
+    let sync = provider
+        .sync_mailboxes(&account, None)
+        .await
+        .expect("list folders");
+    let SyncUpdate::Snapshot { objects, .. } = sync.update else {
+        return default_name.to_owned();
+    };
+    objects
+        .into_iter()
+        .find(|mailbox| mailbox.role.as_ref() == Some(&role))
+        .map_or_else(|| default_name.to_owned(), |mailbox| mailbox.name)
 }
 
 #[tokio::test]
@@ -285,8 +305,11 @@ async fn live_smtp_submits_and_files_the_sent_copy() {
         .wait_until_ready(StdDuration::from_secs(30))
         .expect("harness ready");
 
-    // Bound to Sent so the appended copy can be re-synced; SMTP submission enabled.
-    let provider = connect_submitter(&harness, "Sent").await;
+    // Bind to the account's real Sent folder (its `\Sent` SPECIAL-USE name —
+    // "Sent Items" on Stalwart, not a literal "Sent"), so the copy the provider
+    // files there can be re-synced. SMTP submission enabled.
+    let sent_mailbox = resolve_role_mailbox(&harness, MailboxRole::Sent, "Sent").await;
+    let provider = connect_submitter(&harness, &sent_mailbox).await;
     let store =
         SqliteStore::open_in_memory(ManualClock::new("2026-06-08T00:00:00Z".parse().unwrap()))
             .expect("store");
@@ -348,8 +371,10 @@ async fn live_imap_saves_a_draft() {
         .wait_until_ready(StdDuration::from_secs(30))
         .expect("harness ready");
 
-    // Bound to Drafts so the appended draft can be re-synced. No SMTP needed.
-    let provider = connect(&harness, "Drafts").await;
+    // Bind to the account's real Drafts folder (its `\Drafts` SPECIAL-USE name), so
+    // the draft the provider files there can be re-synced. No SMTP needed.
+    let drafts_mailbox = resolve_role_mailbox(&harness, MailboxRole::Drafts, "Drafts").await;
+    let provider = connect(&harness, &drafts_mailbox).await;
     let store =
         SqliteStore::open_in_memory(ManualClock::new("2026-06-08T00:00:00Z".parse().unwrap()))
             .expect("store");
@@ -364,7 +389,7 @@ async fn live_imap_saves_a_draft() {
         "Saved as a draft by the live test (no SMTP).",
     );
 
-    // Save it via IMAP APPEND (CREATE Drafts + APPEND \Draft).
+    // Save it via IMAP APPEND into the resolved Drafts folder (flagged \Draft).
     provider.save_draft(&draft).await.expect("save_draft");
 
     // Re-sync Drafts; the saved draft is there, found by Message-ID and flagged.
