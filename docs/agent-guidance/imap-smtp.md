@@ -51,12 +51,16 @@ CalDAV/CardDAV is the **other** step-5 slice and is not covered here.
 
 - **Cursor + paging.** The cursor is `(UIDVALIDITY, UIDNEXT)` encoded
   `v{validity};n{next}`; a foreign/garbage cursor decodes to "no cursor" → snapshot.
-  Paging is a **UID window, newest UIDs first**: the first page covers the highest
-  UIDs (`page_low:newest`), the window descends across pages, and the next boundary
-  travels in the opaque `PageToken`. No `SEARCH` — the window is fetched directly,
-  so expunged UIDs are simply absent (a gap), and a snapshot's accumulated `present`
-  set is exactly the existing UIDs (tombstoning the rest). `limit` `0` means the
-  whole window in one page (the drain default).
+  Paging is **newest UIDs first, up to `limit` *messages* per page**: a page fetches
+  a UID window and, if a gap (expunged UID) leaves it under-filled, **widens the
+  window downward** until it has `limit` messages (or reaches the floor) — so
+  `limit` is a count of messages, not a span of UID slots. Any older overshoot is
+  capped off and re-fetched by the next page (whose window ends strictly below the
+  lowest kept UID, so no duplication). The next boundary travels in the opaque
+  `PageToken`. No `SEARCH` — windows are fetched directly, so expunged UIDs are
+  simply absent (a gap), and a snapshot's accumulated `present` set is exactly the
+  existing UIDs (tombstoning the rest). `limit` `0` means the whole remaining window
+  in one page (the drain default).
 - **Snapshot vs delta.** First sync (no cursor) or a UIDVALIDITY mismatch →
   **snapshot** (rediscover from UID 1, carry `present`). A matching cursor → **delta**
   of new arrivals only (UIDs at or above the cursor's `UIDNEXT`). A delta carries
@@ -71,7 +75,10 @@ CalDAV/CardDAV is the **other** step-5 slice and is not covered here.
   `INTERNALDATE` → a UTC instant (offset applied). `ENVELOPE` → subject, flattened
   addresses, and the `Message-ID`/`In-Reply-To` hints; **RFC 2047 encoded-words** in
   the subject and display names are decoded (`B`/`Q`, UTF-8/ISO-8859-1, with
-  whitespace between adjacent words dropped — `encoded_word.rs`). Folder `LIST` →
+  whitespace between adjacent words dropped — `encoded_word.rs`). A quoted string
+  carrying **raw UTF-8** (a `UTF8=ACCEPT` mailbox name, or an unencoded display name)
+  is decoded as UTF-8, not byte-cast to Latin-1 — the quoted and `{n}`-literal paths
+  agree. Folder `LIST` →
   `Mailbox` with role from the `INBOX` name or a SPECIAL-USE attribute (RFC 6154;
   note a provider may tag its Archive folder `\All`, like Gmail's "All Mail" — the
   normalizer reflects the attribute faithfully). Raw MIME is **not materialized**
@@ -80,8 +87,23 @@ CalDAV/CardDAV is the **other** step-5 slice and is not covered here.
 ## SMTP submission
 
 - **`submit_email`** runs the conversation `EHLO → [AUTH] → MAIL FROM → RCPT TO* →
-  DATA`, then files the sent copy (`CREATE Sent` idempotently, then `APPEND`). The
-  pre-generated `Message-ID` is on the message so the sent copy reconciles by it.
+  DATA`, then files the sent copy. The pre-generated `Message-ID` is on the message
+  so the sent copy reconciles by it.
+- **Message assembly (`assemble_message`)** is hardened against header injection:
+  every interpolated value (`Message-ID`, addresses, subject, display names) is
+  **rejected on CR/LF/NUL** (RFC 5322 §2.2 / RFC 5321 §2.3.8 — otherwise a poisoned
+  draft could inject headers or split the command stream), and a **non-ASCII subject
+  or display name is emitted as an RFC 2047 `B` encoded-word**, never raw 8-bit
+  bytes, so headers stay 7-bit clean. A **`Date` header is generated locally**
+  (RFC 5322 §3.6 requires it; for an IMAP `APPEND` — `save_draft` / the Sent copy —
+  no server is in the loop to add one). The body is normalized so a bare CR/LF never
+  reaches the wire. (Long encoded-words are not yet folded into 75-octet runs — a
+  later refinement.)
+- **Folder resolution.** The sent copy / draft is filed into the account's **real
+  folder for the role**, discovered via the `\Sent`/`\Drafts` SPECIAL-USE attribute
+  in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
+  only when the server advertises none does it fall back to creating the
+  conventional `Sent`/`Drafts` name. This costs one `LIST` per submission (rare path).
 - **Two transports.** `ImapConfig::with_smtp(addr)` is **plaintext, no auth** — for
   an MX that accepts local mail (the fixture's port 25). `with_smtp_tls(addr,
   server_name)` is **implicit TLS + `AUTH PLAIN`** (port 465) using the account
@@ -92,8 +114,10 @@ CalDAV/CardDAV is the **other** step-5 slice and is not covered here.
   `250` accept, a `550` reject). The message still goes to the accepted recipients;
   if none accept, it is a permanent rejection with no `DATA`.
 - **Post-`DATA` disposition.** `2xx` → delivered; `5xx` → permanent rejection;
-  `4xx` → transient (retryable — the message was not queued); a **lost
-  acknowledgement** (the connection dropping before a reply) → **ambiguous**. The
+  `4xx` → transient (retryable — the message was not queued); any **unreadable
+  acknowledgement once the message bytes are on the wire** — a dropped connection
+  *or* a malformed final reply — → **ambiguous** (never a plain transport error, so
+  an already-sent message is never reported as a clean failure). The
   ambiguous case becomes `ProviderError::needs_confirmation`, which
   `engine_sync::submit_mail` routes to `PendingOutcome::NeedsConfirmation` rather
   than `Failed` — so the outbox never blind-retries and risks a double-send
@@ -105,10 +129,11 @@ CalDAV/CardDAV is the **other** step-5 slice and is not covered here.
   → the receipt carries the real Sent key (the same key the next Sent sync
   synthesizes); without it the receipt key is `Message-ID`-derived and the copy
   reconciles when Sent is synced.
-- **`save_draft` (no SMTP).** `ImapProvider::save_draft` files a draft into Drafts
-  via the same `CREATE`-then-`APPEND` path (flagged `\Draft`), so creating a mail
-  works against any IMAP server even where SMTP submission cannot. Unlike Sent
-  placement it surfaces an `APPEND` failure (saving the draft is the whole op). The
+- **`save_draft` (no SMTP).** `ImapProvider::save_draft` files a draft into the
+  account's Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating
+  `Drafts`), flagged `\Draft`, via `APPEND` — so creating a mail works against any
+  IMAP server even where SMTP submission cannot. Unlike Sent placement it surfaces
+  an `APPEND` failure (saving the draft is the whole op). The
   `examples/imap_explore.rs` example exercises read + (opt-in) `save_draft` against
   a real provider.
 
@@ -122,7 +147,12 @@ CalDAV/CardDAV is the **other** step-5 slice and is not covered here.
   refinement.
 - **`References` not populated** (it is not an `ENVELOPE` field; a later threading
   slice). RFC 2047 decoding covers UTF-8/ISO-8859-1; other charsets fall back to a
-  UTF-8-lossy read (a full charset table is a later refinement).
+  UTF-8-lossy read (a full charset table is a later refinement). Outbound non-ASCII
+  subjects/display names are RFC 2047 `B`-encoded but **not folded** into 75-octet
+  words (a later refinement).
+- **Server literals are capped at 64 MiB.** A `{n}` larger than the cap is rejected
+  (an adversarial server cannot drive an unbounded allocation); generous for any
+  metadata response.
 - **iTIP/iMIP scheduling** is out of scope (distinct from event storage —
   `calendar-semantics.md`), as is **CalDAV/CardDAV** (the other step-5 slice).
 

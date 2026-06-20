@@ -126,11 +126,12 @@ async fn provider_is_object_safe() {
 
 #[tokio::test]
 async fn submit_over_smtp_delivers_and_files_the_sent_copy() {
-    // The IMAP side files the Sent copy: CREATE Sent, then APPEND (with APPENDUID).
+    // The IMAP side files the Sent copy: LIST resolves the real `\Sent` folder
+    // (no CREATE needed), then APPEND (with APPENDUID).
     let imap = script(&[
         GREETING,
         LOGIN_OK,
-        "a2 OK CREATE completed\r\n",
+        "* LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\na2 OK LIST done\r\n",
         "+ OK send literal\r\n",
         "a3 OK [APPENDUID 50 9] APPEND completed\r\n",
     ]);
@@ -211,7 +212,7 @@ async fn submit_falls_back_to_a_message_id_key_without_appenduid() {
     let imap = script(&[
         GREETING,
         LOGIN_OK,
-        "a2 OK CREATE completed\r\n",
+        "* LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\na2 OK LIST done\r\n",
         "+ OK\r\n",
         "a3 OK APPEND completed\r\n", // no [APPENDUID]
     ]);
@@ -235,13 +236,16 @@ async fn submit_falls_back_to_a_message_id_key_without_appenduid() {
 }
 
 #[tokio::test]
-async fn save_draft_appends_to_drafts_with_the_draft_flag() {
+async fn save_draft_creates_drafts_when_no_special_use_folder_exists() {
+    // LIST advertises no `\Drafts` folder, so the client falls back to the
+    // conventional name: CREATE "Drafts", then APPEND flagged `\Draft`.
     let imap = script(&[
         GREETING,
         LOGIN_OK,
-        "a2 OK CREATE completed\r\n",
+        "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\na2 OK LIST done\r\n",
+        "a3 OK CREATE completed\r\n",
         "+ OK send literal\r\n",
-        "a3 OK [APPENDUID 70 4] APPEND completed\r\n",
+        "a4 OK [APPENDUID 70 4] APPEND completed\r\n",
     ]);
     let (stream, recorded) = MockStream::new(imap);
     let mut conn = Connection::open(stream).await.unwrap();
@@ -252,9 +256,39 @@ async fn save_draft_appends_to_drafts_with_the_draft_flag() {
     assert_eq!(key.as_str(), "imap:v70:u4@Drafts");
 
     let sent = written(&recorded);
-    assert!(sent.contains("a2 CREATE \"Drafts\""), "{sent}");
+    assert!(sent.contains("CREATE \"Drafts\""), "{sent}");
     assert!(
         sent.contains("APPEND \"Drafts\" (\\Draft \\Seen)"),
+        "{sent}"
+    );
+}
+
+#[tokio::test]
+async fn save_draft_files_into_the_special_use_drafts_folder() {
+    // The server names its drafts folder differently and tags it `\Drafts`; the
+    // client must file into that real folder (no CREATE), not a stray "Drafts".
+    let imap = script(&[
+        GREETING,
+        LOGIN_OK,
+        "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n\
+         * LIST (\\HasNoChildren \\Drafts) \"/\" \"[Mail]/Concepten\"\r\n\
+         a2 OK LIST done\r\n",
+        "+ OK send literal\r\n",
+        "a3 OK [APPENDUID 70 4] APPEND completed\r\n",
+    ]);
+    let (stream, recorded) = MockStream::new(imap);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+
+    let key = provider.save_draft(&submit_draft()).await.unwrap();
+    assert_eq!(key.as_str(), "imap:v70:u4@[Mail]/Concepten");
+
+    let sent = written(&recorded);
+    // No stray CREATE; the resolved folder is appended to directly.
+    assert!(!sent.contains("CREATE"), "{sent}");
+    assert!(
+        sent.contains("APPEND \"[Mail]/Concepten\" (\\Draft \\Seen)"),
         "{sent}"
     );
 }
@@ -297,11 +331,12 @@ fn loopback_smtp() -> String {
 
 #[tokio::test]
 async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
-    // IMAP side files the Sent copy; SMTP side is the loopback server.
+    // IMAP side files the Sent copy (LIST resolves `\Sent`); SMTP side is the
+    // loopback server.
     let imap = script(&[
         GREETING,
         LOGIN_OK,
-        "a2 OK CREATE completed\r\n",
+        "* LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\na2 OK LIST done\r\n",
         "+ OK send literal\r\n",
         "a3 OK [APPENDUID 12 3] APPEND completed\r\n",
     ]);

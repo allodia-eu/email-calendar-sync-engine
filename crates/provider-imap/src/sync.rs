@@ -25,7 +25,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::cursor::{self, MailboxCursor};
 use crate::error::ImapResult;
 use crate::mail::message_from_fetch;
-use crate::parse::SelectData;
+use crate::parse::{FetchRow, SelectData};
 use crate::transport::Connection;
 
 /// The metadata `FETCH` items — Tier-1, all peek-safe (none sets `\Seen`).
@@ -75,18 +75,45 @@ where
         return Ok(empty_page(kind, next_cursor, total));
     }
 
-    let width = if limit == 0 {
+    // Collect up to `limit` messages, newest UID first, widening the UID window
+    // downward over gaps (expunged UIDs) so a page carries a full `limit` of
+    // *messages* — not a `limit`-wide span of UID slots that gaps could leave
+    // near-empty. `limit == 0` means "the whole remaining window in one page" (the
+    // drain default).
+    let target = if limit == 0 { usize::MAX } else { limit };
+    let chunk = if limit == 0 {
         high - low_bound + 1
     } else {
         u32::try_from(limit).unwrap_or(u32::MAX)
     };
-    let page_low = low_bound.max(high.saturating_sub(width.saturating_sub(1)));
 
-    let rows = conn
-        .uid_fetch(&format!("{page_low}:{high}"), FETCH_ITEMS)
-        .await?;
+    let mut rows: Vec<FetchRow> = Vec::new();
+    let mut window_high = high;
+    let reached_floor = loop {
+        let window_low = low_bound.max(window_high.saturating_sub(chunk.saturating_sub(1)));
+        let mut fetched = conn
+            .uid_fetch(&format!("{window_low}:{window_high}"), FETCH_ITEMS)
+            .await?;
+        rows.append(&mut fetched);
+        if window_low == low_bound {
+            break true;
+        }
+        if rows.len() >= target {
+            break false;
+        }
+        window_high = window_low - 1;
+    };
+
+    // Keep the newest `target` messages; any older overshoot is re-fetched by the
+    // next page (whose window ends strictly below the lowest kept UID, so no
+    // duplication).
+    rows.sort_unstable_by_key(|row| row.uid);
+    let overshoot = rows.len() > target;
+    let start = rows.len().saturating_sub(target);
+    let kept = &rows[start..];
+
     // `FETCH` returns ascending UID; reverse so the page renders newest-first.
-    let messages: Vec<Message> = rows
+    let messages: Vec<Message> = kept
         .iter()
         .rev()
         .map(|row| message_from_fetch(row, mailbox, uid_validity))
@@ -95,11 +122,18 @@ where
         SyncKind::Snapshot => messages.iter().map(|m| m.id.key().clone()).collect(),
         SyncKind::Delta => Vec::new(),
     };
-    // Continue while the next window still has UIDs at or above the low bound.
-    let next_page = page_low
-        .checked_sub(1)
-        .filter(|&boundary| boundary >= low_bound)
-        .map(cursor::page_token);
+
+    // There is more below this page iff we capped an overshoot or stopped before
+    // reaching the floor; the next window ends just below the lowest kept UID.
+    let more_below = overshoot || !reached_floor;
+    let next_page = if more_below {
+        kept.first()
+            .and_then(|row| row.uid.checked_sub(1))
+            .filter(|&boundary| boundary >= low_bound)
+            .map(cursor::page_token)
+    } else {
+        None
+    };
 
     Ok(SyncPage {
         kind,

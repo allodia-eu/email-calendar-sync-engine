@@ -13,6 +13,9 @@
 //! step runs after `EHLO`. STARTTLS (port 587) is a later refinement — the TLS path
 //! here is implicit TLS (the stream is already secured by the caller).
 
+use engine_core::mail::EmailAddress;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc2822;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use engine_provider::Draft;
@@ -54,33 +57,131 @@ pub(crate) struct SmtpResult {
     pub disposition: Disposition,
 }
 
-/// Assembles the RFC 5322 message bytes for `draft` (CRLF line endings).
+/// Assembles the RFC 5322 message bytes for `draft`, stamped with `date` (CRLF
+/// line endings).
 ///
 /// The caller's pre-generated `Message-ID` is set verbatim so the sent copy
-/// reconciles by it on a later sync (`store-and-sync.md`). No `Date` header is
-/// added — the submission server stamps one (the Stalwart fixture accepts a
-/// `Date`-less submission).
-pub(crate) fn assemble_message(draft: &Draft) -> Vec<u8> {
+/// reconciles by it on a later sync (`store-and-sync.md`).
+///
+/// # Errors
+///
+/// Every header-interpolated value (`Message-ID`, addresses, subject, display
+/// names) is rejected if it carries a CR, LF, or NUL — RFC 5322 §2.2 forbids those
+/// in a header field body, and allowing them would let a hostile draft inject extra
+/// headers or split the message / SMTP command stream. A non-ASCII subject or
+/// display name is emitted as an RFC 2047 `B` encoded-word, never raw 8-bit bytes,
+/// so the headers stay 7-bit clean. A `Date` header is generated from `date`
+/// (RFC 5322 §3.6 requires it; for an IMAP `APPEND` — `save_draft` or the Sent copy
+/// — no server is in the loop to add one).
+pub(crate) fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ImapResult<Vec<u8>> {
+    let message_id = reject_control("Message-ID", draft.message_id.as_str())?;
+    let from = address_field(&draft.from)?;
     let to = draft
         .to
         .iter()
-        .map(|address| address.email.as_str())
-        .collect::<Vec<_>>()
+        .map(address_field)
+        .collect::<ImapResult<Vec<_>>>()?
         .join(", ");
+    let subject = encode_header_text(reject_control("subject", &draft.subject)?);
+    let date = date
+        .format(&Rfc2822)
+        .map_err(|e| ImapError::protocol(format!("cannot format the Date header: {e}")))?;
     let headers = format!(
-        "Message-ID: <{message_id}>\r\nFrom: {from}\r\nTo: {to}\r\nSubject: {subject}\r\n\
-         MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
-        message_id = draft.message_id.as_str(),
-        from = draft.from.email,
-        subject = draft.subject,
+        "Date: {date}\r\nMessage-ID: <{message_id}>\r\nFrom: {from}\r\nTo: {to}\r\n\
+         Subject: {subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
     );
     let mut message = headers.into_bytes();
-    for line in draft.text_body.split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
+    for line in normalize_body_lines(&draft.text_body) {
         message.extend_from_slice(line.as_bytes());
         message.extend_from_slice(b"\r\n");
     }
-    message
+    Ok(message)
+}
+
+/// Rejects a header/command value carrying CR, LF, or NUL — the bytes that would
+/// inject extra headers or split the SMTP command stream (RFC 5322 §2.2 / RFC 5321
+/// §2.3.8). Returns the value unchanged when clean.
+fn reject_control<'a>(field: &str, value: &'a str) -> ImapResult<&'a str> {
+    if value
+        .bytes()
+        .any(|b| b == b'\r' || b == b'\n' || b == b'\0')
+    {
+        return Err(ImapError::protocol(format!(
+            "{field} contains a forbidden control character (CR, LF, or NUL)"
+        )));
+    }
+    Ok(value)
+}
+
+/// Formats one address as an RFC 5322 header value: `Display Name <email>` (the name
+/// quoted when ASCII, RFC 2047-encoded when not), or bare `email`. The email is
+/// rejected on CR/LF/NUL but never encoded — it goes verbatim into both the header
+/// and the SMTP `MAIL`/`RCPT` command.
+fn address_field(addr: &EmailAddress) -> ImapResult<String> {
+    let email = reject_control("address", &addr.email)?;
+    match &addr.name {
+        Some(name) => {
+            let name = encode_header_phrase(reject_control("display name", name)?);
+            Ok(format!("{name} <{email}>"))
+        }
+        None => Ok(email.to_owned()),
+    }
+}
+
+/// Whether `s` is entirely printable 7-bit ASCII (so it needs no encoding).
+fn is_ascii_printable(s: &str) -> bool {
+    s.bytes().all(|b| (0x20..0x7f).contains(&b))
+}
+
+/// Encodes unstructured header text (a subject): verbatim when printable ASCII,
+/// else an RFC 2047 `B` encoded-word.
+fn encode_header_text(text: &str) -> String {
+    if is_ascii_printable(text) {
+        text.to_owned()
+    } else {
+        encoded_word(text)
+    }
+}
+
+/// Encodes an address display-name phrase: a quoted-string when printable ASCII (so
+/// specials like `,`/`.` are safe in the phrase position), else an RFC 2047 `B`
+/// encoded-word.
+fn encode_header_phrase(name: &str) -> String {
+    if is_ascii_printable(name) {
+        let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    } else {
+        encoded_word(name)
+    }
+}
+
+/// One RFC 2047 base64 encoded-word, `=?UTF-8?B?<base64>?=`. Long values are not yet
+/// folded into 75-octet words (a later refinement); most subjects and names fit one.
+fn encoded_word(text: &str) -> String {
+    format!("=?UTF-8?B?{}?=", crate::base64::encode(text.as_bytes()))
+}
+
+/// Splits a body into lines on any of CRLF, a lone CR, or a lone LF, so a bare CR
+/// from legacy text never reaches the wire (RFC 5321/5322 forbid a bare CR or LF).
+/// Each returned line is re-emitted CRLF-terminated by the caller.
+fn normalize_body_lines(body: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut rest = body;
+    loop {
+        let Some(idx) = rest.find(['\r', '\n']) else {
+            lines.push(rest);
+            return lines;
+        };
+        lines.push(&rest[..idx]);
+        // A `\r\n` is one break; a lone `\r` or `\n` is also one.
+        let skip = if rest.as_bytes()[idx] == b'\r' && rest.as_bytes().get(idx + 1) == Some(&b'\n')
+        {
+            2
+        } else {
+            1
+        };
+        rest = &rest[idx + skip..];
+    }
 }
 
 /// Runs the SMTP conversation over `stream`, submitting `message` from `from` to
@@ -98,6 +199,13 @@ pub(crate) async fn send<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    // The envelope addresses go verbatim into `MAIL FROM`/`RCPT TO` command lines,
+    // so reject any CR/LF/NUL before they can inject a command (RFC 5321 §2.3.8).
+    reject_control("MAIL FROM address", from)?;
+    for address in to {
+        reject_control("RCPT TO address", address)?;
+    }
+
     let mut smtp = SmtpStream::new(stream);
 
     let (code, _) = smtp.read_reply().await?;
@@ -170,15 +278,14 @@ where
     }
     smtp.write_data(message).await?;
 
-    // The post-DATA reply decides delivery. A lost acknowledgement (the connection
-    // dropping before a reply) is the ambiguous case — never blind-retried.
+    // The post-DATA reply decides delivery. The message bytes are already on the
+    // wire, so ANY failure to read the acknowledgement — a dropped connection OR a
+    // malformed reply — is the ambiguous case: it may have delivered, so it must be
+    // confirmed, never blind-retried (never a plain transport error here).
     let disposition = match smtp.read_reply().await {
         Ok((code, _)) if is_success(code) => Disposition::Delivered,
         Ok((code, text)) => classify(code, text),
-        Err(ImapError::Io(_)) => {
-            Disposition::Ambiguous("post-DATA acknowledgement lost".to_owned())
-        }
-        Err(other) => return Err(other),
+        Err(_) => Disposition::Ambiguous("post-DATA acknowledgement unreadable".to_owned()),
     };
     let _ = smtp.write_line("QUIT").await;
     Ok(SmtpResult {
@@ -213,10 +320,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
         }
     }
 
-    /// Reads a (possibly multiline) reply, returning its code and joined text.
+    /// Reads a (possibly multiline) reply, returning its code and joined text. The
+    /// continuation-line count is capped so a server emitting an endless stream of
+    /// `NNN-...` lines cannot hang the submission or grow `text` without bound.
     async fn read_reply(&mut self) -> ImapResult<(u16, String)> {
+        const MAX_REPLY_LINES: usize = 256;
         let mut text = String::new();
-        loop {
+        for _ in 0..MAX_REPLY_LINES {
             let mut line = String::new();
             if self.inner.read_line(&mut line).await? == 0 {
                 return Err(ImapError::Io(std::io::Error::new(
@@ -237,6 +347,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
                 return Ok((code, text));
             }
         }
+        Err(ImapError::protocol(
+            "SMTP multiline reply exceeded the line cap",
+        ))
     }
 
     async fn write_line(&mut self, line: &str) -> ImapResult<()> {
@@ -281,32 +394,7 @@ fn auth_plain_token(user: &str, password: &str) -> String {
     creds.extend_from_slice(user.as_bytes());
     creds.push(0);
     creds.extend_from_slice(password.as_bytes());
-    base64_encode(&creds)
-}
-
-/// Standard base64 encoding (RFC 4648) with padding.
-fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let symbol = |bits: u8| char::from(ALPHABET[usize::from(bits)]);
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        out.push(symbol(b0 >> 2));
-        out.push(symbol(((b0 & 0x03) << 4) | (b1 >> 4)));
-        out.push(if chunk.len() > 1 {
-            symbol(((b1 & 0x0f) << 2) | (b2 >> 6))
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            symbol(b2 & 0x3f)
-        } else {
-            '='
-        });
-    }
-    out
+    crate::base64::encode(&creds)
 }
 
 #[cfg(test)]

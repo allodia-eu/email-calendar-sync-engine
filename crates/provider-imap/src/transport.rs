@@ -12,6 +12,12 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use crate::error::{ImapError, ImapResult};
 use crate::parse::{self, FetchRow, ListRow, SelectData};
 
+/// The largest `{n}` literal we will read into memory. A hostile or buggy server
+/// could announce an enormous literal (`* {4000000000}`); the cap bounds the
+/// allocation so adversarial input cannot exhaust memory (`north-star.md` security).
+/// Generous enough for any real metadata response (and future body fetches).
+const MAX_LITERAL: usize = 64 * 1024 * 1024;
+
 /// A connected IMAP session over a generic async byte stream.
 pub(crate) struct Connection<S> {
     inner: BufReader<S>,
@@ -80,6 +86,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 )));
             }
             if let Some(len) = trailing_literal_len(&line[before..]) {
+                if len > MAX_LITERAL {
+                    return Err(ImapError::protocol(format!(
+                        "server announced a {len}-byte literal exceeding the {MAX_LITERAL}-byte cap"
+                    )));
+                }
                 let mut literal = vec![0u8; len];
                 self.inner.read_exact(&mut literal).await?;
                 line.extend_from_slice(&literal);
@@ -148,7 +159,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// in either an untagged `* OK [..]` or the tagged completion are honored.
     pub(crate) async fn select(&mut self, mailbox: &str) -> ImapResult<SelectData> {
         let response = self.command(&format!("SELECT {}", quote(mailbox))).await?;
-        parse::parse_select(&response.all_lines())
+        parse::parse_select(&response.into_all_lines())
     }
 
     /// `UID FETCH <set> (<items>)`, returning the parsed rows.
@@ -191,8 +202,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         );
         self.inner.write_all(header.as_bytes()).await?;
         self.inner.flush().await?;
-        let line = self.read_line().await?;
-        if strip_ascii_prefix(&line, b"+ ").is_none() {
+        // The server may emit untagged responses (e.g. `* n EXISTS`) before the `+`
+        // continuation request; skip them and wait for the continuation (RFC 9051
+        // §7 allows unsolicited untagged responses at any point).
+        loop {
+            let line = self.read_line().await?;
+            if strip_ascii_prefix(&line, b"* ").is_some() {
+                continue;
+            }
+            if strip_ascii_prefix(&line, b"+ ").is_some() {
+                break;
+            }
             return Err(ImapError::protocol(format!(
                 "APPEND expected a continuation, got: {}",
                 String::from_utf8_lossy(&line).trim()
@@ -225,11 +245,11 @@ struct Response {
 }
 
 impl Response {
-    /// The untagged lines plus the completion detail, so a `[UIDVALIDITY n]`
-    /// response code in either place is seen.
-    fn all_lines(&self) -> Vec<Vec<u8>> {
-        let mut lines = self.untagged.clone();
-        lines.push(self.detail.clone().into_bytes());
+    /// The untagged lines plus the completion detail, consumed (no clone), so a
+    /// `[UIDVALIDITY n]` response code in either place is seen.
+    fn into_all_lines(self) -> Vec<Vec<u8>> {
+        let mut lines = self.untagged;
+        lines.push(self.detail.into_bytes());
         lines
     }
 }

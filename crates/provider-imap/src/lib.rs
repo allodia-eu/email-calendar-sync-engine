@@ -45,6 +45,7 @@
 //! Tier-1 metadata only: like step 4, the raw RFC 5322 body is not materialized
 //! yet (durable blob storage is a later store sub-step).
 
+mod base64;
 mod cursor;
 mod encoded_word;
 mod error;

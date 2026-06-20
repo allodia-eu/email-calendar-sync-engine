@@ -48,9 +48,10 @@ const LOGIN_OK: &str = "a1 OK LOGIN ok\r\n";
 
 #[tokio::test]
 async fn first_sync_snapshots_a_uid_window_newest_first() {
-    // 8 messages, UIDNEXT 10. With limit 3 the first window is the newest: 7:9.
-    let select = select_resp("a2", 1000, 10, 8);
-    let fetch = fetch_resp("a3", &[7, 8]); // UID 9 is a gap (UIDNEXT runs ahead)
+    // 8 messages, UIDNEXT 9 (UIDs 1..=8). With limit 3 the first window is the
+    // newest three: 6:8.
+    let select = select_resp("a2", 1000, 9, 8);
+    let fetch = fetch_resp("a3", &[6, 7, 8]);
     let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
@@ -59,19 +60,47 @@ async fn first_sync_snapshots_a_uid_window_newest_first() {
     let page = sync_page(&mut conn, &inbox(), None, None, 3).await.unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
     assert_eq!(page.total, Some(8));
-    assert_eq!(page.changed.len(), 2);
+    assert_eq!(page.changed.len(), 3);
     // Newest-first within the page.
     assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u8@INBOX");
-    assert_eq!(page.changed[1].id.as_str(), "imap:v1000:u7@INBOX");
-    assert_eq!(page.present.len(), 2);
+    assert_eq!(page.changed[2].id.as_str(), "imap:v1000:u6@INBOX");
+    assert_eq!(page.present.len(), 3);
     assert!(page.removed.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "v1000;n10");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n9");
     // The next window ends just below this one.
-    assert_eq!(page_high(page.next_page.as_ref().unwrap()), Some(6));
+    assert_eq!(page_high(page.next_page.as_ref().unwrap()), Some(5));
     // The client fetched exactly the newest window.
     assert!(
-        written(&recorded).contains("UID FETCH 7:9 (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)")
+        written(&recorded).contains("UID FETCH 6:8 (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)")
     );
+}
+
+#[tokio::test]
+async fn a_page_fills_to_the_limit_over_uid_gaps() {
+    // 8 messages but the UID space is sparse near the top: UID 9 is a gap (UIDNEXT
+    // runs ahead to 10). A limit-3 page must still return 3 *messages*, widening the
+    // window downward over the gap instead of under-filling to 2.
+    let select = select_resp("a2", 1000, 10, 8);
+    let fetch_top = fetch_resp("a3", &[7, 8]); // window 7:9 → only 7,8 (9 is a gap)
+    let fetch_next = fetch_resp("a4", &[4, 5, 6]); // widened window 4:6
+    let server = script(&[GREETING, LOGIN_OK, &select, &fetch_top, &fetch_next]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+
+    let page = sync_page(&mut conn, &inbox(), None, None, 3).await.unwrap();
+    // Filled to the limit despite the gap, newest-first.
+    assert_eq!(page.changed.len(), 3);
+    assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u8@INBOX");
+    assert_eq!(page.changed[1].id.as_str(), "imap:v1000:u7@INBOX");
+    assert_eq!(page.changed[2].id.as_str(), "imap:v1000:u6@INBOX");
+    assert_eq!(page.present.len(), 3);
+    // The next page resumes just below the lowest kept UID (6).
+    assert_eq!(page_high(page.next_page.as_ref().unwrap()), Some(5));
+    // The client widened the window: it fetched 7:9, then 4:6.
+    let sent = written(&recorded);
+    assert!(sent.contains("UID FETCH 7:9"), "{sent}");
+    assert!(sent.contains("UID FETCH 4:6"), "{sent}");
 }
 
 #[tokio::test]

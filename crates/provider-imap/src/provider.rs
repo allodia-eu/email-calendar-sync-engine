@@ -12,12 +12,13 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use engine_core::ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey};
-use engine_core::mail::{Mailbox, Message};
+use engine_core::mail::{Mailbox, MailboxRole, Message};
 use engine_core::sync::{SyncScope, SyncState, SyncUpdate};
 use engine_provider::{
     Capabilities, Draft, PageToken, Provider, ProviderError, ProviderResult, ScopeSync,
     SubmissionReceipt, SyncPage,
 };
+use time::OffsetDateTime;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -25,7 +26,7 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 
-use crate::error::ImapError;
+use crate::error::{ImapError, ImapResult};
 use crate::mail::{mailbox_from_list, message_key};
 use crate::smtp::{self, Disposition};
 use crate::sync::sync_page;
@@ -35,12 +36,14 @@ use crate::transport::Connection;
 /// so its cursor is a fixed sentinel — the store round-trips it unread.
 const FOLDER_LIST_CURSOR: &str = "imap-folders";
 
-/// How SMTP submission connects. The Stalwart fixture uses plaintext with no auth
-/// (an MX on port 25); a real provider uses implicit TLS with `AUTH PLAIN`.
+/// SMTP submission settings captured at config time: the address, and — for a
+/// real provider — the TLS server name that switches on implicit TLS + `AUTH
+/// PLAIN`. `tls_server_name` is `None` for the Stalwart fixture's plaintext MX
+/// (port 25, no auth) and `Some` for implicit TLS (port 465).
 #[derive(Clone)]
-enum SmtpConfig {
-    Plaintext { addr: String },
-    ImplicitTls { addr: String, server_name: String },
+struct SmtpSettings {
+    addr: String,
+    tls_server_name: Option<String>,
 }
 
 /// How to connect an [`ImapProvider`]: the address, the TLS server name, and
@@ -51,7 +54,7 @@ pub struct ImapConfig {
     server_name: String,
     username: String,
     password: String,
-    smtp: Option<SmtpConfig>,
+    smtp: Option<SmtpSettings>,
 }
 
 impl ImapConfig {
@@ -80,8 +83,9 @@ impl ImapConfig {
     /// capability and [`submit_email`](Provider::submit_email) is rejected.
     #[must_use]
     pub fn with_smtp(mut self, smtp_addr: impl Into<String>) -> Self {
-        self.smtp = Some(SmtpConfig::Plaintext {
+        self.smtp = Some(SmtpSettings {
             addr: smtp_addr.into(),
+            tls_server_name: None,
         });
         self
     }
@@ -97,9 +101,9 @@ impl ImapConfig {
         smtp_addr: impl Into<String>,
         server_name: impl Into<String>,
     ) -> Self {
-        self.smtp = Some(SmtpConfig::ImplicitTls {
+        self.smtp = Some(SmtpSettings {
             addr: smtp_addr.into(),
-            server_name: server_name.into(),
+            tls_server_name: Some(server_name.into()),
         });
         self
     }
@@ -115,11 +119,49 @@ impl core::fmt::Debug for ImapConfig {
     }
 }
 
-/// The folder a sent copy is filed into.
-const SENT_MAILBOX: &str = "Sent";
+/// Where a placed copy is filed. One value ties together the SPECIAL-USE role used
+/// to resolve the server's real folder, the conventional folder name to fall back
+/// to, and the fallback key prefix — so the three can never desync.
+#[derive(Clone, Copy)]
+enum Filing {
+    Sent,
+    Drafts,
+}
 
-/// The folder a saved draft is filed into.
-const DRAFTS_MAILBOX: &str = "Drafts";
+impl Filing {
+    /// The RFC 6154 SPECIAL-USE role identifying this folder on the server.
+    fn role(self) -> MailboxRole {
+        match self {
+            Self::Sent => MailboxRole::Sent,
+            Self::Drafts => MailboxRole::Drafts,
+        }
+    }
+
+    /// The conventional folder name to create and use when the server advertises no
+    /// folder with [`Self::role`].
+    fn default_folder(self) -> &'static str {
+        match self {
+            Self::Sent => "Sent",
+            Self::Drafts => "Drafts",
+        }
+    }
+
+    /// The prefix of the `Message-ID`-derived fallback key (when no UIDPLUS).
+    fn key_prefix(self) -> &'static str {
+        match self {
+            Self::Sent => "sent",
+            Self::Drafts => "draft",
+        }
+    }
+
+    /// The IMAP flags to set on the appended copy.
+    fn flags(self) -> &'static str {
+        match self {
+            Self::Sent => "\\Seen",
+            Self::Drafts => "\\Draft \\Seen",
+        }
+    }
+}
 
 /// The resolved SMTP transport a provider holds after `connect`: plaintext, or
 /// implicit TLS carrying the connector + credentials each fresh send re-dials with.
@@ -169,12 +211,12 @@ impl ImapProvider<TlsStream<TcpStream>> {
         connector: TlsConnector,
         mailbox: MailboxId,
     ) -> Result<Self, ImapError> {
-        // Clone the connector before the IMAP connect consumes it, so SMTP-over-TLS
-        // can re-dial with the host's trust policy.
+        // Resolve the SMTP sender first (cloning the connector), so SMTP-over-TLS can
+        // re-dial with the host's trust policy after the IMAP connect consumes it.
         let smtp = config
             .smtp
             .as_ref()
-            .map(|smtp| smtp.resolve(connector.clone(), config));
+            .map(|settings| resolve_smtp(settings, &connector, config));
         let tcp = TcpStream::connect(&config.addr).await?;
         let server_name = ServerName::try_from(config.server_name.clone())
             .map_err(|e| ImapError::bad(format!("invalid TLS server name: {e}")))?;
@@ -185,20 +227,24 @@ impl ImapProvider<TlsStream<TcpStream>> {
     }
 }
 
-impl SmtpConfig {
-    /// Resolves a configured transport into the sender the provider holds, carrying
-    /// the TLS connector and credentials needed for each future send.
-    fn resolve(&self, connector: TlsConnector, config: &ImapConfig) -> SmtpSender {
-        match self {
-            Self::Plaintext { addr } => SmtpSender::Plaintext { addr: addr.clone() },
-            Self::ImplicitTls { addr, server_name } => SmtpSender::ImplicitTls {
-                addr: addr.clone(),
-                server_name: server_name.clone(),
-                connector,
-                username: config.username.clone(),
-                password: config.password.clone(),
-            },
-        }
+/// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,
+/// capturing the TLS connector and credentials each future send re-dials with.
+fn resolve_smtp(
+    settings: &SmtpSettings,
+    connector: &TlsConnector,
+    config: &ImapConfig,
+) -> SmtpSender {
+    match &settings.tls_server_name {
+        None => SmtpSender::Plaintext {
+            addr: settings.addr.clone(),
+        },
+        Some(server_name) => SmtpSender::ImplicitTls {
+            addr: settings.addr.clone(),
+            server_name: server_name.clone(),
+            connector: connector.clone(),
+            username: config.username.clone(),
+            password: config.password.clone(),
+        },
     }
 }
 
@@ -337,7 +383,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     where
         W: AsyncRead + AsyncWrite + Unpin + Send,
     {
-        let message = smtp::assemble_message(draft);
+        let message = smtp::assemble_message(draft, OffsetDateTime::now_utc())?;
         let from = draft.from.email.as_str();
         let to: Vec<String> = draft
             .to
@@ -364,20 +410,45 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
             }
         }
 
-        // Best-effort Sent placement; a successful send is never failed for it.
-        // Ensure the Sent folder exists first (the fixture has none until a client
-        // creates it); an "already exists" rejection is ignored.
-        let append_uid = {
-            let mut connection = self.connection.lock().await;
-            let _ = connection.create(SENT_MAILBOX).await;
-            connection
-                .append(SENT_MAILBOX, "\\Seen", &message)
-                .await
-                .ok()
-                .flatten()
-        };
-        let email_key = placed_key(SENT_MAILBOX, "sent", append_uid, &draft.message_id);
+        // Best-effort Sent placement; a successful send is never failed for it. The
+        // Sent folder is resolved by its `\Sent` SPECIAL-USE role (falling back to
+        // the conventional "Sent"), so the copy lands in the account's real Sent
+        // folder — not a stray one on servers that name it differently.
+        let (folder, append_uid) = self
+            .append_to_role_folder(Filing::Sent, &message)
+            .await
+            .unwrap_or_else(|_| (Filing::Sent.default_folder().to_owned(), None));
+        let email_key = placed_key(
+            &folder,
+            Filing::Sent.key_prefix(),
+            append_uid,
+            &draft.message_id,
+        );
         Ok(SubmissionReceipt::new(email_key, draft.message_id.clone()))
+    }
+
+    /// Resolves the real folder for `filing` — the account's folder carrying the
+    /// matching SPECIAL-USE role, else the conventional name (created if missing) —
+    /// and APPENDs `message` flagged per `filing`, returning the folder used and the
+    /// UIDPLUS `APPENDUID` if the server supports it.
+    async fn append_to_role_folder(
+        &self,
+        filing: Filing,
+        message: &[u8],
+    ) -> ProviderResult<(String, Option<(u32, u32)>)> {
+        let mut connection = self.connection.lock().await;
+        let folder = if let Some(name) = resolve_role_folder(&mut connection, filing.role()).await?
+        {
+            name
+        } else {
+            // No folder advertises the role: fall back to the conventional name,
+            // creating it (an "already exists" rejection is ignored).
+            let name = filing.default_folder().to_owned();
+            let _ = connection.create(&name).await;
+            name
+        };
+        let append_uid = connection.append(&folder, filing.flags(), message).await?;
+        Ok((folder, append_uid))
     }
 
     /// Saves `draft` as a message in the Drafts folder via IMAP `APPEND` — no SMTP,
@@ -393,19 +464,35 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     ///
     /// Returns a classified [`ProviderError`] on a transport or `APPEND` failure.
     pub async fn save_draft(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
-        let message = smtp::assemble_message(draft);
-        let mut connection = self.connection.lock().await;
-        let _ = connection.create(DRAFTS_MAILBOX).await;
-        let append_uid = connection
-            .append(DRAFTS_MAILBOX, "\\Draft \\Seen", &message)
-            .await?;
+        let message = smtp::assemble_message(draft, OffsetDateTime::now_utc())?;
+        // Unlike Sent placement this surfaces an `APPEND` failure (saving the draft is
+        // the whole op). The Drafts folder is resolved by its `\Drafts` SPECIAL-USE
+        // role (falling back to the conventional "Drafts").
+        let (folder, append_uid) = self.append_to_role_folder(Filing::Drafts, &message).await?;
         Ok(placed_key(
-            DRAFTS_MAILBOX,
-            "draft",
+            &folder,
+            Filing::Drafts.key_prefix(),
             append_uid,
             &draft.message_id,
         ))
     }
+}
+
+/// Finds the account's folder carrying `role` (RFC 6154 SPECIAL-USE) via `LIST`;
+/// `None` when the server advertises none.
+async fn resolve_role_folder<S>(
+    connection: &mut Connection<S>,
+    role: MailboxRole,
+) -> ImapResult<Option<String>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let rows = connection.list().await?;
+    Ok(rows
+        .iter()
+        .filter_map(mailbox_from_list)
+        .find(|mailbox| mailbox.role.as_ref() == Some(&role))
+        .map(|mailbox| mailbox.name))
 }
 
 /// The key for a message just placed in `folder`: the real key from UIDPLUS

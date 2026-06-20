@@ -176,3 +176,41 @@ async fn list_returns_every_mailbox() {
     assert_eq!(rows[1].name, "Sent");
     assert!(written(&recorded).contains("a2 LIST \"\" \"*\""));
 }
+
+#[tokio::test]
+async fn a_huge_announced_literal_is_rejected_before_allocating() {
+    // A hostile server announces an enormous literal; the transport must reject it
+    // (bounding the allocation) rather than try to read ~100 MB into memory.
+    let server = script(&[
+        GREETING,
+        "a1 OK LOGIN ok\r\n",
+        "* 1 FETCH (UID 1 ENVELOPE (NIL {99999999}\r\n",
+    ]);
+    let (stream, _) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("a", "b").await.unwrap();
+
+    let err = conn.uid_fetch("1", "ENVELOPE").await.unwrap_err();
+    assert_eq!(err.failure_class(), FailureClass::Permanent);
+}
+
+#[tokio::test]
+async fn append_tolerates_an_untagged_response_before_the_continuation() {
+    // A server may interleave an unsolicited untagged response (here `* 5 EXISTS`)
+    // before the `+` continuation; APPEND must skip it, not fail.
+    let server = script(&[
+        GREETING,
+        "a1 OK LOGIN ok\r\n",
+        "* 5 EXISTS\r\n+ OK send the literal\r\n",
+        "a2 OK [APPENDUID 99 7] APPEND completed\r\n",
+    ]);
+    let (stream, _) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("a", "b").await.unwrap();
+
+    let uid = conn
+        .append("Sent", "\\Seen", b"Subject: x\r\n\r\nhi\r\n")
+        .await
+        .unwrap();
+    assert_eq!(uid, Some((99, 7)));
+}

@@ -60,6 +60,21 @@ fn list_unescapes_a_quoted_name() {
 }
 
 #[test]
+fn a_quoted_string_carrying_raw_utf8_decodes_as_utf8_not_latin1() {
+    // A server may send a display name / mailbox name as a raw-UTF-8 quoted string
+    // (RFC 6855 UTF8=ACCEPT), not an RFC 2047 encoded-word. The bytes for "Café"
+    // are C-a-f-0xC3-0xA9; a per-byte cast would yield the mojibake "CafÃ©".
+    let mut line = br#"1 FETCH (UID 1 ENVELOPE (NIL "Caf"#.to_vec();
+    line.extend_from_slice(&[0xC3, 0xA9]); // é in UTF-8
+    line.extend_from_slice(br#"" NIL NIL NIL NIL NIL NIL NIL NIL))"#);
+    let rows = parse_fetch(&[line]).unwrap();
+    assert_eq!(
+        rows[0].envelope.as_ref().unwrap().subject.as_deref(),
+        Some("Café")
+    );
+}
+
+#[test]
 fn fetch_parses_uid_flags_internaldate_size_and_envelope() {
     let line = concat!(
         r#"1 FETCH (UID 1 FLAGS (\Seen \Flagged harness) "#,

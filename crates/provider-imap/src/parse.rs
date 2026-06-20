@@ -153,18 +153,23 @@ impl<'a> Tokens<'a> {
     /// Parses a `"quoted string"`, resolving `\"` and `\\` escapes.
     fn parse_quoted(&mut self) -> ImapResult<Item> {
         self.bump(); // consume opening '"'
-        let mut out = String::new();
+        // Accumulate raw bytes and decode the whole run as UTF-8 (lossy) at the end.
+        // A per-byte `as char` cast would map each byte to a Latin-1 codepoint, so a
+        // quoted string carrying raw UTF-8 (a display name or a `UTF8=ACCEPT` mailbox
+        // name) would be mojibake — the literal path already decodes correctly, and
+        // the two must agree.
+        let mut out: Vec<u8> = Vec::new();
         loop {
             match self.bump() {
-                Some(b'"') => return Ok(Item::Quoted(out)),
+                Some(b'"') => return Ok(Item::Quoted(String::from_utf8_lossy(&out).into_owned())),
                 Some(b'\\') => match self.bump() {
-                    Some(c @ (b'"' | b'\\')) => out.push(c as char),
+                    Some(c @ (b'"' | b'\\')) => out.push(c),
                     _ => return Err(ImapError::protocol("bad escape in quoted string")),
                 },
                 Some(b'\r' | b'\n') => {
                     return Err(ImapError::protocol("CR/LF in quoted string"));
                 }
-                Some(c) => out.push(c as char),
+                Some(c) => out.push(c),
                 None => return Err(ImapError::protocol("unterminated quoted string")),
             }
         }
