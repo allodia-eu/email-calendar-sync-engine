@@ -1,0 +1,37 @@
+[package]
+name = "provider-caldav"
+description = "CalDAV (RFC 4791/6578/7986) read/sync provider adapter for the PIM sync engine: WebDAV HTTP transport + collection discovery + sync-collection REPORT, parsing iCalendar (RFC 5545) into the engine's normalized Event/Calendar projections. Implements the engine-provider contract."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-provider = { workspace = true }
+reqwest = { workspace = true }
+quick-xml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+# Exposes `fuzz_parse` for a cargo-fuzz target driving the iCalendar parser; off
+# in normal builds (mirrors `provider-jmap`).
+fuzzing = []
+
+[dev-dependencies]
+tokio = { workspace = true }
+stalwart-harness = { path = "../stalwart-harness" }
+# The gated live integration test drives the full calendar sync loop through the
+# real store, exactly like provider-jmap's live_sync.
+engine-store = { workspace = true }
+engine-search = { workspace = true }
+engine-recurrence = { workspace = true }
+engine-sync = { workspace = true }
+store-sqlite = { workspace = true }
+rustls = { workspace = true }
+
+[lints]
+workspace = true

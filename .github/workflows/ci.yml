@@ -200,6 +200,13 @@ jobs:
           STALWART_PASSWORD: harness-alice-pw
         run: cargo test -p provider-imap --all-features -- --nocapture
 
+      - name: Run the gated CalDAV provider integration tests (live)
+        env:
+          STALWART_HTTP_ADDR: 127.0.0.1:18080
+          STALWART_ACCOUNT: alice@test.local
+          STALWART_PASSWORD: harness-alice-pw
+        run: cargo test -p provider-caldav --all-features -- --nocapture
+
       - name: Dump Stalwart logs on failure
         if: failure()
         working-directory: docker/stalwart
@@ -210,6 +217,49 @@ jobs:
       - name: Tear down
         if: always()
         working-directory: docker/stalwart
+        run: docker compose down -v
+
+  # The second CalDAV protocol fixture: a SabreDAV server (the stack Soverin/
+  # Fastmail-style providers run). It validates `provider-caldav` against a
+  # different real implementation than Stalwart — two-step RFC 6764 discovery, the
+  # `http://sabre.io/ns/sync/N` sync-token form — using the same shared calendar
+  # seed. Like `stalwart`, it is the only job that sets `SABREDAV_*`, so its gated
+  # test executes only here; everywhere else it skips.
+  sabredav:
+    name: SabreDAV protocol harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: sabredav
+
+      # The image is pinned by digest and the PHP deps by composer.lock; the
+      # container self-seeds and reports healthy once the marker exists, so
+      # `--wait` returns only when the calendar fixture is ready.
+      - name: Start the SabreDAV fixture and seed it
+        working-directory: docker/sabredav
+        run: docker compose up -d --wait
+
+      - name: Run the gated SabreDAV CalDAV integration test (live)
+        env:
+          SABREDAV_HTTP_ADDR: 127.0.0.1:18081
+        run: cargo test -p provider-caldav --test live_sabredav -- --nocapture
+
+      - name: Dump SabreDAV logs on failure
+        if: failure()
+        working-directory: docker/sabredav
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        working-directory: docker/sabredav
         run: docker compose down -v
 
   coverage:
@@ -245,7 +295,7 @@ jobs:
       # offline-uncovered client `src` lines are the raw TCP+TLS `connect` glue,
       # which the live tests exercise.
       - name: Export lcov report
-        run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/'
+        run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/'
 
       # Upload to Codecov before the threshold gate below so coverage is
       # recorded even on builds that dip under the bar. `files` points at the
@@ -258,7 +308,7 @@ jobs:
           files: ./lcov.info
 
       - name: Coverage summary
-        run: cargo llvm-cov report --summary-only --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/'
+        run: cargo llvm-cov report --summary-only --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/'
 
       # Codecov (the lcov export above) is the real signal; every meaningful path is
       # tested offline. The *native* line metric reads under it for two reasons:
@@ -276,7 +326,7 @@ jobs:
       # land. Codecov remains the real signal; tighten this as native stabilizes
       # higher (e.g. once a mock TLS listener covers the dial path).
       - name: Enforce coverage threshold
-        run: cargo llvm-cov report --fail-under-lines 95 --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/'
+        run: cargo llvm-cov report --fail-under-lines 95 --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/'
 
       - name: Upload lcov report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
