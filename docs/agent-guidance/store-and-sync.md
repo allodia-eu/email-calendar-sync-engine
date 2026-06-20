@@ -41,8 +41,12 @@ is an enum, not a single id:
 - **JMAP:** state is **per account, per data type** (`Email/changes`,
   `Mailbox/changes`, `CalendarEvent/changes`, … each carry their own state
   string). There is no per-mailbox email state. Scope = `(account, JmapType)`.
-- **IMAP:** state is **per mailbox** (`UIDVALIDITY`, `UIDNEXT`, and
-  `HIGHESTMODSEQ` under CONDSTORE). Scope = `(account, MailboxKey)`.
+- **IMAP:** email state is **per mailbox** (`UIDVALIDITY`, `UIDNEXT`, and
+  `HIGHESTMODSEQ` under CONDSTORE). Scope = `(account, MailboxKey)`
+  (`ImapMailbox`). The account's **folder list** is a separate per-account
+  container scope, `ImapMailboxList{account}` — a `LIST` re-snapshots it each pass
+  (no folder-list cursor), applied before the per-mailbox email it parents
+  (`imap-smtp.md`).
 - **CalDAV/CardDAV:** state is **per collection** (RFC 6578 sync-token, or
   CTag + per-resource ETags). Scope = `(account, CollectionKey)`.
 - **SMTP** is not a sync scope. It is an outbox transport only; the outbox is
@@ -268,7 +272,7 @@ opt-in), so the same contract holds either way. A small `StoreRead` companion
 
 Supporting types (abbreviated):
 
-- `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailbox { account, mailbox }`, `DavCollection { account, collection }`.
+- `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailboxList { account }` (the IMAP folder-list container), `ImapMailbox { account, mailbox }`, `DavCollection { account, collection }`.
 - `SyncLease` / `OpLease` — opaque, store-issued; expose fencing token, bound identity, and expiry.
 - `StorableObject` — the trait domain objects implement so the store keys and persists them mechanically; `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
 - `DerivedWrite` — precomputed FTS rows, structured-filter rows (scalar index rows

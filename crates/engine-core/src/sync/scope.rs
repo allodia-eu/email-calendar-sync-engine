@@ -52,6 +52,17 @@ pub enum SyncScope {
         /// The JMAP data type.
         data_type: JmapDataType,
     },
+    /// An IMAP per-account mailbox-list (folder discovery) scope.
+    ///
+    /// IMAP carries no sync state for the folder list itself — a `LIST`
+    /// re-discovers it as a snapshot each pass — but it is a distinct **container**
+    /// scope, claimed and applied before the per-[`ImapMailbox`](Self::ImapMailbox)
+    /// email it parents (`store-and-sync.md` referential apply order). Distinct from
+    /// any single mailbox's email scope so the two never share a lease.
+    ImapMailboxList {
+        /// The account.
+        account: AccountId,
+    },
     /// An IMAP `(account, mailbox)` scope.
     ImapMailbox {
         /// The account.
@@ -74,6 +85,7 @@ impl SyncScope {
     pub fn account(&self) -> &AccountId {
         match self {
             Self::JmapType { account, .. }
+            | Self::ImapMailboxList { account }
             | Self::ImapMailbox { account, .. }
             | Self::DavCollection { account, .. } => account,
         }
@@ -118,5 +130,20 @@ mod tests {
         assert_ne!(jmap, imap);
         let json = serde_json::to_string(&jmap).unwrap();
         assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), jmap);
+    }
+
+    #[test]
+    fn imap_mailbox_list_is_distinct_from_a_mailbox_and_roundtrips() {
+        // The folder-list container scope must never collide with the email scope
+        // of any single mailbox, or the two would share one lease.
+        let list = SyncScope::ImapMailboxList { account: account() };
+        let inbox = SyncScope::ImapMailbox {
+            account: account(),
+            mailbox: MailboxId::try_from("INBOX").unwrap(),
+        };
+        assert_ne!(list, inbox);
+        assert_eq!(list.account(), &account());
+        let json = serde_json::to_string(&list).unwrap();
+        assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), list);
     }
 }

@@ -9,7 +9,9 @@ Recommended first provider spine:
 2. JMAP read/write against Stalwart. **Implemented** (step 4); `jmap.md` is
    authoritative for the client (`engine-provider`/`provider-jmap`/`engine-sync`).
    JMAP calendar *writes*/RSVP are deferred to a later slice.
-3. IMAP/SMTP + CalDAV/CardDAV against the same Stalwart fixture.
+3. IMAP/SMTP + CalDAV/CardDAV against the same Stalwart fixture. The **IMAP/SMTP
+   mail half is implemented** (step 5a); `imap-smtp.md` is authoritative for the
+   `provider-imap` client. **CalDAV/CardDAV is the remaining step-5 slice.**
 4. Optional external-provider smoke tests against real hosted or self-managed servers.
 
 If product pressure changes the order, the domain model tests still need JMAP and JSCalendar coverage before IMAP assumptions land.

@@ -29,6 +29,7 @@ pub struct ProviderError {
     class: FailureClass,
     detail: String,
     retry_after: Option<Duration>,
+    confirmation_needed: bool,
     source: Option<BoxError>,
 }
 
@@ -40,6 +41,7 @@ impl ProviderError {
             class,
             detail: detail.into(),
             retry_after: None,
+            confirmation_needed: false,
             source: None,
         }
     }
@@ -96,6 +98,21 @@ impl ProviderError {
         Self::new(FailureClass::Permanent, detail)
     }
 
+    /// The outcome is **genuinely ambiguous** and must not be blindly retried —
+    /// e.g. an SMTP send whose post-`DATA` acknowledgement was lost, which may or
+    /// may not have delivered (`providers.md`). The op is parked for confirmation
+    /// (sync reconciliation, `Message-ID` lookup, or an explicit resolve) rather
+    /// than retried. Classified [`FailureClass::InvalidState`] so it is never
+    /// plain-retryable; the outbox routes it to
+    /// [`PendingOutcome::NeedsConfirmation`](engine_core::write::PendingOutcome::NeedsConfirmation).
+    #[must_use]
+    pub fn needs_confirmation(detail: impl Into<String>) -> Self {
+        Self {
+            confirmation_needed: true,
+            ..Self::new(FailureClass::InvalidState, detail)
+        }
+    }
+
     /// Attaches the underlying protocol/transport error as the [`source`](std::error::Error::source).
     #[must_use]
     pub fn with_source(mut self, source: impl Into<BoxError>) -> Self {
@@ -131,6 +148,13 @@ impl ProviderError {
     #[must_use]
     pub fn requires_resync(&self) -> bool {
         self.class.requires_resync()
+    }
+
+    /// Whether this is an ambiguous outcome that must be confirmed rather than
+    /// retried (the outbox records it as `NeedsConfirmation`).
+    #[must_use]
+    pub fn requires_confirmation(&self) -> bool {
+        self.confirmation_needed
     }
 }
 
@@ -195,6 +219,17 @@ mod tests {
                 .retry_after()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn needs_confirmation_is_ambiguous_and_not_retryable() {
+        let err = ProviderError::needs_confirmation("post-DATA acknowledgement lost");
+        assert!(err.requires_confirmation());
+        // Ambiguity must never be plain-retried (it might have delivered).
+        assert!(!err.is_retryable());
+        assert_eq!(err.class(), FailureClass::InvalidState);
+        // An ordinary failure is not flagged for confirmation.
+        assert!(!ProviderError::permanent("550 rejected").requires_confirmation());
     }
 
     #[test]
