@@ -70,6 +70,20 @@ pub enum SyncScope {
         /// The mailbox.
         mailbox: MailboxId,
     },
+    /// A CalDAV/CardDAV per-account collection-list (calendar/address-book
+    /// discovery) scope.
+    ///
+    /// Like [`ImapMailboxList`](Self::ImapMailboxList), the collection list is
+    /// re-discovered as a snapshot each pass (a `PROPFIND` of the
+    /// calendar/address-book home), so it carries no cursor of its own — but it is
+    /// a distinct **container** scope, claimed and applied before the per-collection
+    /// [`DavCollection`](Self::DavCollection) members it parents
+    /// (`store-and-sync.md` referential apply order). Distinct from any single
+    /// collection's scope so the two never share a lease.
+    DavCollectionList {
+        /// The account.
+        account: AccountId,
+    },
     /// A CalDAV/CardDAV `(account, collection)` scope.
     DavCollection {
         /// The account.
@@ -87,6 +101,7 @@ impl SyncScope {
             Self::JmapType { account, .. }
             | Self::ImapMailboxList { account }
             | Self::ImapMailbox { account, .. }
+            | Self::DavCollectionList { account }
             | Self::DavCollection { account, .. } => account,
         }
     }
@@ -142,6 +157,22 @@ mod tests {
             mailbox: MailboxId::try_from("INBOX").unwrap(),
         };
         assert_ne!(list, inbox);
+        assert_eq!(list.account(), &account());
+        let json = serde_json::to_string(&list).unwrap();
+        assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), list);
+    }
+
+    #[test]
+    fn dav_collection_list_is_distinct_from_a_collection_and_roundtrips() {
+        // The calendar/address-book-list container scope must never collide with
+        // the events/contacts scope of any single collection, or the two would
+        // share one lease.
+        let list = SyncScope::DavCollectionList { account: account() };
+        let calendar = SyncScope::DavCollection {
+            account: account(),
+            collection: DavCollectionId::try_from("/dav/cal/alice/default/").unwrap(),
+        };
+        assert_ne!(list, calendar);
         assert_eq!(list.account(), &account());
         let json = serde_json::to_string(&list).unwrap();
         assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), list);

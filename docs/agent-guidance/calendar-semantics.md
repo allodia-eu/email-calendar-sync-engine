@@ -119,8 +119,10 @@ materializes occurrences, so time-range search matches single events too.
 
 Staged (return an error, not expanded): `BYYEARDAY`, `BYWEEKNO`, `BYSETPOS`,
 year-relative nth `BYDAY`; sub-daily frequencies; `RSCALE` (preserved, never
-expanded, per above); custom/embedded-`VTIMEZONE` zones (need the iCalendar
-parser, a later provider step); and cross-object master/override-instance
+expanded, per above); custom/embedded-`VTIMEZONE` zones (the iCalendar parser
+landed with `provider-caldav` — `caldav.md` — and an IANA `TZID` is resolved
+where present, but feeding a genuinely custom embedded `VTIMEZONE` into the
+expander is still staged); and cross-object master/override-instance
 reconciliation (the expander is a pure single-`Event` function — a recurring
 master expands its inline overrides, a standalone override-instance object
 expands to its own occurrence; deduplicating a master against sibling override

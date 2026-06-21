@@ -13,11 +13,14 @@ specifics they implement against the Stalwart fixture. Read it before touching
   return a normalized [`ScopeSync`] (a `SyncUpdate` + opaque next cursor) or one
   [`SyncPage`] at a time, expose [`Capabilities`], and classify failures with
   [`ProviderError`] over the engine-neutral `FailureClass`. The `Provider` trait is
-  **shaped by JMAP** and kept small: required `sync_mailboxes` + the **paged**
-  `sync_email_page` + `mailbox_scope`/`email_scope`; default-able `sync_email` (a
-  drain over `sync_email_page`, so an adapter implements one paged method and gets
-  both streaming and whole-fetch), `submit_email`, `sync_calendars`/`sync_events`,
-  and the calendar scope accessors (a non-JMAP provider overrides). `SyncPage` +
+  **shaped by JMAP** and kept small: only `capabilities` is required. Every
+  data-domain method is **default-able** and gated by capability, so an adapter
+  implements just the domains it serves — mail providers override `sync_mailboxes`
+  + the **paged** `sync_email_page` (plus `mailbox_scope`/`email_scope`); a
+  calendar-only provider (`provider-caldav`) overrides `sync_calendars`/
+  `sync_events` and leaves the mail methods at their unsupported defaults.
+  `sync_email` is a drain over `sync_email_page` (one paged method gets both
+  streaming and whole-fetch); `submit_email` defaults to unsupported. `SyncPage` +
   the opaque `PageToken` are the paging vocabulary. Depends only on `engine-core`;
   no network or runtime. Callers never switch on provider kind.
 - **`provider-jmap`** — the JMAP/HTTP adapter implementing `Provider`. reqwest +

@@ -9,7 +9,8 @@ alongside `providers.md` (the Provider Contract), `store-and-sync.md` (the
 apply/lease model and `SyncScope`), `jmap.md` (the precedent it mirrors), and
 `stalwart-harness.md` (the fixture).
 
-CalDAV/CardDAV is the **other** step-5 slice and is not covered here.
+CalDAV/CardDAV is the **other** step-5 slice and is not covered here; `caldav.md`
+is authoritative for the `provider-caldav` calendar client.
 
 ## The crate
 

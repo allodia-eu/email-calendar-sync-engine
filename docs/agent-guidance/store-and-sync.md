@@ -48,7 +48,12 @@ is an enum, not a single id:
   (no folder-list cursor), applied before the per-mailbox email it parents
   (`imap-smtp.md`).
 - **CalDAV/CardDAV:** state is **per collection** (RFC 6578 sync-token, or
-  CTag + per-resource ETags). Scope = `(account, CollectionKey)`.
+  CTag + per-resource ETags). Scope = `(account, CollectionKey)`
+  (`DavCollection`). The account's **collection list** (calendar/address-book
+  discovery) is a separate per-account container scope, `DavCollectionList{account}`
+  — a `PROPFIND` of the home re-snapshots it each pass (no list cursor), applied
+  before the per-collection members it parents (`caldav.md`), exactly as
+  `ImapMailboxList` parents `ImapMailbox`.
 - **SMTP** is not a sync scope. It is an outbox transport only; the outbox is
   leased per account (see below).
 
@@ -272,7 +277,7 @@ opt-in), so the same contract holds either way. A small `StoreRead` companion
 
 Supporting types (abbreviated):
 
-- `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailboxList { account }` (the IMAP folder-list container), `ImapMailbox { account, mailbox }`, `DavCollection { account, collection }`.
+- `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailboxList { account }` (the IMAP folder-list container), `ImapMailbox { account, mailbox }`, `DavCollectionList { account }` (the CalDAV/CardDAV collection-list container), `DavCollection { account, collection }`.
 - `SyncLease` / `OpLease` — opaque, store-issued; expose fencing token, bound identity, and expiry.
 - `StorableObject` — the trait domain objects implement so the store keys and persists them mechanically; `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
 - `DerivedWrite` — precomputed FTS rows, structured-filter rows (scalar index rows

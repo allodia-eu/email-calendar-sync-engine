@@ -43,6 +43,13 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # The no-verify verifier for Stalwart's self-signed test cert lives in test code
 # only (a dev-dependency), never the host store — same posture as stalwart-harness.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Pure-Rust streaming XML reader for the CalDAV/WebDAV multistatus parser
+# (`provider-caldav`). WebDAV responses are namespaced XML with CDATA-wrapped
+# calendar data and per-property status; a hardened, battle-tested reader is the
+# right tool for hostile input (calendar data is untrusted — `north-star.md`
+# security), and hand-rolling one would be a correctness/safety risk for no gain.
+# No C dependency, so it cross-compiles to mobile like the rest of the stack.
+quick-xml = "0.37"
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
@@ -52,6 +59,7 @@ engine-recurrence = { path = "crates/engine-recurrence" }
 engine-provider = { path = "crates/engine-provider" }
 provider-jmap = { path = "crates/provider-jmap" }
 provider-imap = { path = "crates/provider-imap" }
+provider-caldav = { path = "crates/provider-caldav" }
 engine-sync = { path = "crates/engine-sync" }
 store-sqlite = { path = "crates/store-sqlite" }
 

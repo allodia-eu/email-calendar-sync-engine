@@ -1,0 +1,26 @@
+# Deterministic SabreDAV CalDAV fixture for provider-caldav tests — the second
+# protocol fixture beside Stalwart (docker/stalwart/). It reuses the shared
+# calendar seed (hence build context `..` = docker/) so one dataset validates both
+# servers. Host port 18081 avoids clashing with Stalwart's 18080. See README.md.
+services:
+  sabredav:
+    build:
+      context: ..
+      dockerfile: sabredav/Dockerfile
+    container_name: pim-sabredav-harness
+    environment:
+      # Throwaway harness credentials, committed on purpose. Never real data.
+      HARNESS_USER: "alice@test.local"
+      HARNESS_PASS: "sabredav-alice-pw"
+    ports:
+      # Loopback-only, high port. CalDAV over plaintext HTTP.
+      - "127.0.0.1:18081:8080"
+    healthcheck:
+      # Healthy once seeding wrote its marker AND the server answers the
+      # (auth-free) well-known redirect — real readiness, not a sleep.
+      test:
+        - CMD-SHELL
+        - test -f /app/data/.sabredav-ready && curl -fsS -o /dev/null http://127.0.0.1:8080/.well-known/caldav
+      interval: 3s
+      timeout: 5s
+      retries: 40
