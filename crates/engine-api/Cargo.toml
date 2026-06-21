@@ -14,10 +14,14 @@ engine-provider = { workspace = true }
 engine-recurrence = { workspace = true }
 store-sqlite = { workspace = true }
 thiserror = { workspace = true }
-time = { workspace = true }
+# `OffsetDateTime::now_utc` needs time's `std` feature; require it explicitly so the
+# crate keeps compiling even if the workspace dep ever turns default features off.
+time = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
-tokio = { workspace = true }
+# `sync` adds tokio::sync::oneshot, used to deterministically interleave two syncs
+# in the concurrent-scope (ApiError::Busy) test.
+tokio = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
 tempfile = { workspace = true }
 

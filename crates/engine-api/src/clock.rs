@@ -14,11 +14,13 @@ use time::OffsetDateTime;
 ///
 /// Resolution is whole seconds: [`UtcDateTime`] is rebuilt from civil components,
 /// and sub-second precision is irrelevant to lease liveness (TTLs run seconds to
-/// minutes) and to the strict `expiry > now` comparison the store makes. Truncation
-/// never moves the clock backwards across a second boundary, so lease ordering
-/// holds.
+/// minutes) and to the strict `expiry > now` comparison the store makes. This is a
+/// wall clock, so it is **not** monotonic — an NTP or manual adjustment can step it
+/// backwards; lease safety across such a step rests on the TTL plus the `StaleLease`
+/// re-claim in the sync loop (`store-and-sync.md`), not on any ordering guarantee
+/// from this clock.
 #[derive(Debug)]
-pub struct SystemClock;
+pub(crate) struct SystemClock;
 
 impl Clock for SystemClock {
     fn now(&self) -> UtcDateTime {
@@ -40,13 +42,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn now_is_recent_and_does_not_run_backwards() {
-        let clock = SystemClock;
-        let first = clock.now();
-        // The engine was written well after 2024; any sane wall clock is past it.
-        assert!(first.year() >= 2024, "implausible clock: {first}");
-        // Whole-second resolution: successive reads never decrease.
-        assert!(clock.now() >= first);
+    fn now_is_a_plausible_recent_instant() {
+        // A wall clock is not monotonic (NTP can step it), so we assert only that it
+        // reads as a sane recent instant — not that successive reads increase.
+        let now = SystemClock.now();
+        assert!(now.year() >= 2024, "implausible clock: {now}");
         // The Debug form names the type (and exercises the derive).
         assert_eq!(format!("{SystemClock:?}"), "SystemClock");
     }

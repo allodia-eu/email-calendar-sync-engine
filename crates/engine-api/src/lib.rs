@@ -5,7 +5,7 @@
 //! `engine-store`, `engine-sync`, the providers, and a clock together itself. The
 //! facade owns that composition: an [`Engine`] holds one durable
 //! [`SqliteStore`](store_sqlite::SqliteStore) (the first store; other backends are
-//! host adapters) driven by the host wall clock ([`SystemClock`]), and exposes
+//! host adapters) driven by the host wall clock (`SystemClock`), and exposes
 //! high-level operations over it.
 //!
 //! # Scope of this slice
@@ -36,7 +36,6 @@ mod engine;
 use engine_store::StoreError;
 use engine_sync::SyncError;
 
-pub use clock::SystemClock;
 pub use engine::Engine;
 
 // Re-exports of the types this facade's signatures mention, so hosts depend on
@@ -49,9 +48,11 @@ pub use engine_sync::{CalendarSyncReport, MailSyncReport};
 
 /// An error from an [`Engine`] operation.
 ///
-/// Each variant wraps the underlying engine error unchanged, so the original
-/// `source()` chain (provider failure class, store backend detail) stays
-/// inspectable.
+/// [`Store`](ApiError::Store) and [`Sync`](ApiError::Sync) wrap the underlying
+/// engine error unchanged, so the original `source()` chain (provider failure
+/// class, store backend detail) stays inspectable. [`Busy`](ApiError::Busy) is
+/// split out from a sync failure so a host can tell a benign scope-contention race
+/// — safe to retry — from a real error.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ApiError {
@@ -60,5 +61,11 @@ pub enum ApiError {
     Store(#[from] StoreError),
     /// A sync cycle failed: a provider fetch or the store apply.
     #[error("sync error: {0}")]
-    Sync(#[from] SyncError),
+    Sync(#[source] SyncError),
+    /// Another sync already holds this account's scope; the call did nothing and
+    /// can be retried once the in-flight sync finishes. Raised when a concurrent
+    /// sync of the same `(account, scope)` makes the store return the retryable
+    /// `ScopeHeld` — the sync loop surfaces it rather than waiting for the lease.
+    #[error("scope is busy: another sync is in progress; retry shortly")]
+    Busy,
 }

@@ -1,11 +1,16 @@
-//! End-to-end facade tests: a host opens an [`Engine`] and syncs an account's
-//! mail and calendar through a [`Provider`], exactly as a real host would. The
-//! returned sync reports are the verification surface (search lands in a later
-//! slice), and a failing provider must surface as [`ApiError::Sync`].
+//! End-to-end facade tests: a host opens an [`Engine`] and syncs an account's mail
+//! and calendar through a [`Provider`], exactly as a real host would.
+//!
+//! The fake is **cursor-aware** — a full snapshot on the first sync of a scope, a
+//! delta once a cursor exists — so the tests can assert real sync semantics from
+//! the returned reports (search, the other read surface, lands in a later slice):
+//! a snapshot upserts, a resync from a *persisted* cursor is an empty delta, and a
+//! delta that drops a key tombstones it. Failures surface as [`ApiError`], and two
+//! concurrent syncs of one scope resolve to [`ApiError::Busy`], not corruption.
 
 use engine_api::{AccountId, ApiError, Engine, Horizon, TimeZoneId};
 use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::{CalendarId, EventId, MailboxId, MessageId, Uid};
+use engine_core::ids::{CalendarId, EventId, MailboxId, MessageId, ProviderKey, Uid};
 use engine_core::mail::{Mailbox, MailboxRole, Message};
 use engine_core::membership::Memberships;
 use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
@@ -13,9 +18,11 @@ use engine_core::time::{CalendarDateTime, LocalDateTime};
 use engine_provider::{
     Capabilities, PageToken, Provider, ProviderError, ProviderResult, ScopeSync, SyncKind, SyncPage,
 };
+use tokio::sync::oneshot;
 
-/// A minimal in-memory JMAP-shaped provider: a snapshot on the first sync of each
-/// scope, configurable to fail its mail fetch.
+/// A minimal in-memory JMAP-shaped provider: a full snapshot on the first sync of a
+/// scope (cursor `None`) and a delta afterwards. Configurable to fail its container
+/// (mailbox/calendar) fetch, and to drop mail keys on a cursored resync.
 struct FakeProvider {
     caps: Capabilities,
     mailboxes: Vec<Mailbox>,
@@ -23,6 +30,7 @@ struct FakeProvider {
     calendars: Vec<Calendar>,
     events: Vec<Event>,
     fail: bool,
+    removed_on_resync: Vec<ProviderKey>,
 }
 
 impl FakeProvider {
@@ -40,6 +48,7 @@ impl FakeProvider {
             calendars: vec![calendar("work", "Work")],
             events: vec![event("evt-1", "uid-1@h", "work")],
             fail: false,
+            removed_on_resync: Vec::new(),
         }
     }
 
@@ -48,6 +57,12 @@ impl FakeProvider {
             fail: true,
             ..Self::new()
         }
+    }
+
+    /// On the next cursored resync, the email scope's delta drops `keys`.
+    fn removing_on_resync(mut self, keys: Vec<ProviderKey>) -> Self {
+        self.removed_on_resync = keys;
+        self
     }
 }
 
@@ -74,10 +89,16 @@ impl Provider for FakeProvider {
     async fn sync_mailboxes(
         &self,
         _account: &AccountId,
-        _cursor: Option<&SyncState>,
+        cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
         if self.fail {
             return Err(ProviderError::retryable("provider is offline"));
+        }
+        if cursor.is_some() {
+            return Ok(ScopeSync::new(
+                SyncUpdate::delta(Vec::new(), Vec::new()),
+                SyncState::new("mbox-2"),
+            ));
         }
         let present = self.mailboxes.iter().map(|m| m.id.key().clone()).collect();
         Ok(ScopeSync::new(
@@ -89,10 +110,22 @@ impl Provider for FakeProvider {
     async fn sync_email_page(
         &self,
         _account: &AccountId,
-        _cursor: Option<&SyncState>,
+        cursor: Option<&SyncState>,
         _page: Option<&PageToken>,
         _limit: usize,
     ) -> ProviderResult<SyncPage<Message>> {
+        if cursor.is_some() {
+            // A cursored resync: a delta that adds nothing and drops any configured keys.
+            return Ok(SyncPage {
+                kind: SyncKind::Delta,
+                changed: Vec::new(),
+                removed: self.removed_on_resync.clone(),
+                present: Vec::new(),
+                next_page: None,
+                next_cursor: SyncState::new("email-2"),
+                total: None,
+            });
+        }
         let present = self.messages.iter().map(|m| m.id.key().clone()).collect();
         Ok(SyncPage {
             kind: SyncKind::Snapshot,
@@ -108,10 +141,16 @@ impl Provider for FakeProvider {
     async fn sync_calendars(
         &self,
         _account: &AccountId,
-        _cursor: Option<&SyncState>,
+        cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Calendar>> {
         if self.fail {
             return Err(ProviderError::retryable("provider is offline"));
+        }
+        if cursor.is_some() {
+            return Ok(ScopeSync::new(
+                SyncUpdate::delta(Vec::new(), Vec::new()),
+                SyncState::new("cal-2"),
+            ));
         }
         let present = self.calendars.iter().map(|c| c.id.key().clone()).collect();
         Ok(ScopeSync::new(
@@ -123,13 +162,73 @@ impl Provider for FakeProvider {
     async fn sync_events(
         &self,
         _account: &AccountId,
-        _cursor: Option<&SyncState>,
+        cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
+        if cursor.is_some() {
+            return Ok(ScopeSync::new(
+                SyncUpdate::delta(Vec::new(), Vec::new()),
+                SyncState::new("evt-cursor-2"),
+            ));
+        }
         let present = self.events.iter().map(|e| e.id.key().clone()).collect();
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(self.events.clone(), present),
-            SyncState::new("evt-1"),
+            SyncState::new("evt-cursor-1"),
         ))
+    }
+}
+
+/// Wraps a [`FakeProvider`] and, inside `sync_mailboxes` (i.e. while the mailbox
+/// scope's lease is held), signals `on_claim` then blocks on `until_release` — so a
+/// test can deterministically hold a live lease while a second sync races for it.
+struct GateProvider {
+    inner: FakeProvider,
+    on_claim: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+    until_release: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for GateProvider {
+    fn capabilities(&self) -> &Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
+        self.inner.mailbox_scope(account)
+    }
+
+    fn email_scope(&self, account: &AccountId) -> SyncScope {
+        self.inner.email_scope(account)
+    }
+
+    async fn sync_mailboxes(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Mailbox>> {
+        // The lease is claimed and held by the time the fetch runs: announce it, then
+        // park here (still holding it) until the racer has had its turn. Guards are
+        // dropped before the await so the future stays `Send`.
+        if let Some(tx) = self.on_claim.lock().expect("gate mutex").take() {
+            let _ = tx.send(());
+        }
+        let release = self.until_release.lock().expect("gate mutex").take();
+        if let Some(rx) = release {
+            let _ = rx.await;
+        }
+        self.inner.sync_mailboxes(account, cursor).await
+    }
+
+    async fn sync_email_page(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+        page: Option<&PageToken>,
+        limit: usize,
+    ) -> ProviderResult<SyncPage<Message>> {
+        self.inner
+            .sync_email_page(account, cursor, page, limit)
+            .await
     }
 }
 
@@ -180,8 +279,10 @@ async fn syncs_mail_from_a_provider() {
         .sync_mail(&FakeProvider::new(), &account())
         .await
         .unwrap();
+    // First sync is a snapshot: both containers and both members are upserted.
     assert_eq!(report.mailboxes.upserted, 2);
     assert_eq!(report.email.upserted, 2);
+    assert_eq!(report.email.tombstoned, 0);
 }
 
 #[tokio::test]
@@ -197,25 +298,70 @@ async fn syncs_calendar_from_a_provider() {
 }
 
 #[tokio::test]
-async fn file_backed_engine_persists_across_reopen() {
+async fn reopen_resumes_mail_from_the_persisted_cursor() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("engine.sqlite");
 
     let first = Engine::open(&db).unwrap();
-    first
+    let initial = first
         .sync_mail(&FakeProvider::new(), &account())
         .await
         .unwrap();
+    assert_eq!(initial.email.upserted, 2); // first sync is a snapshot
     drop(first);
 
-    // Re-opening the same file re-runs migrations cleanly over the existing
-    // database and syncs again against the stored cursor.
+    // Reopen and sync again. Because the cursor persisted, the fake is asked for a
+    // *delta* and returns an empty one — so nothing is upserted. On a fresh/lost DB
+    // there would be no cursor, the fake would return a snapshot, and upserted would
+    // be 2. Asserting 0 is therefore a real persistence check, not a re-apply count.
     let reopened = Engine::open(&db).unwrap();
-    let report = reopened
+    let resumed = reopened
         .sync_mail(&FakeProvider::new(), &account())
         .await
         .unwrap();
-    assert_eq!(report.email.upserted, 2);
+    assert_eq!(resumed.email.upserted, 0);
+    assert_eq!(resumed.email.tombstoned, 0);
+}
+
+#[tokio::test]
+async fn reopen_resumes_calendar_from_the_persisted_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("engine.sqlite");
+    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+
+    let first = Engine::open(&db).unwrap();
+    let initial = first
+        .sync_calendar(&FakeProvider::new(), &account(), horizon(), &zone)
+        .await
+        .unwrap();
+    assert_eq!(initial.events.upserted, 1);
+    drop(first);
+
+    // Same persistence check for the on-disk calendar/event/occurrence path: the
+    // resumed sync is an empty delta off the persisted cursor.
+    let reopened = Engine::open(&db).unwrap();
+    let resumed = reopened
+        .sync_calendar(&FakeProvider::new(), &account(), horizon(), &zone)
+        .await
+        .unwrap();
+    assert_eq!(resumed.events.upserted, 0);
+}
+
+#[tokio::test]
+async fn resync_tombstones_mail_dropped_from_the_delta() {
+    let engine = Engine::open_in_memory().unwrap();
+    // m1's stored key is its MessageId's provider key — recompute it from the same id.
+    let dropped = message("m1", "a", "Quarterly report").id.key().clone();
+    let provider = FakeProvider::new().removing_on_resync(vec![dropped]);
+
+    let initial = engine.sync_mail(&provider, &account()).await.unwrap();
+    assert_eq!(initial.email.upserted, 2);
+
+    // The cursor now exists, so the second sync is a delta that drops m1: it must be
+    // tombstoned, with nothing upserted.
+    let resync = engine.sync_mail(&provider, &account()).await.unwrap();
+    assert_eq!(resync.email.tombstoned, 1);
+    assert_eq!(resync.email.upserted, 0);
 }
 
 #[tokio::test]
@@ -237,6 +383,41 @@ async fn calendar_provider_failure_surfaces_as_a_sync_error() {
         .await
         .unwrap_err();
     assert!(matches!(err, ApiError::Sync(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn concurrent_same_scope_sync_reports_busy() {
+    let engine = Engine::open_in_memory().unwrap();
+    let acct = account();
+    let (claim_tx, claim_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let gate = GateProvider {
+        inner: FakeProvider::new(),
+        on_claim: std::sync::Mutex::new(Some(claim_tx)),
+        until_release: std::sync::Mutex::new(Some(release_rx)),
+    };
+
+    // The gated sync claims the mailbox scope and parks (lease held) until released.
+    let held = engine.sync_mail(&gate, &acct);
+    // The racer waits until the lease is held, then attempts the same scope.
+    let racer = async {
+        claim_rx.await.expect("first sync should claim the scope");
+        let outcome = engine.sync_mail(&FakeProvider::new(), &acct).await;
+        release_tx.send(()).expect("first sync still parked");
+        outcome
+    };
+
+    let (held_result, racer_result) = tokio::join!(held, racer);
+    held_result.expect("the lease holder completes once released");
+
+    // The racer found the scope's lease live -> retryable ScopeHeld -> ApiError::Busy,
+    // not an opaque sync error.
+    let err = racer_result.expect_err("the racer must lose the scope race");
+    assert!(matches!(err, ApiError::Busy), "got {err:?}");
+    assert_eq!(
+        err.to_string(),
+        "scope is busy: another sync is in progress; retry shortly"
+    );
 }
 
 #[tokio::test]

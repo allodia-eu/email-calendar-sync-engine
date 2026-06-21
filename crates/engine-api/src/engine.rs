@@ -7,8 +7,8 @@ use engine_core::ids::AccountId;
 use engine_core::time::TimeZoneId;
 use engine_provider::Provider;
 use engine_recurrence::Horizon;
-use engine_store::WorkerId;
-use engine_sync::{CalendarSyncReport, MailSyncReport, sync_calendar, sync_mail};
+use engine_store::{StoreError, WorkerId};
+use engine_sync::{CalendarSyncReport, MailSyncReport, SyncError, sync_calendar, sync_mail};
 use store_sqlite::SqliteStore;
 
 use crate::ApiError;
@@ -32,10 +32,15 @@ const LEASE_TTL: Duration = Duration::from_mins(5);
 /// The stable, host-facing entry point to the engine (`north-star.md`).
 ///
 /// An `Engine` owns one durable [`SqliteStore`] — the first store; other backends
-/// are host adapters — driven by the host wall clock ([`SystemClock`]). Hosts sync
-/// accounts through this one facade rather than wiring the engine crates
-/// themselves; search, the write/outbox surface, and the language bindings are
-/// follow-up slices.
+/// are host adapters — driven by the host wall clock. Hosts sync accounts through
+/// this one facade rather than wiring the engine crates themselves; search, the
+/// write/outbox surface, and the language bindings are follow-up slices.
+///
+/// `Engine` is `Send + Sync`; a host shares one across tasks as `Arc<Engine>`.
+/// Concurrent syncs of *different* scopes proceed in parallel, but two concurrent
+/// syncs of the *same* `(account, scope)` cannot both hold its lease — the loser
+/// gets [`ApiError::Busy`] (it did nothing; retry once the other finishes) rather
+/// than corrupting state.
 #[derive(Debug)]
 pub struct Engine {
     store: SqliteStore<SystemClock>,
@@ -72,14 +77,17 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Sync`] if the provider fetch fails or the store rejects
+    /// Returns [`ApiError::Busy`] if another sync already holds this account's mail
+    /// scope, or [`ApiError::Sync`] if the provider fetch fails or the store rejects
     /// the apply.
     pub async fn sync_mail<P: Provider>(
         &self,
         provider: &P,
         account: &AccountId,
     ) -> Result<MailSyncReport, ApiError> {
-        Ok(sync_mail(provider, &self.store, account, worker(), LEASE_TTL).await?)
+        sync_mail(provider, &self.store, account, worker(), LEASE_TTL)
+            .await
+            .map_err(map_sync_error)
     }
 
     /// Syncs one account's calendars from `provider`: calendar containers first,
@@ -89,8 +97,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Sync`] if the provider fetch fails or the store rejects
-    /// the apply.
+    /// Returns [`ApiError::Busy`] if another sync already holds this account's
+    /// calendar scope, or [`ApiError::Sync`] if the provider fetch fails or the
+    /// store rejects the apply.
     pub async fn sync_calendar<P: Provider>(
         &self,
         provider: &P,
@@ -98,7 +107,7 @@ impl Engine {
         horizon: Horizon,
         host_zone: &TimeZoneId,
     ) -> Result<CalendarSyncReport, ApiError> {
-        Ok(sync_calendar(
+        sync_calendar(
             provider,
             &self.store,
             account,
@@ -107,11 +116,24 @@ impl Engine {
             horizon,
             host_zone,
         )
-        .await?)
+        .await
+        .map_err(map_sync_error)
     }
 }
 
 /// The lease owner identity this engine stamps (see [`WORKER`]).
 fn worker() -> WorkerId {
     WorkerId::new(WORKER)
+}
+
+/// Translates a sync failure into an [`ApiError`], splitting the benign
+/// scope-contention race out as [`ApiError::Busy`]. A concurrent sync of the same
+/// `(account, scope)` makes the store return the retryable [`StoreError::ScopeHeld`];
+/// the sync loop surfaces it rather than waiting for the live lease, so the facade
+/// reports it as `Busy` — distinct from a real failure a host should not retry.
+fn map_sync_error(err: SyncError) -> ApiError {
+    match err {
+        SyncError::Store(StoreError::ScopeHeld) => ApiError::Busy,
+        other => ApiError::Sync(other),
+    }
 }

@@ -36,8 +36,12 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   deterministic tests and never reads wall-clock time itself; the engine's time
   source stays one injected seam. `engine-api` supplies the real one
   (`SystemClock`, built from `time::OffsetDateTime::now_utc()`, whole-second
-  resolution — enough for lease liveness). Keep new real-world I/O seams (clock,
-  later: network policy, blob roots) on this side of the boundary.
+  resolution — enough for lease liveness; it is a wall clock, so cross-step
+  ordering rests on the TTL + `StaleLease` reclaim, not on the clock). It is
+  crate-internal (`pub(crate)`) for now — nothing public accepts a clock — and
+  becomes public when a clock-injection constructor lands (see deferred seams
+  below). Keep new real-world I/O seams (clock, later: network policy, blob roots)
+  on this side of the boundary.
 - **Generic over `Provider`.** `sync_*` take `&impl Provider`, so the facade is
   provider-agnostic and a host passes a `provider-jmap` / `provider-imap` /
   `provider-caldav` adapter. (The `engine-sync` free functions are generic over
@@ -45,12 +49,27 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `Box<dyn Provider>` cannot call these yet. If/when a binding needs dynamic
   dispatch across providers, add a blanket `impl Provider for Box<dyn Provider>` in
   `engine-provider` as its own slice — do not special-case it in `engine-api`.)
-- **One logical writer.** An `Engine` stamps a fixed `WorkerId` ("engine-api") on
-  its leases; the fencing token (not the id) serializes a suspended-then-resumed
-  worker against itself (`store-and-sync.md`). Distinct-per-device worker
-  identities for a genuinely multi-writer account are a later, host-configured
-  slice. The lease TTL is a generous safety bound (`LEASE_TTL`), not a deadline —
-  the sync loop re-claims and recomputes on `StaleLease`.
+- **Host-config is hardcoded in this slice, by design (deferred seams).** An
+  `Engine` stamps a fixed `WorkerId` (`"engine-api"`), uses a fixed `LEASE_TTL`
+  (5 min — a generous safety bound, not a deadline; the sync loop re-claims and
+  recomputes on `StaleLease`), and constructs its own `SystemClock`. The durable
+  docs describe all three as host-controlled seams — host-assigned worker identity,
+  a *"TTL (host-tunable via the injected clock)"* (`store-and-sync.md`), and an
+  *"injectable clock/time source"* (`north-star.md`) — and the engine layers below
+  honor them; the **facade just does not expose them yet**. Host-supplied worker id
+  (for multi-device lease attribution), host-tunable TTL, and clock injection (for
+  deterministic facade tests) are deferred to a later slice; threading them through
+  `open()`/`sync_*` then is an additive change. Until then, fencing tokens (not the
+  worker id) still serialize writers correctly.
+- **Concurrent same-scope syncs resolve to `Busy`, not corruption.** `Engine` is
+  `Send + Sync`; share one as `Arc<Engine>`. Two syncs of *different* scopes run in
+  parallel, but two of the *same* `(account, scope)` cannot both hold its lease: the
+  store returns the retryable `ScopeHeld`, the sync loop surfaces it (it recovers
+  only `StaleLease`), and the facade maps it to `ApiError::Busy` — a distinct,
+  retryable signal separate from `ApiError::Sync`. The facade does **not** itself
+  queue or auto-retry; a host serializes per account or retries on `Busy`. If a
+  future slice wants transparent serialization, add a per-account async lock in the
+  facade — do not widen `run_scope` to swallow `ScopeHeld`.
 - **Re-export signature types.** Types that appear in the facade's own signatures
   (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`) are
   re-exported so a host depends on `engine-api` alone. The concrete provider still
@@ -90,23 +109,38 @@ facade"*).
 - **Keep it a thin composition.** If a method grows real logic, that logic
   probably belongs in `engine-sync`/`engine-search`/`engine-core` with a test
   there; the facade just calls it.
-- **Errors wrap, never restring.** `ApiError` variants carry the underlying engine
-  error unchanged so its `source()` chain (provider failure class, store backend
-  detail) stays inspectable.
-- **Real clock stays whole-second and forward-only.** Lease ordering depends on
-  `now()` never moving backwards across a second boundary; do not "optimize" it
-  into something that can.
+- **Errors wrap, never restring.** `ApiError::Store`/`Sync` carry the underlying
+  engine error unchanged so its `source()` chain (provider failure class, store
+  backend detail) stays inspectable. The one deliberate exception is `ScopeHeld`,
+  which `map_sync_error` classifies as `ApiError::Busy` (a retryable race, not a
+  failure) — classification, not restringing. Add similar classifications there if
+  another error class deserves a distinct host signal.
+- **The clock is a wall clock, not monotonic.** `now()` is whole-second and can
+  step backward (NTP); do not write code or tests that assume monotonic `now()`.
+  Lease safety across a step rests on the TTL + `StaleLease` reclaim in the sync
+  loop, not on the clock.
 
 ## Verification
 
 The crate's deterministic tests cover it without the Stalwart harness: an
-end-to-end `tests/sync.rs` opens an `Engine` and syncs mail+calendar through a fake
-`Provider` (the same way a host would), asserts the sync reports, and checks that a
-provider failure surfaces as `ApiError::Sync` and a bad path as `ApiError::Store`.
-Run the standard gate (`AGENTS.md`): `cargo fmt --check`, `cargo clippy --workspace
---all-targets --all-features -- -D warnings`, `cargo test --workspace
---all-features`, `cargo doc`. `engine-api`'s own lines are 100%-covered by these
-tests (no live provider needed).
+end-to-end `tests/sync.rs` opens an `Engine` and syncs mail+calendar through a
+**cursor-aware** fake `Provider` (snapshot first, delta after), the same way a host
+would. From the returned reports it asserts: a first snapshot upserts; a resync
+after reopening a file-backed store is an *empty delta* (proving the cursor — and
+data — persisted, since a lost store would re-snapshot and upsert); a delta that
+drops a key tombstones it; a provider failure surfaces as `ApiError::Sync` and a
+bad path as `ApiError::Store`; and two concurrent syncs of one scope resolve to
+`ApiError::Busy` (a `tokio::sync::oneshot` gate holds one sync's lease while the
+other races, deterministically — no timing). Run the standard gate (`AGENTS.md`):
+`cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
+warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own
+lines are 100%-covered by these tests (no live provider needed).
+
+The fake `Provider` and object builders in `tests/sync.rs` are a third copy of a
+pattern `engine-sync` and `engine-provider` also hand-roll as crate-private test
+code. Promoting one shared fake + builders behind a `test-support` feature/module
+(so the `Provider` trait has a single fake to update) is a worthwhile follow-up,
+deferred here to avoid refactoring three crates' tests in this slice.
 
 [`Engine`]: ../../crates/engine-api/src/engine.rs
 [`SystemClock`]: ../../crates/engine-api/src/clock.rs
