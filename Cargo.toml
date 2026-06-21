@@ -54,6 +54,7 @@ provider-jmap = { path = "crates/provider-jmap" }
 provider-imap = { path = "crates/provider-imap" }
 engine-sync = { path = "crates/engine-sync" }
 store-sqlite = { path = "crates/store-sqlite" }
+engine-api = { path = "crates/engine-api" }
 
 # Strict, workspace-wide lint policy (AGENTS.md / rust.md). Member crates inherit
 # via `[lints] workspace = true`. Verification runs clippy with `-D warnings`, so
