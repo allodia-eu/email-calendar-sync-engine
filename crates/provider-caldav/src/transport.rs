@@ -43,13 +43,17 @@ impl core::fmt::Debug for Credentials {
     }
 }
 
-/// The WebDAV methods this read adapter issues.
+/// The WebDAV methods this adapter issues — the read reports plus the write verbs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DavMethod {
     /// `PROPFIND` (RFC 4918 §9.1).
     Propfind,
     /// `REPORT` (RFC 3253 §3.6; CalDAV/RFC 6578 reports).
     Report,
+    /// `PUT` (RFC 4791 §5.3.2) — create or replace a calendar object resource.
+    Put,
+    /// `DELETE` (RFC 4918 §9.6) — remove a calendar object resource.
+    Delete,
 }
 
 impl DavMethod {
@@ -58,12 +62,44 @@ impl DavMethod {
         match self {
             Self::Propfind => "PROPFIND",
             Self::Report => "REPORT",
+            Self::Put => "PUT",
+            Self::Delete => "DELETE",
         }
     }
 }
 
+/// The conditional precondition guarding a write (RFC 7232; RFC 4791 §5.3.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Precondition {
+    /// `If-None-Match: *` — the resource must not already exist (a create).
+    IfNoneMatch,
+    /// `If-Match: <etag>` — the resource must still carry this entity tag (a
+    /// guarded update or delete).
+    IfMatch(String),
+    /// No conditional header (an unconditional write).
+    None,
+}
+
+/// A WebDAV write request (`PUT`/`DELETE`): the verb, target href, optional typed
+/// body, and the conditional precondition. Distinct from the read [`DavExecutor::send`]
+/// shape (Depth + XML), so the proven read path is untouched.
+#[derive(Debug, Clone)]
+pub(crate) struct WriteRequest {
+    /// `PUT` or `DELETE`.
+    pub method: DavMethod,
+    /// The target resource href (absolute path or full URL).
+    pub href: String,
+    /// The `Content-Type` to send, when there is a body (`text/calendar` for a PUT).
+    pub content_type: Option<&'static str>,
+    /// The optimistic-concurrency precondition.
+    pub precondition: Precondition,
+    /// The request body (the iCalendar document for a PUT; empty for a DELETE).
+    pub body: String,
+}
+
 /// A WebDAV HTTP response reduced to what the adapter needs: the status, the body,
-/// and the `Location` header (so discovery can follow a well-known redirect).
+/// the `Location` header (so discovery can follow a well-known redirect), and the
+/// `ETag` header (the new entity tag a successful `PUT` returns).
 #[derive(Debug, Clone)]
 pub(crate) struct HttpResponse {
     /// The HTTP status code.
@@ -72,6 +108,8 @@ pub(crate) struct HttpResponse {
     pub body: String,
     /// The `Location` header, if the server sent a redirect.
     pub location: Option<String>,
+    /// The `ETag` header, if the server returned one (a write's new entity tag).
+    pub etag: Option<String>,
 }
 
 impl HttpResponse {
@@ -89,14 +127,26 @@ impl HttpResponse {
         }
         crate::dav::parse_multistatus(&self.body)
     }
+
+    /// For a write (`PUT`/`DELETE`): the new `ETag` (if the server sent one) on a
+    /// `2xx`, or a classified error otherwise — `412` becomes a
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict) so a
+    /// precondition failure is refetched, not blindly retried (`error.rs`).
+    pub(crate) fn into_write_etag(self) -> Result<Option<String>, CalDavError> {
+        if (200..300).contains(&self.status) {
+            Ok(self.etag)
+        } else {
+            Err(CalDavError::status(self.status, self.body))
+        }
+    }
 }
 
 /// Executes one CalDAV request. Implemented by the live [`DavClient`] and, in
 /// tests, by a fake replaying canned response documents.
 #[async_trait]
 pub(crate) trait DavExecutor: Send + Sync {
-    /// Sends `method` to `href` (an absolute path or URL) with the `Depth` header
-    /// and XML `body`, returning the raw response.
+    /// Sends a **read** report — `method` to `href` (an absolute path or URL) with
+    /// the `Depth` header and XML `body` — returning the raw response.
     async fn send(
         &self,
         method: DavMethod,
@@ -104,6 +154,11 @@ pub(crate) trait DavExecutor: Send + Sync {
         depth: &str,
         body: String,
     ) -> Result<HttpResponse, CalDavError>;
+
+    /// Sends a **write** — a `PUT`/`DELETE` carrying a typed body and a conditional
+    /// precondition instead of a `Depth` + XML body — returning the raw response
+    /// (whose `ETag` header is the resource's new entity tag on a successful PUT).
+    async fn send_write(&self, request: WriteRequest) -> Result<HttpResponse, CalDavError>;
 }
 
 /// The live `reqwest`-backed CalDAV transport.
@@ -145,6 +200,52 @@ impl DavClient {
     }
 }
 
+impl DavClient {
+    /// Resolves `href` against the connection origin and builds an authenticated
+    /// request for `method` — the shared head of every read and write.
+    fn request(
+        &self,
+        method: DavMethod,
+        href: &str,
+    ) -> Result<reqwest::RequestBuilder, CalDavError> {
+        let url = self
+            .base
+            .join(href)
+            .map_err(|e| CalDavError::protocol(format!("bad href {href:?}: {e}")))?;
+        let method = Method::from_bytes(method.as_str().as_bytes())
+            .map_err(|e| CalDavError::protocol(format!("bad method: {e}")))?;
+        let builder = self.client.request(method, url);
+        Ok(match &self.credentials {
+            Credentials::Basic { username, password } => {
+                builder.basic_auth(username, Some(password))
+            }
+            Credentials::Bearer(token) => builder.bearer_auth(token),
+        })
+    }
+}
+
+/// Reduces a finished reqwest response to an [`HttpResponse`], reading its body and
+/// the `Location`/`ETag` headers.
+async fn collect(response: reqwest::Response) -> Result<HttpResponse, CalDavError> {
+    let status = response.status().as_u16();
+    let header = |name: reqwest::header::HeaderName| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let location = header(reqwest::header::LOCATION);
+    let etag = header(reqwest::header::ETAG);
+    let body = response.text().await?;
+    Ok(HttpResponse {
+        status,
+        body,
+        location,
+        etag,
+    })
+}
+
 #[async_trait]
 impl DavExecutor for DavClient {
     async fn send(
@@ -154,40 +255,33 @@ impl DavExecutor for DavClient {
         depth: &str,
         body: String,
     ) -> Result<HttpResponse, CalDavError> {
-        let url = self
-            .base
-            .join(href)
-            .map_err(|e| CalDavError::protocol(format!("bad href {href:?}: {e}")))?;
-        let method = Method::from_bytes(method.as_str().as_bytes())
-            .map_err(|e| CalDavError::protocol(format!("bad method: {e}")))?;
-        let mut builder = self
-            .client
-            .request(method, url)
+        let response = self
+            .request(method, href)?
             .header("Depth", depth)
             .header(
                 reqwest::header::CONTENT_TYPE,
                 "application/xml; charset=utf-8",
             )
-            .body(body);
-        builder = match &self.credentials {
-            Credentials::Basic { username, password } => {
-                builder.basic_auth(username, Some(password))
-            }
-            Credentials::Bearer(token) => builder.bearer_auth(token),
+            .body(body)
+            .send()
+            .await?;
+        collect(response).await
+    }
+
+    async fn send_write(&self, request: WriteRequest) -> Result<HttpResponse, CalDavError> {
+        let mut builder = self.request(request.method, &request.href)?;
+        if let Some(content_type) = request.content_type {
+            builder = builder.header(reqwest::header::CONTENT_TYPE, content_type);
+        }
+        builder = match request.precondition {
+            // RFC 7232: `If-None-Match: *` admits only a create; `If-Match` admits
+            // a replace/delete only while the entity tag is unchanged.
+            Precondition::IfNoneMatch => builder.header(reqwest::header::IF_NONE_MATCH, "*"),
+            Precondition::IfMatch(etag) => builder.header(reqwest::header::IF_MATCH, etag),
+            Precondition::None => builder,
         };
-        let response = builder.send().await?;
-        let status = response.status().as_u16();
-        let location = response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let body = response.text().await?;
-        Ok(HttpResponse {
-            status,
-            body,
-            location,
-        })
+        let response = builder.body(request.body).send().await?;
+        collect(response).await
     }
 }
 
@@ -195,27 +289,21 @@ impl DavExecutor for DavClient {
 mod tests {
     use super::*;
 
+    fn response(status: u16, location: Option<&str>) -> HttpResponse {
+        HttpResponse {
+            status,
+            body: String::new(),
+            location: location.map(str::to_owned),
+            etag: None,
+        }
+    }
+
     #[test]
     fn redirect_detection_requires_a_location() {
-        let with_location = HttpResponse {
-            status: 307,
-            body: String::new(),
-            location: Some("/dav/cal".to_owned()),
-        };
-        assert!(with_location.is_redirect());
-        let no_location = HttpResponse {
-            status: 307,
-            body: String::new(),
-            location: None,
-        };
-        assert!(!no_location.is_redirect());
+        assert!(response(307, Some("/dav/cal")).is_redirect());
+        assert!(!response(307, None).is_redirect());
         // 303 See Other is a redirect too (must be followed by discovery).
-        let see_other = HttpResponse {
-            status: 303,
-            body: String::new(),
-            location: Some("/dav/cal".to_owned()),
-        };
-        assert!(see_other.is_redirect());
+        assert!(response(303, Some("/dav/cal")).is_redirect());
     }
 
     #[test]
@@ -224,6 +312,7 @@ mod tests {
             status: 401,
             body: "denied".to_owned(),
             location: None,
+            etag: None,
         };
         let err = unauthorized.into_multistatus().unwrap_err();
         assert_eq!(
@@ -236,5 +325,46 @@ mod tests {
     fn dav_method_tokens() {
         assert_eq!(DavMethod::Propfind.as_str(), "PROPFIND");
         assert_eq!(DavMethod::Report.as_str(), "REPORT");
+        assert_eq!(DavMethod::Put.as_str(), "PUT");
+        assert_eq!(DavMethod::Delete.as_str(), "DELETE");
+    }
+
+    #[test]
+    fn write_success_yields_the_new_etag() {
+        // A 2xx PUT returns the server's new entity tag (or None when it sent none).
+        let created = HttpResponse {
+            status: 201,
+            body: String::new(),
+            location: None,
+            etag: Some("\"v9\"".to_owned()),
+        };
+        assert_eq!(
+            created.into_write_etag().unwrap(),
+            Some("\"v9\"".to_owned())
+        );
+        let no_content = HttpResponse {
+            status: 204,
+            body: String::new(),
+            location: None,
+            etag: None,
+        };
+        assert_eq!(no_content.into_write_etag().unwrap(), None);
+    }
+
+    #[test]
+    fn write_precondition_failure_is_a_conflict() {
+        // RFC 4791 §5.3.2: a failed If-Match/If-None-Match is 412 → Conflict, so
+        // the caller refetches rather than blindly retrying.
+        let precondition_failed = HttpResponse {
+            status: 412,
+            body: String::new(),
+            location: None,
+            etag: None,
+        };
+        let err = precondition_failed.into_write_etag().unwrap_err();
+        assert_eq!(
+            err.failure_class(),
+            engine_core::error::FailureClass::Conflict
+        );
     }
 }

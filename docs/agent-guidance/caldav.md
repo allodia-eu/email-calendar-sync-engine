@@ -1,38 +1,41 @@
 # CalDAV Client Guidance
 
 This document is authoritative for the **CalDAV (RFC 4791) calendar read/sync
-provider** — the calendar half of build-order step 5 (`north-star.md`). It covers
-the `provider-caldav` crate and the CalDAV/WebDAV specifics it implements against
-the Stalwart fixture. Read it before touching `provider-caldav`, alongside
-`providers.md` (the Provider Contract), `store-and-sync.md` (the apply/lease model
-and `SyncScope`), `jmap.md` (the calendar-read precedent it mirrors),
-`calendar-semantics.md` (the time model, recurrence subset, iTIP/iMIP), and
-`stalwart-harness.md` (the fixture).
+**and write** provider** — the calendar half of build-order step 5
+(`north-star.md`). It covers the `provider-caldav` crate and the CalDAV/WebDAV
+specifics it implements against the Stalwart fixture. Read it before touching
+`provider-caldav`, alongside `providers.md` (the Provider Contract),
+`store-and-sync.md` (the apply/lease model, the outbox, and `SyncScope`), `jmap.md`
+(the calendar-read precedent it mirrors), `calendar-semantics.md` (the time model,
+recurrence subset, iTIP/iMIP), and `stalwart-harness.md` (the fixture).
 
 The **IMAP/SMTP mail half** of step 5 is the other slice (`imap-smtp.md`).
-CalDAV **writes** (PUT/`If-Match`/DELETE), **iTIP/iMIP** scheduling, and
-**CardDAV/contacts** are explicitly **not** in this slice — see "Known
+**CalDAV writes** (conditional `PUT`/`DELETE` with `If-Match`/`If-None-Match`) are
+**implemented** (see "CalDAV writes") and outbox-driven by
+`engine_sync::write_calendar_event`/`delete_calendar_event`. **iTIP/iMIP**
+scheduling and **CardDAV/contacts** remain out of this slice — see "Known
 limitations".
 
 ## The crate
 
 - **`provider-caldav`** — a CalDAV client over HTTP that implements
-  `engine_provider::Provider` for calendar **read/sync only**. It reuses the
+  `engine_provider::Provider` for calendar **read/sync and write**. It reuses the
   `Executor`-seam pattern from `provider-jmap`: every request goes through a
-  `DavExecutor` trait, so the whole discovery/sync orchestration is offline-tested
-  by replaying captured Stalwart response documents. The live transport is
-  `reqwest` + rustls (pure-Rust TLS, mobile cross-compile), like `provider-jmap`.
-  The headline difference from JMAP is that the calendar payload arrives as
-  **iCalendar (RFC 5545)**, which this crate parses, where JMAP supplied
+  `DavExecutor` trait, so the whole discovery/sync/write orchestration is
+  offline-tested by replaying captured Stalwart response documents. The live
+  transport is `reqwest` + rustls (pure-Rust TLS, mobile cross-compile), like
+  `provider-jmap`. The headline difference from JMAP is that the calendar payload
+  arrives as **iCalendar (RFC 5545)**, which this crate parses, where JMAP supplied
   JSCalendar directly — so the bulk of the crate is an iCalendar parser producing
   the **same** normalized [`Event`]/[`Calendar`] projection the JMAP adapter does.
 - Layers: `ical` (the RFC 5545 parser: `unfold` → `component` tree → `value`/
   `recur`/`party`/`event` normalizers → one folded `Event` per resource), `dav`
   (the WebDAV `multistatus` XML parser, via `quick-xml`), `transport` (the
-  `DavExecutor` seam + its `reqwest` implementation), `request` (the
-  PROPFIND/REPORT bodies), `discovery`/`calendar` (principal → home → collection
-  listing), `sync` (the `sync-collection` REPORT snapshot/delta logic), `provider`
-  (the `Provider` impl).
+  `DavExecutor` seam — read reports plus the `send_write` write verb — + its
+  `reqwest` implementation), `request` (the PROPFIND/REPORT bodies),
+  `discovery`/`calendar` (principal → home → collection listing), `sync` (the
+  `sync-collection` REPORT snapshot/delta logic), `write` (the conditional
+  `PUT`/`DELETE` of event resources), `provider` (the `Provider` impl).
 
 ## How CalDAV differs from JMAP (the shape)
 
@@ -68,13 +71,18 @@ limitations".
   cross-system `Uid`. The `getetag` is preserved in `event.revisions` (the `ETag`
   for a future `If-Match` write). The `DavCollectionId` (the scope's collection
   key) and the `CalendarId` (event membership) both wrap the collection href.
-- **`Capabilities::calendars` only.** A `CalDavProvider` does no mail; it advertises
-  only the calendar capability. To support a calendar-only provider cleanly, the
-  `Provider` trait's mail methods (`sync_mailboxes`/`sync_email_page` and the
-  `mailbox_scope`/`email_scope` accessors) became **default-able** (unsupported /
+- **Calendar capabilities only (read + write), no mail.** A `CalDavProvider`
+  advertises `Capabilities::calendars` **and** `Capabilities::calendar_writes` —
+  it reads/syncs and writes over the same HTTP transport — and does no mail. The
+  write capability is **separate** from the read one (mirroring `submission` being
+  separate from `mail`), so a read-only calendar — a shared CalDAV collection the
+  account cannot write, or a future calendar-read-only adapter — advertises
+  `calendars` without `calendar_writes`; callers route a write by capability, never
+  by provider kind. To support a calendar-only provider cleanly, the `Provider`
+  trait's mail methods (`sync_mailboxes`/`sync_email_page` and the
+  `mailbox_scope`/`email_scope` accessors) are **default-able** (unsupported /
   JMAP-default), symmetric with how the calendar methods already defaulted for a
-  mail-only provider; the JMAP and IMAP adapters still override them. No caller is
-  affected because work is routed by capability, never by provider kind.
+  mail-only provider; the JMAP and IMAP adapters still override them.
 
 ## CalDAV specifics implemented
 
@@ -125,16 +133,76 @@ limitations".
   rather than panicking on hostile input; a single malformed resource is **skipped**,
   never failing the whole sync pass.
 
+## CalDAV writes
+
+- **Create/update is one conditional `PUT`; delete is one `DELETE`** (RFC 4791
+  §5.3.2). The `write` layer builds the request and maps the response to a receipt
+  or a classified error; the live `DavClient::send_write` carries a typed body and
+  the conditional header, distinct from the read `send` (Depth + XML) — so the
+  proven read path is untouched. The verbs live on the `Provider` trait as
+  `put_event`/`delete_event`, default-rejecting (unsupported) so a
+  capability-checking caller never relies on them; `CalDavProvider` overrides both
+  and advertises `Capabilities::calendar_writes`.
+- **Optimistic concurrency rides on the `ETag`.** A create sends `If-None-Match: *`
+  (never overwrite an existing resource at the href); an update or guarded delete
+  sends `If-Match: "<etag>"` (apply only while the server copy is unchanged). A
+  failed precondition is `412` → `FailureClass::Conflict`, recovered by refetch and
+  merge, **never a blind retry** (`error.rs`). `PUT` and `DELETE` are **idempotent
+  HTTP methods** (RFC 7231 §4.2.2), and the precondition makes a retry
+  self-correcting: a retried create `412`s if the first landed, a retried update
+  `412`s once the ETag moved, and a retried delete sees the resource already gone.
+  So a lost-response retry is **safe** — there is no ambiguous `NeedsConfirmation`
+  case as there is for SMTP. The read slice already preserves each event's `ETag` in
+  `event.revisions`, so a write `If-Match`es without a refetch (the deferred read
+  promise, now fulfilled).
+- **`DELETE` is idempotent: already-gone is success.** A `DELETE` whose resource is
+  **already absent** (`404`/`410`) resolves as `Ok` (RFC 7231 §4.3.5), not a
+  `Permanent` error — so re-running a delete whose response was lost (the first one
+  landed) succeeds rather than reporting a spurious failure. A `412` (the resource
+  still exists but its ETag moved) remains a genuine `If-Match` conflict, surfaced
+  for refetch.
+- **The body is the round-tripped `RawIcal`, never a re-serialized projection**
+  (`calendar-semantics.md`, `modeling.md`): an update PUTs the stored `raw_ical`
+  with targeted patches applied, so properties the lossy JSCalendar projection
+  cannot express (`X-` props, `VALARM`, …) survive the round trip (locked by an
+  offline test). A **create** carries a freshly built iCalendar document — the
+  body is constructed by the host/caller, since this slice is the transport +
+  outbox primitive, not a JSCalendar→iCalendar serializer (that, and a structural
+  iCal patcher for updates, are separate concerns). `CalDavProvider::event_href`
+  mints the conventional `<collection>/<uid>.ics` resource href for a create
+  (percent-encoding the `UID` as one path segment); an update/delete reuses the
+  stored `EventId`.
+- **The new `ETag` is read back where the server supplies it.** A successful PUT
+  returns the resource's new entity tag in the `ETag` response header (RFC 4791
+  §5.3.4), surfaced on the receipt; when the server omits it the receipt carries
+  `None` and the next `sync-collection` delta refreshes `event.revisions`. No
+  automatic follow-up `GET` is issued.
+- **Writes are outbox-mediated** (`store-and-sync.md` Write Contract). The thin
+  drivers `engine_sync::write_calendar_event`/`delete_calendar_event` mirror
+  `submit_mail`: a durable `PendingOp` (serialized on the resource href so writes
+  to one event never race) is recorded **before** the side effect, claimed under a
+  fenced `OpLease`, and resolved `Succeeded`/`Failed` under that lease. The
+  **idempotency key is a caller-supplied argument**, not derived from the href: the
+  store dedups enqueue by `(account, idempotency_key)` across *every* op state
+  (including terminal), so a href-only key would wrongly collapse two distinct edits
+  of one resource into one op. The host mints a key per write intent.
+
 ## Known limitations (documented, not bugs)
 
-- **CalDAV writes are out of scope.** This slice is read/sync only. `PUT` with
-  `If-Match`/ETag, `DELETE`, and their outbox integration (the Write Contract's
-  "CalDAV writes use ETags and `If-Match`") are the next CalDAV slice. The `ETag`
-  is already preserved per event so a write slice can `If-Match` without a refetch.
 - **iTIP/iMIP scheduling is out of scope.** The model exists in
   `engine_core::scheduling` (keys, `SEQUENCE` ordering, the trust decision), but
   detecting inbound iMIP on the mail path, applying it to stored events, and
   sending replies are a later slice (`calendar-semantics.md`).
+- **Only event object resources are written, not collections.** Creating or
+  deleting a *calendar collection* (`MKCALENDAR`, RFC 4791 §5.3.1; collection
+  `DELETE`) is out of scope — the write slice manages event resources within an
+  existing collection. The host provisions calendars out of band.
+- **A JSCalendar→iCalendar serializer and a structural iCal patcher are separate
+  concerns.** The write carries the iCalendar body as `RawIcal`; constructing it
+  for a create, and applying targeted patches to the stored raw for an update, are
+  the caller's job in this slice (the engine supplies the conditional-`PUT`
+  transport + outbox, not the serialization). The lossy projection is never
+  re-serialized to the wire.
 - **CardDAV/contacts are out of scope.** Contacts land after step 5
   (`north-star.md`); the `DavCollectionList`/`DavCollection` scopes and the
   WebDAV/multistatus machinery are already shaped to serve an address-book home
@@ -168,28 +236,46 @@ limitations".
   executor through `engine_sync::sync_calendar` into a real `SqliteStore`,
   asserting the six seed fixtures normalize, the master+override folds with its
   `EXDATE` exclusion, participants merge, and occurrences materialize (the weekly
-  series → 7, twelve in total).
+  series → 7, twelve in total). The **write** path is unit-tested through the same
+  fake: create (`If-None-Match`)/update (`If-Match`)/delete request-shaping and
+  response→receipt mapping (`write.rs`), the `412`→`Conflict` precondition failure,
+  the missing-response-`ETag` case, the `event_href` minting + percent-encoding,
+  and — the model invariant — that an update **round-trips the preserved `raw_ical`**
+  so an `X-` property and a `VALARM` the projection cannot express survive on the
+  wire. The outbox drivers are tested in `engine-sync` (a real `SqliteStore`):
+  enqueue→claim→`PUT`/`DELETE`→record `Succeeded`, a `Conflict` recorded `Failed`
+  without blind retry, and that two distinct edits of one href with **distinct
+  idempotency keys both run** (the key-as-argument rationale).
 - **Live against Stalwart (gated on `STALWART_HTTP_ADDR`, skips otherwise):**
   `tests/live_caldav.rs` connects to the real Stalwart over HTTP, runs discovery +
   `sync-collection`, and asserts the same seed invariants in the store, plus an
-  idempotent **empty delta** on a second sync (the held sync-token). It reuses
-  `crates/stalwart-harness`. The `stalwart` CI job runs it; the file is excluded
-  from the offline coverage metric, like the JMAP/IMAP live tests.
+  idempotent **empty delta** on a second sync (the held sync-token). A second test,
+  `caldav_write_round_trip`, drives the full **write lifecycle** against the real
+  server — create → update (`If-Match`) → delete (`If-Match`), verified by
+  re-reading the collection — and leaves the seed untouched. The two tests
+  **serialize** on a shared guard (the write test transiently adds an event, which
+  must not race the exact-count assertion). It reuses `crates/stalwart-harness`. The
+  `stalwart` CI job runs it; the file is excluded from the offline coverage metric,
+  like the JMAP/IMAP live tests.
 - **Live against SabreDAV (gated on `SABREDAV_HTTP_ADDR`, skips otherwise):**
-  `tests/live_sabredav.rs` runs the **same** seed assertions against a second,
+  `tests/live_sabredav.rs` runs the **same** seed assertions **and the same write
+  round-trip** (`tests/common/`, shared by both live files) against a second,
   independent CalDAV implementation — the SabreDAV fixture (`docker/sabredav/`,
   the stack Soverin/Fastmail-style providers run). Passing here proves the client
   is not over-fit to Stalwart: SabreDAV exercises the **two-step RFC 6764
-  discovery** and the `http://sabre.io/ns/sync/N` sync-token form. The separate
-  `sabredav` CI job runs it; the file is likewise excluded from the offline
-  coverage metric. The fixture reuses the shared `docker/stalwart/seed/calendar`
-  dataset, so one set of fixtures validates both servers.
+  discovery**, the `http://sabre.io/ns/sync/N` sync-token form, and its own
+  `ETag`/`If-Match` write semantics. The separate `sabredav` CI job runs it; the
+  file is likewise excluded from the offline coverage metric. The fixture reuses the
+  shared `docker/stalwart/seed/calendar` dataset, so one set of fixtures validates
+  both servers.
 - **Fuzzing:** `fuzz/` (a separate cargo-fuzz workspace) gained
   `cargo +nightly fuzz run caldav_parse`, driving `provider_caldav::fuzz_parse`
   (behind the `fuzzing` feature) over the unfold → component → normalize pipeline.
 - **Real-provider exploration:** `examples/caldav_explore.rs` connects to a *real*
   CalDAV server (Fastmail/iCloud/Google over verifying HTTPS, or a local server
   over HTTP), discovers the calendar home, lists calendars, and prints the bound
-  calendar's events (start, kind, title) — read-only. It is the calendar parallel
-  to `provider-imap`'s `imap_explore`; point it at the local Stalwart harness with
-  `CALDAV_URL=http://127.0.0.1:18080`.
+  calendar's events (start, kind, title) — read-only by default. Set `CALDAV_WRITE=1`
+  to also run a **write demo** that creates a throwaway event and deletes it again
+  (the opt-in parallel to `imap_explore`'s `IMAP_DRAFT`/`IMAP_SEND`). It is the
+  calendar parallel to `provider-imap`'s `imap_explore`; point it at the local
+  Stalwart harness with `CALDAV_URL=http://127.0.0.1:18080`.

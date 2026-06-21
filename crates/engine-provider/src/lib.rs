@@ -20,12 +20,14 @@
 //! orchestrator that drives many providers and scopes is a later build step; the
 //! step-4 driver is the thin loop in `engine-sync`.
 
+mod calendar_write;
 mod capability;
 mod error;
 mod page;
 mod submit;
 mod sync;
 
+pub use calendar_write::{EventDeletion, EventWrite, EventWriteReceipt, WritePrecondition};
 pub use capability::Capabilities;
 pub use error::{ProviderError, ProviderResult};
 pub use page::{PageToken, SyncKind, SyncPage};
@@ -257,6 +259,57 @@ pub trait Provider: Send + Sync {
             "provider does not support calendar sync",
         ))
     }
+
+    /// Creates or replaces a calendar object resource (CalDAV `PUT`).
+    ///
+    /// Providers advertising [`Capabilities::calendar_writes`] override this; the
+    /// default rejects, so a capability-checking caller never relies on it. The
+    /// write is outbox-mediated by the caller (a durable pending op precedes this
+    /// side effect); this method performs only the provider call. The body is the
+    /// round-tripped [`RawIcal`](engine_core::raw::RawIcal), never a re-serialized
+    /// projection (`calendar-semantics.md`); optimistic concurrency rides on the
+    /// [`WritePrecondition`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]. A precondition failure
+    /// (`If-Match`/`If-None-Match`) is
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict) —
+    /// refetch and merge before retrying; the default returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn put_event(
+        &self,
+        account: &AccountId,
+        write: &EventWrite,
+    ) -> ProviderResult<EventWriteReceipt> {
+        let _ = (account, write);
+        Err(ProviderError::invalid_state(
+            "provider does not support calendar writes",
+        ))
+    }
+
+    /// Deletes a calendar object resource (CalDAV `DELETE`), optionally guarded by
+    /// an `If-Match` ETag.
+    ///
+    /// Providers advertising [`Capabilities::calendar_writes`] override this; the
+    /// default rejects. Outbox-mediated by the caller, like [`Provider::put_event`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]; an `If-Match` failure is
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict), and
+    /// the default returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn delete_event(
+        &self,
+        account: &AccountId,
+        deletion: &EventDeletion,
+    ) -> ProviderResult<()> {
+        let _ = (account, deletion);
+        Err(ProviderError::invalid_state(
+            "provider does not support calendar writes",
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -417,6 +470,33 @@ mod tests {
             "body",
         );
         let err = provider.submit_email(&account(), &draft).await.unwrap_err();
+        assert_eq!(err.class(), FailureClass::InvalidState);
+    }
+
+    #[tokio::test]
+    async fn calendar_writes_default_to_unsupported() {
+        use engine_core::error::FailureClass;
+        use engine_core::ids::{EventId, Uid};
+        use engine_core::raw::RawIcal;
+
+        let provider = FakeJmap {
+            caps: Capabilities::none().with_mail(),
+        };
+        let href = EventId::try_from("/cal/evt-1.ics").unwrap();
+        let write = crate::EventWrite::create(
+            href.clone(),
+            Uid::new("evt-1@host").unwrap(),
+            RawIcal::new("BEGIN:VCALENDAR\r\nEND:VCALENDAR"),
+        );
+        // A provider that did not override calendar writes rejects, so a
+        // capability-checking caller never depends on the default.
+        let err = provider.put_event(&account(), &write).await.unwrap_err();
+        assert_eq!(err.class(), FailureClass::InvalidState);
+        let deletion = crate::EventDeletion::unconditional(href);
+        let err = provider
+            .delete_event(&account(), &deletion)
+            .await
+            .unwrap_err();
         assert_eq!(err.class(), FailureClass::InvalidState);
     }
 

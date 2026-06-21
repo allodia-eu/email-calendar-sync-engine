@@ -218,6 +218,7 @@ mod tests {
             status: 409,
             body: "<D:error xmlns:D=\"DAV:\"><D:valid-sync-token/></D:error>".to_owned(),
             location: None,
+            etag: None,
         };
         let exec = replay(vec![
             rejected,

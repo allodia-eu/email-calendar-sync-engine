@@ -135,6 +135,7 @@ mod tests {
             status: 307,
             body: String::new(),
             location: Some("/dav/cal".to_owned()),
+            etag: None,
         };
         let exec = Replay::new(vec![
             redirect,
