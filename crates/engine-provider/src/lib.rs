@@ -60,19 +60,33 @@ pub trait Provider: Send + Sync {
     fn capabilities(&self) -> &Capabilities;
 
     /// The scope the account's mail collections (mailboxes/folders/labels) sync
-    /// under. For JMAP this is `(account, Mailbox)`.
-    fn mailbox_scope(&self, account: &AccountId) -> SyncScope;
+    /// under. Defaults to the JMAP `(account, Mailbox)` scope; mail providers with
+    /// a different granularity (IMAP) override it. A calendar-only provider never
+    /// has this consulted (its [`Capabilities::mail`] is false).
+    fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
+        SyncScope::JmapType {
+            account: account.clone(),
+            data_type: JmapDataType::Mailbox,
+        }
+    }
 
-    /// The scope the account's mail objects sync under. For JMAP this is
-    /// `(account, Email)`.
-    fn email_scope(&self, account: &AccountId) -> SyncScope;
+    /// The scope the account's mail objects sync under. Defaults to the JMAP
+    /// `(account, Email)` scope; non-JMAP mail providers override.
+    fn email_scope(&self, account: &AccountId) -> SyncScope {
+        SyncScope::JmapType {
+            account: account.clone(),
+            data_type: JmapDataType::Email,
+        }
+    }
 
     /// Fetches the account's mail collections since `cursor` (a full snapshot when
     /// `cursor` is `None`).
     ///
     /// Containers are applied before the members that reference them
     /// (`store-and-sync.md` referential apply order), so the orchestrator syncs
-    /// this scope before [`Provider::sync_email`].
+    /// this scope before [`Provider::sync_email`]. Mail providers
+    /// ([`Capabilities::mail`]) override this; the default rejects, so a
+    /// capability-checking caller never relies on it.
     ///
     /// # Errors
     ///
@@ -82,7 +96,12 @@ pub trait Provider: Send + Sync {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Mailbox>>;
+    ) -> ProviderResult<ScopeSync<Mailbox>> {
+        let _ = (account, cursor);
+        Err(ProviderError::invalid_state(
+            "provider does not support mail sync",
+        ))
+    }
 
     /// Fetches **one page** of the account's mail objects since `cursor` — the
     /// paged primitive every adapter implements.
@@ -99,7 +118,8 @@ pub trait Provider: Send + Sync {
     /// meaningful on the final page.
     ///
     /// [`Provider::sync_email`] drains this into one update; a responsive caller
-    /// drives it directly and applies each page as it lands (`engine-sync`).
+    /// drives it directly and applies each page as it lands (`engine-sync`). Mail
+    /// providers ([`Capabilities::mail`]) override this; the default rejects.
     ///
     /// # Errors
     ///
@@ -110,7 +130,12 @@ pub trait Provider: Send + Sync {
         cursor: Option<&SyncState>,
         page: Option<&PageToken>,
         limit: usize,
-    ) -> ProviderResult<SyncPage<Message>>;
+    ) -> ProviderResult<SyncPage<Message>> {
+        let _ = (account, cursor, page, limit);
+        Err(ProviderError::invalid_state(
+            "provider does not support mail sync",
+        ))
+    }
 
     /// Fetches the account's mail objects since `cursor` as a single combined
     /// update (a full snapshot when `cursor` is `None`, or when the provider can

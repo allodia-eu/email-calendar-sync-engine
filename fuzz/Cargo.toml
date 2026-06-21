@@ -1,15 +1,17 @@
-# cargo-fuzz target for the JMAP JSON parser (security requirement: JMAP JSON
-# parsing is fuzz-tested — `north-star.md`). This is its **own** workspace (the
-# empty `[workspace]` below) so the root `cargo build/test --workspace` ignores
-# it; it builds only on nightly via cargo-fuzz:
+# cargo-fuzz targets for the provider parsers (security requirement: JMAP JSON and
+# iCalendar parsing are fuzz-tested — `north-star.md`). This is its **own**
+# workspace (the empty `[workspace]` below) so the root `cargo build/test
+# --workspace` ignores it; it builds only on nightly via cargo-fuzz:
 #
 #   cargo install cargo-fuzz
 #   cargo +nightly fuzz run jmap_parse
+#   cargo +nightly fuzz run caldav_parse
 #
-# The in-gate counterpart (running on stable under `cargo test`) is
-# `provider-jmap`'s `parsers_never_panic_on_hostile_json` test.
+# The in-gate counterparts (running on stable under `cargo test`) are
+# `provider-jmap`'s `parsers_never_panic_on_hostile_json` and `provider-caldav`'s
+# `adversarial_input_does_not_panic` tests.
 [package]
-name = "provider-jmap-fuzz"
+name = "provider-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -24,9 +26,20 @@ libfuzzer-sys = "0.4"
 path = "../crates/provider-jmap"
 features = ["fuzzing"]
 
+[dependencies.provider-caldav]
+path = "../crates/provider-caldav"
+features = ["fuzzing"]
+
 [[bin]]
 name = "jmap_parse"
 path = "fuzz_targets/jmap_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "caldav_parse"
+path = "fuzz_targets/caldav_parse.rs"
 test = false
 doc = false
 bench = false

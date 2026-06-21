@@ -11,6 +11,14 @@ real server; it does not contain provider clients. The JMAP client is step 4 and
 the IMAP/SMTP/CalDAV clients are step 5 — they consume this fixture, they are not
 part of it.
 
+> A **second CalDAV fixture**, SabreDAV, lives in `docker/sabredav/` (see
+> `caldav.md`). It validates `provider-caldav` against a different real
+> implementation than Stalwart (two-step RFC 6764 discovery, the
+> `http://sabre.io/ns/sync/N` sync-token form) and **reuses this harness's shared
+> calendar seed** (`seed/calendar/`), so one dataset validates both servers. The
+> determinism, gating-by-env-var, and excluded-from-offline-coverage conventions
+> below apply to it too.
+
 ## What it is
 
 - A Stalwart server in Docker, **pinned by image digest**, brought up by
