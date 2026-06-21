@@ -9,14 +9,18 @@
 //! [`DavCollectionList`](engine_core::sync::SyncScope::DavCollectionList) container
 //! scope. The collection list is re-snapshotted each pass (no list cursor),
 //! exactly as IMAP re-`LIST`s its folders. The cross-collection fan-out (drive
-//! every calendar) is the later orchestrator's job. The provider advertises only
-//! [`Capabilities::calendars`]; the mail methods keep their unsupported defaults.
+//! every calendar) is the later orchestrator's job. The provider advertises
+//! [`Capabilities::calendars`] **and** [`Capabilities::calendar_writes`] — it both
+//! reads/syncs and writes (`PUT`/`DELETE`) over the same HTTP transport (`write`);
+//! the mail methods keep their unsupported defaults.
 
 use async_trait::async_trait;
 use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::{AccountId, CalendarId, DavCollectionId};
+use engine_core::ids::{AccountId, CalendarId, DavCollectionId, EventId, Uid};
 use engine_core::sync::{SyncScope, SyncState, SyncUpdate};
-use engine_provider::{Capabilities, Provider, ProviderResult, ScopeSync};
+use engine_provider::{
+    Capabilities, EventDeletion, EventWrite, EventWriteReceipt, Provider, ProviderResult, ScopeSync,
+};
 
 use crate::discovery;
 use crate::error::CalDavError;
@@ -117,7 +121,7 @@ impl CalDavProvider {
         let collection = bind_collection(&home_href, calendar)?;
         Ok(Self {
             executor,
-            capabilities: Capabilities::none().with_calendars(),
+            capabilities: Capabilities::none().with_calendars().with_calendar_writes(),
             home_href,
             collection,
         })
@@ -140,6 +144,29 @@ impl CalDavProvider {
     #[must_use]
     pub fn collection_href(&self) -> &str {
         self.collection.as_str()
+    }
+
+    /// Mints the resource href for a **new** event in the bound collection:
+    /// `<collection>/<uid>.ics`, the universal CalDAV convention (RFC 4791 §5.3.2
+    /// lets the client choose the resource name). The `uid` is percent-encoded as a
+    /// single path segment, so an unusual `UID` still yields a valid href. Use it as
+    /// the [`EventWrite::create`](engine_provider::EventWrite::create) target; an
+    /// update/delete reuses the stored
+    /// [`Event::id`](engine_core::calendar::Event::id).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalDavError`] if the resolved href is not a valid event key (the
+    /// bound collection href and the non-empty suffix make this unreachable in
+    /// practice, but the construction is fallible like the collection binding).
+    pub fn event_href(&self, uid: &Uid) -> Result<EventId, CalDavError> {
+        let href = format!(
+            "{}{}.ics",
+            self.collection.as_str(),
+            encode_path_segment(uid.as_str())
+        );
+        EventId::try_from(href.as_str())
+            .map_err(|e| CalDavError::protocol(format!("bad event href {href:?}: {e}")))
     }
 
     /// The membership [`CalendarId`] for the bound collection (same href as
@@ -202,6 +229,22 @@ impl Provider for CalDavProvider {
         )
         .await?)
     }
+
+    async fn put_event(
+        &self,
+        _account: &AccountId,
+        write: &EventWrite,
+    ) -> ProviderResult<EventWriteReceipt> {
+        Ok(crate::write::put_event(self.executor.as_ref(), write).await?)
+    }
+
+    async fn delete_event(
+        &self,
+        _account: &AccountId,
+        deletion: &EventDeletion,
+    ) -> ProviderResult<()> {
+        Ok(crate::write::delete_event(self.executor.as_ref(), deletion).await?)
+    }
 }
 
 /// Binds a calendar argument to a collection id: an absolute path or full URL is
@@ -253,6 +296,39 @@ fn with_trailing_slash(href: &str) -> String {
     } else {
         format!("{href}/")
     }
+}
+
+/// Percent-encodes one URL path segment to its **canonical** form: only RFC 3986
+/// `unreserved` bytes (`ALPHA` / `DIGIT` / `-` / `.` / `_` / `~`) are kept verbatim;
+/// every other byte — including `@`, sub-delims, and path-unsafe bytes — is
+/// `%`-encoded. Encoding everything outside `unreserved` matches how CalDAV servers
+/// store and report resource hrefs (Stalwart returns `@` as `%40`, verified live),
+/// so a minted create href round-trips to the same href the server canonicalizes to
+/// — otherwise a later `If-Match`/`DELETE` against the minted href would miss the
+/// server's differently-encoded resource.
+fn encode_path_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for &byte in segment.as_bytes() {
+        if is_unreserved(byte) {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(hex_upper(byte >> 4));
+            out.push(hex_upper(byte & 0x0f));
+        }
+    }
+    out
+}
+
+/// Whether `byte` is an RFC 3986 `unreserved` character (never percent-encoded;
+/// `%XX` and the literal byte are equivalent only for this set, §2.3).
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+/// The upper-case hex digit for a 0–15 nibble.
+fn hex_upper(nibble: u8) -> char {
+    char::from_digit(u32::from(nibble), 16).map_or('0', |c| c.to_ascii_uppercase())
 }
 
 #[cfg(test)]

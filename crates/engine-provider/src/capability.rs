@@ -17,11 +17,19 @@
 /// let caps = Capabilities::none().with_mail().with_submission();
 /// assert!(caps.mail() && caps.submission() && !caps.calendars());
 /// ```
+// These are independent capability flags (a small fixed bitset), not the state of
+// a state machine, so the excessive-bools heuristic's "use a state machine"
+// suggestion does not apply; each flag is queried by name on its own.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent capability flags, not state-machine state"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Capabilities {
     mail: bool,
     submission: bool,
     calendars: bool,
+    calendar_writes: bool,
 }
 
 impl Capabilities {
@@ -32,6 +40,7 @@ impl Capabilities {
             mail: false,
             submission: false,
             calendars: false,
+            calendar_writes: false,
         }
     }
 
@@ -56,6 +65,18 @@ impl Capabilities {
         self
     }
 
+    /// Marks calendar **writes** (create/update/delete event resources) as
+    /// supported. Distinct from [`with_calendars`](Self::with_calendars), the read
+    /// capability — a calendar the account can read but not write (a shared
+    /// read-only CalDAV collection, or a calendar-read-only adapter) advertises
+    /// [`calendars`](Self::calendars) without this, exactly as a mail adapter with
+    /// no SMTP advertises [`mail`](Self::mail) without [`submission`](Self::submission).
+    #[must_use]
+    pub const fn with_calendar_writes(mut self) -> Self {
+        self.calendar_writes = true;
+        self
+    }
+
     /// Whether mail read/sync is supported.
     #[must_use]
     pub const fn mail(self) -> bool {
@@ -73,6 +94,13 @@ impl Capabilities {
     pub const fn calendars(self) -> bool {
         self.calendars
     }
+
+    /// Whether calendar writes (create/update/delete event resources) are
+    /// supported.
+    #[must_use]
+    pub const fn calendar_writes(self) -> bool {
+        self.calendar_writes
+    }
 }
 
 #[cfg(test)]
@@ -86,6 +114,7 @@ mod tests {
         assert!(caps.mail());
         assert!(caps.calendars());
         assert!(!caps.submission());
+        assert!(!caps.calendar_writes());
     }
 
     #[test]
@@ -93,7 +122,16 @@ mod tests {
         let caps = Capabilities::none()
             .with_mail()
             .with_submission()
-            .with_calendars();
-        assert!(caps.mail() && caps.submission() && caps.calendars());
+            .with_calendars()
+            .with_calendar_writes();
+        assert!(caps.mail() && caps.submission() && caps.calendars() && caps.calendar_writes());
+    }
+
+    #[test]
+    fn calendar_writes_is_independent_of_read() {
+        // A read-only calendar advertises `calendars` without `calendar_writes`,
+        // exactly as a no-SMTP mail adapter advertises `mail` without `submission`.
+        let read_only = Capabilities::none().with_calendars();
+        assert!(read_only.calendars() && !read_only.calendar_writes());
     }
 }

@@ -75,7 +75,10 @@ recognizing and reconciling scheduling messages that arrive through sync.
     handling may be staged.
 - **Responding** is an outbox operation that separates calendar storage (my
   `PARTSTAT`) from delivery (the iTIP `REPLY` via iMIP or provider scheduling),
-  consistent with the Write Contract.
+  consistent with the Write Contract. The CalDAV write primitive this builds on —
+  a conditional `PUT` of my patched copy under `If-Match`, outbox-driven — is
+  **implemented** (`caldav.md`); wiring an RSVP to it (patch my `PARTSTAT` in the
+  raw, PUT it back) is the deferred scheduling slice.
 - **Security.** Scheduling messages are hostile input. Validate `ORGANIZER` and
   attendee identities against the message's authenticated sender (From / DKIM /
   authenticated submission) before applying anything; never auto-apply changes
@@ -98,7 +101,9 @@ recognizing and reconciling scheduling messages that arrive through sync.
   (model invariant). Provider writes round-trip from raw plus targeted patches,
   never by re-serializing the lossy projection. The projection exists for
   display, search, and engine logic and is explicitly **not**
-  round-trip-authoritative.
+  round-trip-authoritative. The CalDAV write slice enforces this — a `PUT` carries
+  the round-tripped `RawIcal`, locked by a test that an updated event's `X-`
+  property and `VALARM` survive on the wire (`caldav.md`).
 
 ## Supported recurrence subset
 

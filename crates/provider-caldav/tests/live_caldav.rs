@@ -29,6 +29,8 @@ use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
 
+mod common;
+
 async fn load<T: DeserializeOwned>(
     store: &SqliteStore<ManualClock>,
     scope: &SyncScope,
@@ -48,6 +50,9 @@ async fn caldav_calendar_sync_loop() {
         eprintln!("skipping caldav_calendar_sync_loop: STALWART_HTTP_ADDR unset");
         return;
     };
+    // Serialize with the write round-trip: it transiently adds an event, which
+    // would otherwise race this test's exact event-count assertion.
+    let _serial = common::serial_guard().await;
     harness
         .wait_until_ready(StdDuration::from_secs(30))
         .expect("harness ready");
@@ -156,4 +161,32 @@ async fn caldav_calendar_sync_loop() {
         6,
         "the event set is unchanged after the delta"
     );
+}
+
+/// The full CalDAV write lifecycle against the real Stalwart: create → update
+/// (`If-Match`) → delete (`If-Match`), verified by re-reading the collection. Leaves
+/// the seed untouched. Skips with no `STALWART_HTTP_ADDR`.
+#[tokio::test]
+async fn caldav_write_round_trip() {
+    let Some(harness) = Harness::from_env() else {
+        eprintln!("skipping caldav_write_round_trip: STALWART_HTTP_ADDR unset");
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    harness
+        .wait_until_ready(StdDuration::from_secs(30))
+        .expect("harness ready");
+
+    let provider = CalDavProvider::connect(CalDavConfig::new(
+        format!("http://{}", harness.http_addr),
+        Credentials::Basic {
+            username: harness.account.clone(),
+            password: harness.password.clone(),
+        },
+    ))
+    .await
+    .expect("connect + discover");
+
+    let account = AccountId::try_from("caldav-write-live").unwrap();
+    common::write_round_trip(&provider, &account).await;
 }

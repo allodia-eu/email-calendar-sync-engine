@@ -1,6 +1,6 @@
 [package]
 name = "provider-caldav"
-description = "CalDAV (RFC 4791/6578/7986) read/sync provider adapter for the PIM sync engine: WebDAV HTTP transport + collection discovery + sync-collection REPORT, parsing iCalendar (RFC 5545) into the engine's normalized Event/Calendar projections. Implements the engine-provider contract."
+description = "CalDAV (RFC 4791/6578/7986) read/sync and write provider adapter for the PIM sync engine: WebDAV HTTP transport + collection discovery + sync-collection REPORT + conditional PUT/DELETE, parsing iCalendar (RFC 5545) into the engine's normalized Event/Calendar projections. Implements the engine-provider contract."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,7 +22,9 @@ thiserror = { workspace = true }
 fuzzing = []
 
 [dev-dependencies]
-tokio = { workspace = true }
+# `sync` for the live tests' serialization Mutex (held across awaits); `time` for
+# the SabreDAV connect retry's sleep.
+tokio = { workspace = true, features = ["sync", "time"] }
 stalwart-harness = { path = "../stalwart-harness" }
 # The gated live integration test drives the full calendar sync loop through the
 # real store, exactly like provider-jmap's live_sync.

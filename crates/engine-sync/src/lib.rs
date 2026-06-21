@@ -344,7 +344,9 @@ fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
 
 mod outbox;
 mod stream;
-pub use outbox::{SubmitOutcome, submit_mail};
+pub use outbox::{
+    CalendarWriteOutcome, SubmitOutcome, delete_calendar_event, submit_mail, write_calendar_event,
+};
 pub use stream::{ProgressSink, SyncProgress, sync_mail_streamed};
 
 #[cfg(test)]

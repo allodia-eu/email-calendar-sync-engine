@@ -11,10 +11,10 @@ Recommended first provider spine:
    JMAP calendar *writes*/RSVP are deferred to a later slice.
 3. IMAP/SMTP + CalDAV/CardDAV against the same Stalwart fixture. The **IMAP/SMTP
    mail half is implemented** (step 5a); `imap-smtp.md` is authoritative for the
-   `provider-imap` client. **CalDAV calendar read/sync is implemented** (step 5b)
-   under `provider-caldav`; `caldav.md` is authoritative. The remaining step-5
-   slices are **CalDAV writes** + **iTIP/iMIP**; **CardDAV/contacts** land after
-   step 5.
+   `provider-imap` client. **CalDAV calendar read/sync (step 5b) and writes
+   (step 5c) are implemented** under `provider-caldav`; `caldav.md` is
+   authoritative. The remaining step-5 slice is **iTIP/iMIP**; **CardDAV/contacts**
+   land after step 5.
 4. Optional external-provider smoke tests against real hosted or self-managed servers.
 
 If product pressure changes the order, the domain model tests still need JMAP and JSCalendar coverage before IMAP assumptions land.
@@ -67,8 +67,8 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
 - SMTP per-recipient acceptance/rejection before DATA must be represented.
 - Sent folder placement must reconcile by generated Message-ID.
 - CalDAV/CardDAV sync uses RFC 6578 sync-token where supported; otherwise CTag plus per-resource ETag diffing. (**Implemented** for the sync-token path in `provider-caldav`; the CTag fallback is a documented follow-up — `caldav.md`.)
-- CalDAV writes use ETags and `If-Match`; conflicts refetch before merge. (Deferred: the read slice preserves each event's `ETag` so the write slice can `If-Match` without a refetch.)
-- iTIP/iMIP scheduling is distinct from ordinary event storage. (Deferred to a later slice; the model lives in `engine_core::scheduling`.)
+- CalDAV writes use ETags and `If-Match`; conflicts refetch before merge. (**Implemented** in `provider-caldav` — conditional `PUT` (`If-None-Match`/`If-Match`) + `DELETE`, outbox-driven by `engine_sync::write_calendar_event`/`delete_calendar_event`, a `412` → `Conflict`; `caldav.md`.)
+- iTIP/iMIP scheduling is distinct from ordinary event storage. (Deferred to a later slice; the model lives in `engine_core::scheduling`. The CalDAV write primitive — PUT my patched copy under `If-Match` — is what an RSVP/scheduling slice will build on.)
 
 ## Fixtures
 

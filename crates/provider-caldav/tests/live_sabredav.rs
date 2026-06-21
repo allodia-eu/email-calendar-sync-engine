@@ -25,6 +25,8 @@ use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 use serde::de::DeserializeOwned;
 use store_sqlite::SqliteStore;
 
+mod common;
+
 /// Reads the SabreDAV harness coordinates, or `None` to skip (offline gate).
 fn harness() -> Option<(String, String, String)> {
     let addr = std::env::var("SABREDAV_HTTP_ADDR").ok()?;
@@ -74,6 +76,8 @@ async fn sabredav_calendar_sync_loop() {
         eprintln!("skipping sabredav_calendar_sync_loop: SABREDAV_HTTP_ADDR unset");
         return;
     };
+    // Serialize with the write round-trip (shares the calendar; see `live_caldav`).
+    let _serial = common::serial_guard().await;
     let provider = connect(&addr, &user, &pass).await;
 
     let store =
@@ -156,4 +160,19 @@ async fn sabredav_calendar_sync_loop() {
         second.events.tombstoned, 0,
         "nothing tombstoned on a re-sync"
     );
+}
+
+/// The same write lifecycle as `live_caldav.rs`, against the independent SabreDAV
+/// server — proving conditional `PUT`/`DELETE` are not over-fit to Stalwart. Skips
+/// with no `SABREDAV_HTTP_ADDR`.
+#[tokio::test]
+async fn sabredav_write_round_trip() {
+    let Some((addr, user, pass)) = harness() else {
+        eprintln!("skipping sabredav_write_round_trip: SABREDAV_HTTP_ADDR unset");
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    let provider = connect(&addr, &user, &pass).await;
+    let account = AccountId::try_from("sabredav-write-live").unwrap();
+    common::write_round_trip(&provider, &account).await;
 }

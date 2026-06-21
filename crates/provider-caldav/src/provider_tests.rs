@@ -68,11 +68,14 @@ fn resolves_relative_and_absolute_collections() {
 }
 
 #[tokio::test]
-async fn exposes_dav_scopes_and_only_the_calendar_capability() {
+async fn exposes_dav_scopes_and_the_calendar_capabilities() {
     let provider = connect(replay(vec![PRINCIPAL])).await;
     let account = AccountId::try_from("a").unwrap();
 
+    // CalDAV does calendar read/sync **and** writes over the same HTTP transport;
+    // it does no mail.
     assert!(provider.capabilities().calendars());
+    assert!(provider.capabilities().calendar_writes());
     assert!(!provider.capabilities().mail());
     assert!(!provider.capabilities().submission());
 
@@ -241,4 +244,88 @@ async fn rebind_switches_collection_without_rediscovery() {
         other => panic!("expected a DavCollection scope, got {other:?}"),
     }
     assert_eq!(rebound.collection_href(), "/calendars/other/");
+}
+
+#[tokio::test]
+async fn mints_a_resource_href_under_the_bound_collection() {
+    let provider = connect(replay(vec![PRINCIPAL])).await;
+    // The conventional `<collection>/<uid>.ics`, with the UID canonically encoded:
+    // `@` → `%40` (the form servers store and report — verified live against
+    // Stalwart), so the minted href matches the server's resource href for a later
+    // If-Match/DELETE.
+    let href = provider
+        .event_href(&Uid::new("oneoff-2001@test.local").unwrap())
+        .unwrap();
+    assert_eq!(
+        href.as_str(),
+        "/dav/cal/alice%40test.local/default/oneoff-2001%40test.local.ics"
+    );
+    // A path-unsafe UID (space, slash) is percent-encoded into one segment, so the
+    // href stays a single valid resource name.
+    let odd = provider.event_href(&Uid::new("a b/c").unwrap()).unwrap();
+    assert_eq!(
+        odd.as_str(),
+        "/dav/cal/alice%40test.local/default/a%20b%2Fc.ics"
+    );
+}
+
+// The model invariant (`calendar-semantics.md`, `modeling.md`): a CalDAV event
+// carrying properties absent from JSCalendar round-trips via **raw-plus-patch**
+// without dropping them. We parse a resource whose body carries an `X-` property
+// and a `VALARM` the lossy projection cannot express, then PUT its preserved
+// `raw_ical` — the wire body must still carry both, proving the write round-trips
+// from raw, never from a re-serialized projection.
+#[tokio::test]
+async fn an_update_round_trips_raw_ical_preserving_non_jscalendar_properties() {
+    use crate::ical::parse_calendar_object;
+    use crate::test_support::wrote;
+    use engine_core::ids::{CalendarId, EventId};
+    use engine_core::version::ETag;
+    use engine_provider::EventWrite;
+
+    let resource = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+        UID:rt-9001@test.local\r\nDTSTART;TZID=Europe/Amsterdam:20260318T100000\r\n\
+        DTEND;TZID=Europe/Amsterdam:20260318T110000\r\nSUMMARY:Round trip\r\n\
+        X-CUSTOM-FLAG:keep-me\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\n\
+        DESCRIPTION:Reminder\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let href = EventId::try_from("/dav/cal/alice%40test.local/default/rt-9001.ics").unwrap();
+    let parsed = parse_calendar_object(
+        resource,
+        href.clone(),
+        CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap(),
+    )
+    .expect("parse");
+    // The lossy projection has no typed field for the X- property, but raw_ical kept it.
+    let raw = parsed.raw_ical.clone().expect("raw preserved");
+
+    // A shared executor handle, so the test can inspect the wire body after the
+    // provider (which owns its executor) performs the PUT. Discovery consumes
+    // PRINCIPAL, then the PUT consumes the write response.
+    let exec = std::sync::Arc::new(Replay::new(vec![
+        crate::test_support::ok(PRINCIPAL),
+        wrote(201, Some("\"rt-v2\"")),
+    ]));
+    let provider =
+        CalDavProvider::with_executor(Box::new(exec.clone()), "/.well-known/caldav", "default")
+            .await
+            .expect("discovery");
+    let account = AccountId::try_from("acct").unwrap();
+    let write = EventWrite::update(
+        href.clone(),
+        parsed.uid.clone(),
+        raw,
+        ETag::new("\"rt-v1\""),
+    );
+    let receipt = provider.put_event(&account, &write).await.expect("put");
+
+    assert_eq!(receipt.event_key, href.key().clone());
+    assert_eq!(receipt.etag, Some(ETag::new("\"rt-v2\"")));
+
+    // The PUT body still carries the X- property and the VALARM — nothing the
+    // projection cannot express was dropped.
+    let writes = exec.writes();
+    assert_eq!(writes[0].method, crate::transport::DavMethod::Put);
+    assert!(writes[0].body.contains("X-CUSTOM-FLAG:keep-me"));
+    assert!(writes[0].body.contains("BEGIN:VALARM"));
+    assert!(writes[0].body.contains("TRIGGER:-PT15M"));
 }

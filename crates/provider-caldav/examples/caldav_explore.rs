@@ -1,13 +1,17 @@
 //! Explore a live CalDAV account: list calendars and the bound calendar's events.
 //!
-//! **Read-only** — it discovers the calendar home, lists the account's calendars,
-//! then syncs the bound collection's events and prints each one's start, kind, and
-//! title. It validates the `provider-caldav` client against a *real* CalDAV server
-//! (Fastmail/iCloud/Google over HTTPS, or a local server such as the Stalwart
-//! harness over plain HTTP). This is the calendar parallel to `provider-imap`'s
-//! `imap_explore` — the external-provider smoke test `north-star.md` step 7
-//! anticipates, ahead of schedule. CalDAV writes are not implemented yet, so this
-//! example does not mutate anything.
+//! **Read-only by default** — it discovers the calendar home, lists the account's
+//! calendars, then syncs the bound collection's events and prints each one's start,
+//! kind, and title. It validates the `provider-caldav` client against a *real*
+//! CalDAV server (Fastmail/iCloud/Google over HTTPS, or a local server such as the
+//! Stalwart harness over plain HTTP). This is the calendar parallel to
+//! `provider-imap`'s `imap_explore` — the external-provider smoke test
+//! `north-star.md` step 7 anticipates, ahead of schedule.
+//!
+//! Set `CALDAV_WRITE=1` to additionally run a **write demo**: it creates a
+//! throwaway event in the bound calendar and immediately deletes it again, so the
+//! calendar is left exactly as it was (the opt-in parallel to `imap_explore`'s
+//! `IMAP_DRAFT`/`IMAP_SEND`).
 //!
 //! Credentials come from the environment — never hard-code or paste a password:
 //!
@@ -17,6 +21,7 @@
 //! cargo run -p provider-caldav --example caldav_explore
 //! # optional: CALDAV_CALENDAR=default            (the collection to bind events to)
 //! # optional: CALDAV_DISCOVERY=/.well-known/caldav (discovery start path)
+//! # optional: CALDAV_WRITE=1                      (create + delete a throwaway event)
 //! #
 //! # Against the local Stalwart harness (docker/stalwart up):
 //! #   export CALDAV_URL=http://127.0.0.1:18080 \
@@ -117,6 +122,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  • {:<24}  {kind:<9}  {title}", describe_start(&ev.start));
     }
     println!("\nNext sync-token cursor: {}", events.next_cursor.as_str());
+
+    // Opt-in write demo: create a throwaway event, then delete it, leaving the
+    // calendar untouched. Off by default so the example never mutates by accident.
+    if env::var("CALDAV_WRITE").is_ok() {
+        write_demo(&provider, &account).await?;
+    }
+    Ok(())
+}
+
+/// Creates a throwaway event in the bound calendar via `PUT`, then deletes it via
+/// `DELETE` — a round trip that leaves the calendar as it was.
+async fn write_demo(
+    provider: &CalDavProvider,
+    account: &AccountId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use engine_core::ids::Uid;
+    use engine_core::raw::RawIcal;
+    use engine_provider::{EventDeletion, EventWrite};
+
+    let uid = Uid::new("caldav-explore-demo@example.invalid")?;
+    let href = provider.event_href(&uid)?;
+    println!("\nCALDAV_WRITE set — write demo:");
+    // Clean up any leftover from a prior interrupted run, so the create is a true
+    // create (If-None-Match: *).
+    let _ = provider
+        .delete_event(account, &EventDeletion::unconditional(href.clone()))
+        .await;
+
+    let ical = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//engine//caldav_explore//EN\r\n\
+         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260101T000000Z\r\n\
+         DTSTART;TZID=Europe/Amsterdam:20260601T100000\r\n\
+         DTEND;TZID=Europe/Amsterdam:20260601T103000\r\n\
+         SUMMARY:caldav_explore demo (safe to delete)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        uid = uid.as_str()
+    );
+    let receipt = provider
+        .put_event(
+            account,
+            &EventWrite::create(href.clone(), uid.clone(), RawIcal::new(ical)),
+        )
+        .await?;
+    println!(
+        "  • created {}  (etag {})",
+        href.as_str(),
+        receipt.etag.as_ref().map_or("—", |e| e.as_str())
+    );
+
+    provider
+        .delete_event(account, &EventDeletion::unconditional(href))
+        .await?;
+    println!("  • deleted — the calendar is left as it was.");
     Ok(())
 }
 

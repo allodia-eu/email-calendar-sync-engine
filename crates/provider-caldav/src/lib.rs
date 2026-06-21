@@ -1,15 +1,18 @@
-//! `provider-caldav` — the CalDAV (calendar) read/sync provider adapter.
+//! `provider-caldav` — the CalDAV (calendar) read/sync **and write** provider
+//! adapter.
 //!
 //! This is the calendar half of build-order step 5 (`north-star.md`): a CalDAV
 //! client that syncs an account's calendars and events into the engine's
 //! normalized [`Calendar`](engine_core::calendar::Calendar) /
-//! [`Event`](engine_core::calendar::Event) projections, against the same Stalwart
-//! fixture the JMAP and IMAP adapters use. It implements the
-//! [`Provider`](engine_provider::Provider) contract, so the generic
-//! `engine_sync::sync_calendar` loop drives it unchanged — the only differences
-//! from JMAP are the transport (WebDAV over HTTP) and that the calendar payload
-//! arrives as **iCalendar** (RFC 5545) which this crate parses, where JMAP
-//! supplied JSCalendar directly. `caldav.md` is authoritative for the design.
+//! [`Event`](engine_core::calendar::Event) projections, and writes events back with
+//! conditional `PUT`/`DELETE`, against the same Stalwart fixture the JMAP and IMAP
+//! adapters use. It implements the [`Provider`](engine_provider::Provider) contract,
+//! so the generic `engine_sync::sync_calendar` loop drives reads unchanged and the
+//! `engine_sync::write_calendar_event` outbox driver drives writes — the only
+//! differences from JMAP are the transport (WebDAV over HTTP) and that the calendar
+//! payload is **iCalendar** (RFC 5545) which this crate parses (reads) and carries
+//! verbatim (writes), where JMAP supplied JSCalendar directly. `caldav.md` is
+//! authoritative for the design.
 //!
 //! Layers (mirroring `provider-jmap`'s `Executor` seam so the whole protocol is
 //! offline-testable by replaying captured transcripts):
@@ -17,9 +20,12 @@
 //!   [`Event`](engine_core::calendar::Event)s, folding a resource's master +
 //!   `RECURRENCE-ID` override `VEVENT`s into one event.
 //! - `dav` — the WebDAV `multistatus` XML parser.
-//! - `transport` — the HTTP `DavExecutor` seam + its `reqwest` implementation.
+//! - `transport` — the HTTP `DavExecutor` seam (read reports + writes) + its
+//!   `reqwest` implementation.
 //! - `discovery`/`calendar` — principal → calendar-home → collection listing.
 //! - `sync` — the `sync-collection` REPORT (RFC 6578) snapshot/delta logic.
+//! - `write` — conditional `PUT`/`DELETE` (`If-Match`/`If-None-Match`) of event
+//!   resources.
 //! - `provider` — the [`Provider`](engine_provider::Provider) implementation.
 
 mod calendar;
@@ -33,6 +39,7 @@ mod sync;
 #[cfg(test)]
 mod test_support;
 mod transport;
+mod write;
 
 pub use error::CalDavError;
 pub use provider::{CalDavConfig, CalDavProvider};
