@@ -2,3 +2,4 @@
 *.local.md
 .local/
 .DS_Store
+.claude/worktrees
