@@ -329,3 +329,141 @@ async fn an_update_round_trips_raw_ical_preserving_non_jscalendar_properties() {
     assert!(writes[0].body.contains("BEGIN:VALARM"));
     assert!(writes[0].body.contains("TRIGGER:-PT15M"));
 }
+
+// --- iTIP/iMIP end-to-end: parse → reconcile → trust → RSVP → outbox → store ---
+
+/// A stored (no transit-only METHOD, RFC 4791 §4.1) copy of the invited event, as
+/// my calendar holds it after a CalDAV auto-schedule server processed the REQUEST:
+/// I am a needs-action attendee.
+const STORED_INVITE: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//T//EN\r\nBEGIN:VEVENT\r\nUID:meeting-7@test.local\r\nDTSTAMP:20260501T080000Z\r\nDTSTART;TZID=Europe/Amsterdam:20260601T090000\r\nDTEND;TZID=Europe/Amsterdam:20260601T093000\r\nSUMMARY:Sprint planning\r\nORGANIZER;CN=Boss:mailto:boss@test.local\r\nATTENDEE;CN=Boss;ROLE=CHAIR;PARTSTAT=ACCEPTED:mailto:boss@test.local\r\nATTENDEE;CN=Me;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:me@test.local\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+/// The inbound iMIP REQUEST that delivered the invite (the same event, carrying a
+/// `METHOD`), as parsed off the mail path.
+const INVITE_REQUEST: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//T//EN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:meeting-7@test.local\r\nDTSTAMP:20260501T080000Z\r\nDTSTART;TZID=Europe/Amsterdam:20260601T090000\r\nDTEND;TZID=Europe/Amsterdam:20260601T093000\r\nSUMMARY:Sprint planning\r\nSEQUENCE:0\r\nORGANIZER;CN=Boss:mailto:boss@test.local\r\nATTENDEE;CN=Boss;ROLE=CHAIR;PARTSTAT=ACCEPTED:mailto:boss@test.local\r\nATTENDEE;CN=Me;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:me@test.local\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+// One cohesive scenario (parse the invite → trust it against its organizer →
+// accept → write my PARTSTAT back through the conditional-PUT outbox driver into a
+// real store); splitting it would obscure the single inbound→outbound flow.
+#[tokio::test]
+async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
+    use crate::ical::parse_calendar_object;
+    use crate::imip;
+    use crate::test_support::{ok, wrote};
+    use crate::transport::{DavMethod, Precondition};
+    use engine_core::calendar::ParticipationStatus;
+    use engine_core::ids::CalendarId;
+    use engine_core::raw::RawIcal;
+    use engine_core::scheduling::{ScheduleAction, reconcile};
+    use engine_core::version::ETag;
+    use engine_provider::EventWrite;
+    use engine_sync::write_calendar_event;
+
+    // (1) Parse the inbound iMIP REQUEST off the mail path.
+    let message = imip::parse(INVITE_REQUEST).expect("parse imip request");
+    let uid = message.event.uid.clone();
+    let me = "me@test.local";
+
+    // (2) Trust + reconcile: the authenticated sender IS the organizer, and the
+    // instance is unseen, so the decision is to schedule the event.
+    assert_eq!(
+        reconcile(&message, Some("boss@test.local"), None),
+        ScheduleAction::ScheduleEvent
+    );
+
+    // (3) I accept: patch *my* PARTSTAT into my stored copy of the event (the RSVP
+    // write primitive). Storage round-trips from raw plus this targeted patch.
+    let patched = imip::set_my_partstat(
+        &RawIcal::new(STORED_INVITE),
+        me,
+        &ParticipationStatus::Accepted,
+    )
+    .expect("rsvp patch");
+
+    // (4) Drive the conditional PUT through the existing outbox driver into a real
+    // store. Discovery consumes PRINCIPAL; the PUT consumes the write response.
+    let exec = std::sync::Arc::new(Replay::new(vec![
+        ok(PRINCIPAL),
+        wrote(204, Some("\"rt-v2\"")),
+    ]));
+    let provider =
+        CalDavProvider::with_executor(Box::new(exec.clone()), "/.well-known/caldav", "default")
+            .await
+            .expect("discovery");
+    let store =
+        SqliteStore::open_in_memory(ManualClock::new("2026-06-20T00:00:00Z".parse().unwrap()))
+            .expect("store");
+    let account = AccountId::try_from("caldav-acct").unwrap();
+    let href = provider.event_href(&uid).expect("href");
+    let write = EventWrite::update(href.clone(), uid, patched, ETag::new("\"rt-v1\""));
+
+    let outcome = write_calendar_event(
+        &provider,
+        &store,
+        &account,
+        WorkerId::new("t"),
+        Duration::from_mins(5),
+        "rsvp:meeting-7@test.local:accept",
+        &write,
+    )
+    .await
+    .expect("rsvp write");
+
+    // (5) The op succeeded and recorded the server's new ETag.
+    assert_eq!(outcome.event_key, href.key().clone());
+    assert_eq!(outcome.etag, Some(ETag::new("\"rt-v2\"")));
+
+    // The PUT was guarded by If-Match (optimistic concurrency, never a blind
+    // overwrite), carried no transit-only METHOD, and its body sets my accepted
+    // status while leaving the organizer's untouched.
+    let writes = exec.writes();
+    let put = writes
+        .iter()
+        .find(|w| w.method == DavMethod::Put)
+        .expect("a PUT was issued");
+    assert_eq!(
+        put.precondition,
+        Precondition::IfMatch("\"rt-v1\"".to_owned())
+    );
+    assert!(!put.body.contains("METHOD:"));
+    let body = parse_calendar_object(
+        &put.body,
+        href.clone(),
+        CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap(),
+    )
+    .expect("the PUT body is valid iCalendar");
+    let my_status = &body
+        .participants
+        .iter()
+        .find(|p| p.email.as_deref() == Some(me))
+        .unwrap()
+        .participation_status;
+    assert_eq!(my_status, &ParticipationStatus::Accepted);
+    let boss = body
+        .participants
+        .iter()
+        .find(|p| p.email.as_deref() == Some("boss@test.local"))
+        .unwrap();
+    assert_eq!(boss.participation_status, ParticipationStatus::Accepted);
+}
+
+#[tokio::test]
+async fn a_parsed_request_whose_organizer_mismatches_the_sender_is_rejected() {
+    // The required security test (`calendar-semantics.md`), end to end on a *parsed*
+    // message: the body's ORGANIZER is boss, but the authenticated sender is an
+    // attacker — the bridge refuses it, so no write is ever planned.
+    use crate::imip;
+    use engine_core::scheduling::{ImipUntrusted, ScheduleAction, reconcile};
+
+    let message = imip::parse(INVITE_REQUEST).expect("parse imip request");
+    let action = reconcile(&message, Some("attacker@evil.example"), None);
+    assert_eq!(
+        action,
+        ScheduleAction::Rejected(ImipUntrusted::SenderMismatch {
+            expected: "organizer"
+        })
+    );
+    assert!(
+        !matches!(action, ScheduleAction::ScheduleEvent),
+        "an untrusted invite is never scheduled"
+    );
+}

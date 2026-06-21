@@ -13,8 +13,12 @@ Recommended first provider spine:
    mail half is implemented** (step 5a); `imap-smtp.md` is authoritative for the
    `provider-imap` client. **CalDAV calendar read/sync (step 5b) and writes
    (step 5c) are implemented** under `provider-caldav`; `caldav.md` is
-   authoritative. The remaining step-5 slice is **iTIP/iMIP**; **CardDAV/contacts**
-   land after step 5.
+   authoritative. **iTIP/iMIP inbound parse/reconcile/trust/apply + the RSVP write
+   primitive (step 5d) are implemented** in `engine_core::scheduling` +
+   `provider_caldav::imip` (`calendar-semantics.md`/`caldav.md`); the residual
+   scheduling deferrals (mail-sync wiring, Scheduling-Inbox `REPORT`, client-iMIP
+   SMTP delivery, `ClientImip` persistence) and **CardDAV/contacts** land after
+   step 5.
 4. Optional external-provider smoke tests against real hosted or self-managed servers.
 
 If product pressure changes the order, the domain model tests still need JMAP and JSCalendar coverage before IMAP assumptions land.
@@ -68,7 +72,7 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
 - Sent folder placement must reconcile by generated Message-ID.
 - CalDAV/CardDAV sync uses RFC 6578 sync-token where supported; otherwise CTag plus per-resource ETag diffing. (**Implemented** for the sync-token path in `provider-caldav`; the CTag fallback is a documented follow-up — `caldav.md`.)
 - CalDAV writes use ETags and `If-Match`; conflicts refetch before merge. (**Implemented** in `provider-caldav` — conditional `PUT` (`If-None-Match`/`If-Match`) + `DELETE`, outbox-driven by `engine_sync::write_calendar_event`/`delete_calendar_event`, a `412` → `Conflict`; `caldav.md`.)
-- iTIP/iMIP scheduling is distinct from ordinary event storage. (Deferred to a later slice; the model lives in `engine_core::scheduling`. The CalDAV write primitive — PUT my patched copy under `If-Match` — is what an RSVP/scheduling slice will build on.)
+- iTIP/iMIP scheduling is distinct from ordinary event storage. (**Implemented** for the inbound half: detect (`find_calendar_part`) → parse (`provider_caldav::imip::parse`) → `reconcile`/trust → apply, and the RSVP write primitive (`set_my_partstat` → conditional `PUT` via the existing outbox driver). The CalDAV Scheduling-Inbox `REPORT`, client-iMIP SMTP delivery, and `ClientImip` local-origin persistence stay deferred; `calendar-semantics.md`.)
 
 ## Fixtures
 

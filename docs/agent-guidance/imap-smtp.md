@@ -154,8 +154,15 @@ is authoritative for the `provider-caldav` calendar client.
 - **Server literals are capped at 64 MiB.** A `{n}` larger than the cap is rejected
   (an adversarial server cannot drive an unbounded allocation); generous for any
   metadata response.
-- **iTIP/iMIP scheduling** is out of scope (distinct from event storage —
-  `calendar-semantics.md`), as is **CalDAV/CardDAV** (the other step-5 slice).
+- **iTIP/iMIP scheduling**: the inbound parse/reconcile/trust/apply pipeline and
+  the RSVP write primitive are **implemented** in `engine_core::scheduling` +
+  `provider_caldav::imip` (`calendar-semantics.md`/`caldav.md`). The piece that
+  touches *this* crate — **delivering an iTIP `REPLY` as an iMIP email** — is
+  deferred: it needs a `multipart` `text/calendar` body, but `assemble_message` is
+  `text/plain`-only today (long encoded-words/folding are likewise unrefined). The
+  `ServerAutoSchedule` RSVP path (conditional `PUT`, the server delivers the
+  `REPLY`) needs no SMTP and is fully wired. **CalDAV/CardDAV** is the other step-5
+  slice.
 
 ## Testing
 
