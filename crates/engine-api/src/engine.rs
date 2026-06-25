@@ -12,8 +12,8 @@ use engine_recurrence::Horizon;
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{PendingOpState, StoreError, StoreRead, WorkerId};
 use engine_sync::{
-    CalendarSyncReport, MailSyncReport, SubmitOutcome, SyncError, submit_mail, sync_calendar,
-    sync_mail,
+    CalendarSyncReport, MailSyncReport, ProgressSink, SubmitOutcome, SyncError, submit_mail,
+    sync_calendar, sync_mail, sync_mail_streamed,
 };
 use store_sqlite::SqliteStore;
 
@@ -39,8 +39,8 @@ const LEASE_TTL: Duration = Duration::from_mins(5);
 ///
 /// An `Engine` owns one durable [`SqliteStore`] — the first store; other backends
 /// are host adapters — driven by the host wall clock. Hosts sync accounts through
-/// this one facade rather than wiring the engine crates themselves; search, the
-/// write/outbox surface, and the language bindings are follow-up slices.
+/// this one facade rather than wiring the engine crates themselves; the language
+/// bindings are a follow-up slice.
 ///
 /// `Engine` is `Send + Sync`; a host shares one across tasks as `Arc<Engine>`.
 /// Concurrent syncs of *different* scopes proceed in parallel, but two concurrent
@@ -121,6 +121,39 @@ impl Engine {
             LEASE_TTL,
             horizon,
             host_zone,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
+
+    /// Syncs one account's mail like [`Engine::sync_mail`], but **streams** the email
+    /// scope: each page of messages commits as it arrives — so a host can render
+    /// recent mail and live "downloaded Y of X" feedback before the whole sync
+    /// finishes — reporting [`SyncProgress`](engine_sync::SyncProgress) to `progress`
+    /// after every committed page. Only the final page advances the cursor, so a
+    /// mid-stream crash re-runs the pass idempotently. `page_limit` bounds each page
+    /// (`0` is the provider's maximum). `progress` must be cheap and non-blocking
+    /// (push onto a channel); a closure works via the blanket `ProgressSink` impl.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Busy`] if another sync already holds the mail scope, or
+    /// [`ApiError::Sync`] if the provider fetch fails or the store rejects an apply.
+    pub async fn sync_mail_streamed<P: Provider, K: ProgressSink>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        page_limit: usize,
+        progress: &K,
+    ) -> Result<MailSyncReport, ApiError> {
+        sync_mail_streamed(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            page_limit,
+            progress,
         )
         .await
         .map_err(map_sync_error)

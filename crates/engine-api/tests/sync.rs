@@ -8,7 +8,9 @@
 //! delta that drops a key tombstones it. Failures surface as [`ApiError`], and two
 //! concurrent syncs of one scope resolve to [`ApiError::Busy`], not corruption.
 
-use engine_api::{AccountId, ApiError, Engine, Horizon, PendingOpId, PendingOpState, TimeZoneId};
+use engine_api::{
+    AccountId, ApiError, Engine, Horizon, PendingOpId, PendingOpState, SyncProgress, TimeZoneId,
+};
 use engine_core::calendar::{Calendar, Event};
 use engine_core::ids::{
     CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid,
@@ -616,4 +618,29 @@ async fn pending_op_state_is_none_for_an_unknown_op() {
             .unwrap(),
         None
     );
+}
+
+#[tokio::test]
+async fn sync_mail_streamed_reports_progress() {
+    use std::sync::{Arc, Mutex};
+    let engine = Engine::open_in_memory().unwrap();
+    let seen: Arc<Mutex<Vec<SyncProgress>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let seen = Arc::clone(&seen);
+        // The blanket `ProgressSink for Fn(SyncProgress)` impl lets a closure be the sink.
+        move |p: SyncProgress| seen.lock().unwrap().push(p)
+    };
+
+    let report = engine
+        .sync_mail_streamed(&FakeProvider::new(), &account(), 0, &sink)
+        .await
+        .unwrap();
+    assert_eq!(report.email.upserted, 2);
+
+    // The fake returns both messages in one snapshot page whose total is known up
+    // front, so exactly one progress event lands with fetched == total == 2.
+    let progress = seen.lock().unwrap();
+    assert_eq!(progress.len(), 1);
+    assert_eq!(progress[0].fetched, 2);
+    assert_eq!(progress[0].total, Some(2));
 }

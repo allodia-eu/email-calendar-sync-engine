@@ -13,10 +13,11 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 
 - An [`Engine`] owns **one durable [`SqliteStore`]** driven by a host wall clock
   ([`SystemClock`]), and exposes high-level operations over it.
-- Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`,
-  `search_mail` / `search_calendar`, and `submit_mail` / `pending_op_state`
-  (calendar writes land in a later slice). The return values (e.g. `MailSyncReport`,
-  `SearchResults`, `SubmitOutcome`) are the host's feedback.
+- Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
+  (or `sync_mail_streamed` for live progress), `search_mail` / `search_calendar`, and
+  `submit_mail` / `pending_op_state` (calendar writes land in a later slice). The
+  return values (e.g. `MailSyncReport`, `SearchResults`, `SubmitOutcome`) are the
+  host's feedback.
 
 ## What it is not
 
@@ -99,8 +100,13 @@ Step 6 lands in small, tested slices. Order and status:
    `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an
    ambiguous send). Calendar writes (`write_calendar_event` /
    `delete_calendar_event`) ride the same outbox and are an additive follow-up.
-4. **Streaming progress.** Expose `sync_mail_streamed` + a `ProgressSink` the host
-   can observe for "downloaded Y of X" UI.
+4. **Streaming progress — _done_.** `Engine::sync_mail_streamed` drives
+   `engine-sync`'s `sync_mail_streamed`: the email scope commits page by page under one
+   lease, reporting `SyncProgress { scope, fetched, total }` to the host's
+   `ProgressSink` after each committed page — so a UI shows recent mail and a
+   "downloaded Y of X" bar before the sync finishes. Only the final page advances the
+   cursor (a mid-stream crash re-runs the pass idempotently). A closure is a sink via
+   the blanket `ProgressSink for Fn(SyncProgress)` impl.
 5. **Bindings.** `bindings-uniffi` (Kotlin/Swift) and `bindings-ffi-c` (C ABI)
    over `engine-api`. These need `unsafe`/codegen, so they override the workspace
    `unsafe_code = "forbid"` lint locally (isolated + documented, per `AGENTS.md`),
@@ -146,7 +152,8 @@ mail/event with complete coverage, a malformed query is `ApiError::Query`, and a
 unsynced account returns an empty answer. A `SubmittingProvider` then exercises the
 outbox facade: a successful `submit_mail` commits the op `Succeeded` (read back via
 `pending_op_state`), a failed send surfaces as `ApiError::Sync`, and an unknown op id
-reads back `None`. Run the standard gate (`AGENTS.md`):
+reads back `None`. A streamed `sync_mail_streamed` with a closure sink then asserts
+one progress event lands with `fetched == total == 2`. Run the standard gate (`AGENTS.md`):
 `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own
 lines are 100%-covered by these tests (no live provider needed).

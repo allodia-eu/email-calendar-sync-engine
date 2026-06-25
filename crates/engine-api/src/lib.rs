@@ -13,10 +13,11 @@
 //! Step 6 of the build order lands in small, tested slices. These cover **store
 //! lifecycle** ([`Engine::open`], [`Engine::open_in_memory`]), **provider-driven
 //! sync** ([`Engine::sync_mail`], [`Engine::sync_calendar`]), **per-account
-//! search** ([`Engine::search_mail`], [`Engine::search_calendar`]), and
+//! search** ([`Engine::search_mail`], [`Engine::search_calendar`]),
 //! **outbox-mediated mail submission** ([`Engine::submit_mail`],
-//! [`Engine::pending_op_state`]). Calendar writes, streaming sync progress, and the
-//! language bindings themselves are deliberate follow-up slices.
+//! [`Engine::pending_op_state`]), and **streaming mail sync**
+//! ([`Engine::sync_mail_streamed`]). Calendar writes and the language bindings
+//! themselves are deliberate follow-up slices.
 //!
 //! # Shape
 //!
@@ -51,7 +52,9 @@ pub use engine_provider::{Draft, Provider};
 pub use engine_recurrence::Horizon;
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 pub use engine_store::PendingOpState;
-pub use engine_sync::{CalendarSyncReport, MailSyncReport, SubmitOutcome};
+pub use engine_sync::{
+    CalendarSyncReport, MailSyncReport, ProgressSink, SubmitOutcome, SyncProgress,
+};
 
 /// An error from an [`Engine`] operation.
 ///
