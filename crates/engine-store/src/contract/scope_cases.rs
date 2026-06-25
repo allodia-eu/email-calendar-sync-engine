@@ -670,3 +670,43 @@ pub(super) async fn structured_index_rows_replace_and_clear<S: Store + StoreRead
             .is_empty()
     );
 }
+
+/// `account_scopes` lists exactly the scopes a store has claimed for an account —
+/// across data types, in ascending `SyncScope` order — and nothing from another
+/// account, so a per-account search enumerates them instead of hard-coding which
+/// scopes a provider uses. An account the store has never seen has none.
+pub(super) async fn account_scopes_enumerates_an_accounts_scopes<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let a = acct("acct-enum-a");
+    let b = acct("acct-enum-b");
+    // Claiming a scope registers it; claim two data types for A and one for B.
+    for scope in [mailbox_scope(&a), email_scope(&a)] {
+        store
+            .claim_sync_scope(a.clone(), &scope, lease_request("worker", 300))
+            .await
+            .unwrap();
+    }
+    store
+        .claim_sync_scope(b.clone(), &email_scope(&b), lease_request("worker", 300))
+        .await
+        .unwrap();
+
+    // A's scopes only, in ascending order (the suite asserts the exact ordered set).
+    let mut expected = vec![email_scope(&a), mailbox_scope(&a)];
+    expected.sort();
+    assert_eq!(store.account_scopes(a).await.unwrap(), expected);
+    assert_eq!(
+        store.account_scopes(b).await.unwrap(),
+        vec![email_scope(&acct("acct-enum-b"))]
+    );
+    // An account the store has never seen has no scopes.
+    assert!(
+        store
+            .account_scopes(acct("acct-enum-none"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

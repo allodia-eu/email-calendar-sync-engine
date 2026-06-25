@@ -273,7 +273,8 @@ fencing vocabulary lives in `engine-store`, beside the trait that issues it. The
 trait is **encryption-agnostic** — at-rest encryption is a `store-sqlite`
 construction detail (plain SQLite over OS file encryption by default, SQLCipher
 opt-in), so the same contract holds either way. A small `StoreRead` companion
-(lease-free object/key inspection) backs the contract suite and early reads.
+(lease-free object/key inspection, plus `account_scopes` to enumerate an account's
+claimed scopes for per-account search) backs the contract suite and early reads.
 
 Supporting types (abbreviated):
 

@@ -451,6 +451,18 @@ impl<C: Clock> Store for MemStore<C> {
 
 #[async_trait]
 impl<C: Clock> StoreRead for MemStore<C> {
+    async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>> {
+        let inner = self.lock();
+        let mut scopes: Vec<SyncScope> = inner
+            .scopes
+            .keys()
+            .filter(|scope| scope.account() == &account)
+            .cloned()
+            .collect();
+        scopes.sort();
+        Ok(scopes)
+    }
+
     async fn object_keys(&self, scope: &SyncScope) -> Result<Vec<ProviderKey>> {
         let inner = self.lock();
         let mut keys: Vec<ProviderKey> = inner

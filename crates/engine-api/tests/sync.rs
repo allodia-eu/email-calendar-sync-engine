@@ -3,7 +3,7 @@
 //!
 //! The fake is **cursor-aware** — a full snapshot on the first sync of a scope, a
 //! delta once a cursor exists — so the tests can assert real sync semantics from
-//! the returned reports (search, the other read surface, lands in a later slice):
+//! the returned reports (search over the synced data is exercised below):
 //! a snapshot upserts, a resync from a *persisted* cursor is an empty delta, and a
 //! delta that drops a key tombstones it. Failures surface as [`ApiError`], and two
 //! concurrent syncs of one scope resolve to [`ApiError::Busy`], not corruption.
@@ -427,4 +427,73 @@ async fn open_rejects_an_unusable_path() {
     let bad = dir.path().join("missing").join("engine.sqlite");
     let err = Engine::open(&bad).unwrap_err();
     assert!(matches!(err, ApiError::Store(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn searches_synced_mail() {
+    let engine = Engine::open_in_memory().unwrap();
+    engine
+        .sync_mail(&FakeProvider::new(), &account())
+        .await
+        .unwrap();
+
+    // Full-text over the indexed subject: "report" matches m1's "Quarterly report".
+    let m1 = message("m1", "a", "Quarterly report").id.key().clone();
+    let m2 = message("m2", "a", "Lunch plans").id.key().clone();
+    let report = engine.search_mail(&account(), "report", 10).await.unwrap();
+    assert_eq!(report.keys(), vec![m1.clone()]);
+    assert!(report.coverage.is_complete());
+
+    // A structured membership filter: both messages live in mailbox "a".
+    let in_a = engine
+        .search_mail(&account(), "mailbox:a", 10)
+        .await
+        .unwrap();
+    let keys = in_a.keys();
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&m1) && keys.contains(&m2));
+}
+
+#[tokio::test]
+async fn searches_synced_calendar() {
+    let engine = Engine::open_in_memory().unwrap();
+    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+    engine
+        .sync_calendar(&FakeProvider::new(), &account(), horizon(), &zone)
+        .await
+        .unwrap();
+
+    // The event is a member of calendar "work"; the calendar-domain scopes are
+    // enumerated and searched, not hard-coded.
+    let evt = event("evt-1", "uid-1@h", "work").id.key().clone();
+    let in_work = engine
+        .search_calendar(&account(), "calendar:work", 10)
+        .await
+        .unwrap();
+    assert_eq!(in_work.keys(), vec![evt]);
+    assert!(in_work.coverage.is_complete());
+}
+
+#[tokio::test]
+async fn search_rejects_a_malformed_query() {
+    let engine = Engine::open_in_memory().unwrap();
+    let mail_err = engine
+        .search_mail(&account(), "from:", 10)
+        .await
+        .unwrap_err();
+    assert!(matches!(mail_err, ApiError::Query(_)), "got {mail_err:?}");
+    let cal_err = engine
+        .search_calendar(&account(), "after:nope", 10)
+        .await
+        .unwrap_err();
+    assert!(matches!(cal_err, ApiError::Query(_)), "got {cal_err:?}");
+}
+
+#[tokio::test]
+async fn search_on_an_unsynced_account_is_empty() {
+    let engine = Engine::open_in_memory().unwrap();
+    // No sync has run, so the account has no scopes: an empty, vacuously complete answer.
+    let results = engine.search_mail(&account(), "report", 10).await.unwrap();
+    assert!(results.hits.is_empty());
+    assert!(results.coverage.is_complete());
 }

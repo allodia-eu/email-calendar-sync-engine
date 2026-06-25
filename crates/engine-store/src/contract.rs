@@ -117,6 +117,8 @@ where
     let (store, clock) = make();
     scope_cases::structured_index_rows_replace_and_clear(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::account_scopes_enumerates_an_accounts_scopes(&store, &clock).await;
+    let (store, clock) = make();
     outbox_cases::expired_op_lease_is_rejected(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::claim_filters_dependencies_and_resources(&store, &clock).await;

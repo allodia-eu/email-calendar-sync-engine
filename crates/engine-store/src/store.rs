@@ -175,6 +175,17 @@ impl IndexRowCounts {
 /// diagnostics; the structured/full-text query path is a separate sub-step.
 #[async_trait]
 pub trait StoreRead: Send + Sync {
+    /// Every sync scope the store currently knows for `account` (every scope it
+    /// has claimed), in ascending [`SyncScope`] order. A per-account search
+    /// enumerates these instead of hard-coding which scopes a provider uses, then
+    /// routes each by
+    /// [`SyncScope::search_domain`](engine_core::sync::SyncScope::search_domain).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>>;
+
     /// The provider keys of live (non-tombstoned) objects in a scope.
     ///
     /// # Errors

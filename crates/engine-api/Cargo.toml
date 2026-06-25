@@ -12,6 +12,7 @@ engine-store = { workspace = true }
 engine-sync = { workspace = true }
 engine-provider = { workspace = true }
 engine-recurrence = { workspace = true }
+engine-search = { workspace = true }
 store-sqlite = { workspace = true }
 thiserror = { workspace = true }
 # `OffsetDateTime::now_utc` needs time's `std` feature; require it explicitly so the

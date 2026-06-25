@@ -296,6 +296,30 @@ pub(crate) fn object_keys(conn: &Connection, scope_key: &str) -> Result<Vec<Prov
     Ok(keys)
 }
 
+/// Every scope the store knows for `account`, decoded from its stored JSON
+/// `scope_key` (the canonical [`SyncScope`] form `convert::scope_key` writes) and
+/// sorted ascending — so a per-account search can enumerate scopes rather than
+/// hard-code which a provider uses.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure or a corrupt scope key.
+pub(crate) fn account_scopes(conn: &Connection, account: &AccountId) -> Result<Vec<SyncScope>> {
+    let mut stmt = conn
+        .prepare("SELECT scope_key FROM sync_scope WHERE account = ?1")
+        .map_err(convert::backend)?;
+    let rows = stmt
+        .query_map([account.as_str()], |r| r.get::<_, String>(0))
+        .map_err(convert::backend)?;
+    let mut scopes = Vec::new();
+    for row in rows {
+        let key = row.map_err(convert::backend)?;
+        scopes.push(serde_json::from_str::<SyncScope>(&key).map_err(convert::backend)?);
+    }
+    scopes.sort();
+    Ok(scopes)
+}
+
 /// The stored payload for one object, or `None` if absent/tombstoned.
 ///
 /// # Errors

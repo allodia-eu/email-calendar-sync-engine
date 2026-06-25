@@ -283,6 +283,11 @@ impl<C: Clock> Store for SqliteStore<C> {
 
 #[async_trait]
 impl<C: Clock> StoreRead for SqliteStore<C> {
+    async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>> {
+        self.call(move |conn| scope_ops::account_scopes(conn, &account))
+            .await
+    }
+
     async fn object_keys(&self, scope: &SyncScope) -> Result<Vec<ProviderKey>> {
         let key = scope_key(scope);
         self.call(move |conn| scope_ops::object_keys(conn, &key))

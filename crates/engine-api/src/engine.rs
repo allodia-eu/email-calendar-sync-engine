@@ -4,10 +4,12 @@ use core::time::Duration;
 use std::path::Path;
 
 use engine_core::ids::AccountId;
+use engine_core::sync::{SearchDomain, SyncScope};
 use engine_core::time::TimeZoneId;
 use engine_provider::Provider;
 use engine_recurrence::Horizon;
-use engine_store::{StoreError, WorkerId};
+use engine_search::{CalendarQuery, MailQuery, SearchResults};
+use engine_store::{StoreError, StoreRead, WorkerId};
 use engine_sync::{CalendarSyncReport, MailSyncReport, SyncError, sync_calendar, sync_mail};
 use store_sqlite::SqliteStore;
 
@@ -118,6 +120,63 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)
+    }
+
+    /// Searches one account's mail with the textual DSL (`from:a subject:"q report"
+    /// before:2026-01-01`), returning ranked object keys and the answer's coverage.
+    /// Runs over the account's mail scopes, enumerated from the store rather than
+    /// hard-coded, so the facade stays provider-agnostic.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Query`] if `query` is malformed, or [`ApiError::Store`]
+    /// on a backend failure.
+    pub async fn search_mail(
+        &self,
+        account: &AccountId,
+        query: &str,
+        limit: usize,
+    ) -> Result<SearchResults, ApiError> {
+        let query = MailQuery::parse(query)?;
+        let scopes = self.scopes_in(account, SearchDomain::Mail).await?;
+        Ok(self.store.search_mail(&scopes, &query, limit).await?)
+    }
+
+    /// Searches one account's calendar events with the textual DSL (`calendar:work
+    /// attendee:a@x after:2026-06-01`); `before:`/`after:` match the materialized
+    /// occurrences, not just the master event (`calendar-semantics.md`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Query`] if `query` is malformed, or [`ApiError::Store`]
+    /// on a backend failure.
+    pub async fn search_calendar(
+        &self,
+        account: &AccountId,
+        query: &str,
+        limit: usize,
+    ) -> Result<SearchResults, ApiError> {
+        let query = CalendarQuery::parse(query)?;
+        let scopes = self.scopes_in(account, SearchDomain::Calendar).await?;
+        Ok(self.store.search_calendar(&scopes, &query, limit).await?)
+    }
+
+    /// The account's scopes in one search domain: every scope the store knows for
+    /// the account, filtered by [`SyncScope::search_domain`]. Enumerating instead
+    /// of hard-coding keeps the facade from branching on protocol or naming a
+    /// provider's scopes.
+    async fn scopes_in(
+        &self,
+        account: &AccountId,
+        domain: SearchDomain,
+    ) -> Result<Vec<SyncScope>, ApiError> {
+        Ok(self
+            .store
+            .account_scopes(account.clone())
+            .await?
+            .into_iter()
+            .filter(|scope| scope.search_domain() == Some(domain))
+            .collect())
     }
 }
 

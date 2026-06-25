@@ -93,6 +93,16 @@ pub enum SyncScope {
     },
 }
 
+/// The search domain whose member objects a scope holds — the index a per-account
+/// query routes the scope to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchDomain {
+    /// Mail objects (the mail scalar/address/membership index plus full text).
+    Mail,
+    /// Calendar events (the event scalar/participant index, occurrences, full text).
+    Calendar,
+}
+
 impl SyncScope {
     /// Returns the account this scope belongs to.
     #[must_use]
@@ -103,6 +113,36 @@ impl SyncScope {
             | Self::ImapMailbox { account, .. }
             | Self::DavCollectionList { account }
             | Self::DavCollection { account, .. } => account,
+        }
+    }
+
+    /// The search domain whose member objects this scope holds, or `None` for a
+    /// container/discovery scope that holds no directly searchable mail or calendar
+    /// objects (a mailbox/collection list, or a JMAP `Mailbox`/`Calendar`/`Thread`/
+    /// `EmailSubmission` collection).
+    ///
+    /// A per-account search enumerates an account's scopes
+    /// (`StoreRead::account_scopes`) and routes each through the matching index by
+    /// this, so callers never hard-code which scopes a provider uses nor branch on
+    /// protocol. CalDAV collections classify as calendar today; CardDAV address
+    /// books will need disambiguation when contacts land (they reuse
+    /// [`DavCollection`](Self::DavCollection)).
+    #[must_use]
+    pub fn search_domain(&self) -> Option<SearchDomain> {
+        match self {
+            Self::JmapType {
+                data_type: JmapDataType::Email,
+                ..
+            }
+            | Self::ImapMailbox { .. } => Some(SearchDomain::Mail),
+            Self::JmapType {
+                data_type: JmapDataType::CalendarEvent,
+                ..
+            }
+            | Self::DavCollection { .. } => Some(SearchDomain::Calendar),
+            Self::JmapType { .. }
+            | Self::ImapMailboxList { .. }
+            | Self::DavCollectionList { .. } => None,
         }
     }
 }
@@ -122,6 +162,55 @@ mod tests {
             data_type: JmapDataType::Email,
         };
         assert_eq!(scope.account(), &account());
+    }
+
+    #[test]
+    fn search_domain_routes_objects_and_skips_containers() {
+        use SearchDomain::{Calendar, Mail};
+        let a = account();
+        // Mail-object scopes.
+        let jmap_mail = SyncScope::JmapType {
+            account: a.clone(),
+            data_type: JmapDataType::Email,
+        };
+        let imap = SyncScope::ImapMailbox {
+            account: a.clone(),
+            mailbox: MailboxId::try_from("INBOX").unwrap(),
+        };
+        assert_eq!(jmap_mail.search_domain(), Some(Mail));
+        assert_eq!(imap.search_domain(), Some(Mail));
+        // Calendar-object scopes.
+        let jmap_cal = SyncScope::JmapType {
+            account: a.clone(),
+            data_type: JmapDataType::CalendarEvent,
+        };
+        let dav = SyncScope::DavCollection {
+            account: a.clone(),
+            collection: DavCollectionId::try_from("/dav/cal/a/default/").unwrap(),
+        };
+        assert_eq!(jmap_cal.search_domain(), Some(Calendar));
+        assert_eq!(dav.search_domain(), Some(Calendar));
+        // Containers and discovery scopes hold no directly searchable objects.
+        for data_type in [
+            JmapDataType::Mailbox,
+            JmapDataType::Calendar,
+            JmapDataType::Thread,
+            JmapDataType::EmailSubmission,
+        ] {
+            let container = SyncScope::JmapType {
+                account: a.clone(),
+                data_type,
+            };
+            assert_eq!(container.search_domain(), None, "{container:?}");
+        }
+        assert_eq!(
+            SyncScope::ImapMailboxList { account: a.clone() }.search_domain(),
+            None
+        );
+        assert_eq!(
+            SyncScope::DavCollectionList { account: a }.search_domain(),
+            None
+        );
     }
 
     #[test]

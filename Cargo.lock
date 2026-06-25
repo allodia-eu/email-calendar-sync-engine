@@ -108,6 +108,7 @@ dependencies = [
  "engine-core",
  "engine-provider",
  "engine-recurrence",
+ "engine-search",
  "engine-store",
  "engine-sync",
  "store-sqlite",

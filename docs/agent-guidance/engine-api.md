@@ -14,8 +14,8 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - An [`Engine`] owns **one durable [`SqliteStore`]** driven by a host wall clock
   ([`SystemClock`]), and exposes high-level operations over it.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
-  (and, as slices land, search and writes). The return values (e.g.
-  `MailSyncReport`) are the host's feedback.
+  and `search_mail` / `search_calendar` (writes land in a later slice). The return
+  values (e.g. `MailSyncReport`, `SearchResults`) are the host's feedback.
 
 ## What it is not
 
@@ -81,13 +81,15 @@ Step 6 lands in small, tested slices. Order and status:
 
 1. **Lifecycle + provider-driven sync — _done_.** `open`/`open_in_memory`,
    `sync_mail`, `sync_calendar`, `SystemClock`, and `ApiError`.
-2. **Per-account search.** Add a store-read primitive to enumerate an account's
-   scopes — the `sync_scope` table already stores `account`, and a `scope_key` is
-   just `serde_json` of a `SyncScope`, so this is a cheap, provider-agnostic
-   `SELECT` — give it a contract test in `engine-store`, then expose
-   `Engine::search_mail` / `search_calendar` (parse DSL → run over the account's
-   scopes → `SearchResults` with coverage). Do **not** hard-code JMAP scopes the
-   way the CLI fixture harness does; enumerate them.
+2. **Per-account search — _done_.** `StoreRead::account_scopes(account)` enumerates
+   an account's scopes (a `SELECT … WHERE account = ?` over `sync_scope`, each JSON
+   `scope_key` decoded back to a `SyncScope`; contract-tested in `engine-store`, so
+   both the in-memory store and `store-sqlite` satisfy it). `Engine::search_mail` /
+   `search_calendar` parse the DSL, filter the account's scopes to the queried
+   domain via `SyncScope::search_domain` (so the facade never hard-codes a
+   provider's scopes nor branches on protocol), and run them through the store's
+   executor — returning `SearchResults` with coverage. A malformed query string is
+   `ApiError::Query`.
 3. **Writes / outbox.** Surface `submit_mail` and pending-op inspection over the
    `engine-sync` outbox path.
 4. **Streaming progress.** Expose `sync_mail_streamed` + a `ProgressSink` the host
@@ -131,7 +133,10 @@ data — persisted, since a lost store would re-snapshot and upsert); a delta th
 drops a key tombstones it; a provider failure surfaces as `ApiError::Sync` and a
 bad path as `ApiError::Store`; and two concurrent syncs of one scope resolve to
 `ApiError::Busy` (a `tokio::sync::oneshot` gate holds one sync's lease while the
-other races, deterministically — no timing). Run the standard gate (`AGENTS.md`):
+other races, deterministically — no timing). The same file's search tests then
+exercise per-account search over the synced data: a DSL query finds the matching
+mail/event with complete coverage, a malformed query is `ApiError::Query`, and an
+unsynced account returns an empty answer. Run the standard gate (`AGENTS.md`):
 `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own
 lines are 100%-covered by these tests (no live provider needed).
