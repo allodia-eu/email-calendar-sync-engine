@@ -6,11 +6,15 @@ use std::path::Path;
 use engine_core::ids::AccountId;
 use engine_core::sync::{SearchDomain, SyncScope};
 use engine_core::time::TimeZoneId;
-use engine_provider::Provider;
+use engine_core::write::PendingOpId;
+use engine_provider::{Draft, Provider};
 use engine_recurrence::Horizon;
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
-use engine_store::{StoreError, StoreRead, WorkerId};
-use engine_sync::{CalendarSyncReport, MailSyncReport, SyncError, sync_calendar, sync_mail};
+use engine_store::{PendingOpState, StoreError, StoreRead, WorkerId};
+use engine_sync::{
+    CalendarSyncReport, MailSyncReport, SubmitOutcome, SyncError, submit_mail, sync_calendar,
+    sync_mail,
+};
 use store_sqlite::SqliteStore;
 
 use crate::ApiError;
@@ -159,6 +163,43 @@ impl Engine {
         let query = CalendarQuery::parse(query)?;
         let scopes = self.scopes_in(account, SearchDomain::Calendar).await?;
         Ok(self.store.search_calendar(&scopes, &query, limit).await?)
+    }
+
+    /// Submits `draft` for one account through the durable outbox: the draft is
+    /// recorded as a pending op (idempotent by its `Message-ID`) **before** the
+    /// provider send, so a crash or an ambiguous failure never loses or double-sends
+    /// it (`north-star.md` Write Contract). Returns the sent message's key, its
+    /// `Message-ID`, and the op id — pollable via [`Engine::pending_op_state`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the send fails: the op is first recorded
+    /// `Failed` (with the failure class), or `NeedsConfirmation` for an ambiguous
+    /// post-`DATA` SMTP loss — the outbox never blind-retries — and the error then
+    /// returns. A store failure also surfaces as [`ApiError::Sync`].
+    pub async fn submit_mail<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        draft: &Draft,
+    ) -> Result<SubmitOutcome, ApiError> {
+        submit_mail(provider, &self.store, account, worker(), LEASE_TTL, draft)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// The current lifecycle state of a pending outbox op — e.g. the one a
+    /// [`submit_mail`](Self::submit_mail) returned — or `None` if no such op exists.
+    /// A lease-free read, safe to poll for write progress and confirmation state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn pending_op_state(
+        &self,
+        op: PendingOpId,
+    ) -> Result<Option<PendingOpState>, ApiError> {
+        Ok(self.store.pending_op_state(op).await?)
     }
 
     /// The account's scopes in one search domain: every scope the store knows for

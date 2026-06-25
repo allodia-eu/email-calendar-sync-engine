@@ -12,10 +12,11 @@
 //!
 //! Step 6 of the build order lands in small, tested slices. These cover **store
 //! lifecycle** ([`Engine::open`], [`Engine::open_in_memory`]), **provider-driven
-//! sync** ([`Engine::sync_mail`], [`Engine::sync_calendar`]), and **per-account
-//! search** ([`Engine::search_mail`], [`Engine::search_calendar`]). The
-//! write/outbox surface, streaming sync progress, and the language bindings
-//! themselves are deliberate follow-up slices.
+//! sync** ([`Engine::sync_mail`], [`Engine::sync_calendar`]), **per-account
+//! search** ([`Engine::search_mail`], [`Engine::search_calendar`]), and
+//! **outbox-mediated mail submission** ([`Engine::submit_mail`],
+//! [`Engine::pending_op_state`]). Calendar writes, streaming sync progress, and the
+//! language bindings themselves are deliberate follow-up slices.
 //!
 //! # Shape
 //!
@@ -42,12 +43,15 @@ pub use engine::Engine;
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::coverage::SearchCoverage;
-pub use engine_core::ids::{AccountId, ProviderKey};
+pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
+pub use engine_core::mail::EmailAddress;
 pub use engine_core::time::TimeZoneId;
-pub use engine_provider::Provider;
+pub use engine_core::write::PendingOpId;
+pub use engine_provider::{Draft, Provider};
 pub use engine_recurrence::Horizon;
 pub use engine_search::{ParseError, SearchHit, SearchResults};
-pub use engine_sync::{CalendarSyncReport, MailSyncReport};
+pub use engine_store::PendingOpState;
+pub use engine_sync::{CalendarSyncReport, MailSyncReport, SubmitOutcome};
 
 /// An error from an [`Engine`] operation.
 ///

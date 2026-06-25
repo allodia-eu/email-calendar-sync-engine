@@ -8,15 +8,18 @@
 //! delta that drops a key tombstones it. Failures surface as [`ApiError`], and two
 //! concurrent syncs of one scope resolve to [`ApiError::Busy`], not corruption.
 
-use engine_api::{AccountId, ApiError, Engine, Horizon, TimeZoneId};
+use engine_api::{AccountId, ApiError, Engine, Horizon, PendingOpId, PendingOpState, TimeZoneId};
 use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::{CalendarId, EventId, MailboxId, MessageId, ProviderKey, Uid};
-use engine_core::mail::{Mailbox, MailboxRole, Message};
+use engine_core::ids::{
+    CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid,
+};
+use engine_core::mail::{EmailAddress, Mailbox, MailboxRole, Message};
 use engine_core::membership::Memberships;
 use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
 use engine_core::time::{CalendarDateTime, LocalDateTime};
 use engine_provider::{
-    Capabilities, PageToken, Provider, ProviderError, ProviderResult, ScopeSync, SyncKind, SyncPage,
+    Capabilities, Draft, PageToken, Provider, ProviderError, ProviderResult, ScopeSync,
+    SubmissionReceipt, SyncKind, SyncPage,
 };
 use tokio::sync::oneshot;
 
@@ -229,6 +232,63 @@ impl Provider for GateProvider {
         self.inner
             .sync_email_page(account, cursor, page, limit)
             .await
+    }
+}
+
+/// Wraps a [`FakeProvider`] and overrides `submit_email` to succeed (filing the
+/// sent copy under a fixed key, echoing the draft's `Message-ID`) or fail, so the
+/// outbox-mediated submission facade can be exercised. Other methods delegate.
+struct SubmittingProvider {
+    inner: FakeProvider,
+    fail: bool,
+}
+
+#[async_trait::async_trait]
+impl Provider for SubmittingProvider {
+    fn capabilities(&self) -> &Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
+        self.inner.mailbox_scope(account)
+    }
+
+    fn email_scope(&self, account: &AccountId) -> SyncScope {
+        self.inner.email_scope(account)
+    }
+
+    async fn sync_mailboxes(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Mailbox>> {
+        self.inner.sync_mailboxes(account, cursor).await
+    }
+
+    async fn sync_email_page(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+        page: Option<&PageToken>,
+        limit: usize,
+    ) -> ProviderResult<SyncPage<Message>> {
+        self.inner
+            .sync_email_page(account, cursor, page, limit)
+            .await
+    }
+
+    async fn submit_email(
+        &self,
+        _account: &AccountId,
+        draft: &Draft,
+    ) -> ProviderResult<SubmissionReceipt> {
+        if self.fail {
+            return Err(ProviderError::retryable("smtp is offline"));
+        }
+        Ok(SubmissionReceipt::new(
+            ProviderKey::new("sent-1").unwrap(),
+            draft.message_id.clone(),
+        ))
     }
 }
 
@@ -496,4 +556,64 @@ async fn search_on_an_unsynced_account_is_empty() {
     let results = engine.search_mail(&account(), "report", 10).await.unwrap();
     assert!(results.hits.is_empty());
     assert!(results.coverage.is_complete());
+}
+
+fn draft(message_id: &str, subject: &str) -> Draft {
+    Draft::new(
+        MessageIdHeader::new(message_id).unwrap(),
+        EmailAddress::new("alice@test.local"),
+        vec![EmailAddress::new("bob@test.local")],
+        subject,
+        "see attached",
+    )
+}
+
+#[tokio::test]
+async fn submit_mail_records_a_successful_send() {
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = SubmittingProvider {
+        inner: FakeProvider::new(),
+        fail: false,
+    };
+    let draft = draft("gen-1@test.local", "Quarterly report");
+
+    let outcome = engine
+        .submit_mail(&provider, &account(), &draft)
+        .await
+        .unwrap();
+    assert_eq!(outcome.email_key, ProviderKey::new("sent-1").unwrap());
+    assert_eq!(outcome.message_id, draft.message_id);
+    // The durable op committed Succeeded, pollable by the returned id.
+    assert_eq!(
+        engine.pending_op_state(outcome.op).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+}
+
+#[tokio::test]
+async fn submit_mail_surfaces_a_failed_send() {
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = SubmittingProvider {
+        inner: FakeProvider::new(),
+        fail: true,
+    };
+    // A failed send surfaces as a sync error; the outbox records the op `Failed`
+    // before returning (that recording is locked at the engine-sync layer).
+    let err = engine
+        .submit_mail(&provider, &account(), &draft("gen-2@test.local", "Lunch"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::Sync(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn pending_op_state_is_none_for_an_unknown_op() {
+    let engine = Engine::open_in_memory().unwrap();
+    assert_eq!(
+        engine
+            .pending_op_state(PendingOpId::new(999))
+            .await
+            .unwrap(),
+        None
+    );
 }

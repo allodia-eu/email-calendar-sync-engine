@@ -13,9 +13,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 
 - An [`Engine`] owns **one durable [`SqliteStore`]** driven by a host wall clock
   ([`SystemClock`]), and exposes high-level operations over it.
-- Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
-  and `search_mail` / `search_calendar` (writes land in a later slice). The return
-  values (e.g. `MailSyncReport`, `SearchResults`) are the host's feedback.
+- Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`,
+  `search_mail` / `search_calendar`, and `submit_mail` / `pending_op_state`
+  (calendar writes land in a later slice). The return values (e.g. `MailSyncReport`,
+  `SearchResults`, `SubmitOutcome`) are the host's feedback.
 
 ## What it is not
 
@@ -90,8 +91,14 @@ Step 6 lands in small, tested slices. Order and status:
    provider's scopes nor branches on protocol), and run them through the store's
    executor — returning `SearchResults` with coverage. A malformed query string is
    `ApiError::Query`.
-3. **Writes / outbox.** Surface `submit_mail` and pending-op inspection over the
-   `engine-sync` outbox path.
+3. **Writes / outbox — _done_.** `Engine::submit_mail` drives `engine-sync`'s outbox
+   `submit_mail` (durable op → claim → provider send → record), returning a
+   `SubmitOutcome` (sent key, `Message-ID`, op id); a failed send is recorded
+   `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the
+   outbox never blind-retries. `Engine::pending_op_state` exposes
+   `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an
+   ambiguous send). Calendar writes (`write_calendar_event` /
+   `delete_calendar_event`) ride the same outbox and are an additive follow-up.
 4. **Streaming progress.** Expose `sync_mail_streamed` + a `ProgressSink` the host
    can observe for "downloaded Y of X" UI.
 5. **Bindings.** `bindings-uniffi` (Kotlin/Swift) and `bindings-ffi-c` (C ABI)
@@ -136,7 +143,10 @@ bad path as `ApiError::Store`; and two concurrent syncs of one scope resolve to
 other races, deterministically — no timing). The same file's search tests then
 exercise per-account search over the synced data: a DSL query finds the matching
 mail/event with complete coverage, a malformed query is `ApiError::Query`, and an
-unsynced account returns an empty answer. Run the standard gate (`AGENTS.md`):
+unsynced account returns an empty answer. A `SubmittingProvider` then exercises the
+outbox facade: a successful `submit_mail` commits the op `Succeeded` (read back via
+`pending_op_state`), a failed send surfaces as `ApiError::Sync`, and an unknown op id
+reads back `None`. Run the standard gate (`AGENTS.md`):
 `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own
 lines are 100%-covered by these tests (no live provider needed).
