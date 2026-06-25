@@ -40,6 +40,9 @@
 //! - `cursor` — the per-mailbox `SyncState` (UIDVALIDITY/UIDNEXT) and opaque
 //!   [`PageToken`](engine_provider::PageToken) encodings.
 //! - `sync` — the snapshot/delta + UID-window paging orchestration.
+//! - `mutate` — applying a [`MailEdit`](engine_provider::MailEdit) (`UID
+//!   STORE`/`MOVE`/`EXPUNGE`) to the bound mailbox.
+//! - `filing` — SMTP submission + `APPEND` filing of sent copies and drafts.
 //! - `provider` — [`ImapProvider`], the [`Provider`](engine_provider::Provider) impl.
 //!
 //! Tier-1 metadata only: like step 4, the raw RFC 5322 body is not materialized
@@ -49,7 +52,9 @@ mod base64;
 mod cursor;
 mod encoded_word;
 mod error;
+mod filing;
 mod mail;
+mod mutate;
 mod parse;
 mod provider;
 mod smtp;
