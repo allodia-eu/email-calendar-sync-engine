@@ -78,8 +78,9 @@ is authoritative for the `provider-caldav` calendar client.
   `INTERNALDATE` → a UTC instant (offset applied). `ENVELOPE` → subject, flattened
   addresses, and the `Message-ID`/`In-Reply-To` hints (the body-header item adds
   `References`) — the threading inputs; **RFC 2047 encoded-words** in
-  the subject and display names are decoded (`B`/`Q`, UTF-8/ISO-8859-1, with
-  whitespace between adjacent words dropped — `encoded_word.rs`). A quoted string
+  the subject and display names are decoded (`B`/`Q`, UTF-8/ISO-8859-1/Windows-1252 —
+  `ISO-8859-1` is read as its CP1252 superset so a `0x96` en-dash is `–`, not `�`, the
+  browser convention — with whitespace between adjacent words dropped — `encoded_word.rs`). A quoted string
   carrying **raw UTF-8** (a `UTF8=ACCEPT` mailbox name, or an unencoded display name)
   is decoded as UTF-8, not byte-cast to Latin-1 — the quoted and `{n}`-literal paths
   agree. Folder `LIST` →
@@ -149,11 +150,12 @@ is authoritative for the `provider-caldav` calendar client.
   slice). The transport does not implement `SEARCH`.
 - **No SMTP STARTTLS** (port 587). Implicit TLS (465) + `AUTH PLAIN` is implemented; STARTTLS is a later
   refinement.
-- **`References` not populated** (it is not an `ENVELOPE` field; a later threading
-  slice). RFC 2047 decoding covers UTF-8/ISO-8859-1; other charsets fall back to a
-  UTF-8-lossy read (a full charset table is a later refinement). Outbound non-ASCII
-  subjects/display names are RFC 2047 `B`-encoded but **not folded** into 75-octet
-  words (a later refinement).
+- **Charset coverage.** RFC 2047 decoding covers UTF-8, ISO-8859-1, and Windows-1252
+  (ISO-8859-1 read as its CP1252 superset); other charsets fall back to a UTF-8-lossy
+  read (a full charset table is a later refinement). `References` *is* fetched (a
+  separate `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` item — see Normalization above).
+  Outbound non-ASCII subjects/display names are RFC 2047 `B`-encoded but **not folded**
+  into 75-octet words (a later refinement).
 - **Server literals are capped at 64 MiB.** A `{n}` larger than the cap is rejected
   (an adversarial server cannot drive an unbounded allocation); generous for any
   metadata response.
