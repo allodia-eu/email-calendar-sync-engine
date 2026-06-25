@@ -9,232 +9,11 @@
 //! security).
 //!
 //! The shared primitive is a tokenizer over the recursive IMAP data grammar
-//! (`NIL` / atom / quoted-string / `{n}` literal / parenthesized list); each
-//! response is then read off the resulting [`Item`] tree.
+//! (`NIL` / atom / quoted-string / `{n}` literal / parenthesized list), defined in
+//! [`crate::tokenize`]; each response is then read off the resulting [`Item`] tree.
 
 use crate::error::{ImapError, ImapResult};
-
-/// Maximum list nesting accepted, so adversarial input (`((((((…`) is rejected
-/// rather than overflowing the stack — hostile mail must never crash the parser
-/// (`north-star.md` security). Real responses nest only a few levels (`ENVELOPE`'s
-/// address lists).
-const MAX_DEPTH: usize = 64;
-
-/// A parsed IMAP data item — the recursive shape every response body reduces to
-/// (RFC 9051 §4). Interpreted into domain structs by the `parse_*` functions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Item {
-    /// `NIL` — an absent value.
-    Nil,
-    /// An unquoted atom: a number, a flag (`\Seen`), a keyword, or `FETCH`.
-    Atom(String),
-    /// A quoted string, with `\"`/`\\` escapes resolved.
-    Quoted(String),
-    /// A `{n}` literal's raw bytes.
-    Literal(Vec<u8>),
-    /// A parenthesized list of items.
-    List(Vec<Item>),
-}
-
-impl Item {
-    /// The item as a UTF-8 string when it is a quoted string or literal; `None`
-    /// for `NIL`. Lossy on non-UTF-8 literal bytes (mail is hostile input).
-    fn as_nstring(&self) -> Option<String> {
-        match self {
-            Self::Quoted(s) => Some(s.clone()),
-            Self::Literal(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
-            // An atom in a string position is unusual but harmless to accept.
-            Self::Atom(a) => Some(a.clone()),
-            Self::Nil | Self::List(_) => None,
-        }
-    }
-
-    /// The item as an atom string (a flag, number, or keyword).
-    fn as_atom(&self) -> Option<&str> {
-        match self {
-            Self::Atom(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    /// The item as a parenthesized list.
-    fn as_list(&self) -> Option<&[Item]> {
-        match self {
-            Self::List(items) => Some(items),
-            _ => None,
-        }
-    }
-}
-
-/// A recursive-descent tokenizer over one assembled response body.
-struct Tokens<'a> {
-    buf: &'a [u8],
-    pos: usize,
-    depth: usize,
-}
-
-impl<'a> Tokens<'a> {
-    fn new(buf: &'a [u8]) -> Self {
-        Self {
-            buf,
-            pos: 0,
-            depth: 0,
-        }
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.buf.get(self.pos).copied()
-    }
-
-    fn bump(&mut self) -> Option<u8> {
-        let b = self.peek()?;
-        self.pos += 1;
-        Some(b)
-    }
-
-    fn skip_spaces(&mut self) {
-        while matches!(self.peek(), Some(b' ')) {
-            self.pos += 1;
-        }
-    }
-
-    /// Parses every space-separated item to end of buffer (the top level of a
-    /// response body).
-    fn parse_all(&mut self) -> ImapResult<Vec<Item>> {
-        let mut items = Vec::new();
-        loop {
-            self.skip_spaces();
-            // Trailing CR/LF the transport may have left on the logical line.
-            while matches!(self.peek(), Some(b'\r' | b'\n')) {
-                self.pos += 1;
-            }
-            if self.peek().is_none() {
-                return Ok(items);
-            }
-            items.push(self.parse_item()?);
-        }
-    }
-
-    /// Parses one item.
-    fn parse_item(&mut self) -> ImapResult<Item> {
-        self.skip_spaces();
-        match self.peek() {
-            Some(b'(') => self.parse_list(),
-            Some(b'"') => self.parse_quoted(),
-            Some(b'{') => self.parse_literal(),
-            Some(_) => self.parse_atom(),
-            None => Err(ImapError::protocol("unexpected end of response")),
-        }
-    }
-
-    /// Parses a parenthesized list, consuming the closing `)`. Nesting is bounded
-    /// by [`MAX_DEPTH`] so adversarial input cannot overflow the stack.
-    fn parse_list(&mut self) -> ImapResult<Item> {
-        self.bump(); // consume '('
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            return Err(ImapError::protocol("list nested too deeply"));
-        }
-        let mut items = Vec::new();
-        loop {
-            self.skip_spaces();
-            match self.peek() {
-                Some(b')') => {
-                    self.pos += 1;
-                    self.depth -= 1;
-                    return Ok(Item::List(items));
-                }
-                None => return Err(ImapError::protocol("unterminated list")),
-                _ => items.push(self.parse_item()?),
-            }
-        }
-    }
-
-    /// Parses a `"quoted string"`, resolving `\"` and `\\` escapes.
-    fn parse_quoted(&mut self) -> ImapResult<Item> {
-        self.bump(); // consume opening '"'
-        // Accumulate raw bytes and decode the whole run as UTF-8 (lossy) at the end.
-        // A per-byte `as char` cast would map each byte to a Latin-1 codepoint, so a
-        // quoted string carrying raw UTF-8 (a display name or a `UTF8=ACCEPT` mailbox
-        // name) would be mojibake — the literal path already decodes correctly, and
-        // the two must agree.
-        let mut out: Vec<u8> = Vec::new();
-        loop {
-            match self.bump() {
-                Some(b'"') => return Ok(Item::Quoted(String::from_utf8_lossy(&out).into_owned())),
-                Some(b'\\') => match self.bump() {
-                    Some(c @ (b'"' | b'\\')) => out.push(c),
-                    _ => return Err(ImapError::protocol("bad escape in quoted string")),
-                },
-                Some(b'\r' | b'\n') => {
-                    return Err(ImapError::protocol("CR/LF in quoted string"));
-                }
-                Some(c) => out.push(c),
-                None => return Err(ImapError::protocol("unterminated quoted string")),
-            }
-        }
-    }
-
-    /// Parses a `{n}` literal: the count, the required CRLF, then exactly `n`
-    /// bytes that the transport inlined after it.
-    fn parse_literal(&mut self) -> ImapResult<Item> {
-        self.bump(); // consume '{'
-        let mut digits = String::new();
-        loop {
-            match self.bump() {
-                Some(b'}') => break,
-                Some(c @ b'0'..=b'9') => digits.push(c as char),
-                _ => return Err(ImapError::protocol("malformed literal length")),
-            }
-        }
-        let n: usize = digits
-            .parse()
-            .map_err(|_| ImapError::protocol("literal length not a number"))?;
-        // The CRLF after `}` — tolerate a bare LF too.
-        if self.peek() == Some(b'\r') {
-            self.pos += 1;
-        }
-        if self.peek() == Some(b'\n') {
-            self.pos += 1;
-        }
-        let end = self
-            .pos
-            .checked_add(n)
-            .filter(|&e| e <= self.buf.len())
-            .ok_or_else(|| ImapError::protocol("literal longer than response"))?;
-        let bytes = self.buf[self.pos..end].to_vec();
-        self.pos = end;
-        Ok(Item::Literal(bytes))
-    }
-
-    /// Parses an atom: a run up to the next space, paren, or end. `NIL` becomes
-    /// [`Item::Nil`].
-    fn parse_atom(&mut self) -> ImapResult<Item> {
-        let start = self.pos;
-        while let Some(b) = self.peek() {
-            if matches!(b, b' ' | b'(' | b')' | b'\r' | b'\n') {
-                break;
-            }
-            self.pos += 1;
-        }
-        // A break character in item position (a stray `)` at top level) consumes
-        // nothing; erroring here keeps the caller's loop from spinning forever.
-        if self.pos == start {
-            return Err(ImapError::protocol("expected an item"));
-        }
-        let atom = String::from_utf8_lossy(&self.buf[start..self.pos]).into_owned();
-        if atom.eq_ignore_ascii_case("NIL") {
-            Ok(Item::Nil)
-        } else {
-            Ok(Item::Atom(atom))
-        }
-    }
-}
-
-/// Parses a response body into its top-level items.
-fn items_of(line: &[u8]) -> ImapResult<Vec<Item>> {
-    Tokens::new(line).parse_all()
-}
+use crate::tokenize::{Item, items_of};
 
 /// What a `SELECT`/`EXAMINE` told us about the mailbox: its UID space and message
 /// count (RFC 9051 §6.3.2, §7.3.1, §7.4.1).
@@ -283,7 +62,8 @@ pub(crate) struct Envelope {
     pub message_id: Option<String>,
 }
 
-/// One row of a `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)`.
+/// One row of a `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
+/// BODY.PEEK[HEADER.FIELDS (REFERENCES)])`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FetchRow {
     /// The mailbox-unique UID (RFC 9051 §2.3.1.1) — the identity component.
@@ -296,6 +76,10 @@ pub(crate) struct FetchRow {
     pub size: Option<u64>,
     /// The parsed `ENVELOPE`, if requested and present.
     pub envelope: Option<Envelope>,
+    /// The raw `References` header line from `BODY[HEADER.FIELDS (REFERENCES)]`
+    /// (e.g. `"References: <a@x> <b@y>\r\n\r\n"`), if requested and present.
+    /// `None` (or empty) when the message carries no `References`.
+    pub references: Option<String>,
 }
 
 /// One `LIST` row: a mailbox's attributes, hierarchy delimiter, and name
@@ -432,9 +216,20 @@ fn fetch_row(pairs: &[Item]) -> Option<FetchRow> {
     let mut internal_date = None;
     let mut size = None;
     let mut envelope = None;
+    let mut references = None;
     let mut iter = pairs.iter();
     while let Some(key) = iter.next() {
         let Some(key) = key.as_atom() else { continue };
+        // A body-section item (`BODY[HEADER.FIELDS (REFERENCES)] <value>`) does not
+        // tokenize as a single atom key: the section spec's brackets, list, and
+        // spaces split it into `BODY[HEADER.FIELDS` + `(REFERENCES)` + `]` before the
+        // value. Recognize it structurally by the `BODY[` prefix, drain the rest of
+        // the section spec up to its closing `]` atom, then read the value.
+        if key.to_ascii_uppercase().starts_with("BODY[") {
+            let value = drain_body_section(key, &mut iter);
+            references = value.and_then(Item::as_nstring);
+            continue;
+        }
         let Some(value) = iter.next() else { break };
         match key.to_ascii_uppercase().as_str() {
             "UID" => uid = value.as_atom().and_then(|a| a.parse().ok()),
@@ -458,7 +253,25 @@ fn fetch_row(pairs: &[Item]) -> Option<FetchRow> {
         internal_date,
         size,
         envelope,
+        references,
     })
+}
+
+/// Consumes the remainder of a `BODY[...]` section spec and returns the body value
+/// that follows it. The `key` atom is the leading `BODY[...` fragment; if it does
+/// not already contain the closing `]` (the common `BODY[HEADER.FIELDS (REFERENCES)]`
+/// case, split into `BODY[HEADER.FIELDS` + `(REFERENCES)` + `]`), `iter` is advanced
+/// over the spec items up to and including the `]` atom. The next item is the value.
+fn drain_body_section<'a>(key: &str, iter: &mut std::slice::Iter<'a, Item>) -> Option<&'a Item> {
+    if !key.contains(']') {
+        // Drain spec items until the atom that ends with `]`.
+        for item in iter.by_ref() {
+            if item.as_atom().is_some_and(|a| a.ends_with(']')) {
+                break;
+            }
+        }
+    }
+    iter.next()
 }
 
 /// Interprets an `ENVELOPE` list's ten positional fields (RFC 9051 §7.5.2).

@@ -100,6 +100,41 @@ fn message_from_fetch_builds_a_full_object() {
 }
 
 #[test]
+fn references_header_threads_through_to_the_envelope() {
+    // The References header rides BODY[HEADER.FIELDS (REFERENCES)]; the chain of
+    // ids surfaces on Message.envelope.references for local threading. The header
+    // value is delivered as a `{n}` literal so its real trailing CRLFs are present
+    // (the quoted-string parser would reject raw CR/LF).
+    let mut bytes =
+        br#"1 FETCH (UID 1 ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL "<r@h>" "<m@h>") "#.to_vec();
+    bytes.extend_from_slice(b"BODY[HEADER.FIELDS (REFERENCES)] {27}\r\n");
+    bytes.extend_from_slice(b"References: <a@x> <b@y>\r\n\r\n");
+    bytes.push(b')');
+
+    let rows = parse_fetch(&[bytes]).unwrap();
+    let message = message_from_fetch(&rows[0], &MailboxId::try_from("INBOX").unwrap(), 1);
+    let refs = &message.envelope.references;
+    assert_eq!(refs.len(), 2);
+    assert_eq!(refs[0].as_str(), "a@x");
+    assert_eq!(refs[1].as_str(), "b@y");
+    // In-Reply-To (an ENVELOPE field) is unaffected and still populated.
+    assert_eq!(message.envelope.in_reply_to[0].as_str(), "r@h");
+}
+
+#[test]
+fn an_empty_references_header_yields_no_ids() {
+    // A message with no References: the echoed value is empty, so the field name
+    // must not be mistaken for an id (the bare-value fallback's trap).
+    let line = concat!(
+        r#"1 FETCH (UID 1 ENVELOPE (NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL) "#,
+        r#"BODY[HEADER.FIELDS (REFERENCES)] "References: ")"#,
+    );
+    let rows = parse_fetch(&[line.as_bytes().to_vec()]).unwrap();
+    let message = message_from_fetch(&rows[0], &MailboxId::try_from("INBOX").unwrap(), 1);
+    assert!(message.envelope.references.is_empty());
+}
+
+#[test]
 fn encoded_word_subjects_are_decoded_through_normalization() {
     // A non-ASCII subject arrives RFC 2047-encoded in the ENVELOPE; it is decoded.
     let line = "1 FETCH (UID 1 ENVELOPE (NIL \"=?UTF-8?Q?Caf=C3=A9?=\" \

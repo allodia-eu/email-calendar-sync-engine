@@ -110,6 +110,59 @@ fn fetch_parses_uid_flags_internaldate_size_and_envelope() {
 }
 
 #[test]
+fn fetch_reads_a_references_header_as_a_quoted_string() {
+    // `BODY[HEADER.FIELDS (REFERENCES)]` does not tokenize as a single atom key:
+    // the section spec splits into `BODY[HEADER.FIELDS` + `(REFERENCES)` + `]`
+    // before the value. The parser must consume the whole spec and keep the value.
+    let line = concat!(
+        r#"1 FETCH (UID 1 ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL "<m@h>") "#,
+        r#"BODY[HEADER.FIELDS (REFERENCES)] "References: <a@x> <b@y>")"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].uid, 1);
+    assert_eq!(
+        rows[0].references.as_deref(),
+        Some("References: <a@x> <b@y>")
+    );
+    // The envelope alongside it is still parsed (the spec drain stops at `]`).
+    assert_eq!(
+        rows[0].envelope.as_ref().unwrap().message_id.as_deref(),
+        Some("<m@h>")
+    );
+}
+
+#[test]
+fn fetch_reads_a_references_header_as_a_literal() {
+    // The same item delivered as a `{n}` literal the transport inlined.
+    let mut line = b"2 FETCH (UID 7 BODY[HEADER.FIELDS (REFERENCES)] {27}\r\n".to_vec();
+    line.extend_from_slice(b"References: <a@x> <b@y>\r\n\r\n");
+    line.push(b')');
+    let rows = parse_fetch(&[line]).unwrap();
+    assert_eq!(rows[0].uid, 7);
+    assert_eq!(
+        rows[0].references.as_deref(),
+        Some("References: <a@x> <b@y>\r\n\r\n")
+    );
+}
+
+#[test]
+fn fetch_handles_a_missing_or_empty_references_header() {
+    // An empty echoed value (no References header) leaves the row's references
+    // empty; a row that omits the item entirely leaves it None.
+    let with_empty = concat!(
+        r#"1 FETCH (UID 1 ENVELOPE (NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL) "#,
+        r#"BODY[HEADER.FIELDS (REFERENCES)] "")"#,
+    );
+    let rows = parse_fetch(&lines(&[with_empty])).unwrap();
+    assert_eq!(rows[0].references.as_deref(), Some(""));
+
+    let without = "2 FETCH (UID 2 RFC822.SIZE 10)";
+    let rows = parse_fetch(&lines(&[without])).unwrap();
+    assert_eq!(rows[0].references, None);
+}
+
+#[test]
 fn fetch_skips_unsolicited_flag_only_rows() {
     // A flag update with no UID is not a usable mail object; skip it, don't error.
     let rows = parse_fetch(&lines(&[r"2 FETCH (FLAGS (\Seen))"])).unwrap();

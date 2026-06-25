@@ -54,6 +54,7 @@ mod parse;
 mod provider;
 mod smtp;
 mod sync;
+mod tokenize;
 mod transport;
 
 #[cfg(test)]

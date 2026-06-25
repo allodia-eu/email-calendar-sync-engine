@@ -69,12 +69,15 @@ is authoritative for the `provider-caldav` calendar client.
   detected incrementally without CONDSTORE/QRESYNC (a deferred capability) — a
   periodic snapshot reconciles them. This is the honest baseline `providers.md`
   prescribes ("CONDSTORE/QRESYNC paths are optional capabilities, not assumptions").
-- **Normalization.** `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)`
-  (Tier-1, all peek-safe — none sets `\Seen`). Flags → keywords: `\Seen`/`\Flagged`/
+- **Normalization.** `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
+  BODY.PEEK[HEADER.FIELDS (REFERENCES)])` (all peek-safe — none sets `\Seen`). The
+  `References` header is not an `ENVELOPE` field, so it rides a separate peek-safe
+  body-header item to feed threading (`threading.md`). Flags → keywords: `\Seen`/`\Flagged`/
   `\Answered`/`\Draft` map to their `$`-keywords; `\Deleted`/`\Recent` are
   deliberately not keywords (expunge/session model); custom keywords pass through.
   `INTERNALDATE` → a UTC instant (offset applied). `ENVELOPE` → subject, flattened
-  addresses, and the `Message-ID`/`In-Reply-To` hints; **RFC 2047 encoded-words** in
+  addresses, and the `Message-ID`/`In-Reply-To` hints (the body-header item adds
+  `References`) — the threading inputs; **RFC 2047 encoded-words** in
   the subject and display names are decoded (`B`/`Q`, UTF-8/ISO-8859-1, with
   whitespace between adjacent words dropped — `encoded_word.rs`). A quoted string
   carrying **raw UTF-8** (a `UTF8=ACCEPT` mailbox name, or an unencoded display name)

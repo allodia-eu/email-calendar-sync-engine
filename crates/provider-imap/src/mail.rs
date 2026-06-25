@@ -57,6 +57,14 @@ pub(crate) fn message_from_fetch(
         // string form is, but normalizing it is a later refinement. INTERNALDATE
         // (delivery time) is the reliable instant here.
     }
+    // `References` is not an ENVELOPE field; it rides a separate
+    // `BODY[HEADER.FIELDS (REFERENCES)]` fetch item (the threading chain). The
+    // value is the raw header line (`References: <a@x> <b@y>\r\n\r\n`); strip the
+    // field name so `extract_message_ids`' bare-value fallback can never mistake
+    // `References:` for an id when the header is empty.
+    if let Some(raw) = &row.references {
+        message.envelope.references = extract_message_ids(strip_header_name(raw));
+    }
     message
 }
 
@@ -231,6 +239,17 @@ fn extract_message_ids(raw: &str) -> Vec<MessageIdHeader> {
         ids.extend(MessageIdHeader::new(raw.trim()).ok());
     }
     ids
+}
+
+/// Strips a leading `Header-Name:` field-name prefix from a raw header line, so a
+/// fetched `BODY[HEADER.FIELDS (...)]` value yields only the field body. Returns the
+/// input unchanged when there is no `name:` prefix before the first `<`.
+fn strip_header_name(raw: &str) -> &str {
+    match (raw.find(':'), raw.find('<')) {
+        // A colon that precedes any angle bracket is the field-name separator.
+        (Some(colon), open) if open.is_none_or(|o| colon < o) => raw[colon + 1..].trim(),
+        _ => raw.trim(),
+    }
 }
 
 /// Whether the attribute list carries `\<attr>` (case-insensitively).
