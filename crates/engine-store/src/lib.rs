@@ -30,3 +30,16 @@ pub use lease::{
 };
 pub use outbox::{LeasedPendingOp, PendingOpState};
 pub use store::{IndexRowCounts, Store, StoreRead};
+
+/// The version of the engine's **normalization** — how providers decode wire data and
+/// how `engine-core` projects it (subject charset decoding, header parsing, address
+/// flattening, occurrence expansion, …). The store is a re-derivable cache of normalized
+/// data, so when this logic changes, already-synced objects hold the *old* normalization
+/// and an incremental delta sync will not refresh them. A backend stamps this version and,
+/// on open, clears its sync cursors when it differs — forcing the next sync to re-snapshot
+/// and re-normalize everything (`store-and-sync.md`).
+///
+/// **Bump it** whenever a change alters the bytes-to-object mapping in any provider or in
+/// `engine-core`'s projection (e.g. the Windows-1252 subject fix), so existing stores
+/// re-sync. A pure additive feature that does not change existing objects need not bump it.
+pub const NORMALIZER_VERSION: u32 = 1;

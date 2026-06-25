@@ -773,3 +773,30 @@ async fn derive_mail_threads_is_a_noop_for_provider_threaded_mail() {
     assert_eq!(after.len(), 3);
     assert!(after.iter().all(|m| m.thread_id.is_some()));
 }
+
+#[tokio::test]
+async fn reset_clears_cursors_and_forces_a_full_resync() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("engine.sqlite");
+    let engine = Engine::open(&db).unwrap();
+
+    // First sync is a snapshot (2 upserts); a second is an empty delta off the cursor.
+    let first = engine
+        .sync_mail(&FakeProvider::new(), &account())
+        .await
+        .unwrap();
+    assert_eq!(first.email.upserted, 2);
+    let delta = engine
+        .sync_mail(&FakeProvider::new(), &account())
+        .await
+        .unwrap();
+    assert_eq!(delta.email.upserted, 0);
+
+    // Reset clears the cursors, so the next sync re-snapshots (full refetch) again.
+    engine.reset().await.unwrap();
+    let resynced = engine
+        .sync_mail(&FakeProvider::new(), &account())
+        .await
+        .unwrap();
+    assert_eq!(resynced.email.upserted, 2);
+}

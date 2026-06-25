@@ -119,6 +119,21 @@ impl Engine {
             .map_err(map_sync_error)
     }
 
+    /// Resets the local cache: clears every sync cursor so the next sync re-fetches and
+    /// re-normalizes the account from scratch — the host's "reset / full refetch". The
+    /// durable outbox (queued sends) is preserved. Sync afterwards to repopulate; until
+    /// then the previously-synced objects remain readable and are reconciled by that
+    /// re-snapshot. The same clear happens automatically when the engine's
+    /// `NORMALIZER_VERSION` changes (`store-and-sync.md`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn reset(&self) -> Result<(), ApiError> {
+        self.store.reset_sync().await?;
+        Ok(())
+    }
+
     /// Syncs one account's calendars from `provider`: calendar containers first,
     /// then events, expanding each event's occurrences over `horizon` (resolving
     /// floating times through `host_zone`) before the commit

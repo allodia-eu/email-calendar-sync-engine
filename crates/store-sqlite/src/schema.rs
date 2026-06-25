@@ -206,3 +206,17 @@ ALTER TABLE event_occurrence ADD COLUMN tzdata_version TEXT NOT NULL DEFAULT '';
 
 CREATE INDEX event_occurrence_tzdata ON event_occurrence (tzdata_version);
 ";
+
+/// Migration v4: the engine-meta key/value table.
+///
+/// Holds small build-level markers, currently `normalizer_version` (see
+/// `engine_store::NORMALIZER_VERSION`): on open the store compares the stored value to
+/// the build's and clears sync cursors when they differ, so a normalization change forces
+/// a re-normalizing re-sync (`store-and-sync.md`). A pre-V4 database has no row, which
+/// reads as a mismatch and triggers exactly that one-time re-sync.
+pub(crate) const V4: &str = "\
+CREATE TABLE meta (
+    key   TEXT NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL
+) STRICT;
+";

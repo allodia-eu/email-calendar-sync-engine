@@ -41,7 +41,7 @@ use async_trait::async_trait;
 use engine_core::ids::{AccountId, ProviderKey};
 use engine_core::sync::{SyncScope, SyncState};
 use engine_core::write::{PendingOp, PendingOpId, PendingOutcome};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -114,6 +114,7 @@ impl<C: Clock> SqliteStore<C> {
             .map_err(backend)?;
         }
         migrations::migrate(&mut conn)?;
+        reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;
         Ok(Self {
             clock,
             conn: Arc::new(Mutex::new(conn)),
@@ -182,6 +183,57 @@ impl<C: Clock> SqliteStore<C> {
             .await?;
         search_ops::assemble_results(ranked, scope_count)
     }
+
+    /// Clears every scope's sync cursor (and releases any held lease), so the next sync
+    /// re-snapshots the account from scratch — re-fetching and **re-normalizing** every
+    /// object. The durable outbox (queued sends) and the schema are untouched. Backs a
+    /// host "reset / full refetch" action; the caller should sync afterwards to
+    /// repopulate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`engine_store::StoreError::Backend`] on a backend failure.
+    pub async fn reset_sync(&self) -> Result<()> {
+        self.call(|conn| clear_sync_cursors(conn)).await
+    }
+}
+
+/// Clears every scope's cursor and lease so the next sync re-snapshots from scratch.
+/// Leaves the scope rows (and their stable `scope_key`s) and objects in place — the
+/// re-snapshot overwrites and tombstones them — so no object is orphaned.
+fn clear_sync_cursors(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE sync_scope SET cursor = NULL, lease_expiry = NULL",
+        [],
+    )
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// On open, compares the stored `normalizer_version` to the build's `current`; on a
+/// mismatch (including a pre-V4 database with no row) it clears the sync cursors so the
+/// next sync re-normalizes everything, then records `current`. See
+/// [`engine_store::NORMALIZER_VERSION`].
+fn reconcile_normalizer_version(conn: &Connection, current: u32) -> Result<()> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'normalizer_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if stored.as_deref() == Some(current.to_string().as_str()) {
+        return Ok(());
+    }
+    clear_sync_cursors(conn)?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('normalizer_version', ?1)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        [current.to_string()],
+    )
+    .map_err(backend)?;
+    Ok(())
 }
 
 #[async_trait]
@@ -339,5 +391,43 @@ mod tests {
         let rendered = format!("{store:?}");
         assert!(rendered.contains("SqliteStore"));
         assert!(rendered.contains(".."));
+    }
+
+    #[test]
+    fn a_normalizer_version_change_clears_sync_cursors() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migrations::migrate(&mut conn).unwrap();
+
+        // A synced scope carries a cursor; reconciling at the same version keeps it.
+        super::reconcile_normalizer_version(&conn, 1).unwrap();
+        conn.execute(
+            "INSERT INTO sync_scope (scope_key, account, token, cursor) VALUES ('s', 'a', 1, 'c1')",
+            [],
+        )
+        .unwrap();
+        super::reconcile_normalizer_version(&conn, 1).unwrap();
+        let cursor: Option<String> = conn
+            .query_row(
+                "SELECT cursor FROM sync_scope WHERE scope_key = 's'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            cursor.as_deref(),
+            Some("c1"),
+            "unchanged version keeps cursors"
+        );
+
+        // A bump clears the cursor, so the next sync re-snapshots + re-normalizes.
+        super::reconcile_normalizer_version(&conn, 2).unwrap();
+        let cursor: Option<String> = conn
+            .query_row(
+                "SELECT cursor FROM sync_scope WHERE scope_key = 's'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursor, None, "a version bump clears cursors");
     }
 }
