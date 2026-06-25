@@ -673,3 +673,28 @@ async fn lists_synced_mailboxes_and_messages() {
     assert!(engine.mailboxes(&other).await.unwrap().is_empty());
     assert!(engine.messages(&other).await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn lists_synced_calendars_and_events() {
+    let engine = Engine::open_in_memory().unwrap();
+    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+    engine
+        .sync_calendar(&FakeProvider::new(), &account(), horizon(), &zone)
+        .await
+        .unwrap();
+
+    // The one synced calendar, carrying its real name (not just a key).
+    let calendars = engine.calendars(&account()).await.unwrap();
+    assert_eq!(calendars.len(), 1);
+    assert_eq!(calendars[0].name, "Work");
+
+    // The one synced event, carrying its real cross-system uid through the store.
+    let events = engine.events(&account()).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].uid, Uid::new("uid-1@h").unwrap());
+
+    // An account that never synced has neither.
+    let other = AccountId::try_from("nobody").unwrap();
+    assert!(engine.calendars(&other).await.unwrap().is_empty());
+    assert!(engine.events(&other).await.unwrap().is_empty());
+}

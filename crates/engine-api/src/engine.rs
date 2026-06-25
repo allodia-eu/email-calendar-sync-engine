@@ -3,6 +3,7 @@
 use core::time::Duration;
 use std::path::Path;
 
+use engine_core::calendar::{Calendar, Event};
 use engine_core::ids::AccountId;
 use engine_core::mail::{Mailbox, Message};
 use engine_core::sync::{ObjectKind, SearchDomain, SyncScope};
@@ -227,6 +228,36 @@ impl Engine {
             messages.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
         }
         Ok(messages)
+    }
+
+    /// Lists one account's calendars (collections) — the synced calendar containers
+    /// across the account's calendar scopes — for the host's calendar sidebar.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn calendars(&self, account: &AccountId) -> Result<Vec<Calendar>, ApiError> {
+        let mut calendars = Vec::new();
+        for payload in self.objects_of(account, ObjectKind::Calendar).await? {
+            calendars.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+        }
+        Ok(calendars)
+    }
+
+    /// Lists one account's events — the synced calendar event objects (the projected
+    /// envelope; recurrence materializes into occurrences in the store) across the
+    /// account's calendar scopes. For the agenda/event list; pair with
+    /// [`Engine::search_calendar`] for filtered or ranked views.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn events(&self, account: &AccountId) -> Result<Vec<Event>, ApiError> {
+        let mut events = Vec::new();
+        for payload in self.objects_of(account, ObjectKind::Event).await? {
+            events.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+        }
+        Ok(events)
     }
 
     /// The normalized payload of every object of `kind` across the account's scopes,
