@@ -43,6 +43,7 @@ pub use engine::Engine;
 
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
+pub use engine_core::calendar::{Calendar, Event};
 pub use engine_core::coverage::SearchCoverage;
 pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
 pub use engine_core::mail::{EmailAddress, Mailbox, Message};
