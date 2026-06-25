@@ -23,10 +23,25 @@ pub struct Draft {
     pub subject: String,
     /// The plain-text body.
     pub text_body: String,
+    /// The `Message-ID` this message replies to, if any — the RFC 5322 §3.6.4
+    /// `In-Reply-To` value (the parent's `Message-ID`, no angle brackets). `None`
+    /// for an original (non-reply) message. Defaulted so a payload serialized
+    /// before threading support still deserializes.
+    #[serde(default)]
+    pub in_reply_to: Option<MessageIdHeader>,
+    /// The RFC 5322 §3.6.4 `References` chain that threads this message with its
+    /// original: the parent's `References` followed by the parent's own
+    /// `Message-ID`, oldest first (each value with no angle brackets). Empty for an
+    /// original (non-reply) message. Defaulted for back-compat like `in_reply_to`.
+    #[serde(default)]
+    pub references: Vec<MessageIdHeader>,
 }
 
 impl Draft {
     /// Assembles a draft to send.
+    ///
+    /// The threading linkage defaults to none; set it with the
+    /// [`in_reply_to`](Draft::in_reply_to) builder for a reply or forward.
     #[must_use]
     pub fn new(
         message_id: MessageIdHeader,
@@ -41,7 +56,24 @@ impl Draft {
             to,
             subject: subject.into(),
             text_body: text_body.into(),
+            in_reply_to: None,
+            references: Vec::new(),
         }
+    }
+
+    /// Sets the threading linkage for a reply or forward: the `parent` message's
+    /// `Message-ID` (the RFC 5322 §3.6.4 `In-Reply-To`) and the full `references`
+    /// chain (the parent's `References` plus its own `Message-ID`, oldest first).
+    /// The SMTP assembler emits both so the sent message threads with its original.
+    #[must_use]
+    pub fn in_reply_to(
+        mut self,
+        parent: MessageIdHeader,
+        references: Vec<MessageIdHeader>,
+    ) -> Self {
+        self.in_reply_to = Some(parent);
+        self.references = references;
+        self
     }
 }
 
@@ -63,5 +95,73 @@ impl SubmissionReceipt {
             email_key,
             message_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mid(value: &str) -> MessageIdHeader {
+        MessageIdHeader::new(value).unwrap()
+    }
+
+    fn draft() -> Draft {
+        Draft::new(
+            mid("reply@host"),
+            EmailAddress::new("alice@test.local"),
+            vec![EmailAddress::new("bob@test.local")],
+            "Re: hi",
+            "thanks",
+        )
+    }
+
+    #[test]
+    fn new_defaults_the_threading_linkage_to_none() {
+        let draft = draft();
+        assert_eq!(draft.in_reply_to, None);
+        assert!(draft.references.is_empty());
+    }
+
+    #[test]
+    fn in_reply_to_builder_sets_parent_and_references() {
+        let draft = draft().in_reply_to(
+            mid("parent@host"),
+            vec![mid("root@host"), mid("parent@host")],
+        );
+        assert_eq!(draft.in_reply_to, Some(mid("parent@host")));
+        assert_eq!(draft.references, vec![mid("root@host"), mid("parent@host")]);
+    }
+
+    #[test]
+    fn serde_round_trip_preserves_the_threading_fields() {
+        let draft = draft().in_reply_to(
+            mid("parent@host"),
+            vec![mid("root@host"), mid("parent@host")],
+        );
+        let json = serde_json::to_string(&draft).unwrap();
+        let restored: Draft = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, draft);
+        assert_eq!(restored.in_reply_to, Some(mid("parent@host")));
+        assert_eq!(
+            restored.references,
+            vec![mid("root@host"), mid("parent@host")]
+        );
+    }
+
+    #[test]
+    fn a_payload_without_the_threading_fields_still_deserializes() {
+        // A durable outbox payload serialized before threading support omits the new
+        // fields; `#[serde(default)]` keeps it loadable as a non-reply draft.
+        let json = r#"{
+            "message_id": "old@host",
+            "from": {"email": "alice@test.local"},
+            "to": [{"email": "bob@test.local"}],
+            "subject": "hi",
+            "text_body": "body"
+        }"#;
+        let restored: Draft = serde_json::from_str(json).unwrap();
+        assert_eq!(restored.in_reply_to, None);
+        assert!(restored.references.is_empty());
     }
 }

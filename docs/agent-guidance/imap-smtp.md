@@ -95,15 +95,20 @@ is authoritative for the `provider-caldav` calendar client.
   DATA`, then files the sent copy. The pre-generated `Message-ID` is on the message
   so the sent copy reconciles by it.
 - **Message assembly (`assemble_message`)** is hardened against header injection:
-  every interpolated value (`Message-ID`, addresses, subject, display names) is
-  **rejected on CR/LF/NUL** (RFC 5322 §2.2 / RFC 5321 §2.3.8 — otherwise a poisoned
-  draft could inject headers or split the command stream), and a **non-ASCII subject
-  or display name is emitted as an RFC 2047 `B` encoded-word**, never raw 8-bit
-  bytes, so headers stay 7-bit clean. A **`Date` header is generated locally**
-  (RFC 5322 §3.6 requires it; for an IMAP `APPEND` — `save_draft` / the Sent copy —
-  no server is in the loop to add one). The body is normalized so a bare CR/LF never
-  reaches the wire. (Long encoded-words are not yet folded into 75-octet runs — a
-  later refinement.)
+  every interpolated value (`Message-ID`, addresses, subject, display names, and the
+  `In-Reply-To`/`References` threading ids) is **rejected on CR/LF/NUL** (RFC 5322
+  §2.2 / RFC 5321 §2.3.8 — otherwise a poisoned draft could inject headers or split
+  the command stream), and a **non-ASCII subject or display name is emitted as an
+  RFC 2047 `B` encoded-word**, never raw 8-bit bytes, so headers stay 7-bit clean.
+  A **`Date` header is generated locally** (RFC 5322 §3.6 requires it; for an IMAP
+  `APPEND` — `save_draft` / the Sent copy — no server is in the loop to add one).
+  For a reply or forward it also emits the **threading linkage** (RFC 5322 §3.6.4):
+  `In-Reply-To: <id>` when `Draft.in_reply_to` is set and `References: <id1> <id2> …`
+  (space-separated, each angle-bracketed) when `Draft.references` is non-empty — each
+  control-char-guarded like the other ids and omitted when its field is empty, so a
+  sent reply threads with its original (`threading.md`). The body is normalized so a
+  bare CR/LF never reaches the wire. (Long encoded-words are not yet folded into
+  75-octet runs — a later refinement.)
 - **Folder resolution.** The sent copy / draft is filed into the account's **real
   folder for the role**, discovered via the `\Sent`/`\Drafts` SPECIAL-USE attribute
   in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
