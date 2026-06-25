@@ -309,8 +309,9 @@ fn occurrence_bounds(
 }
 
 /// Builds the FTS5 `MATCH` string for a domain's text, or `None` if empty. Every
-/// term is a quoted phrase so user input cannot inject FTS operators; scoped terms
-/// carry a column filter.
+/// term is a quoted-phrase **prefix** query (`"term"*`) so search-as-you-type
+/// matches partial words (`allo` matches `allodia`); the quoting still keeps user
+/// input from injecting FTS operators, and scoped terms carry a column filter.
 fn fts_match(text: &TextQuery) -> Option<String> {
     if text.is_empty() {
         return None;
@@ -326,9 +327,10 @@ fn fts_match(text: &TextQuery) -> Option<String> {
     Some(parts.join(" "))
 }
 
-/// Wraps a term as an FTS5 phrase, doubling embedded quotes.
+/// Wraps a term as an FTS5 prefix query: a quoted phrase (embedded quotes doubled)
+/// followed by `*`, so the term matches any token that *starts with* it.
 fn quote_term(term: &str) -> String {
-    format!("\"{}\"", term.replace('"', "\"\""))
+    format!("\"{}\"*", term.replace('"', "\"\""))
 }
 
 /// `?,?,…` for an `IN` list of `n` values (`n >= 1`).
@@ -409,4 +411,40 @@ fn run(conn: &Connection, sql: &str, params: &[Param]) -> Result<Vec<String>> {
         keys.push(row.map_err(convert::backend)?);
     }
     Ok(keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_search::ScopedTerm;
+
+    /// Each term becomes a quoted-phrase prefix query (`"term"*`); scoped terms
+    /// keep their column filter. This is the search-as-you-type form, so a typed
+    /// `allo` matches a stored `allodia`.
+    #[test]
+    fn fts_match_builds_prefix_phrases() {
+        let text = TextQuery {
+            unscoped: vec!["allo".into(), "bar".into()],
+            scoped: vec![ScopedTerm {
+                field: TextField::Subject,
+                text: "allo".into(),
+            }],
+        };
+        assert_eq!(
+            fts_match(&text).as_deref(),
+            Some(r#""allo"* "bar"* subject:"allo"*"#)
+        );
+    }
+
+    #[test]
+    fn fts_match_is_none_for_empty_text() {
+        assert_eq!(fts_match(&TextQuery::default()), None);
+    }
+
+    /// Embedded quotes are doubled (injection-safe) and the `*` is appended after
+    /// the closing quote, not inside it.
+    #[test]
+    fn quote_term_doubles_quotes_then_appends_star() {
+        assert_eq!(quote_term(r#"a"b"#), r#""a""b"*"#);
+    }
 }

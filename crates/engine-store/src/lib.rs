@@ -42,4 +42,8 @@ pub use store::{IndexRowCounts, Store, StoreRead};
 /// **Bump it** whenever a change alters the bytes-to-object mapping in any provider or in
 /// `engine-core`'s projection (e.g. the Windows-1252 subject fix), so existing stores
 /// re-sync. A pure additive feature that does not change existing objects need not bump it.
-pub const NORMALIZER_VERSION: u32 = 1;
+///
+/// History:
+/// - `2`: the mail FTS `body` now folds in sender/recipient address text, and FTS
+///   terms are prefix-matched; existing stores re-project to populate the new text.
+pub const NORMALIZER_VERSION: u32 = 2;
