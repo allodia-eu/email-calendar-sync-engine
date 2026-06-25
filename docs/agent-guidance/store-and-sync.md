@@ -213,7 +213,12 @@ if a store is ever suspected stale.
 ## The outbox
 
 Pending ops are durable before any side effect and are claimed with the same
-fencing discipline as scopes.
+fencing discipline as scopes. The thin inline drivers built on this are
+`engine_sync::{submit_mail, write_calendar_event, delete_calendar_event, edit_mail}`
+— the last applies a `MailEdit` (mark-read/flag, move, or permanent delete) and
+serializes on the target message key (`mail:{key}`), recording a plain classified
+`Failed` on error (no `NeedsConfirmation`: a mail edit is not post-`DATA`-ambiguous
+like an SMTP send, and a stale-target `Conflict` self-corrects after a re-sync).
 
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the

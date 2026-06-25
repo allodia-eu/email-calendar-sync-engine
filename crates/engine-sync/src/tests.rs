@@ -22,18 +22,20 @@ use engine_core::time::{CalendarDateTime, LocalDateTime, TimeZoneId};
 use engine_core::version::ETag;
 use engine_core::write::{IdempotencyKey, PendingOp, ResourceKey};
 use engine_provider::{
-    Capabilities, Draft, EventDeletion, EventWrite, EventWriteReceipt, PageToken, Provider,
-    ProviderError, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind, SyncPage,
+    Capabilities, Draft, EventDeletion, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
+    PageToken, Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind,
+    SyncPage,
 };
 use engine_recurrence::Horizon;
 use engine_store::{LeaseRequest, ManualClock, PendingOpState, Store, StoreRead, WorkerId};
 use store_sqlite::SqliteStore;
 
 use super::{
-    AccountId, Duration, SyncProgress, delete_calendar_event, submit_mail, sync_calendar,
-    sync_mail, sync_mail_streamed, write_calendar_event,
+    AccountId, Duration, SyncProgress, delete_calendar_event, edit_mail, submit_mail,
+    sync_calendar, sync_mail, sync_mail_streamed, write_calendar_event,
 };
 
+mod mail_edit;
 mod streaming;
 
 /// A configurable in-memory mail provider: a snapshot on first sync, an empty
@@ -222,6 +224,19 @@ impl Provider for FakeMail {
             return Err(ProviderError::conflict("etag precondition failed"));
         }
         Ok(())
+    }
+
+    async fn edit_mail(
+        &self,
+        _account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        if self.write_conflicts {
+            // The IMAP analogue of a CalDAV 412: a stale UID under a changed
+            // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
+            return Err(ProviderError::conflict("UIDVALIDITY changed"));
+        }
+        Ok(MailEditReceipt::new(edit.target().clone()))
     }
 }
 

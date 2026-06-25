@@ -18,7 +18,7 @@ use core::time::Duration;
 use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey, Uid};
 use engine_core::version::ETag;
 use engine_core::write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey};
-use engine_provider::{Draft, EventDeletion, EventWrite, Provider};
+use engine_provider::{Draft, EventDeletion, EventWrite, MailEdit, Provider};
 use engine_store::{LeaseRequest, LeasedPendingOp, Store, WorkerId};
 
 use crate::SyncError;
@@ -277,6 +277,87 @@ where
                 )
                 .await?;
             Ok(leased.id)
+        }
+        Err(err) => {
+            record_failure(store, &leased, &err).await?;
+            Err(SyncError::Provider(err))
+        }
+    }
+}
+
+/// The result of a successful mail edit through the outbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailEditOutcome {
+    /// The durable op that recorded the edit.
+    pub op: PendingOpId,
+    /// The provider key the edit resolved to (the edited message; for a move, its
+    /// source key — the next sync reconciles the destination copy).
+    pub message_key: ProviderKey,
+}
+
+/// Applies a [`MailEdit`] through the outbox: durable op → claim → provider
+/// `edit_mail` → record. The mail counterpart of [`write_calendar_event`].
+///
+/// `idempotency` is the caller-minted key that makes the enqueue idempotent — it
+/// must be **unique per edit intent** (the store dedups by `(account, key)` across
+/// every op state, so a key derived only from the target would wrongly collapse two
+/// distinct edits of one message — e.g. mark-read then mark-unread — into one op).
+/// The op's `resource_key` is the target message key, so the store serializes edits
+/// to one message (a second edit whose target is already in flight is *deferred*; the
+/// thin inline driver assumes low outbox contention — the background worker is the
+/// right driver under contention). A provider failure is recorded `Failed` (with its
+/// class) and returned — never blindly retried here. Unlike an SMTP send there is no
+/// `NeedsConfirmation` case: `UID STORE`/`MOVE`/`EXPUNGE` are not post-`DATA`-ambiguous
+/// (a periodic snapshot reconciles the true state), and a stale-target `Conflict` is
+/// self-correcting after a re-sync (`imap-smtp.md`).
+///
+/// # Errors
+///
+/// Returns [`SyncError::Provider`] if the edit fails (after recording it),
+/// [`SyncError::Store`] on a store failure, or [`SyncError::Outbox`] if the request
+/// cannot be encoded or the just-enqueued op is not claimable.
+pub async fn edit_mail<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+    idempotency: &str,
+    edit: &MailEdit,
+) -> Result<MailEditOutcome, SyncError>
+where
+    P: Provider,
+    S: Store,
+{
+    let payload = serde_json::to_value(edit)
+        .map_err(|e| SyncError::Outbox(format!("encode mail edit: {e}")))?;
+    let idempotency_key =
+        IdempotencyKey::new(idempotency).map_err(|e| SyncError::Outbox(e.to_string()))?;
+    let resource = ResourceKey::new(format!("mail:{}", edit.target().as_str()))
+        .map_err(|e| SyncError::Outbox(e.to_string()))?;
+    let leased = enqueue_and_claim(
+        store,
+        account,
+        worker,
+        ttl,
+        PendingOp::new(idempotency_key, resource, payload),
+    )
+    .await?;
+
+    match provider.edit_mail(account, edit).await {
+        Ok(receipt) => {
+            store
+                .mark_pending_op(
+                    &leased.lease,
+                    PendingOutcome::Succeeded {
+                        provider_key: receipt.message_key.clone(),
+                    },
+                )
+                .await?;
+            Ok(MailEditOutcome {
+                op: leased.id,
+                message_key: receipt.message_key,
+            })
         }
         Err(err) => {
             record_failure(store, &leased, &err).await?;
