@@ -47,10 +47,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - **Generic over `Provider`.** `sync_*` take `&impl Provider`, so the facade is
   provider-agnostic and a host passes a `provider-jmap` / `provider-imap` /
   `provider-caldav` adapter. (The `engine-sync` free functions are generic over
-  `P: Provider`; `dyn Provider` does not implement `Provider`, so a host holding a
-  `Box<dyn Provider>` cannot call these yet. If/when a binding needs dynamic
-  dispatch across providers, add a blanket `impl Provider for Box<dyn Provider>` in
-  `engine-provider` as its own slice — do not special-case it in `engine-api`.)
+  `P: Provider`. A host that picks a concrete adapter at runtime can hold a
+  `Box<dyn Provider>` and still call them: `engine-provider` provides a blanket
+  `impl<P: Provider + ?Sized> Provider for Box<P>` that delegates every method to the
+  box's contents — kept there, not special-cased in `engine-api`.)
 - **Host-config is hardcoded in this slice, by design (deferred seams).** An
   `Engine` stamps a fixed `WorkerId` (`"engine-api"`), uses a fixed `LEASE_TTL`
   (5 min — a generous safety bound, not a deadline; the sync loop re-claims and
