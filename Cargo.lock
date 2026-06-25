@@ -152,6 +152,7 @@ dependencies = [
  "async-trait",
  "engine-core",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

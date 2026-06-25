@@ -66,13 +66,16 @@ pub(crate) struct SmtpResult {
 /// # Errors
 ///
 /// Every header-interpolated value (`Message-ID`, addresses, subject, display
-/// names) is rejected if it carries a CR, LF, or NUL — RFC 5322 §2.2 forbids those
-/// in a header field body, and allowing them would let a hostile draft inject extra
-/// headers or split the message / SMTP command stream. A non-ASCII subject or
-/// display name is emitted as an RFC 2047 `B` encoded-word, never raw 8-bit bytes,
-/// so the headers stay 7-bit clean. A `Date` header is generated from `date`
-/// (RFC 5322 §3.6 requires it; for an IMAP `APPEND` — `save_draft` or the Sent copy
-/// — no server is in the loop to add one).
+/// names, and the `In-Reply-To`/`References` threading ids) is rejected if it
+/// carries a CR, LF, or NUL — RFC 5322 §2.2 forbids those in a header field body,
+/// and allowing them would let a hostile draft inject extra headers or split the
+/// message / SMTP command stream. A non-ASCII subject or display name is emitted as
+/// an RFC 2047 `B` encoded-word, never raw 8-bit bytes, so the headers stay 7-bit
+/// clean. A `Date` header is generated from `date` (RFC 5322 §3.6 requires it; for
+/// an IMAP `APPEND` — `save_draft` or the Sent copy — no server is in the loop to
+/// add one). For a reply or forward the `In-Reply-To` and `References` headers
+/// (RFC 5322 §3.6.4) thread the message with its original; each is omitted when its
+/// draft field is empty.
 pub(crate) fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ImapResult<Vec<u8>> {
     let message_id = reject_control("Message-ID", draft.message_id.as_str())?;
     let from = address_field(&draft.from)?;
@@ -83,12 +86,31 @@ pub(crate) fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ImapResul
         .collect::<ImapResult<Vec<_>>>()?
         .join(", ");
     let subject = encode_header_text(reject_control("subject", &draft.subject)?);
+    let in_reply_to = match &draft.in_reply_to {
+        Some(parent) => format!(
+            "In-Reply-To: <{}>\r\n",
+            reject_control("In-Reply-To", parent.as_str())?
+        ),
+        None => String::new(),
+    };
+    let references = if draft.references.is_empty() {
+        String::new()
+    } else {
+        let ids = draft
+            .references
+            .iter()
+            .map(|r| reject_control("References", r.as_str()).map(|id| format!("<{id}>")))
+            .collect::<ImapResult<Vec<_>>>()?
+            .join(" ");
+        format!("References: {ids}\r\n")
+    };
     let date = date
         .format(&Rfc2822)
         .map_err(|e| ImapError::protocol(format!("cannot format the Date header: {e}")))?;
     let headers = format!(
         "Date: {date}\r\nMessage-ID: <{message_id}>\r\nFrom: {from}\r\nTo: {to}\r\n\
-         Subject: {subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
+         {in_reply_to}{references}Subject: {subject}\r\n\
+         MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
     );
     let mut message = headers.into_bytes();
     for line in normalize_body_lines(&draft.text_body) {
@@ -400,3 +422,9 @@ fn auth_plain_token(user: &str, password: &str) -> String {
 #[cfg(test)]
 #[path = "smtp_tests.rs"]
 mod tests;
+
+// The threading-header tests live in a sibling file: `smtp_tests.rs` is already at
+// the 500-line limit, so the In-Reply-To/References cases go here rather than grow it.
+#[cfg(test)]
+#[path = "smtp_threading_tests.rs"]
+mod threading_tests;
