@@ -197,12 +197,19 @@ impl<C: Clock> SqliteStore<C> {
         self.call(|conn| clear_sync_cursors(conn)).await
     }
 
-    /// Clears one scope's sync cursor (and releases any held lease), so the next sync of
-    /// that scope re-snapshots it from scratch. The targeted counterpart of
-    /// [`reset_sync`](Self::reset_sync): a host reconciles a single domain (e.g. mail,
-    /// to pick up flag/move/expunge changes an IMAP delta cannot detect without
-    /// CONDSTORE — `imap-smtp.md`) without re-fetching the whole account. Leaves the
-    /// scope row, its objects, and the durable outbox in place.
+    /// Clears one scope's sync cursor, so the next sync of that scope re-snapshots it
+    /// from scratch. The targeted counterpart of [`reset_sync`](Self::reset_sync): a
+    /// host reconciles a single domain (e.g. mail, to pick up flag/move/expunge changes
+    /// an IMAP delta cannot detect without CONDSTORE — `imap-smtp.md`) without
+    /// re-fetching the whole account.
+    ///
+    /// Unlike [`reset_sync`](Self::reset_sync) it **leaves any held lease intact**:
+    /// this clear runs on every refresh, concurrently with fire-and-forget syncs, so it
+    /// must not steal a live lease (it carries no fencing token to check, and clearing
+    /// `lease_expiry` without bumping the generation would let a stolen-then-resumed
+    /// worker commit its cursor back over the clear). An in-flight sync therefore keeps
+    /// its lease; the cleared cursor takes effect on the next claim of the scope. The
+    /// scope row, its objects, and the durable outbox are left in place.
     ///
     /// # Errors
     ///
@@ -225,10 +232,12 @@ fn clear_sync_cursors(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Clears one scope's cursor and lease (by `scope_key`) so the next sync re-snapshots it.
+/// Clears one scope's cursor (by `scope_key`) so the next sync re-snapshots it. Leaves
+/// `lease_expiry` and the fencing token untouched, so a concurrent in-flight sync's
+/// lease is not stolen (see [`SqliteStore::clear_scope_cursor`]).
 fn clear_one_cursor(conn: &Connection, scope_key: &str) -> Result<()> {
     conn.execute(
-        "UPDATE sync_scope SET cursor = NULL, lease_expiry = NULL WHERE scope_key = ?1",
+        "UPDATE sync_scope SET cursor = NULL WHERE scope_key = ?1",
         [scope_key],
     )
     .map_err(backend)?;
@@ -454,5 +463,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cursor, None, "a version bump clears cursors");
+    }
+
+    #[test]
+    fn clear_one_cursor_clears_the_cursor_but_keeps_a_held_lease() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migrations::migrate(&mut conn).unwrap();
+
+        // A scope mid-sync: a cursor plus a live lease (a fencing token and a future
+        // expiry). The per-scope clear runs concurrently with such syncs, so unlike
+        // reset_sync it must clear ONLY the cursor — stealing the lease would let the
+        // in-flight worker commit its cursor back over the clear.
+        conn.execute(
+            "INSERT INTO sync_scope (scope_key, account, token, cursor, lease_expiry) \
+             VALUES ('s', 'a', 5, 'c1', '2099-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        super::clear_one_cursor(&conn, "s").unwrap();
+
+        let (cursor, token, lease): (Option<String>, i64, Option<String>) = conn
+            .query_row(
+                "SELECT cursor, token, lease_expiry FROM sync_scope WHERE scope_key = 's'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            cursor, None,
+            "the cursor is cleared so the next sync snapshots"
+        );
+        assert_eq!(token, 5, "the fencing token is untouched");
+        assert_eq!(
+            lease.as_deref(),
+            Some("2099-01-01T00:00:00Z"),
+            "a live lease is NOT stolen (the contrast with reset_sync)"
+        );
     }
 }
