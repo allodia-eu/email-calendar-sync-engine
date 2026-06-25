@@ -13,7 +13,7 @@ use engine_api::{
 };
 use engine_core::calendar::{Calendar, Event};
 use engine_core::ids::{
-    CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid,
+    CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, ThreadId, Uid,
 };
 use engine_core::mail::{EmailAddress, Mailbox, MailboxRole, Message};
 use engine_core::membership::Memberships;
@@ -68,6 +68,19 @@ impl FakeProvider {
     fn removing_on_resync(mut self, keys: Vec<ProviderKey>) -> Self {
         self.removed_on_resync = keys;
         self
+    }
+
+    /// An IMAP-shaped provider: messages carry threading headers but no thread id, so
+    /// the engine must derive one. `t2` replies to `t1` (shared id); `t3` is separate.
+    fn threaded() -> Self {
+        Self {
+            messages: vec![
+                threaded_message("t1", "a", "a@h", &[]),
+                threaded_message("t2", "a", "b@h", &["a@h"]),
+                threaded_message("t3", "a", "c@h", &[]),
+            ],
+            ..Self::new()
+        }
     }
 }
 
@@ -310,6 +323,16 @@ fn message(id: &str, mailbox: &str, subject: &str) -> Message {
         Memberships::of_one(MailboxId::try_from(mailbox).unwrap()),
     );
     message.envelope.subject = Some(subject.to_owned());
+    message
+}
+
+fn threaded_message(id: &str, mailbox: &str, own: &str, references: &[&str]) -> Message {
+    let mut message = message(id, mailbox, "subject");
+    message.envelope.message_id = vec![MessageIdHeader::new(own).unwrap()];
+    message.envelope.references = references
+        .iter()
+        .map(|value| MessageIdHeader::new(*value).unwrap())
+        .collect();
     message
 }
 
@@ -697,4 +720,56 @@ async fn lists_synced_calendars_and_events() {
     let other = AccountId::try_from("nobody").unwrap();
     assert!(engine.calendars(&other).await.unwrap().is_empty());
     assert!(engine.events(&other).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn derives_and_persists_thread_ids_for_unthreaded_mail() {
+    let engine = Engine::open_in_memory().unwrap();
+    engine
+        .sync_mail(&FakeProvider::threaded(), &account())
+        .await
+        .unwrap();
+
+    // IMAP-shaped mail arrives without thread ids.
+    let before = engine.messages(&account()).await.unwrap();
+    assert!(before.iter().all(|m| m.thread_id.is_none()));
+
+    // Derivation groups the reply (t2) with its original (t1); t3 stands alone.
+    let report = engine.derive_mail_threads(&account()).await.unwrap();
+    assert_eq!(report.messages_assigned, 3);
+    assert_eq!(report.threads, 2);
+
+    // The grouping is persisted: messages() now carries the derived thread_id.
+    let after = engine.messages(&account()).await.unwrap();
+    let thread_of = |key: &str| {
+        after
+            .iter()
+            .find(|m| m.id.key().as_str() == key)
+            .unwrap()
+            .thread_id
+            .clone()
+    };
+    assert!(thread_of("t1").is_some());
+    assert_eq!(thread_of("t1"), thread_of("t2"));
+    assert_ne!(thread_of("t1"), thread_of("t3"));
+}
+
+#[tokio::test]
+async fn derive_mail_threads_is_a_noop_for_provider_threaded_mail() {
+    // A provider that assigns its own thread ids (JMAP/Gmail/Graph): derivation must
+    // not touch them.
+    let mut provider = FakeProvider::threaded();
+    for (index, message) in provider.messages.iter_mut().enumerate() {
+        message.thread_id = Some(ThreadId::try_from(format!("T{index}").as_str()).unwrap());
+    }
+    let engine = Engine::open_in_memory().unwrap();
+    engine.sync_mail(&provider, &account()).await.unwrap();
+
+    let report = engine.derive_mail_threads(&account()).await.unwrap();
+    assert_eq!(report.messages_assigned, 0);
+
+    // Every message keeps its provider-assigned thread id.
+    let after = engine.messages(&account()).await.unwrap();
+    assert_eq!(after.len(), 3);
+    assert!(after.iter().all(|m| m.thread_id.is_some()));
 }

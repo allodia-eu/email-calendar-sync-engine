@@ -14,8 +14,8 @@ use engine_recurrence::Horizon;
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{PendingOpState, StoreError, StoreRead, WorkerId};
 use engine_sync::{
-    CalendarSyncReport, MailSyncReport, ProgressSink, SubmitOutcome, SyncError, submit_mail,
-    sync_calendar, sync_mail, sync_mail_streamed,
+    CalendarSyncReport, MailSyncReport, ProgressSink, SubmitOutcome, SyncError, ThreadDeriveReport,
+    derive_mail_threads, submit_mail, sync_calendar, sync_mail, sync_mail_streamed,
 };
 use serde_json::Value;
 use store_sqlite::SqliteStore;
@@ -95,6 +95,26 @@ impl Engine {
         account: &AccountId,
     ) -> Result<MailSyncReport, ApiError> {
         sync_mail(provider, &self.store, account, worker(), LEASE_TTL)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Derives and persists thread ids for the account's mail that has none — IMAP and
+    /// other providers without native threading — grouping messages across folders by
+    /// their `Message-ID`/`In-Reply-To`/`References` headers (so a sent reply and its
+    /// received original share a thread). A no-op for providers that assign thread ids
+    /// themselves. Run after [`Engine::sync_mail`]; subsequent [`Engine::messages`]
+    /// reads then carry the grouped `thread_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Busy`] if a sync already holds a mail scope, or
+    /// [`ApiError::Sync`] if the store rejects the apply.
+    pub async fn derive_mail_threads(
+        &self,
+        account: &AccountId,
+    ) -> Result<ThreadDeriveReport, ApiError> {
+        derive_mail_threads(&self.store, account, worker(), LEASE_TTL)
             .await
             .map_err(map_sync_error)
     }

@@ -344,10 +344,12 @@ fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
 
 mod outbox;
 mod stream;
+mod threading;
 pub use outbox::{
     CalendarWriteOutcome, SubmitOutcome, delete_calendar_event, submit_mail, write_calendar_event,
 };
 pub use stream::{ProgressSink, SyncProgress, sync_mail_streamed};
+pub use threading::{ThreadDeriveReport, derive_mail_threads};
 
 #[cfg(test)]
 mod tests;

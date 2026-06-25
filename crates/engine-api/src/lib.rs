@@ -54,6 +54,7 @@ pub use engine_search::{ParseError, SearchHit, SearchResults};
 pub use engine_store::PendingOpState;
 pub use engine_sync::{
     CalendarSyncReport, MailSyncReport, ProgressSink, SubmitOutcome, SyncProgress,
+    ThreadDeriveReport,
 };
 
 /// An error from an [`Engine`] operation.
