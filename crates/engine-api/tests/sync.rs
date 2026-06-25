@@ -20,8 +20,8 @@ use engine_core::membership::Memberships;
 use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
 use engine_core::time::{CalendarDateTime, LocalDateTime};
 use engine_provider::{
-    Capabilities, Draft, PageToken, Provider, ProviderError, ProviderResult, ScopeSync,
-    SubmissionReceipt, SyncKind, SyncPage,
+    Capabilities, Draft, MailEdit, MailEditReceipt, PageToken, Provider, ProviderError,
+    ProviderResult, ScopeSync, SubmissionReceipt, SyncKind, SyncPage,
 };
 use tokio::sync::oneshot;
 
@@ -304,6 +304,17 @@ impl Provider for SubmittingProvider {
             ProviderKey::new("sent-1").unwrap(),
             draft.message_id.clone(),
         ))
+    }
+
+    async fn edit_mail(
+        &self,
+        _account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        if self.fail {
+            return Err(ProviderError::conflict("UIDVALIDITY changed"));
+        }
+        Ok(MailEditReceipt::new(edit.target().clone()))
     }
 }
 
@@ -626,6 +637,53 @@ async fn submit_mail_surfaces_a_failed_send() {
     // before returning (that recording is locked at the engine-sync layer).
     let err = engine
         .submit_mail(&provider, &account(), &draft("gen-2@test.local", "Lunch"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::Sync(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn edit_mail_records_a_successful_edit() {
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = SubmittingProvider {
+        inner: FakeProvider::new(),
+        fail: false,
+    };
+    let target = ProviderKey::new("imap:v1:u42@INBOX").unwrap();
+
+    let outcome = engine
+        .edit_mail(
+            &provider,
+            &account(),
+            "edit:u42:seen:on",
+            &MailEdit::mark_seen(target.clone(), true),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.message_key, target);
+    // The durable op committed Succeeded, pollable by the returned id.
+    assert_eq!(
+        engine.pending_op_state(outcome.op).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+}
+
+#[tokio::test]
+async fn edit_mail_surfaces_a_failed_edit() {
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = SubmittingProvider {
+        inner: FakeProvider::new(),
+        fail: true,
+    };
+    // A failed edit (here a stale-target Conflict) surfaces as a sync error; the
+    // outbox records the op `Failed` before returning (locked at engine-sync).
+    let err = engine
+        .edit_mail(
+            &provider,
+            &account(),
+            "edit:u42:delete",
+            &MailEdit::delete(ProviderKey::new("imap:v1:u42@INBOX").unwrap()),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, ApiError::Sync(_)), "got {err:?}");

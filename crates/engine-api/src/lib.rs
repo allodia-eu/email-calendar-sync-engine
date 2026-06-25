@@ -46,15 +46,15 @@ pub use engine::Engine;
 pub use engine_core::calendar::{Calendar, Event};
 pub use engine_core::coverage::SearchCoverage;
 pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
-pub use engine_core::mail::{EmailAddress, Mailbox, Message};
+pub use engine_core::mail::{EmailAddress, Mailbox, MailboxRole, Message};
 pub use engine_core::time::TimeZoneId;
 pub use engine_core::write::PendingOpId;
-pub use engine_provider::{Draft, Provider};
+pub use engine_provider::{Draft, MailEdit, MailEditReceipt, Provider};
 pub use engine_recurrence::Horizon;
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 pub use engine_store::PendingOpState;
 pub use engine_sync::{
-    CalendarSyncReport, MailSyncReport, ProgressSink, SubmitOutcome, SyncProgress,
+    CalendarSyncReport, MailEditOutcome, MailSyncReport, ProgressSink, SubmitOutcome, SyncProgress,
     ThreadDeriveReport,
 };
 

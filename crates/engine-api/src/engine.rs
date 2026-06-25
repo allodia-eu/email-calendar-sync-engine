@@ -9,13 +9,14 @@ use engine_core::mail::{Mailbox, Message};
 use engine_core::sync::{ObjectKind, SearchDomain, SyncScope};
 use engine_core::time::TimeZoneId;
 use engine_core::write::PendingOpId;
-use engine_provider::{Draft, Provider};
+use engine_provider::{Draft, MailEdit, Provider};
 use engine_recurrence::Horizon;
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{PendingOpState, StoreError, StoreRead, WorkerId};
 use engine_sync::{
-    CalendarSyncReport, MailSyncReport, ProgressSink, SubmitOutcome, SyncError, ThreadDeriveReport,
-    derive_mail_threads, submit_mail, sync_calendar, sync_mail, sync_mail_streamed,
+    CalendarSyncReport, MailEditOutcome, MailSyncReport, ProgressSink, SubmitOutcome, SyncError,
+    ThreadDeriveReport, derive_mail_threads, edit_mail, submit_mail, sync_calendar, sync_mail,
+    sync_mail_streamed,
 };
 use serde_json::Value;
 use store_sqlite::SqliteStore;
@@ -342,6 +343,46 @@ impl Engine {
         submit_mail(provider, &self.store, account, worker(), LEASE_TTL, draft)
             .await
             .map_err(map_sync_error)
+    }
+
+    /// Applies a [`MailEdit`] to one of the account's messages through the durable
+    /// outbox — mark-read/flag (`SetKeywords`), move to another folder
+    /// (`MoveTo` — also the mechanism behind a Trash "delete", the host resolving the
+    /// Trash mailbox), or permanent delete (`Delete`). The edit is recorded as a
+    /// pending op (idempotent by `idempotency`) **before** the provider side effect,
+    /// so a crash never loses it (`north-star.md` Write Contract). `idempotency` must
+    /// be **unique per edit intent** — deriving it only from the target message would
+    /// wrongly collapse mark-read then mark-unread into one op. Returns the resolved
+    /// message key and the op id (pollable via [`Engine::pending_op_state`]).
+    ///
+    /// The next [`Engine::sync_mail`] reconciles the local rows to the new server
+    /// state (a periodic snapshot, since IMAP deltas do not carry flag/expunge
+    /// changes — `imap-smtp.md`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the edit fails: the op is first recorded
+    /// `Failed` (a stale-target `Conflict` — e.g. an IMAP UID under a changed
+    /// `UIDVALIDITY` — means re-sync then retry), and the error then returns. A store
+    /// failure also surfaces as [`ApiError::Sync`].
+    pub async fn edit_mail<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        idempotency: &str,
+        edit: &MailEdit,
+    ) -> Result<MailEditOutcome, ApiError> {
+        edit_mail(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            idempotency,
+            edit,
+        )
+        .await
+        .map_err(map_sync_error)
     }
 
     /// The current lifecycle state of a pending outbox op — e.g. the one a
