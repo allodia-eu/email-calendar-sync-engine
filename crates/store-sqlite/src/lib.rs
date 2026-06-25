@@ -301,6 +301,12 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
             .await
     }
 
+    async fn scope_objects(&self, scope: &SyncScope) -> Result<Vec<(ProviderKey, Value)>> {
+        let key = scope_key(scope);
+        self.call(move |conn| scope_ops::scope_objects(conn, &key))
+            .await
+    }
+
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {
         self.call(move |conn| outbox_ops::pending_op_state(conn, id))
             .await

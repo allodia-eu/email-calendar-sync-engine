@@ -482,6 +482,22 @@ impl<C: Clock> StoreRead for MemStore<C> {
             .and_then(|c| c.objects.get(key).cloned()))
     }
 
+    async fn scope_objects(&self, scope: &SyncScope) -> Result<Vec<(ProviderKey, Value)>> {
+        let inner = self.lock();
+        let mut objects: Vec<(ProviderKey, Value)> = inner
+            .scopes
+            .get(scope)
+            .map(|c| {
+                c.objects
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        objects.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(objects)
+    }
+
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {
         Ok(self.lock().ops.get(&id).map(|o| o.state))
     }

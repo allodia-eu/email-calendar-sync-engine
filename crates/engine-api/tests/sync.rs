@@ -644,3 +644,32 @@ async fn sync_mail_streamed_reports_progress() {
     assert_eq!(progress[0].fetched, 2);
     assert_eq!(progress[0].total, Some(2));
 }
+
+#[tokio::test]
+async fn lists_synced_mailboxes_and_messages() {
+    let engine = Engine::open_in_memory().unwrap();
+    engine
+        .sync_mail(&FakeProvider::new(), &account())
+        .await
+        .unwrap();
+
+    // The two synced mailboxes, carrying their real names (not just keys).
+    let mailboxes = engine.mailboxes(&account()).await.unwrap();
+    let names: Vec<&str> = mailboxes.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(mailboxes.len(), 2);
+    assert!(names.contains(&"Inbox") && names.contains(&"Archive"));
+
+    // The two synced messages, carrying their real envelope subjects.
+    let messages = engine.messages(&account()).await.unwrap();
+    let subjects: Vec<&str> = messages
+        .iter()
+        .filter_map(|m| m.envelope.subject.as_deref())
+        .collect();
+    assert_eq!(messages.len(), 2);
+    assert!(subjects.contains(&"Quarterly report") && subjects.contains(&"Lunch plans"));
+
+    // An account that never synced has neither.
+    let other = AccountId::try_from("nobody").unwrap();
+    assert!(engine.mailboxes(&other).await.unwrap().is_empty());
+    assert!(engine.messages(&other).await.unwrap().is_empty());
+}

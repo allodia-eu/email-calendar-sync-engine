@@ -710,3 +710,71 @@ pub(super) async fn account_scopes_enumerates_an_accounts_scopes<S: Store + Stor
             .is_empty()
     );
 }
+
+/// `scope_objects` batch-reads a scope's live objects as `(key, payload)` pairs in key
+/// order — the read backing per-account views — matching `object_payload` per key and
+/// excluding tombstoned objects.
+pub(super) async fn scope_objects_batch_reads_live_objects<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-objects");
+    let scope = email_scope(&account);
+    let derived = DerivedWrite::empty();
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+
+    let update = SyncUpdate::delta(
+        vec![
+            TestObject::new("a", "A"),
+            TestObject::new("b", "B"),
+            TestObject::new("c", "C"),
+        ],
+        vec![],
+    );
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&update, &derived, &[], &SyncState::new("c1")),
+        )
+        .await
+        .unwrap();
+    // Drop `b`: a tombstoned object must not appear in the batch read.
+    let drop_b: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![pk("b")]);
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&drop_b, &derived, &[], &SyncState::new("c2")),
+        )
+        .await
+        .unwrap();
+
+    // The two live objects, in ascending key order (so a multi-object sort runs).
+    let objects = store.scope_objects(&scope).await.unwrap();
+    assert_eq!(
+        objects
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>(),
+        vec![pk("a"), pk("c")]
+    );
+    // The batched payload matches the single-key read.
+    assert_eq!(
+        Some(&objects[0].1),
+        store
+            .object_payload(&scope, &pk("a"))
+            .await
+            .unwrap()
+            .as_ref()
+    );
+    // A scope the store has never seen reads back empty.
+    assert!(
+        store
+            .scope_objects(&email_scope(&acct("acct-objects-none")))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -201,6 +201,16 @@ pub trait StoreRead: Send + Sync {
     /// Returns `StoreError::Backend` on a backend failure.
     async fn object_payload(&self, scope: &SyncScope, key: &ProviderKey) -> Result<Option<Value>>;
 
+    /// Every live (non-tombstoned) object in a scope as `(provider key, normalized
+    /// payload)` pairs, in ascending key order. A batch read for building per-account
+    /// views, so a host need not make an N+1 [`object_payload`](StoreRead::object_payload)
+    /// call per key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn scope_objects(&self, scope: &SyncScope) -> Result<Vec<(ProviderKey, Value)>>;
+
     /// The current lifecycle state of a pending op, or `None` if unknown.
     ///
     /// # Errors

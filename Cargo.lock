@@ -111,6 +111,7 @@ dependencies = [
  "engine-search",
  "engine-store",
  "engine-sync",
+ "serde_json",
  "store-sqlite",
  "tempfile",
  "thiserror",

@@ -45,7 +45,7 @@ pub use engine::Engine;
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::coverage::SearchCoverage;
 pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
-pub use engine_core::mail::EmailAddress;
+pub use engine_core::mail::{EmailAddress, Mailbox, Message};
 pub use engine_core::time::TimeZoneId;
 pub use engine_core::write::PendingOpId;
 pub use engine_provider::{Draft, Provider};

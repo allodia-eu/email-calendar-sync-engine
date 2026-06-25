@@ -344,6 +344,36 @@ pub(crate) fn object_payload(
     }
 }
 
+/// Every live object in a scope as `(provider_key, payload)`, ordered by key (the
+/// reference store sorts the same way; SQLite's default `BINARY` collation matches
+/// `ProviderKey`'s `Ord`). A batch read backing per-account views.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure or a corrupt payload.
+pub(crate) fn scope_objects(
+    conn: &Connection,
+    scope_key: &str,
+) -> Result<Vec<(ProviderKey, Value)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT provider_key, payload FROM object WHERE scope_key = ?1 ORDER BY provider_key",
+        )
+        .map_err(convert::backend)?;
+    let rows = stmt
+        .query_map([scope_key], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(convert::backend)?;
+    let mut objects = Vec::new();
+    for row in rows {
+        let (key, payload) = row.map_err(convert::backend)?;
+        let value = serde_json::from_str(&payload).map_err(convert::backend)?;
+        objects.push((ProviderKey::new(key).map_err(convert::backend)?, value));
+    }
+    Ok(objects)
+}
+
 /// Fails with [`StoreError::StaleLease`] unless the scope's stored generation
 /// equals `token` (the fencing check, inside the write transaction).
 fn check_token(tx: &Transaction<'_>, scope_key: &str, token: u64) -> Result<()> {

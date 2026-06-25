@@ -14,6 +14,9 @@ engine-provider = { workspace = true }
 engine-recurrence = { workspace = true }
 engine-search = { workspace = true }
 store-sqlite = { workspace = true }
+# Deserializes the store's normalized object payloads (Value) into the domain types
+# the read methods return (Mailbox/Message).
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 # `OffsetDateTime::now_utc` needs time's `std` feature; require it explicitly so the
 # crate keeps compiling even if the workspace dep ever turns default features off.

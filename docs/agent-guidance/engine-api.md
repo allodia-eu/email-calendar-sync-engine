@@ -14,10 +14,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - An [`Engine`] owns **one durable [`SqliteStore`]** driven by a host wall clock
   ([`SystemClock`]), and exposes high-level operations over it.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
-  (or `sync_mail_streamed` for live progress), `search_mail` / `search_calendar`, and
-  `submit_mail` / `pending_op_state` (calendar writes land in a later slice). The
-  return values (e.g. `MailSyncReport`, `SearchResults`, `SubmitOutcome`) are the
-  host's feedback.
+  (or `sync_mail_streamed` for live progress); read with `mailboxes` / `messages` and
+  `search_mail` / `search_calendar`; and write with `submit_mail` / `pending_op_state`
+  (calendar writes land in a later slice). The return values (e.g. `MailSyncReport`,
+  `Vec<Message>`, `SearchResults`, `SubmitOutcome`) are the host's feedback.
 
 ## What it is not
 

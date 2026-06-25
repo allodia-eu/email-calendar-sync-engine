@@ -103,6 +103,20 @@ pub enum SearchDomain {
     Calendar,
 }
 
+/// The kind of member object a scope holds, so a host can read an account's objects
+/// (mailboxes, messages, calendars, events) by kind without branching on protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectKind {
+    /// A mail collection (mailbox/folder/label).
+    Mailbox,
+    /// A mail object (message).
+    Message,
+    /// A calendar collection.
+    Calendar,
+    /// A calendar event.
+    Event,
+}
+
 impl SyncScope {
     /// Returns the account this scope belongs to.
     #[must_use]
@@ -116,33 +130,45 @@ impl SyncScope {
         }
     }
 
-    /// The search domain whose member objects this scope holds, or `None` for a
-    /// container/discovery scope that holds no directly searchable mail or calendar
-    /// objects (a mailbox/collection list, or a JMAP `Mailbox`/`Calendar`/`Thread`/
-    /// `EmailSubmission` collection).
+    /// The kind of member object this scope holds, or `None` for a scope whose objects
+    /// are not host-facing view objects (a JMAP `Thread` or `EmailSubmission`).
     ///
-    /// A per-account search enumerates an account's scopes
-    /// (`StoreRead::account_scopes`) and routes each through the matching index by
-    /// this, so callers never hard-code which scopes a provider uses nor branch on
-    /// protocol. CalDAV collections classify as calendar today; CardDAV address
-    /// books will need disambiguation when contacts land (they reuse
-    /// [`DavCollection`](Self::DavCollection)).
+    /// This is how a host reads an account's objects without hard-coding or branching
+    /// on protocol: enumerate the account's scopes (`StoreRead::account_scopes`), then
+    /// read the ones whose kind it wants. CalDAV collections classify as calendar
+    /// today; CardDAV address books will need disambiguation when contacts land (they
+    /// reuse [`DavCollection`](Self::DavCollection) /
+    /// [`DavCollectionList`](Self::DavCollectionList)).
+    #[must_use]
+    pub fn object_kind(&self) -> Option<ObjectKind> {
+        match self {
+            Self::JmapType { data_type, .. } => match data_type {
+                JmapDataType::Email => Some(ObjectKind::Message),
+                JmapDataType::Mailbox => Some(ObjectKind::Mailbox),
+                JmapDataType::CalendarEvent => Some(ObjectKind::Event),
+                JmapDataType::Calendar => Some(ObjectKind::Calendar),
+                _ => None,
+            },
+            Self::ImapMailbox { .. } => Some(ObjectKind::Message),
+            Self::ImapMailboxList { .. } => Some(ObjectKind::Mailbox),
+            Self::DavCollection { .. } => Some(ObjectKind::Event),
+            Self::DavCollectionList { .. } => Some(ObjectKind::Calendar),
+        }
+    }
+
+    /// The search domain whose member objects this scope holds, or `None` for a scope
+    /// whose objects are not directly searchable (a mailbox/calendar collection or
+    /// discovery scope, or a JMAP `Thread`/`EmailSubmission`). Derived from
+    /// [`object_kind`](Self::object_kind): only message and event scopes are searchable.
+    ///
+    /// A per-account search enumerates the account's scopes and routes each through the
+    /// matching index by this, so callers never hard-code which scopes a provider uses.
     #[must_use]
     pub fn search_domain(&self) -> Option<SearchDomain> {
-        match self {
-            Self::JmapType {
-                data_type: JmapDataType::Email,
-                ..
-            }
-            | Self::ImapMailbox { .. } => Some(SearchDomain::Mail),
-            Self::JmapType {
-                data_type: JmapDataType::CalendarEvent,
-                ..
-            }
-            | Self::DavCollection { .. } => Some(SearchDomain::Calendar),
-            Self::JmapType { .. }
-            | Self::ImapMailboxList { .. }
-            | Self::DavCollectionList { .. } => None,
+        match self.object_kind() {
+            Some(ObjectKind::Message) => Some(SearchDomain::Mail),
+            Some(ObjectKind::Event) => Some(SearchDomain::Calendar),
+            Some(ObjectKind::Mailbox | ObjectKind::Calendar) | None => None,
         }
     }
 }
@@ -210,6 +236,48 @@ mod tests {
         assert_eq!(
             SyncScope::DavCollectionList { account: a }.search_domain(),
             None
+        );
+    }
+
+    #[test]
+    fn object_kind_classifies_every_scope() {
+        use ObjectKind::{Calendar, Event, Mailbox, Message};
+        let a = account();
+        let jmap = |data_type| SyncScope::JmapType {
+            account: a.clone(),
+            data_type,
+        };
+        assert_eq!(jmap(JmapDataType::Email).object_kind(), Some(Message));
+        assert_eq!(jmap(JmapDataType::Mailbox).object_kind(), Some(Mailbox));
+        assert_eq!(jmap(JmapDataType::CalendarEvent).object_kind(), Some(Event));
+        assert_eq!(jmap(JmapDataType::Calendar).object_kind(), Some(Calendar));
+        // JMAP types with no host-facing view object.
+        assert_eq!(jmap(JmapDataType::Thread).object_kind(), None);
+        assert_eq!(jmap(JmapDataType::EmailSubmission).object_kind(), None);
+        // IMAP / CalDAV scopes.
+        assert_eq!(
+            SyncScope::ImapMailbox {
+                account: a.clone(),
+                mailbox: MailboxId::try_from("INBOX").unwrap(),
+            }
+            .object_kind(),
+            Some(Message)
+        );
+        assert_eq!(
+            SyncScope::ImapMailboxList { account: a.clone() }.object_kind(),
+            Some(Mailbox)
+        );
+        assert_eq!(
+            SyncScope::DavCollection {
+                account: a.clone(),
+                collection: DavCollectionId::try_from("/dav/cal/a/default/").unwrap(),
+            }
+            .object_kind(),
+            Some(Event)
+        );
+        assert_eq!(
+            SyncScope::DavCollectionList { account: a }.object_kind(),
+            Some(Calendar)
         );
     }
 

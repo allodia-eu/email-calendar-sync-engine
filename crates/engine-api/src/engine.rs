@@ -4,7 +4,8 @@ use core::time::Duration;
 use std::path::Path;
 
 use engine_core::ids::AccountId;
-use engine_core::sync::{SearchDomain, SyncScope};
+use engine_core::mail::{Mailbox, Message};
+use engine_core::sync::{ObjectKind, SearchDomain, SyncScope};
 use engine_core::time::TimeZoneId;
 use engine_core::write::PendingOpId;
 use engine_provider::{Draft, Provider};
@@ -15,6 +16,7 @@ use engine_sync::{
     CalendarSyncReport, MailSyncReport, ProgressSink, SubmitOutcome, SyncError, submit_mail,
     sync_calendar, sync_mail, sync_mail_streamed,
 };
+use serde_json::Value;
 use store_sqlite::SqliteStore;
 
 use crate::ApiError;
@@ -198,6 +200,61 @@ impl Engine {
         Ok(self.store.search_calendar(&scopes, &query, limit).await?)
     }
 
+    /// Lists one account's mailboxes (folders/labels) — the synced mail collections
+    /// across the account's mailbox scopes — for the host's folder sidebar.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn mailboxes(&self, account: &AccountId) -> Result<Vec<Mailbox>, ApiError> {
+        let mut mailboxes = Vec::new();
+        for payload in self.objects_of(account, ObjectKind::Mailbox).await? {
+            mailboxes.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+        }
+        Ok(mailboxes)
+    }
+
+    /// Lists one account's messages — the synced mail objects (envelope metadata;
+    /// bodies are fetched on demand) across the account's mail scopes. For the message
+    /// list; pair with [`Engine::search_mail`] for filtered or ranked views.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn messages(&self, account: &AccountId) -> Result<Vec<Message>, ApiError> {
+        let mut messages = Vec::new();
+        for payload in self.objects_of(account, ObjectKind::Message).await? {
+            messages.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+        }
+        Ok(messages)
+    }
+
+    /// The normalized payload of every object of `kind` across the account's scopes,
+    /// enumerated and filtered by [`SyncScope::object_kind`] — so the facade never
+    /// hard-codes or branches on which scopes a provider uses. One batch read per scope
+    /// (no per-key round trip).
+    async fn objects_of(
+        &self,
+        account: &AccountId,
+        kind: ObjectKind,
+    ) -> Result<Vec<Value>, ApiError> {
+        let scopes = self.store.account_scopes(account.clone()).await?;
+        let mut payloads = Vec::new();
+        for scope in scopes
+            .into_iter()
+            .filter(|scope| scope.object_kind() == Some(kind))
+        {
+            payloads.extend(
+                self.store
+                    .scope_objects(&scope)
+                    .await?
+                    .into_iter()
+                    .map(|(_key, payload)| payload),
+            );
+        }
+        Ok(payloads)
+    }
+
     /// Submits `draft` for one account through the durable outbox: the draft is
     /// recorded as a pending op (idempotent by its `Message-ID`) **before** the
     /// provider send, so a crash or an ambiguous failure never loses or double-sends
@@ -268,5 +325,24 @@ fn map_sync_error(err: SyncError) -> ApiError {
     match err {
         SyncError::Store(StoreError::ScopeHeld) => ApiError::Busy,
         other => ApiError::Sync(other),
+    }
+}
+
+/// Maps a payload-decode failure to a store error: the store wrote these objects, so a
+/// failure to deserialize one back is store corruption, not host input.
+fn decode_error(err: &serde_json::Error) -> ApiError {
+    ApiError::Store(StoreError::Backend(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiError, Mailbox, decode_error};
+
+    #[test]
+    fn decode_error_maps_a_corrupt_payload_to_a_store_error() {
+        // A stored object that fails to deserialize is store corruption, not host
+        // input, so the read methods surface it as `ApiError::Store`.
+        let err = serde_json::from_str::<Mailbox>("not a mailbox").unwrap_err();
+        assert!(matches!(decode_error(&err), ApiError::Store(_)));
     }
 }
