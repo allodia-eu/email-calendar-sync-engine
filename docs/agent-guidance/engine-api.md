@@ -16,7 +16,8 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
   (or `sync_mail_streamed` for live progress); read with `mailboxes` / `messages` /
   `calendars` / `events` and `search_mail` / `search_calendar`; and write with
-  `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) / `pending_op_state`.
+  `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
+  `write_calendar_event` / `delete_calendar_event` / `pending_op_state`.
   The read
   surface enumerates the account's scopes and filters by `SyncScope::object_kind`, so
   the facade never hard-codes which scopes a provider uses. The return values (e.g.
@@ -106,9 +107,12 @@ Step 6 lands in small, tested slices. Order and status:
    it takes a caller-minted idempotency key and a `MailEdit` (mark-read/flag, move,
    or permanent delete) and returns a `MailEditOutcome` (resolved key + op id); a
    failure (e.g. a stale-target `Conflict`) is recorded `Failed` before surfacing as
-   `ApiError::Sync`. Calendar writes (`write_calendar_event` / `delete_calendar_event`)
-   ride the same outbox too, exposed through `engine-sync` rather than a facade method
-   for now.
+   `ApiError::Sync`. `Engine::write_calendar_event` / `Engine::delete_calendar_event`
+   ride the same outbox for calendar mutations — a caller-minted idempotency key plus an
+   `EventWrite` (conditional `PUT`) or `EventDeletion` (`DELETE`), returning a
+   `CalendarWriteOutcome` / op id; a host builds the create body with
+   `provider_caldav::build_event_ical` (the write types are re-exported from
+   `engine-api`). A `412` precondition failure surfaces as a `Conflict` (`caldav.md`).
 4. **Streaming progress — _done_.** `Engine::sync_mail_streamed` drives
    `engine-sync`'s `sync_mail_streamed`: the email scope commits page by page under one
    lease, reporting `SyncProgress { scope, fetched, total }` to the host's

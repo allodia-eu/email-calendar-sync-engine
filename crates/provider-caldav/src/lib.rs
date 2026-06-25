@@ -42,6 +42,7 @@ mod transport;
 mod write;
 
 pub use error::CalDavError;
+pub use ical::build_event_ical;
 pub use provider::{CalDavConfig, CalDavProvider};
 pub use transport::Credentials;
 
