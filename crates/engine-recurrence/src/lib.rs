@@ -59,10 +59,40 @@ mod expand;
 mod rule;
 mod zone;
 
-use engine_core::time::{TimeError, UtcDateTime};
+use engine_core::time::{CalendarDateTime, TimeError, UtcDateTime};
 
 pub use engine_store::{OccurrenceRow, TzdataVersion};
 pub use expand::expand;
+
+/// Resolves a scheduled [`CalendarDateTime`] to its absolute UTC instant, when it
+/// has one.
+///
+/// A [`Zoned`](CalendarDateTime::Zoned) value — including UTC, which the engine
+/// stores as `Etc/UTC` — resolves through its IANA zone in the bundled,
+/// version-pinned tzdb (the same path [`expand`] uses, so a host that localizes a
+/// single event agrees with the materialized occurrence rows). A
+/// [`Floating`](CalendarDateTime::Floating) or all-day
+/// [`Date`](CalendarDateTime::Date) value has no fixed instant without an external
+/// zone, so this returns `Ok(None)` — the host renders those as wall-clock or date
+/// text. This is the read-side counterpart hosts use to display a stored event's
+/// start in the device's local zone, regardless of the zone the event was authored
+/// in (`calendar-semantics.md`).
+///
+/// # Errors
+///
+/// Returns [`ExpandError::UnsupportedZone`] if the value carries a custom or
+/// embedded `VTIMEZONE` zone that the bundled tzdb cannot resolve, or
+/// [`ExpandError::OutOfRange`] if the instant falls outside representable time.
+pub fn resolve_instant(value: &CalendarDateTime) -> Result<Option<UtcDateTime>, ExpandError> {
+    match value {
+        CalendarDateTime::Date(_) | CalendarDateTime::Floating(_) => Ok(None),
+        CalendarDateTime::Zoned { local, zone } => {
+            let tz = zone::resolve_zone_id(zone)?;
+            let dt = zone::at(zone::local_date(*local)?, zone::local_time(*local)?);
+            zone::resolve(&tz, dt).map(Some)
+        }
+    }
+}
 
 /// The bundled IANA tzdata release this build expands under.
 ///
@@ -154,5 +184,71 @@ pub enum ExpandError {
 impl From<TimeError> for ExpandError {
     fn from(_: TimeError) -> Self {
         Self::OutOfRange
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_core::time::{CalendarDate, LocalDateTime, TimeZoneId};
+
+    fn local(year: i32, month: u8, day: u8, hour: u8, minute: u8) -> LocalDateTime {
+        LocalDateTime::new(year, month, day, hour, minute, 0).unwrap()
+    }
+
+    #[test]
+    fn utc_resolves_to_the_same_instant() {
+        // UTC is `Etc/UTC`; resolving it is the identity (wall clock == instant).
+        let value = CalendarDateTime::utc(local(2026, 6, 27, 22, 0));
+        assert_eq!(
+            resolve_instant(&value).unwrap(),
+            Some("2026-06-27T22:00:00Z".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn a_named_zone_resolves_through_tzdata() {
+        // The user's real bug: an Amsterdam 22:00 event in summer (CEST, UTC+2)
+        // is the instant 20:00Z — so a host localizes it correctly anywhere, not
+        // just for a device that happens to share the authoring zone.
+        let value = CalendarDateTime::Zoned {
+            local: local(2026, 6, 27, 22, 0),
+            zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+        };
+        assert_eq!(
+            resolve_instant(&value).unwrap(),
+            Some("2026-06-27T20:00:00Z".parse().unwrap())
+        );
+        // The same wall clock in winter (CET, UTC+1) is a different instant.
+        let winter = CalendarDateTime::Zoned {
+            local: local(2026, 1, 27, 22, 0),
+            zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+        };
+        assert_eq!(
+            resolve_instant(&winter).unwrap(),
+            Some("2026-01-27T21:00:00Z".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn floating_and_all_day_have_no_instant() {
+        // No zone → no fixed instant; the host renders these as wall-clock/date.
+        let floating = CalendarDateTime::Floating(local(2026, 6, 27, 9, 0));
+        assert_eq!(resolve_instant(&floating).unwrap(), None);
+        let all_day = CalendarDateTime::Date(CalendarDate::new(2026, 6, 27).unwrap());
+        assert_eq!(resolve_instant(&all_day).unwrap(), None);
+    }
+
+    #[test]
+    fn a_custom_zone_is_unsupported() {
+        // A custom/embedded VTIMEZONE cannot be resolved from the bundled tzdb.
+        let value = CalendarDateTime::Zoned {
+            local: local(2026, 6, 27, 22, 0),
+            zone: TimeZoneId::custom("/example.com/Custom").unwrap(),
+        };
+        assert!(matches!(
+            resolve_instant(&value),
+            Err(ExpandError::UnsupportedZone(_))
+        ));
     }
 }

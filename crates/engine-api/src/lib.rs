@@ -54,7 +54,7 @@ pub use engine_provider::{
     Draft, EventDeletion, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, Provider,
     WritePrecondition,
 };
-pub use engine_recurrence::Horizon;
+pub use engine_recurrence::{ExpandError, Horizon, resolve_instant};
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 pub use engine_store::PendingOpState;
 pub use engine_sync::{

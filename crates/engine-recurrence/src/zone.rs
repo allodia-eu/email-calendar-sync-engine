@@ -5,7 +5,7 @@
 //! `tzdb-bundle-always`, so no system path is read). `to_zoned` uses jiff's
 //! Compatible disambiguation, which matches RFC 5545's gap/fold handling.
 
-use engine_core::time::{CalendarDate, Duration, LocalDateTime, UtcDateTime};
+use engine_core::time::{CalendarDate, Duration, LocalDateTime, TimeZoneId, UtcDateTime};
 use jiff::civil::{Date, DateTime, Time};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Span, Timestamp, Zoned};
@@ -28,6 +28,16 @@ pub(crate) fn iana(name: &str) -> Result<TimeZone, ExpandError> {
 /// The UTC zone (used for all-day values, which are zoneless).
 pub(crate) fn utc() -> TimeZone {
     TimeZone::UTC
+}
+
+/// Resolves a [`TimeZoneId`] to a bundled jiff zone, rejecting custom/embedded
+/// zones (their expansion needs the iCalendar `VTIMEZONE` parser, a later step).
+pub(crate) fn resolve_zone_id(id: &TimeZoneId) -> Result<TimeZone, ExpandError> {
+    if id.is_iana() {
+        iana(id.as_str())
+    } else {
+        Err(ExpandError::UnsupportedZone(id.as_str().to_owned()))
+    }
 }
 
 /// Builds a civil date from engine components.

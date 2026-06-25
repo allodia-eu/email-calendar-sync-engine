@@ -81,6 +81,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`) are
   re-exported so a host depends on `engine-api` alone. The concrete provider still
   comes from the adapter crate.
+- **Display-side timezone resolution.** `resolve_instant` (with its `ExpandError`)
+  is re-exported from `engine-recurrence` so a host can resolve a single stored
+  event's zoned start to its absolute UTC instant for local-zone display, without
+  depending on `engine-recurrence` or bundling tzdata itself (`calendar-semantics.md`).
 
 ## Slice plan
 

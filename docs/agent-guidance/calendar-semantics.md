@@ -38,6 +38,16 @@ expansion, or scheduling.
   inherent to floating time, not a defect.
 - **All-day / date-only** values are zoneless calendar dates: no DST, never
   attach a zone.
+- **Read-side display resolution.** A host rendering a single stored event's
+  start (not the materialized occurrence rows) resolves it through
+  `engine_recurrence::resolve_instant` (re-exported from `engine-api`), the
+  read-side counterpart to expansion: a zoned start — UTC (`Etc/UTC`) or a named
+  IANA zone — resolves to its absolute UTC instant through the *same* bundled
+  tzdata, so the host can localize to the device zone regardless of the authoring
+  zone; a floating or all-day value returns `None` (no fixed instant) and the host
+  shows wall-clock/date text; a custom/embedded zone returns `UnsupportedZone`.
+  Hosts must localize off the resolved instant — never the bare wall-clock — or a
+  non-UTC event displays in the wrong zone.
 - Normalization target: JSCalendar (`LocalDateTime` + IANA `timeZone`, or UTC)
   and iCalendar (`DTSTART` with `TZID`/`VTIMEZONE`, UTC `Z`, or floating) both map
   to one engine time model — an instant resolved through its zone, or wall-clock
