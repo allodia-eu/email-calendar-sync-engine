@@ -1,10 +1,12 @@
-//! Applying a [`MailEdit`] to the bound mailbox over an open IMAP connection.
+//! Applying a [`MailEdit`] to its target message over an open IMAP connection.
 //!
 //! The free function [`edit_mail`] drives a `&mut Connection<S>` so it is generic
 //! over the stream (the offline tests replay it over a mock) and the `Provider` impl
 //! stays a thin lock-and-call. It maps the three provider-neutral edits onto IMAP:
 //! `SetKeywords` → `UID STORE ±FLAGS.SILENT`, `MoveTo` → `UID MOVE` (RFC 6851),
 //! `Delete` → `UID STORE +FLAGS (\Deleted)` then `UID EXPUNGE` (UIDPLUS, RFC 4315).
+//! The target mailbox comes from the message key, not the provider's bound mailbox,
+//! so one connected provider can edit a message in any of the account's folders.
 //!
 //! IMAP identity is `(mailbox, UIDVALIDITY, UID)`, so before any mutation the target
 //! key's mailbox is `SELECT`ed and its returned `UIDVALIDITY` is checked against the
@@ -12,25 +14,26 @@
 //! stale, so the edit is a [`ProviderError::conflict`] (the caller re-syncs, then
 //! retries) rather than a blind write against the wrong message.
 
-use engine_core::ids::MailboxId;
 use engine_provider::{MailEdit, MailEditReceipt, ProviderError, ProviderResult};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::mail::{keyword_to_flag, parse_message_key};
 use crate::transport::Connection;
 
-/// Applies `edit` to its target message over `connection` (bound to `bound`),
-/// returning a receipt carrying the edited message's key.
+/// Applies `edit` to its target message over `connection`, returning a receipt
+/// carrying the edited message's key.
 ///
 /// # Errors
 ///
-/// - [`ProviderError::invalid_state`] if the target key is not a parseable IMAP key.
+/// - [`ProviderError::invalid_state`] if the target key is not a parseable IMAP key,
+///   or a mailbox name (the key's source folder, or a move destination) contains a
+///   control character — IMAP mailbox names cannot, and admitting `CR`/`LF`/`NUL`
+///   would let it inject a second command into the protocol stream.
 /// - [`ProviderError::conflict`] if the target mailbox's `UIDVALIDITY` has changed
 ///   since the key was synthesized (the key is stale; re-sync before editing).
 /// - A classified [`ProviderError`] from the underlying IMAP command on failure.
 pub(crate) async fn edit_mail<S>(
     connection: &mut Connection<S>,
-    bound: &MailboxId,
     edit: &MailEdit,
 ) -> ProviderResult<MailEditReceipt>
 where
@@ -40,7 +43,11 @@ where
     let (mailbox, key_validity, uid) = parse_message_key(key.as_str()).ok_or_else(|| {
         ProviderError::invalid_state(format!("unparseable IMAP message key: {}", key.as_str()))
     })?;
-    let _ = bound;
+    // The mailbox name (and any move destination below) flows into a quoted IMAP
+    // command argument, which cannot represent CR/LF/NUL; reject them so a crafted
+    // name — from a hostile server's LIST, or a host-supplied destination — cannot
+    // inject a second command line.
+    reject_control_chars(mailbox)?;
 
     // SELECT the key's own mailbox (a move's source, a delete's home) and guard on
     // UIDVALIDITY: a renumbered UID space invalidates the key, so a write would hit
@@ -69,6 +76,7 @@ where
             // resolves the pending op.
         }
         MailEdit::MoveTo { destination, .. } => {
+            reject_control_chars(destination.as_str())?;
             connection.uid_move(&set, destination.as_str()).await?;
         }
         MailEdit::Delete { .. } => {
@@ -80,6 +88,19 @@ where
     }
 
     Ok(MailEditReceipt::new(key.clone()))
+}
+
+/// Rejects a mailbox name carrying `CR`/`LF`/`NUL` before it reaches a quoted IMAP
+/// command argument: those bytes cannot appear in a valid mailbox name, and admitting
+/// them would let a crafted name inject a second command line (the transport's `quote`
+/// escapes only `"`/`\`).
+fn reject_control_chars(name: &str) -> ProviderResult<()> {
+    if name.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
+        return Err(ProviderError::invalid_state(
+            "mailbox name contains a control character",
+        ));
+    }
+    Ok(())
 }
 
 /// Builds a `±FLAGS.SILENT (<flags>)` STORE item from a set of keywords, with `sign`

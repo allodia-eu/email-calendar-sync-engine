@@ -14,10 +14,6 @@ const LOGIN_OK: &str = "a1 OK LOGIN ok\r\n";
 /// A `SELECT` whose `UIDVALIDITY` matches the keys below (`v7`).
 const SELECT_V7: &str = "* 3 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\na2 OK [READ-WRITE] done\r\n";
 
-fn inbox() -> MailboxId {
-    MailboxId::try_from("INBOX").unwrap()
-}
-
 /// The provider key for INBOX UID 42 under UIDVALIDITY 7.
 fn target() -> ProviderKey {
     ProviderKey::new("imap:v7:u42@INBOX").unwrap()
@@ -37,7 +33,7 @@ async fn mark_read_selects_then_stores_seen() {
     let (mut conn, recorded) = logged_in(server).await;
 
     let edit = MailEdit::mark_seen(target(), true);
-    let receipt = edit_mail(&mut conn, &inbox(), &edit).await.unwrap();
+    let receipt = edit_mail(&mut conn, &edit).await.unwrap();
     assert_eq!(receipt.message_key, target());
 
     let sent = written(&recorded);
@@ -54,7 +50,7 @@ async fn mark_unread_stores_a_minus_seen() {
     let (mut conn, recorded) = logged_in(server).await;
 
     let edit = MailEdit::mark_seen(target(), false);
-    edit_mail(&mut conn, &inbox(), &edit).await.unwrap();
+    edit_mail(&mut conn, &edit).await.unwrap();
     assert!(
         written(&recorded).contains("a3 UID STORE 42 -FLAGS.SILENT (\\Seen)"),
         "{}",
@@ -68,7 +64,7 @@ async fn flag_stores_a_plus_flagged() {
     let (mut conn, recorded) = logged_in(server).await;
 
     let edit = MailEdit::set_flagged(target(), true);
-    edit_mail(&mut conn, &inbox(), &edit).await.unwrap();
+    edit_mail(&mut conn, &edit).await.unwrap();
     assert!(
         written(&recorded).contains("a3 UID STORE 42 +FLAGS.SILENT (\\Flagged)"),
         "{}",
@@ -92,7 +88,7 @@ async fn set_keywords_with_both_sides_issues_two_stores() {
         add: BTreeSet::from([Keyword::system(SystemKeyword::Seen)]),
         remove: BTreeSet::from([Keyword::system(SystemKeyword::Flagged)]),
     };
-    edit_mail(&mut conn, &inbox(), &edit).await.unwrap();
+    edit_mail(&mut conn, &edit).await.unwrap();
 
     let sent = written(&recorded);
     assert!(
@@ -116,7 +112,7 @@ async fn set_keywords_with_both_sides_empty_is_a_select_only_no_op() {
         add: BTreeSet::new(),
         remove: BTreeSet::new(),
     };
-    let receipt = edit_mail(&mut conn, &inbox(), &edit).await.unwrap();
+    let receipt = edit_mail(&mut conn, &edit).await.unwrap();
     assert_eq!(receipt.message_key, target());
     assert!(
         !written(&recorded).contains("UID STORE"),
@@ -131,7 +127,7 @@ async fn move_issues_a_quoted_uid_move() {
     let (mut conn, recorded) = logged_in(server).await;
 
     let edit = MailEdit::move_to(target(), MailboxId::try_from("Archive").unwrap());
-    let receipt = edit_mail(&mut conn, &inbox(), &edit).await.unwrap();
+    let receipt = edit_mail(&mut conn, &edit).await.unwrap();
     // The receipt carries the source key (the destination copy reconciles on sync).
     assert_eq!(receipt.message_key, target());
     assert!(
@@ -153,7 +149,7 @@ async fn delete_stores_deleted_then_uid_expunges() {
     let (mut conn, recorded) = logged_in(server).await;
 
     let edit = MailEdit::delete(target());
-    let receipt = edit_mail(&mut conn, &inbox(), &edit).await.unwrap();
+    let receipt = edit_mail(&mut conn, &edit).await.unwrap();
     assert_eq!(receipt.message_key, target());
 
     let sent = written(&recorded);
@@ -174,7 +170,7 @@ async fn uidvalidity_mismatch_is_a_conflict() {
     let (mut conn, recorded) = logged_in(server).await;
 
     let edit = MailEdit::mark_seen(target(), true);
-    let err = edit_mail(&mut conn, &inbox(), &edit).await.unwrap_err();
+    let err = edit_mail(&mut conn, &edit).await.unwrap_err();
     assert_eq!(err.class(), FailureClass::Conflict);
     // No STORE is attempted once the guard fails.
     assert!(
@@ -191,10 +187,30 @@ async fn an_unparseable_target_key_is_invalid_state() {
     let (mut conn, recorded) = logged_in(server).await;
 
     let edit = MailEdit::mark_seen(ProviderKey::new("jmap:Mxyz").unwrap(), true);
-    let err = edit_mail(&mut conn, &inbox(), &edit).await.unwrap_err();
+    let err = edit_mail(&mut conn, &edit).await.unwrap_err();
     assert_eq!(err.class(), FailureClass::InvalidState);
     assert!(
         !written(&recorded).contains("SELECT"),
+        "{}",
+        written(&recorded)
+    );
+}
+
+#[tokio::test]
+async fn a_move_destination_with_crlf_is_rejected_before_the_wire() {
+    // A mailbox id is only validated non-empty, so a destination could carry CR/LF;
+    // since `quote` escapes only "/\, admitting it would inject a second command.
+    // The edit must be rejected before any IMAP command reaches the wire.
+    let server = script(&[GREETING, LOGIN_OK, SELECT_V7]);
+    let (mut conn, recorded) = logged_in(server).await;
+
+    let evil = MailboxId::try_from("Archive\r\na9 DELETE INBOX").unwrap();
+    let edit = MailEdit::move_to(target(), evil);
+    let err = edit_mail(&mut conn, &edit).await.unwrap_err();
+    assert_eq!(err.class(), FailureClass::InvalidState);
+    // The SELECT may run, but no UID MOVE (and certainly no injected command) is sent.
+    assert!(
+        !written(&recorded).contains("UID MOVE") && !written(&recorded).contains("DELETE"),
         "{}",
         written(&recorded)
     );
@@ -210,7 +226,7 @@ async fn a_custom_keyword_passes_through_as_a_bare_atom() {
         add: BTreeSet::from([Keyword::new("project-x").unwrap()]),
         remove: BTreeSet::new(),
     };
-    edit_mail(&mut conn, &inbox(), &edit).await.unwrap();
+    edit_mail(&mut conn, &edit).await.unwrap();
     assert!(
         written(&recorded).contains("a3 UID STORE 42 +FLAGS.SILENT (project-x)"),
         "{}",

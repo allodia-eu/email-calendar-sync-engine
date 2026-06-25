@@ -339,7 +339,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         edit: &MailEdit,
     ) -> ProviderResult<MailEditReceipt> {
         let mut connection = self.connection.lock().await;
-        crate::mutate::edit_mail(&mut connection, &self.mailbox, edit).await
+        crate::mutate::edit_mail(&mut connection, edit).await
     }
 }
 
