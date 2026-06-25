@@ -181,3 +181,57 @@ fn message_ids_handle_brackets_and_multiples() {
     // Empty/garbage yields nothing, never a panic.
     assert!(extract_message_ids("<>").is_empty());
 }
+
+#[test]
+fn parse_message_key_round_trips_with_message_key() {
+    // The inverse of `message_key`: a synthesized key parses back to its triple.
+    assert_eq!(
+        parse_message_key(message_key("Sent", 7, 42).as_str()),
+        Some(("Sent", 7, 42))
+    );
+    // A mailbox name carrying the delimiters is still recovered whole: `:u` splits
+    // on its first occurrence and `@` on the first, so a mailbox like "a@b" or one
+    // spelled like a UID suffix survives.
+    assert_eq!(
+        parse_message_key("imap:v1:u5@Work/a@b"),
+        Some(("Work/a@b", 1, 5))
+    );
+    // Garbage and foreign keys yield None, never a panic.
+    assert!(parse_message_key("not-an-imap-key").is_none());
+    assert!(parse_message_key("imap:v1:u5").is_none()); // no @mailbox
+    assert!(parse_message_key("imap:vX:u5@INBOX").is_none()); // non-decimal validity
+    assert!(parse_message_key("imap:v1:uY@INBOX").is_none()); // non-decimal uid
+    assert!(parse_message_key("imap:v1:u5@").is_none()); // empty mailbox
+    assert!(parse_message_key("").is_none());
+}
+
+#[test]
+fn keyword_to_flag_inverts_flags_to_keywords() {
+    // The four standard system keywords map back to their backslash system flags.
+    assert_eq!(
+        keyword_to_flag(&Keyword::system(SystemKeyword::Seen)),
+        "\\Seen"
+    );
+    assert_eq!(
+        keyword_to_flag(&Keyword::system(SystemKeyword::Flagged)),
+        "\\Flagged"
+    );
+    assert_eq!(
+        keyword_to_flag(&Keyword::system(SystemKeyword::Answered)),
+        "\\Answered"
+    );
+    assert_eq!(
+        keyword_to_flag(&Keyword::system(SystemKeyword::Draft)),
+        "\\Draft"
+    );
+    // Another system keyword (`$forwarded`) and a custom keyword both pass through
+    // as bare IMAP keyword atoms (their `as_str`).
+    assert_eq!(
+        keyword_to_flag(&Keyword::system(SystemKeyword::Forwarded)),
+        "$forwarded"
+    );
+    assert_eq!(
+        keyword_to_flag(&Keyword::new("harness").unwrap()),
+        "harness"
+    );
+}

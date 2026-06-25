@@ -142,10 +142,38 @@ is authoritative for the `provider-caldav` calendar client.
   `examples/imap_explore.rs` example exercises read + (opt-in) `save_draft` against
   a real provider.
 
+## Mail mutations
+
+- **`edit_mail`** applies a provider-neutral `MailEdit` to the bound mailbox over the
+  open session (`mutate.rs`; the `Provider` impl is a thin lock-and-call). The crate
+  advertises `Capabilities::mail_writes` **unconditionally** — `UID STORE`/`MOVE`/
+  `EXPUNGE` need no extra config, unlike submission which is gated on a configured SMTP.
+- **`SetKeywords`** → `UID STORE +FLAGS.SILENT (...)` for the `add` set and
+  `-FLAGS.SILENT (...)` for the `remove` set (one command per non-empty side; both
+  empty is a no-op). The keyword↔flag mapping is `keyword_to_flag`, the inverse of
+  the read path's `flags_to_keywords`: `$seen`/`$flagged`/`$answered`/`$draft` →
+  `\Seen`/`\Flagged`/`\Answered`/`\Draft`, every other keyword (other system
+  keywords, custom keywords) → a bare IMAP keyword atom. `.SILENT` suppresses the
+  per-message `FETCH` echo, so no response parsing is needed.
+- **`MoveTo`** → `UID MOVE <uid> "<dest>"` (RFC 6851), an atomic server-side move.
+- **`Delete`** (permanent, not a Trash move) → `UID STORE +FLAGS.SILENT (\Deleted)`
+  then `UID EXPUNGE <uid>` (UIDPLUS, RFC 4315 — only the named UID is expunged, so a
+  concurrent `\Deleted` elsewhere is not collaterally removed).
+- **UIDVALIDITY guard.** Every edit first `SELECT`s the target key's mailbox and
+  checks the returned `UIDVALIDITY` against the key's. A mismatch means the UID space
+  was renumbered and every prior key is stale, so the edit is a **`Conflict`** (the
+  caller re-syncs, then retries) rather than a blind write against the wrong message.
+  An unparseable target key is `InvalidState` (rejected before any command).
+
 ## Known limitations (documented, not bugs)
 
 - **No CONDSTORE/QRESYNC.** Deltas bring new arrivals only; flag/expunge changes
   reconcile via a periodic snapshot. Deferred capability.
+- **No `UID MOVE` fallback.** A server lacking RFC 6851 `MOVE` is unsupported for
+  moves — the `COPY` + `\Deleted` + `EXPUNGE` fallback is a later refinement.
+- **`UID EXPUNGE` requires UIDPLUS** (RFC 4315). A server without it would need a
+  plain `EXPUNGE` (which expunges every `\Deleted` message in the mailbox) — also a
+  later refinement.
 - **No IMAP `SEARCH` provider-search fallback** yet (the `search-coverage.md`
   slice). The transport does not implement `SEARCH`.
 - **No SMTP STARTTLS** (port 587). Implicit TLS (465) + `AUTH PLAIN` is implemented; STARTTLS is a later
