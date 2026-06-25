@@ -91,6 +91,32 @@ pub enum SyncScope {
         /// The WebDAV collection.
         collection: DavCollectionId,
     },
+    /// A Microsoft Graph per-account mail-folder-list (folder discovery) scope.
+    ///
+    /// Like [`ImapMailboxList`](Self::ImapMailboxList), the folder list is
+    /// re-discovered as a snapshot each pass (`GET /me/mailFolders`), so it carries
+    /// no cursor of its own — but it is a distinct **container** scope, claimed and
+    /// applied before the per-folder [`GraphFolder`](Self::GraphFolder) message
+    /// scopes it parents (`store-and-sync.md` referential apply order). Distinct
+    /// from any single folder's scope so the two never share a lease.
+    GraphFolderList {
+        /// The account.
+        account: AccountId,
+    },
+    /// A Microsoft Graph `(account, mail folder)` message scope.
+    ///
+    /// Graph mail `delta` is rooted at a folder
+    /// (`/me/mailFolders/{id}/messages/delta`) with a per-folder `deltaLink` cursor
+    /// — there is no account-wide message delta — so message sync is per folder,
+    /// like [`ImapMailbox`](Self::ImapMailbox) (but keyed by stable account-global
+    /// immutable ids, not per-folder UIDs). A Graph provider is bound to one folder
+    /// for email; the cross-folder fan-out is the orchestrator's job.
+    GraphFolder {
+        /// The account.
+        account: AccountId,
+        /// The mail folder.
+        folder: MailboxId,
+    },
 }
 
 impl SyncScope {
@@ -102,7 +128,9 @@ impl SyncScope {
             | Self::ImapMailboxList { account }
             | Self::ImapMailbox { account, .. }
             | Self::DavCollectionList { account }
-            | Self::DavCollection { account, .. } => account,
+            | Self::DavCollection { account, .. }
+            | Self::GraphFolderList { account }
+            | Self::GraphFolder { account, .. } => account,
         }
     }
 }
@@ -160,6 +188,26 @@ mod tests {
         assert_eq!(list.account(), &account());
         let json = serde_json::to_string(&list).unwrap();
         assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), list);
+    }
+
+    #[test]
+    fn graph_folder_list_is_distinct_from_a_folder_and_roundtrips() {
+        // The folder-list container scope must never collide with the message
+        // scope of any single folder, or the two would share one lease. Graph mail
+        // delta is per-folder (no account-wide message delta), so each folder is a
+        // distinct member scope.
+        let list = SyncScope::GraphFolderList { account: account() };
+        let inbox = SyncScope::GraphFolder {
+            account: account(),
+            folder: MailboxId::try_from("folder-inbox").unwrap(),
+        };
+        assert_ne!(list, inbox);
+        assert_eq!(list.account(), &account());
+        assert_eq!(inbox.account(), &account());
+        for scope in [&list, &inbox] {
+            let json = serde_json::to_string(scope).unwrap();
+            assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
+        }
     }
 
     #[test]

@@ -15,7 +15,17 @@ Recommended first provider spine:
    (step 5c) are implemented** under `provider-caldav`; `caldav.md` is
    authoritative. The remaining step-5 slice is **iTIP/iMIP**; **CardDAV/contacts**
    land after step 5.
-4. Optional external-provider smoke tests against real hosted or self-managed servers.
+4. External cloud providers. **Microsoft Graph mail read/sync is implemented**
+   under `provider-graph`; `graph.md` is authoritative. Graph's mail sync is
+   per-folder (no account-wide message delta), so it follows the IMAP/CalDAV
+   container+member shape (a folder-bound provider + `GraphFolderList`/`GraphFolder`
+   scopes), not JMAP's account-global one — and unlike JMAP, an incremental `delta`
+   returns *partial* changed objects that the adapter re-fetches. It is the first
+   adapter validated without the Stalwart fixture: deterministically by a
+   fixture-replay HTTP server over scrubbed real captures, plus an optional
+   token-gated live test. Calendar/submission/writes are later slices.
+5. Optional further external-provider smoke tests against real hosted or
+   self-managed servers.
 
 If product pressure changes the order, the domain model tests still need JMAP and JSCalendar coverage before IMAP assumptions land.
 
