@@ -101,6 +101,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "engine-core",
+ "engine-provider",
+ "engine-recurrence",
+ "engine-store",
+ "engine-sync",
+ "store-sqlite",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "engine-cli"
 version = "0.1.0"
 dependencies = [
