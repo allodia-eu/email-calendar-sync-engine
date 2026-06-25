@@ -23,6 +23,7 @@
 mod calendar_write;
 mod capability;
 mod error;
+mod mail_edit;
 mod page;
 mod submit;
 mod sync;
@@ -30,6 +31,7 @@ mod sync;
 pub use calendar_write::{EventDeletion, EventWrite, EventWriteReceipt, WritePrecondition};
 pub use capability::Capabilities;
 pub use error::{ProviderError, ProviderResult};
+pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use submit::{Draft, SubmissionReceipt};
 pub use sync::ScopeSync;
@@ -206,6 +208,32 @@ pub trait Provider: Send + Sync {
         ))
     }
 
+    /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (keyword
+    /// change), move (folder change, incl. a Trash "delete"), or permanent delete.
+    ///
+    /// Providers advertising [`Capabilities::mail_writes`] override this; the default
+    /// rejects, so a capability-checking caller never relies on it. The write is
+    /// outbox-mediated by the caller (a durable pending op precedes this side
+    /// effect); this method performs only the provider call.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]. A stale target — e.g. an IMAP UID
+    /// whose mailbox `UIDVALIDITY` has since changed — is
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict)
+    /// (re-sync, then retry); the default returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn edit_mail(
+        &self,
+        account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        let _ = (account, edit);
+        Err(ProviderError::invalid_state(
+            "provider does not support mail writes",
+        ))
+    }
+
     /// The scope the account's calendars sync under. Defaults to the JMAP
     /// `(account, Calendar)` scope; non-JMAP providers override.
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
@@ -371,6 +399,14 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
         (**self).submit_email(account, draft).await
+    }
+
+    async fn edit_mail(
+        &self,
+        account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        (**self).edit_mail(account, edit).await
     }
 
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
@@ -697,6 +733,29 @@ mod tests {
                 .class(),
             FailureClass::InvalidState
         );
+    }
+
+    #[tokio::test]
+    async fn mail_writes_default_to_unsupported() {
+        use engine_core::error::FailureClass;
+        use engine_core::ids::ProviderKey;
+
+        let edit = crate::MailEdit::delete(ProviderKey::new("imap:v1:u7@INBOX").unwrap());
+        // A mail adapter that did not override writes rejects, so a
+        // capability-checking caller never depends on the default — and a boxed
+        // adapter delegates `edit_mail` to that same default (the blanket impl).
+        let direct = FakeJmap {
+            caps: Capabilities::none().with_mail(),
+        };
+        let boxed: Box<dyn Provider> = Box::new(FakeJmap {
+            caps: Capabilities::none().with_mail(),
+        });
+        for err in [
+            direct.edit_mail(&account(), &edit).await.unwrap_err(),
+            boxed.edit_mail(&account(), &edit).await.unwrap_err(),
+        ] {
+            assert_eq!(err.class(), FailureClass::InvalidState);
+        }
     }
 
     #[tokio::test]

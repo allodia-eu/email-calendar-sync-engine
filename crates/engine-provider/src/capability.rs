@@ -27,6 +27,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Capabilities {
     mail: bool,
+    mail_writes: bool,
     submission: bool,
     calendars: bool,
     calendar_writes: bool,
@@ -38,6 +39,7 @@ impl Capabilities {
     pub const fn none() -> Self {
         Self {
             mail: false,
+            mail_writes: false,
             submission: false,
             calendars: false,
             calendar_writes: false,
@@ -48,6 +50,18 @@ impl Capabilities {
     #[must_use]
     pub const fn with_mail(mut self) -> Self {
         self.mail = true;
+        self
+    }
+
+    /// Marks mail **writes** (mark-read/flag, move, delete via
+    /// [`Provider::edit_mail`](crate::Provider::edit_mail)) as supported. Distinct
+    /// from [`with_mail`](Self::with_mail), the read capability — a mailbox the
+    /// account can read but not mutate (a shared read-only IMAP folder) advertises
+    /// [`mail`](Self::mail) without this, exactly as a no-SMTP adapter advertises
+    /// [`mail`](Self::mail) without [`submission`](Self::submission).
+    #[must_use]
+    pub const fn with_mail_writes(mut self) -> Self {
+        self.mail_writes = true;
         self
     }
 
@@ -83,6 +97,12 @@ impl Capabilities {
         self.mail
     }
 
+    /// Whether mail writes (mark-read/flag, move, delete) are supported.
+    #[must_use]
+    pub const fn mail_writes(self) -> bool {
+        self.mail_writes
+    }
+
     /// Whether mail submission is supported.
     #[must_use]
     pub const fn submission(self) -> bool {
@@ -115,16 +135,19 @@ mod tests {
         assert!(caps.calendars());
         assert!(!caps.submission());
         assert!(!caps.calendar_writes());
+        assert!(!caps.mail_writes());
     }
 
     #[test]
     fn full_capability_set() {
         let caps = Capabilities::none()
             .with_mail()
+            .with_mail_writes()
             .with_submission()
             .with_calendars()
             .with_calendar_writes();
-        assert!(caps.mail() && caps.submission() && caps.calendars() && caps.calendar_writes());
+        assert!(caps.mail() && caps.mail_writes() && caps.submission());
+        assert!(caps.calendars() && caps.calendar_writes());
     }
 
     #[test]
@@ -133,5 +156,13 @@ mod tests {
         // exactly as a no-SMTP mail adapter advertises `mail` without `submission`.
         let read_only = Capabilities::none().with_calendars();
         assert!(read_only.calendars() && !read_only.calendar_writes());
+    }
+
+    #[test]
+    fn mail_writes_is_independent_of_read() {
+        // A read-only mailbox advertises `mail` without `mail_writes`, exactly as a
+        // read-only calendar advertises `calendars` without `calendar_writes`.
+        let read_only = Capabilities::none().with_mail();
+        assert!(read_only.mail() && !read_only.mail_writes());
     }
 }
