@@ -9,14 +9,14 @@ use engine_core::mail::{Mailbox, Message};
 use engine_core::sync::{ObjectKind, SearchDomain, SyncScope};
 use engine_core::time::TimeZoneId;
 use engine_core::write::PendingOpId;
-use engine_provider::{Draft, MailEdit, Provider};
+use engine_provider::{Draft, EventDeletion, EventWrite, MailEdit, Provider};
 use engine_recurrence::Horizon;
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{PendingOpState, StoreError, StoreRead, WorkerId};
 use engine_sync::{
-    CalendarSyncReport, MailEditOutcome, MailSyncReport, ProgressSink, SubmitOutcome, SyncError,
-    ThreadDeriveReport, derive_mail_threads, edit_mail, submit_mail, sync_calendar, sync_mail,
-    sync_mail_streamed,
+    CalendarSyncReport, CalendarWriteOutcome, MailEditOutcome, MailSyncReport, ProgressSink,
+    SubmitOutcome, SyncError, ThreadDeriveReport, delete_calendar_event, derive_mail_threads,
+    edit_mail, submit_mail, sync_calendar, sync_mail, sync_mail_streamed, write_calendar_event,
 };
 use serde_json::Value;
 use store_sqlite::SqliteStore;
@@ -398,6 +398,87 @@ impl Engine {
             LEASE_TTL,
             idempotency,
             edit,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
+
+    /// Creates or replaces a calendar event through the durable outbox — a
+    /// conditional CalDAV `PUT` of the iCalendar body in `write` (a create carries
+    /// an `If-None-Match: *` guard, an update an `If-Match: <etag>` one). The write
+    /// is recorded as a pending op (idempotent by `idempotency`, serialized on the
+    /// resource href so two writes to one event never race) **before** the provider
+    /// side effect, so a crash never loses it (`north-star.md` Write Contract;
+    /// `caldav.md`). `idempotency` must be **unique per write intent** — deriving it
+    /// only from the target href would wrongly collapse two distinct edits of one
+    /// event into one op. The body is built by the host (e.g. with
+    /// `provider_caldav::build_event_ical` for a create) or round-tripped from the
+    /// stored raw for an update, never re-serialized from the lossy projection
+    /// (`calendar-semantics.md`). Returns the
+    /// resource key, the new `ETag` if the server returned one, and the op id
+    /// (pollable via [`Engine::pending_op_state`]).
+    ///
+    /// The next [`Engine::sync_calendar`] reconciles the local rows to the new server
+    /// revision (a `sync-collection` delta carrying the fresh `ETag` when the `PUT`
+    /// response omitted it).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the write fails: a `412` precondition failure
+    /// (the resource already exists for a create, or its `ETag` moved for an update)
+    /// is recorded `Failed` with a `Conflict` class — refetch and merge, never blind
+    /// retry — and the error then returns. A store failure also surfaces as
+    /// [`ApiError::Sync`].
+    pub async fn write_calendar_event<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        idempotency: &str,
+        write: &EventWrite,
+    ) -> Result<CalendarWriteOutcome, ApiError> {
+        write_calendar_event(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            idempotency,
+            write,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
+
+    /// Deletes a calendar event through the durable outbox — a CalDAV `DELETE` of the
+    /// resource in `deletion` (optionally guarded by `If-Match: <etag>`). The delete
+    /// is recorded as a pending op (idempotent by `idempotency`, serialized on the
+    /// resource href) **before** the provider side effect, so a crash never loses it
+    /// (`north-star.md` Write Contract; `caldav.md`). `idempotency` must be **unique
+    /// per delete intent**. An already-gone resource resolves as success (`DELETE` is
+    /// idempotent, RFC 7231 §4.3.5). Returns the op id (pollable via
+    /// [`Engine::pending_op_state`]); the next [`Engine::sync_calendar`] tombstones
+    /// the local row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the delete fails: a `412` (the guarded `ETag`
+    /// moved) is recorded `Failed` with a `Conflict` class — refetch and retry — and
+    /// the error then returns. A store failure also surfaces as [`ApiError::Sync`].
+    pub async fn delete_calendar_event<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        idempotency: &str,
+        deletion: &EventDeletion,
+    ) -> Result<PendingOpId, ApiError> {
+        delete_calendar_event(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            idempotency,
+            deletion,
         )
         .await
         .map_err(map_sync_error)

@@ -15,9 +15,10 @@
 //! sync** ([`Engine::sync_mail`], [`Engine::sync_calendar`]), **per-account
 //! search** ([`Engine::search_mail`], [`Engine::search_calendar`]),
 //! **outbox-mediated mail submission** ([`Engine::submit_mail`],
-//! [`Engine::pending_op_state`]), and **streaming mail sync**
-//! ([`Engine::sync_mail_streamed`]). Calendar writes and the language bindings
-//! themselves are deliberate follow-up slices.
+//! [`Engine::pending_op_state`]), **streaming mail sync**
+//! ([`Engine::sync_mail_streamed`]), and **outbox-mediated calendar writes**
+//! ([`Engine::write_calendar_event`], [`Engine::delete_calendar_event`]). The
+//! language bindings themselves are a deliberate follow-up slice.
 //!
 //! # Shape
 //!
@@ -49,13 +50,16 @@ pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
 pub use engine_core::mail::{EmailAddress, Mailbox, MailboxRole, Message, SystemKeyword};
 pub use engine_core::time::TimeZoneId;
 pub use engine_core::write::PendingOpId;
-pub use engine_provider::{Draft, MailEdit, MailEditReceipt, Provider};
+pub use engine_provider::{
+    Draft, EventDeletion, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, Provider,
+    WritePrecondition,
+};
 pub use engine_recurrence::Horizon;
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 pub use engine_store::PendingOpState;
 pub use engine_sync::{
-    CalendarSyncReport, MailEditOutcome, MailSyncReport, ProgressSink, SubmitOutcome, SyncProgress,
-    ThreadDeriveReport,
+    CalendarSyncReport, CalendarWriteOutcome, MailEditOutcome, MailSyncReport, ProgressSink,
+    SubmitOutcome, SyncProgress, ThreadDeriveReport,
 };
 
 /// An error from an [`Engine`] operation.
