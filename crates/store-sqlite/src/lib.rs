@@ -196,6 +196,21 @@ impl<C: Clock> SqliteStore<C> {
     pub async fn reset_sync(&self) -> Result<()> {
         self.call(|conn| clear_sync_cursors(conn)).await
     }
+
+    /// Clears one scope's sync cursor (and releases any held lease), so the next sync of
+    /// that scope re-snapshots it from scratch. The targeted counterpart of
+    /// [`reset_sync`](Self::reset_sync): a host reconciles a single domain (e.g. mail,
+    /// to pick up flag/move/expunge changes an IMAP delta cannot detect without
+    /// CONDSTORE — `imap-smtp.md`) without re-fetching the whole account. Leaves the
+    /// scope row, its objects, and the durable outbox in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`engine_store::StoreError::Backend`] on a backend failure.
+    pub async fn clear_scope_cursor(&self, scope: &SyncScope) -> Result<()> {
+        let key = scope_key(scope);
+        self.call(move |conn| clear_one_cursor(conn, &key)).await
+    }
 }
 
 /// Clears every scope's cursor and lease so the next sync re-snapshots from scratch.
@@ -205,6 +220,16 @@ fn clear_sync_cursors(conn: &Connection) -> Result<()> {
     conn.execute(
         "UPDATE sync_scope SET cursor = NULL, lease_expiry = NULL",
         [],
+    )
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Clears one scope's cursor and lease (by `scope_key`) so the next sync re-snapshots it.
+fn clear_one_cursor(conn: &Connection, scope_key: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE sync_scope SET cursor = NULL, lease_expiry = NULL WHERE scope_key = ?1",
+        [scope_key],
     )
     .map_err(backend)?;
     Ok(())

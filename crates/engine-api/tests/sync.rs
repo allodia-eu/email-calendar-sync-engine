@@ -318,6 +318,84 @@ impl Provider for SubmittingProvider {
     }
 }
 
+/// A mail provider whose snapshot drops the second message once `dropped` is set —
+/// modeling a server-side removal (a move or expunge) that an IMAP-style delta cannot
+/// report, so only a re-snapshot (after the cursor is cleared) reconciles it.
+struct ReconcilingProvider {
+    caps: Capabilities,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl Provider for ReconcilingProvider {
+    fn capabilities(&self) -> &Capabilities {
+        &self.caps
+    }
+
+    fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
+        SyncScope::JmapType {
+            account: account.clone(),
+            data_type: JmapDataType::Mailbox,
+        }
+    }
+
+    fn email_scope(&self, account: &AccountId) -> SyncScope {
+        SyncScope::JmapType {
+            account: account.clone(),
+            data_type: JmapDataType::Email,
+        }
+    }
+
+    async fn sync_mailboxes(
+        &self,
+        _account: &AccountId,
+        _cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Mailbox>> {
+        let inbox = mailbox("a", "Inbox", Some(MailboxRole::Inbox));
+        let present = [inbox.id.key().clone()].into_iter().collect();
+        Ok(ScopeSync::new(
+            SyncUpdate::snapshot(vec![inbox], present),
+            SyncState::new("mbox-1"),
+        ))
+    }
+
+    async fn sync_email_page(
+        &self,
+        _account: &AccountId,
+        cursor: Option<&SyncState>,
+        _page: Option<&PageToken>,
+        _limit: usize,
+    ) -> ProviderResult<SyncPage<Message>> {
+        // A cursor present → delta with no removals (the IMAP-no-CONDSTORE baseline).
+        if cursor.is_some() {
+            return Ok(SyncPage {
+                kind: SyncKind::Delta,
+                changed: Vec::new(),
+                removed: Vec::new(),
+                present: Vec::new(),
+                next_page: None,
+                next_cursor: SyncState::new("email-2"),
+                total: None,
+            });
+        }
+        // A snapshot: m2 is gone once the server "removed" it.
+        let mut messages = vec![message("m1", "a", "First")];
+        if !self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
+            messages.push(message("m2", "a", "Second"));
+        }
+        let present = messages.iter().map(|m| m.id.key().clone()).collect();
+        Ok(SyncPage {
+            kind: SyncKind::Snapshot,
+            changed: messages.clone(),
+            removed: Vec::new(),
+            present,
+            next_page: None,
+            next_cursor: SyncState::new("email-1"),
+            total: Some(messages.len()),
+        })
+    }
+}
+
 fn account() -> AccountId {
     AccountId::try_from("acct-1").expect("valid account")
 }
@@ -687,6 +765,36 @@ async fn edit_mail_surfaces_a_failed_edit() {
         .await
         .unwrap_err();
     assert!(matches!(err, ApiError::Sync(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn clear_mail_cursors_forces_a_reconciling_resnapshot() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let engine = Engine::open_in_memory().unwrap();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let provider = ReconcilingProvider {
+        caps: Capabilities::none().with_mail(),
+        dropped: Arc::clone(&dropped),
+    };
+
+    // First sync snapshots both messages.
+    engine.sync_mail(&provider, &account()).await.unwrap();
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+
+    // The server drops m2 (a move/expunge). A plain re-sync is a delta carrying no
+    // removals (IMAP without CONDSTORE), so it does NOT reconcile — m2 lingers.
+    dropped.store(true, Ordering::SeqCst);
+    engine.sync_mail(&provider, &account()).await.unwrap();
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+
+    // Clearing the mail cursors forces the next sync to snapshot, which tombstones the
+    // now-absent m2 — the reconcile a host triggers for a "refresh" that reflects
+    // server-side changes.
+    engine.clear_mail_cursors(&account()).await.unwrap();
+    engine.sync_mail(&provider, &account()).await.unwrap();
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 1);
 }
 
 #[tokio::test]

@@ -135,6 +135,24 @@ impl Engine {
         Ok(())
     }
 
+    /// Clears just the **mail** scopes' sync cursors, so the next [`Engine::sync_mail`]
+    /// re-snapshots them. The targeted counterpart of [`Engine::reset`]: it reconciles
+    /// mail with the server — picking up flag, move, and expunge changes that an IMAP
+    /// delta cannot detect without CONDSTORE (`imap-smtp.md`) — without clearing the
+    /// calendar or re-fetching the whole account. A host calls this for a mail
+    /// "refresh" that must reflect server-side changes (not just new arrivals); a plain
+    /// `sync_mail` after it reconciles, since the cleared scopes snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn clear_mail_cursors(&self, account: &AccountId) -> Result<(), ApiError> {
+        for scope in self.scopes_in(account, SearchDomain::Mail).await? {
+            self.store.clear_scope_cursor(&scope).await?;
+        }
+        Ok(())
+    }
+
     /// Syncs one account's calendars from `provider`: calendar containers first,
     /// then events, expanding each event's occurrences over `horizon` (resolving
     /// floating times through `host_zone`) before the commit

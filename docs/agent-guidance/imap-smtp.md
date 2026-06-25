@@ -167,8 +167,14 @@ is authoritative for the `provider-caldav` calendar client.
 
 ## Known limitations (documented, not bugs)
 
-- **No CONDSTORE/QRESYNC.** Deltas bring new arrivals only; flag/expunge changes
-  reconcile via a periodic snapshot. Deferred capability.
+- **No CONDSTORE/QRESYNC.** Deltas bring new arrivals only; flag/expunge/move changes
+  to already-synced messages reconcile via a periodic **snapshot**. A host forces that
+  snapshot with `Engine::clear_mail_cursors` (clears just the mail scopes' cursors, so
+  the next `sync_mail` re-snapshots and reconciles) — the targeted, mail-only
+  counterpart of `Engine::reset`. So a UI "refresh" that must reflect server-side
+  flag/move/delete changes (its own or another client's) clears the mail cursors before
+  syncing, rather than relying on the delta. Per-message CONDSTORE incrementality is the
+  deferred optimization. Deferred capability.
 - **No `UID MOVE` fallback.** A server lacking RFC 6851 `MOVE` is unsupported for
   moves — the `COPY` + `\Deleted` + `EXPUNGE` fallback is a later refinement.
 - **`UID EXPUNGE` requires UIDPLUS** (RFC 4315). A server without it would need a
