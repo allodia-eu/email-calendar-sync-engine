@@ -177,8 +177,11 @@ impl SyncScope {
                 JmapDataType::Calendar => Some(ObjectKind::Calendar),
                 _ => None,
             },
-            Self::ImapMailbox { .. } => Some(ObjectKind::Message),
-            Self::ImapMailboxList { .. } => Some(ObjectKind::Mailbox),
+            // Graph mirrors IMAP: a per-folder message scope + a folder-list container.
+            Self::ImapMailbox { .. } | Self::GraphFolder { .. } => Some(ObjectKind::Message),
+            Self::ImapMailboxList { .. } | Self::GraphFolderList { .. } => {
+                Some(ObjectKind::Mailbox)
+            }
             Self::DavCollection { .. } => Some(ObjectKind::Event),
             Self::DavCollectionList { .. } => Some(ObjectKind::Calendar),
         }
@@ -304,8 +307,22 @@ mod tests {
             Some(Event)
         );
         assert_eq!(
-            SyncScope::DavCollectionList { account: a }.object_kind(),
+            SyncScope::DavCollectionList { account: a.clone() }.object_kind(),
             Some(Calendar)
+        );
+        // Graph scopes mirror IMAP: a per-folder message scope + the folder-list
+        // container.
+        assert_eq!(
+            SyncScope::GraphFolder {
+                account: a.clone(),
+                folder: MailboxId::try_from("folder-inbox").unwrap(),
+            }
+            .object_kind(),
+            Some(Message)
+        );
+        assert_eq!(
+            SyncScope::GraphFolderList { account: a }.object_kind(),
+            Some(Mailbox)
         );
     }
 
