@@ -22,8 +22,10 @@
 //!   each connection is its own database).
 //!
 //! The FTS5 search index and the normalized structured-filter tables layer over
-//! this base in migration `V2` (`schema.rs`); content-addressed blob storage is a
-//! later sub-step.
+//! this base in migration `V2` (`schema.rs`). On-demand message content (`V5`) splits
+//! by *text vs bytes*: the raw message bytes live in a content-addressed filesystem
+//! blob area (`blob.rs`) — never in SQLite — while the extracted body text and its
+//! own lease-free FTS index live in `message_body`/`message_body_fts` (`source_ops.rs`).
 
 mod blob;
 mod convert;
@@ -152,6 +154,19 @@ impl<C: Clock> SqliteStore<C> {
         .expect("sqlite blocking task panicked")
     }
 
+    /// Runs `f` on a blocking thread **without** holding the connection lock — for
+    /// filesystem blob I/O (a multi-megabyte read/write) that must not serialize the
+    /// whole store behind the SQLite mutex the way [`Self::call`] does.
+    async fn block<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        tokio::task::spawn_blocking(f)
+            .await
+            .expect("blob blocking task panicked")
+    }
+
     /// Searches mail across `scopes`, returning ranked hits and the answer's
     /// coverage. The query compiles to indexed structured filters plus an FTS5
     /// `bm25()` ranking; pass the account's mail scopes (search is per-account).
@@ -167,9 +182,15 @@ impl<C: Clock> SqliteStore<C> {
     ) -> Result<SearchResults> {
         let scope_keys: Vec<String> = scopes.iter().map(scope_key).collect();
         let scope_count = scopes.len();
+        // Search is per-account, so every scope shares one account; the body-FTS
+        // source filters on it (IMAP keys can collide across accounts).
+        let account = scopes
+            .first()
+            .map(|scope| scope.account().as_str().to_owned())
+            .unwrap_or_default();
         let query = query.clone();
         let ranked = self
-            .call(move |conn| search_ops::search_mail(conn, &scope_keys, &query, limit))
+            .call(move |conn| search_ops::search_mail(conn, &account, &scope_keys, &query, limit))
             .await?;
         search_ops::assemble_results(ranked, scope_count)
     }

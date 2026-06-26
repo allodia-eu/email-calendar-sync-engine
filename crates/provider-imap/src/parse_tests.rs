@@ -232,33 +232,42 @@ fn envelope_handles_all_nil_addresses() {
 }
 
 #[test]
-fn fetch_body_extracts_the_literal_payload() {
+fn fetch_body_extracts_the_literal_payload_for_its_uid() {
     // The transport inlines the `{n}` literal: the untagged entry is the framing,
     // the n raw bytes, then the closing `)`.
     let body = "Subject: x\r\n\r\nbody bytes";
     let line = format!("3 FETCH (UID 7 BODY[] {{{}}}\r\n{body})", body.len());
-    let raw = parse_fetch_body(&lines(&[&line])).unwrap();
+    let raw = parse_fetch_body(&lines(&[&line]), 7).unwrap();
     assert_eq!(raw, body.as_bytes());
 }
 
 #[test]
-fn fetch_body_without_a_literal_is_a_protocol_error() {
-    // A response that carries no `BODY[]` section (the UID was not returned) is a
-    // protocol error, never a panic.
-    assert!(parse_fetch_body(&lines(&["3 FETCH (UID 7 FLAGS (\\Seen))"])).is_err());
+fn fetch_body_ignores_a_line_for_another_uid() {
+    // A piggybacked FETCH for a different UID (and the `UID 70` red herring) must not
+    // be mistaken for our UID 7's body.
+    let body = "wrong message";
+    let line = format!("3 FETCH (UID 70 BODY[] {{{}}}\r\n{body})", body.len());
+    assert!(parse_fetch_body(&lines(&[&line]), 7).is_none());
 }
 
 #[test]
-fn fetch_body_truncated_below_announced_length_is_a_protocol_error() {
+fn fetch_body_without_a_literal_for_the_uid_is_none() {
+    // No `BODY[]` section for the UID (expunged / not returned) → None, never a panic.
+    assert!(parse_fetch_body(&lines(&["3 FETCH (UID 7 FLAGS (\\Seen))"]), 7).is_none());
+    assert!(parse_fetch_body(&lines(&[]), 7).is_none());
+}
+
+#[test]
+fn fetch_body_truncated_below_announced_length_is_none() {
     // The server announced 999 bytes but sent far fewer: reject rather than read out
     // of bounds.
     let line = "3 FETCH (UID 7 BODY[] {999}\r\nonly a few bytes)";
-    assert!(parse_fetch_body(&lines(&[line])).is_err());
+    assert!(parse_fetch_body(&lines(&[line]), 7).is_none());
 }
 
 #[test]
-fn fetch_body_with_malformed_framing_is_a_protocol_error() {
+fn fetch_body_with_malformed_framing_is_none() {
     // `BODY[]` present but no `{n}` length framing follows.
     let line = "3 FETCH (UID 7 BODY[] NIL)";
-    assert!(parse_fetch_body(&lines(&[line])).is_err());
+    assert!(parse_fetch_body(&lines(&[line]), 7).is_none());
 }

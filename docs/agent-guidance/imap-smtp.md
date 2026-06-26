@@ -178,16 +178,20 @@ is authoritative for the `provider-caldav` calendar client.
   — every IMAP session can fetch bodies.
 - **`UID FETCH <uid> (BODY.PEEK[])`** fetches the entire message (headers + every
   part) as a single `{n}` literal, which the transport inlines; `parse_fetch_body`
-  pulls the literal bytes out of the framing (`BODY[] {n}\r\n<n bytes>`). `.PEEK`
-  does **not** set `\Seen` — reading a body must not silently mark it read; the host
-  marks-read via a separate `edit_mail` when it chooses. Fetching the whole source
-  (not just the text part) is lossless and serves the body now and HTML/attachments
-  later from the cached raw with no re-fetch (`providers.md`, `store-and-sync.md`).
-- **Same guards as edit.** The message is addressed by its own key (so any folder is
-  readable over the one bound session): `SELECT` + `UIDVALIDITY` guard → a mismatch
-  is a **`Conflict`**; an unparseable key, or a key whose mailbox carries `CR`/`LF`,
-  is `InvalidState` (rejected before any command). `reject_control_chars` is shared
-  with the mutate path.
+  pulls the literal bytes out of the framing (`BODY[] {n}\r\n<n bytes>`) — and only
+  from the line whose `UID` matches the request, so a piggybacked `FETCH` for another
+  UID cannot supply the wrong message's bytes. `.PEEK` does **not** set `\Seen` —
+  reading a body must not silently mark it read; the host marks-read via a separate
+  `edit_mail` when it chooses. Fetching the whole source (not just the text part) is
+  lossless and serves the body now and HTML/attachments later from the cached raw with
+  no re-fetch (`providers.md`, `store-and-sync.md`).
+- **Read-only open + shared guard.** Resolution is shared with the edit path via
+  `target::select_target`: parse the key, reject a `CR`/`LF` mailbox (`InvalidState`),
+  open, and guard `UIDVALIDITY` (mismatch → **`Conflict`**). A body read opens the
+  mailbox with **`EXAMINE`** (read-only), not `SELECT`, so it takes no write-intent
+  open, leaves `\Recent` untouched, and works on a read-only folder. A `UID FETCH`
+  that returns no data — the UID was expunged since the last sync — is also a
+  **`Conflict`** (re-sync, then drop), not a permanent failure.
 
 ## Known limitations (documented, not bugs)
 

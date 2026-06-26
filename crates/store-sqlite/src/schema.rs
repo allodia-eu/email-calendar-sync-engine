@@ -221,22 +221,62 @@ CREATE TABLE meta (
 ) STRICT;
 ";
 
-/// Migration v5: raw message-source cache metadata.
+/// Migration v5: on-demand message content — text in SQLite, bytes on disk.
 ///
-/// The on-demand Tier-3 raw RFC 5322 bytes (`MessageSourceCache`) live in a
-/// content-addressed filesystem blob area, **not** in SQLite — a single message can
-/// carry 1–15 MB of inline attachments, which would bloat the database. This table
-/// holds only the per-message metadata: the SHA-256 `content_hash` naming the blob
-/// file, its decoded `byte_len`, and the `fetched_at` instant (kept for future
-/// quota/eviction). Keyed by `(account, provider_key)`; the bytes are deduped across
-/// rows by content hash (two IMAP copies of one message share one blob).
+/// The split is by **text vs bytes** (`north-star.md`): searchable text lives in
+/// SQLite, the heavy byte payload on the filesystem.
+///
+/// - `message_source` is metadata for the raw RFC 5322 bytes, which live in a
+///   content-addressed filesystem blob area, **not** SQLite — a single message can
+///   carry 1–15 MB of inline attachments that would bloat the database. The SHA-256
+///   `content_hash` names the blob (two IMAP copies of one message dedupe to one
+///   file); `fetched_at` is kept for future quota/eviction.
+/// - `message_body` holds the extracted, displayable body text (the reading view and
+///   the search source). `message_body_fts` is an FTS5 index over the `plain` text,
+///   maintained by triggers (mirroring V2's `fts_doc`/`fts_index`), so a search
+///   matches body content. It is **lease-free** and never touched by sync, so an
+///   IMAP re-snapshot cannot wipe it; stale rows for deleted messages are filtered at
+///   query time by joining to the live `mail_index`.
+///
+/// Both are keyed by `(account, provider_key)`.
 pub(crate) const V5: &str = "\
 CREATE TABLE message_source (
     account      TEXT NOT NULL,
     provider_key TEXT NOT NULL,
     content_hash TEXT NOT NULL,
-    byte_len     INTEGER NOT NULL,
     fetched_at   TEXT NOT NULL,
     PRIMARY KEY (account, provider_key)
 ) STRICT, WITHOUT ROWID;
+
+CREATE TABLE message_body (
+    rowid        INTEGER PRIMARY KEY,
+    account      TEXT NOT NULL,
+    provider_key TEXT NOT NULL,
+    plain        TEXT NOT NULL DEFAULT '',
+    html         TEXT,
+    fetched_at   TEXT NOT NULL,
+    UNIQUE (account, provider_key)
+) STRICT;
+
+CREATE VIRTUAL TABLE message_body_fts USING fts5 (
+    plain,
+    content = 'message_body',
+    content_rowid = 'rowid',
+    tokenize = 'porter unicode61'
+);
+
+CREATE TRIGGER message_body_ai AFTER INSERT ON message_body BEGIN
+    INSERT INTO message_body_fts (rowid, plain) VALUES (new.rowid, new.plain);
+END;
+
+CREATE TRIGGER message_body_ad AFTER DELETE ON message_body BEGIN
+    INSERT INTO message_body_fts (message_body_fts, rowid, plain)
+    VALUES ('delete', old.rowid, old.plain);
+END;
+
+CREATE TRIGGER message_body_au AFTER UPDATE ON message_body BEGIN
+    INSERT INTO message_body_fts (message_body_fts, rowid, plain)
+    VALUES ('delete', old.rowid, old.plain);
+    INSERT INTO message_body_fts (rowid, plain) VALUES (new.rowid, new.plain);
+END;
 ";

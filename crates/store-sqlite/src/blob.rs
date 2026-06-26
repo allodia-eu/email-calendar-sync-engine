@@ -97,8 +97,10 @@ pub(crate) fn write_source(root: &Path, bytes: &[u8]) -> Result<String> {
     Ok(hash)
 }
 
-/// Reads the blob named by `hash`, or `None` if its file is absent (an evicted or
-/// externally-removed blob reads as a cache miss).
+/// Reads the blob named by `hash` and verifies its contents still hash to `hash`,
+/// or `None` if its file is absent **or** fails that check — an evicted, truncated,
+/// or corrupted blob reads as a cache miss, so the caller re-fetches rather than
+/// serving wrong bytes as a valid body.
 ///
 /// # Errors
 ///
@@ -107,7 +109,8 @@ pub(crate) fn write_source(root: &Path, bytes: &[u8]) -> Result<String> {
 pub(crate) fn read_source(root: &Path, hash: &str) -> Result<Option<Vec<u8>>> {
     let path = root.join("sources").join(format!("{hash}.eml"));
     match fs::read(&path) {
-        Ok(bytes) => Ok(Some(bytes)),
+        Ok(bytes) if hex(Sha256::digest(&bytes).as_slice()) == hash => Ok(Some(bytes)),
+        Ok(_) => Ok(None),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(backend(err)),
     }

@@ -60,6 +60,7 @@ mod parse;
 mod provider;
 mod smtp;
 mod sync;
+mod target;
 mod tokenize;
 mod transport;
 

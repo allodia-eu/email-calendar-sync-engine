@@ -183,37 +183,45 @@ state — plus a `tzdata-version` index to find *only* stale scopes, and an
 occurrence-only clear so a pure horizon advance need not re-project unchanged text —
 is the sync orchestrator's job, a later step.
 
-On-demand fetched bodies **will** be indexed (resolving the "does opening old
-mail make it searchable?" question: yes) — that indexing step is an
-`apply_maintenance` write (it re-derives the message's FTS rows, hence the lease).
-The *fetch + cache* of the raw is already implemented (below); folding the
-extracted body text into FTS is the still-pending follow-up. Search coverage
-metadata must therefore reflect that local coverage can grow over time; it is not
-a static property of the corpus.
+On-demand fetched bodies **are** searchable (resolving the "does opening old mail
+make it searchable?" question: yes), via a separate lease-free body index — **not**
+the scope-derived FTS — so opening a message indexes its body immediately and a
+later re-snapshot cannot wipe it (below). Search coverage metadata must therefore
+reflect that local coverage can grow over time; it is not a static property of the
+corpus.
 
-## The raw message-source cache (Tier-3 bodies)
+## On-demand message content: text vs bytes (Tier-3 bodies)
 
-The raw RFC 5322 source a host fetches on demand to read a body — and, later, its
-attachments — is cached through a **separate, lease-free** trait,
-`MessageSourceCache` (`put_message_source`/`get_message_source`, keyed by
-`(account, ProviderKey)`), defined in `engine-store` beside `Store`:
+A message's on-demand content splits by **text vs bytes** (`north-star.md`):
+searchable text in SQLite, the heavy byte payload on the filesystem. Both are cached
+through **separate, lease-free** traits in `engine-store` (beside `Store`), keyed by
+`(account, ProviderKey)`:
 
-- It sits **outside** the scope-fencing/lease contract on purpose. The bytes for a
-  `(UIDVALIDITY, UID)` (or a JMAP blob) are immutable, so two concurrent fetches
-  write identical bytes — the cache is idempotent and needs no lease. That lets a
-  host open a message *while a sync of the same scope is in flight*; taking the
-  scope lease would needlessly serialize reads behind sync.
-- The bytes do **not** live in SQLite. A single message can carry 1–15 MB of inline
-  attachments (the whole `BODY.PEEK[]` is cached), which would bloat the database.
-  `store-sqlite` writes them to a **content-addressed filesystem blob area** beside
-  the database (`<db>.blobs/sources/<sha256>.eml`; an in-memory store uses a temp
-  dir), deduping identical payloads, and keeps only metadata (the content hash, byte
-  length, fetch instant) in a `message_source` table. This is the content-addressed
-  blob foundation attachments-as-entities will reuse. The bytes are sensitive mail
-  data, protected at rest by the same OS file encryption as the database file.
-- The fetch-through is `engine_sync::fetch_message_body` (cache → on miss
-  provider-fetch + cache → extract via `engine-mime`), surfaced as
-  `Engine::message_body` (`engine-api.md`).
+- They sit **outside** the scope-fencing/lease contract on purpose. The raw bytes for
+  a `(UIDVALIDITY, UID)` (or JMAP blob) are immutable and the extracted text is a pure
+  function of them, so the caches are idempotent and need no lease — a host opens and
+  searches a message *while a sync of its scope is in flight*; taking the scope lease
+  would needlessly serialize reads behind sync.
+- **Bytes — `MessageSourceCache`** (`put_message_source`/`get_message_source`). The
+  raw RFC 5322 source (the whole `BODY.PEEK[]`, which carries the attachments) can be
+  1–15 MB, so it does **not** live in SQLite. `store-sqlite` writes it to a
+  **content-addressed filesystem blob area** (`<db>.blobs/sources/<sha256>.eml`; an
+  in-memory store uses a temp dir), deduping identical payloads and verifying the
+  content hash on read; SQLite keeps only metadata (`message_source`). The blob I/O
+  runs off the connection lock. This is the content-addressed blob foundation
+  attachments-as-entities will reuse. Kept for losslessness (DKIM/view-source/forward).
+- **Text — `MessageBodyStore`** (`put_message_body`/`get_message_body`). The extracted
+  body (plain + html) lives in the `message_body` table — small, the reading-view fast
+  path (no disk read, no re-parse), and the **search** source. A trigger maintains
+  `message_body_fts` (FTS5 over the plain text). Because this index is lease-free and
+  sync never touches it, an IMAP re-snapshot cannot wipe it; `search_mail` matches it
+  alongside the scope FTS (RRF-fused) and joins to the live `mail_index` so stale rows
+  for deleted messages drop out, and to `message_body.account` so IMAP keys that
+  collide across accounts cannot cross over (`search.md`).
+- The fetch-through is `engine_sync::fetch_message_body` (text in SQLite → on-disk raw
+  → one provider fetch; best-effort caching of both), surfaced as
+  `Engine::message_body` (`engine-api.md`). Per-attachment blobs + lazy attachment
+  fetch, and embeddings/RAG over the indexed text, are later slices.
 
 ## Re-normalization on a normalizer-version change
 

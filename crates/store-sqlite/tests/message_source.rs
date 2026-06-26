@@ -3,8 +3,9 @@
 use std::fs;
 
 use engine_core::ids::{AccountId, ProviderKey};
+use engine_core::mail::MessageBody;
 use engine_core::raw::RawMime;
-use engine_store::{ManualClock, MessageSourceCache};
+use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
 use store_sqlite::SqliteStore;
 use tempfile::TempDir;
 
@@ -35,7 +36,7 @@ async fn put_then_get_round_trips_through_the_blob_area() {
     );
 
     store
-        .put_message_source(&account(), &key("imap:v1:u1@INBOX"), &raw)
+        .put_message_source(&account(), &key("imap:v1:u1@INBOX"), raw.clone())
         .await
         .expect("put");
 
@@ -55,7 +56,7 @@ async fn bytes_land_on_the_filesystem_and_a_missing_blob_reads_as_a_miss() {
     let raw = RawMime::new(b"the raw message bytes".to_vec());
 
     store
-        .put_message_source(&account(), &key("imap:v1:u7@INBOX"), &raw)
+        .put_message_source(&account(), &key("imap:v1:u7@INBOX"), raw.clone())
         .await
         .expect("put");
 
@@ -91,11 +92,11 @@ async fn identical_bytes_dedupe_to_one_blob() {
     // The same message copied into two folders is two distinct keys but identical
     // bytes — content addressing stores one file.
     store
-        .put_message_source(&account(), &key("imap:v1:u1@INBOX"), &raw)
+        .put_message_source(&account(), &key("imap:v1:u1@INBOX"), raw.clone())
         .await
         .expect("put inbox");
     store
-        .put_message_source(&account(), &key("imap:v1:u1@Archive"), &raw)
+        .put_message_source(&account(), &key("imap:v1:u1@Archive"), raw.clone())
         .await
         .expect("put archive");
 
@@ -120,11 +121,11 @@ async fn put_overwrites_a_prior_entry_for_the_same_key() {
     let second = RawMime::new(b"second, longer version of the body".to_vec());
 
     store
-        .put_message_source(&account(), &key("imap:v1:u1@INBOX"), &first)
+        .put_message_source(&account(), &key("imap:v1:u1@INBOX"), first.clone())
         .await
         .expect("put first");
     store
-        .put_message_source(&account(), &key("imap:v1:u1@INBOX"), &second)
+        .put_message_source(&account(), &key("imap:v1:u1@INBOX"), second.clone())
         .await
         .expect("put second");
 
@@ -134,4 +135,78 @@ async fn put_overwrites_a_prior_entry_for_the_same_key() {
         .expect("get")
         .expect("present");
     assert_eq!(got.as_bytes(), second.as_bytes());
+}
+
+#[tokio::test]
+async fn a_corrupted_blob_reads_as_a_miss() {
+    let dir = TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("store.db");
+    let store = SqliteStore::open(&db_path, clock()).expect("open file store");
+    store
+        .put_message_source(
+            &account(),
+            &key("imap:v1:u1@INBOX"),
+            RawMime::new(b"the real bytes".to_vec()),
+        )
+        .await
+        .expect("put");
+
+    // Overwrite the blob with different content — its name no longer matches its
+    // hash, so verify-on-read treats it as a miss rather than serving wrong bytes.
+    let sources = dir.path().join("store.db.blobs").join("sources");
+    let blob = fs::read_dir(&sources)
+        .expect("sources dir")
+        .map(|e| e.expect("entry").path())
+        .find(|p| p.extension().is_some_and(|x| x == "eml"))
+        .expect("one blob");
+    fs::write(&blob, b"tampered/truncated content").expect("corrupt blob");
+
+    assert!(
+        store
+            .get_message_source(&account(), &key("imap:v1:u1@INBOX"))
+            .await
+            .expect("get")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn body_text_round_trips_through_sqlite() {
+    let store = SqliteStore::open_in_memory(clock()).expect("open store");
+    let k = key("imap:v1:u1@INBOX");
+
+    assert!(
+        store
+            .get_message_body(&account(), &k)
+            .await
+            .expect("get")
+            .is_none(),
+        "absent before extraction"
+    );
+
+    let body = MessageBody::new(
+        Some("plain text".to_owned()),
+        Some("<p>html</p>".to_owned()),
+    );
+    store
+        .put_message_body(&account(), &k, &body)
+        .await
+        .expect("put body");
+    let got = store
+        .get_message_body(&account(), &k)
+        .await
+        .expect("get")
+        .expect("present");
+    assert_eq!(got, body);
+
+    // A later extraction with no HTML part overwrites and round-trips html = None.
+    let plain_only = MessageBody::new(Some("just plain".to_owned()), None);
+    store
+        .put_message_body(&account(), &k, &plain_only)
+        .await
+        .expect("put plain-only");
+    assert_eq!(
+        store.get_message_body(&account(), &k).await.expect("get"),
+        Some(plain_only)
+    );
 }

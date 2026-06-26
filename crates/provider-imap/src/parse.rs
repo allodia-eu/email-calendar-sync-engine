@@ -308,27 +308,36 @@ fn addresses_of(item: &Item) -> Vec<Address> {
         .collect()
 }
 
-/// Extracts the raw `BODY[]` literal bytes from a `UID FETCH … (BODY.PEEK[])`
-/// response (RFC 9051 §7.5.2). The server echoes the section as `BODY[] {n}` with
-/// the `n` raw bytes inlined by the transport, so we scan for that framing rather
-/// than tokenizing (the payload is arbitrary RFC 5322 bytes, not IMAP grammar).
+/// Extracts the raw `BODY[]` literal bytes for `expected_uid` from a
+/// `UID FETCH <uid> (BODY.PEEK[])` response (RFC 9051 §7.5.2), or `None` if no line
+/// carries a `BODY[]` literal **for that UID**.
 ///
-/// # Errors
-///
-/// [`ImapError::Protocol`] if no untagged line carries a `BODY[]` literal (the UID
-/// was not returned, or the server answered without the requested section).
-pub(crate) fn parse_fetch_body(untagged: &[Vec<u8>]) -> ImapResult<Vec<u8>> {
+/// The server echoes the section as `BODY[] {n}` with the `n` raw bytes inlined by
+/// the transport, so we scan for that framing rather than tokenizing (the payload is
+/// arbitrary RFC 5322 bytes, not IMAP grammar). Each candidate line is required to
+/// carry `UID <expected_uid>` before its `BODY[]` marker, so an unsolicited `FETCH`
+/// for a different UID (a concurrent flag update the server piggybacks) can never
+/// supply the wrong message's bytes. `None` means the UID returned no body — the
+/// caller treats that as an expunge (re-sync), not a parse error.
+pub(crate) fn parse_fetch_body(untagged: &[Vec<u8>], expected_uid: u32) -> Option<Vec<u8>> {
     untagged
         .iter()
-        .find_map(|line| extract_body_literal(line))
-        .ok_or_else(|| ImapError::protocol("FETCH response carried no BODY[] literal"))
+        .find_map(|line| extract_body_literal(line, expected_uid))
 }
 
-/// Pulls the `{n}`-framed bytes that follow the first `BODY[]` marker in `line`, or
-/// `None` if the framing is absent or truncated.
-fn extract_body_literal(line: &[u8]) -> Option<Vec<u8>> {
+/// Pulls the `{n}`-framed bytes that follow the first `BODY[]` marker in `line`,
+/// provided the framing before that marker names `expected_uid`. `None` if the line
+/// is for another UID, or the framing is absent or truncated.
+fn extract_body_literal(line: &[u8], expected_uid: u32) -> Option<Vec<u8>> {
     const MARKER: &[u8] = b"BODY[]";
-    let after_marker = &line[find_subsequence(line, MARKER)? + MARKER.len()..];
+    let marker_at = find_subsequence(line, MARKER)?;
+    // The `UID <n>` pair is part of the FETCH framing, which precedes the body
+    // literal; restrict the UID check to that prefix so the payload bytes (which may
+    // themselves contain "UID 7") cannot spoof it.
+    if !prefix_names_uid(&line[..marker_at], expected_uid) {
+        return None;
+    }
+    let after_marker = &line[marker_at + MARKER.len()..];
     // `BODY[] {n}\r\n<n bytes>`: skip the separating space, read the `{n}` length,
     // then take exactly the n bytes after the CRLF.
     let after_brace = after_marker
@@ -344,6 +353,31 @@ fn extract_body_literal(line: &[u8]) -> Option<Vec<u8>> {
         .strip_prefix(b"\r\n")
         .or_else(|| after_brace[close + 1..].strip_prefix(b"\n"))?;
     (body.len() >= len).then(|| body[..len].to_vec())
+}
+
+/// `true` if `prefix` contains a `UID <expected>` token (case-insensitive `UID`,
+/// the decimal matched as a whole number so `UID 70` does not satisfy `7`).
+fn prefix_names_uid(prefix: &[u8], expected: u32) -> bool {
+    const UID: &[u8] = b"UID ";
+    let upper = prefix.to_ascii_uppercase();
+    let mut from = 0;
+    while let Some(rel) = find_subsequence(&upper[from..], UID) {
+        let start = from + rel + UID.len();
+        let digits: Vec<u8> = upper[start..]
+            .iter()
+            .copied()
+            .take_while(u8::is_ascii_digit)
+            .collect();
+        if std::str::from_utf8(&digits)
+            .ok()
+            .and_then(|text| text.parse::<u32>().ok())
+            == Some(expected)
+        {
+            return true;
+        }
+        from = start;
+    }
+    false
 }
 
 /// The first index at which `needle` occurs in `haystack`, if any.

@@ -37,19 +37,17 @@ pub fn extract_body(raw: &RawMime) -> MessageBody {
     };
 
     let plain = message.body_text(0).map(Cow::into_owned);
-    // A non-empty `html_body` index list does not prove a real `text/html` part:
-    // mail-parser also lists a text-only message's text part there so `body_html`
-    // can synthesize HTML. Require a part whose decoded body is actually `Html`
-    // before capturing it, so the next (HTML-rendering) slice never mistakes a
-    // synthesized rendering for genuine provider HTML.
-    let html = if message
-        .html_bodies()
-        .any(|part| matches!(part.body, PartType::Html(_)))
-    {
-        message.body_html(0).map(Cow::into_owned)
-    } else {
-        None
-    };
+    // Take the decoded contents of the first body part that is *actually* a
+    // `text/html` part, rather than `body_html(0)`. mail-parser lists a text-only
+    // message's text part in its `html_body` index too (so `body_html` can
+    // synthesize HTML from plain text), and for a `multipart/mixed` with a leading
+    // text part before a `multipart/alternative`, `html_body[0]` is that leading
+    // *text* part — so `body_html(0)` would return fabricated HTML and drop the real
+    // one. Matching on `PartType::Html` captures genuine provider HTML only.
+    let html = message.html_bodies().find_map(|part| match &part.body {
+        PartType::Html(text) => Some(text.as_ref().to_owned()),
+        _ => None,
+    });
 
     MessageBody::new(plain, html)
 }
@@ -129,6 +127,26 @@ mod tests {
         assert!(body.plain().unwrap().contains("the body text"));
         // The attachment is binary, not an HTML part.
         assert_eq!(body.html(), None);
+    }
+
+    #[test]
+    fn mixed_with_leading_text_keeps_real_html_not_a_synthesis() {
+        // Regression: a leading text/plain before a multipart/alternative makes
+        // mail-parser put that text part at html_body[0], so `body_html(0)` would
+        // synthesize HTML from "LEADING_PLAIN" and drop the genuine `<p>REAL</p>`.
+        let body = extract_body(&raw(
+            b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
+              --m\r\nContent-Type: text/plain\r\n\r\nLEADING_PLAIN\r\n\
+              --m\r\nContent-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
+              --a\r\nContent-Type: text/plain\r\n\r\nALT_PLAIN\r\n\
+              --a\r\nContent-Type: text/html\r\n\r\n<p>REAL_HTML</p>\r\n--a--\r\n--m--\r\n",
+        ));
+        let html = body.html().expect("the real html part is captured");
+        assert!(html.contains("REAL_HTML"), "{html}");
+        assert!(
+            !html.contains("LEADING_PLAIN"),
+            "must not be a text->html synthesis: {html}"
+        );
     }
 
     #[test]

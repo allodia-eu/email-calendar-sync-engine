@@ -14,10 +14,11 @@
 //! stale, so the edit is a [`ProviderError::conflict`] (the caller re-syncs, then
 //! retries) rather than a blind write against the wrong message.
 
-use engine_provider::{MailEdit, MailEditReceipt, ProviderError, ProviderResult};
+use engine_provider::{MailEdit, MailEditReceipt, ProviderResult};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::mail::{keyword_to_flag, parse_message_key};
+use crate::mail::keyword_to_flag;
+use crate::target::{Access, reject_control_chars, select_target};
 use crate::transport::Connection;
 
 /// Applies `edit` to its target message over `connection`, returning a receipt
@@ -40,24 +41,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let key = edit.target();
-    let (mailbox, key_validity, uid) = parse_message_key(key.as_str()).ok_or_else(|| {
-        ProviderError::invalid_state(format!("unparseable IMAP message key: {}", key.as_str()))
-    })?;
-    // The mailbox name (and any move destination below) flows into a quoted IMAP
-    // command argument, which cannot represent CR/LF/NUL; reject them so a crafted
-    // name — from a hostile server's LIST, or a host-supplied destination — cannot
-    // inject a second command line.
-    reject_control_chars(mailbox)?;
-
-    // SELECT the key's own mailbox (a move's source, a delete's home) and guard on
-    // UIDVALIDITY: a renumbered UID space invalidates the key, so a write would hit
-    // the wrong message — surface a Conflict so the caller re-syncs first.
-    let selected = connection.select(mailbox).await?;
-    if selected.uid_validity != key_validity {
-        return Err(ProviderError::conflict(format!(
-            "UIDVALIDITY changed for {mailbox}: re-sync before editing"
-        )));
-    }
+    // Resolve + SELECT the key's own mailbox (a move's source, a delete's home,
+    // read-write since this mutates) and guard `UIDVALIDITY` — shared with the read
+    // path so the stale-key and CR/LF-injection guards cannot drift apart.
+    let (_mailbox, uid) = select_target(connection, key, Access::ReadWrite).await?;
 
     let set = uid.to_string();
     match edit {
@@ -88,19 +75,6 @@ where
     }
 
     Ok(MailEditReceipt::new(key.clone()))
-}
-
-/// Rejects a mailbox name carrying `CR`/`LF`/`NUL` before it reaches a quoted IMAP
-/// command argument: those bytes cannot appear in a valid mailbox name, and admitting
-/// them would let a crafted name inject a second command line (the transport's `quote`
-/// escapes only `"`/`\`). Shared with the body-fetch path (`crate::fetch`).
-pub(crate) fn reject_control_chars(name: &str) -> ProviderResult<()> {
-    if name.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
-        return Err(ProviderError::invalid_state(
-            "mailbox name contains a control character",
-        ));
-    }
-    Ok(())
 }
 
 /// Builds a `±FLAGS.SILENT (<flags>)` STORE item from a set of keywords, with `sign`

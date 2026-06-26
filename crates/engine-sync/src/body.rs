@@ -1,30 +1,33 @@
 //! On-demand fetch of a message's body — a read-through cache, no lease.
 //!
 //! Unlike sync and the outbox, reading a body takes **no** scope or op lease: the
-//! raw bytes are immutable Tier-3 content and the cache is idempotent
+//! raw bytes are immutable Tier-3 content and the caches are idempotent
 //! (`store-and-sync.md`), so a host can open a message while a sync of its scope is
-//! in flight. The flow is cache-first — return the cached raw, else fetch it from
-//! the provider once and cache it — then extract the displayable text with
-//! `engine-mime`.
+//! in flight. The flow is cache-first in three tiers — the extracted text in SQLite,
+//! else the cached raw bytes on disk, else one provider fetch — extracting the
+//! displayable text with `engine-mime` and caching both halves best-effort.
 
 use engine_core::ids::AccountId;
 use engine_core::mail::{Message, MessageBody};
 use engine_provider::Provider;
-use engine_store::MessageSourceCache;
+use engine_store::{MessageBodyStore, MessageSourceCache};
 
 use crate::SyncError;
 
-/// Returns the displayable [`MessageBody`] of `message`, fetching and caching its
-/// raw RFC 5322 source on the first call and serving it from the cache thereafter.
+/// Returns the displayable [`MessageBody`] of `message`.
 ///
-/// The cached raw is the whole message (headers + every part), so this one fetch
-/// also serves the later HTML and attachment slices without re-fetching.
+/// Cache-first, in three tiers: the extracted body **text** in SQLite (the fast
+/// reading-view path — no disk read, no re-parse); else the cached raw **bytes** on
+/// disk; else a one-time provider fetch of the whole raw message (which also serves
+/// the later HTML/attachment slices without re-fetching). The newly-fetched bytes and
+/// extracted text are cached **best-effort** — a cache-write failure never denies a
+/// read of content already in hand.
 ///
 /// # Errors
 ///
-/// Returns [`SyncError::Provider`] if the body fetch fails (a stale IMAP target is a
-/// `Conflict` — re-sync, then retry), or [`SyncError::Store`] if the cache read or
-/// write fails.
+/// Returns [`SyncError::Provider`] if the body fetch fails (a stale or expunged IMAP
+/// target is a `Conflict` — re-sync, then retry), or [`SyncError::Store`] if a cache
+/// **read** fails.
 pub async fn fetch_message_body<P, S>(
     provider: &P,
     store: &S,
@@ -33,17 +36,27 @@ pub async fn fetch_message_body<P, S>(
 ) -> Result<MessageBody, SyncError>
 where
     P: Provider,
-    S: MessageSourceCache,
+    S: MessageSourceCache + MessageBodyStore,
 {
     let key = message.id.key();
-    let raw = if let Some(cached) = store.get_message_source(account, key).await? {
-        cached
-    } else {
-        let fetched = provider.fetch_message_source(account, message).await?;
-        store.put_message_source(account, key, &fetched).await?;
-        fetched
+    // Fast path: the extracted text is already in SQLite.
+    if let Some(body) = store.get_message_body(account, key).await? {
+        return Ok(body);
+    }
+
+    // Otherwise we need the raw bytes — from the on-disk blob, or one provider fetch.
+    let (from_provider, raw) = match store.get_message_source(account, key).await? {
+        Some(cached) => (false, cached),
+        None => (true, provider.fetch_message_source(account, message).await?),
     };
-    Ok(engine_mime::extract_body(&raw))
+    let body = engine_mime::extract_body(&raw);
+
+    // Best-effort caching; the read already succeeded.
+    if from_provider {
+        let _ = store.put_message_source(account, key, raw).await;
+    }
+    let _ = store.put_message_body(account, key, &body).await;
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -52,11 +65,11 @@ mod tests {
 
     use async_trait::async_trait;
     use engine_core::ids::{AccountId, MailboxId, MessageId};
-    use engine_core::mail::Message;
+    use engine_core::mail::{Message, MessageBody};
     use engine_core::membership::Memberships;
     use engine_core::raw::RawMime;
     use engine_provider::{Capabilities, Provider, ProviderResult};
-    use engine_store::{ManualClock, MessageSourceCache};
+    use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
     use store_sqlite::SqliteStore;
 
     use super::fetch_message_body;
@@ -127,32 +140,66 @@ mod tests {
         assert!(body.plain().unwrap().contains("the decoded body"));
         assert_eq!(provider.hits.load(Ordering::SeqCst), 1, "fetched once");
 
-        // The raw is now in the cache.
+        // Both the raw bytes and the extracted text are now cached.
         assert!(
             store
                 .get_message_source(&account(), message().id.key())
                 .await
-                .expect("get")
+                .expect("get source")
+                .is_some()
+        );
+        assert!(
+            store
+                .get_message_body(&account(), message().id.key())
+                .await
+                .expect("get body")
                 .is_some()
         );
     }
 
     #[tokio::test]
-    async fn cache_hit_does_not_fetch() {
+    async fn raw_cached_extracts_without_a_provider_fetch() {
         let store = store();
-        // Pre-seed the cache, then prove the read is served from it: the counting
-        // provider records zero hits, so no network round trip happened.
+        // Raw bytes cached but text not yet extracted: the read uses the on-disk
+        // blob, so the counting provider is never consulted.
         store
-            .put_message_source(&account(), message().id.key(), &RawMime::new(RAW.to_vec()))
+            .put_message_source(&account(), message().id.key(), RawMime::new(RAW.to_vec()))
             .await
-            .expect("seed");
+            .expect("seed source");
 
         let provider = CountingProvider::new(b"unused - should not be fetched");
         let body = fetch_message_body(&provider, &store, &account(), &message())
             .await
-            .expect("fetch body from cache");
+            .expect("fetch body from blob");
         assert!(body.plain().unwrap().contains("the decoded body"));
-        assert_eq!(provider.hits.load(Ordering::SeqCst), 0, "served from cache");
+        assert_eq!(
+            provider.hits.load(Ordering::SeqCst),
+            0,
+            "served from disk blob"
+        );
+    }
+
+    #[tokio::test]
+    async fn body_text_cached_skips_blob_and_provider() {
+        let store = store();
+        // The extracted text is cached: the fast path returns it directly — no blob
+        // read, no provider fetch.
+        let seeded = MessageBody::new(Some("the fast-path body".to_owned()), None);
+        store
+            .put_message_body(&account(), message().id.key(), &seeded)
+            .await
+            .expect("seed body");
+
+        let provider = CountingProvider::new(b"unused - should not be fetched");
+        let body = fetch_message_body(&provider, &store, &account(), &message())
+            .await
+            .expect("fetch body from sqlite");
+        assert_eq!(body.plain(), Some("the fast-path body"));
+        assert_eq!(
+            provider.hits.load(Ordering::SeqCst),
+            0,
+            "served from sqlite"
+        );
     }
 
     #[tokio::test]
