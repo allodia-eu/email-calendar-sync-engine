@@ -1,0 +1,23 @@
+[package]
+name = "provider-graph"
+description = "Microsoft Graph (v1.0) read/sync provider adapter for the PIM sync engine: bearer-auth HTTP transport, per-folder mail-folder/message delta sync, normalizing Graph mail JSON into the engine's SyncUpdate shapes. Implements the engine-provider contract."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-provider = { workspace = true }
+# reqwest + rustls (pure-Rust TLS, mobile cross-compile) on the engine's standard
+# HTTP stack, mirroring provider-jmap.
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

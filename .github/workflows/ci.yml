@@ -295,7 +295,7 @@ jobs:
       # offline-uncovered client `src` lines are the raw TCP+TLS `connect` glue,
       # which the live tests exercise.
       - name: Export lcov report
-        run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/'
+        run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/|provider-graph/tests/'
 
       # Upload to Codecov before the threshold gate below so coverage is
       # recorded even on builds that dip under the bar. `files` points at the
@@ -308,7 +308,7 @@ jobs:
           files: ./lcov.info
 
       - name: Coverage summary
-        run: cargo llvm-cov report --summary-only --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/'
+        run: cargo llvm-cov report --summary-only --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/|provider-graph/tests/'
 
       # Codecov (the lcov export above) is the real signal; every meaningful path is
       # tested offline. The *native* line metric reads under it for two reasons:
@@ -326,7 +326,7 @@ jobs:
       # land. Codecov remains the real signal; tighten this as native stabilizes
       # higher (e.g. once a mock TLS listener covers the dial path).
       - name: Enforce coverage threshold
-        run: cargo llvm-cov report --fail-under-lines 95 --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/'
+        run: cargo llvm-cov report --fail-under-lines 95 --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/|provider-graph/tests/'
 
       - name: Upload lcov report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

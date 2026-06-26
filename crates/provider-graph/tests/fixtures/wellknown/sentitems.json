@@ -1,0 +1,5 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('testuser%40example.test')/mailFolders(id,displayName)/$entity",
+  "displayName": "Verzonden items",
+  "id": "folder-sentitems"
+}

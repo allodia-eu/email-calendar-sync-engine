@@ -1,0 +1,94 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(mailFolder)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/delta?$deltatoken=opaque-token-4",
+  "value": [
+    {
+      "@odata.type": "#microsoft.graph.mailFolder",
+      "childFolderCount": 0,
+      "displayName": "Archiveren",
+      "id": "folder-archive",
+      "isHidden": false,
+      "parentFolderId": "folder-root",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0
+    },
+    {
+      "@odata.type": "#microsoft.graph.mailFolder",
+      "childFolderCount": 0,
+      "displayName": "Concepten",
+      "id": "folder-drafts",
+      "isHidden": false,
+      "parentFolderId": "folder-root",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0
+    },
+    {
+      "@odata.type": "#microsoft.graph.mailFolder",
+      "childFolderCount": 1,
+      "displayName": "Gesprekgeschiedenis",
+      "id": "folder-extra-1",
+      "isHidden": false,
+      "parentFolderId": "folder-root",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0
+    },
+    {
+      "@odata.type": "#microsoft.graph.mailFolder",
+      "childFolderCount": 0,
+      "displayName": "Ongewenste e-mail",
+      "id": "folder-junkemail",
+      "isHidden": false,
+      "parentFolderId": "folder-root",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0
+    },
+    {
+      "@odata.type": "#microsoft.graph.mailFolder",
+      "childFolderCount": 0,
+      "displayName": "Postvak IN",
+      "id": "folder-inbox",
+      "isHidden": false,
+      "parentFolderId": "folder-root",
+      "sizeInBytes": 1091122,
+      "totalItemCount": 2,
+      "unreadItemCount": 2
+    },
+    {
+      "@odata.type": "#microsoft.graph.mailFolder",
+      "childFolderCount": 0,
+      "displayName": "Postvak UIT",
+      "id": "folder-outbox",
+      "isHidden": false,
+      "parentFolderId": "folder-root",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0
+    },
+    {
+      "@odata.type": "#microsoft.graph.mailFolder",
+      "childFolderCount": 0,
+      "displayName": "Verwijderde items",
+      "id": "folder-deleteditems",
+      "isHidden": false,
+      "parentFolderId": "folder-root",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0
+    },
+    {
+      "@odata.type": "#microsoft.graph.mailFolder",
+      "childFolderCount": 0,
+      "displayName": "Verzonden items",
+      "id": "folder-sentitems",
+      "isHidden": false,
+      "parentFolderId": "folder-root",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0
+    }
+  ]
+}

@@ -837,6 +837,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "provider-graph"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "engine-core",
+ "engine-provider",
+ "reqwest",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "provider-imap"
 version = "0.1.0"
 dependencies = [

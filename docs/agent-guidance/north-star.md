@@ -43,7 +43,7 @@ pim-sync-engine/
 │   ├── provider-smtp/           # SMTP submission support.
 │   ├── provider-caldav/         # CalDAV/CardDAV support.
 │   ├── provider-gmail/          # Future Gmail adapter.
-│   ├── provider-graph/          # Future Microsoft Graph adapter.
+│   ├── provider-graph/          # Microsoft Graph mail read/sync (implemented; graph.md).
 │   ├── engine-store/            # Store trait and contract tests.
 │   ├── store-sqlite/            # SQLite, at-rest seam (plain or SQLCipher), FTS5, vectors.
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
