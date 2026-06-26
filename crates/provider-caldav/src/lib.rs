@@ -26,6 +26,11 @@
 //! - `sync` — the `sync-collection` REPORT (RFC 6578) snapshot/delta logic.
 //! - `write` — conditional `PUT`/`DELETE` (`If-Match`/`If-None-Match`) of event
 //!   resources.
+//! - [`imip`] — iMIP (iTIP over email, RFC 6047): parsing an inbound
+//!   `text/calendar` scheduling message into an
+//!   [`engine_core::scheduling::SchedulingMessage`], and the RSVP write primitive
+//!   that patches my `PARTSTAT` into a stored event's raw for a conditional `PUT`
+//!   back (`calendar-semantics.md`).
 //! - `provider` — the [`Provider`](engine_provider::Provider) implementation.
 
 mod calendar;
@@ -33,6 +38,7 @@ mod dav;
 mod discovery;
 mod error;
 pub mod ical;
+pub mod imip;
 mod provider;
 mod request;
 mod sync;

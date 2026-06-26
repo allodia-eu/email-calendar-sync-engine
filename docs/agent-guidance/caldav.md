@@ -13,8 +13,10 @@ The **IMAP/SMTP mail half** of step 5 is the other slice (`imap-smtp.md`).
 **CalDAV writes** (conditional `PUT`/`DELETE` with `If-Match`/`If-None-Match`) are
 **implemented** (see "CalDAV writes") and outbox-driven by
 `engine_sync::write_calendar_event`/`delete_calendar_event`. **iTIP/iMIP**
-scheduling and **CardDAV/contacts** remain out of this slice — see "Known
-limitations".
+inbound parsing + the RSVP write primitive are **implemented** (see "iMIP
+scheduling"); the remaining scheduling deferrals (the Scheduling-Inbox `REPORT`,
+client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
+**CardDAV/contacts** are out of this slice — see "Known limitations".
 
 ## The crate
 
@@ -200,12 +202,49 @@ limitations".
   re-exported from `engine-api`). A `412` precondition failure surfaces as a
   `Conflict`; the next `Engine::sync_calendar` reconciles the new revision.
 
+## iMIP scheduling
+
+The `imip` module is the iMIP (iTIP over email, RFC 6047) surface; the pure
+decision/trust/apply logic lives in `engine_core::scheduling`, and
+`calendar-semantics.md` is authoritative for the inbound-scheduling design.
+
+- **Parse.** `imip::parse(text)` reuses the iCalendar parser (`ical`) to turn a
+  `text/calendar` body into an `engine_core::scheduling::SchedulingMessage` — the
+  `VCALENDAR` `METHOD`, the folded `VEVENT` `Event` projection, and the `DTSTAMP`.
+  Absent `METHOD` is an error (it is then a stored object, not a scheduling
+  message). A parsed message's `EventId`/`CalendarId` are **synthetic placeholders**
+  minted from the `UID` (`imip:<uid>` / `imip:scheduling`); an iMIP body has no
+  provider href/collection, and reconciliation keys on `(UID, SEQUENCE,
+  RECURRENCE-ID)` regardless, so storage identity is assigned only when the event is
+  stored. The shared fold logic (`resource_components`/`fold_overrides`) is factored
+  out of `parse_calendar_object`, so the read path and the scheduling path produce
+  the *same* `Event`.
+- **RSVP write primitive.** `imip::set_my_partstat(stored_raw, me, status)` patches
+  *my* `PARTSTAT` into a stored event's raw iCalendar and returns the body to `PUT`
+  back. It is a **targeted raw edit**, not a re-serialization: untouched physical
+  lines (other attendees, the organizer, `X-` properties, `VALARM`s) re-emit
+  byte-for-byte, only the matching `ATTENDEE` line's `PARTSTAT` changes (an absent
+  one is appended), and the rewritten line is re-folded to ≤75 octets (RFC 5545
+  §3.1). The engine `ParticipationStatus` (lowercase JSCalendar spelling) is mapped
+  back to the uppercase iCalendar `PARTSTAT` token. The result feeds
+  `EventWrite::update`/`If-Match` through the existing
+  `engine_sync::write_calendar_event` outbox driver — **no new write verb or outbox
+  op**. On a CalDAV auto-schedule server (RFC 6638) the changed `PARTSTAT` is what
+  the server turns into the iTIP `REPLY` to the organizer.
+
 ## Known limitations (documented, not bugs)
 
-- **iTIP/iMIP scheduling is out of scope.** The model exists in
-  `engine_core::scheduling` (keys, `SEQUENCE` ordering, the trust decision), but
-  detecting inbound iMIP on the mail path, applying it to stored events, and
-  sending replies are a later slice (`calendar-semantics.md`).
+- **iTIP/iMIP inbound parse + RSVP are implemented; delivery/persistence wiring is
+  staged.** `engine_core::scheduling` (keys, `SEQUENCE` ordering, the trust
+  decision, `reconcile` → `ScheduleAction`, the `apply_reply`/`cancel` event
+  mutations) and `provider_caldav::imip` (parse + `set_my_partstat`) are done and
+  offline-tested end to end through the conditional-`PUT` outbox driver. Still
+  deferred (`calendar-semantics.md`): the **mail-sync wiring** that fetches the
+  detected `text/calendar` part's bytes and drives `reconcile`; the **CalDAV
+  Scheduling Inbox** `REPORT` (RFC 6638) and a live Stalwart scheduling test;
+  **client-iMIP `REPLY` delivery** over SMTP (the assembler is `text/plain`-only);
+  and **`ClientImip` local-origin persistence** (storing a brand-new inbound
+  `REQUEST` has no provider-less single-event store path yet).
 - **Only event object resources are written, not collections.** Creating or
   deleting a *calendar collection* (`MKCALENDAR`, RFC 4791 §5.3.1; collection
   `DELETE`) is out of scope — the write slice manages event resources within an
@@ -258,7 +297,17 @@ limitations".
   wire. The outbox drivers are tested in `engine-sync` (a real `SqliteStore`):
   enqueue→claim→`PUT`/`DELETE`→record `Succeeded`, a `Conflict` recorded `Failed`
   without blind retry, and that two distinct edits of one href with **distinct
-  idempotency keys both run** (the key-as-argument rationale).
+  idempotency keys both run** (the key-as-argument rationale). The **iMIP** layer is
+  unit-tested in `imip.rs` (parse of `REQUEST`/`REPLY`/`CANCEL`, the no-`METHOD` and
+  missing-`DTSTAMP` rejections, and the `set_my_partstat` patch — folded input,
+  quoted params, bare-LF, an absent/added `PARTSTAT`, the round-trip preserving
+  `X-`/`VALARM`, and the case-/scheme-insensitive match), and an **end-to-end RSVP
+  flow** in `provider_tests.rs` drives parse → `reconcile` (trusted) → `set_my_partstat`
+  → `EventWrite::update` → `engine_sync::write_calendar_event` into a real
+  `SqliteStore` over the fake executor (asserting the `If-Match` `PUT` carries my
+  accepted `PARTSTAT` and no transit-only `METHOD`), plus the security case that a
+  parsed `REQUEST` whose `ORGANIZER` mismatches the authenticated sender is rejected,
+  not written.
 - **Live against Stalwart (gated on `STALWART_HTTP_ADDR`, skips otherwise):**
   `tests/live_caldav.rs` connects to the real Stalwart over HTTP, runs discovery +
   `sync-collection`, and asserts the same seed invariants in the store, plus an
