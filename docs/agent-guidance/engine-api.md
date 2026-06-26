@@ -14,8 +14,15 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - An [`Engine`] owns **one durable [`SqliteStore`]** driven by a host wall clock
   ([`SystemClock`]), and exposes high-level operations over it.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
-  (and, as slices land, search and writes). The return values (e.g.
-  `MailSyncReport`) are the host's feedback.
+  (or `sync_mail_streamed` for live progress); read with `mailboxes` / `messages` /
+  `calendars` / `events` and `search_mail` / `search_calendar`; and write with
+  `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
+  `write_calendar_event` / `delete_calendar_event` / `pending_op_state`.
+  The read
+  surface enumerates the account's scopes and filters by `SyncScope::object_kind`, so
+  the facade never hard-codes which scopes a provider uses. The return values (e.g.
+  `MailSyncReport`, `Vec<Message>`, `Vec<Event>`, `SearchResults`, `SubmitOutcome`) are
+  the host's feedback.
 
 ## What it is not
 
@@ -45,10 +52,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - **Generic over `Provider`.** `sync_*` take `&impl Provider`, so the facade is
   provider-agnostic and a host passes a `provider-jmap` / `provider-imap` /
   `provider-caldav` adapter. (The `engine-sync` free functions are generic over
-  `P: Provider`; `dyn Provider` does not implement `Provider`, so a host holding a
-  `Box<dyn Provider>` cannot call these yet. If/when a binding needs dynamic
-  dispatch across providers, add a blanket `impl Provider for Box<dyn Provider>` in
-  `engine-provider` as its own slice — do not special-case it in `engine-api`.)
+  `P: Provider`. A host that picks a concrete adapter at runtime can hold a
+  `Box<dyn Provider>` and still call them: `engine-provider` provides a blanket
+  `impl<P: Provider + ?Sized> Provider for Box<P>` that delegates every method to the
+  box's contents — kept there, not special-cased in `engine-api`.)
 - **Host-config is hardcoded in this slice, by design (deferred seams).** An
   `Engine` stamps a fixed `WorkerId` (`"engine-api"`), uses a fixed `LEASE_TTL`
   (5 min — a generous safety bound, not a deadline; the sync loop re-claims and
@@ -81,17 +88,38 @@ Step 6 lands in small, tested slices. Order and status:
 
 1. **Lifecycle + provider-driven sync — _done_.** `open`/`open_in_memory`,
    `sync_mail`, `sync_calendar`, `SystemClock`, and `ApiError`.
-2. **Per-account search.** Add a store-read primitive to enumerate an account's
-   scopes — the `sync_scope` table already stores `account`, and a `scope_key` is
-   just `serde_json` of a `SyncScope`, so this is a cheap, provider-agnostic
-   `SELECT` — give it a contract test in `engine-store`, then expose
-   `Engine::search_mail` / `search_calendar` (parse DSL → run over the account's
-   scopes → `SearchResults` with coverage). Do **not** hard-code JMAP scopes the
-   way the CLI fixture harness does; enumerate them.
-3. **Writes / outbox.** Surface `submit_mail` and pending-op inspection over the
-   `engine-sync` outbox path.
-4. **Streaming progress.** Expose `sync_mail_streamed` + a `ProgressSink` the host
-   can observe for "downloaded Y of X" UI.
+2. **Per-account search — _done_.** `StoreRead::account_scopes(account)` enumerates
+   an account's scopes (a `SELECT … WHERE account = ?` over `sync_scope`, each JSON
+   `scope_key` decoded back to a `SyncScope`; contract-tested in `engine-store`, so
+   both the in-memory store and `store-sqlite` satisfy it). `Engine::search_mail` /
+   `search_calendar` parse the DSL, filter the account's scopes to the queried
+   domain via `SyncScope::search_domain` (so the facade never hard-codes a
+   provider's scopes nor branches on protocol), and run them through the store's
+   executor — returning `SearchResults` with coverage. A malformed query string is
+   `ApiError::Query`.
+3. **Writes / outbox — _done_.** `Engine::submit_mail` drives `engine-sync`'s outbox
+   `submit_mail` (durable op → claim → provider send → record), returning a
+   `SubmitOutcome` (sent key, `Message-ID`, op id); a failed send is recorded
+   `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the
+   outbox never blind-retries. `Engine::pending_op_state` exposes
+   `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an
+   ambiguous send). `Engine::edit_mail` rides the same outbox for mail mutations —
+   it takes a caller-minted idempotency key and a `MailEdit` (mark-read/flag, move,
+   or permanent delete) and returns a `MailEditOutcome` (resolved key + op id); a
+   failure (e.g. a stale-target `Conflict`) is recorded `Failed` before surfacing as
+   `ApiError::Sync`. `Engine::write_calendar_event` / `Engine::delete_calendar_event`
+   ride the same outbox for calendar mutations — a caller-minted idempotency key plus an
+   `EventWrite` (conditional `PUT`) or `EventDeletion` (`DELETE`), returning a
+   `CalendarWriteOutcome` / op id; a host builds the create body with
+   `provider_caldav::build_event_ical` (the write types are re-exported from
+   `engine-api`). A `412` precondition failure surfaces as a `Conflict` (`caldav.md`).
+4. **Streaming progress — _done_.** `Engine::sync_mail_streamed` drives
+   `engine-sync`'s `sync_mail_streamed`: the email scope commits page by page under one
+   lease, reporting `SyncProgress { scope, fetched, total }` to the host's
+   `ProgressSink` after each committed page — so a UI shows recent mail and a
+   "downloaded Y of X" bar before the sync finishes. Only the final page advances the
+   cursor (a mid-stream crash re-runs the pass idempotently). A closure is a sink via
+   the blanket `ProgressSink for Fn(SyncProgress)` impl.
 5. **Bindings.** `bindings-uniffi` (Kotlin/Swift) and `bindings-ffi-c` (C ABI)
    over `engine-api`. These need `unsafe`/codegen, so they override the workspace
    `unsafe_code = "forbid"` lint locally (isolated + documented, per `AGENTS.md`),
@@ -131,7 +159,14 @@ data — persisted, since a lost store would re-snapshot and upsert); a delta th
 drops a key tombstones it; a provider failure surfaces as `ApiError::Sync` and a
 bad path as `ApiError::Store`; and two concurrent syncs of one scope resolve to
 `ApiError::Busy` (a `tokio::sync::oneshot` gate holds one sync's lease while the
-other races, deterministically — no timing). Run the standard gate (`AGENTS.md`):
+other races, deterministically — no timing). The same file's search tests then
+exercise per-account search over the synced data: a DSL query finds the matching
+mail/event with complete coverage, a malformed query is `ApiError::Query`, and an
+unsynced account returns an empty answer. A `SubmittingProvider` then exercises the
+outbox facade: a successful `submit_mail` commits the op `Succeeded` (read back via
+`pending_op_state`), a failed send surfaces as `ApiError::Sync`, and an unknown op id
+reads back `None`. A streamed `sync_mail_streamed` with a closure sink then asserts
+one progress event lands with `fetched == total == 2`. Run the standard gate (`AGENTS.md`):
 `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own
 lines are 100%-covered by these tests (no live provider needed).

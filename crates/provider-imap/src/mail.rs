@@ -36,6 +36,22 @@ pub(crate) fn message_key(mailbox: &str, uid_validity: u32, uid: u32) -> Provide
         .expect("a synthesized IMAP key is never empty")
 }
 
+/// The inverse of [`message_key`]: parses `imap:v{validity}:u{uid}@{mailbox}` back
+/// into its `(mailbox, UIDVALIDITY, UID)` triple, or `None` on any malformed key.
+///
+/// A foreign or garbage key (a JMAP key, a truncated value, non-decimal components)
+/// yields `None` rather than panicking, so a stale outbox payload is rejected as an
+/// invalid edit instead of crashing the mutation path.
+pub(crate) fn parse_message_key(key: &str) -> Option<(&str, u32, u32)> {
+    let rest = key.strip_prefix("imap:v")?;
+    let (validity, rest) = rest.split_once(":u")?;
+    let (uid, mailbox) = rest.split_once('@')?;
+    if mailbox.is_empty() {
+        return None;
+    }
+    Some((mailbox, validity.parse().ok()?, uid.parse().ok()?))
+}
+
 /// Normalizes one `UID FETCH` row into a [`Message`] in the bound mailbox.
 ///
 /// Infallible: malformed sub-fields (an unparseable date, an invalid keyword, a
@@ -56,6 +72,14 @@ pub(crate) fn message_from_fetch(
         // The `Date` header instant is not in ENVELOPE as a parsed value; the
         // string form is, but normalizing it is a later refinement. INTERNALDATE
         // (delivery time) is the reliable instant here.
+    }
+    // `References` is not an ENVELOPE field; it rides a separate
+    // `BODY[HEADER.FIELDS (REFERENCES)]` fetch item (the threading chain). The
+    // value is the raw header line (`References: <a@x> <b@y>\r\n\r\n`); strip the
+    // field name so `extract_message_ids`' bare-value fallback can never mistake
+    // `References:` for an id when the header is empty.
+    if let Some(raw) = &row.references {
+        message.envelope.references = extract_message_ids(strip_header_name(raw));
     }
     message
 }
@@ -96,6 +120,22 @@ fn flags_to_keywords(flags: &[String]) -> BTreeSet<Keyword> {
         }
     }
     set
+}
+
+/// The inverse of [`flags_to_keywords`]: maps one engine [`Keyword`] to the IMAP
+/// flag a `UID STORE` sets. The four standard system keywords (`$seen`/`$flagged`/
+/// `$answered`/`$draft`) map back to their backslash system flags; every other
+/// keyword — another system keyword (`$forwarded`, …) or a custom one — is emitted
+/// as a bare IMAP keyword atom (`Keyword::as_str`, already a valid IMAP atom since
+/// the keyword grammar forbids the flag-illegal characters).
+pub(crate) fn keyword_to_flag(kw: &Keyword) -> String {
+    match kw.as_system() {
+        Some(SystemKeyword::Seen) => "\\Seen".to_owned(),
+        Some(SystemKeyword::Flagged) => "\\Flagged".to_owned(),
+        Some(SystemKeyword::Answered) => "\\Answered".to_owned(),
+        Some(SystemKeyword::Draft) => "\\Draft".to_owned(),
+        _ => kw.as_str().to_owned(),
+    }
 }
 
 /// Parses an IMAP `INTERNALDATE` (`"dd-Mon-yyyy hh:mm:ss +zzzz"`, RFC 9051
@@ -231,6 +271,17 @@ fn extract_message_ids(raw: &str) -> Vec<MessageIdHeader> {
         ids.extend(MessageIdHeader::new(raw.trim()).ok());
     }
     ids
+}
+
+/// Strips a leading `Header-Name:` field-name prefix from a raw header line, so a
+/// fetched `BODY[HEADER.FIELDS (...)]` value yields only the field body. Returns the
+/// input unchanged when there is no `name:` prefix before the first `<`.
+fn strip_header_name(raw: &str) -> &str {
+    match (raw.find(':'), raw.find('<')) {
+        // A colon that precedes any angle bracket is the field-name separator.
+        (Some(colon), open) if open.is_none_or(|o| colon < o) => raw[colon + 1..].trim(),
+        _ => raw.trim(),
+    }
 }
 
 /// Whether the attribute list carries `\<attr>` (case-insensitively).

@@ -188,10 +188,37 @@ make it searchable?" question: yes). Search coverage metadata must therefore
 reflect that local coverage can grow over time; it is not a static property of
 the corpus.
 
+## Re-normalization on a normalizer-version change
+
+The store is a re-derivable cache of **normalized** provider data — how a provider
+decodes wire bytes into objects (subject charset, header parsing) and how
+`engine-core` projects them. When that logic changes, already-synced objects hold the
+*old* normalization and an incremental delta sync will never refresh them (it only
+fetches what changed on the server, not what the engine now decodes differently).
+
+`engine_store::NORMALIZER_VERSION` is the marker for that logic. A backend records it
+(store-sqlite: a `meta` row) and, **on open**, clears every scope cursor when the stored
+value differs — so the next sync re-snapshots and re-normalizes everything. A pre-marker
+database (no row) reads as a mismatch and gets exactly that one-time re-sync. Bump
+`NORMALIZER_VERSION` whenever a change alters the bytes-to-object mapping in any provider
+or in `engine-core` (e.g. the Windows-1252 subject fix); a purely additive change need
+not. The cursor clear leaves scope rows and objects in place — the re-snapshot overwrites
+and tombstones them — so nothing is orphaned, and the durable outbox is untouched.
+
+The **host-triggered reset** (`Engine::reset`) uses the same primitive: clear the cursors
+so the next sync is a full refetch. It is the manual counterpart of the automatic
+version-driven clear — a "reset / clean state" action a host exposes, and the escape hatch
+if a store is ever suspected stale.
+
 ## The outbox
 
 Pending ops are durable before any side effect and are claimed with the same
-fencing discipline as scopes.
+fencing discipline as scopes. The thin inline drivers built on this are
+`engine_sync::{submit_mail, write_calendar_event, delete_calendar_event, edit_mail}`
+— the last applies a `MailEdit` (mark-read/flag, move, or permanent delete) and
+serializes on the target message key (`mail:{key}`), recording a plain classified
+`Failed` on error (no `NeedsConfirmation`: a mail edit is not post-`DATA`-ambiguous
+like an SMTP send, and a stale-target `Conflict` self-corrects after a re-sync).
 
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the
@@ -273,7 +300,9 @@ fencing vocabulary lives in `engine-store`, beside the trait that issues it. The
 trait is **encryption-agnostic** — at-rest encryption is a `store-sqlite`
 construction detail (plain SQLite over OS file encryption by default, SQLCipher
 opt-in), so the same contract holds either way. A small `StoreRead` companion
-(lease-free object/key inspection) backs the contract suite and early reads.
+(lease-free object/key inspection, plus `account_scopes` to enumerate an account's
+claimed scopes and `scope_objects` to batch-read a scope's objects — for per-account
+search and views) backs the contract suite and early reads.
 
 Supporting types (abbreviated):
 

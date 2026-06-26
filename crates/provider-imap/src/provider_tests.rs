@@ -49,7 +49,44 @@ async fn scopes_are_imap_shaped() {
         }
     );
     assert!(provider.capabilities().mail());
+    // Mail writes (STORE/MOVE/EXPUNGE) need no extra config, so every IMAP provider
+    // advertises them — unlike submission, which is gated on a configured SMTP.
+    assert!(provider.capabilities().mail_writes());
+    assert!(!provider.capabilities().submission());
     assert!(!provider.capabilities().calendars());
+}
+
+#[tokio::test]
+async fn edit_mail_marks_a_message_read_through_the_provider() {
+    // The trait method is a thin lock-and-call into `mutate`: SELECT (UIDVALIDITY
+    // guard) then a silent STORE. The receipt carries the target key.
+    let select = "* 1 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\na2 OK [READ-WRITE] done\r\n";
+    let (stream, recorded) = MockStream::new(script(&[
+        GREETING,
+        LOGIN_OK,
+        select,
+        "a3 OK STORE done\r\n",
+    ]));
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+
+    let target = engine_core::ids::ProviderKey::new("imap:v7:u42@INBOX").unwrap();
+    let receipt = provider
+        .edit_mail(
+            &account(),
+            &engine_provider::MailEdit::mark_seen(target.clone(), true),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.message_key, target);
+
+    let sent = written(&recorded);
+    assert!(sent.contains("a2 SELECT \"INBOX\""), "{sent}");
+    assert!(
+        sent.contains("a3 UID STORE 42 +FLAGS.SILENT (\\Seen)"),
+        "{sent}"
+    );
 }
 
 #[tokio::test]

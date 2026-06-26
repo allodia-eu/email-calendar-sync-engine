@@ -175,6 +175,17 @@ impl IndexRowCounts {
 /// diagnostics; the structured/full-text query path is a separate sub-step.
 #[async_trait]
 pub trait StoreRead: Send + Sync {
+    /// Every sync scope the store currently knows for `account` (every scope it
+    /// has claimed), in ascending [`SyncScope`] order. A per-account search
+    /// enumerates these instead of hard-coding which scopes a provider uses, then
+    /// routes each by
+    /// [`SyncScope::search_domain`](engine_core::sync::SyncScope::search_domain).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>>;
+
     /// The provider keys of live (non-tombstoned) objects in a scope.
     ///
     /// # Errors
@@ -189,6 +200,16 @@ pub trait StoreRead: Send + Sync {
     ///
     /// Returns `StoreError::Backend` on a backend failure.
     async fn object_payload(&self, scope: &SyncScope, key: &ProviderKey) -> Result<Option<Value>>;
+
+    /// Every live (non-tombstoned) object in a scope as `(provider key, normalized
+    /// payload)` pairs, in ascending key order. A batch read for building per-account
+    /// views, so a host need not make an N+1 [`object_payload`](StoreRead::object_payload)
+    /// call per key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn scope_objects(&self, scope: &SyncScope) -> Result<Vec<(ProviderKey, Value)>>;
 
     /// The current lifecycle state of a pending op, or `None` if unknown.
     ///

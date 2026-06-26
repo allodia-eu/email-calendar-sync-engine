@@ -108,8 +108,10 @@ dependencies = [
  "engine-core",
  "engine-provider",
  "engine-recurrence",
+ "engine-search",
  "engine-store",
  "engine-sync",
+ "serde_json",
  "store-sqlite",
  "tempfile",
  "thiserror",
@@ -150,6 +152,7 @@ dependencies = [
  "async-trait",
  "engine-core",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

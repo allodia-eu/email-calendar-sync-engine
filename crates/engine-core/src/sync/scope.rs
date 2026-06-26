@@ -119,6 +119,30 @@ pub enum SyncScope {
     },
 }
 
+/// The search domain whose member objects a scope holds — the index a per-account
+/// query routes the scope to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchDomain {
+    /// Mail objects (the mail scalar/address/membership index plus full text).
+    Mail,
+    /// Calendar events (the event scalar/participant index, occurrences, full text).
+    Calendar,
+}
+
+/// The kind of member object a scope holds, so a host can read an account's objects
+/// (mailboxes, messages, calendars, events) by kind without branching on protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectKind {
+    /// A mail collection (mailbox/folder/label).
+    Mailbox,
+    /// A mail object (message).
+    Message,
+    /// A calendar collection.
+    Calendar,
+    /// A calendar event.
+    Event,
+}
+
 impl SyncScope {
     /// Returns the account this scope belongs to.
     #[must_use]
@@ -131,6 +155,48 @@ impl SyncScope {
             | Self::DavCollection { account, .. }
             | Self::GraphFolderList { account }
             | Self::GraphFolder { account, .. } => account,
+        }
+    }
+
+    /// The kind of member object this scope holds, or `None` for a scope whose objects
+    /// are not host-facing view objects (a JMAP `Thread` or `EmailSubmission`).
+    ///
+    /// This is how a host reads an account's objects without hard-coding or branching
+    /// on protocol: enumerate the account's scopes (`StoreRead::account_scopes`), then
+    /// read the ones whose kind it wants. CalDAV collections classify as calendar
+    /// today; CardDAV address books will need disambiguation when contacts land (they
+    /// reuse [`DavCollection`](Self::DavCollection) /
+    /// [`DavCollectionList`](Self::DavCollectionList)).
+    #[must_use]
+    pub fn object_kind(&self) -> Option<ObjectKind> {
+        match self {
+            Self::JmapType { data_type, .. } => match data_type {
+                JmapDataType::Email => Some(ObjectKind::Message),
+                JmapDataType::Mailbox => Some(ObjectKind::Mailbox),
+                JmapDataType::CalendarEvent => Some(ObjectKind::Event),
+                JmapDataType::Calendar => Some(ObjectKind::Calendar),
+                _ => None,
+            },
+            Self::ImapMailbox { .. } => Some(ObjectKind::Message),
+            Self::ImapMailboxList { .. } => Some(ObjectKind::Mailbox),
+            Self::DavCollection { .. } => Some(ObjectKind::Event),
+            Self::DavCollectionList { .. } => Some(ObjectKind::Calendar),
+        }
+    }
+
+    /// The search domain whose member objects this scope holds, or `None` for a scope
+    /// whose objects are not directly searchable (a mailbox/calendar collection or
+    /// discovery scope, or a JMAP `Thread`/`EmailSubmission`). Derived from
+    /// [`object_kind`](Self::object_kind): only message and event scopes are searchable.
+    ///
+    /// A per-account search enumerates the account's scopes and routes each through the
+    /// matching index by this, so callers never hard-code which scopes a provider uses.
+    #[must_use]
+    pub fn search_domain(&self) -> Option<SearchDomain> {
+        match self.object_kind() {
+            Some(ObjectKind::Message) => Some(SearchDomain::Mail),
+            Some(ObjectKind::Event) => Some(SearchDomain::Calendar),
+            Some(ObjectKind::Mailbox | ObjectKind::Calendar) | None => None,
         }
     }
 }
@@ -150,6 +216,97 @@ mod tests {
             data_type: JmapDataType::Email,
         };
         assert_eq!(scope.account(), &account());
+    }
+
+    #[test]
+    fn search_domain_routes_objects_and_skips_containers() {
+        use SearchDomain::{Calendar, Mail};
+        let a = account();
+        // Mail-object scopes.
+        let jmap_mail = SyncScope::JmapType {
+            account: a.clone(),
+            data_type: JmapDataType::Email,
+        };
+        let imap = SyncScope::ImapMailbox {
+            account: a.clone(),
+            mailbox: MailboxId::try_from("INBOX").unwrap(),
+        };
+        assert_eq!(jmap_mail.search_domain(), Some(Mail));
+        assert_eq!(imap.search_domain(), Some(Mail));
+        // Calendar-object scopes.
+        let jmap_cal = SyncScope::JmapType {
+            account: a.clone(),
+            data_type: JmapDataType::CalendarEvent,
+        };
+        let dav = SyncScope::DavCollection {
+            account: a.clone(),
+            collection: DavCollectionId::try_from("/dav/cal/a/default/").unwrap(),
+        };
+        assert_eq!(jmap_cal.search_domain(), Some(Calendar));
+        assert_eq!(dav.search_domain(), Some(Calendar));
+        // Containers and discovery scopes hold no directly searchable objects.
+        for data_type in [
+            JmapDataType::Mailbox,
+            JmapDataType::Calendar,
+            JmapDataType::Thread,
+            JmapDataType::EmailSubmission,
+        ] {
+            let container = SyncScope::JmapType {
+                account: a.clone(),
+                data_type,
+            };
+            assert_eq!(container.search_domain(), None, "{container:?}");
+        }
+        assert_eq!(
+            SyncScope::ImapMailboxList { account: a.clone() }.search_domain(),
+            None
+        );
+        assert_eq!(
+            SyncScope::DavCollectionList { account: a }.search_domain(),
+            None
+        );
+    }
+
+    #[test]
+    fn object_kind_classifies_every_scope() {
+        use ObjectKind::{Calendar, Event, Mailbox, Message};
+        let a = account();
+        let jmap = |data_type| SyncScope::JmapType {
+            account: a.clone(),
+            data_type,
+        };
+        assert_eq!(jmap(JmapDataType::Email).object_kind(), Some(Message));
+        assert_eq!(jmap(JmapDataType::Mailbox).object_kind(), Some(Mailbox));
+        assert_eq!(jmap(JmapDataType::CalendarEvent).object_kind(), Some(Event));
+        assert_eq!(jmap(JmapDataType::Calendar).object_kind(), Some(Calendar));
+        // JMAP types with no host-facing view object.
+        assert_eq!(jmap(JmapDataType::Thread).object_kind(), None);
+        assert_eq!(jmap(JmapDataType::EmailSubmission).object_kind(), None);
+        // IMAP / CalDAV scopes.
+        assert_eq!(
+            SyncScope::ImapMailbox {
+                account: a.clone(),
+                mailbox: MailboxId::try_from("INBOX").unwrap(),
+            }
+            .object_kind(),
+            Some(Message)
+        );
+        assert_eq!(
+            SyncScope::ImapMailboxList { account: a.clone() }.object_kind(),
+            Some(Mailbox)
+        );
+        assert_eq!(
+            SyncScope::DavCollection {
+                account: a.clone(),
+                collection: DavCollectionId::try_from("/dav/cal/a/default/").unwrap(),
+            }
+            .object_kind(),
+            Some(Event)
+        );
+        assert_eq!(
+            SyncScope::DavCollectionList { account: a }.object_kind(),
+            Some(Calendar)
+        );
     }
 
     #[test]

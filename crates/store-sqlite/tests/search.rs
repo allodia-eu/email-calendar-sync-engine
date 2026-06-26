@@ -113,6 +113,64 @@ async fn from_filter_returns_only_matching_messages() {
 }
 
 #[tokio::test]
+async fn prefix_term_matches_partial_word_in_subject() {
+    let store = store();
+    let scope = mail_scope();
+    ingest_mail(
+        &store,
+        &scope,
+        vec![
+            message("hit", "Allodia weekly", "a@example.com", "inbox"),
+            message("miss", "unrelated digest", "a@example.com", "inbox"),
+        ],
+    )
+    .await;
+
+    // Search-as-you-type: typing "allo" prefix-matches the subject token
+    // "Allodia"; the unrelated message is excluded.
+    let results = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("allo"), 10)
+        .await
+        .unwrap();
+    assert_eq!(results.keys().len(), 1);
+    assert_eq!(results.keys()[0].as_str(), "hit");
+}
+
+#[tokio::test]
+async fn address_is_searchable_as_free_text_and_by_prefix() {
+    let store = store();
+    let scope = mail_scope();
+    // A metadata-tier message: the subject never mentions "allodia", and there is
+    // no body preview — the only "allodia" is in the sender address, which the
+    // projection folds into the FTS body.
+    ingest_mail(
+        &store,
+        &scope,
+        vec![
+            message("addr", "Weekly update", "info@allodia.eu", "inbox"),
+            message("other", "Weekly update", "bob@example.com", "inbox"),
+        ],
+    )
+    .await;
+
+    // The full token "allodia" (from the address) matches via the FTS body...
+    let full = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("allodia"), 10)
+        .await
+        .unwrap();
+    assert_eq!(full.keys().len(), 1);
+    assert_eq!(full.keys()[0].as_str(), "addr");
+
+    // ...and so does the prefix "allo".
+    let prefix = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("allo"), 10)
+        .await
+        .unwrap();
+    assert_eq!(prefix.keys().len(), 1);
+    assert_eq!(prefix.keys()[0].as_str(), "addr");
+}
+
+#[tokio::test]
 async fn free_text_ranks_by_term_frequency() {
     let store = store();
     let scope = mail_scope();

@@ -195,6 +195,68 @@ async fn a_huge_announced_literal_is_rejected_before_allocating() {
 }
 
 #[tokio::test]
+async fn uid_store_issues_a_silent_flag_command() {
+    let server = script(&[GREETING, "a1 OK LOGIN ok\r\n", "a2 OK STORE completed\r\n"]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("a", "b").await.unwrap();
+    conn.uid_store("42", "+FLAGS.SILENT (\\Seen)")
+        .await
+        .unwrap();
+    assert!(
+        written(&recorded).contains("a2 UID STORE 42 +FLAGS.SILENT (\\Seen)"),
+        "{}",
+        written(&recorded)
+    );
+}
+
+#[tokio::test]
+async fn uid_store_no_is_an_invalid_state_error() {
+    // A tagged NO (e.g. the message vanished) surfaces as InvalidState, not success.
+    let server = script(&[GREETING, "a1 OK LOGIN ok\r\n", "a2 NO no such message\r\n"]);
+    let (stream, _) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("a", "b").await.unwrap();
+    let err = conn
+        .uid_store("99", "+FLAGS.SILENT (\\Deleted)")
+        .await
+        .unwrap_err();
+    assert_eq!(err.failure_class(), FailureClass::InvalidState);
+}
+
+#[tokio::test]
+async fn uid_move_quotes_the_destination() {
+    let server = script(&[GREETING, "a1 OK LOGIN ok\r\n", "a2 OK MOVE completed\r\n"]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("a", "b").await.unwrap();
+    conn.uid_move("42", "Archive").await.unwrap();
+    assert!(
+        written(&recorded).contains("a2 UID MOVE 42 \"Archive\""),
+        "{}",
+        written(&recorded)
+    );
+}
+
+#[tokio::test]
+async fn uid_expunge_issues_the_command() {
+    let server = script(&[
+        GREETING,
+        "a1 OK LOGIN ok\r\n",
+        "a2 OK EXPUNGE completed\r\n",
+    ]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("a", "b").await.unwrap();
+    conn.uid_expunge("42").await.unwrap();
+    assert!(
+        written(&recorded).contains("a2 UID EXPUNGE 42"),
+        "{}",
+        written(&recorded)
+    );
+}
+
+#[tokio::test]
 async fn append_tolerates_an_untagged_response_before_the_continuation() {
     // A server may interleave an unsolicited untagged response (here `* 5 EXISTS`)
     // before the `+` continuation; APPEND must skip it, not fail.

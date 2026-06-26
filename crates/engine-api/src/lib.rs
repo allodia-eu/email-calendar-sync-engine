@@ -10,11 +10,15 @@
 //!
 //! # Scope of this slice
 //!
-//! Step 6 of the build order lands in small, tested slices. This first slice
-//! covers **store lifecycle** ([`Engine::open`], [`Engine::open_in_memory`]) and
-//! **provider-driven sync** ([`Engine::sync_mail`], [`Engine::sync_calendar`]).
-//! Structured/full-text search, the write/outbox surface, streaming sync progress,
-//! and the language bindings themselves are deliberate follow-up slices.
+//! Step 6 of the build order lands in small, tested slices. These cover **store
+//! lifecycle** ([`Engine::open`], [`Engine::open_in_memory`]), **provider-driven
+//! sync** ([`Engine::sync_mail`], [`Engine::sync_calendar`]), **per-account
+//! search** ([`Engine::search_mail`], [`Engine::search_calendar`]),
+//! **outbox-mediated mail submission** ([`Engine::submit_mail`],
+//! [`Engine::pending_op_state`]), **streaming mail sync**
+//! ([`Engine::sync_mail_streamed`]), and **outbox-mediated calendar writes**
+//! ([`Engine::write_calendar_event`], [`Engine::delete_calendar_event`]). The
+//! language bindings themselves are a deliberate follow-up slice.
 //!
 //! # Shape
 //!
@@ -40,11 +44,23 @@ pub use engine::Engine;
 
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
-pub use engine_core::ids::AccountId;
+pub use engine_core::calendar::{Calendar, Event};
+pub use engine_core::coverage::SearchCoverage;
+pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
+pub use engine_core::mail::{EmailAddress, Mailbox, MailboxRole, Message, SystemKeyword};
 pub use engine_core::time::TimeZoneId;
-pub use engine_provider::Provider;
+pub use engine_core::write::PendingOpId;
+pub use engine_provider::{
+    Draft, EventDeletion, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, Provider,
+    WritePrecondition,
+};
 pub use engine_recurrence::Horizon;
-pub use engine_sync::{CalendarSyncReport, MailSyncReport};
+pub use engine_search::{ParseError, SearchHit, SearchResults};
+pub use engine_store::PendingOpState;
+pub use engine_sync::{
+    CalendarSyncReport, CalendarWriteOutcome, MailEditOutcome, MailSyncReport, ProgressSink,
+    SubmitOutcome, SyncProgress, ThreadDeriveReport,
+};
 
 /// An error from an [`Engine`] operation.
 ///
@@ -62,6 +78,10 @@ pub enum ApiError {
     /// A sync cycle failed: a provider fetch or the store apply.
     #[error("sync error: {0}")]
     Sync(#[source] SyncError),
+    /// The search query string was malformed — an unbalanced quote, an empty
+    /// operator value, or a bad `before:`/`after:` date or boolean.
+    #[error("query error: {0}")]
+    Query(#[from] ParseError),
     /// Another sync already holds this account's scope; the call did nothing and
     /// can be retried once the in-flight sync finishes. Raised when a concurrent
     /// sync of the same `(account, scope)` makes the store return the retryable
