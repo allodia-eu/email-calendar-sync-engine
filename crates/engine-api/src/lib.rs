@@ -48,13 +48,15 @@ pub use engine_core::calendar::{Calendar, Event};
 pub use engine_core::coverage::SearchCoverage;
 pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
 pub use engine_core::mail::{EmailAddress, Mailbox, MailboxRole, Message, SystemKeyword};
-pub use engine_core::time::TimeZoneId;
+pub use engine_core::time::{TimeZoneId, UtcDateTime};
 pub use engine_core::write::PendingOpId;
 pub use engine_provider::{
     Draft, EventDeletion, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, Provider,
     WritePrecondition,
 };
-pub use engine_recurrence::{ExpandError, Horizon, resolve_instant};
+pub use engine_recurrence::{
+    ExpandError, Horizon, is_supported_zone, resolve_instant, resolve_instant_in,
+};
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 pub use engine_store::PendingOpState;
 pub use engine_sync::{

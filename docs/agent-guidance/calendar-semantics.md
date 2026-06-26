@@ -48,6 +48,15 @@ expansion, or scheduling.
   shows wall-clock/date text; a custom/embedded zone returns `UnsupportedZone`.
   Hosts must localize off the resolved instant — never the bare wall-clock — or a
   non-UTC event displays in the wrong zone.
+- **Total-order key for sorting + the display zone.** Sorting an agenda that mixes
+  zoned, floating, and all-day values needs an instant for *every* value, so
+  `resolve_instant_in(value, host_zone)` resolves a floating value through the
+  caller's display zone and an all-day value to that zone's local midnight (a
+  zoned value still resolves through its own zone). The display zone is a **host
+  app preference**, not engine-domain state: the host detects the OS zone natively,
+  the product-core persists the user's chosen zone, and the engine only resolves
+  and validates against it. `is_supported_zone` lets a host reject a picked or
+  device-reported zone the bundled tzdb cannot resolve before adopting it.
 - Normalization target: JSCalendar (`LocalDateTime` + IANA `timeZone`, or UTC)
   and iCalendar (`DTSTART` with `TZID`/`VTIMEZONE`, UTC `Z`, or floating) both map
   to one engine time model — an instant resolved through its zone, or wall-clock

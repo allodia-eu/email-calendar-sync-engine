@@ -58,6 +58,12 @@ pub(crate) fn calendar_date(value: CalendarDate) -> Result<Date, ExpandError> {
     date(value.year(), value.month(), value.day())
 }
 
+/// Midnight (00:00:00) — the start-of-day time used to resolve an all-day
+/// [`CalendarDate`] to an instant in a display zone.
+pub(crate) fn midnight() -> Time {
+    Time::midnight()
+}
+
 /// The civil time-of-day of a [`LocalDateTime`].
 pub(crate) fn local_time(local: LocalDateTime) -> Result<Time, ExpandError> {
     let hour = i8::try_from(local.hour()).map_err(|_| ExpandError::OutOfRange)?;
