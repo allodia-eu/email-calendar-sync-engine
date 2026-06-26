@@ -112,6 +112,30 @@ account-wide message delta, so sync is per folder.
 - **Mail only.** Calendar, submission, and writes are later slices; the provider
   advertises `mail` capability only.
 
+## Calendar (deferred — design notes from the official delta doc)
+
+When the calendar slice lands, follow Microsoft's
+[delta-query-events](https://learn.microsoft.com/graph/delta-query-events) doc.
+The `@odata.nextLink`/`@odata.deltaLink`/`@removed` machinery (and the
+full-object + `@odata.etag` re-fetch heuristic) in `fetch` is **directly
+reusable**; the two real differences shape the slice:
+
+- **Time-windowed.** Event delta is `GET /me/calendarView/delta?startDateTime=…&
+  endDateTime=…`, **not** `/me/events/delta` (the unbounded form is beta-only). The
+  date range is **mandatory** in v1.0 and the token encodes it. This fits the
+  engine's model — `providers.md` already says calendar sync "may be inherently
+  time-windowed … surfaced as scoped, possibly-incomplete coverage" — so the slice
+  drives the window off the host's recurrence-expansion horizon and reports
+  coverage. A new `GraphCalendarWindow`-style scope is likely needed (the cursor
+  is per-(calendar, window)).
+- **Recurrences are pre-expanded.** `calendarView` returns "single instances or
+  occurrences and exceptions of a recurring series" — i.e. Graph expands the
+  series, whereas the engine stores a master + `RRULE` and expands locally
+  (`calendar-semantics.md`, `engine-recurrence`). The slice must decide: ingest the
+  windowed instances as `event_occurrence` rows directly (bypassing local
+  expansion for Graph), or fetch masters via `/me/events` and use `calendarView`
+  only as the change signal. This tension is the key calendar design call.
+
 ## Testing
 
 - **Offline (always green, no network):** the normalizers and error mapping are
