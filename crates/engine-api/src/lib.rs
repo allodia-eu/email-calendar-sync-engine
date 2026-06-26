@@ -55,7 +55,7 @@ pub use engine_provider::{
     WritePrecondition,
 };
 pub use engine_recurrence::{
-    ExpandError, Horizon, is_supported_zone, resolve_instant, resolve_instant_in,
+    ExpandError, Horizon, available_zones, is_supported_zone, resolve_instant, resolve_instant_in,
 };
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 pub use engine_store::PendingOpState;

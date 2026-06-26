@@ -30,6 +30,21 @@ pub(crate) fn utc() -> TimeZone {
     TimeZone::UTC
 }
 
+/// Every IANA zone name the bundled tzdb can resolve, sorted.
+///
+/// Listed straight from the bundled database (and confirmed resolvable through the same
+/// [`iana`] path), so it is exactly the set the engine localizes and migrates against —
+/// the enumeration counterpart of [`resolve_zone_id`].
+pub(crate) fn available() -> Vec<String> {
+    let mut names: Vec<String> = jiff::tz::db()
+        .available()
+        .map(|name| name.as_str().to_owned())
+        .filter(|name| iana(name).is_ok())
+        .collect();
+    names.sort();
+    names
+}
+
 /// Resolves a [`TimeZoneId`] to a bundled jiff zone, rejecting custom/embedded
 /// zones (their expansion needs the iCalendar `VTIMEZONE` parser, a later step).
 pub(crate) fn resolve_zone_id(id: &TimeZoneId) -> Result<TimeZone, ExpandError> {
