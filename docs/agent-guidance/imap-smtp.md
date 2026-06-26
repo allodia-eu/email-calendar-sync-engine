@@ -69,14 +69,18 @@ is authoritative for the `provider-caldav` calendar client.
   detected incrementally without CONDSTORE/QRESYNC (a deferred capability) — a
   periodic snapshot reconciles them. This is the honest baseline `providers.md`
   prescribes ("CONDSTORE/QRESYNC paths are optional capabilities, not assumptions").
-- **Normalization.** `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)`
-  (Tier-1, all peek-safe — none sets `\Seen`). Flags → keywords: `\Seen`/`\Flagged`/
+- **Normalization.** `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
+  BODY.PEEK[HEADER.FIELDS (REFERENCES)])` (all peek-safe — none sets `\Seen`). The
+  `References` header is not an `ENVELOPE` field, so it rides a separate peek-safe
+  body-header item to feed threading (`threading.md`). Flags → keywords: `\Seen`/`\Flagged`/
   `\Answered`/`\Draft` map to their `$`-keywords; `\Deleted`/`\Recent` are
   deliberately not keywords (expunge/session model); custom keywords pass through.
   `INTERNALDATE` → a UTC instant (offset applied). `ENVELOPE` → subject, flattened
-  addresses, and the `Message-ID`/`In-Reply-To` hints; **RFC 2047 encoded-words** in
-  the subject and display names are decoded (`B`/`Q`, UTF-8/ISO-8859-1, with
-  whitespace between adjacent words dropped — `encoded_word.rs`). A quoted string
+  addresses, and the `Message-ID`/`In-Reply-To` hints (the body-header item adds
+  `References`) — the threading inputs; **RFC 2047 encoded-words** in
+  the subject and display names are decoded (`B`/`Q`, UTF-8/ISO-8859-1/Windows-1252 —
+  `ISO-8859-1` is read as its CP1252 superset so a `0x96` en-dash is `–`, not `�`, the
+  browser convention — with whitespace between adjacent words dropped — `encoded_word.rs`). A quoted string
   carrying **raw UTF-8** (a `UTF8=ACCEPT` mailbox name, or an unencoded display name)
   is decoded as UTF-8, not byte-cast to Latin-1 — the quoted and `{n}`-literal paths
   agree. Folder `LIST` →
@@ -91,15 +95,20 @@ is authoritative for the `provider-caldav` calendar client.
   DATA`, then files the sent copy. The pre-generated `Message-ID` is on the message
   so the sent copy reconciles by it.
 - **Message assembly (`assemble_message`)** is hardened against header injection:
-  every interpolated value (`Message-ID`, addresses, subject, display names) is
-  **rejected on CR/LF/NUL** (RFC 5322 §2.2 / RFC 5321 §2.3.8 — otherwise a poisoned
-  draft could inject headers or split the command stream), and a **non-ASCII subject
-  or display name is emitted as an RFC 2047 `B` encoded-word**, never raw 8-bit
-  bytes, so headers stay 7-bit clean. A **`Date` header is generated locally**
-  (RFC 5322 §3.6 requires it; for an IMAP `APPEND` — `save_draft` / the Sent copy —
-  no server is in the loop to add one). The body is normalized so a bare CR/LF never
-  reaches the wire. (Long encoded-words are not yet folded into 75-octet runs — a
-  later refinement.)
+  every interpolated value (`Message-ID`, addresses, subject, display names, and the
+  `In-Reply-To`/`References` threading ids) is **rejected on CR/LF/NUL** (RFC 5322
+  §2.2 / RFC 5321 §2.3.8 — otherwise a poisoned draft could inject headers or split
+  the command stream), and a **non-ASCII subject or display name is emitted as an
+  RFC 2047 `B` encoded-word**, never raw 8-bit bytes, so headers stay 7-bit clean.
+  A **`Date` header is generated locally** (RFC 5322 §3.6 requires it; for an IMAP
+  `APPEND` — `save_draft` / the Sent copy — no server is in the loop to add one).
+  For a reply or forward it also emits the **threading linkage** (RFC 5322 §3.6.4):
+  `In-Reply-To: <id>` when `Draft.in_reply_to` is set and `References: <id1> <id2> …`
+  (space-separated, each angle-bracketed) when `Draft.references` is non-empty — each
+  control-char-guarded like the other ids and omitted when its field is empty, so a
+  sent reply threads with its original (`threading.md`). The body is normalized so a
+  bare CR/LF never reaches the wire. (Long encoded-words are not yet folded into
+  75-octet runs — a later refinement.)
 - **Folder resolution.** The sent copy / draft is filed into the account's **real
   folder for the role**, discovered via the `\Sent`/`\Drafts` SPECIAL-USE attribute
   in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
@@ -138,19 +147,54 @@ is authoritative for the `provider-caldav` calendar client.
   `examples/imap_explore.rs` example exercises read + (opt-in) `save_draft` against
   a real provider.
 
+## Mail mutations
+
+- **`edit_mail`** applies a provider-neutral `MailEdit` to the bound mailbox over the
+  open session (`mutate.rs`; the `Provider` impl is a thin lock-and-call). The crate
+  advertises `Capabilities::mail_writes` **unconditionally** — `UID STORE`/`MOVE`/
+  `EXPUNGE` need no extra config, unlike submission which is gated on a configured SMTP.
+- **`SetKeywords`** → `UID STORE +FLAGS.SILENT (...)` for the `add` set and
+  `-FLAGS.SILENT (...)` for the `remove` set (one command per non-empty side; both
+  empty is a no-op). The keyword↔flag mapping is `keyword_to_flag`, the inverse of
+  the read path's `flags_to_keywords`: `$seen`/`$flagged`/`$answered`/`$draft` →
+  `\Seen`/`\Flagged`/`\Answered`/`\Draft`, every other keyword (other system
+  keywords, custom keywords) → a bare IMAP keyword atom. `.SILENT` suppresses the
+  per-message `FETCH` echo, so no response parsing is needed.
+- **`MoveTo`** → `UID MOVE <uid> "<dest>"` (RFC 6851), an atomic server-side move.
+- **`Delete`** (permanent, not a Trash move) → `UID STORE +FLAGS.SILENT (\Deleted)`
+  then `UID EXPUNGE <uid>` (UIDPLUS, RFC 4315 — only the named UID is expunged, so a
+  concurrent `\Deleted` elsewhere is not collaterally removed).
+- **UIDVALIDITY guard.** Every edit first `SELECT`s the target key's mailbox and
+  checks the returned `UIDVALIDITY` against the key's. A mismatch means the UID space
+  was renumbered and every prior key is stale, so the edit is a **`Conflict`** (the
+  caller re-syncs, then retries) rather than a blind write against the wrong message.
+  An unparseable target key is `InvalidState` (rejected before any command).
+
 ## Known limitations (documented, not bugs)
 
-- **No CONDSTORE/QRESYNC.** Deltas bring new arrivals only; flag/expunge changes
-  reconcile via a periodic snapshot. Deferred capability.
+- **No CONDSTORE/QRESYNC.** Deltas bring new arrivals only; flag/expunge/move changes
+  to already-synced messages reconcile via a periodic **snapshot**. A host forces that
+  snapshot with `Engine::clear_mail_cursors` (clears just the mail scopes' cursors, so
+  the next `sync_mail` re-snapshots and reconciles) — the targeted, mail-only
+  counterpart of `Engine::reset`. So a UI "refresh" that must reflect server-side
+  flag/move/delete changes (its own or another client's) clears the mail cursors before
+  syncing, rather than relying on the delta. Per-message CONDSTORE incrementality is the
+  deferred optimization. Deferred capability.
+- **No `UID MOVE` fallback.** A server lacking RFC 6851 `MOVE` is unsupported for
+  moves — the `COPY` + `\Deleted` + `EXPUNGE` fallback is a later refinement.
+- **`UID EXPUNGE` requires UIDPLUS** (RFC 4315). A server without it would need a
+  plain `EXPUNGE` (which expunges every `\Deleted` message in the mailbox) — also a
+  later refinement.
 - **No IMAP `SEARCH` provider-search fallback** yet (the `search-coverage.md`
   slice). The transport does not implement `SEARCH`.
 - **No SMTP STARTTLS** (port 587). Implicit TLS (465) + `AUTH PLAIN` is implemented; STARTTLS is a later
   refinement.
-- **`References` not populated** (it is not an `ENVELOPE` field; a later threading
-  slice). RFC 2047 decoding covers UTF-8/ISO-8859-1; other charsets fall back to a
-  UTF-8-lossy read (a full charset table is a later refinement). Outbound non-ASCII
-  subjects/display names are RFC 2047 `B`-encoded but **not folded** into 75-octet
-  words (a later refinement).
+- **Charset coverage.** RFC 2047 decoding covers UTF-8, ISO-8859-1, and Windows-1252
+  (ISO-8859-1 read as its CP1252 superset); other charsets fall back to a UTF-8-lossy
+  read (a full charset table is a later refinement). `References` *is* fetched (a
+  separate `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` item — see Normalization above).
+  Outbound non-ASCII subjects/display names are RFC 2047 `B`-encoded but **not folded**
+  into 75-octet words (a later refinement).
 - **Server literals are capped at 64 MiB.** A `{n}` larger than the cap is rejected
   (an adversarial server cannot drive an unbounded allocation); generous for any
   metadata response.

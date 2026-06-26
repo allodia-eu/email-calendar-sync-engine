@@ -5,7 +5,7 @@
 //! `tzdb-bundle-always`, so no system path is read). `to_zoned` uses jiff's
 //! Compatible disambiguation, which matches RFC 5545's gap/fold handling.
 
-use engine_core::time::{CalendarDate, Duration, LocalDateTime, UtcDateTime};
+use engine_core::time::{CalendarDate, Duration, LocalDateTime, TimeZoneId, UtcDateTime};
 use jiff::civil::{Date, DateTime, Time};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Span, Timestamp, Zoned};
@@ -30,6 +30,16 @@ pub(crate) fn utc() -> TimeZone {
     TimeZone::UTC
 }
 
+/// Resolves a [`TimeZoneId`] to a bundled jiff zone, rejecting custom/embedded
+/// zones (their expansion needs the iCalendar `VTIMEZONE` parser, a later step).
+pub(crate) fn resolve_zone_id(id: &TimeZoneId) -> Result<TimeZone, ExpandError> {
+    if id.is_iana() {
+        iana(id.as_str())
+    } else {
+        Err(ExpandError::UnsupportedZone(id.as_str().to_owned()))
+    }
+}
+
 /// Builds a civil date from engine components.
 pub(crate) fn date(year: i32, month: u8, day: u8) -> Result<Date, ExpandError> {
     let year = i16::try_from(year).map_err(|_| ExpandError::OutOfRange)?;
@@ -46,6 +56,12 @@ pub(crate) fn local_date(local: LocalDateTime) -> Result<Date, ExpandError> {
 /// The civil date of an all-day [`CalendarDate`].
 pub(crate) fn calendar_date(value: CalendarDate) -> Result<Date, ExpandError> {
     date(value.year(), value.month(), value.day())
+}
+
+/// Midnight (00:00:00) — the start-of-day time used to resolve an all-day
+/// [`CalendarDate`] to an instant in a display zone.
+pub(crate) fn midnight() -> Time {
+    Time::midnight()
 }
 
 /// The civil time-of-day of a [`LocalDateTime`].

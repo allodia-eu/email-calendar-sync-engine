@@ -170,7 +170,13 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   offline test). A **create** carries a freshly built iCalendar document — the
   body is constructed by the host/caller, since this slice is the transport +
   outbox primitive, not a JSCalendar→iCalendar serializer (that, and a structural
-  iCal patcher for updates, are separate concerns). `CalDavProvider::event_href`
+  iCal patcher for updates, are separate concerns). The crate ships a **minimal
+  RFC 5545 builder** for that create body, `provider_caldav::build_event_ical`
+  (`UID`, `DTSTAMP`, UTC `DTSTART`/`DTEND`, `SUMMARY`, optional `DESCRIPTION`;
+  TEXT escaped per §3.3.11, UTC "basic" times, `DTSTAMP` derived from `start`),
+  re-exported from the crate root and locked by a round-trip test through the
+  parser — deliberately not the full serializer or the update patcher.
+  `CalDavProvider::event_href`
   mints the conventional `<collection>/<uid>.ics` resource href for a create
   (percent-encoding the `UID` as one path segment); an update/delete reuses the
   stored `EventId`.
@@ -188,6 +194,13 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   store dedups enqueue by `(account, idempotency_key)` across *every* op state
   (including terminal), so a href-only key would wrongly collapse two distinct edits
   of one resource into one op. The host mints a key per write intent.
+- **Exposed on the host facade.** `Engine::write_calendar_event` and
+  `Engine::delete_calendar_event` (`engine-api.md`) wrap these drivers, mirroring
+  `Engine::submit_mail`/`Engine::edit_mail`: a host builds the create body with
+  `provider_caldav::build_event_ical`, wraps it in an `EventWrite::create`, and
+  drives the conditional `PUT` through the facade alone (the write types are
+  re-exported from `engine-api`). A `412` precondition failure surfaces as a
+  `Conflict`; the next `Engine::sync_calendar` reconciles the new revision.
 
 ## iMIP scheduling
 

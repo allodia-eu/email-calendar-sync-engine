@@ -1,0 +1,33 @@
+[package]
+name = "engine-api"
+description = "The stable host-facing facade for the PIM sync engine (north-star.md): one Engine that owns a SQLite store and a wall clock, over which hosts (UniFFI/C ABI/CLI/server) drive provider-agnostic sync — and, in later slices, search and writes. This first slice covers store lifecycle and mail/calendar sync."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-store = { workspace = true }
+engine-sync = { workspace = true }
+engine-provider = { workspace = true }
+engine-recurrence = { workspace = true }
+engine-search = { workspace = true }
+store-sqlite = { workspace = true }
+# Deserializes the store's normalized object payloads (Value) into the domain types
+# the read methods return (Mailbox/Message).
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# `OffsetDateTime::now_utc` needs time's `std` feature; require it explicitly so the
+# crate keeps compiling even if the workspace dep ever turns default features off.
+time = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+# `sync` adds tokio::sync::oneshot, used to deterministically interleave two syncs
+# in the concurrent-scope (ApiError::Busy) test.
+tokio = { workspace = true, features = ["sync"] }
+async-trait = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

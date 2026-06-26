@@ -1,0 +1,42 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('testuser%40example.test')/messages(id,internetMessageId,conversationId,parentFolderId,subject,from,sender,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,lastModifiedDateTime,isRead,isDraft,hasAttachments,flag,bodyPreview,changeKey)/$entity",
+  "@odata.etag": "W/\"ChangeKeyFixture0001\"",
+  "bccRecipients": [],
+  "bodyPreview": "Example fixture message preview text.",
+  "ccRecipients": [],
+  "changeKey": "ChangeKeyFixture0001",
+  "conversationId": "conversation-3",
+  "flag": {
+    "flagStatus": "notFlagged"
+  },
+  "from": {
+    "emailAddress": {
+      "address": "testuser@example.test",
+      "name": "Test User"
+    }
+  },
+  "hasAttachments": false,
+  "id": "message-3",
+  "internetMessageId": "<fixture-message-3@example.test>",
+  "isDraft": false,
+  "isRead": true,
+  "lastModifiedDateTime": "2026-06-25T18:19:10Z",
+  "parentFolderId": "folder-inbox",
+  "receivedDateTime": "2026-06-25T18:19:09Z",
+  "sender": {
+    "emailAddress": {
+      "address": "testuser@example.test",
+      "name": "Test User"
+    }
+  },
+  "sentDateTime": "2026-06-25T18:19:04Z",
+  "subject": "Fixture: first message",
+  "toRecipients": [
+    {
+      "emailAddress": {
+        "address": "testuser@example.test",
+        "name": "Test User"
+      }
+    }
+  ]
+}

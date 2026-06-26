@@ -101,6 +101,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "engine-core",
+ "engine-provider",
+ "engine-recurrence",
+ "engine-search",
+ "engine-store",
+ "engine-sync",
+ "serde_json",
+ "store-sqlite",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "engine-cli"
 version = "0.1.0"
 dependencies = [
@@ -133,6 +152,7 @@ dependencies = [
  "async-trait",
  "engine-core",
  "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -812,6 +832,19 @@ dependencies = [
  "serde_json",
  "stalwart-harness",
  "store-sqlite",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "provider-graph"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "engine-core",
+ "engine-provider",
+ "reqwest",
+ "serde_json",
  "thiserror",
  "tokio",
 ]

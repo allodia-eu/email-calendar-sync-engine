@@ -43,7 +43,7 @@ pim-sync-engine/
 │   ├── provider-smtp/           # SMTP submission support.
 │   ├── provider-caldav/         # CalDAV/CardDAV support.
 │   ├── provider-gmail/          # Future Gmail adapter.
-│   ├── provider-graph/          # Future Microsoft Graph adapter.
+│   ├── provider-graph/          # Microsoft Graph mail read/sync (implemented; graph.md).
 │   ├── engine-store/            # Store trait and contract tests.
 │   ├── store-sqlite/            # SQLite, at-rest seam (plain or SQLCipher), FTS5, vectors.
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
@@ -160,7 +160,7 @@ The engine also exposes an injectable clock/time source for recurrence expansion
 3. **Stalwart Docker harness.** Seed deterministic accounts, messages, calendars, and protocol endpoints for local/CI tests (contacts/CardDAV deferred until contacts land, after step 5). Implemented under `docker/stalwart/` + `crates/stalwart-harness`; see `stalwart-harness.md`.
 4. **JMAP read/write.** Implement JMAP sync, JSCalendar normalization, mail submission, calendar writes, RSVP patches, and conference links. **Implemented** for mail (read/sync + submission) and calendar **read** under `engine-provider` + `provider-jmap` + a thin `engine-sync` loop; `jmap.md` is authoritative. JMAP calendar *writes*/RSVP are deferred to a later slice (CalDAV in step 5 is the more-deployed calendar-write path).
 5. **IMAP/SMTP + CalDAV/CardDAV.** Implement legacy protocol adapters against the same Stalwart fixture. **IMAP read/sync + SMTP submission are implemented** under `provider-imap` (a mailbox-bound `Provider`; `imap-smtp.md` is authoritative). **CalDAV calendar read/sync and writes are implemented** under `provider-caldav` (a collection-bound `Provider` parsing iCalendar into the same `Event` projection JMAP produces, plus conditional `PUT`/`DELETE`; `caldav.md` is authoritative). **iTIP/iMIP inbound parse/reconcile/trust/apply + the RSVP write primitive are implemented** in `engine_core::scheduling` + `provider_caldav::imip` (`calendar-semantics.md`). The residual step-5 scheduling deferrals (mail-sync wiring, the CalDAV Scheduling-Inbox `REPORT`, client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and **CardDAV/contacts** follow after step 5.
-6. **Bindings and reference host.** Add UniFFI/CLI/desktop seams in small, tested slices.
+6. **Bindings and reference host.** Add the `engine-api` facade, then the UniFFI/CLI/desktop seams over it, in small, tested slices. **The `engine-api` facade is implemented** for store lifecycle and provider-driven mail/calendar sync — an `Engine` over a concrete `SqliteStore` driven by a host `SystemClock`, generic over `Provider` so it stays provider-agnostic; `engine-api.md` is authoritative. Search, the write/outbox surface, streaming progress, and the UniFFI/C-ABI bindings themselves are the remaining slices.
 7. **External provider smoke tests.** Add optional live-provider tests only after deterministic protocol tests pass.
 
 Contacts and CardDAV follow the mail and calendar spine rather than leading it: they reuse the provider-object identity and membership model and raw vCard preservation, land after step 5, and are not part of the initial search AST. The repository's mail/calendar focus is deliberate; contact sync and search are additive, not v1 gates.

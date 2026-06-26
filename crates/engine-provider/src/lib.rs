@@ -23,6 +23,7 @@
 mod calendar_write;
 mod capability;
 mod error;
+mod mail_edit;
 mod page;
 mod submit;
 mod sync;
@@ -30,6 +31,7 @@ mod sync;
 pub use calendar_write::{EventDeletion, EventWrite, EventWriteReceipt, WritePrecondition};
 pub use capability::Capabilities;
 pub use error::{ProviderError, ProviderResult};
+pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use submit::{Draft, SubmissionReceipt};
 pub use sync::ScopeSync;
@@ -206,6 +208,32 @@ pub trait Provider: Send + Sync {
         ))
     }
 
+    /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (keyword
+    /// change), move (folder change, incl. a Trash "delete"), or permanent delete.
+    ///
+    /// Providers advertising [`Capabilities::mail_writes`] override this; the default
+    /// rejects, so a capability-checking caller never relies on it. The write is
+    /// outbox-mediated by the caller (a durable pending op precedes this side
+    /// effect); this method performs only the provider call.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]. A stale target — e.g. an IMAP UID
+    /// whose mailbox `UIDVALIDITY` has since changed — is
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict)
+    /// (re-sync, then retry); the default returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn edit_mail(
+        &self,
+        account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        let _ = (account, edit);
+        Err(ProviderError::invalid_state(
+            "provider does not support mail writes",
+        ))
+    }
+
     /// The scope the account's calendars sync under. Defaults to the JMAP
     /// `(account, Calendar)` scope; non-JMAP providers override.
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
@@ -309,6 +337,116 @@ pub trait Provider: Send + Sync {
         Err(ProviderError::invalid_state(
             "provider does not support calendar writes",
         ))
+    }
+}
+
+/// A boxed provider is itself a [`Provider`], delegating every method to the box's
+/// contents — including a `Box<dyn Provider>`, so a host can hold an adapter behind
+/// dynamic dispatch.
+///
+/// The `engine-sync`/`engine-api` functions are generic over `P: Provider`, so a host
+/// that picks a concrete adapter at runtime — e.g. a language binding choosing IMAP vs
+/// JMAP from account config — needs this to drive them through a trait object. The
+/// `?Sized` bound covers the trait-object case for *any* lifetime: a plain
+/// `impl Provider for Box<dyn Provider>` is fixed to `'static` and is "not general
+/// enough" once the boxed provider is driven from an async task. Kept here, not
+/// special-cased in `engine-api` (`engine-api.md`). Every method delegates, so an inner
+/// adapter's overrides (submission, calendar writes, a custom drain, …) are honored,
+/// not the trait defaults.
+#[async_trait]
+impl<P: Provider + ?Sized> Provider for Box<P> {
+    fn capabilities(&self) -> &Capabilities {
+        (**self).capabilities()
+    }
+
+    fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
+        (**self).mailbox_scope(account)
+    }
+
+    fn email_scope(&self, account: &AccountId) -> SyncScope {
+        (**self).email_scope(account)
+    }
+
+    async fn sync_mailboxes(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Mailbox>> {
+        (**self).sync_mailboxes(account, cursor).await
+    }
+
+    async fn sync_email_page(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+        page: Option<&PageToken>,
+        limit: usize,
+    ) -> ProviderResult<SyncPage<Message>> {
+        (**self).sync_email_page(account, cursor, page, limit).await
+    }
+
+    async fn sync_email(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Message>> {
+        (**self).sync_email(account, cursor).await
+    }
+
+    async fn submit_email(
+        &self,
+        account: &AccountId,
+        draft: &Draft,
+    ) -> ProviderResult<SubmissionReceipt> {
+        (**self).submit_email(account, draft).await
+    }
+
+    async fn edit_mail(
+        &self,
+        account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        (**self).edit_mail(account, edit).await
+    }
+
+    fn calendar_scope(&self, account: &AccountId) -> SyncScope {
+        (**self).calendar_scope(account)
+    }
+
+    fn event_scope(&self, account: &AccountId) -> SyncScope {
+        (**self).event_scope(account)
+    }
+
+    async fn sync_calendars(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Calendar>> {
+        (**self).sync_calendars(account, cursor).await
+    }
+
+    async fn sync_events(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Event>> {
+        (**self).sync_events(account, cursor).await
+    }
+
+    async fn put_event(
+        &self,
+        account: &AccountId,
+        write: &EventWrite,
+    ) -> ProviderResult<EventWriteReceipt> {
+        (**self).put_event(account, write).await
+    }
+
+    async fn delete_event(
+        &self,
+        account: &AccountId,
+        deletion: &EventDeletion,
+    ) -> ProviderResult<()> {
+        (**self).delete_event(account, deletion).await
     }
 }
 
@@ -471,6 +609,153 @@ mod tests {
         );
         let err = provider.submit_email(&account(), &draft).await.unwrap_err();
         assert_eq!(err.class(), FailureClass::InvalidState);
+    }
+
+    /// A provider implementing only the required `capabilities`, leaving every other
+    /// method to its trait default — so boxing it exercises the blanket impl's
+    /// delegation to the *defaults*, not just to an adapter's overrides.
+    struct BareProvider {
+        caps: Capabilities,
+    }
+
+    impl Provider for BareProvider {
+        fn capabilities(&self) -> &Capabilities {
+            &self.caps
+        }
+    }
+
+    #[tokio::test]
+    async fn box_dyn_provider_delegates_overrides_and_defaults() {
+        use engine_core::error::FailureClass;
+        use engine_core::ids::{EventId, MessageIdHeader, Uid};
+        use engine_core::mail::EmailAddress;
+        use engine_core::raw::RawIcal;
+
+        let email_scope = SyncScope::JmapType {
+            account: account(),
+            data_type: JmapDataType::Email,
+        };
+        let mailbox_scope = SyncScope::JmapType {
+            account: account(),
+            data_type: JmapDataType::Mailbox,
+        };
+
+        // (1) An adapter that overrides the mail methods: the box yields the inner's
+        // data (delegation honors overrides), and the working paged primitive drives
+        // the inherited drain default.
+        let over: Box<dyn Provider> = Box::new(FakeJmap {
+            caps: Capabilities::none().with_mail(),
+        });
+        assert!(over.capabilities().mail());
+        assert_eq!(over.email_scope(&account()), email_scope);
+        assert_eq!(over.mailbox_scope(&account()), mailbox_scope);
+        assert!(over.sync_mailboxes(&account(), None).await.is_ok());
+        let page = over
+            .sync_email_page(&account(), None, None, 50)
+            .await
+            .unwrap();
+        assert_eq!(page.kind, SyncKind::Snapshot);
+        assert!(
+            over.sync_email(&account(), None)
+                .await
+                .unwrap()
+                .is_snapshot()
+        );
+
+        // (2) A bare adapter: the box delegates to the trait defaults for every
+        // non-required method — the scope defaults compute, the unsupported async
+        // operations reject with `InvalidState`.
+        let bare: Box<dyn Provider> = Box::new(BareProvider {
+            caps: Capabilities::none(),
+        });
+        assert!(!bare.capabilities().mail());
+        assert_eq!(bare.mailbox_scope(&account()), mailbox_scope);
+        assert_eq!(bare.email_scope(&account()), email_scope);
+        assert_eq!(
+            bare.calendar_scope(&account()),
+            SyncScope::JmapType {
+                account: account(),
+                data_type: JmapDataType::Calendar,
+            }
+        );
+        assert_eq!(
+            bare.event_scope(&account()),
+            SyncScope::JmapType {
+                account: account(),
+                data_type: JmapDataType::CalendarEvent,
+            }
+        );
+        let rejected = [
+            bare.sync_mailboxes(&account(), None).await.unwrap_err(),
+            bare.sync_email_page(&account(), None, None, 0)
+                .await
+                .unwrap_err(),
+            bare.sync_email(&account(), None).await.unwrap_err(),
+            bare.sync_calendars(&account(), None).await.unwrap_err(),
+            bare.sync_events(&account(), None).await.unwrap_err(),
+        ];
+        for err in &rejected {
+            assert_eq!(err.class(), FailureClass::InvalidState);
+        }
+
+        let draft = crate::Draft::new(
+            MessageIdHeader::new("g@host").unwrap(),
+            EmailAddress::new("a@host"),
+            vec![EmailAddress::new("b@host")],
+            "Hi",
+            "body",
+        );
+        assert_eq!(
+            bare.submit_email(&account(), &draft)
+                .await
+                .unwrap_err()
+                .class(),
+            FailureClass::InvalidState
+        );
+        let href = EventId::try_from("/cal/e.ics").unwrap();
+        let write = crate::EventWrite::create(
+            href.clone(),
+            Uid::new("e@host").unwrap(),
+            RawIcal::new("BEGIN:VCALENDAR\r\nEND:VCALENDAR"),
+        );
+        assert_eq!(
+            bare.put_event(&account(), &write)
+                .await
+                .unwrap_err()
+                .class(),
+            FailureClass::InvalidState
+        );
+        let deletion = crate::EventDeletion::unconditional(href);
+        assert_eq!(
+            bare.delete_event(&account(), &deletion)
+                .await
+                .unwrap_err()
+                .class(),
+            FailureClass::InvalidState
+        );
+    }
+
+    #[tokio::test]
+    async fn mail_writes_default_to_unsupported() {
+        use engine_core::error::FailureClass;
+        use engine_core::ids::ProviderKey;
+
+        let edit = crate::MailEdit::delete(ProviderKey::new("imap:v1:u7@INBOX").unwrap());
+        // A mail adapter that did not override writes rejects, so a
+        // capability-checking caller never depends on the default — and a boxed
+        // adapter delegates `edit_mail` to that same default (the blanket impl).
+        let direct = FakeJmap {
+            caps: Capabilities::none().with_mail(),
+        };
+        let boxed: Box<dyn Provider> = Box::new(FakeJmap {
+            caps: Capabilities::none().with_mail(),
+        });
+        for err in [
+            direct.edit_mail(&account(), &edit).await.unwrap_err(),
+            boxed.edit_mail(&account(), &edit).await.unwrap_err(),
+        ] {
+            assert_eq!(err.class(), FailureClass::InvalidState);
+        }
     }
 
     #[tokio::test]

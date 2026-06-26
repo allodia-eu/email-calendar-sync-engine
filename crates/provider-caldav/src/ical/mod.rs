@@ -10,6 +10,7 @@
 //! ([`EventId`], from its href) and calendar membership ([`CalendarId`]) are
 //! supplied by the caller; the whole resource text is preserved as [`RawIcal`].
 
+mod build;
 mod component;
 mod event;
 mod party;
@@ -23,6 +24,8 @@ use engine_core::ids::{CalendarId, EventId, Uid};
 use engine_core::raw::RawIcal;
 use engine_core::scheduling::{ScheduleMethod, SchedulingMessage};
 use engine_core::time::UtcDateTime;
+
+pub use build::build_event_ical;
 
 use component::{Component, parse_components};
 use event::{event_from_vevent, vevent_uid};

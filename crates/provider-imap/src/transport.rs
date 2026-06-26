@@ -224,6 +224,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let response = self.read_response(&tag).await?;
         Ok(parse_append_uid(&response.detail))
     }
+
+    /// `UID STORE <set> <item>` — alters the flags of the named UIDs, where `item`
+    /// is e.g. `+FLAGS.SILENT (\Seen)` or `-FLAGS.SILENT (\Flagged)` (RFC 9051
+    /// §6.4.6). The `.SILENT` suffix suppresses the per-message `FETCH` echo, so no
+    /// response parsing is needed — a tagged `OK` is success, a `NO`/`BAD` an error.
+    pub(crate) async fn uid_store(&mut self, set: &str, item: &str) -> ImapResult<()> {
+        self.command(&format!("UID STORE {set} {item}")).await?;
+        Ok(())
+    }
+
+    /// `UID MOVE <set> <mailbox>` — moves the named UIDs to `dest` (RFC 6851), so
+    /// the move is atomic server-side (copy + `\Deleted` + expunge in one command,
+    /// where supported). The destination is a quoted string.
+    pub(crate) async fn uid_move(&mut self, set: &str, dest: &str) -> ImapResult<()> {
+        self.command(&format!("UID MOVE {set} {}", quote(dest)))
+            .await?;
+        Ok(())
+    }
+
+    /// `UID EXPUNGE <set>` — permanently removes only the named `\Deleted` UIDs
+    /// (UIDPLUS, RFC 4315), so a concurrent `\Deleted` mark elsewhere in the mailbox
+    /// is not collaterally expunged.
+    pub(crate) async fn uid_expunge(&mut self, set: &str) -> ImapResult<()> {
+        self.command(&format!("UID EXPUNGE {set}")).await?;
+        Ok(())
+    }
 }
 
 /// Extracts `(validity, uid)` from an `[APPENDUID validity uid]` response code

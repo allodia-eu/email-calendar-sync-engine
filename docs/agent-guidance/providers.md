@@ -19,7 +19,17 @@ Recommended first provider spine:
    scheduling deferrals (mail-sync wiring, Scheduling-Inbox `REPORT`, client-iMIP
    SMTP delivery, `ClientImip` persistence) and **CardDAV/contacts** land after
    step 5.
-4. Optional external-provider smoke tests against real hosted or self-managed servers.
+4. External cloud providers. **Microsoft Graph mail read/sync is implemented**
+   under `provider-graph`; `graph.md` is authoritative. Graph's mail sync is
+   per-folder (no account-wide message delta), so it follows the IMAP/CalDAV
+   container+member shape (a folder-bound provider + `GraphFolderList`/`GraphFolder`
+   scopes), not JMAP's account-global one — and unlike JMAP, an incremental `delta`
+   returns *partial* changed objects that the adapter re-fetches. It is the first
+   adapter validated without the Stalwart fixture: deterministically by a
+   fixture-replay HTTP server over scrubbed real captures, plus an optional
+   token-gated live test. Calendar/submission/writes are later slices.
+5. Optional further external-provider smoke tests against real hosted or
+   self-managed servers.
 
 If product pressure changes the order, the domain model tests still need JMAP and JSCalendar coverage before IMAP assumptions land.
 
@@ -70,6 +80,7 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
 - SMTP post-DATA ambiguity must enter `NeedsConfirmation`; never blind-retry.
 - SMTP per-recipient acceptance/rejection before DATA must be represented.
 - Sent folder placement must reconcile by generated Message-ID.
+- Mail mutations (mark-read/flag, move, delete) are one provider-neutral method, `edit_mail(account, &MailEdit) -> MailEditReceipt`, gated by the `mail_writes` capability (distinct from read `mail`, like `calendar_writes` vs `calendars`). `MailEdit` mirrors the three independent mail axes (`modeling.md`): `SetKeywords{add,remove}` (the `$seen`/`$flagged` state), `MoveTo{destination}` (membership — and the mechanism behind a Trash "delete"), and `Delete` (permanent). It is outbox-driven by `engine_sync::edit_mail`, exactly like the calendar writes. JMAP maps all three to one `Email/set` (keywords/mailboxIds patch or `destroy`); IMAP maps them to `UID STORE`, `UID MOVE`, and `UID STORE \Deleted` + `UID EXPUNGE`. A stale target (an IMAP UID under a changed `UIDVALIDITY`) is a `Conflict` → re-sync then retry. (Shape + capability + trait method **implemented** in `engine-provider`; the IMAP adapter implements it — `imap-smtp.md`.)
 - CalDAV/CardDAV sync uses RFC 6578 sync-token where supported; otherwise CTag plus per-resource ETag diffing. (**Implemented** for the sync-token path in `provider-caldav`; the CTag fallback is a documented follow-up — `caldav.md`.)
 - CalDAV writes use ETags and `If-Match`; conflicts refetch before merge. (**Implemented** in `provider-caldav` — conditional `PUT` (`If-None-Match`/`If-Match`) + `DELETE`, outbox-driven by `engine_sync::write_calendar_event`/`delete_calendar_event`, a `412` → `Conflict`; `caldav.md`.)
 - iTIP/iMIP scheduling is distinct from ordinary event storage. (**Implemented** for the inbound half: detect (`find_calendar_part`) → parse (`provider_caldav::imip::parse`) → `reconcile`/trust → apply, and the RSVP write primitive (`set_my_partstat` → conditional `PUT` via the existing outbox driver). The CalDAV Scheduling-Inbox `REPORT`, client-iMIP SMTP delivery, and `ClientImip` local-origin persistence stay deferred; `calendar-semantics.md`.)
