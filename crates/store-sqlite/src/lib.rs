@@ -25,6 +25,7 @@
 //! this base in migration `V2` (`schema.rs`); content-addressed blob storage is a
 //! later sub-step.
 
+mod blob;
 mod convert;
 mod derived_ops;
 mod migrations;
@@ -32,6 +33,7 @@ mod outbox_ops;
 mod schema;
 mod scope_ops;
 mod search_ops;
+mod source_ops;
 
 use core::fmt;
 use std::path::Path;
@@ -51,6 +53,7 @@ use engine_store::{
     PendingOpState, Result, StorableObject, Store, StoreRead, SyncApplied, SyncClaim, SyncLease,
 };
 
+use crate::blob::BlobArea;
 use crate::convert::{backend, expiry_after, scope_key};
 use crate::scope_ops::OwnedUpdate;
 
@@ -67,6 +70,9 @@ const MMAP_BYTES: i64 = 256 * 1024 * 1024;
 pub struct SqliteStore<C> {
     clock: C,
     conn: Arc<Mutex<Connection>>,
+    /// The content-addressed blob area holding raw message sources beside (or, for
+    /// in-memory stores, instead of) the database — large bytes never enter SQLite.
+    blobs: Arc<BlobArea>,
 }
 
 impl<C> fmt::Debug for SqliteStore<C> {
@@ -86,7 +92,7 @@ impl<C: Clock> SqliteStore<C> {
     /// opened or the schema cannot be created.
     pub fn open_in_memory(clock: C) -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(backend)?;
-        Self::configure(conn, clock, false)
+        Self::configure(conn, clock, false, BlobArea::temporary()?)
     }
 
     /// Opens (creating if absent) a file-backed store at `path`, driven by
@@ -97,13 +103,18 @@ impl<C: Clock> SqliteStore<C> {
     /// Returns [`engine_store::StoreError::Backend`] if the database cannot be
     /// opened or the schema cannot be created.
     pub fn open(path: impl AsRef<Path>, clock: C) -> Result<Self> {
+        let path = path.as_ref();
+        // Open the database first: an unusable path must fail here, before we would
+        // otherwise create the blob directory (whose `create_dir_all` would mask the
+        // bad path by materializing its missing parent).
         let conn = Connection::open(path).map_err(backend)?;
-        Self::configure(conn, clock, true)
+        let blobs = BlobArea::beside_db(path)?;
+        Self::configure(conn, clock, true, blobs)
     }
 
     /// Applies the pragmas, migrates the schema to the latest version, and wraps
-    /// the connection.
-    fn configure(mut conn: Connection, clock: C, on_disk: bool) -> Result<Self> {
+    /// the connection alongside its blob area.
+    fn configure(mut conn: Connection, clock: C, on_disk: bool, blobs: BlobArea) -> Result<Self> {
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(backend)?;
         if on_disk {
@@ -118,6 +129,7 @@ impl<C: Clock> SqliteStore<C> {
         Ok(Self {
             clock,
             conn: Arc::new(Mutex::new(conn)),
+            blobs: Arc::new(blobs),
         })
     }
 

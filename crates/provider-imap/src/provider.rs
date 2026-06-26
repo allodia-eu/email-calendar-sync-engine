@@ -207,10 +207,14 @@ fn resolve_smtp(
 impl<S> ImapProvider<S> {
     /// Builds a provider, advertising submission iff SMTP is configured.
     fn build(connection: Connection<S>, mailbox: MailboxId, smtp: Option<SmtpSender>) -> Self {
-        // Mail writes (`UID STORE`/`MOVE`/`EXPUNGE`) need no extra config — every
-        // IMAP session can issue them — so the capability is unconditional, unlike
-        // submission which depends on a configured SMTP transport.
-        let mut capabilities = Capabilities::none().with_mail().with_mail_writes();
+        // Mail writes (`UID STORE`/`MOVE`/`EXPUNGE`) and body fetch (`UID FETCH
+        // BODY.PEEK[]`) need no extra config — every IMAP session can issue them — so
+        // those capabilities are unconditional, unlike submission which depends on a
+        // configured SMTP transport.
+        let mut capabilities = Capabilities::none()
+            .with_mail()
+            .with_mail_writes()
+            .with_message_source();
         if smtp.is_some() {
             capabilities = capabilities.with_submission();
         }
@@ -340,6 +344,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     ) -> ProviderResult<MailEditReceipt> {
         let mut connection = self.connection.lock().await;
         crate::mutate::edit_mail(&mut connection, edit).await
+    }
+
+    /// Fetches a message's raw RFC 5322 source (`UID FETCH BODY.PEEK[]`).
+    ///
+    /// A thin lock-and-call: the fetch logic (key parse, the SELECT + UIDVALIDITY
+    /// guard, the body read) lives in the `fetch` module so it stays stream-generic
+    /// and unit-testable. The message is addressed by its own key, so any of the
+    /// account's folders can be read over this one bound session; a stale UID (its
+    /// mailbox's `UIDVALIDITY` changed) is a [`ProviderError::conflict`].
+    async fn fetch_message_source(
+        &self,
+        _account: &AccountId,
+        message: &Message,
+    ) -> ProviderResult<engine_core::raw::RawMime> {
+        let mut connection = self.connection.lock().await;
+        crate::fetch::fetch_message_source(&mut connection, message.id.key()).await
     }
 }
 

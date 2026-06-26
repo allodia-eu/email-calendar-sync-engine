@@ -28,6 +28,7 @@
 pub struct Capabilities {
     mail: bool,
     mail_writes: bool,
+    message_source: bool,
     submission: bool,
     calendars: bool,
     calendar_writes: bool,
@@ -40,6 +41,7 @@ impl Capabilities {
         Self {
             mail: false,
             mail_writes: false,
+            message_source: false,
             submission: false,
             calendars: false,
             calendar_writes: false,
@@ -62,6 +64,18 @@ impl Capabilities {
     #[must_use]
     pub const fn with_mail_writes(mut self) -> Self {
         self.mail_writes = true;
+        self
+    }
+
+    /// Marks fetching a message's raw RFC 5322 source on demand (Tier-3 bodies via
+    /// [`Provider::fetch_message_source`](crate::Provider::fetch_message_source)) as
+    /// supported. Distinct from [`with_mail`](Self::with_mail), the metadata
+    /// read/sync capability — an adapter can sync envelopes without being able to
+    /// download full bodies, exactly as a no-SMTP adapter advertises
+    /// [`mail`](Self::mail) without [`submission`](Self::submission).
+    #[must_use]
+    pub const fn with_message_source(mut self) -> Self {
+        self.message_source = true;
         self
     }
 
@@ -101,6 +115,12 @@ impl Capabilities {
     #[must_use]
     pub const fn mail_writes(self) -> bool {
         self.mail_writes
+    }
+
+    /// Whether on-demand raw-message-source fetch (Tier-3 bodies) is supported.
+    #[must_use]
+    pub const fn message_source(self) -> bool {
+        self.message_source
     }
 
     /// Whether mail submission is supported.
@@ -143,11 +163,21 @@ mod tests {
         let caps = Capabilities::none()
             .with_mail()
             .with_mail_writes()
+            .with_message_source()
             .with_submission()
             .with_calendars()
             .with_calendar_writes();
         assert!(caps.mail() && caps.mail_writes() && caps.submission());
+        assert!(caps.message_source());
         assert!(caps.calendars() && caps.calendar_writes());
+    }
+
+    #[test]
+    fn message_source_is_independent_of_read() {
+        // An adapter can sync envelope metadata without supporting full-body fetch,
+        // exactly as a read-only mailbox advertises `mail` without `mail_writes`.
+        let metadata_only = Capabilities::none().with_mail();
+        assert!(metadata_only.mail() && !metadata_only.message_source());
     }
 
     #[test]

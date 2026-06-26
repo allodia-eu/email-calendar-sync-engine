@@ -93,8 +93,8 @@ where
 /// Rejects a mailbox name carrying `CR`/`LF`/`NUL` before it reaches a quoted IMAP
 /// command argument: those bytes cannot appear in a valid mailbox name, and admitting
 /// them would let a crafted name inject a second command line (the transport's `quote`
-/// escapes only `"`/`\`).
-fn reject_control_chars(name: &str) -> ProviderResult<()> {
+/// escapes only `"`/`\`). Shared with the body-fetch path (`crate::fetch`).
+pub(crate) fn reject_control_chars(name: &str) -> ProviderResult<()> {
     if name.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
         return Err(ProviderError::invalid_state(
             "mailbox name contains a control character",

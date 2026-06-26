@@ -220,3 +220,23 @@ CREATE TABLE meta (
     value TEXT NOT NULL
 ) STRICT;
 ";
+
+/// Migration v5: raw message-source cache metadata.
+///
+/// The on-demand Tier-3 raw RFC 5322 bytes (`MessageSourceCache`) live in a
+/// content-addressed filesystem blob area, **not** in SQLite — a single message can
+/// carry 1–15 MB of inline attachments, which would bloat the database. This table
+/// holds only the per-message metadata: the SHA-256 `content_hash` naming the blob
+/// file, its decoded `byte_len`, and the `fetched_at` instant (kept for future
+/// quota/eviction). Keyed by `(account, provider_key)`; the bytes are deduped across
+/// rows by content hash (two IMAP copies of one message share one blob).
+pub(crate) const V5: &str = "\
+CREATE TABLE message_source (
+    account      TEXT NOT NULL,
+    provider_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    byte_len     INTEGER NOT NULL,
+    fetched_at   TEXT NOT NULL,
+    PRIMARY KEY (account, provider_key)
+) STRICT, WITHOUT ROWID;
+";

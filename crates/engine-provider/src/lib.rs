@@ -42,6 +42,7 @@ use async_trait::async_trait;
 use engine_core::calendar::{Calendar, Event};
 use engine_core::ids::AccountId;
 use engine_core::mail::{Mailbox, Message};
+use engine_core::raw::RawMime;
 use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
 
 /// Default page size [`Provider::sync_email`] uses to drain
@@ -234,6 +235,38 @@ pub trait Provider: Send + Sync {
         ))
     }
 
+    /// Fetches the raw RFC 5322 source of an already-synced `message` — the lossless
+    /// Tier-3 blob a host fetches on demand to read the body and (later) attachments
+    /// (`north-star.md`). Returns the whole message (headers + every part); the
+    /// engine extracts displayable text with `engine-mime` and caches the raw in the
+    /// store's content-addressed blob area, so one fetch serves the body now and
+    /// HTML/attachments later without re-fetching.
+    ///
+    /// Providers advertising [`Capabilities::message_source`] override this; the
+    /// default rejects, so a capability-checking caller never relies on it.
+    /// `message` carries everything an adapter needs to address the fetch: its
+    /// [`id`](engine_core::mail::Message::id) key (the IMAP `(mailbox, UIDVALIDITY,
+    /// UID)`) and its [`blob_id`](engine_core::mail::Message::blob_id) (a JMAP/Graph
+    /// download handle).
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]. A stale target — e.g. an IMAP UID
+    /// whose mailbox `UIDVALIDITY` has since changed — is
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict)
+    /// (re-sync, then retry); the default returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn fetch_message_source(
+        &self,
+        account: &AccountId,
+        message: &Message,
+    ) -> ProviderResult<RawMime> {
+        let _ = (account, message);
+        Err(ProviderError::invalid_state(
+            "provider does not support message source fetch",
+        ))
+    }
+
     /// The scope the account's calendars sync under. Defaults to the JMAP
     /// `(account, Calendar)` scope; non-JMAP providers override.
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
@@ -407,6 +440,14 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         edit: &MailEdit,
     ) -> ProviderResult<MailEditReceipt> {
         (**self).edit_mail(account, edit).await
+    }
+
+    async fn fetch_message_source(
+        &self,
+        account: &AccountId,
+        message: &Message,
+    ) -> ProviderResult<RawMime> {
+        (**self).fetch_message_source(account, message).await
     }
 
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
@@ -753,6 +794,37 @@ mod tests {
         for err in [
             direct.edit_mail(&account(), &edit).await.unwrap_err(),
             boxed.edit_mail(&account(), &edit).await.unwrap_err(),
+        ] {
+            assert_eq!(err.class(), FailureClass::InvalidState);
+        }
+    }
+
+    #[tokio::test]
+    async fn message_source_default_to_unsupported() {
+        use engine_core::error::FailureClass;
+
+        let message = Message::new(
+            MessageId::try_from("eaaaaab").unwrap(),
+            Memberships::of_one(MailboxId::try_from("a").unwrap()),
+        );
+        // A mail adapter that did not override body fetch rejects, so a
+        // capability-checking caller never depends on the default — and a boxed
+        // adapter delegates `fetch_message_source` to that same default.
+        let direct = FakeJmap {
+            caps: Capabilities::none().with_mail(),
+        };
+        let boxed: Box<dyn Provider> = Box::new(FakeJmap {
+            caps: Capabilities::none().with_mail(),
+        });
+        for err in [
+            direct
+                .fetch_message_source(&account(), &message)
+                .await
+                .unwrap_err(),
+            boxed
+                .fetch_message_source(&account(), &message)
+                .await
+                .unwrap_err(),
         ] {
             assert_eq!(err.class(), FailureClass::InvalidState);
         }

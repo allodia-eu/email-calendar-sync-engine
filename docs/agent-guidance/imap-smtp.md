@@ -170,6 +170,25 @@ is authoritative for the `provider-caldav` calendar client.
   caller re-syncs, then retries) rather than a blind write against the wrong message.
   An unparseable target key is `InvalidState` (rejected before any command).
 
+## Body fetch (Tier-3 source)
+
+- **`fetch_message_source`** returns a message's whole raw RFC 5322 source over the
+  open session (`fetch.rs`; the `Provider` impl is a thin lock-and-call, mirroring
+  `mutate.rs`). The crate advertises `Capabilities::message_source` **unconditionally**
+  — every IMAP session can fetch bodies.
+- **`UID FETCH <uid> (BODY.PEEK[])`** fetches the entire message (headers + every
+  part) as a single `{n}` literal, which the transport inlines; `parse_fetch_body`
+  pulls the literal bytes out of the framing (`BODY[] {n}\r\n<n bytes>`). `.PEEK`
+  does **not** set `\Seen` — reading a body must not silently mark it read; the host
+  marks-read via a separate `edit_mail` when it chooses. Fetching the whole source
+  (not just the text part) is lossless and serves the body now and HTML/attachments
+  later from the cached raw with no re-fetch (`providers.md`, `store-and-sync.md`).
+- **Same guards as edit.** The message is addressed by its own key (so any folder is
+  readable over the one bound session): `SELECT` + `UIDVALIDITY` guard → a mismatch
+  is a **`Conflict`**; an unparseable key, or a key whose mailbox carries `CR`/`LF`,
+  is `InvalidState` (rejected before any command). `reject_control_chars` is shared
+  with the mutate path.
+
 ## Known limitations (documented, not bugs)
 
 - **No CONDSTORE/QRESYNC.** Deltas bring new arrivals only; flag/expunge/move changes

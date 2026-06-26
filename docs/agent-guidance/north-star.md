@@ -48,6 +48,7 @@ pim-sync-engine/
 │   ├── store-sqlite/            # SQLite, at-rest seam (plain or SQLCipher), FTS5, vectors.
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
 │   ├── engine-recurrence/       # Deterministic recurrence -> occurrence expansion (bundled tzdb).
+│   ├── engine-mime/             # MIME/RFC 5322 body extraction (mail-parser) -> MessageBody (implemented).
 │   ├── engine-index/            # Text extraction, chunks, embedding seam.
 │   ├── engine-cli/              # Headless ingestion/search/maintenance harness (CLI host).
 │   ├── crypto-keystore/         # Platform credential/key abstraction.
@@ -90,7 +91,7 @@ pim-sync-engine/
 The default mobile-safe sync policy is tiered:
 - **Tier 1:** headers, envelope, flags/keywords, collection membership, provider ids, threading inputs, event metadata.
 - **Tier 2:** snippets and recent body text, extracted from plain-text and HTML parts, for FTS.
-- **Tier 3:** full bodies and attachments fetched on demand and cached with quotas.
+- **Tier 3:** full bodies and attachments fetched on demand and cached with quotas. **Implemented** for bodies: `Provider::fetch_message_source` returns the raw RFC 5322 source, cached lease-free in a content-addressed filesystem blob area (`MessageSourceCache`, not SQLite — `store-and-sync.md`) and extracted to displayable text by `engine-mime`, surfaced as `Engine::message_body`. Quota/eviction and per-attachment entities are later refinements.
 
 Desktop or server hosts may request fuller replication, but the engine cannot assume it. Search APIs must return coverage metadata. Completeness is several independent axes — local object/content coverage, time-range (recurrence-horizon) coverage, and remote augmentation — not one value; `docs/agent-guidance/search-coverage.md` is authoritative. Provider search fallbacks such as JMAP `Email/query` or IMAP `SEARCH` are capabilities used when local coverage is incomplete.
 

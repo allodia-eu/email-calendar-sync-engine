@@ -53,7 +53,7 @@ const LEASE_TTL: Duration = Duration::from_mins(5);
 /// than corrupting state.
 #[derive(Debug)]
 pub struct Engine {
-    store: SqliteStore<SystemClock>,
+    pub(crate) store: SqliteStore<SystemClock>,
 }
 
 impl Engine {
@@ -527,7 +527,7 @@ fn worker() -> WorkerId {
 /// `(account, scope)` makes the store return the retryable [`StoreError::ScopeHeld`];
 /// the sync loop surfaces it rather than waiting for the live lease, so the facade
 /// reports it as `Busy` — distinct from a real failure a host should not retry.
-fn map_sync_error(err: SyncError) -> ApiError {
+pub(crate) fn map_sync_error(err: SyncError) -> ApiError {
     match err {
         SyncError::Store(StoreError::ScopeHeld) => ApiError::Busy,
         other => ApiError::Sync(other),

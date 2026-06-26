@@ -308,6 +308,49 @@ fn addresses_of(item: &Item) -> Vec<Address> {
         .collect()
 }
 
+/// Extracts the raw `BODY[]` literal bytes from a `UID FETCH … (BODY.PEEK[])`
+/// response (RFC 9051 §7.5.2). The server echoes the section as `BODY[] {n}` with
+/// the `n` raw bytes inlined by the transport, so we scan for that framing rather
+/// than tokenizing (the payload is arbitrary RFC 5322 bytes, not IMAP grammar).
+///
+/// # Errors
+///
+/// [`ImapError::Protocol`] if no untagged line carries a `BODY[]` literal (the UID
+/// was not returned, or the server answered without the requested section).
+pub(crate) fn parse_fetch_body(untagged: &[Vec<u8>]) -> ImapResult<Vec<u8>> {
+    untagged
+        .iter()
+        .find_map(|line| extract_body_literal(line))
+        .ok_or_else(|| ImapError::protocol("FETCH response carried no BODY[] literal"))
+}
+
+/// Pulls the `{n}`-framed bytes that follow the first `BODY[]` marker in `line`, or
+/// `None` if the framing is absent or truncated.
+fn extract_body_literal(line: &[u8]) -> Option<Vec<u8>> {
+    const MARKER: &[u8] = b"BODY[]";
+    let after_marker = &line[find_subsequence(line, MARKER)? + MARKER.len()..];
+    // `BODY[] {n}\r\n<n bytes>`: skip the separating space, read the `{n}` length,
+    // then take exactly the n bytes after the CRLF.
+    let after_brace = after_marker
+        .strip_prefix(b" ")
+        .unwrap_or(after_marker)
+        .strip_prefix(b"{")?;
+    let close = after_brace.iter().position(|&b| b == b'}')?;
+    let len: usize = std::str::from_utf8(&after_brace[..close])
+        .ok()?
+        .parse()
+        .ok()?;
+    let body = after_brace[close + 1..]
+        .strip_prefix(b"\r\n")
+        .or_else(|| after_brace[close + 1..].strip_prefix(b"\n"))?;
+    (body.len() >= len).then(|| body[..len].to_vec())
+}
+
+/// The first index at which `needle` occurs in `haystack`, if any.
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
 #[cfg(test)]
 #[path = "parse_tests.rs"]
 mod tests;

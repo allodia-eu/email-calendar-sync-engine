@@ -230,3 +230,35 @@ fn envelope_handles_all_nil_addresses() {
     assert_eq!(env.subject, None);
     assert_eq!(env.message_id, None);
 }
+
+#[test]
+fn fetch_body_extracts_the_literal_payload() {
+    // The transport inlines the `{n}` literal: the untagged entry is the framing,
+    // the n raw bytes, then the closing `)`.
+    let body = "Subject: x\r\n\r\nbody bytes";
+    let line = format!("3 FETCH (UID 7 BODY[] {{{}}}\r\n{body})", body.len());
+    let raw = parse_fetch_body(&lines(&[&line])).unwrap();
+    assert_eq!(raw, body.as_bytes());
+}
+
+#[test]
+fn fetch_body_without_a_literal_is_a_protocol_error() {
+    // A response that carries no `BODY[]` section (the UID was not returned) is a
+    // protocol error, never a panic.
+    assert!(parse_fetch_body(&lines(&["3 FETCH (UID 7 FLAGS (\\Seen))"])).is_err());
+}
+
+#[test]
+fn fetch_body_truncated_below_announced_length_is_a_protocol_error() {
+    // The server announced 999 bytes but sent far fewer: reject rather than read out
+    // of bounds.
+    let line = "3 FETCH (UID 7 BODY[] {999}\r\nonly a few bytes)";
+    assert!(parse_fetch_body(&lines(&[line])).is_err());
+}
+
+#[test]
+fn fetch_body_with_malformed_framing_is_a_protocol_error() {
+    // `BODY[]` present but no `{n}` length framing follows.
+    let line = "3 FETCH (UID 7 BODY[] NIL)";
+    assert!(parse_fetch_body(&lines(&[line])).is_err());
+}

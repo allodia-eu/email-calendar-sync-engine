@@ -52,6 +52,7 @@ mod base64;
 mod cursor;
 mod encoded_word;
 mod error;
+mod fetch;
 mod filing;
 mod mail;
 mod mutate;

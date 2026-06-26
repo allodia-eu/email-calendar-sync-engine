@@ -168,6 +168,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         parse::parse_fetch(&response.untagged)
     }
 
+    /// `UID FETCH <uid> (BODY.PEEK[])`, returning the raw RFC 5322 bytes of the
+    /// message (the whole source, headers + every part). `.PEEK` does not set
+    /// `\Seen` — fetching a body to read it must not silently mark it read; the host
+    /// decides when to do that via a separate edit.
+    pub(crate) async fn uid_fetch_body(&mut self, uid: &str) -> ImapResult<Vec<u8>> {
+        let response = self
+            .command(&format!("UID FETCH {uid} (BODY.PEEK[])"))
+            .await?;
+        parse::parse_fetch_body(&response.untagged)
+    }
+
     /// `LIST "" "*"`, returning every mailbox.
     pub(crate) async fn list(&mut self) -> ImapResult<Vec<ListRow>> {
         let response = self.command(r#"LIST "" "*""#).await?;

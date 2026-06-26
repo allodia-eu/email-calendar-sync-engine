@@ -18,6 +18,7 @@ mod error;
 mod lease;
 pub mod mem;
 mod outbox;
+mod source;
 mod store;
 
 pub use apply::{
@@ -29,6 +30,7 @@ pub use lease::{
     Clock, FenceToken, LeaseRequest, ManualClock, OpLease, SyncClaim, SyncLease, WorkerId,
 };
 pub use outbox::{LeasedPendingOp, PendingOpState};
+pub use source::MessageSourceCache;
 pub use store::{IndexRowCounts, Store, StoreRead};
 
 /// The version of the engine's **normalization** — how providers decode wire data and
