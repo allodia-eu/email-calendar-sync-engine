@@ -269,13 +269,28 @@ mod tests {
     fn available_zones_lists_the_full_resolvable_tzdb_sorted() {
         let zones = available_zones();
         // Hundreds of zones — the whole bundle, far more than a host OS's ~140.
-        assert!(zones.len() > 100, "expected the full tzdb, got {}", zones.len());
+        assert!(
+            zones.len() > 100,
+            "expected the full tzdb, got {}",
+            zones.len()
+        );
         // Including cities a Windows OS zone set collapses into a single zone.
-        for expected in ["Europe/Amsterdam", "Europe/Berlin", "America/New_York", "Etc/UTC"] {
-            assert!(zones.iter().any(|zone| zone == expected), "missing {expected}");
+        for expected in [
+            "Europe/Amsterdam",
+            "Europe/Berlin",
+            "America/New_York",
+            "Etc/UTC",
+        ] {
+            assert!(
+                zones.iter().any(|zone| zone == expected),
+                "missing {expected}"
+            );
         }
         // Sorted and de-duplicated.
-        assert!(zones.windows(2).all(|pair| pair[0] < pair[1]), "not sorted/unique");
+        assert!(
+            zones.windows(2).all(|pair| pair[0] < pair[1]),
+            "not sorted/unique"
+        );
         // Every offered zone is one the engine actually resolves.
         assert!(
             zones
