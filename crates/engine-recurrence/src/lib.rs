@@ -142,6 +142,17 @@ pub fn is_supported_zone(zone: &TimeZoneId) -> bool {
     zone::resolve_zone_id(zone).is_ok()
 }
 
+/// Every IANA zone name the bundled tzdb can resolve, sorted.
+///
+/// The enumeration counterpart of [`is_supported_zone`]: a host fills its time-zone
+/// picker from this so it offers exactly the zones the engine localizes and migrates
+/// against (the bundled [`tzdata_version`]), rather than the host OS's own zone set —
+/// which, on Windows, collapses distinct IANA cities (e.g. `Europe/Amsterdam`) into one.
+#[must_use]
+pub fn available_zones() -> Vec<String> {
+    zone::available()
+}
+
 /// The bundled IANA tzdata release this build expands under.
 ///
 /// Recorded on every [`OccurrenceRow`] so a tzdata-version bump can find and
@@ -251,6 +262,26 @@ mod tests {
         assert_eq!(
             resolve_instant(&value).unwrap(),
             Some("2026-06-27T22:00:00Z".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn available_zones_lists_the_full_resolvable_tzdb_sorted() {
+        let zones = available_zones();
+        // Hundreds of zones — the whole bundle, far more than a host OS's ~140.
+        assert!(zones.len() > 100, "expected the full tzdb, got {}", zones.len());
+        // Including cities a Windows OS zone set collapses into a single zone.
+        for expected in ["Europe/Amsterdam", "Europe/Berlin", "America/New_York", "Etc/UTC"] {
+            assert!(zones.iter().any(|zone| zone == expected), "missing {expected}");
+        }
+        // Sorted and de-duplicated.
+        assert!(zones.windows(2).all(|pair| pair[0] < pair[1]), "not sorted/unique");
+        // Every offered zone is one the engine actually resolves.
+        assert!(
+            zones
+                .iter()
+                .all(|zone| is_supported_zone(&TimeZoneId::iana(zone.clone()).unwrap())),
+            "an offered zone is not engine-resolvable"
         );
     }
 
