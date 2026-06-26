@@ -79,6 +79,38 @@ account-wide message delta, so sync is per folder.
   provenance; `@odata.etag`→`ETag` and (full `GET` only) `changeKey`→`ChangeKey`
   revision tokens; `bodyPreview`→the snippet.
 
+## Shared mailboxes (the multi-mailbox model)
+
+One signed-in user (one OAuth credential) can access several mailboxes: their own
+and any shared/other mailbox they hold delegate access to — Graph addresses the
+latter as `…/users/{address}/mailFolders('Inbox')/messages`, using the user's
+token plus the `*.Shared` delegated scopes (an Exchange Online / work-school
+feature; the `tools/graph-oauth` helper already requests them).
+
+The engine models this **without any `engine-core` change**, because it is already
+multi-account:
+
+- **Each mailbox is a separate `AccountId`** — its own folders, `GraphFolder`/
+  `GraphFolderList` scopes, cursors, search, and threading, exactly like any other
+  account. A shared mailbox reuses the entire existing machinery; nothing about it
+  is special at the store/sync/search layer.
+- **The credential is shared.** Credentials live outside the store (host-owned —
+  `north-star.md`), so several accounts can map to the same token. The host's
+  account onboarding owns the credential → accounts mapping and the
+  add-a-shared-mailbox flow (deferred).
+- **The provider differs only by a `MailboxPrincipal`.** `GraphClient::for_mailbox`
+  roots every request at `/me` (`MailboxPrincipal::Me`) or `/users/{address}`
+  (`MailboxPrincipal::user`); the rest of the provider — folder list, role
+  resolution, snapshot/delta, re-fetch — is principal-agnostic. This stays in
+  `provider-graph`: a Graph-specific URL detail does **not** belong in generic
+  `engine-core` types (AGENTS hard rule).
+- **Unified "all my mailboxes" views are host-composed**, not storage joins
+  (`north-star.md`). Search/threading remain per-account.
+
+So adding a shared mailbox is, for the engine, just another account pointed at a
+`User` principal. (Not live-verified — a personal Microsoft account cannot host
+shared mailboxes; verification awaits a work/school account.)
+
 ## Known limitations (documented, not bugs)
 
 - **Tier-1 metadata only.** The body/MIME and Graph `uniqueBody` are fetched on

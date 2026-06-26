@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::error::GraphError;
+use crate::principal::MailboxPrincipal;
 
 /// The Microsoft Graph v1.0 API root.
 pub(crate) const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
@@ -79,12 +80,14 @@ impl GraphTransport for HttpTransport {
 pub struct GraphClient {
     transport: Box<dyn GraphTransport>,
     base: String,
+    principal: MailboxPrincipal,
 }
 
 impl core::fmt::Debug for GraphClient {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GraphClient")
             .field("base", &self.base)
+            .field("principal", &self.principal)
             .finish_non_exhaustive()
     }
 }
@@ -98,6 +101,23 @@ impl GraphClient {
     pub fn connect(token: impl Into<String>) -> Result<Self, GraphError> {
         let transport = Box::new(HttpTransport::new(token.into())?);
         Ok(Self::with_transport(transport, GRAPH_BASE.to_owned()))
+    }
+
+    /// Connects to one specific mailbox the signed-in user can access — their own
+    /// (`MailboxPrincipal::Me`) or a shared/other mailbox
+    /// ([`MailboxPrincipal::user`]). One credential (the same `token`) backs every
+    /// mailbox; each is a separate engine account differing only by this principal,
+    /// which roots the client's requests at `/me` or `/users/{address}`
+    /// (`principal.rs`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError::Transport`] if the HTTP client cannot be built.
+    pub fn for_mailbox(
+        token: impl Into<String>,
+        principal: MailboxPrincipal,
+    ) -> Result<Self, GraphError> {
+        Ok(Self::connect(token)?.with_principal(principal))
     }
 
     /// Connects a real client to a custom base origin instead of the Graph root —
@@ -119,14 +139,28 @@ impl GraphClient {
         ))
     }
 
-    /// Wraps a transport and API root (the seam offline tests construct).
+    /// Wraps a transport and API root (the seam offline tests construct),
+    /// defaulting to the signed-in user's own mailbox.
     pub(crate) fn with_transport(transport: Box<dyn GraphTransport>, base: String) -> Self {
-        Self { transport, base }
+        Self {
+            transport,
+            base,
+            principal: MailboxPrincipal::Me,
+        }
     }
 
-    /// Builds an absolute URL from a Graph-relative path (`/me/...`).
+    /// Roots this client's requests at a specific mailbox (the user's own, or a
+    /// shared one) instead of `/me`.
+    #[must_use]
+    pub(crate) fn with_principal(mut self, principal: MailboxPrincipal) -> Self {
+        self.principal = principal;
+        self
+    }
+
+    /// Builds an absolute URL from a mailbox-relative path (`/mailFolders/…`),
+    /// rooting it at the principal (`/me` or `/users/{address}`).
     pub(crate) fn url(&self, path: &str) -> String {
-        format!("{}{path}", self.base)
+        format!("{}{}{path}", self.base, self.principal.root())
     }
 
     /// Authenticated `GET`, rebasing absolute Graph links onto a non-default base.
@@ -226,15 +260,20 @@ mod tests {
     }
 
     #[test]
-    fn client_builds_absolute_urls_and_redacts_debug() {
-        let client = GraphClient::connect("super-secret-token").unwrap();
+    fn client_roots_urls_at_the_principal_and_redacts_debug() {
+        // Default — the signed-in user's own mailbox roots at /me.
+        let me = GraphClient::connect("super-secret-token").unwrap();
+        assert_eq!(me.url("/messages"), format!("{GRAPH_BASE}/me/messages"));
+        // A shared mailbox roots requests at /users/{address} — the documented shape
+        // `…/users/info@company.org/mailFolders('Inbox')/messages`.
+        let shared =
+            GraphClient::for_mailbox("t", MailboxPrincipal::user("info@company.org")).unwrap();
         assert_eq!(
-            client.url("/me/messages"),
-            format!("{GRAPH_BASE}/me/messages")
+            shared.url("/mailFolders('Inbox')/messages"),
+            format!("{GRAPH_BASE}/users/info@company.org/mailFolders('Inbox')/messages")
         );
         // The Debug rendering must not leak the bearer token.
-        let shown = format!("{client:?}");
-        assert!(!shown.contains("super-secret-token"));
+        assert!(!format!("{me:?}").contains("super-secret-token"));
     }
 
     #[test]

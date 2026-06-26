@@ -40,6 +40,7 @@ mod error;
 mod fetch;
 mod json;
 mod normalize;
+mod principal;
 mod provider;
 mod transport;
 
@@ -47,5 +48,6 @@ mod transport;
 mod test_support;
 
 pub use error::GraphError;
+pub use principal::MailboxPrincipal;
 pub use provider::GraphProvider;
 pub use transport::GraphClient;

@@ -4,11 +4,11 @@
 //! - **snapshot** (`cursor` `None`): the initial `messages/delta` enumeration
 //!   returns *full* objects; each becomes a `changed` + `present` entry, and the
 //!   pass ends at the `@odata.deltaLink` (the cursor to persist).
-//! - **incremental delta** (`cursor` `Some`): the same call returns *partial*
-//!   changed entries (only the changed properties + `id`) and `@removed`
-//!   tombstones, so each changed id is **re-fetched** as a full message
-//!   ([`message`]); removals apply inline. Multi-page passes follow
-//!   `@odata.nextLink`.
+//! - **incremental delta** (`cursor` `Some`): a changed entry is normally a *full*
+//!   object (it carries `@odata.etag`) and is used directly; a *lightweight* change
+//!   (e.g. `isRead`) returns an etag-less *partial*, which is **re-fetched** as a
+//!   full message ([`message`]). `@removed` tombstones apply inline. Multi-page
+//!   passes follow `@odata.nextLink`.
 
 use engine_core::ids::{MailboxId, MessageId, ProviderKey};
 use engine_core::mail::{Mailbox, Message};
@@ -45,7 +45,7 @@ pub(crate) async fn folders(client: &GraphClient) -> Result<Vec<Mailbox>, GraphE
     // more than one page of folders is not truncated — and then tombstoned, since
     // this set becomes the snapshot's `present` set.
     let mut mailboxes = Vec::new();
-    let mut url = client.url("/me/mailFolders?$top=100");
+    let mut url = client.url("/mailFolders?$top=100");
     loop {
         let doc = client.get(&url).await?;
         for folder in value_array(&doc, "mailFolders")? {
@@ -63,7 +63,7 @@ pub(crate) async fn folders(client: &GraphClient) -> Result<Vec<Mailbox>, GraphE
 /// Resolves a well-known folder alias (`inbox`, `msgfolderroot`, …) to its id.
 async fn well_known_id(client: &GraphClient, alias: &str) -> Result<MailboxId, GraphError> {
     let doc = client
-        .get(&client.url(&format!("/me/mailFolders/{alias}?$select=id")))
+        .get(&client.url(&format!("/mailFolders/{alias}?$select=id")))
         .await?;
     well_known_folder_id(&doc)
 }
@@ -85,7 +85,7 @@ async fn optional_well_known_id(
 pub(crate) async fn message(client: &GraphClient, id: &MessageId) -> Result<Message, GraphError> {
     let select = MESSAGE_SELECT.join(",");
     let doc = client
-        .get(&client.url(&format!("/me/messages/{}?$select={select}", id.as_str())))
+        .get(&client.url(&format!("/messages/{}?$select={select}", id.as_str())))
         .await?;
     message_from_json(&doc)
 }
@@ -168,7 +168,7 @@ fn page_url(
     } else {
         let select = MESSAGE_SELECT.join(",");
         client.url(&format!(
-            "/me/mailFolders/{}/messages/delta?$select={select}",
+            "/mailFolders/{}/messages/delta?$select={select}",
             folder.as_str()
         ))
     }
@@ -359,6 +359,26 @@ mod tests {
         let archive = mailboxes.iter().find(|m| m.name == "Archiveren").unwrap();
         assert!(archive.role.is_none());
         assert!(mailboxes.iter().any(|m| m.role == Some(MailboxRole::Inbox)));
+    }
+
+    #[tokio::test]
+    async fn folders_address_a_shared_mailbox() {
+        use crate::principal::MailboxPrincipal;
+        // The first request (msgfolderroot) is routed ONLY under the
+        // /users/{address} prefix, so the whole folder sync succeeds only if the
+        // principal roots the URLs there — proving a shared mailbox is reachable.
+        let mut routes: Vec<(&str, Value)> = folder_routes()
+            .into_iter()
+            .filter(|(key, _)| *key != "/mailFolders/msgfolderroot")
+            .collect();
+        routes.push((
+            "/users/info@company.org/mailFolders/msgfolderroot",
+            json(include_str!(
+                "../tests/fixtures/wellknown/msgfolderroot.json"
+            )),
+        ));
+        let client = fake_client(routes).with_principal(MailboxPrincipal::user("info@company.org"));
+        assert!(folders(&client).await.is_ok());
     }
 
     #[tokio::test]
