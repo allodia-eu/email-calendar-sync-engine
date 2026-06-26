@@ -110,21 +110,29 @@ pub(crate) async fn messages_page(
     for entry in value_array(&doc, "messages delta")? {
         if entry.get("@removed").is_some() {
             removed.push(entry_key(entry)?);
-        } else if kind == SyncKind::Snapshot {
-            let message = message_from_json(entry)?;
-            present.push(message.id.key().clone());
-            changed.push(message);
+            continue;
+        }
+        // Per the delta-query-messages docs a changed entry is a FULL object — and it
+        // is for most edits; a full message resource carries `@odata.etag`. The
+        // exception is a *lightweight* property change (notably `isRead` on consumer
+        // mailboxes), which returns only the changed property + id with no etag; those
+        // (and never a full entry) are re-fetched. Snapshot entries are always full.
+        let full = if entry.get("@odata.etag").is_some() {
+            message_from_json(entry)?
         } else {
-            // An incremental change is a *partial* object → re-fetch the full one.
-            // If it 404s (deleted/moved in the race since the delta enumerated it),
-            // skip it; a later delta reports the removal, so the pass is not wedged.
             let id = MessageId::new(entry_key(entry)?);
             match message(client, &id).await {
-                Ok(full) => changed.push(full),
-                Err(GraphError::Status { status: 404, .. }) => {}
+                Ok(full) => full,
+                // Deleted/moved in the race since the delta → skip; a later delta
+                // reports the removal, so the pass is not wedged.
+                Err(GraphError::Status { status: 404, .. }) => continue,
                 Err(other) => return Err(other),
             }
+        };
+        if kind == SyncKind::Snapshot {
+            present.push(full.id.key().clone());
         }
+        changed.push(full);
     }
 
     let next_page = odata_link(&doc, "@odata.nextLink").map(PageToken::new);
@@ -191,6 +199,8 @@ mod tests {
 
     const SNAPSHOT: &str = include_str!("../tests/fixtures/mail/messages_delta_snapshot.json");
     const CHANGED: &str = include_str!("../tests/fixtures/mail/messages_delta_changed.json");
+    const CHANGED_FULL: &str =
+        include_str!("../tests/fixtures/mail/messages_delta_changed_full.json");
     const REMOVED: &str = include_str!("../tests/fixtures/mail/messages_delta_removed.json");
     const DETAIL: &str = include_str!("../tests/fixtures/mail/message_detail.json");
     const LIST_P1: &str = include_str!("../tests/fixtures/mail/messages_list_page1.json");
@@ -259,9 +269,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn incremental_delta_refetches_changed_and_tombstones_removed() {
+    async fn incremental_delta_refetches_a_lightweight_partial_and_tombstones_removed() {
         let cursor = SyncState::new("https://graph.test/me/mailFolders/folder-inbox/delta-token-1");
-        // A partial changed entry → re-fetch the full message (id != "delta-token-1").
+        // A lightweight `isRead`-only change is a partial (no @odata.etag) → re-fetch
+        // the full message (id != "delta-token-1").
         let client = fake_client(vec![
             ("delta-token-1", json(CHANGED)),
             ("/me/messages/", json(DETAIL)),
@@ -282,6 +293,22 @@ mod tests {
         assert_eq!(page.removed.len(), 1);
         assert!(page.changed.is_empty());
         assert!(page.next_cursor.as_str().contains("deltatoken"));
+    }
+
+    #[tokio::test]
+    async fn incremental_delta_uses_a_full_changed_entry_without_refetch() {
+        // A substantive change returns a FULL object (with @odata.etag), so it is used
+        // directly — no `/me/messages/` re-fetch route is provided, so a re-fetch
+        // would error; the test succeeding proves none happens. This is the doc's
+        // "changed entries are full objects" common case.
+        let cursor = SyncState::new("https://graph.test/me/mailFolders/folder-inbox/delta-token-1");
+        let client = fake_client(vec![("delta-token-1", json(CHANGED_FULL))]);
+        let page = messages_page(&client, &inbox(), Some(&cursor), None)
+            .await
+            .unwrap();
+        assert_eq!(page.changed.len(), 1);
+        assert!(page.changed[0].envelope.subject.is_some());
+        assert!(page.changed[0].revisions.etag.is_some());
     }
 
     #[tokio::test]

@@ -59,13 +59,20 @@ account-wide message delta, so sync is per folder.
   `@odata.nextLink` pages, ending at the `@odata.deltaLink` that becomes the
   persisted cursor. `$top` does **not** paginate consumer delta (page size is
   server-controlled; `@odata.nextLink` appears only on large result sets).
-- **Incremental delta returns PARTIAL objects.** A changed entry carries only the
-  changed properties plus `id`/`parentFolderId` (no `subject`/`from`/`@odata.etag`).
-  The store applies whole objects, not property merges, so the adapter
-  **re-fetches the full message for each changed id** before emitting it. A
-  removal is `{ id, @removed: { reason } }` → an inline tombstone. This is the
-  key divergence from JMAP, where `Foo/changes`→`Foo/get` already yields full
-  objects.
+- **Incremental delta: full objects, except lightweight changes.** Microsoft's
+  [delta-query-messages](https://learn.microsoft.com/graph/delta-query-messages)
+  guidance says a changed entry is a *full* object — and it is for substantive
+  edits (verified live: a flag change returns every selected field + `@odata.etag`).
+  The exception, **not in the docs** and observed on consumer mailboxes, is a
+  *lightweight* property change (notably `isRead`): it returns only the changed
+  property + `id`, with **no** `@odata.etag`. So the adapter uses the entry
+  directly when it carries `@odata.etag` (the common case) and **re-fetches** only
+  the etag-less partials (the store applies whole objects, not property merges). A
+  removal is `{ id, @removed: { reason } }` → an inline tombstone. (JMAP differs
+  again: `Foo/changes`→`Foo/get` always yields full objects.) The rest of the flow
+  follows the doc verbatim: initial `messages/delta` with `$select`, drain
+  `@odata.nextLink` to the terminal `@odata.deltaLink` (the persisted cursor),
+  following the returned URLs as-is since the token encodes the `$select`.
 - **Keyword/revision mapping.** `isRead`→`$seen`, `isDraft`→`$draft`,
   `flag.flagStatus == "flagged"`→`$flagged`; `internetMessageId` is preserved
   bracket-stripped as a threading hint (never identity); `conversationId`→thread
@@ -90,6 +97,11 @@ account-wide message delta, so sync is per folder.
   round-trips via `$batch` (≤20 sub-requests) — a follow-up optimization. A
   changed-id re-fetch that `404`s (deleted/moved in the race since the delta) is
   skipped, so a single vanished message cannot wedge the pass.
+- **Page size is server-controlled.** The delta cycle drains every server page
+  (correct), but the adapter does not yet send `Prefer: odata.maxpagesize` — the
+  page-size control the delta-query-messages doc documents — so it ignores the
+  `sync_email_page` `limit`. A follow-up for responsive streaming. (`$top` does
+  *not* paginate consumer delta, which is why the header is the right lever.)
 - **National clouds aren't auto-rebased.** `with_base` rebasing rewrites only the
   commercial-cloud origin (`graph.microsoft.com/v1.0`); links a national-cloud
   endpoint (e.g. `graph.microsoft.us`) returns would be followed verbatim — fine

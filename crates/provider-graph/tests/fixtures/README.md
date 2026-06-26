@@ -24,7 +24,8 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/mailfolders_delta.json` | `GET /me/mailFolders/delta` | folder container delta + `deltaLink` cursor |
 | `mail/messages_delta_snapshot.json` | `GET /me/mailFolders/inbox/messages/delta?$select=…` | **initial** sync: full message objects + `deltaLink` |
 | `mail/messages_delta_nochange.json` | replay the snapshot `deltaLink` | incremental no-op (`value:[]` + new `deltaLink`) |
-| `mail/messages_delta_changed.json` | replay after `PATCH isRead` | **partial** changed entry (see Finding 4) |
+| `mail/messages_delta_changed.json` | replay after `PATCH isRead` | **lightweight partial** changed entry — no `@odata.etag` (see Finding 4) → re-fetched |
+| `mail/messages_delta_changed_full.json` | replay after `PATCH flag` | **full** changed entry (has `@odata.etag`) → used directly, no re-fetch |
 | `mail/messages_delta_removed.json` | replay after `DELETE` | `{ id, @removed:{reason} }` tombstone shape |
 | `mail/messages_list_page1.json` / `_page2.json` | `GET …/messages?$top=2` + its `@odata.nextLink` | real `nextLink` pagination chain |
 | `mail/message_detail.json` | `GET /me/messages/{id}` | full single-message shape (the changed-id re-fetch) |
@@ -43,10 +44,14 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
    server-controlled; `@odata.nextLink` appears only on large result sets. The
    `nextLink`-following path is therefore exercised via the *list* endpoint, whose
    `$top` does paginate.
-4. **Incremental `delta` returns PARTIAL changed objects** — only the changed
-   properties plus `id`/`@odata.type`/`parentFolderId` (no `@odata.etag`, `subject`,
-   `from`, …). *Snapshot* (initial) entries are full. So the provider must **re-fetch
-   full messages for changed ids** before emitting them (the engine applies full
-   objects, not property merges). `@removed` items carry only `id` + `@removed`.
+4. **Incremental `delta` — full objects, except lightweight changes.** Per
+   Microsoft's delta-query-messages doc a changed entry is a *full* object, and it
+   is for substantive edits (a `flag` change → all selected fields + `@odata.etag`:
+   `messages_delta_changed_full.json`). The undocumented exception, on consumer
+   mailboxes, is a *lightweight* `isRead` change → only the changed property + `id`,
+   **no** `@odata.etag` (`messages_delta_changed.json`). So the provider uses an
+   entry with `@odata.etag` directly and **re-fetches only the etag-less partials**.
+   *Snapshot* (initial) entries are always full. `@removed` items carry only `id` +
+   `@removed`.
 5. **Immutable ids** (requested via `Prefer: IdType="ImmutableId"`) are stable
    across calls and URL-safe — the right `ProviderKey` for Graph mail.
