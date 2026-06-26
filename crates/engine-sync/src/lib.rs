@@ -342,9 +342,11 @@ fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
     }
 }
 
+mod body;
 mod outbox;
 mod stream;
 mod threading;
+pub use body::fetch_message_body;
 pub use outbox::{
     CalendarWriteOutcome, MailEditOutcome, SubmitOutcome, delete_calendar_event, edit_mail,
     submit_mail, write_calendar_event,

@@ -15,8 +15,11 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   ([`SystemClock`]), and exposes high-level operations over it.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
   (or `sync_mail_streamed` for live progress); read with `mailboxes` / `messages` /
-  `calendars` / `events` and `search_mail` / `search_calendar`; and write with
-  `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
+  `calendars` / `events` and `search_mail` / `search_calendar` (which now also
+  matches fetched **body** text); open a message with `message_body` (fetch-on-demand;
+  caches the raw bytes on disk and the extracted text in SQLite, so reopen is a fast
+  SQLite read and the body becomes searchable); and
+  write with `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
   `write_calendar_event` / `delete_calendar_event` / `pending_op_state`.
   The read
   surface enumerates the account's scopes and filters by `SyncScope::object_kind`, so

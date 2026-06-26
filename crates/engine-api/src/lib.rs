@@ -34,6 +34,7 @@
 //! The types that appear in the facade's own signatures are re-exported, so a host
 //! can depend on `engine-api` alone and still name everything it needs to call it.
 
+mod body;
 mod clock;
 mod engine;
 
@@ -47,7 +48,9 @@ pub use engine::Engine;
 pub use engine_core::calendar::{Calendar, Event};
 pub use engine_core::coverage::SearchCoverage;
 pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
-pub use engine_core::mail::{EmailAddress, Mailbox, MailboxRole, Message, SystemKeyword};
+pub use engine_core::mail::{
+    EmailAddress, Mailbox, MailboxRole, Message, MessageBody, SystemKeyword,
+};
 pub use engine_core::time::{TimeZoneId, UtcDateTime};
 pub use engine_core::write::PendingOpId;
 pub use engine_provider::{

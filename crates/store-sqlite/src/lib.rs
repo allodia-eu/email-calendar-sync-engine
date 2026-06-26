@@ -22,9 +22,12 @@
 //!   each connection is its own database).
 //!
 //! The FTS5 search index and the normalized structured-filter tables layer over
-//! this base in migration `V2` (`schema.rs`); content-addressed blob storage is a
-//! later sub-step.
+//! this base in migration `V2` (`schema.rs`). On-demand message content (`V5`) splits
+//! by *text vs bytes*: the raw message bytes live in a content-addressed filesystem
+//! blob area (`blob.rs`) — never in SQLite — while the extracted body text and its
+//! own lease-free FTS index live in `message_body`/`message_body_fts` (`source_ops.rs`).
 
+mod blob;
 mod convert;
 mod derived_ops;
 mod migrations;
@@ -32,6 +35,7 @@ mod outbox_ops;
 mod schema;
 mod scope_ops;
 mod search_ops;
+mod source_ops;
 
 use core::fmt;
 use std::path::Path;
@@ -51,6 +55,7 @@ use engine_store::{
     PendingOpState, Result, StorableObject, Store, StoreRead, SyncApplied, SyncClaim, SyncLease,
 };
 
+use crate::blob::BlobArea;
 use crate::convert::{backend, expiry_after, scope_key};
 use crate::scope_ops::OwnedUpdate;
 
@@ -67,6 +72,9 @@ const MMAP_BYTES: i64 = 256 * 1024 * 1024;
 pub struct SqliteStore<C> {
     clock: C,
     conn: Arc<Mutex<Connection>>,
+    /// The content-addressed blob area holding raw message sources beside (or, for
+    /// in-memory stores, instead of) the database — large bytes never enter SQLite.
+    blobs: Arc<BlobArea>,
 }
 
 impl<C> fmt::Debug for SqliteStore<C> {
@@ -86,7 +94,7 @@ impl<C: Clock> SqliteStore<C> {
     /// opened or the schema cannot be created.
     pub fn open_in_memory(clock: C) -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(backend)?;
-        Self::configure(conn, clock, false)
+        Self::configure(conn, clock, false, BlobArea::temporary()?)
     }
 
     /// Opens (creating if absent) a file-backed store at `path`, driven by
@@ -97,13 +105,18 @@ impl<C: Clock> SqliteStore<C> {
     /// Returns [`engine_store::StoreError::Backend`] if the database cannot be
     /// opened or the schema cannot be created.
     pub fn open(path: impl AsRef<Path>, clock: C) -> Result<Self> {
+        let path = path.as_ref();
+        // Open the database first: an unusable path must fail here, before we would
+        // otherwise create the blob directory (whose `create_dir_all` would mask the
+        // bad path by materializing its missing parent).
         let conn = Connection::open(path).map_err(backend)?;
-        Self::configure(conn, clock, true)
+        let blobs = BlobArea::beside_db(path)?;
+        Self::configure(conn, clock, true, blobs)
     }
 
     /// Applies the pragmas, migrates the schema to the latest version, and wraps
-    /// the connection.
-    fn configure(mut conn: Connection, clock: C, on_disk: bool) -> Result<Self> {
+    /// the connection alongside its blob area.
+    fn configure(mut conn: Connection, clock: C, on_disk: bool, blobs: BlobArea) -> Result<Self> {
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(backend)?;
         if on_disk {
@@ -118,6 +131,7 @@ impl<C: Clock> SqliteStore<C> {
         Ok(Self {
             clock,
             conn: Arc::new(Mutex::new(conn)),
+            blobs: Arc::new(blobs),
         })
     }
 
@@ -140,6 +154,19 @@ impl<C: Clock> SqliteStore<C> {
         .expect("sqlite blocking task panicked")
     }
 
+    /// Runs `f` on a blocking thread **without** holding the connection lock — for
+    /// filesystem blob I/O (a multi-megabyte read/write) that must not serialize the
+    /// whole store behind the SQLite mutex the way [`Self::call`] does.
+    async fn block<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        tokio::task::spawn_blocking(f)
+            .await
+            .expect("blob blocking task panicked")
+    }
+
     /// Searches mail across `scopes`, returning ranked hits and the answer's
     /// coverage. The query compiles to indexed structured filters plus an FTS5
     /// `bm25()` ranking; pass the account's mail scopes (search is per-account).
@@ -155,9 +182,15 @@ impl<C: Clock> SqliteStore<C> {
     ) -> Result<SearchResults> {
         let scope_keys: Vec<String> = scopes.iter().map(scope_key).collect();
         let scope_count = scopes.len();
+        // Search is per-account, so every scope shares one account; the body-FTS
+        // source filters on it (IMAP keys can collide across accounts).
+        let account = scopes
+            .first()
+            .map(|scope| scope.account().as_str().to_owned())
+            .unwrap_or_default();
         let query = query.clone();
         let ranked = self
-            .call(move |conn| search_ops::search_mail(conn, &scope_keys, &query, limit))
+            .call(move |conn| search_ops::search_mail(conn, &account, &scope_keys, &query, limit))
             .await?;
         search_ops::assemble_results(ranked, scope_count)
     }

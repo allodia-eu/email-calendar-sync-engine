@@ -50,9 +50,23 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # security), and hand-rolling one would be a correctness/safety risk for no gain.
 # No C dependency, so it cross-compiles to mobile like the rest of the stack.
 quick-xml = "0.37"
+# Pure-Rust MIME/RFC 5322 parser (`engine-mime`), by the same authors as our
+# Stalwart test target. Mail bodies are hostile input (`north-star.md` security),
+# and charset/encoded-word/nested-multipart decoding is spec-heavy and a known
+# correctness/safety minefield — a hardened, fuzzed parser is the right tool, and
+# it is pure Rust so it cross-compiles to mobile like the rest of the stack. The
+# `full_encoding` feature (no longer default since 0.11.2) pulls the full legacy
+# charset tables so non-UTF-8 bodies decode correctly.
+mail-parser = { version = "0.11", default-features = false, features = ["full_encoding"] }
+# Content addressing for the on-disk raw-message/attachment blob area
+# (`store-sqlite`): blobs are named by the SHA-256 of their bytes, deduping IMAP
+# copies of one message and giving filesystem-safe, fixed-length names. Pure Rust,
+# no C surface.
+sha2 = { version = "0.10", default-features = false }
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
+engine-mime = { path = "crates/engine-mime" }
 engine-store = { path = "crates/engine-store" }
 engine-search = { path = "crates/engine-search" }
 engine-recurrence = { path = "crates/engine-recurrence" }

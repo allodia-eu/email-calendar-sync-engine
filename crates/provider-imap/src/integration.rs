@@ -19,8 +19,11 @@ use store_sqlite::SqliteStore;
 use crate::ImapProvider;
 use crate::mock::{MockStream, script};
 use crate::transport::Connection;
-use engine_core::ids::MailboxId;
+use engine_core::ids::{MailboxId, MessageId};
+use engine_core::mail::Message;
+use engine_core::membership::Memberships;
 use engine_provider::Provider;
+use engine_sync::fetch_message_body;
 
 fn select_frag(tag: &str, validity: u32, uid_next: u32, exists: u32) -> String {
     format!(
@@ -128,4 +131,53 @@ async fn streamed_imap_sync_lands_in_the_store_with_progress() {
     assert!(seq.iter().all(|p| p.scope == email_scope));
     assert_eq!(seq.last().unwrap().total, Some(5));
     assert_eq!(seq.last().unwrap().fetched, 5);
+}
+
+#[tokio::test]
+async fn body_fetch_extracts_and_caches_through_the_engine() {
+    // greeting, login, then one SELECT + `BODY.PEEK[]` for UID 5. The body is a
+    // multipart/alternative so the extractor must walk it to the text part.
+    let body = "From: alice@test.local\r\nSubject: report\r\n\
+                Content-Type: multipart/alternative; boundary=\"b\"\r\n\r\n\
+                --b\r\nContent-Type: text/plain\r\n\r\nThe quarterly numbers.\r\n\
+                --b\r\nContent-Type: text/html\r\n\r\n<p>The quarterly numbers.</p>\r\n--b--\r\n";
+    let select = select_frag("a2", 100, 6, 5);
+    let fetch = format!(
+        "* 5 FETCH (UID 5 BODY[] {{{}}}\r\n{body})\r\na3 OK FETCH done\r\n",
+        body.len()
+    );
+    let server = script(&["* OK ready\r\n", "a1 OK LOGIN ok\r\n", &select, &fetch]);
+
+    let (stream, _) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+
+    let store =
+        SqliteStore::open_in_memory(ManualClock::new("2026-06-08T00:00:00Z".parse().unwrap()))
+            .expect("store");
+    let account = AccountId::try_from("imap-acct").unwrap();
+    let message = Message::new(
+        MessageId::try_from("imap:v100:u5@INBOX").unwrap(),
+        Memberships::of_one(MailboxId::try_from("INBOX").unwrap()),
+    );
+
+    // First read fetches over IMAP, caches the raw, and extracts the text + HTML.
+    let first = fetch_message_body(&provider, &store, &account, &message)
+        .await
+        .expect("fetch body");
+    assert!(first.plain().unwrap().contains("The quarterly numbers."));
+    assert!(
+        first
+            .html()
+            .unwrap()
+            .contains("<p>The quarterly numbers.</p>")
+    );
+
+    // Second read is served from the store's blob cache: the mock script is now
+    // exhausted, so a network round trip would error — proving no re-fetch.
+    let second = fetch_message_body(&provider, &store, &account, &message)
+        .await
+        .expect("fetch body from cache");
+    assert_eq!(second.plain(), first.plain());
 }

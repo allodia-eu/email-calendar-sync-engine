@@ -162,10 +162,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         parse::parse_select(&response.into_all_lines())
     }
 
+    /// `EXAMINE mailbox` — the read-only `SELECT` (RFC 9051 §6.3.2): same response
+    /// shape, but opens the mailbox without write intent and does not reset
+    /// `\Recent`, so a body peek needs no write access to the folder.
+    pub(crate) async fn examine(&mut self, mailbox: &str) -> ImapResult<SelectData> {
+        let response = self.command(&format!("EXAMINE {}", quote(mailbox))).await?;
+        parse::parse_select(&response.into_all_lines())
+    }
+
     /// `UID FETCH <set> (<items>)`, returning the parsed rows.
     pub(crate) async fn uid_fetch(&mut self, set: &str, items: &str) -> ImapResult<Vec<FetchRow>> {
         let response = self.command(&format!("UID FETCH {set} ({items})")).await?;
         parse::parse_fetch(&response.untagged)
+    }
+
+    /// `UID FETCH <uid> (BODY.PEEK[])`, returning the raw RFC 5322 bytes of the
+    /// message (the whole source, headers + every part), or `None` if the server
+    /// returned no `BODY[]` for that UID — i.e. it was expunged since the last sync
+    /// (fetching a non-existent UID is a tagged `OK` with no data, RFC 9051 §6.4.8).
+    /// `.PEEK` does not set `\Seen` — fetching a body to read it must not silently
+    /// mark it read; the host decides that via a separate edit. Only the matching
+    /// UID's data is accepted, so an unsolicited `FETCH` for another UID (a
+    /// concurrent flag update) cannot return the wrong message's bytes.
+    pub(crate) async fn uid_fetch_body(&mut self, uid: u32) -> ImapResult<Option<Vec<u8>>> {
+        let response = self
+            .command(&format!("UID FETCH {uid} (BODY.PEEK[])"))
+            .await?;
+        Ok(parse::parse_fetch_body(&response.untagged, uid))
     }
 
     /// `LIST "" "*"`, returning every mailbox.

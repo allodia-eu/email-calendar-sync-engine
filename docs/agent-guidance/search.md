@@ -113,10 +113,18 @@ back the exact, scoped `from:`/`to:`/`cc:` filters (the fold does not replace th
    matches `allodia`). Scoped terms carry a column filter (`subject:"allo"*`).
    Ranked by `bm25()`.
 
-Ranked candidate lists fuse with **RRF** (`engine_search::fuse`). Today FTS is the
-only ranked source, so single-list fusion reproduces the bm25 order; a query with
-no text falls back to a deterministic order (mail by date desc, calendar by key).
-The result is ranked provider keys (`SearchResults`) plus assembled coverage.
+Ranked candidate lists fuse with **RRF** (`engine_search::fuse`). For **mail**, free
+text matches **two** FTS sources fused together: the scope-derived `fts_index`
+(subject + folded address text) and the lease-free **`message_body_fts`** over the
+on-demand-fetched body text (`store-and-sync.md`). The body source is mail-only,
+matches the *unscoped* terms (its single `plain` column has no `subject:`/`location:`
+qualifier), and is joined to `mail_index` (live, in-scope keys only) and
+`message_body.account` (IMAP keys can collide across accounts) — so a body row for a
+deleted message or another account never surfaces. A purely `subject:`-scoped query
+does not search the body. Calendar has the single FTS source. A query with no text
+falls back to a deterministic order (mail by date desc, calendar by key). The result
+is ranked provider keys (`SearchResults`) plus assembled coverage; the fused list is
+truncated to the limit.
 
 ## Coverage
 

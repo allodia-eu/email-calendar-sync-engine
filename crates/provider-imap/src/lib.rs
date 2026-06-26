@@ -52,6 +52,7 @@ mod base64;
 mod cursor;
 mod encoded_word;
 mod error;
+mod fetch;
 mod filing;
 mod mail;
 mod mutate;
@@ -59,6 +60,7 @@ mod parse;
 mod provider;
 mod smtp;
 mod sync;
+mod target;
 mod tokenize;
 mod transport;
 
