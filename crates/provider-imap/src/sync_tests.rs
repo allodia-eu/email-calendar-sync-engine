@@ -59,7 +59,9 @@ async fn first_sync_snapshots_a_uid_window_newest_first() {
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
 
-    let page = sync_page(&mut conn, &inbox(), None, None, 3).await.unwrap();
+    let page = sync_page(&mut conn, &inbox(), None, None, 3, None)
+        .await
+        .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
     assert_eq!(page.total, Some(8));
     assert_eq!(page.changed.len(), 3);
@@ -91,7 +93,9 @@ async fn a_page_fills_to_the_limit_over_uid_gaps() {
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
 
-    let page = sync_page(&mut conn, &inbox(), None, None, 3).await.unwrap();
+    let page = sync_page(&mut conn, &inbox(), None, None, 3, None)
+        .await
+        .unwrap();
     // Filled to the limit despite the gap, newest-first.
     assert_eq!(page.changed.len(), 3);
     assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u8@INBOX");
@@ -117,7 +121,7 @@ async fn a_continuation_page_fetches_the_next_window_down() {
 
     // Resume from boundary 6 (what the first page handed back) with limit 3 → 4:6.
     let token = crate::cursor::page_token(6);
-    let page = sync_page(&mut conn, &inbox(), None, Some(&token), 3)
+    let page = sync_page(&mut conn, &inbox(), None, Some(&token), 3, None)
         .await
         .unwrap();
     assert_eq!(page.changed.len(), 3);
@@ -133,7 +137,7 @@ async fn a_delta_with_no_new_arrivals_is_a_single_empty_page() {
     let mut conn = logged_in(server).await;
 
     let cursor = SyncState::new("v1000;n10");
-    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50)
+    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Delta);
@@ -153,7 +157,7 @@ async fn a_delta_fetches_only_new_arrivals() {
     conn.login("alice", "pw").await.unwrap();
 
     let cursor = SyncState::new("v1000;n5");
-    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50)
+    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Delta);
@@ -175,7 +179,7 @@ async fn a_uidvalidity_reset_forces_a_snapshot() {
     let mut conn = logged_in(server).await;
 
     let stale = SyncState::new("v111;n9");
-    let page = sync_page(&mut conn, &inbox(), Some(&stale), None, 50)
+    let page = sync_page(&mut conn, &inbox(), Some(&stale), None, 50, None)
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
@@ -198,7 +202,7 @@ async fn uid_next_is_derived_when_the_server_omits_it() {
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
 
-    let page = sync_page(&mut conn, &inbox(), None, None, 50)
+    let page = sync_page(&mut conn, &inbox(), None, None, 50, None)
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
@@ -214,7 +218,7 @@ async fn an_empty_mailbox_snapshots_to_nothing() {
     let server = script(&[GREETING, LOGIN_OK, &select]);
     let mut conn = logged_in(server).await;
 
-    let page = sync_page(&mut conn, &inbox(), None, None, 50)
+    let page = sync_page(&mut conn, &inbox(), None, None, 50, None)
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
@@ -223,4 +227,86 @@ async fn an_empty_mailbox_snapshots_to_nothing() {
     assert!(page.present.is_empty());
     assert_eq!(page.total, Some(0));
     assert_eq!(page.next_cursor.as_str(), "v1000;n1");
+}
+
+#[tokio::test]
+async fn a_windowed_snapshot_starts_at_the_lowest_in_window_uid() {
+    // 8 messages (UIDs 1..=8), but only UIDs 5..=8 fall within the sync-depth window.
+    // `UID SEARCH SINCE` returns those, so the snapshot starts at UID 5 — older mail is
+    // never fetched — and reports the in-window count (4), not the mailbox's 8.
+    let select = select_resp("a2", 1000, 9, 8);
+    let search = "* SEARCH 5 6 7 8\r\na3 OK SEARCH done\r\n";
+    let fetch = fetch_resp("a4", &[5, 6, 7, 8]);
+    let server = script(&[GREETING, LOGIN_OK, &select, search, &fetch]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+
+    let page = sync_page(&mut conn, &inbox(), None, None, 0, Some("1-Mar-2026"))
+        .await
+        .unwrap();
+    assert_eq!(page.kind, SyncKind::Snapshot);
+    assert_eq!(page.total, Some(4));
+    assert_eq!(page.changed.len(), 4);
+    assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u8@INBOX");
+    assert_eq!(page.changed[3].id.as_str(), "imap:v1000:u5@INBOX");
+    assert_eq!(page.present.len(), 4);
+    let sent = written(&recorded);
+    assert!(sent.contains("UID SEARCH SINCE 1-Mar-2026"), "{sent}");
+    // The fetch starts at the window floor (5), not UID 1.
+    assert!(sent.contains("UID FETCH 5:8"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_windowed_snapshot_with_no_matches_fetches_nothing() {
+    // Nothing in the window → an empty `UID SEARCH` → no `FETCH` at all, but an empty
+    // present set still tombstones any stale local rows below the window.
+    let select = select_resp("a2", 1000, 9, 8);
+    let search = "* SEARCH\r\na3 OK SEARCH done\r\n";
+    let server = script(&[GREETING, LOGIN_OK, &select, search]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+
+    let page = sync_page(&mut conn, &inbox(), None, None, 0, Some("1-Jun-2026"))
+        .await
+        .unwrap();
+    assert_eq!(page.kind, SyncKind::Snapshot);
+    assert!(page.changed.is_empty());
+    assert!(page.present.is_empty());
+    assert_eq!(page.total, Some(0));
+    assert_eq!(page.next_cursor.as_str(), "v1000;n9");
+    assert!(!written(&recorded).contains("UID FETCH"));
+}
+
+#[tokio::test]
+async fn a_delta_ignores_the_sync_depth_window() {
+    // A delta is already bounded to new arrivals, so the window triggers no `SEARCH` —
+    // new mail is recent by definition.
+    let select = select_resp("a2", 1000, 8, 7);
+    let fetch = fetch_resp("a3", &[5, 6, 7]);
+    let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+
+    let cursor = SyncState::new("v1000;n5");
+    let page = sync_page(
+        &mut conn,
+        &inbox(),
+        Some(&cursor),
+        None,
+        50,
+        Some("1-Mar-2026"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.kind, SyncKind::Delta);
+    assert_eq!(page.changed.len(), 3);
+    let sent = written(&recorded);
+    assert!(
+        !sent.contains("UID SEARCH"),
+        "a delta must not SEARCH: {sent}"
+    );
+    assert!(sent.contains("UID FETCH 5:7"));
 }

@@ -32,7 +32,8 @@ use store_sqlite::SqliteStore;
 
 use super::{
     AccountId, Duration, SyncProgress, delete_calendar_event, edit_mail, submit_mail,
-    sync_calendar, sync_mail, sync_mail_streamed, write_calendar_event,
+    sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed, sync_mailbox_list,
+    write_calendar_event,
 };
 
 mod mail_edit;

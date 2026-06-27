@@ -53,6 +53,7 @@ pub struct ImapConfig {
     username: String,
     password: String,
     smtp: Option<SmtpSettings>,
+    since: Option<time::Date>,
 }
 
 impl ImapConfig {
@@ -72,7 +73,19 @@ impl ImapConfig {
             username: username.into(),
             password: password.into(),
             smtp: None,
+            since: None,
         }
+    }
+
+    /// Bounds mail sync to messages delivered on or after `since` (the sync-depth
+    /// window). A snapshot then fetches only mail within the window — so a large
+    /// mailbox syncs just recent messages — via `UID SEARCH SINCE` to find the window
+    /// floor. With no cutoff (the default) the whole mailbox syncs. A delta is already
+    /// bounded to new arrivals, so the window never narrows it.
+    #[must_use]
+    pub fn with_since(mut self, since: time::Date) -> Self {
+        self.since = Some(since);
+        self
     }
 
     /// Enables **plaintext** SMTP submission via `smtp_addr` (`host:port`), with no
@@ -113,6 +126,7 @@ impl core::fmt::Debug for ImapConfig {
             .field("addr", &self.addr)
             .field("server_name", &self.server_name)
             .field("username", &self.username)
+            .field("since", &self.since)
             .finish_non_exhaustive()
     }
 }
@@ -140,6 +154,9 @@ pub struct ImapProvider<S> {
     pub(crate) connection: Mutex<Connection<S>>,
     mailbox: MailboxId,
     smtp: Option<SmtpSender>,
+    /// The sync-depth window floor: when set, a snapshot fetches only mail delivered
+    /// on or after this date (`ImapConfig::with_since`). `None` syncs the whole mailbox.
+    since: Option<time::Date>,
     capabilities: Capabilities,
 }
 
@@ -147,6 +164,7 @@ impl<S> core::fmt::Debug for ImapProvider<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ImapProvider")
             .field("mailbox", &self.mailbox)
+            .field("since", &self.since)
             .field("capabilities", &self.capabilities)
             .finish_non_exhaustive()
     }
@@ -179,7 +197,7 @@ impl ImapProvider<TlsStream<TcpStream>> {
         let tls = connector.connect(server_name, tcp).await?;
         let mut connection = Connection::open(tls).await?;
         connection.login(&config.username, &config.password).await?;
-        Ok(Self::build(connection, mailbox, smtp))
+        Ok(Self::build(connection, mailbox, smtp, config.since))
     }
 }
 
@@ -204,9 +222,25 @@ fn resolve_smtp(
     }
 }
 
+/// Formats a calendar date as the IMAP `d-Mon-yyyy` form `UID SEARCH SINCE` expects
+/// (RFC 9051 §6.4.4), e.g. 2026-03-18 → `18-Mar-2026`. The month is a fixed English
+/// abbreviation and the rest is digits, so the result is a safe, unquoted search atom.
+fn format_imap_date(date: time::Date) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = MONTHS[usize::from(u8::from(date.month())) - 1];
+    format!("{}-{month}-{}", date.day(), date.year())
+}
+
 impl<S> ImapProvider<S> {
     /// Builds a provider, advertising submission iff SMTP is configured.
-    fn build(connection: Connection<S>, mailbox: MailboxId, smtp: Option<SmtpSender>) -> Self {
+    fn build(
+        connection: Connection<S>,
+        mailbox: MailboxId,
+        smtp: Option<SmtpSender>,
+        since: Option<time::Date>,
+    ) -> Self {
         // Mail writes (`UID STORE`/`MOVE`/`EXPUNGE`) and body fetch (`UID FETCH
         // BODY.PEEK[]`) need no extra config — every IMAP session can issue them — so
         // those capabilities are unconditional, unlike submission which depends on a
@@ -222,6 +256,7 @@ impl<S> ImapProvider<S> {
             connection: Mutex::new(connection),
             mailbox,
             smtp,
+            since,
             capabilities,
         }
     }
@@ -231,7 +266,7 @@ impl<S> ImapProvider<S> {
     /// [`ImapProvider::connect`].
     #[cfg(test)]
     pub(crate) fn with_connection(connection: Connection<S>, mailbox: MailboxId) -> Self {
-        Self::build(connection, mailbox, None)
+        Self::build(connection, mailbox, None, None)
     }
 }
 
@@ -284,7 +319,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         limit: usize,
     ) -> ProviderResult<SyncPage<Message>> {
         let mut connection = self.connection.lock().await;
-        Ok(sync_page(&mut connection, &self.mailbox, cursor, page, limit).await?)
+        let since = self.since.map(format_imap_date);
+        Ok(sync_page(
+            &mut connection,
+            &self.mailbox,
+            cursor,
+            page,
+            limit,
+            since.as_deref(),
+        )
+        .await?)
     }
 
     /// Submits `draft` over SMTP and files the sent copy in Sent.

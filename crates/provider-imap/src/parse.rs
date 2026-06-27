@@ -182,6 +182,50 @@ pub(crate) fn parse_list(lines: &[Vec<u8>]) -> ImapResult<Vec<ListRow>> {
     Ok(rows)
 }
 
+/// Reads a `UID SEARCH` result into its matched UIDs. Handles both the classic
+/// untagged `SEARCH <n> <n> …` response (RFC 9051 §7.3.4) and the extended
+/// `ESEARCH … ALL <sequence-set>` form a server may return instead: in both, the
+/// numeric tokens are collected (an `ESEARCH` range like `1:3` contributes its
+/// endpoints, which is enough for the lowest/highest UID the caller needs). Lines
+/// that are not a search result are skipped; an absent or zero-match result yields an
+/// empty vec.
+pub(crate) fn parse_search(lines: &[Vec<u8>]) -> Vec<u32> {
+    for line in lines {
+        let text = String::from_utf8_lossy(line);
+        let mut tokens = text.split_whitespace();
+        let Some(head) = tokens.next() else { continue };
+        if head.eq_ignore_ascii_case("SEARCH") {
+            // `SEARCH 3 7 9` — every remaining token is a matched UID.
+            return tokens.filter_map(|token| token.parse().ok()).collect();
+        }
+        if head.eq_ignore_ascii_case("ESEARCH") {
+            // `ESEARCH (TAG "a3") UID ALL 1:3,7` — the set follows the `ALL` label.
+            return esearch_all_uids(tokens);
+        }
+    }
+    Vec::new()
+}
+
+/// Collects the UID numbers from an `ESEARCH` response's `ALL <sequence-set>`: the
+/// tokens after `ALL`, split on the set's `,` and range `:` separators. Range
+/// endpoints (not the expanded interior) are returned — enough for the lowest UID the
+/// window floor needs, and a close-enough count for the progress denominator.
+fn esearch_all_uids<'a>(mut tokens: impl Iterator<Item = &'a str>) -> Vec<u32> {
+    let found_all = tokens
+        .by_ref()
+        .any(|token| token.eq_ignore_ascii_case("ALL"));
+    if !found_all {
+        return Vec::new();
+    }
+    let Some(set) = tokens.next() else {
+        return Vec::new();
+    };
+    set.split(',')
+        .flat_map(|range| range.split(':'))
+        .filter_map(|number| number.parse().ok())
+        .collect()
+}
+
 /// Reads `UID FETCH` untagged responses into [`FetchRow`]s. Rows without a `UID`
 /// (e.g. an unsolicited flag-only `FETCH`) are skipped, never errored.
 pub(crate) fn parse_fetch(lines: &[Vec<u8>]) -> ImapResult<Vec<FetchRow>> {

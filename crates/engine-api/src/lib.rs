@@ -16,7 +16,9 @@
 //! search** ([`Engine::search_mail`], [`Engine::search_calendar`]),
 //! **outbox-mediated mail submission** ([`Engine::submit_mail`],
 //! [`Engine::pending_op_state`]), **streaming mail sync**
-//! ([`Engine::sync_mail_streamed`]), and **outbox-mediated calendar writes**
+//! ([`Engine::sync_mail_streamed`], plus the per-folder split
+//! [`Engine::sync_mailbox_list`] + [`Engine::sync_folder_email_streamed`] for
+//! concurrent cross-folder sync), and **outbox-mediated calendar writes**
 //! ([`Engine::write_calendar_event`], [`Engine::delete_calendar_event`]). The
 //! language bindings themselves are a deliberate follow-up slice.
 //!
@@ -61,7 +63,7 @@ pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, is_supported_zone, resolve_instant, resolve_instant_in,
 };
 pub use engine_search::{ParseError, SearchHit, SearchResults};
-pub use engine_store::PendingOpState;
+pub use engine_store::{PendingOpState, SyncApplied};
 pub use engine_sync::{
     CalendarSyncReport, CalendarWriteOutcome, MailEditOutcome, MailSyncReport, ProgressSink,
     SubmitOutcome, SyncProgress, ThreadDeriveReport,
