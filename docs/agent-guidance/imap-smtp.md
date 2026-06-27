@@ -107,8 +107,13 @@ is authoritative for the `provider-caldav` calendar client.
   (space-separated, each angle-bracketed) when `Draft.references` is non-empty — each
   control-char-guarded like the other ids and omitted when its field is empty, so a
   sent reply threads with its original (`threading.md`). The body is normalized so a
-  bare CR/LF never reaches the wire. (Long encoded-words are not yet folded into
-  75-octet runs — a later refinement.)
+  bare CR/LF never reaches the wire. Plain drafts emit `text/plain`; drafts with an
+  HTML alternative emit `multipart/alternative`; CID-referenced inline attachments
+  wrap the body in `multipart/related`; regular attachments wrap the result in
+  `multipart/mixed`. Attachment header values are CR/LF/NUL guarded, binary
+  attachment bodies are base64 encoded, and non-ASCII attachment filenames use
+  RFC 5987-style `filename*` / `name*` parameters. (Long encoded-words are not yet
+  folded into 75-octet runs — a later refinement.)
 - **Folder resolution.** The sent copy / draft is filed into the account's **real
   folder for the role**, discovered via the `\Sent`/`\Drafts` SPECIAL-USE attribute
   in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
@@ -225,11 +230,11 @@ is authoritative for the `provider-caldav` calendar client.
   the RSVP write primitive are **implemented** in `engine_core::scheduling` +
   `provider_caldav::imip` (`calendar-semantics.md`/`caldav.md`). The piece that
   touches *this* crate — **delivering an iTIP `REPLY` as an iMIP email** — is
-  deferred: it needs a `multipart` `text/calendar` body, but `assemble_message` is
-  `text/plain`-only today (long encoded-words/folding are likewise unrefined). The
-  `ServerAutoSchedule` RSVP path (conditional `PUT`, the server delivers the
-  `REPLY`) needs no SMTP and is fully wired. **CalDAV/CardDAV** is the other step-5
-  slice.
+  deferred: SMTP MIME assembly now supports multipart bodies and attachments, but
+  the iTIP-specific `text/calendar` body builder is not wired yet (long
+  encoded-words/folding are likewise unrefined). The `ServerAutoSchedule` RSVP path
+  (conditional `PUT`, the server delivers the `REPLY`) needs no SMTP and is fully
+  wired. **CalDAV/CardDAV** is the other step-5 slice.
 
 ## Testing
 

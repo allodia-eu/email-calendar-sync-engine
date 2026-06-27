@@ -33,7 +33,10 @@ pub use capability::Capabilities;
 pub use error::{ProviderError, ProviderResult};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use page::{PageToken, SyncKind, SyncPage};
-pub use submit::{Draft, SubmissionReceipt};
+pub use submit::{
+    ContentIdError, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,
+    SubmissionReceipt,
+};
 pub use sync::ScopeSync;
 
 use std::collections::BTreeSet;

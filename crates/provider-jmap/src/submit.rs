@@ -37,6 +37,12 @@ pub(crate) async fn send(
     submission_account: &str,
     draft: &Draft,
 ) -> Result<SubmissionReceipt, JmapError> {
+    if !draft.attachments.is_empty() {
+        return Err(JmapError::protocol(
+            "JMAP submission does not yet support draft attachments",
+        ));
+    }
+
     let context = resolve_context(executor, mail_account, submission_account).await?;
 
     let mut req = Request::new([capability::CORE, capability::MAIL, capability::SUBMISSION]);
@@ -110,6 +116,7 @@ fn first_identity(result: &Value) -> Result<String, JmapError> {
 fn build_draft(context: &SubmitContext, draft: &Draft) -> Value {
     let mut mailbox_ids = Map::new();
     mailbox_ids.insert(context.drafts.clone(), Value::Bool(true));
+    let (body_structure, body_values) = body(draft);
     json!({
         "mailboxIds": mailbox_ids,
         "keywords": { "$draft": true, "$seen": true },
@@ -117,9 +124,32 @@ fn build_draft(context: &SubmitContext, draft: &Draft) -> Value {
         "to": draft.to.iter().map(address).collect::<Vec<_>>(),
         "subject": draft.subject,
         "messageId": [draft.message_id.as_str()],
-        "bodyStructure": { "partId": "text", "type": "text/plain" },
-        "bodyValues": { "text": { "value": draft.text_body } },
+        "bodyStructure": body_structure,
+        "bodyValues": body_values,
     })
+}
+
+/// Builds the JMAP body structure and values.
+fn body(draft: &Draft) -> (Value, Value) {
+    match &draft.html_body {
+        Some(html) => (
+            json!({
+                "type": "multipart/alternative",
+                "subParts": [
+                    { "partId": "text", "type": "text/plain" },
+                    { "partId": "html", "type": "text/html" },
+                ],
+            }),
+            json!({
+                "text": { "value": draft.text_body },
+                "html": { "value": html },
+            }),
+        ),
+        None => (
+            json!({ "partId": "text", "type": "text/plain" }),
+            json!({ "text": { "value": draft.text_body } }),
+        ),
+    }
 }
 
 /// Builds the `EmailSubmission/set` create object and the `onSuccessUpdateEmail`
@@ -276,5 +306,30 @@ mod tests {
         assert_eq!(on_success["#sub"]["mailboxIds/d"], Value::Null);
         assert_eq!(on_success["#sub"]["mailboxIds/e"], json!(true));
         assert_eq!(on_success["#sub"]["keywords/$draft"], Value::Null);
+    }
+
+    #[test]
+    fn build_draft_carries_html_as_alternative_body() {
+        let context = SubmitContext {
+            drafts: "d".to_owned(),
+            sent: "e".to_owned(),
+            identity: "b".to_owned(),
+        };
+        let draft = Draft::new(
+            message_id(),
+            EmailAddress::new("alice@test.local"),
+            vec![EmailAddress::new("bob@test.local")],
+            "Subject",
+            "Plain",
+        )
+        .with_html_body("<p>Plain</p>");
+
+        let create = build_draft(&context, &draft);
+
+        assert_eq!(create["bodyStructure"]["type"], "multipart/alternative");
+        assert_eq!(create["bodyStructure"]["subParts"][0]["partId"], "text");
+        assert_eq!(create["bodyStructure"]["subParts"][1]["partId"], "html");
+        assert_eq!(create["bodyValues"]["text"]["value"], "Plain");
+        assert_eq!(create["bodyValues"]["html"]["value"], "<p>Plain</p>");
     }
 }

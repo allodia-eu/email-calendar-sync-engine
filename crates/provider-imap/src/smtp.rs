@@ -22,6 +22,8 @@ use engine_provider::Draft;
 
 use crate::error::{ImapError, ImapResult};
 
+mod mime;
+
 /// One recipient's disposition from its `RCPT TO` reply (before `DATA`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Recipient {
@@ -66,16 +68,16 @@ pub(crate) struct SmtpResult {
 /// # Errors
 ///
 /// Every header-interpolated value (`Message-ID`, addresses, subject, display
-/// names, and the `In-Reply-To`/`References` threading ids) is rejected if it
-/// carries a CR, LF, or NUL — RFC 5322 §2.2 forbids those in a header field body,
-/// and allowing them would let a hostile draft inject extra headers or split the
-/// message / SMTP command stream. A non-ASCII subject or display name is emitted as
-/// an RFC 2047 `B` encoded-word, never raw 8-bit bytes, so the headers stay 7-bit
-/// clean. A `Date` header is generated from `date` (RFC 5322 §3.6 requires it; for
-/// an IMAP `APPEND` — `save_draft` or the Sent copy — no server is in the loop to
-/// add one). For a reply or forward the `In-Reply-To` and `References` headers
-/// (RFC 5322 §3.6.4) thread the message with its original; each is omitted when its
-/// draft field is empty.
+/// names, the `In-Reply-To`/`References` threading ids, and attachment media
+/// metadata) is rejected if it carries a CR, LF, or NUL — RFC 5322 §2.2 forbids
+/// those in a header field body, and allowing them would let a hostile draft inject
+/// extra headers or split the message / SMTP command stream. A non-ASCII subject or
+/// display name is emitted as an RFC 2047 `B` encoded-word, never raw 8-bit bytes,
+/// so the headers stay 7-bit clean. A `Date` header is generated from `date` (RFC
+/// 5322 §3.6 requires it; for an IMAP `APPEND` — `save_draft` or the Sent copy —
+/// no server is in the loop to add one). For a reply or forward the `In-Reply-To`
+/// and `References` headers (RFC 5322 §3.6.4) thread the message with its original;
+/// each is omitted when its draft field is empty.
 pub(crate) fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ImapResult<Vec<u8>> {
     let message_id = reject_control("Message-ID", draft.message_id.as_str())?;
     let from = address_field(&draft.from)?;
@@ -110,13 +112,13 @@ pub(crate) fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ImapResul
     let headers = format!(
         "Date: {date}\r\nMessage-ID: <{message_id}>\r\nFrom: {from}\r\nTo: {to}\r\n\
          {in_reply_to}{references}Subject: {subject}\r\n\
-         MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
+         MIME-Version: 1.0\r\n",
     );
+    let body = mime::assemble(draft)?;
     let mut message = headers.into_bytes();
-    for line in normalize_body_lines(&draft.text_body) {
-        message.extend_from_slice(line.as_bytes());
-        message.extend_from_slice(b"\r\n");
-    }
+    message.extend_from_slice(body.content_headers.as_bytes());
+    message.extend_from_slice(b"\r\n");
+    message.extend_from_slice(&body.body);
     Ok(message)
 }
 
@@ -428,3 +430,7 @@ mod tests;
 #[cfg(test)]
 #[path = "smtp_threading_tests.rs"]
 mod threading_tests;
+
+#[cfg(test)]
+#[path = "smtp_mime_tests.rs"]
+mod mime_tests;

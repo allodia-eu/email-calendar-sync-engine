@@ -54,8 +54,8 @@ pub use engine_core::mail::{
 pub use engine_core::time::{TimeZoneId, UtcDateTime};
 pub use engine_core::write::PendingOpId;
 pub use engine_provider::{
-    Draft, EventDeletion, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, Provider,
-    WritePrecondition,
+    ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition, EventDeletion, EventWrite,
+    EventWriteReceipt, MailEdit, MailEditReceipt, Provider, SubmissionReceipt, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, is_supported_zone, resolve_instant, resolve_instant_in,
