@@ -251,6 +251,34 @@ impl<C: Clock> SqliteStore<C> {
         let key = scope_key(scope);
         self.call(move |conn| clear_one_cursor(conn, &key)).await
     }
+
+    /// Compacts the database, reclaiming the free pages that deletions leave behind —
+    /// e.g. the out-of-window messages a re-snapshot tombstones after a sync-depth
+    /// reduction, or after a [`reset_sync`](Self::reset_sync) and its follow-up sync drop
+    /// everything past the window. SQLite holds a file at its high-water mark and reuses
+    /// freed pages rather than shrinking, so without this the on-disk size never falls as
+    /// mail ages out. Runs `VACUUM` then a `TRUNCATE` checkpoint, so the main file is
+    /// rewritten compact and the WAL truncated **then** — in WAL mode `VACUUM` alone defers
+    /// the on-disk shrink to the next checkpoint. The content-addressed blob area is
+    /// separate and untouched.
+    ///
+    /// It rewrites the whole database, so it needs transient free disk space about the size
+    /// of the database and briefly holds the store's single connection. Call it off the hot
+    /// path, once the deletions are committed (a host runs it after a reset's re-sync has
+    /// settled), not on every sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`engine_store::StoreError::Backend`] on a backend failure.
+    pub async fn vacuum(&self) -> Result<()> {
+        self.call(|conn| {
+            // execute_batch tolerates the rows the checkpoint pragma echoes back; VACUUM
+            // runs in autocommit (the bare connection holds no transaction), as it requires.
+            conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+                .map_err(backend)
+        })
+        .await
+    }
 }
 
 /// Clears every scope's cursor and lease so the next sync re-snapshots from scratch.

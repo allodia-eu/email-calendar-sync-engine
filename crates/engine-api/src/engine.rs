@@ -136,6 +136,23 @@ impl Engine {
         Ok(())
     }
 
+    /// Compacts the on-disk database, reclaiming the free pages left after objects are
+    /// deleted — e.g. the out-of-window mail a re-snapshot tombstones once a
+    /// [`reset`](Self::reset) (or a sync-depth reduction) and its follow-up sync have
+    /// dropped everything past the window. SQLite holds a file at its high-water mark and
+    /// reuses freed pages, so the on-disk size never falls on its own; a host calls this
+    /// after a reset's re-sync settles to shrink the file back to the live data's size. It
+    /// rewrites the whole database, so it needs transient free disk space about the size of
+    /// the database and briefly serializes the store — not for a hot path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn vacuum(&self) -> Result<(), ApiError> {
+        self.store.vacuum().await?;
+        Ok(())
+    }
+
     /// Clears just the **mail** scopes' sync cursors, so the next [`Engine::sync_mail`]
     /// re-snapshots them. The targeted counterpart of [`Engine::reset`]: it reconciles
     /// mail with the server — picking up flag, move, and expunge changes that an IMAP
