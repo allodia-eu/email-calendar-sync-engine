@@ -40,12 +40,19 @@ const FETCH_ITEMS: &str =
 /// Fetches one page of the bound mailbox's mail since `cursor`, continuing from
 /// `page` (a UID boundary) and bounded by `limit` (`0` means the whole window in
 /// one page).
+///
+/// `since` is the optional sync-depth window floor (an IMAP `dd-Mon-yyyy` date): when
+/// set, a **snapshot** fetches only mail delivered on or after it (found via
+/// `UID SEARCH SINCE`), so a large mailbox syncs just recent messages. It never
+/// narrows a delta — new arrivals are recent by definition — nor changes paging once
+/// the floor is set.
 pub(crate) async fn sync_page<S>(
     conn: &mut Connection<S>,
     mailbox: &MailboxId,
     cursor: Option<&SyncState>,
     page: Option<&PageToken>,
     limit: usize,
+    since: Option<&str>,
 ) -> ImapResult<SyncPage<Message>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -61,14 +68,29 @@ where
 
     // First sync, or a UIDVALIDITY reset, is a snapshot from UID 1; a matching
     // cursor is a delta from its watermark.
-    let (kind, low_bound) = match cursor.and_then(MailboxCursor::decode) {
+    let (kind, mut low_bound) = match cursor.and_then(MailboxCursor::decode) {
         Some(prior) if prior.uid_validity == uid_validity => (SyncKind::Delta, prior.uid_next),
         _ => (SyncKind::Snapshot, 1),
     };
-    let total = match kind {
+    let mut total = match kind {
         SyncKind::Snapshot => Some(usize::try_from(select.exists).unwrap_or(usize::MAX)),
         SyncKind::Delta => None,
     };
+
+    // A sync-depth window bounds the snapshot to recent mail: `UID SEARCH SINCE`
+    // yields the in-window UIDs, so the snapshot starts at the lowest of them (older
+    // mail is never fetched) and reports their count as the progress denominator. No
+    // matches means an empty pass that still tombstones any stale local rows.
+    if let (SyncKind::Snapshot, Some(date)) = (kind, since) {
+        let in_window = conn.uid_search_since(date).await?;
+        match in_window.iter().min() {
+            Some(&lowest) => {
+                low_bound = lowest;
+                total = Some(in_window.len());
+            }
+            None => return Ok(empty_page(kind, next_cursor, Some(0))),
+        }
+    }
 
     // The highest UID this page covers: the continuation boundary, else the newest.
     let newest = uid_next.saturating_sub(1);

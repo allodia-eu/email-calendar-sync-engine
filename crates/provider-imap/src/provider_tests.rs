@@ -386,6 +386,7 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
         Some(super::SmtpSender::Plaintext {
             addr: loopback_smtp(),
         }),
+        None,
     );
     assert!(provider.capabilities().submission());
 

@@ -176,6 +176,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         parse::parse_fetch(&response.untagged)
     }
 
+    /// `UID SEARCH SINCE <date>` — the UIDs of messages whose `INTERNALDATE` is on or
+    /// after `date` (an IMAP `dd-Mon-yyyy` date, RFC 9051 §6.4.4), used to find the
+    /// floor of a sync-depth window so a snapshot fetches only recent mail. `date` is
+    /// caller-formatted from a calendar date (digits + a fixed month abbreviation), so
+    /// it carries no quoting or injection risk. Returns the matched UIDs (empty if none
+    /// match), tolerating both the classic `* SEARCH` and extended `* ESEARCH` reply.
+    pub(crate) async fn uid_search_since(&mut self, date: &str) -> ImapResult<Vec<u32>> {
+        let response = self.command(&format!("UID SEARCH SINCE {date}")).await?;
+        Ok(parse::parse_search(&response.untagged))
+    }
+
     /// `UID FETCH <uid> (BODY.PEEK[])`, returning the raw RFC 5322 bytes of the
     /// message (the whole source, headers + every part), or `None` if the server
     /// returned no `BODY[]` for that UID — i.e. it was expunged since the last sync

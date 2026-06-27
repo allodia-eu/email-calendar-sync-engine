@@ -835,6 +835,38 @@ async fn sync_mail_streamed_reports_progress() {
 }
 
 #[tokio::test]
+async fn folder_split_sync_lists_then_streams_email() {
+    use std::sync::{Arc, Mutex};
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = FakeProvider::new();
+
+    // The container step applies only the folder list — the messages are not synced yet,
+    // so the per-folder email streams can fan out afterwards without re-listing.
+    let mailboxes = engine
+        .sync_mailbox_list(&provider, &account())
+        .await
+        .unwrap();
+    assert_eq!(mailboxes.upserted, 2);
+    assert_eq!(engine.mailboxes(&account()).await.unwrap().len(), 2);
+    assert!(engine.messages(&account()).await.unwrap().is_empty());
+
+    // The per-folder email stream then commits the messages and reports progress,
+    // without re-touching the folder list.
+    let seen: Arc<Mutex<Vec<SyncProgress>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let seen = Arc::clone(&seen);
+        move |p: SyncProgress| seen.lock().unwrap().push(p)
+    };
+    let email = engine
+        .sync_folder_email_streamed(&provider, &account(), 0, &sink)
+        .await
+        .unwrap();
+    assert_eq!(email.upserted, 2);
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn lists_synced_mailboxes_and_messages() {
     let engine = Engine::open_in_memory().unwrap();
     engine

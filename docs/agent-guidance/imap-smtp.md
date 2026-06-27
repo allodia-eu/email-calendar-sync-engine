@@ -62,6 +62,18 @@ is authoritative for the `provider-caldav` calendar client.
   simply absent (a gap), and a snapshot's accumulated `present` set is exactly the
   existing UIDs (tombstoning the rest). `limit` `0` means the whole remaining window
   in one page (the drain default).
+- **Sync-depth window (optional).** A provider built with `ImapConfig::with_since(date)`
+  bounds a **snapshot** to mail delivered on or after `date`: before paging, a single
+  `UID SEARCH SINCE <dd-Mon-yyyy>` (`transport::uid_search_since`, parsed by
+  `parse_search`, tolerating both classic `* SEARCH` and extended `* ESEARCH … ALL`)
+  yields the in-window UIDs, and the snapshot starts at the **lowest** of them (older
+  mail is never fetched), reporting their count as the `total` progress denominator. No
+  matches yields an empty snapshot that still tombstones stale rows below the window. A
+  **delta** is already bounded to new arrivals, so the window never narrows it (no
+  `SEARCH` is issued). With no cutoff (the default) the whole mailbox syncs, exactly as
+  before. This is how a host implements "configurable sync depth" without an
+  account-wide message delta — the cutoff is a host-supplied calendar date, so this
+  crate stays free of any depth/duration policy.
 - **Snapshot vs delta.** First sync (no cursor) or a UIDVALIDITY mismatch →
   **snapshot** (rediscover from UID 1, carry `present`). A matching cursor → **delta**
   of new arrivals only (UIDs at or above the cursor's `UIDNEXT`). A delta carries
@@ -213,8 +225,11 @@ is authoritative for the `provider-caldav` calendar client.
 - **`UID EXPUNGE` requires UIDPLUS** (RFC 4315). A server without it would need a
   plain `EXPUNGE` (which expunges every `\Deleted` message in the mailbox) — also a
   later refinement.
-- **No IMAP `SEARCH` provider-search fallback** yet (the `search-coverage.md`
-  slice). The transport does not implement `SEARCH`.
+- **`SEARCH` is implemented only for the sync-depth window** (`UID SEARCH SINCE`, see
+  Sync-depth window above), not yet as a general **provider-search fallback** (the
+  `search-coverage.md` slice). `UID SEARCH SINCE` is parsed for both the classic
+  `* SEARCH` and extended `* ESEARCH … ALL` replies; richer criteria and the
+  full-text provider fallback remain a later refinement.
 - **No SMTP STARTTLS** (port 587). Implicit TLS (465) + `AUTH PLAIN` is implemented; STARTTLS is a later
   refinement.
 - **Charset coverage.** RFC 2047 decoding covers UTF-8, ISO-8859-1, and Windows-1252

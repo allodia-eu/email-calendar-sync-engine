@@ -60,6 +60,41 @@ fn list_unescapes_a_quoted_name() {
 }
 
 #[test]
+fn search_collects_matched_uids() {
+    assert_eq!(parse_search(&lines(&["SEARCH 3 7 9"])), vec![3, 7, 9]);
+}
+
+#[test]
+fn search_with_no_matches_is_empty() {
+    assert_eq!(parse_search(&lines(&["SEARCH"])), Vec::<u32>::new());
+}
+
+#[test]
+fn search_reads_the_extended_esearch_all_set() {
+    // A server may answer the extended ESEARCH form instead; the `ALL` sequence-set's
+    // numbers are collected (range endpoints suffice for the lowest UID the caller needs).
+    assert_eq!(
+        parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 5:8"#])),
+        vec![5, 8]
+    );
+    assert_eq!(
+        parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 1:3,7"#])),
+        vec![1, 3, 7]
+    );
+}
+
+#[test]
+fn search_skips_unrelated_lines_and_zero_match_esearch() {
+    // A non-search untagged line is ignored, and an ESEARCH carrying no `ALL` (zero
+    // matches) yields nothing.
+    assert_eq!(parse_search(&lines(&["OK noted"])), Vec::<u32>::new());
+    assert_eq!(
+        parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID"#])),
+        Vec::<u32>::new()
+    );
+}
+
+#[test]
 fn a_quoted_string_carrying_raw_utf8_decodes_as_utf8_not_latin1() {
     // A server may send a display name / mailbox name as a raw-UTF-8 quoted string
     // (RFC 6855 UTF8=ACCEPT), not an RFC 2047 encoded-word. The bytes for "Café"

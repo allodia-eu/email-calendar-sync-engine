@@ -12,11 +12,12 @@ use engine_core::write::PendingOpId;
 use engine_provider::{Draft, EventDeletion, EventWrite, MailEdit, Provider};
 use engine_recurrence::Horizon;
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
-use engine_store::{PendingOpState, StoreError, StoreRead, WorkerId};
+use engine_store::{PendingOpState, StoreError, StoreRead, SyncApplied, WorkerId};
 use engine_sync::{
     CalendarSyncReport, CalendarWriteOutcome, MailEditOutcome, MailSyncReport, ProgressSink,
     SubmitOutcome, SyncError, ThreadDeriveReport, delete_calendar_event, derive_mail_threads,
-    edit_mail, submit_mail, sync_calendar, sync_mail, sync_mail_streamed, write_calendar_event,
+    edit_mail, submit_mail, sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed,
+    sync_mailbox_list, write_calendar_event,
 };
 use serde_json::Value;
 use store_sqlite::SqliteStore;
@@ -178,6 +179,61 @@ impl Engine {
             LEASE_TTL,
             horizon,
             host_zone,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
+
+    /// Syncs **only** one account's mailbox list (folder discovery) from `provider`,
+    /// skipping the email members. The once-per-account container step a host runs
+    /// before fanning out the per-folder email syncs
+    /// ([`Engine::sync_folder_email_streamed`]) **concurrently**: the folder-list scope
+    /// is shared, so syncing it once up front lets the independent per-folder email
+    /// scopes proceed in parallel without contending over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Busy`] if another sync already holds this account's
+    /// folder-list scope, or [`ApiError::Sync`] if the provider fetch fails or the
+    /// store rejects the apply.
+    pub async fn sync_mailbox_list<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+    ) -> Result<SyncApplied, ApiError> {
+        sync_mailbox_list(provider, &self.store, account, worker(), LEASE_TTL)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Streams **only** the mail of the single folder `provider` is bound to, skipping
+    /// the mailbox-list step — the per-folder counterpart of
+    /// [`Engine::sync_mail_streamed`]. A host runs [`Engine::sync_mailbox_list`] once,
+    /// then calls this for each folder provider **concurrently** (distinct mailbox
+    /// scopes never contend), each reporting [`SyncProgress`](engine_sync::SyncProgress)
+    /// to `progress` after every committed page. Only the final page advances the
+    /// folder's cursor, so a mid-stream crash re-runs the pass idempotently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Busy`] if another sync already holds this folder's mail
+    /// scope, or [`ApiError::Sync`] if the provider fetch fails or the store rejects an
+    /// apply.
+    pub async fn sync_folder_email_streamed<P: Provider, K: ProgressSink>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        page_limit: usize,
+        progress: &K,
+    ) -> Result<SyncApplied, ApiError> {
+        sync_email_streamed(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            page_limit,
+            progress,
         )
         .await
         .map_err(map_sync_error)
