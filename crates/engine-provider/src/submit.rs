@@ -22,6 +22,15 @@ pub struct Draft {
     pub from: EmailAddress,
     /// The recipient addresses.
     pub to: Vec<EmailAddress>,
+    /// The `Cc` ("carbon copy") recipients — visible to every recipient. Empty for
+    /// none. Defaulted so a payload serialized before Cc/Bcc support still deserializes.
+    #[serde(default)]
+    pub cc: Vec<EmailAddress>,
+    /// The `Bcc` ("blind carbon copy") recipients. They are delivered to (added to the
+    /// SMTP envelope) but, by convention, **never** written as a message header, so no
+    /// other recipient can see them. Empty for none. Defaulted for back-compat like `cc`.
+    #[serde(default)]
+    pub bcc: Vec<EmailAddress>,
     /// The subject.
     pub subject: String,
     /// The plain-text body.
@@ -63,6 +72,8 @@ impl Draft {
             message_id,
             from,
             to,
+            cc: Vec::new(),
+            bcc: Vec::new(),
             subject: subject.into(),
             text_body: text_body.into(),
             html_body: None,
@@ -70,6 +81,21 @@ impl Draft {
             in_reply_to: None,
             references: Vec::new(),
         }
+    }
+
+    /// Sets the `Cc` recipients (visible to every recipient).
+    #[must_use]
+    pub fn with_cc(mut self, cc: Vec<EmailAddress>) -> Self {
+        self.cc = cc;
+        self
+    }
+
+    /// Sets the `Bcc` recipients — delivered via the SMTP envelope but never emitted as
+    /// a header, so they stay hidden from every other recipient.
+    #[must_use]
+    pub fn with_bcc(mut self, bcc: Vec<EmailAddress>) -> Self {
+        self.bcc = bcc;
+        self
     }
 
     /// Sets the threading linkage for a reply or forward: the `parent` message's
@@ -314,6 +340,49 @@ mod tests {
         );
         assert_eq!(draft.in_reply_to, Some(mid("parent@host")));
         assert_eq!(draft.references, vec![mid("root@host"), mid("parent@host")]);
+    }
+
+    #[test]
+    fn new_defaults_cc_and_bcc_to_empty() {
+        let draft = draft();
+        assert!(draft.cc.is_empty());
+        assert!(draft.bcc.is_empty());
+    }
+
+    #[test]
+    fn cc_and_bcc_builders_set_recipients() {
+        let draft = draft()
+            .with_cc(vec![EmailAddress::new("carol@test.local")])
+            .with_bcc(vec![EmailAddress::new("dave@test.local")]);
+        assert_eq!(draft.cc, vec![EmailAddress::new("carol@test.local")]);
+        assert_eq!(draft.bcc, vec![EmailAddress::new("dave@test.local")]);
+    }
+
+    #[test]
+    fn cc_and_bcc_round_trip_through_serde() {
+        let draft = draft()
+            .with_cc(vec![EmailAddress::new("carol@test.local")])
+            .with_bcc(vec![EmailAddress::new("dave@test.local")]);
+        let json = serde_json::to_string(&draft).unwrap();
+        let restored: Draft = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.cc, draft.cc);
+        assert_eq!(restored.bcc, draft.bcc);
+    }
+
+    #[test]
+    fn a_payload_without_cc_or_bcc_still_deserializes() {
+        // A durable outbox payload serialized before Cc/Bcc support omits the new fields;
+        // `#[serde(default)]` keeps it loadable with empty recipient lists.
+        let json = r#"{
+            "message_id": "old@host",
+            "from": {"email": "alice@test.local"},
+            "to": [{"email": "bob@test.local"}],
+            "subject": "hi",
+            "text_body": "body"
+        }"#;
+        let restored: Draft = serde_json::from_str(json).unwrap();
+        assert!(restored.cc.is_empty());
+        assert!(restored.bcc.is_empty());
     }
 
     #[test]

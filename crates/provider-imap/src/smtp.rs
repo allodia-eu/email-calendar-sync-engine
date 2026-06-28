@@ -59,8 +59,35 @@ pub(crate) struct SmtpResult {
     pub disposition: Disposition,
 }
 
+/// Whether the assembled message carries a `Bcc` header — the one difference between the
+/// over-the-wire message and the filed Sent/Drafts copy (Outlook/Thunderbird behavior).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BccHeader {
+    /// Over-the-wire: omit `Bcc`. Bcc recipients are reached via the SMTP envelope only, so no
+    /// recipient can see the Bcc list (nor that a Bcc happened).
+    Omit,
+    /// Filed Sent/Drafts copy: include `Bcc`. APPENDed locally, never transmitted, so the
+    /// sender keeps a record of whom they Bcc'd while it stays private to them.
+    Include,
+}
+
+/// Assembles the **over-the-wire** RFC 5322 message for `draft` — **without** a `Bcc` header,
+/// so no recipient can see the Bcc list. Use [`assemble_filed_message`] for the Sent/Drafts
+/// copy. See [`assemble`] for the full contract.
+pub(crate) fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ImapResult<Vec<u8>> {
+    assemble(draft, date, BccHeader::Omit)
+}
+
+/// Assembles the RFC 5322 message for the **filed Sent/Drafts copy** — identical to
+/// [`assemble_message`] but **with** the `Bcc` header, so the sender's Sent folder records
+/// whom they Bcc'd (Outlook/Thunderbird behavior). This copy is APPENDed locally and never
+/// transmitted, so the Bcc never reaches a recipient.
+pub(crate) fn assemble_filed_message(draft: &Draft, date: OffsetDateTime) -> ImapResult<Vec<u8>> {
+    assemble(draft, date, BccHeader::Include)
+}
+
 /// Assembles the RFC 5322 message bytes for `draft`, stamped with `date` (CRLF
-/// line endings).
+/// line endings), emitting a `Bcc` header only when `bcc` is [`BccHeader::Include`].
 ///
 /// The caller's pre-generated `Message-ID` is set verbatim so the sent copy
 /// reconciles by it on a later sync (`store-and-sync.md`).
@@ -77,16 +104,34 @@ pub(crate) struct SmtpResult {
 /// 5322 §3.6 requires it; for an IMAP `APPEND` — `save_draft` or the Sent copy —
 /// no server is in the loop to add one). For a reply or forward the `In-Reply-To`
 /// and `References` headers (RFC 5322 §3.6.4) thread the message with its original;
-/// each is omitted when its draft field is empty.
-pub(crate) fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ImapResult<Vec<u8>> {
+/// each is omitted when its draft field is empty. A `Cc` header is emitted when the
+/// draft carries Cc recipients (visible to everyone); a `Bcc` header is emitted only
+/// for [`BccHeader::Include`] (the filed copy), never for transmission.
+fn assemble(draft: &Draft, date: OffsetDateTime, bcc: BccHeader) -> ImapResult<Vec<u8>> {
     let message_id = reject_control("Message-ID", draft.message_id.as_str())?;
     let from = address_field(&draft.from)?;
-    let to = draft
-        .to
-        .iter()
-        .map(address_field)
-        .collect::<ImapResult<Vec<_>>>()?
-        .join(", ");
+    // A message with no To recipients (a Bcc-only send) still needs a valid `To` header — name
+    // an empty RFC 5322 §3.4 group, exactly as Outlook/Thunderbird do — rather than emit a bare
+    // empty `To:` that many MTAs and spam filters penalize.
+    let to_header = if draft.to.is_empty() {
+        "To: undisclosed-recipients:;\r\n".to_owned()
+    } else {
+        format!("To: {}\r\n", address_list(&draft.to)?)
+    };
+    // A `Cc:` header is emitted (visible to every recipient) when present.
+    let cc_header = if draft.cc.is_empty() {
+        String::new()
+    } else {
+        format!("Cc: {}\r\n", address_list(&draft.cc)?)
+    };
+    // A `Bcc:` header is emitted ONLY for the filed Sent/Drafts copy (`BccHeader::Include`).
+    // The transmitted message omits it, so Bcc recipients — delivered via the SMTP envelope
+    // (`RCPT TO`, see `submit_over`) — stay hidden from every recipient.
+    let bcc_header = if bcc == BccHeader::Omit || draft.bcc.is_empty() {
+        String::new()
+    } else {
+        format!("Bcc: {}\r\n", address_list(&draft.bcc)?)
+    };
     let subject = encode_header_text(reject_control("subject", &draft.subject)?);
     let in_reply_to = match &draft.in_reply_to {
         Some(parent) => format!(
@@ -110,8 +155,8 @@ pub(crate) fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ImapResul
         .format(&Rfc2822)
         .map_err(|e| ImapError::protocol(format!("cannot format the Date header: {e}")))?;
     let headers = format!(
-        "Date: {date}\r\nMessage-ID: <{message_id}>\r\nFrom: {from}\r\nTo: {to}\r\n\
-         {in_reply_to}{references}Subject: {subject}\r\n\
+        "Date: {date}\r\nMessage-ID: <{message_id}>\r\nFrom: {from}\r\n{to_header}\
+         {cc_header}{bcc_header}{in_reply_to}{references}Subject: {subject}\r\n\
          MIME-Version: 1.0\r\n",
     );
     let body = mime::assemble(draft)?;
@@ -150,6 +195,16 @@ fn address_field(addr: &EmailAddress) -> ImapResult<String> {
         }
         None => Ok(email.to_owned()),
     }
+}
+
+/// Formats an address list as a comma-separated RFC 5322 header value (each via
+/// [`address_field`]) — the shared body of the `To`/`Cc`/`Bcc` headers.
+fn address_list(addresses: &[EmailAddress]) -> ImapResult<String> {
+    Ok(addresses
+        .iter()
+        .map(address_field)
+        .collect::<ImapResult<Vec<_>>>()?
+        .join(", "))
 }
 
 /// Whether `s` is entirely printable 7-bit ASCII (so it needs no encoding).
@@ -434,3 +489,7 @@ mod threading_tests;
 #[cfg(test)]
 #[path = "smtp_mime_tests.rs"]
 mod mime_tests;
+
+#[cfg(test)]
+#[path = "smtp_cc_bcc_tests.rs"]
+mod cc_bcc_tests;

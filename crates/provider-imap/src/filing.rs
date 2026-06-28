@@ -6,6 +6,8 @@
 //! [`ImapProvider`] half that `submit_email` delegates to, kept out of
 //! [`crate::provider`] so that file stays under the size limit.
 
+use std::collections::HashSet;
+
 use engine_core::ids::{MessageIdHeader, ProviderKey};
 use engine_core::mail::MailboxRole;
 use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
@@ -81,11 +83,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     where
         W: AsyncRead + AsyncWrite + Unpin + Send,
     {
-        let message = smtp::assemble_message(draft, OffsetDateTime::now_utc())?;
+        // One timestamp for both the transmitted and the filed copy, so they differ ONLY in
+        // the Bcc header.
+        let now = OffsetDateTime::now_utc();
+        // The over-the-wire message OMITS the Bcc header — Bcc recipients are reached via the
+        // envelope only, so no recipient can see them.
+        let message = smtp::assemble_message(draft, now)?;
         let from = draft.from.email.as_str();
+        // Every envelope recipient gets a `RCPT TO`: To + Cc + Bcc, de-duplicated
+        // case-insensitively (the same address can appear in more than one field — e.g. To and
+        // Cc) so a strict server never rejects a repeated `RCPT`. Bcc is delivered here but not
+        // in the wire message's headers, so it stays hidden from the other recipients.
+        let mut seen: HashSet<String> = HashSet::new();
         let to: Vec<String> = draft
             .to
             .iter()
+            .chain(&draft.cc)
+            .chain(&draft.bcc)
+            .filter(|address| seen.insert(address.email.to_ascii_lowercase()))
             .map(|address| address.email.clone())
             .collect();
         let ehlo = from
@@ -108,12 +123,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
             }
         }
 
+        // The filed Sent copy INCLUDES the Bcc header (it is APPENDed locally, never
+        // transmitted), so the sender's Sent folder records whom they Bcc'd — Outlook/
+        // Thunderbird behavior. Identical to the wire message when there's no Bcc, so only
+        // re-assemble then.
+        let filed = if draft.bcc.is_empty() {
+            message.clone()
+        } else {
+            smtp::assemble_filed_message(draft, now)?
+        };
         // Best-effort Sent placement; a successful send is never failed for it. The
         // Sent folder is resolved by its `\Sent` SPECIAL-USE role (falling back to
         // the conventional "Sent"), so the copy lands in the account's real Sent
         // folder — not a stray one on servers that name it differently.
         let (folder, append_uid) = self
-            .append_to_role_folder(Filing::Sent, &message)
+            .append_to_role_folder(Filing::Sent, &filed)
             .await
             .unwrap_or_else(|_| (Filing::Sent.default_folder().to_owned(), None));
         let email_key = placed_key(
@@ -162,7 +186,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     ///
     /// Returns a classified [`ProviderError`] on a transport or `APPEND` failure.
     pub async fn save_draft(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
-        let message = smtp::assemble_message(draft, OffsetDateTime::now_utc())?;
+        // A saved draft retains the Bcc header so resuming it restores every recipient (it is
+        // APPENDed locally, never transmitted).
+        let message = smtp::assemble_filed_message(draft, OffsetDateTime::now_utc())?;
         // Unlike Sent placement this surfaces an `APPEND` failure (saving the draft is
         // the whole op). The Drafts folder is resolved by its `\Drafts` SPECIAL-USE
         // role (falling back to the conventional "Drafts").
