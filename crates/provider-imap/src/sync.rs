@@ -16,6 +16,8 @@
 //!   deferred capability); a periodic snapshot reconciles them. So a delta never
 //!   carries removals.
 
+use std::cmp::Reverse;
+
 use engine_core::ids::MailboxId;
 use engine_core::mail::Message;
 use engine_core::sync::SyncState;
@@ -68,28 +70,37 @@ where
 
     // First sync, or a UIDVALIDITY reset, is a snapshot from UID 1; a matching
     // cursor is a delta from its watermark.
-    let (kind, mut low_bound) = match cursor.and_then(MailboxCursor::decode) {
+    let (kind, low_bound) = match cursor.and_then(MailboxCursor::decode) {
         Some(prior) if prior.uid_validity == uid_validity => (SyncKind::Delta, prior.uid_next),
         _ => (SyncKind::Snapshot, 1),
     };
-    let mut total = match kind {
+    let total = match kind {
         SyncKind::Snapshot => Some(usize::try_from(select.exists).unwrap_or(usize::MAX)),
         SyncKind::Delta => None,
     };
 
-    // A sync-depth window bounds the snapshot to recent mail: `UID SEARCH SINCE`
-    // yields the in-window UIDs, so the snapshot starts at the lowest of them (older
-    // mail is never fetched) and reports their count as the progress denominator. No
-    // matches means an empty pass that still tombstones any stale local rows.
+    // A sync-depth window bounds the snapshot to recent mail: fetch **only** the UIDs that
+    // `UID SEARCH SINCE` reports in window — never the whole UID range above the oldest of
+    // them. That range can span most of the mailbox when moved/imported mail scrambles the
+    // UID-vs-date order (the cause of a 3-month window still pulling tens of thousands of
+    // old messages, and of `fetched` overshooting the in-window `total`). A delta is
+    // already new-arrivals-only, so the window never applies to it.
     if let (SyncKind::Snapshot, Some(date)) = (kind, since) {
-        let in_window = conn.uid_search_since(date).await?;
-        match in_window.iter().min() {
-            Some(&lowest) => {
-                low_bound = lowest;
-                total = Some(in_window.len());
-            }
-            None => return Ok(empty_page(kind, next_cursor, Some(0))),
+        let mut in_window = conn.uid_search_since(date).await?;
+        if in_window.is_empty() {
+            return Ok(empty_page(SyncKind::Snapshot, next_cursor, Some(0)));
         }
+        in_window.sort_unstable();
+        return windowed_snapshot_page(
+            conn,
+            mailbox,
+            uid_validity,
+            next_cursor,
+            &in_window,
+            page,
+            limit,
+        )
+        .await;
     }
 
     // The highest UID this page covers: the continuation boundary, else the newest.
@@ -172,6 +183,95 @@ where
         next_cursor,
         total,
     })
+}
+
+/// Fetches one page of a **sync-depth-windowed** snapshot: only the UIDs `UID SEARCH
+/// SINCE` reported in window (`in_window`, ascending), newest-first, `limit` per page
+/// (`0` = the whole remaining window). So a large mailbox downloads exactly the recent
+/// mail — never the whole UID range above the oldest in-window message — and `fetched`
+/// can never overshoot the in-window `total`. `page` is the exclusive high boundary (the
+/// lowest UID the prior page kept); `None` starts from the newest.
+async fn windowed_snapshot_page<S>(
+    conn: &mut Connection<S>,
+    mailbox: &MailboxId,
+    uid_validity: u32,
+    next_cursor: SyncState,
+    in_window: &[u32],
+    page: Option<&PageToken>,
+    limit: usize,
+) -> ImapResult<SyncPage<Message>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let total = Some(in_window.len());
+    // Resume below the prior page's lowest kept UID (the opaque boundary), newest-first.
+    let boundary = page.and_then(cursor::page_high);
+    let mut pending: Vec<u32> = in_window
+        .iter()
+        .copied()
+        .filter(|&uid| boundary.is_none_or(|b| uid < b))
+        .collect();
+    pending.sort_unstable_by_key(|&uid| Reverse(uid)); // descending: newest first
+    let take = if limit == 0 {
+        pending.len()
+    } else {
+        limit.min(pending.len())
+    };
+    let chunk = &pending[..take];
+    if chunk.is_empty() {
+        // Drained: a final empty page; the streaming loop's accumulated `present` (every
+        // in-window key) is what tombstones anything now outside the window.
+        return Ok(empty_page(SyncKind::Snapshot, next_cursor, total));
+    }
+    // Fetch exactly these UIDs as a compact set (`5,7,10:12`), so the request — and the
+    // download — is bounded to the window, not a range spanning the whole mailbox.
+    let mut set = chunk.to_vec();
+    set.sort_unstable();
+    let mut rows = conn.uid_fetch(&uid_set_spec(&set), FETCH_ITEMS).await?;
+    rows.sort_unstable_by_key(|row| Reverse(row.uid)); // newest first for display
+    let messages: Vec<Message> = rows
+        .iter()
+        .map(|row| message_from_fetch(row, mailbox, uid_validity))
+        .collect();
+    let present = messages.iter().map(|m| m.id.key().clone()).collect();
+    // More remains iff any in-window UID falls below the lowest we just took.
+    let lowest = *chunk.iter().min().expect("chunk is non-empty");
+    let next_page = in_window
+        .iter()
+        .any(|&uid| uid < lowest)
+        .then(|| cursor::page_token(lowest));
+    Ok(SyncPage {
+        kind: SyncKind::Snapshot,
+        changed: messages,
+        removed: Vec::new(),
+        present,
+        next_page,
+        next_cursor,
+        total,
+    })
+}
+
+/// Compacts a **sorted-ascending** UID list into an IMAP sequence-set (`5,7,10:12`),
+/// collapsing contiguous runs into ranges so the `UID FETCH` command stays short even
+/// for a few hundred UIDs.
+fn uid_set_spec(sorted: &[u32]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < sorted.len() {
+        let start = sorted[index];
+        let mut end = start;
+        while index + 1 < sorted.len() && sorted[index + 1] == end + 1 {
+            end = sorted[index + 1];
+            index += 1;
+        }
+        parts.push(if start == end {
+            start.to_string()
+        } else {
+            format!("{start}:{end}")
+        });
+        index += 1;
+    }
+    parts.join(",")
 }
 
 /// A pass with no messages in range (empty mailbox snapshot, or a no-arrivals

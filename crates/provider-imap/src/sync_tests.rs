@@ -310,3 +310,58 @@ async fn a_delta_ignores_the_sync_depth_window() {
     );
     assert!(sent.contains("UID FETCH 5:7"));
 }
+
+#[tokio::test]
+async fn a_windowed_snapshot_fetches_only_the_in_window_uids_not_the_range() {
+    // The in-window UIDs are *scattered* (2, then 50, 51) across a large mailbox — moved or
+    // imported mail puts a recent message at a low UID. Fetching the range 2:51 would pull
+    // ~50 old messages; the windowed snapshot must fetch ONLY {2, 50, 51}, so `fetched`
+    // (3) equals the in-window `total` (3) and the download is bounded to the window.
+    let select = select_resp("a2", 1000, 100, 60);
+    let search = "* SEARCH 2 50 51\r\na3 OK SEARCH done\r\n";
+    let fetch = fetch_resp("a4", &[2, 50, 51]);
+    let server = script(&[GREETING, LOGIN_OK, &select, search, &fetch]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+
+    let page = sync_page(&mut conn, &inbox(), None, None, 0, Some("1-Mar-2026"))
+        .await
+        .unwrap();
+    assert_eq!(page.total, Some(3));
+    assert_eq!(page.changed.len(), 3); // not the ~50 of the 2:51 range
+    assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u51@INBOX"); // newest first
+    assert_eq!(page.changed[2].id.as_str(), "imap:v1000:u2@INBOX");
+    let sent = written(&recorded);
+    // The exact compacted set — never the spanning range or "from UID 1".
+    assert!(sent.contains("UID FETCH 2,50:51"), "{sent}");
+    assert!(
+        !sent.contains("2:51"),
+        "must not fetch the spanning range: {sent}"
+    );
+}
+
+#[tokio::test]
+async fn a_windowed_snapshot_pages_the_in_window_set_newest_first() {
+    // 4 in-window UIDs (10,20,30,40), limit 2: page one fetches the newest two as an exact
+    // set, and hands back a boundary the next page resumes below.
+    let select = select_resp("a2", 1000, 50, 40);
+    let search = "* SEARCH 10 20 30 40\r\na3 OK SEARCH done\r\n";
+    let fetch = fetch_resp("a4", &[30, 40]);
+    let server = script(&[GREETING, LOGIN_OK, &select, search, &fetch]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+
+    let page = sync_page(&mut conn, &inbox(), None, None, 2, Some("1-Mar-2026"))
+        .await
+        .unwrap();
+    assert_eq!(page.total, Some(4)); // the full in-window count, across pages
+    assert_eq!(page.changed.len(), 2);
+    assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u40@INBOX");
+    assert_eq!(page.changed[1].id.as_str(), "imap:v1000:u30@INBOX");
+    // The next page resumes below the lowest kept UID (30).
+    assert_eq!(page_high(page.next_page.as_ref().unwrap()), Some(30));
+    // 30 and 40 aren't contiguous, so the set is the comma form, not a range.
+    assert!(written(&recorded).contains("UID FETCH 30,40"));
+}
