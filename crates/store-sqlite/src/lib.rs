@@ -232,9 +232,10 @@ impl<C: Clock> SqliteStore<C> {
 
     /// Clears one scope's sync cursor, so the next sync of that scope re-snapshots it
     /// from scratch. The targeted counterpart of [`reset_sync`](Self::reset_sync): a
-    /// host reconciles a single domain (e.g. mail, to pick up flag/move/expunge changes
-    /// an IMAP delta cannot detect without CONDSTORE — `imap-smtp.md`) without
-    /// re-fetching the whole account.
+    /// host reconciles a single domain without re-fetching the whole account. For mail
+    /// this is the fallback for a non-QRESYNC server (a QRESYNC delta already picks up
+    /// flag/move/expunge changes incrementally — `imap-smtp.md`) or a forced full
+    /// re-snapshot.
     ///
     /// Unlike [`reset_sync`](Self::reset_sync) it **leaves any held lease intact**:
     /// this clear runs on every refresh, concurrently with fire-and-forget syncs, so it

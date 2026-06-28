@@ -10,7 +10,7 @@ use core::fmt::Write as _;
 use core::time::Duration;
 use std::sync::Mutex;
 
-use engine_core::ids::AccountId;
+use engine_core::ids::{AccountId, ProviderKey};
 use engine_search::MailQuery;
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::{SyncProgress, sync_mail_streamed};
@@ -20,10 +20,10 @@ use crate::ImapProvider;
 use crate::mock::{MockStream, script};
 use crate::transport::Connection;
 use engine_core::ids::{MailboxId, MessageId};
-use engine_core::mail::Message;
+use engine_core::mail::{Message, SystemKeyword};
 use engine_core::membership::Memberships;
 use engine_provider::Provider;
-use engine_sync::fetch_message_body;
+use engine_sync::{fetch_message_body, sync_email_streamed};
 
 fn select_frag(tag: &str, validity: u32, uid_next: u32, exists: u32) -> String {
     format!(
@@ -52,6 +52,22 @@ fn fetch_frag(tag: &str, uids: &[u32]) -> String {
 const LIST_FRAG: &str = "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n\
                          * LIST (\\HasNoChildren) \"/\" \"Archive\"\r\n\
                          a2 OK LIST done\r\n";
+
+/// A `SELECT (CONDSTORE)` fragment carrying a `HIGHESTMODSEQ` — what a QRESYNC
+/// session opens the mailbox with.
+fn select_condstore_frag(
+    tag: &str,
+    validity: u32,
+    uid_next: u32,
+    exists: u32,
+    modseq: u64,
+) -> String {
+    format!(
+        "* {exists} EXISTS\r\n* OK [UIDVALIDITY {validity}] x\r\n\
+         * OK [UIDNEXT {uid_next}] x\r\n* OK [HIGHESTMODSEQ {modseq}] x\r\n\
+         {tag} OK [READ-WRITE] done\r\n"
+    )
+}
 
 #[tokio::test]
 async fn streamed_imap_sync_lands_in_the_store_with_progress() {
@@ -180,4 +196,109 @@ async fn body_fetch_extracts_and_caches_through_the_engine() {
         .await
         .expect("fetch body from cache");
     assert_eq!(second.plain(), first.plain());
+}
+
+#[tokio::test]
+async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
+    // A QRESYNC session: first a snapshot (records the modseq baseline), then a
+    // `CHANGEDSINCE … VANISHED` delta that re-flags UID 1 and expunges UID 2. The
+    // store must reflect both — the flag update *and* the tombstone — with no
+    // re-snapshot, proving the incremental path end to end.
+    let snap_select = select_condstore_frag("a3", 100, 4, 3, 10);
+    let snap_fetch = fetch_frag("a4", &[1, 2, 3]);
+    let delta_select = select_condstore_frag("a5", 100, 4, 2, 15);
+    // The CHANGEDSINCE delta: UID 2 vanished, UID 1 came back \Flagged.
+    let delta_changes = "* VANISHED (EARLIER) 2\r\n\
+         * 1 FETCH (UID 1 FLAGS (\\Seen \\Flagged) \
+         INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
+         ENVELOPE (NIL \"report 1\" ((\"A\" NIL \"alice\" \"test.local\")) NIL NIL \
+         ((\"B\" NIL \"bob\" \"test.local\")) NIL NIL NIL \"<m1@test.local>\"))\r\n\
+         a6 OK UID FETCH completed\r\n";
+    let server = script(&[
+        "* OK ready\r\n",
+        "a1 OK LOGIN ok\r\n",
+        LIST_FRAG,
+        &snap_select,
+        &snap_fetch,
+        &delta_select,
+        delta_changes,
+    ]);
+
+    let (stream, _) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    conn.force_qresync();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+
+    let store =
+        SqliteStore::open_in_memory(ManualClock::new("2026-06-08T00:00:00Z".parse().unwrap()))
+            .expect("store");
+    let account = AccountId::try_from("imap-acct").unwrap();
+    let drop_progress = |_: SyncProgress| {};
+
+    // Snapshot sync: three messages land, the cursor records the modseq baseline.
+    sync_mail_streamed(
+        &provider,
+        &store,
+        &account,
+        WorkerId::new("imap"),
+        Duration::from_mins(5),
+        50,
+        &drop_progress,
+    )
+    .await
+    .expect("snapshot sync");
+
+    let email_scope = provider.email_scope(&account);
+    assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 3);
+
+    // QRESYNC delta: reconciles the flag change and the expunge incrementally.
+    let applied = sync_email_streamed(
+        &provider,
+        &store,
+        &account,
+        WorkerId::new("imap"),
+        Duration::from_mins(5),
+        50,
+        &drop_progress,
+    )
+    .await
+    .expect("qresync delta sync");
+    assert_eq!(
+        applied.upserted, 1,
+        "only the flag-changed message re-upserts"
+    );
+    assert_eq!(applied.tombstoned, 1, "the expunged message is tombstoned");
+
+    // The store now holds exactly UID 1 (re-flagged) and UID 3 (untouched); the
+    // expunged UID 2 is gone — without a full re-snapshot.
+    let keys: Vec<String> = store
+        .object_keys(&email_scope)
+        .await
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().to_owned())
+        .collect();
+    assert_eq!(keys.len(), 2);
+    assert!(keys.iter().any(|k| k == "imap:v100:u1@INBOX"));
+    assert!(keys.iter().any(|k| k == "imap:v100:u3@INBOX"));
+    assert!(
+        !keys.iter().any(|k| k == "imap:v100:u2@INBOX"),
+        "the expunged message is tombstoned, not lingering"
+    );
+
+    // UID 1 carries its new \Flagged keyword in the store.
+    let payload = store
+        .object_payload(
+            &email_scope,
+            &ProviderKey::new("imap:v100:u1@INBOX").unwrap(),
+        )
+        .await
+        .unwrap()
+        .expect("UID 1 present");
+    let message: Message = serde_json::from_value(payload).expect("deserialize message");
+    assert!(
+        message.has_system_keyword(SystemKeyword::Flagged),
+        "the delta applied the flag change"
+    );
 }

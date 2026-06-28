@@ -76,7 +76,10 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
 
 - IMAP identity includes mailbox, UIDVALIDITY, and UID.
 - UIDVALIDITY reset invalidates the scope and triggers rediscovery.
-- CONDSTORE/QRESYNC paths are optional capabilities, not assumptions.
+- CONDSTORE/QRESYNC paths are optional capabilities, not assumptions. (**Implemented**
+  in `provider-imap`: when the server advertises QRESYNC the delta reconciles flag
+  changes + expunges via `CHANGEDSINCE`/`VANISHED`; a server without it falls back to a
+  new-arrivals delta + periodic snapshot — `imap-smtp.md`.)
 - IMAP SEARCH is a provider-search fallback when local body coverage is incomplete.
 - SMTP post-DATA ambiguity must enter `NeedsConfirmation`; never blind-retry.
 - SMTP per-recipient acceptance/rejection before DATA must be represented.

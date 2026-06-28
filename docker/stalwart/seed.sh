@@ -73,11 +73,16 @@ done
 log "ensuring mailboxes exist"
 imap_cmd INBOX "CREATE Archive" >/dev/null 2>&1 || true
 imap_cmd INBOX "CREATE Projects" >/dev/null 2>&1 || true
+# QResync is a dedicated, otherwise-untouched mailbox the CONDSTORE/QRESYNC delta
+# test mutates in isolation (it re-flags one message and expunges another), so it
+# never disturbs the count-asserted INBOX/Archive/Projects.
+imap_cmd INBOX "CREATE QResync" >/dev/null 2>&1 || true
 
 log "clearing managed mailboxes for an idempotent re-seed"
 imap_clear INBOX
 imap_clear Archive
 imap_clear Projects
+imap_clear QResync
 
 # INBOX was just cleared, so appends land at deterministic sequence numbers
 # (Stalwart's SEARCH does not match on a HEADER Message-ID, so we rely on append
@@ -97,6 +102,9 @@ imap_cmd INBOX "STORE 6 +FLAGS (\\Seen \\Flagged harness)" >/dev/null
 
 log "copying the baseline message (seq 1) into Archive (two memberships)"
 imap_cmd INBOX "COPY 1 Archive" >/dev/null
+
+log "seeding the dedicated QResync mailbox (three messages) for the QRESYNC delta test"
+imap_cmd INBOX "COPY 1:3 QResync" >/dev/null
 
 log "moving a message from INBOX into Projects (single membership)"
 imap_append "$MAIL_DIR/07-moved.eml" INBOX # seq 9

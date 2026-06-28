@@ -10,11 +10,12 @@
 //!   since the cursor (a reset — the IMAP analogue of JMAP `cannotCalculateChanges`):
 //!   every existing UID is rediscovered and carried in `present`, so the store
 //!   tombstones whatever is now absent (expunged or renumbered);
-//! - a **delta** otherwise: only UIDs at or above the cursor's `UIDNEXT` (new
-//!   arrivals). Flag changes and expunges of already-synced messages are **not**
-//!   reported in a delta — detecting them incrementally needs CONDSTORE/QRESYNC (a
-//!   deferred capability); a periodic snapshot reconciles them. So a delta never
-//!   carries removals.
+//! - a **delta** otherwise. On a QRESYNC session ([`crate::qresync`]) with a prior
+//!   `HIGHESTMODSEQ` baseline, the delta reconciles flag changes **and** expunges of
+//!   already-synced messages too (`CHANGEDSINCE`/`VANISHED`, RFC 7162). Without
+//!   QRESYNC the delta carries only UIDs at or above the cursor's `UIDNEXT` (new
+//!   arrivals) and no removals, so a periodic snapshot reconciles flag/expunge
+//!   changes — the honest non-QRESYNC baseline.
 
 use std::cmp::Reverse;
 
@@ -36,7 +37,7 @@ use crate::transport::Connection;
 /// `ENVELOPE` omits (RFC 9051 §7.5.2) — it is what local threading needs. The peek
 /// form is required so the read does not set `\Seen`; the server echoes it back as
 /// `BODY[HEADER.FIELDS (REFERENCES)]`.
-const FETCH_ITEMS: &str =
+pub(crate) const FETCH_ITEMS: &str =
     "UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODY.PEEK[HEADER.FIELDS (REFERENCES)]";
 
 /// Fetches one page of the bound mailbox's mail since `cursor`, continuing from
@@ -59,48 +60,62 @@ pub(crate) async fn sync_page<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let select = conn.select(mailbox.as_str()).await?;
+    // A QRESYNC session opens the mailbox CONDSTORE-aware so the SELECT carries
+    // `[HIGHESTMODSEQ n]` — the baseline the cursor records for the next delta.
+    let qresync = conn.qresync_enabled();
+    let select = if qresync {
+        conn.select_condstore(mailbox.as_str()).await?
+    } else {
+        conn.select(mailbox.as_str()).await?
+    };
     let uid_validity = select.uid_validity;
     let uid_next = effective_uid_next(conn, &select).await?;
     let next_cursor = MailboxCursor {
         uid_validity,
         uid_next,
+        highest_modseq: select.highest_modseq,
     }
     .encode();
 
     // First sync, or a UIDVALIDITY reset, is a snapshot from UID 1; a matching
-    // cursor is a delta from its watermark.
-    let (kind, low_bound) = match cursor.and_then(MailboxCursor::decode) {
-        Some(prior) if prior.uid_validity == uid_validity => (SyncKind::Delta, prior.uid_next),
+    // cursor is a delta from its watermark. One extra case re-snapshots: a QRESYNC
+    // session inheriting a **pre-QRESYNC cursor** (matching validity but no modseq
+    // baseline — an upgrade). A plain new-arrivals delta there would record the fresh
+    // HIGHESTMODSEQ while never fetching the flag/expunge changes to already-synced
+    // mail that predate this session, so a future `CHANGEDSINCE` (past those changes)
+    // would never reconcile them. Re-snapshotting once both reconciles them and
+    // establishes the baseline; thereafter deltas are incremental. Without QRESYNC the
+    // matching cursor stays a new-arrivals delta exactly as before.
+    let prior = cursor.and_then(MailboxCursor::decode);
+    let needs_baseline = qresync && prior.is_some_and(|p| p.highest_modseq.is_none());
+    let (kind, low_bound) = match prior {
+        Some(p) if p.uid_validity == uid_validity && !needs_baseline => {
+            (SyncKind::Delta, p.uid_next)
+        }
         _ => (SyncKind::Snapshot, 1),
     };
+
+    // QRESYNC incremental delta (RFC 7162): an enabled session with a prior
+    // HIGHESTMODSEQ baseline reconciles flag changes AND expunges of already-synced
+    // mail in one round trip — not just new arrivals. Without QRESYNC, or on the
+    // first delta after an upgrade (a prior cursor with no modseq), this falls
+    // through to the new-arrivals window below, which still records the fresh modseq
+    // so the *next* delta is incremental.
+    if let (SyncKind::Delta, true, Some(modseq)) =
+        (kind, qresync, prior.and_then(|p| p.highest_modseq))
+    {
+        return crate::qresync::delta_page(conn, mailbox, uid_validity, next_cursor, modseq).await;
+    }
     let total = match kind {
         SyncKind::Snapshot => Some(usize::try_from(select.exists).unwrap_or(usize::MAX)),
         SyncKind::Delta => None,
     };
 
-    // A sync-depth window bounds the snapshot to recent mail: fetch **only** the UIDs that
-    // `UID SEARCH SINCE` reports in window — never the whole UID range above the oldest of
-    // them. That range can span most of the mailbox when moved/imported mail scrambles the
-    // UID-vs-date order (the cause of a 3-month window still pulling tens of thousands of
-    // old messages, and of `fetched` overshooting the in-window `total`). A delta is
-    // already new-arrivals-only, so the window never applies to it.
+    // A sync-depth window bounds a snapshot to recent mail (a delta is already
+    // new-arrivals-only, so the window never applies to it).
     if let (SyncKind::Snapshot, Some(date)) = (kind, since) {
-        let mut in_window = conn.uid_search_since(date).await?;
-        if in_window.is_empty() {
-            return Ok(empty_page(SyncKind::Snapshot, next_cursor, Some(0)));
-        }
-        in_window.sort_unstable();
-        return windowed_snapshot_page(
-            conn,
-            mailbox,
-            uid_validity,
-            next_cursor,
-            &in_window,
-            page,
-            limit,
-        )
-        .await;
+        return windowed_snapshot(conn, mailbox, uid_validity, next_cursor, page, limit, date)
+            .await;
     }
 
     // The highest UID this page covers: the continuation boundary, else the newest.
@@ -183,6 +198,41 @@ where
         next_cursor,
         total,
     })
+}
+
+/// Runs the sync-depth-windowed snapshot for `date`: a single `UID SEARCH SINCE` finds
+/// the in-window UIDs, then [`windowed_snapshot_page`] pages them. Fetching **only** the
+/// reported UIDs — never the whole UID range above the oldest of them — keeps the
+/// download bounded when moved/imported mail scrambles the UID-vs-date order (the cause
+/// of a 3-month window otherwise pulling tens of thousands of old messages). No matches
+/// is an empty snapshot that still tombstones stale rows below the window.
+async fn windowed_snapshot<S>(
+    conn: &mut Connection<S>,
+    mailbox: &MailboxId,
+    uid_validity: u32,
+    next_cursor: SyncState,
+    page: Option<&PageToken>,
+    limit: usize,
+    date: &str,
+) -> ImapResult<SyncPage<Message>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut in_window = conn.uid_search_since(date).await?;
+    if in_window.is_empty() {
+        return Ok(empty_page(SyncKind::Snapshot, next_cursor, Some(0)));
+    }
+    in_window.sort_unstable();
+    windowed_snapshot_page(
+        conn,
+        mailbox,
+        uid_validity,
+        next_cursor,
+        &in_window,
+        page,
+        limit,
+    )
+    .await
 }
 
 /// Fetches one page of a **sync-depth-windowed** snapshot: only the UIDs `UID SEARCH

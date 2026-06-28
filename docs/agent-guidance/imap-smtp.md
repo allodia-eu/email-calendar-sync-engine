@@ -22,12 +22,15 @@ is authoritative for the `provider-caldav` calendar client.
   seam and the harness probe). TLS is pure-Rust `tokio-rustls`, with the host
   injecting trust policy — the library bakes in no root store, so mobile hosts and
   the self-signed fixture each supply their own.
-- Layers: `transport` (connect + the tagged line protocol: `LOGIN`/`SELECT`/`UID
-  FETCH`/`LIST`/`CREATE`/`APPEND`, literal handling), `parse` (pure response
-  parsers, panic-resistant on hostile input), `mail` (normalize rows →
-  `Message`/`Mailbox`), `cursor` (the per-mailbox `SyncState` + opaque `PageToken`
-  encodings), `sync` (snapshot/delta UID-window paging), `smtp` (the submission
-  conversation + RFC 5322 assembly), `provider` (the `Provider` impl).
+- Layers: `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
+  `ENABLE`/`SELECT [(CONDSTORE)]`/`UID FETCH [(CHANGEDSINCE … VANISHED)]`/`LIST`/
+  `CREATE`/`APPEND`, literal handling), `parse` (pure response parsers,
+  panic-resistant on hostile input), `mail` (normalize rows → `Message`/`Mailbox`),
+  `cursor` (the per-mailbox `SyncState` — `UIDVALIDITY`/`UIDNEXT` plus an optional
+  QRESYNC `HIGHESTMODSEQ` — + opaque `PageToken` encodings), `sync` (snapshot/delta
+  UID-window paging), `qresync` (the QRESYNC incremental delta — flag changes +
+  expunges via `CHANGEDSINCE`/`VANISHED`), `smtp` (the submission conversation +
+  RFC 5322 assembly), `provider` (the `Provider` impl).
 
 ## How IMAP differs from JMAP (the shape)
 
@@ -51,7 +54,10 @@ is authoritative for the `provider-caldav` calendar client.
 ## IMAP specifics implemented
 
 - **Cursor + paging.** The cursor is `(UIDVALIDITY, UIDNEXT)` encoded
-  `v{validity};n{next}`; a foreign/garbage cursor decodes to "no cursor" → snapshot.
+  `v{validity};n{next}`, with an optional QRESYNC `HIGHESTMODSEQ` appended as
+  `;m{modseq}` when the session negotiated QRESYNC (a non-QRESYNC cursor is
+  byte-identical to the old format, and a pre-QRESYNC cursor with no `;m` decodes with
+  `highest_modseq: None`); a foreign/garbage cursor decodes to "no cursor" → snapshot.
   Paging is **newest UIDs first, up to `limit` *messages* per page**: a page fetches
   a UID window and, if a gap (expunged UID) leaves it under-filled, **widens the
   window downward** until it has `limit` messages (or reaches the floor) — so
@@ -75,12 +81,32 @@ is authoritative for the `provider-caldav` calendar client.
   account-wide message delta — the cutoff is a host-supplied calendar date, so this
   crate stays free of any depth/duration policy.
 - **Snapshot vs delta.** First sync (no cursor) or a UIDVALIDITY mismatch →
-  **snapshot** (rediscover from UID 1, carry `present`). A matching cursor → **delta**
-  of new arrivals only (UIDs at or above the cursor's `UIDNEXT`). A delta carries
-  **no removals**: flag changes and expunges of already-synced messages are not
-  detected incrementally without CONDSTORE/QRESYNC (a deferred capability) — a
-  periodic snapshot reconciles them. This is the honest baseline `providers.md`
-  prescribes ("CONDSTORE/QRESYNC paths are optional capabilities, not assumptions").
+  **snapshot** (rediscover from UID 1, carry `present`). A matching cursor → **delta**.
+  On a QRESYNC session with a prior `HIGHESTMODSEQ` baseline the delta is **incremental
+  and complete** — flag changes *and* expunges of already-synced messages, plus new
+  arrivals, in one round trip (see **CONDSTORE/QRESYNC** below). Without QRESYNC (or on
+  the first delta after an upgrade, before a modseq baseline exists) the delta is
+  **new arrivals only** (UIDs at or above the cursor's `UIDNEXT`) and carries **no
+  removals**, so flag/expunge changes reconcile via a periodic snapshot — the honest
+  baseline `providers.md` prescribes ("CONDSTORE/QRESYNC paths are optional
+  capabilities, not assumptions").
+- **CONDSTORE/QRESYNC incremental delta** (RFC 7162; `qresync` module). After login the
+  client issues `CAPABILITY` (capabilities are advertised only post-auth) and, when the
+  server lists `QRESYNC`, `ENABLE QRESYNC` — best-effort, so a server that lists it but
+  rejects `ENABLE` stays on the baseline. On a QRESYNC session the sync layer opens the
+  mailbox `SELECT … (CONDSTORE)` so the response carries `[HIGHESTMODSEQ n]`, recorded
+  in the cursor. A delta with a prior baseline then issues a single
+  `UID FETCH 1:* (<items>) (CHANGEDSINCE <modseq> VANISHED)`: every message whose
+  mod-sequence exceeds the baseline returns with **full metadata** (new arrivals *and*
+  flag-only changes, so the store upserts them by their stable key), and
+  `* VANISHED (EARLIER) <set>` lists the UIDs expunged since the baseline, which become
+  the page's `removed` keys (the store tombstones them inline — `store-and-sync.md`
+  `Delta { changed, removed }`). The set is expanded per UID and bounded by a cap so a
+  hostile range cannot exhaust memory. The pass is a single page (the changed set is
+  bounded to what moved since the last sync); the new baseline is the SELECT-time
+  `HIGHESTMODSEQ`. So a host "refresh" that must reflect server-side flag/move/delete
+  changes no longer needs `Engine::clear_mail_cursors` against a QRESYNC server — a plain
+  delta sync reconciles them.
 - **Normalization.** `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
   BODY.PEEK[HEADER.FIELDS (REFERENCES)])` (all peek-safe — none sets `\Seen`). The
   `References` header is not an `ENVELOPE` field, so it rides a separate peek-safe
@@ -212,14 +238,38 @@ is authoritative for the `provider-caldav` calendar client.
 
 ## Known limitations (documented, not bugs)
 
-- **No CONDSTORE/QRESYNC.** Deltas bring new arrivals only; flag/expunge/move changes
-  to already-synced messages reconcile via a periodic **snapshot**. A host forces that
-  snapshot with `Engine::clear_mail_cursors` (clears just the mail scopes' cursors, so
-  the next `sync_mail` re-snapshots and reconciles) — the targeted, mail-only
-  counterpart of `Engine::reset`. So a UI "refresh" that must reflect server-side
-  flag/move/delete changes (its own or another client's) clears the mail cursors before
-  syncing, rather than relying on the delta. Per-message CONDSTORE incrementality is the
-  deferred optimization. Deferred capability.
+- **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
+  **implemented** for servers that advertise QRESYNC (RFC 7162) — the common case
+  (Stalwart, Dovecot, Cyrus, Gmail). A server that advertises **neither** QRESYNC nor a
+  usable baseline falls back to the new-arrivals-only delta, where flag/expunge/move
+  changes to already-synced messages still reconcile via a periodic **snapshot** forced
+  with `Engine::clear_mail_cursors` (the targeted, mail-only counterpart of
+  `Engine::reset`). A **CONDSTORE-only** server (CONDSTORE without QRESYNC) is treated as
+  the non-incremental baseline too: we gate the delta on QRESYNC because the `VANISHED`
+  expunge half needs it, and a half-incremental path that detects flag changes but
+  silently misses expunges would be a worse, more confusing state than the honest
+  snapshot fallback. Wiring CONDSTORE-only flag deltas is a possible later refinement.
+- **QRESYNC delta is a single page and not sync-depth-windowed.** The QRESYNC delta
+  issues one `UID FETCH 1:* (CHANGEDSINCE … VANISHED)`: it does **not** honor the
+  `limit`/paging the snapshot path uses (a bulk server-side change — "mark all read" —
+  returns every changed message in one response and one transaction; per-page streaming
+  of the delta is a later refinement), and it does **not** re-apply the optional
+  sync-depth window (`ImapConfig::with_since`, currently provider-only and not
+  host-wired), so a flag change to an *out-of-window* message can re-enter the store.
+  Bounding the delta — correctly, since `VANISHED` needs `1:*` to report already-expunged
+  UIDs while a window must restrict only `changed` — is deferred until `with_since` is
+  host-wired. An *unsolicited* flag-only `FETCH` (no `ENVELOPE`) that the server
+  interleaves mid-response is dropped, so it can never overwrite a stored message's
+  metadata; the change it signals rides a later `CHANGEDSINCE`. A `* VANISHED` set larger
+  than the `MAX_VANISHED` cap (2²⁰, the adversarial-allocation guard) is truncated — an
+  implausible size for a real delta, but a host hitting it would need a snapshot to
+  reconcile the remainder.
+- **First sync after a QRESYNC upgrade re-snapshots.** A store with a **pre-QRESYNC
+  cursor** (no `HIGHESTMODSEQ`) does one **snapshot** on its first QRESYNC sync rather
+  than a new-arrivals delta — otherwise it would record a modseq baseline while never
+  fetching the flag/expunge changes to already-synced mail that predate the session,
+  hiding them from every future `CHANGEDSINCE`. The snapshot reconciles them and
+  establishes the baseline; subsequent syncs are incremental.
 - **No `UID MOVE` fallback.** A server lacking RFC 6851 `MOVE` is unsupported for
   moves — the `COPY` + `\Deleted` + `EXPUNGE` fallback is a later refinement.
 - **`UID EXPUNGE` requires UIDPLUS** (RFC 4315). A server without it would need a
@@ -261,7 +311,14 @@ is authoritative for the `provider-caldav` calendar client.
   **engine-sync integration** drives `ImapProvider` over the mock through
   `sync_mail_streamed` into a real `SqliteStore` (container-before-member, per-page
   progress, FTS search). The `needs_confirmation` → `NeedsConfirmation` bridge is
-  locked in `engine-sync`.
+  locked in `engine-sync`. The **QRESYNC** path is covered offline by replaying the
+  **exact bytes captured from live Stalwart** (`CAPABILITY`/`ENABLE`,
+  `SELECT (CONDSTORE)`, and `UID FETCH … (CHANGEDSINCE … VANISHED)` with its
+  `VANISHED (EARLIER)` + full-metadata FETCH) — through the parsers, the cursor
+  roundtrip (incl. the pre-QRESYNC `;m`-less form), `qresync::delta_page`, and an
+  engine-sync integration that snapshot-syncs then delta-syncs into a real
+  `SqliteStore`, asserting the flag change *and* the expunge tombstone land with no
+  re-snapshot.
 - **Live (gated on `STALWART_IMAP_ADDR`, skips otherwise):** `tests/live_imap.rs` —
   connects over implicit TLS (trusting the self-signed cert via a test-only
   no-verify verifier, never a host store), and asserts the INBOX seed, the
@@ -269,13 +326,25 @@ is authoritative for the `provider-caldav` calendar client.
   distinctness** (the IMAP identity contrast), streamed paging with progress, an
   **SMTP submission** that delivers and files the Sent copy (found by its generated
   `Message-ID`), and a **`save_draft`** that files a draft and reads it back flagged
-  `\Draft`. Reuses `crates/stalwart-harness`. The `stalwart` CI job runs it; the file
-  is excluded from the offline coverage metric, like the harness probes and
-  `provider-jmap/tests/`.
+  `\Draft`. Reuses `crates/stalwart-harness`. A second gated file,
+  `tests/live_imap_qresync.rs`, exercises the **QRESYNC incremental delta** against
+  Stalwart (which advertises `CONDSTORE QRESYNC` post-auth): it snapshot-syncs the
+  dedicated `QResync` seed mailbox, then re-flags one message and **expunges** another
+  via `edit_mail`, and asserts the next sync — a delta, not a snapshot — reflects both
+  the flag change and the tombstone in the store. The dedicated mailbox isolates the
+  mutation from the count-asserted INBOX/Archive/Projects. The `stalwart` CI job runs
+  both files; they are excluded from the offline coverage metric, like the harness
+  probes and `provider-jmap/tests/`.
 - **Real-provider exploration:** `examples/imap_explore.rs` connects to a *real*
   IMAP server over a verifying TLS connector (Mozilla roots) and lists folders +
-  recent mail (read-only; opt-in `IMAP_DRAFT` saves a draft and `IMAP_SEND` submits
-  over SMTP `AUTH PLAIN` + implicit TLS). Validated against a real Dovecot server —
-  read, UTF-8 subjects, and draft creation; authenticated SMTP send is implemented
-  and offline-tested, exercisable via `IMAP_SEND`. This is the "external provider
-  smoke test" `north-star.md` step 7 anticipates, ahead of schedule.
+  recent mail (read-only; opt-in `IMAP_QRESYNC` verifies the CONDSTORE/QRESYNC delta,
+  `IMAP_DRAFT` saves a draft, and `IMAP_SEND` submits over SMTP `AUTH PLAIN` + implicit
+  TLS). Validated against a real Dovecot server — read, UTF-8 subjects, and draft
+  creation; authenticated SMTP send is implemented and offline-tested, exercisable via
+  `IMAP_SEND`. The **CONDSTORE/QRESYNC delta** was validated read-only against
+  **Soverin** (Dovecot): it advertises `CONDSTORE QRESYNC` post-auth, `SELECT (CONDSTORE)`
+  returns `HIGHESTMODSEQ`, and the `IMAP_QRESYNC` check confirms the second sync is an
+  incremental `Delta` (changed/removed ≈ 0, no re-snapshot) rather than re-listing the
+  mailbox — the same path the live Stalwart test exercises with a full mutate→delta
+  cycle. This is the "external provider smoke test" `north-star.md` step 7 anticipates,
+  ahead of schedule.

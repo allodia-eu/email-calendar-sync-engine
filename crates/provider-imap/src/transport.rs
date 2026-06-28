@@ -22,12 +22,17 @@ const MAX_LITERAL: usize = 64 * 1024 * 1024;
 pub(crate) struct Connection<S> {
     inner: BufReader<S>,
     tag: u32,
+    /// Whether QRESYNC (RFC 7162) was negotiated for this session — set by
+    /// [`Connection::negotiate_qresync`]. When `true`, the sync layer opens mailboxes
+    /// with CONDSTORE and reconciles deltas via `CHANGEDSINCE`/`VANISHED`.
+    qresync: bool,
 }
 
 impl<S> core::fmt::Debug for Connection<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Connection")
             .field("tag", &self.tag)
+            .field("qresync", &self.qresync)
             .finish_non_exhaustive()
     }
 }
@@ -44,9 +49,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let mut connection = Self {
             inner: BufReader::new(stream),
             tag: 0,
+            qresync: false,
         };
         connection.read_greeting().await?;
         Ok(connection)
+    }
+
+    /// Whether QRESYNC (RFC 7162) is enabled for this session.
+    pub(crate) fn qresync_enabled(&self) -> bool {
+        self.qresync
+    }
+
+    /// Forces the QRESYNC flag on, for tests that drive the sync layer over a mock
+    /// transcript without replaying the live `CAPABILITY`/`ENABLE` negotiation.
+    #[cfg(test)]
+    pub(crate) fn force_qresync(&mut self) {
+        self.qresync = true;
     }
 
     /// Reads the untagged greeting: `* OK`/`* PREAUTH` is success, `* BYE` is a
@@ -155,10 +173,51 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         }
     }
 
+    /// Detects QRESYNC (RFC 7162) and, when the server advertises it, `ENABLE`s it so
+    /// later deltas can use `CHANGEDSINCE`/`VANISHED` to reconcile flag changes and
+    /// expunges incrementally. Capabilities are queried with an explicit `CAPABILITY`
+    /// **after** login, because servers (Stalwart included) advertise CONDSTORE/QRESYNC
+    /// only post-authentication. Best-effort: a server that lists QRESYNC but rejects
+    /// `ENABLE` (a `NO`/`BAD`), or that answers `OK` without confirming `* ENABLED
+    /// QRESYNC`, leaves the session in the non-QRESYNC baseline rather than failing the
+    /// connection; a transport error still propagates.
+    pub(crate) async fn negotiate_qresync(&mut self) -> ImapResult<()> {
+        let response = self.command("CAPABILITY").await?;
+        let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
+        if capabilities
+            .iter()
+            .any(|cap| cap.eq_ignore_ascii_case("QRESYNC"))
+        {
+            match self.command("ENABLE QRESYNC").await {
+                // Trust the enable only if `* ENABLED QRESYNC` confirms it (a bare
+                // `* ENABLED` + OK enables nothing, RFC 5161); otherwise stay baseline.
+                Ok(response) => {
+                    if crate::parse_qresync::enabled_lists_qresync(&response.untagged) {
+                        self.qresync = true;
+                    }
+                }
+                Err(ImapError::No(_) | ImapError::Bad(_)) => {}
+                Err(other) => return Err(other),
+            }
+        }
+        Ok(())
+    }
+
     /// `SELECT mailbox`, returning its UID space and message count. Response codes
     /// in either an untagged `* OK [..]` or the tagged completion are honored.
     pub(crate) async fn select(&mut self, mailbox: &str) -> ImapResult<SelectData> {
         let response = self.command(&format!("SELECT {}", quote(mailbox))).await?;
+        parse::parse_select(&response.into_all_lines())
+    }
+
+    /// `SELECT mailbox (CONDSTORE)` — opens the mailbox CONDSTORE-aware (RFC 7162
+    /// §3.1.8) so the response carries `[HIGHESTMODSEQ n]`, the baseline a QRESYNC
+    /// delta records in its cursor. Used in place of [`Connection::select`] for the
+    /// sync path on a QRESYNC session.
+    pub(crate) async fn select_condstore(&mut self, mailbox: &str) -> ImapResult<SelectData> {
+        let response = self
+            .command(&format!("SELECT {} (CONDSTORE)", quote(mailbox)))
+            .await?;
         parse::parse_select(&response.into_all_lines())
     }
 
@@ -174,6 +233,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     pub(crate) async fn uid_fetch(&mut self, set: &str, items: &str) -> ImapResult<Vec<FetchRow>> {
         let response = self.command(&format!("UID FETCH {set} ({items})")).await?;
         parse::parse_fetch(&response.untagged)
+    }
+
+    /// `UID FETCH <set> (<items>) (CHANGEDSINCE <modseq> VANISHED)` — the QRESYNC
+    /// incremental delta (RFC 7162 §3.1.4.1, §3.2.5). The server returns a `FETCH` for
+    /// every message whose mod-sequence is greater than `modseq` (new arrivals *and*
+    /// flag changes, with full metadata) and a `* VANISHED (EARLIER) <set>` listing the
+    /// UIDs expunged since `modseq`. Returns the changed rows paired with the expanded
+    /// vanished UIDs, both read from the one command's untagged responses.
+    pub(crate) async fn uid_fetch_changedsince(
+        &mut self,
+        set: &str,
+        items: &str,
+        modseq: u64,
+    ) -> ImapResult<(Vec<FetchRow>, Vec<u32>)> {
+        let response = self
+            .command(&format!(
+                "UID FETCH {set} ({items}) (CHANGEDSINCE {modseq} VANISHED)"
+            ))
+            .await?;
+        let rows = parse::parse_fetch(&response.untagged)?;
+        let vanished = crate::parse_qresync::parse_vanished(&response.untagged);
+        Ok((rows, vanished))
     }
 
     /// `UID SEARCH SINCE <date>` — the UIDs of messages whose `INTERNALDATE` is on or
