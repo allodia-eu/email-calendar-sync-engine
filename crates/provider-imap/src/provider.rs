@@ -197,6 +197,9 @@ impl ImapProvider<TlsStream<TcpStream>> {
         let tls = connector.connect(server_name, tcp).await?;
         let mut connection = Connection::open(tls).await?;
         connection.login(&config.username, &config.password).await?;
+        // Detect + ENABLE QRESYNC (RFC 7162) so deltas reconcile flag/expunge changes
+        // incrementally; a server without it stays on the new-arrivals baseline.
+        connection.negotiate_qresync().await?;
         Ok(Self::build(connection, mailbox, smtp, config.since))
     }
 }

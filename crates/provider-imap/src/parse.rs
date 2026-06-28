@@ -25,6 +25,10 @@ pub(crate) struct SelectData {
     pub uid_next: Option<u32>,
     /// `EXISTS` — the number of messages in the mailbox.
     pub exists: u32,
+    /// `HIGHESTMODSEQ` — the mailbox's current mod-sequence (RFC 7162 §3.1.2.1),
+    /// present only when the mailbox is opened with CONDSTORE/QRESYNC enabled. It is
+    /// the baseline a subsequent QRESYNC delta carries forward in its cursor.
+    pub highest_modseq: Option<u64>,
 }
 
 /// One parsed `ENVELOPE` address `(name adl mailbox host)` (RFC 9051 §7.5.2).
@@ -95,8 +99,9 @@ pub(crate) struct ListRow {
 }
 
 /// Scans a response line for a bracketed response-code number like
-/// `[UIDVALIDITY 12345]` (RFC 9051 §7.1).
-fn response_code_number(line: &[u8], code: &str) -> Option<u32> {
+/// `[UIDVALIDITY 12345]` or `[HIGHESTMODSEQ 42]` (RFC 9051 §7.1, RFC 7162), parsed
+/// into the requested integer width (`u32` for UID-space codes, `u64` for a MODSEQ).
+fn response_code<T: std::str::FromStr>(line: &[u8], code: &str) -> Option<T> {
     let text = String::from_utf8_lossy(line);
     let needle = format!("[{code} ");
     let start = text.find(&needle)? + needle.len();
@@ -127,12 +132,16 @@ pub(crate) fn parse_select(lines: &[Vec<u8>]) -> ImapResult<SelectData> {
     let mut uid_validity = None;
     let mut uid_next = None;
     let mut exists = 0;
+    let mut highest_modseq = None;
     for line in lines {
-        if let Some(v) = response_code_number(line, "UIDVALIDITY") {
+        if let Some(v) = response_code(line, "UIDVALIDITY") {
             uid_validity = Some(v);
         }
-        if let Some(v) = response_code_number(line, "UIDNEXT") {
+        if let Some(v) = response_code(line, "UIDNEXT") {
             uid_next = Some(v);
+        }
+        if let Some(m) = response_code(line, "HIGHESTMODSEQ") {
+            highest_modseq = Some(m);
         }
         if let Some(n) = exists_count(line) {
             exists = n;
@@ -144,6 +153,7 @@ pub(crate) fn parse_select(lines: &[Vec<u8>]) -> ImapResult<SelectData> {
         uid_validity,
         uid_next,
         exists,
+        highest_modseq,
     })
 }
 

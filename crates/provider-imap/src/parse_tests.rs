@@ -34,6 +34,27 @@ fn select_without_uidvalidity_is_a_protocol_error() {
 }
 
 #[test]
+fn select_reads_highest_modseq_when_condstore_is_enabled() {
+    // A `SELECT … (CONDSTORE)` adds `[HIGHESTMODSEQ n]`; a plain SELECT does not.
+    let with_modseq = parse_select(&lines(&[
+        "8 EXISTS",
+        "OK [UIDVALIDITY 347529756] UIDs valid",
+        "OK [UIDNEXT 10] Next predicted UID",
+        "OK [HIGHESTMODSEQ 16] Highest Modseq",
+    ]))
+    .unwrap();
+    assert_eq!(with_modseq.highest_modseq, Some(16));
+
+    let plain = parse_select(&lines(&[
+        "8 EXISTS",
+        "OK [UIDVALIDITY 347529756] UIDs valid",
+        "OK [UIDNEXT 10] Next predicted UID",
+    ]))
+    .unwrap();
+    assert_eq!(plain.highest_modseq, None);
+}
+
+#[test]
 fn list_parses_attributes_delimiter_and_name() {
     let rows = parse_list(&lines(&[
         r#"LIST (\HasNoChildren) "/" "INBOX""#,

@@ -365,3 +365,113 @@ async fn a_windowed_snapshot_pages_the_in_window_set_newest_first() {
     // 30 and 40 aren't contiguous, so the set is the comma form, not a range.
     assert!(written(&recorded).contains("UID FETCH 30,40"));
 }
+
+/// A `SELECT (CONDSTORE)` response, advertising a `HIGHESTMODSEQ` alongside the UID
+/// space — what a QRESYNC session opens the mailbox with.
+fn select_condstore_resp(
+    tag: &str,
+    validity: u32,
+    uid_next: u32,
+    exists: u32,
+    modseq: u64,
+) -> String {
+    format!(
+        "* {exists} EXISTS\r\n* OK [UIDVALIDITY {validity}] v\r\n\
+         * OK [UIDNEXT {uid_next}] n\r\n* OK [HIGHESTMODSEQ {modseq}] m\r\n\
+         {tag} OK [READ-WRITE] done\r\n"
+    )
+}
+
+#[tokio::test]
+async fn a_qresync_delta_reconciles_flag_changes_and_expunges() {
+    // Prior cursor carries a modseq baseline (9); the QRESYNC session opens CONDSTORE
+    // (modseq now 20) and one `CHANGEDSINCE 9 VANISHED` brings back the flag-changed
+    // UID 6 and the expunged UID 3.
+    let select = select_condstore_resp("a2", 1000, 8, 7, 20);
+    let delta = format!("* VANISHED (EARLIER) 3\r\n{}", fetch_resp("a3", &[6]));
+    let server = script(&[GREETING, LOGIN_OK, &select, &delta]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    conn.force_qresync();
+
+    let cursor = SyncState::new("v1000;n5;m9");
+    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
+        .await
+        .unwrap();
+    assert_eq!(page.kind, SyncKind::Delta);
+    assert_eq!(page.changed.len(), 1);
+    assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u6@INBOX");
+    assert_eq!(page.removed.len(), 1);
+    assert_eq!(page.removed[0].as_str(), "imap:v1000:u3@INBOX");
+    // The new modseq baseline rides the cursor forward.
+    assert_eq!(page.next_cursor.as_str(), "v1000;n8;m20");
+
+    let sent = written(&recorded);
+    assert!(sent.contains("SELECT \"INBOX\" (CONDSTORE)"), "{sent}");
+    assert!(sent.contains("(CHANGEDSINCE 9 VANISHED)"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_qresync_snapshot_records_the_modseq_baseline() {
+    // A first sync on a QRESYNC session opens CONDSTORE and records HIGHESTMODSEQ, so
+    // the *next* sync can run an incremental delta.
+    let select = select_condstore_resp("a2", 1000, 4, 3, 12);
+    let fetch = fetch_resp("a3", &[1, 2, 3]);
+    let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    conn.force_qresync();
+
+    let page = sync_page(&mut conn, &inbox(), None, None, 50, None)
+        .await
+        .unwrap();
+    assert_eq!(page.kind, SyncKind::Snapshot);
+    assert_eq!(page.changed.len(), 3);
+    assert_eq!(page.next_cursor.as_str(), "v1000;n4;m12");
+    assert!(written(&recorded).contains("SELECT \"INBOX\" (CONDSTORE)"));
+}
+
+#[tokio::test]
+async fn the_first_sync_after_upgrade_re_snapshots_to_establish_the_baseline() {
+    // A QRESYNC session inherits a pre-QRESYNC cursor (no `;m`): there is no baseline
+    // to run `CHANGEDSINCE` from, and a plain new-arrivals delta would silently skip
+    // flag/expunge changes to already-synced mail (then record a modseq that hides the
+    // gap forever). So this one pass re-snapshots — reconciling the whole mailbox and
+    // recording the fresh modseq — and the *next* sync is an incremental delta.
+    let select = select_condstore_resp("a2", 1000, 8, 7, 20);
+    let fetch = fetch_resp("a3", &[1, 2, 3, 4, 5, 6, 7]);
+    let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    conn.force_qresync();
+
+    let cursor = SyncState::new("v1000;n5"); // pre-QRESYNC: no modseq
+    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.kind,
+        SyncKind::Snapshot,
+        "re-snapshots to reconcile + establish the modseq baseline"
+    );
+    assert_eq!(
+        page.changed.len(),
+        7,
+        "the whole mailbox, not just new arrivals"
+    );
+    assert_eq!(
+        page.present.len(),
+        7,
+        "a snapshot tombstones against the full set"
+    );
+    assert_eq!(page.next_cursor.as_str(), "v1000;n8;m20");
+    let sent = written(&recorded);
+    assert!(!sent.contains("CHANGEDSINCE"), "no baseline yet: {sent}");
+    assert!(
+        sent.contains("UID FETCH 1:7"),
+        "snapshots from UID 1: {sent}"
+    );
+}

@@ -37,9 +37,12 @@
 //!   hostile input is rejected, never panicked on.
 //! - `mail` — normalize parsed rows into [`Message`](engine_core::mail::Message) /
 //!   [`Mailbox`](engine_core::mail::Mailbox).
-//! - `cursor` — the per-mailbox `SyncState` (UIDVALIDITY/UIDNEXT) and opaque
-//!   [`PageToken`](engine_provider::PageToken) encodings.
+//! - `cursor` — the per-mailbox `SyncState` (UIDVALIDITY/UIDNEXT, plus an optional
+//!   QRESYNC `HIGHESTMODSEQ`) and opaque [`PageToken`](engine_provider::PageToken)
+//!   encodings.
 //! - `sync` — the snapshot/delta + UID-window paging orchestration.
+//! - `qresync` — the QRESYNC incremental delta (RFC 7162): flag changes + expunges of
+//!   already-synced mail via `CHANGEDSINCE`/`VANISHED`, when the session negotiates it.
 //! - `mutate` — applying a [`MailEdit`](engine_provider::MailEdit) (`UID
 //!   STORE`/`MOVE`/`EXPUNGE`) to the bound mailbox.
 //! - `filing` — SMTP submission + `APPEND` filing of sent copies and drafts.
@@ -57,7 +60,9 @@ mod filing;
 mod mail;
 mod mutate;
 mod parse;
+mod parse_qresync;
 mod provider;
+mod qresync;
 mod smtp;
 mod sync;
 mod target;
