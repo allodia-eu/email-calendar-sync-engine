@@ -280,7 +280,11 @@ is authoritative for the `provider-caldav` calendar client.
   instantly, deterministically). A gated live test (`tests/live_imap_idle.rs`,
   `STALWART_IMAP_ADDR`) watches the dedicated `Idle` seed mailbox and flag-toggles it on
   a second connection, asserting the watcher surfaces `Changed`. The `imap_explore`
-  example's `IMAP_IDLE` opt-in watches a real account read-only.
+  example's `IMAP_IDLE` opt-in watches a real account read-only. The push path was also
+  validated against **Soverin** (Dovecot): the read-only watch negotiates `IDLE`, enters
+  it, and re-issues on the keep-alive (a `KeepAlive` heartbeat), and a draft `APPEND`ed by
+  a second connection pushes a `Changed` — confirming the path across a second server
+  implementation, like the QRESYNC delta was.
 
 ## Known limitations (documented, not bugs)
 
