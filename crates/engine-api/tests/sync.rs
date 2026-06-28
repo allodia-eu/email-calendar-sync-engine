@@ -998,3 +998,21 @@ async fn reset_clears_cursors_and_forces_a_full_resync() {
         .unwrap();
     assert_eq!(resynced.email.upserted, 2);
 }
+
+#[tokio::test]
+async fn vacuum_compacts_the_store_without_losing_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("engine.sqlite");
+    let engine = Engine::open(&db).unwrap();
+
+    engine
+        .sync_mail(&FakeProvider::new(), &account())
+        .await
+        .unwrap();
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+
+    // Compaction runs without error and keeps the live rows readable — the store-sqlite
+    // test proves it reclaims the freed pages and shrinks the file on disk.
+    engine.vacuum().await.unwrap();
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+}
