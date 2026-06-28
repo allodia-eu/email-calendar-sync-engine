@@ -27,6 +27,7 @@ mod mail_edit;
 mod page;
 mod submit;
 mod sync;
+mod watch;
 
 pub use calendar_write::{EventDeletion, EventWrite, EventWriteReceipt, WritePrecondition};
 pub use capability::Capabilities;
@@ -38,6 +39,7 @@ pub use submit::{
     SubmissionReceipt,
 };
 pub use sync::ScopeSync;
+pub use watch::{Watch, WatchEvent};
 
 use std::collections::BTreeSet;
 

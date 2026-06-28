@@ -29,7 +29,8 @@ is authoritative for the `provider-caldav` calendar client.
   `cursor` (the per-mailbox `SyncState` — `UIDVALIDITY`/`UIDNEXT` plus an optional
   QRESYNC `HIGHESTMODSEQ` — + opaque `PageToken` encodings), `sync` (snapshot/delta
   UID-window paging), `qresync` (the QRESYNC incremental delta — flag changes +
-  expunges via `CHANGEDSINCE`/`VANISHED`), `smtp` (the submission conversation +
+  expunges via `CHANGEDSINCE`/`VANISHED`), `idle`/`watch` (the `IDLE` push primitives +
+  the `ImapWatcher`), `smtp` (the submission conversation +
   RFC 5322 assembly), `provider` (the `Provider` impl).
 
 ## How IMAP differs from JMAP (the shape)
@@ -236,6 +237,55 @@ is authoritative for the `provider-caldav` calendar client.
   that returns no data — the UID was expunged since the last sync — is also a
   **`Conflict`** (re-sync, then drop), not a permanent failure.
 
+## Push (IMAP IDLE, RFC 2177)
+
+- **A watcher, not a sync.** `ImapWatcher` (the `watch` module, built on the `idle`
+  transport primitives) turns IMAP `IDLE` into the provider-neutral
+  `engine_provider::Watch` stream (`providers.md`): `next()` yields a `WatchEvent` —
+  `Changed` (the mailbox changed) or `KeepAlive` (a re-`IDLE` heartbeat). A
+  notification carries **no data** — `IDLE` only reports *that* `* n EXISTS` /
+  `* n EXPUNGE` / `* n FETCH` / `* VANISHED` happened, never *what*. So the watcher
+  never applies mail; a `Changed` means only "run the mailbox's normal sync," and the
+  authoritative reconciliation is the existing CONDSTORE/QRESYNC delta (one round trip).
+  This is what makes push bulletproof: a coalesced burst, a spurious wake, a missed
+  notification, or a dropped connection cannot corrupt the store — the next sync makes
+  it correct, because syncing a scope is idempotent. The host advertises `idle` from
+  the post-auth `CAPABILITY` so it can offer an "as it comes in" strategy or fall back
+  to polling.
+- **A dedicated connection, gated on `IDLE`.** A watcher opens its **own** connection
+  (the shared `connect_session` dial), separate from the `ImapProvider` that syncs the
+  mailbox — a connection in `IDLE` can only send `DONE`, so it cannot also `FETCH`.
+  Construction `EXAMINE`s the mailbox **read-only** (watching never writes or resets
+  `\Recent`) and fails fast with `InvalidState` if the server does not advertise `IDLE`.
+  One watcher watches one mailbox, mirroring the bound-mailbox sync model; the host
+  decides which (and how many) mailboxes warrant a standing connection against the
+  server's connection limit (usually just INBOX).
+- **The notification gap, closed three ways.** `IDLE` delivers unsolicited responses
+  *only while a connection is actively idling*, so a change arriving in any other window
+  is never re-sent. The watcher closes this by (1) **staying in `IDLE` continuously**
+  across `Changed` events — `next()` reports a change without leaving `IDLE`, so a
+  message arriving while the host syncs the previous one on its *separate* connection is
+  still captured; (2) the host's prescribed loop syncing **once on start and once after
+  every reconnect**; and (3) the mandatory **~28-minute keep-alive re-`IDLE`** (under
+  RFC 2177's 29-minute rule), which doubles as a liveness probe and a backstop sync
+  trigger — and whose pre-re-`IDLE` `DONE` drain converts a boundary change into
+  `Changed` rather than swallowing it. The keep-alive interval is the one host-supplied
+  knob (a protocol timer, clamped to a sane range; default 28 min, shorter on mobile to
+  detect a dead link sooner), not a product policy — **scheduling and reconnect/backoff
+  live in the host**, not the engine.
+- **Coverage.** The `idle` primitives (continuation handling, untagged-line
+  classification, `DONE` drain) are unit-tested over scripted transcripts; the watcher's
+  keep-alive timing and stay-idling-across-events behavior are tested over a real
+  in-memory `tokio::io::duplex` with `start_paused` (the 28-minute timer fires
+  instantly, deterministically). A gated live test (`tests/live_imap_idle.rs`,
+  `STALWART_IMAP_ADDR`) watches the dedicated `Idle` seed mailbox and flag-toggles it on
+  a second connection, asserting the watcher surfaces `Changed`. The `imap_explore`
+  example's `IMAP_IDLE` opt-in watches a real account read-only. The push path was also
+  validated against **Soverin** (Dovecot): the read-only watch negotiates `IDLE`, enters
+  it, and re-issues on the keep-alive (a `KeepAlive` heartbeat), and a draft `APPEND`ed by
+  a second connection pushes a `Changed` — confirming the path across a second server
+  implementation, like the QRESYNC delta was.
+
 ## Known limitations (documented, not bugs)
 
 - **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
@@ -282,6 +332,12 @@ is authoritative for the `provider-caldav` calendar client.
   full-text provider fallback remain a later refinement.
 - **No SMTP STARTTLS** (port 587). Implicit TLS (465) + `AUTH PLAIN` is implemented; STARTTLS is a later
   refinement.
+- **IDLE watches one mailbox per connection.** `NOTIFY` (RFC 5465 — watch many
+  mailboxes over a single connection) is a later refinement; per-folder `IDLE` (one
+  `ImapWatcher` per watched mailbox) covers the common case (usually just INBOX), as
+  most servers and clients do. Binding the watch to a host facade (engine-api / UniFFI),
+  with its task lifecycle and reconnect policy, is deferred to the consuming host repo —
+  the engine provides the `Watch` primitive, not the scheduling.
 - **Charset coverage.** RFC 2047 decoding covers UTF-8, ISO-8859-1, and Windows-1252
   (ISO-8859-1 read as its CP1252 superset); other charsets fall back to a UTF-8-lossy
   read (a full charset table is a later refinement). `References` *is* fetched (a

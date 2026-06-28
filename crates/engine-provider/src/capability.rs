@@ -30,6 +30,7 @@ pub struct Capabilities {
     mail_writes: bool,
     message_source: bool,
     submission: bool,
+    idle: bool,
     calendars: bool,
     calendar_writes: bool,
 }
@@ -43,6 +44,7 @@ impl Capabilities {
             mail_writes: false,
             message_source: false,
             submission: false,
+            idle: false,
             calendars: false,
             calendar_writes: false,
         }
@@ -83,6 +85,21 @@ impl Capabilities {
     #[must_use]
     pub const fn with_submission(mut self) -> Self {
         self.submission = true;
+        self
+    }
+
+    /// Marks **push / change notification** as supported — the adapter can hand a
+    /// host a [`Watch`](crate::Watch) session that signals when a scope changes (the
+    /// IMAP `IDLE` keep-alive, RFC 2177; a JMAP push channel or Graph webhook later).
+    /// Distinct from [`with_mail`](Self::with_mail), the read capability — a host
+    /// reads this to decide whether to offer an "as it comes in" sync strategy versus
+    /// periodic polling, exactly as a no-SMTP adapter advertises [`mail`](Self::mail)
+    /// without [`submission`](Self::submission). Push is a **latency optimization**:
+    /// the authoritative reconciliation is always the scope's normal sync, so a
+    /// provider without this is fully functional on a poll.
+    #[must_use]
+    pub const fn with_idle(mut self) -> Self {
+        self.idle = true;
         self
     }
 
@@ -129,6 +146,13 @@ impl Capabilities {
         self.submission
     }
 
+    /// Whether push / change notification ([`Watch`](crate::Watch), e.g. IMAP
+    /// `IDLE`) is supported.
+    #[must_use]
+    pub const fn idle(self) -> bool {
+        self.idle
+    }
+
     /// Whether calendar read/sync is supported.
     #[must_use]
     pub const fn calendars(self) -> bool {
@@ -165,11 +189,23 @@ mod tests {
             .with_mail_writes()
             .with_message_source()
             .with_submission()
+            .with_idle()
             .with_calendars()
             .with_calendar_writes();
         assert!(caps.mail() && caps.mail_writes() && caps.submission());
-        assert!(caps.message_source());
+        assert!(caps.message_source() && caps.idle());
         assert!(caps.calendars() && caps.calendar_writes());
+    }
+
+    #[test]
+    fn idle_is_independent_of_read() {
+        // An adapter can read/sync mail without offering push (a server without IMAP
+        // `IDLE`), exactly as a read-only mailbox advertises `mail` without
+        // `mail_writes`. Push is a latency optimization layered on top of sync.
+        let poll_only = Capabilities::none().with_mail();
+        assert!(poll_only.mail() && !poll_only.idle());
+        let pushable = Capabilities::none().with_mail().with_idle();
+        assert!(pushable.mail() && pushable.idle());
     }
 
     #[test]

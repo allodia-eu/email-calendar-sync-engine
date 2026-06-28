@@ -3,11 +3,12 @@
 //! **Read-only by default** — it lists folders + recent mail. It validates the
 //! `provider-imap` client against a *real* IMAP provider over a properly
 //! **verifying** TLS connector (Mozilla roots via `webpki-roots`), in contrast to
-//! the self-signed Stalwart fixture. A read-only opt-in, `IMAP_QRESYNC`, proves the
-//! CONDSTORE/QRESYNC incremental delta runs against the real server (snapshot, then an
-//! immediate delta that reconciles without re-snapshotting). Two opt-in writes exercise
-//! the rest: `IMAP_DRAFT` saves a draft (IMAP `APPEND`), and `IMAP_SEND` submits a test
-//! mail to yourself over SMTP (`AUTH PLAIN` + implicit TLS on port 465).
+//! the self-signed Stalwart fixture. Two read-only opt-ins prove more of the client:
+//! `IMAP_QRESYNC` runs the CONDSTORE/QRESYNC incremental delta (snapshot, then an
+//! immediate delta that reconciles without re-snapshotting), and `IMAP_IDLE` opens an
+//! IMAP IDLE push watch on the mailbox so new mail appears instantly. Two opt-in writes
+//! exercise the rest: `IMAP_DRAFT` saves a draft (IMAP `APPEND`), and `IMAP_SEND`
+//! submits a test mail to yourself over SMTP (`AUTH PLAIN` + implicit TLS on port 465).
 //!
 //! Credentials come from the environment — never hard-code or paste a password:
 //!
@@ -17,6 +18,8 @@
 //! cargo run -p provider-imap --example imap_explore
 //! # optional: IMAP_PORT=993 (default), IMAP_MAILBOX=INBOX (default)
 //! # optional: IMAP_QRESYNC=1 verifies the CONDSTORE/QRESYNC delta (read-only).
+//! # optional: IMAP_IDLE=1 watches the mailbox via IMAP IDLE push (read-only);
+//! #           IMAP_IDLE_SECS sets the window (default 40) — send yourself mail to see it.
 //! # optional: IMAP_DRAFT=1 saves a test draft to your Drafts folder (IMAP APPEND).
 //! # optional: IMAP_SEND=1 sends a test mail to yourself over SMTP AUTH+TLS.
 //! #           SMTP host defaults to your IMAP host with imap.→smtp.; override with
@@ -30,7 +33,7 @@ use engine_core::ids::{AccountId, MailboxId, MessageIdHeader};
 use engine_core::mail::EmailAddress;
 use engine_core::sync::SyncUpdate;
 use engine_provider::{Draft, Provider};
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{ImapConfig, ImapProvider, ImapWatcher};
 use tokio_rustls::TlsConnector;
 
 #[tokio::main]
@@ -94,6 +97,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Opt-in read-only QRESYNC check (no content printed, nothing mutated).
     if env::var("IMAP_QRESYNC").is_ok() {
         qresync_check(&provider, &account).await?;
+    }
+
+    // Opt-in read-only push: watch the mailbox via IMAP IDLE and print events.
+    if env::var("IMAP_IDLE").is_ok() {
+        idle_watch(&config, &mailbox).await?;
     }
 
     // Opt-in write: save a test draft to Drafts via IMAP APPEND (no SMTP).
@@ -200,6 +208,50 @@ async fn qresync_check<P: Provider>(
             "server did not negotiate QRESYNC — using the new-arrivals fallback"
         }
     );
+    Ok(())
+}
+
+/// Read-only push demo: open an IMAP IDLE watcher on the bound mailbox and print each
+/// change / keep-alive event for a short window (`IMAP_IDLE_SECS`, default 40). Send
+/// yourself an email while it runs to watch the `Changed` notification arrive instantly
+/// — nothing is mutated. A 20-second keep-alive makes the periodic heartbeat visible in
+/// the window (a real desktop watch uses the 28-minute default).
+async fn idle_watch(config: &ImapConfig, mailbox: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
+    let window: u64 = env::var("IMAP_IDLE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(40);
+    println!(
+        "\n[IDLE] watching {mailbox} for {window}s — send yourself an email to see it arrive \
+         instantly (nothing is mutated)..."
+    );
+    let mut watcher = ImapWatcher::connect(
+        config,
+        verifying_connector(),
+        MailboxId::try_from(mailbox)?,
+        Duration::from_secs(20),
+    )
+    .await?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(window);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, watcher.next_event()).await {
+            Ok(Ok(event)) => println!("[IDLE] {event:?} — a host would sync the mailbox now"),
+            Ok(Err(e)) => {
+                println!("[IDLE] watch error (a host would reconnect): {e}");
+                break;
+            }
+            Err(_) => break, // the demo window elapsed
+        }
+    }
+    watcher.stop().await.ok();
+    println!("[IDLE] done watching.");
     Ok(())
 }
 

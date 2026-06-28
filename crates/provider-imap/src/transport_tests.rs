@@ -83,6 +83,8 @@ async fn negotiate_qresync_enables_it_when_advertised() {
 
     conn.negotiate_qresync().await.unwrap();
     assert!(conn.qresync_enabled());
+    // This server advertises QRESYNC but not IDLE, so no push capability is recorded.
+    assert!(!conn.idle_advertised());
 
     let sent = written(&recorded);
     assert!(sent.contains("a2 CAPABILITY"), "{sent}");
@@ -103,6 +105,9 @@ async fn negotiate_qresync_stays_off_without_the_capability() {
 
     conn.negotiate_qresync().await.unwrap();
     assert!(!conn.qresync_enabled());
+    // The same post-auth CAPABILITY lists IDLE (but not QRESYNC), so push is recorded
+    // even though the QRESYNC delta is not — the two are independent capabilities.
+    assert!(conn.idle_advertised());
     assert!(!written(&recorded).contains("ENABLE"), "no ENABLE sent");
 }
 

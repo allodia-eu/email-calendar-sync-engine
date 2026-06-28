@@ -77,12 +77,17 @@ imap_cmd INBOX "CREATE Projects" >/dev/null 2>&1 || true
 # test mutates in isolation (it re-flags one message and expunges another), so it
 # never disturbs the count-asserted INBOX/Archive/Projects.
 imap_cmd INBOX "CREATE QResync" >/dev/null 2>&1 || true
+# Idle is a second dedicated mailbox the IMAP IDLE (RFC 2177) push test watches and
+# flag-toggles in isolation, so its mutations never disturb the count-asserted
+# mailboxes either.
+imap_cmd INBOX "CREATE Idle" >/dev/null 2>&1 || true
 
 log "clearing managed mailboxes for an idempotent re-seed"
 imap_clear INBOX
 imap_clear Archive
 imap_clear Projects
 imap_clear QResync
+imap_clear Idle
 
 # INBOX was just cleared, so appends land at deterministic sequence numbers
 # (Stalwart's SEARCH does not match on a HEADER Message-ID, so we rely on append
@@ -105,6 +110,9 @@ imap_cmd INBOX "COPY 1 Archive" >/dev/null
 
 log "seeding the dedicated QResync mailbox (three messages) for the QRESYNC delta test"
 imap_cmd INBOX "COPY 1:3 QResync" >/dev/null
+
+log "seeding the dedicated Idle mailbox (one message) for the IMAP IDLE push test"
+imap_cmd INBOX "COPY 1 Idle" >/dev/null
 
 log "moving a message from INBOX into Projects (single membership)"
 imap_append "$MAIL_DIR/07-moved.eml" INBOX # seq 9

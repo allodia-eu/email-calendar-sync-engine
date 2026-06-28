@@ -10,9 +10,10 @@ publish.workspace = true
 engine-core = { workspace = true }
 engine-provider = { workspace = true }
 # `io-util` for the line-protocol reader/writer over any async stream; `net` for
-# the live TCP connect. The protocol is generic over `AsyncRead + AsyncWrite`, so
-# the offline tests drive it over an in-memory duplex with no socket or TLS.
-tokio = { workspace = true, features = ["io-util", "net", "sync"] }
+# the live TCP connect; `time` for the IDLE watcher's keep-alive timeout (the
+# RFC 2177 re-issue clock). The protocol is generic over `AsyncRead + AsyncWrite`,
+# so the offline tests drive it over an in-memory duplex with no socket or TLS.
+tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
 tokio-rustls = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -26,8 +27,9 @@ time = { workspace = true }
 fuzzing = []
 
 [dev-dependencies]
-# Tests add the timer/sync/blocking pieces the library does not need at runtime.
-tokio = { workspace = true, features = ["io-util", "net", "time", "sync", "macros", "rt-multi-thread"] }
+# Tests add the blocking/macro pieces and `test-util` for `start_paused` — so the
+# watcher's keep-alive timeout fires deterministically with no real waiting.
+tokio = { workspace = true, features = ["io-util", "net", "time", "sync", "macros", "rt-multi-thread", "test-util"] }
 # The no-verify verifier for Stalwart's self-signed test cert (live tests only).
 rustls = { workspace = true }
 # Mozilla root certificates for the `imap_explore` example's *verifying* TLS

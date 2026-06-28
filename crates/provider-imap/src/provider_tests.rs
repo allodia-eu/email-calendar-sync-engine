@@ -54,6 +54,31 @@ async fn scopes_are_imap_shaped() {
     assert!(provider.capabilities().mail_writes());
     assert!(!provider.capabilities().submission());
     assert!(!provider.capabilities().calendars());
+    // This provider's connection never ran CAPABILITY negotiation, so push (IDLE) is
+    // not advertised — it is gated on the server, like submission is on SMTP.
+    assert!(!provider.capabilities().idle());
+}
+
+#[tokio::test]
+async fn idle_capability_reflects_a_post_auth_advertisement() {
+    // A server that advertises IDLE post-auth (Stalwart, Dovecot, …): negotiation
+    // records it, so the built provider advertises push and a host can offer an
+    // "as it comes in" strategy. Connection::open consumes the greeting (`a0`),
+    // login is `a1`, and CAPABILITY is the next tagged command (`a2`).
+    let (stream, _) = MockStream::new(script(&[
+        GREETING,
+        LOGIN_OK,
+        "* CAPABILITY IMAP4rev2 IDLE CONDSTORE QRESYNC\r\na2 OK done\r\n",
+        "* ENABLED QRESYNC\r\na3 OK enabled\r\n",
+    ]));
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    conn.negotiate_qresync().await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+    assert!(
+        provider.capabilities().idle(),
+        "an advertised IDLE becomes the provider's push capability"
+    );
 }
 
 #[tokio::test]

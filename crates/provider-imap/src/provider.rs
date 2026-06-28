@@ -191,17 +191,36 @@ impl ImapProvider<TlsStream<TcpStream>> {
             .smtp
             .as_ref()
             .map(|settings| resolve_smtp(settings, &connector, config));
-        let tcp = TcpStream::connect(&config.addr).await?;
-        let server_name = ServerName::try_from(config.server_name.clone())
-            .map_err(|e| ImapError::bad(format!("invalid TLS server name: {e}")))?;
-        let tls = connector.connect(server_name, tcp).await?;
-        let mut connection = Connection::open(tls).await?;
-        connection.login(&config.username, &config.password).await?;
-        // Detect + ENABLE QRESYNC (RFC 7162) so deltas reconcile flag/expunge changes
-        // incrementally; a server without it stays on the new-arrivals baseline.
-        connection.negotiate_qresync().await?;
+        let connection = connect_session(config, &connector).await?;
         Ok(Self::build(connection, mailbox, smtp, config.since))
     }
+}
+
+/// Opens a TCP + implicit-TLS connection, logs in, and negotiates capabilities
+/// (ENABLE QRESYNC + record IDLE) — the shared dial both [`ImapProvider::connect`]
+/// and [`ImapWatcher::connect`](crate::watch::ImapWatcher::connect) build their session
+/// on. Factored out so a watcher opens its **own** dedicated connection (push needs a
+/// standing IDLE socket separate from the sync socket) without duplicating the
+/// connect/login/negotiate sequence or exposing the config's private fields.
+///
+/// # Errors
+///
+/// [`ImapError`] on a TCP/TLS/login failure or a bad server name.
+pub(crate) async fn connect_session(
+    config: &ImapConfig,
+    connector: &TlsConnector,
+) -> Result<Connection<TlsStream<TcpStream>>, ImapError> {
+    let tcp = TcpStream::connect(&config.addr).await?;
+    let server_name = ServerName::try_from(config.server_name.clone())
+        .map_err(|e| ImapError::bad(format!("invalid TLS server name: {e}")))?;
+    let tls = connector.connect(server_name, tcp).await?;
+    let mut connection = Connection::open(tls).await?;
+    connection.login(&config.username, &config.password).await?;
+    // Detect + ENABLE QRESYNC (RFC 7162) so deltas reconcile flag/expunge changes
+    // incrementally, and record IDLE (RFC 2177) support; a server without either stays
+    // on the corresponding baseline.
+    connection.negotiate_qresync().await?;
+    Ok(connection)
 }
 
 /// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,
@@ -254,6 +273,12 @@ impl<S> ImapProvider<S> {
             .with_message_source();
         if smtp.is_some() {
             capabilities = capabilities.with_submission();
+        }
+        // Push (`IDLE`, RFC 2177) is gated on the server advertising it post-auth, so a
+        // host knows whether to offer an "as it comes in" strategy or fall back to
+        // polling. The watcher itself opens a *separate* connection (`crate::watch`).
+        if connection.idle_advertised() {
+            capabilities = capabilities.with_idle();
         }
         Self {
             connection: Mutex::new(connection),
