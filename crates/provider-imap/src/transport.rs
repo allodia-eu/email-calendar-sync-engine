@@ -26,6 +26,11 @@ pub(crate) struct Connection<S> {
     /// [`Connection::negotiate_qresync`]. When `true`, the sync layer opens mailboxes
     /// with CONDSTORE and reconciles deltas via `CHANGEDSINCE`/`VANISHED`.
     qresync: bool,
+    /// Whether the server advertised `IDLE` (RFC 2177) in its post-auth `CAPABILITY` —
+    /// recorded by [`Connection::negotiate_qresync`] from the same response. When
+    /// `true`, a [`crate::watch::ImapWatcher`] can keep a standing connection idling to
+    /// push change notifications; when `false`, the host must fall back to polling.
+    idle_advertised: bool,
 }
 
 impl<S> core::fmt::Debug for Connection<S> {
@@ -33,7 +38,19 @@ impl<S> core::fmt::Debug for Connection<S> {
         f.debug_struct("Connection")
             .field("tag", &self.tag)
             .field("qresync", &self.qresync)
+            .field("idle_advertised", &self.idle_advertised)
             .finish_non_exhaustive()
+    }
+}
+
+impl<S> Connection<S> {
+    /// Whether the server advertised `IDLE` (RFC 2177) post-auth — the precondition a
+    /// [`crate::watch::ImapWatcher`] checks before opening a standing IDLE session, and
+    /// what [`ImapProvider::build`](crate::provider) reads to advertise
+    /// [`Capabilities::idle`](engine_provider::Capabilities::idle). A plain field read,
+    /// so it needs no stream bounds (the unbounded provider builder consults it).
+    pub(crate) fn idle_advertised(&self) -> bool {
+        self.idle_advertised
     }
 }
 
@@ -50,6 +67,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             inner: BufReader::new(stream),
             tag: 0,
             qresync: false,
+            idle_advertised: false,
         };
         connection.read_greeting().await?;
         Ok(connection)
@@ -84,15 +102,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         }
     }
 
-    fn next_tag(&mut self) -> String {
+    /// Allocates the next command tag (`a1`, `a2`, …). `pub(crate)` so the IDLE
+    /// primitives in [`crate::idle`] can tag the `IDLE` command they manage outside
+    /// the normal request/response [`command`](Self::command) round trip.
+    pub(crate) fn next_tag(&mut self) -> String {
         self.tag += 1;
         format!("a{}", self.tag)
+    }
+
+    /// Writes raw bytes and flushes — the unframed send the IDLE primitives need to
+    /// issue `<tag> IDLE\r\n` and the bare `DONE\r\n` continuation
+    /// ([`crate::idle`]), which fall outside [`command`](Self::command)'s tagged
+    /// request/response shape.
+    pub(crate) async fn send_raw(&mut self, bytes: &[u8]) -> ImapResult<()> {
+        self.inner.write_all(bytes).await?;
+        self.inner.flush().await?;
+        Ok(())
     }
 
     /// Reads one logical line: bytes through the next `\n`, with any `{n}` literal
     /// the line announces inlined (the n bytes, then the continuation). Literals
     /// can themselves announce further literals, so this loops.
-    async fn read_line(&mut self) -> ImapResult<Vec<u8>> {
+    ///
+    /// `pub(crate)` so the IDLE read loop ([`crate::idle`]) can consume the
+    /// unsolicited untagged responses the server streams while idling, reusing the
+    /// same literal-aware framing as the command path.
+    pub(crate) async fn read_line(&mut self) -> ImapResult<Vec<u8>> {
         let mut line = Vec::new();
         loop {
             let before = line.len();
@@ -184,6 +219,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     pub(crate) async fn negotiate_qresync(&mut self) -> ImapResult<()> {
         let response = self.command("CAPABILITY").await?;
         let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
+        // Record IDLE (RFC 2177) from the same post-auth list so a watcher (and the
+        // provider's advertised `Capabilities::idle`) knows whether push is available.
+        self.idle_advertised = capabilities
+            .iter()
+            .any(|cap| cap.eq_ignore_ascii_case("IDLE"));
         if capabilities
             .iter()
             .any(|cap| cap.eq_ignore_ascii_case("QRESYNC"))
@@ -410,7 +450,9 @@ fn trailing_literal_len(line: &[u8]) -> Option<usize> {
 }
 
 /// Strips an ASCII prefix, returning the remainder without its trailing CRLF.
-fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+/// `pub(crate)` so [`crate::idle`] can peel the `* ` from an untagged line before
+/// classifying the IDLE notification it carries.
+pub(crate) fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     let rest = line.strip_prefix(prefix)?;
     let rest = rest.strip_suffix(b"\n").unwrap_or(rest);
     Some(rest.strip_suffix(b"\r").unwrap_or(rest))

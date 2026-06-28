@@ -135,7 +135,11 @@ sequence numbers are deterministic) rather than by searching.
 | `06-thread-root/reply`   | INBOX (`In-Reply-To`/`References`) | Threading by references, independent of subject. |
 | `07-moved.eml`           | INBOX → **MOVE**d to Projects | A moved message keeps a single membership (contrast the copy). |
 
-Folders `Archive` and `Projects` exercise non-INBOX mailboxes.
+Folders `Archive` and `Projects` exercise non-INBOX mailboxes. Two further dedicated
+mailboxes carry isolated copies of INBOX fixtures so a test can mutate them without
+disturbing the count-asserted folders: `QResync` (three messages, for the
+CONDSTORE/QRESYNC delta test) and `Idle` (one message, for the IMAP `IDLE` push test,
+which flag-toggles it on a second connection — `imap-smtp.md`).
 
 ### Calendar (`seed/calendar/`, via CalDAV into Alice's default calendar)
 

@@ -46,7 +46,7 @@ If product pressure changes the order, the domain model tests still need JMAP an
 - Provider adapters must expose whether a sync response is a delta or a complete snapshot.
 - Provider object ids may not be stable across container moves; adapters expose a stable or immutable id as the `ProviderKey`, plus a version token (ETag, `changeKey`, MODSEQ) for concurrency.
 - Sync cursors are provider-specific (state strings, MODSEQ, sync-tokens, history ids, delta tokens); calendar sync may be inherently time-windowed (a date-bounded view), surfaced as scoped, possibly-incomplete coverage.
-- Providers that support push or idle signals emit wake hints; the engine still performs pull sync to fetch changes.
+- Providers that support push or idle signals emit wake hints; the engine still performs pull sync to fetch changes. This is a **provider-neutral** capability: the `idle` capability flag advertises it, and a `Watch` session (`engine-provider`) yields a `WatchEvent` stream (`Changed` | `KeepAlive`) for one scope. A watch event carries **no data** and is never a source of truth — it means only "run the scope's normal sync," which is the authoritative, idempotent reconciliation. So a missed/coalesced/spurious notification cannot corrupt the store; push only lowers the *latency* of seeing a change, and a poll-only host is fully correct. (**Implemented** for IMAP `IDLE` — `imap-smtp.md`; a JMAP push channel / Graph webhook are later slices over the same `Watch` contract.)
 
 ## Stalwart Test Spine
 
@@ -80,6 +80,11 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
   in `provider-imap`: when the server advertises QRESYNC the delta reconciles flag
   changes + expunges via `CHANGEDSINCE`/`VANISHED`; a server without it falls back to a
   new-arrivals delta + periodic snapshot — `imap-smtp.md`.)
+- IMAP `IDLE` (RFC 2177) push is an optional capability too, advertised by the `idle`
+  flag. (**Implemented** in `provider-imap`: an `ImapWatcher` holds a *dedicated*
+  standing connection that turns the `IDLE`/`DONE` keep-alive loop into the neutral
+  `Watch` stream — `imap-smtp.md`. A non-`IDLE` server simply isn't watchable, and the
+  host polls.)
 - IMAP SEARCH is a provider-search fallback when local body coverage is incomplete.
 - SMTP post-DATA ambiguity must enter `NeedsConfirmation`; never blind-retry.
 - SMTP per-recipient acceptance/rejection before DATA must be represented.

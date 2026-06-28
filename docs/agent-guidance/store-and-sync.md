@@ -56,6 +56,12 @@ is an enum, not a single id:
   `ImapMailboxList` parents `ImapMailbox`.
 - **SMTP** is not a sync scope. It is an outbox transport only; the outbox is
   leased per account (see below).
+- **Push (IMAP `IDLE`) is not a sync scope either.** A `Watch` session
+  (`providers.md`, `imap-smtp.md`) only signals that a scope *may* have changed; the
+  host responds by running that scope's normal sync, under the same lease and atomic
+  apply as a poll. Push adds no lease semantics and writes nothing itself — it is a
+  latency optimization over polling, and the scope sync stays the authoritative,
+  idempotent reconciliation.
 
 Consequences that the orchestrator must not paper over:
 
