@@ -223,6 +223,125 @@ async fn submit_over_smtp_delivers_and_files_the_sent_copy() {
 }
 
 #[tokio::test]
+async fn submit_over_hides_bcc_on_the_wire_but_keeps_it_in_the_sent_copy() {
+    // Build the provider over a RECORDED IMAP stream so we can inspect the Sent-copy APPEND.
+    // The script: greeting + login (consumed by `login`), then LIST resolves `\Sent` and the
+    // APPEND literal is accepted.
+    let (imap_stream, imap_recorded) = MockStream::new(script(&[
+        GREETING,
+        LOGIN_OK,
+        "* LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\na2 OK LIST done\r\n",
+        "+ OK send literal\r\n",
+        "a3 OK [APPENDUID 50 9] APPEND completed\r\n",
+    ]));
+    let mut conn = Connection::open(imap_stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+
+    // One reply per command: greeting, EHLO, MAIL, then a RCPT for EACH of To+Cc+Bcc
+    // (three), DATA, queued, bye.
+    let smtp = script(&[
+        "220 mail\r\n",
+        "250 OK\r\n",
+        "250 2.1.0 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "354 go ahead\r\n",
+        "250 2.0.0 queued\r\n",
+        "221 bye\r\n",
+    ]);
+    let (smtp_stream, smtp_recorded) = MockStream::new(smtp);
+
+    let draft = submit_draft()
+        .with_cc(vec![EmailAddress::new("carol@test.local")])
+        .with_bcc(vec![EmailAddress::new("dave@test.local")]);
+    provider
+        .submit_over(smtp_stream, &draft, None)
+        .await
+        .unwrap();
+
+    // --- The over-the-wire message (what recipients receive) ---
+    let conversation = written(&smtp_recorded);
+    // Every recipient — To, Cc, AND Bcc — gets an envelope `RCPT TO`.
+    assert!(
+        conversation.contains("RCPT TO:<bob@test.local>\r\n"),
+        "{conversation}"
+    );
+    assert!(
+        conversation.contains("RCPT TO:<carol@test.local>\r\n"),
+        "{conversation}"
+    );
+    assert!(
+        conversation.contains("RCPT TO:<dave@test.local>\r\n"),
+        "{conversation}"
+    );
+    // The transmitted message carries a visible `Cc:` header but NEVER a `Bcc:` one.
+    assert!(
+        conversation.contains("Cc: carol@test.local\r\n"),
+        "{conversation}"
+    );
+    assert!(!conversation.contains("Bcc:"), "{conversation}");
+    // The Cc address appears twice (the envelope `RCPT TO` AND the `Cc:` header), but the Bcc
+    // address appears exactly ONCE — only in the envelope, never in the transmitted message —
+    // so no recipient can see it.
+    assert_eq!(
+        conversation.matches("carol@test.local").count(),
+        2,
+        "{conversation}"
+    );
+    assert_eq!(
+        conversation.matches("dave@test.local").count(),
+        1,
+        "{conversation}"
+    );
+
+    // --- The filed Sent copy (what the SENDER keeps) ---
+    // The APPENDed Sent copy DOES carry the `Bcc:` header, so the sender's Sent folder records
+    // whom they Bcc'd — the other half of the Outlook/Thunderbird behavior.
+    let appended = written(&imap_recorded);
+    assert!(appended.contains("Bcc: dave@test.local\r\n"), "{appended}");
+    assert!(appended.contains("Cc: carol@test.local\r\n"), "{appended}");
+}
+
+#[tokio::test]
+async fn submit_over_deduplicates_a_recipient_listed_in_both_to_and_cc() {
+    let provider = connected_provider(script(&[
+        GREETING,
+        LOGIN_OK,
+        "* LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\na2 OK LIST done\r\n",
+        "+ OK send literal\r\n",
+        "a3 OK [APPENDUID 50 9] APPEND completed\r\n",
+    ]))
+    .await;
+    // Exactly ONE RCPT reply: bob is in both To and Cc but the envelope de-duplicates him.
+    let smtp = script(&[
+        "220 mail\r\n",
+        "250 OK\r\n",
+        "250 2.1.0 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "354 go ahead\r\n",
+        "250 2.0.0 queued\r\n",
+        "221 bye\r\n",
+    ]);
+    let (smtp_stream, smtp_recorded) = MockStream::new(smtp);
+
+    // submit_draft()'s To is bob@test.local; adding him to Cc must not yield a second RCPT.
+    let draft = submit_draft().with_cc(vec![EmailAddress::new("bob@test.local")]);
+    provider
+        .submit_over(smtp_stream, &draft, None)
+        .await
+        .unwrap();
+
+    let conversation = written(&smtp_recorded);
+    assert_eq!(
+        conversation.matches("RCPT TO:").count(),
+        1,
+        "{conversation}"
+    );
+}
+
+#[tokio::test]
 async fn submit_over_smtp_maps_a_lost_ack_to_needs_confirmation() {
     // SMTP fails (lost post-DATA ack) before the Sent APPEND, so the IMAP side is
     // only greeted and logged in.
