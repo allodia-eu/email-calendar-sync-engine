@@ -73,6 +73,75 @@ impl fmt::Debug for MessageBody {
     }
 }
 
+/// A message's inline (`cid:`-referenced) MIME part — the decoded bytes a host needs to
+/// render an `<img src="cid:…">` in the HTML body, keyed by the `Content-ID` the
+/// reference points at.
+///
+/// Like [`MessageBody`] this is a *derived* view of the raw RFC 5322 source, not stored
+/// state: `engine-mime` decodes it out of the cached raw ([`RawMime`](crate::raw::RawMime))
+/// on demand. [`bytes`](Self::bytes) is content-transfer-decoded (base64/quoted-printable
+/// already undone). Its `Debug` is **redacted** — only the id, media type, and byte length
+/// print, never the bytes — because inline content is as sensitive as the body text
+/// (`north-star.md`).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InlinePart {
+    /// The `Content-ID` with its surrounding angle brackets removed — the exact token a
+    /// `cid:` URL addresses (RFC 2392): a part `Content-ID: <logo@x>` is referenced by
+    /// `cid:logo@x`.
+    content_id: String,
+    /// The media type with parameters stripped (e.g. `image/png`), as the `Content-Type`
+    /// declared it. A host that inlines this as a `data:` URI is responsible for its own
+    /// validation — the bytes are hostile input.
+    media_type: String,
+    /// The content-transfer-decoded part bytes.
+    bytes: Vec<u8>,
+}
+
+impl InlinePart {
+    /// Creates an inline part from its `cid` token (angle brackets already stripped), its
+    /// media type, and its decoded bytes.
+    #[must_use]
+    pub fn new(
+        content_id: impl Into<String>,
+        media_type: impl Into<String>,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            content_id: content_id.into(),
+            media_type: media_type.into(),
+            bytes,
+        }
+    }
+
+    /// The `Content-ID` token (no angle brackets) a `cid:` URL references.
+    #[must_use]
+    pub fn content_id(&self) -> &str {
+        &self.content_id
+    }
+
+    /// The media type (`Content-Type` with parameters stripped, e.g. `image/png`).
+    #[must_use]
+    pub fn media_type(&self) -> &str {
+        &self.media_type
+    }
+
+    /// The content-transfer-decoded bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl fmt::Debug for InlinePart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InlinePart")
+            .field("content_id", &self.content_id)
+            .field("media_type", &self.media_type)
+            .field("bytes_len", &self.bytes.len())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +185,36 @@ mod tests {
         assert!(
             !shown.contains("secret") && !shown.contains("private"),
             "body content must not leak: {shown}"
+        );
+    }
+
+    #[test]
+    fn inline_part_accessors_expose_each_field() {
+        let part = InlinePart::new("logo@x", "image/png", vec![1, 2, 3]);
+        assert_eq!(part.content_id(), "logo@x");
+        assert_eq!(part.media_type(), "image/png");
+        assert_eq!(part.bytes(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn inline_part_roundtrips_through_json() {
+        let part = InlinePart::new("chart.1@host", "image/gif", vec![0xde, 0xad, 0xbe, 0xef]);
+        let json = serde_json::to_string(&part).unwrap();
+        assert_eq!(serde_json::from_str::<InlinePart>(&json).unwrap(), part);
+    }
+
+    #[test]
+    fn inline_part_debug_redacts_bytes() {
+        // The id and media type are not sensitive (they are routing metadata), but the
+        // bytes are content — only their length may print.
+        let part = InlinePart::new("logo@x", "image/png", b"\x89PNGsecretpixels".to_vec());
+        let shown = format!("{part:?}");
+        assert!(shown.contains("content_id: \"logo@x\""), "{shown}");
+        assert!(shown.contains("media_type: \"image/png\""), "{shown}");
+        assert!(shown.contains("bytes_len: 16"), "{shown}");
+        assert!(
+            !shown.contains("secretpixels") && !shown.contains("PNG"),
+            "inline bytes must not leak: {shown}"
         );
     }
 }

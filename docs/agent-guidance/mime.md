@@ -5,14 +5,15 @@ code that turns a raw RFC 5322 message into displayable text.
 
 ## What it is
 
-`engine-mime` is a pure, I/O-free, async-free crate with one public function:
+`engine-mime` is a pure, I/O-free, async-free crate with two public functions:
 
 ```rust
 pub fn extract_body(raw: &RawMime) -> MessageBody
+pub fn extract_inline_parts(raw: &RawMime) -> Vec<InlinePart>
 ```
 
-It interprets a message's cached raw source (`RawMime`, the Tier-3 blob the store
-caches on demand — `store-and-sync.md`) into `MessageBody { plain, html }`:
+`extract_body` interprets a message's cached raw source (`RawMime`, the Tier-3 blob the
+store caches on demand — `store-and-sync.md`) into `MessageBody { plain, html }`:
 
 - `plain` — the canonical text rendering: the decoded `text/plain` body, or a text
   rendering of an HTML-only message, so a plain-text reading view always has
@@ -24,9 +25,22 @@ caches on demand — `store-and-sync.md`) into `MessageBody { plain, html }`:
   (`north-star.md` security: HTML mail is sanitized, remote images blocked by
   default). Rendering HTML is a later slice.
 
+`extract_inline_parts` decodes a message's inline (`cid:`-referenced) parts into
+`Vec<InlinePart>` — one per **binary** leaf part that declares a `Content-ID`, the only
+parts a `cid:` URL can address (RFC 2392). Each `InlinePart` carries the id with angle
+brackets stripped, the `Content-Type` media type (parameters stripped), and the
+content-transfer-decoded bytes. A host inlines these for `<img src="cid:…">` references
+in the (sanitized) HTML body. **Policy stays with the host**: which media types are safe
+to inline, and the inert form they are inlined as (e.g. an `image/*`-only `data:` URI),
+are decided by the renderer, not here — the bytes are hostile input. Text and
+`multipart/*` parts, and parts without a `Content-ID`, are skipped.
+
 The fetching and caching of the raw bytes are **not** this crate's job — the
 provider layer fetches (`Provider::fetch_message_source`) and the store caches
-(`MessageSourceCache`); `engine-mime` only *interprets*.
+(`MessageSourceCache`); `engine-mime` only *interprets*. Note inline bytes are kept **out**
+of the SQLite body cache (`MessageBodyStore`): `engine-sync::fetch_inline_parts` re-derives
+them from the immutable raw blob on demand, so a large inline image never bloats the
+relational store (`MessageSourceCache` doc).
 
 ## Key decision: depend on `mail-parser`, don't hand-roll
 
@@ -56,4 +70,7 @@ the same authors as our test target):
 `extract_body` is covered by fixtures for plain text, `multipart/alternative`
 (text+html), quoted-printable, base64, a non-UTF-8 charset (proving `full_encoding`),
 HTML-only fallback, `multipart/mixed` past an attachment, and adversarial/empty input
-(no panic). Add a fixture for any new decoding behavior.
+(no panic). `extract_inline_parts` is covered by fixtures for a `multipart/related`
+inline image (decoded bytes, stripped `cid`), an attachment without a `Content-ID` (not
+returned), plain/HTML-only messages (no inline parts), multiple inline parts in order, and
+adversarial/empty input (no panic). Add a fixture for any new decoding behavior.

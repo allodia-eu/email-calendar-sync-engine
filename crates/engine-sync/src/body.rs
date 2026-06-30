@@ -8,7 +8,7 @@
 //! displayable text with `engine-mime` and caching both halves best-effort.
 
 use engine_core::ids::AccountId;
-use engine_core::mail::{Message, MessageBody};
+use engine_core::mail::{InlinePart, Message, MessageBody};
 use engine_provider::Provider;
 use engine_store::{MessageBodyStore, MessageSourceCache};
 
@@ -59,6 +59,47 @@ where
     Ok(body)
 }
 
+/// Returns the inline (`cid:`-referenced) parts of `message` — the decoded bytes a host
+/// inlines for `<img src="cid:…">` references in the rendered HTML body.
+///
+/// Cache-first on the **raw** bytes: the on-disk blob (cached by an earlier
+/// [`fetch_message_body`] or a prior call), else one provider fetch — then decodes the
+/// inline parts with [`engine_mime::extract_inline_parts`]. Unlike [`fetch_message_body`]
+/// it does **not** read or write the SQLite body-text cache: inline attachment bytes are
+/// kept out of the relational store ([`MessageSourceCache`] doc), so they are re-derived
+/// from the immutable raw on demand (cheap). Lease-free, for the same reason as
+/// [`fetch_message_body`] — the raw bytes and their decoding are immutable.
+///
+/// # Errors
+///
+/// Returns [`SyncError::Provider`] if the source fetch fails (a stale or expunged IMAP
+/// target is a `Conflict` — re-sync, then retry), or [`SyncError::Store`] if a cache
+/// **read** fails.
+pub async fn fetch_inline_parts<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    message: &Message,
+) -> Result<Vec<InlinePart>, SyncError>
+where
+    P: Provider,
+    S: MessageSourceCache,
+{
+    let key = message.id.key();
+    let (from_provider, raw) = match store.get_message_source(account, key).await? {
+        Some(cached) => (false, cached),
+        None => (true, provider.fetch_message_source(account, message).await?),
+    };
+    let parts = engine_mime::extract_inline_parts(&raw);
+
+    // Best-effort: re-cache the raw so a later body/inline read hits the blob. The read
+    // already succeeded, so a cache-write failure never denies it.
+    if from_provider {
+        let _ = store.put_message_source(account, key, raw).await;
+    }
+    Ok(parts)
+}
+
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -72,7 +113,7 @@ mod tests {
     use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
     use store_sqlite::SqliteStore;
 
-    use super::fetch_message_body;
+    use super::{fetch_inline_parts, fetch_message_body};
 
     /// A provider whose only ability is body fetch; it counts how often it is hit,
     /// so the cache-hit test can prove the second read never reaches the network.
@@ -220,6 +261,85 @@ mod tests {
         };
         assert!(!provider.capabilities().message_source());
         let err = fetch_message_body(&provider, &store(), &account(), &message())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::SyncError::Provider(_)));
+    }
+
+    // A `multipart/related` whose HTML references an inline image by `cid:`; `aGVsbG8=` is
+    // base64 for `hello`, so the decoded inline bytes are easy to assert.
+    const RAW_RELATED: &[u8] = b"Content-Type: multipart/related; boundary=\"b\"\r\n\r\n\
+        --b\r\nContent-Type: text/html\r\n\r\n<img src=\"cid:logo@x\">\r\n\
+        --b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\n\
+        Content-Transfer-Encoding: base64\r\nContent-Disposition: inline\r\n\r\naGVsbG8=\r\n\
+        --b--\r\n";
+
+    #[tokio::test]
+    async fn inline_parts_cache_miss_fetches_and_decodes() {
+        let provider = CountingProvider::new(RAW_RELATED);
+        let store = store();
+
+        let parts = fetch_inline_parts(&provider, &store, &account(), &message())
+            .await
+            .expect("fetch inline parts");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].content_id(), "logo@x");
+        assert_eq!(parts[0].media_type(), "image/png");
+        assert_eq!(parts[0].bytes(), b"hello");
+        assert_eq!(provider.hits.load(Ordering::SeqCst), 1, "fetched once");
+
+        // The raw bytes are now cached for a later body/inline read.
+        assert!(
+            store
+                .get_message_source(&account(), message().id.key())
+                .await
+                .expect("get source")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn inline_parts_served_from_cached_raw_without_provider_fetch() {
+        let store = store();
+        // Raw bytes already on disk (e.g. cached by a prior body read): inline-part
+        // extraction reuses the blob and never reaches the provider.
+        store
+            .put_message_source(
+                &account(),
+                message().id.key(),
+                RawMime::new(RAW_RELATED.to_vec()),
+            )
+            .await
+            .expect("seed source");
+
+        let provider = CountingProvider::new(b"unused - should not be fetched");
+        let parts = fetch_inline_parts(&provider, &store, &account(), &message())
+            .await
+            .expect("fetch inline parts from blob");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].bytes(), b"hello");
+        assert_eq!(
+            provider.hits.load(Ordering::SeqCst),
+            0,
+            "served from disk blob"
+        );
+    }
+
+    #[tokio::test]
+    async fn inline_parts_provider_error_propagates() {
+        struct Unsupported {
+            caps: Capabilities,
+        }
+        #[async_trait]
+        impl Provider for Unsupported {
+            fn capabilities(&self) -> &Capabilities {
+                &self.caps
+            }
+        }
+        let provider = Unsupported {
+            caps: Capabilities::none().with_mail(),
+        };
+        let err = fetch_inline_parts(&provider, &store(), &account(), &message())
             .await
             .unwrap_err();
         assert!(matches!(err, crate::SyncError::Provider(_)));
