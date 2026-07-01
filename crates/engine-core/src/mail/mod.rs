@@ -22,7 +22,9 @@ mod thread;
 
 pub use address::{EmailAddress, EmailAddressGroup};
 pub use body::EmailBodyPart;
-pub use content::{InlinePart, MessageBody};
+pub use content::{
+    AttachmentPartId, InlinePart, MessageAttachment, MessageAttachmentContent, MessageBody,
+};
 pub use header::{EmailHeader, Envelope};
 pub use keyword::{Keyword, KeywordError, SystemKeyword};
 pub use mailbox::Mailbox;

@@ -51,7 +51,8 @@ pub use engine_core::calendar::{Calendar, Event};
 pub use engine_core::coverage::SearchCoverage;
 pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
 pub use engine_core::mail::{
-    EmailAddress, InlinePart, Mailbox, MailboxRole, Message, MessageBody, SystemKeyword,
+    AttachmentPartId, EmailAddress, InlinePart, Mailbox, MailboxRole, Message, MessageAttachment,
+    MessageAttachmentContent, MessageBody, SystemKeyword,
 };
 pub use engine_core::time::{TimeZoneId, UtcDateTime};
 pub use engine_core::write::PendingOpId;

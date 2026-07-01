@@ -56,6 +56,7 @@
 //! yet (durable blob storage is a later store sub-step).
 
 mod base64;
+mod bodystructure;
 mod cursor;
 mod encoded_word;
 mod error;

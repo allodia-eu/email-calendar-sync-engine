@@ -37,8 +37,10 @@ use crate::transport::Connection;
 /// `ENVELOPE` omits (RFC 9051 §7.5.2) — it is what local threading needs. The peek
 /// form is required so the read does not set `\Seen`; the server echoes it back as
 /// `BODY[HEADER.FIELDS (REFERENCES)]`.
-pub(crate) const FETCH_ITEMS: &str =
-    "UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODY.PEEK[HEADER.FIELDS (REFERENCES)]";
+pub(crate) const FETCH_ITEMS: &str = concat!(
+    "UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODYSTRUCTURE ",
+    "BODY.PEEK[HEADER.FIELDS (REFERENCES)]"
+);
 
 /// Fetches one page of the bound mailbox's mail since `cursor`, continuing from
 /// `page` (a UID boundary) and bounded by `limit` (`0` means the whole window in

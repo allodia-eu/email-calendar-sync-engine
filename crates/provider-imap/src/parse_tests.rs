@@ -166,6 +166,50 @@ fn fetch_parses_uid_flags_internaldate_size_and_envelope() {
 }
 
 #[test]
+fn fetch_bodystructure_marks_regular_attachments() {
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE (("#,
+        r#""TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 2 1)"#,
+        r#"("#,
+        r#""APPLICATION" "PDF" ("NAME" "report.pdf") NIL NIL "BASE64" 3 NIL "#,
+        r#"("ATTACHMENT" ("FILENAME" "report.pdf")) NIL)"#,
+        r#" "MIXED" ("BOUNDARY" "b")))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_keeps_cid_inline_images_out_of_the_attachment_flag() {
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("IMAGE" "PNG" ("NAME" "logo.png") "#,
+        r#""<logo@cid>" NIL "BASE64" 12 NIL ("INLINE" ("FILENAME" "logo.png")) NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(!rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_keeps_undisposed_cid_images_out_of_the_attachment_flag() {
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("IMAGE" "PNG" ("NAME" "logo.png") "#,
+        r#""<logo@cid>" NIL "BASE64" 12 NIL NIL NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(!rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_marks_inline_named_files_without_content_id() {
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("APPLICATION" "PDF" ("NAME" "preview.pdf") "#,
+        r#"NIL NIL "BASE64" 12 NIL ("INLINE" ("FILENAME" "preview.pdf")) NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(rows[0].has_attachment);
+}
+
+#[test]
 fn fetch_reads_a_references_header_as_a_quoted_string() {
     // `BODY[HEADER.FIELDS (REFERENCES)]` does not tokenize as a single atom key:
     // the section spec splits into `BODY[HEADER.FIELDS` + `(REFERENCES)` + `]`

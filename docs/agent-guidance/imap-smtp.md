@@ -109,9 +109,12 @@ is authoritative for the `provider-caldav` calendar client.
   changes no longer needs `Engine::clear_mail_cursors` against a QRESYNC server — a plain
   delta sync reconciles them.
 - **Normalization.** `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
-  BODY.PEEK[HEADER.FIELDS (REFERENCES)])` (all peek-safe — none sets `\Seen`). The
-  `References` header is not an `ENVELOPE` field, so it rides a separate peek-safe
-  body-header item to feed threading (`threading.md`). Flags → keywords: `\Seen`/`\Flagged`/
+  BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES)])` (safe metadata — none sets
+  `\Seen`). The `References` header is not an `ENVELOPE` field, so it rides a
+  separate peek-safe body-header item to feed threading (`threading.md`).
+  `BODYSTRUCTURE` feeds `Message.has_attachment` without downloading parts: explicit
+  attachments or named non-CID parts count; CID inline resources do not. Flags → keywords:
+  `\Seen`/`\Flagged`/
   `\Answered`/`\Draft` map to their `$`-keywords; `\Deleted`/`\Recent` are
   deliberately not keywords (expunge/session model); custom keywords pass through.
   `INTERNALDATE` → a UTC instant (offset applied). `ENVELOPE` → subject, flattened
@@ -227,8 +230,8 @@ is authoritative for the `provider-caldav` calendar client.
   UID cannot supply the wrong message's bytes. `.PEEK` does **not** set `\Seen` —
   reading a body must not silently mark it read; the host marks-read via a separate
   `edit_mail` when it chooses. Fetching the whole source (not just the text part) is
-  lossless and serves the body now and HTML/attachments later from the cached raw with
-  no re-fetch (`providers.md`, `store-and-sync.md`).
+  lossless and serves the body, inline CID resources, and downloadable attachments from
+  the cached raw with no re-fetch (`providers.md`, `store-and-sync.md`).
 - **Read-only open + shared guard.** Resolution is shared with the edit path via
   `target::select_target`: parse the key, reject a `CR`/`LF` mailbox (`InvalidState`),
   open, and guard `UIDVALIDITY` (mismatch → **`Conflict`**). A body read opens the

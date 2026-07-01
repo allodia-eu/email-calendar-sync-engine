@@ -73,6 +73,7 @@ pub(crate) fn message_from_fetch(
         // string form is, but normalizing it is a later refinement. INTERNALDATE
         // (delivery time) is the reliable instant here.
     }
+    message.has_attachment = row.has_attachment;
     // `References` is not an ENVELOPE field; it rides a separate
     // `BODY[HEADER.FIELDS (REFERENCES)]` fetch item (the threading chain). The
     // value is the raw header line (`References: <a@x> <b@y>\r\n\r\n`); strip the
