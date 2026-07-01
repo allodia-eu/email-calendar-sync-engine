@@ -68,14 +68,12 @@ where
     S: MessageSourceCache,
 {
     let key = message.id.key();
-    match store.get_message_source(account, key).await? {
-        Some(cached) => Ok(cached),
-        None => {
-            let raw = provider.fetch_message_source(account, message).await?;
-            let _ = store.put_message_source(account, key, raw.clone()).await;
-            Ok(raw)
-        }
+    if let Some(cached) = store.get_message_source(account, key).await? {
+        return Ok(cached);
     }
+    let raw = provider.fetch_message_source(account, message).await?;
+    let _ = store.put_message_source(account, key, raw.clone()).await;
+    Ok(raw)
 }
 
 #[cfg(test)]

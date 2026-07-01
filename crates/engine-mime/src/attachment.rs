@@ -52,8 +52,7 @@ fn attachment_meta(id: AttachmentPartId, part: &MessagePart<'_>) -> Option<Messa
     let file_name = part
         .attachment_name()
         .filter(|name| !name.trim().is_empty())
-        .map(safe_file_name)
-        .unwrap_or_else(|| default_file_name(id, &media_type));
+        .map_or_else(|| default_file_name(id, &media_type), safe_file_name);
     let inline = part
         .content_disposition()
         .is_some_and(ContentType::is_inline);
@@ -124,7 +123,7 @@ fn safe_extension(value: &str) -> String {
     let ext: String = value
         .chars()
         .take(16)
-        .filter(|ch| ch.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .collect();
     if ext.is_empty() {
         "bin".to_owned()
