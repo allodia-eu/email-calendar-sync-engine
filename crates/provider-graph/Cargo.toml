@@ -15,6 +15,8 @@ reqwest = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+# The sync-depth cutoff date for the `receivedDateTime` window on the initial delta.
+time = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

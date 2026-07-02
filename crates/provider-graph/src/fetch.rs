@@ -12,9 +12,11 @@
 
 use engine_core::ids::{MailboxId, MessageId, ProviderKey};
 use engine_core::mail::{Mailbox, Message};
+use engine_core::raw::RawMime;
 use engine_core::sync::SyncState;
 use engine_provider::{PageToken, SyncKind, SyncPage};
 use serde_json::Value;
+use time::Date;
 
 use crate::error::GraphError;
 use crate::json::{req_str, wrap_id};
@@ -90,19 +92,35 @@ pub(crate) async fn message(client: &GraphClient, id: &MessageId) -> Result<Mess
     message_from_json(&doc)
 }
 
-/// Fetches one page of the bound folder's messages (see the module docs).
+/// Fetches one message's raw RFC 822 MIME via the `$value` endpoint — the source the
+/// reading view renders. Graph accepts the message id verbatim in the path, exactly as
+/// the changed-id re-fetch in [`message`] does.
+pub(crate) async fn message_source(
+    client: &GraphClient,
+    key: &ProviderKey,
+) -> Result<RawMime, GraphError> {
+    let bytes = client
+        .get_bytes(&client.url(&format!("/messages/{}/$value", key.as_str())))
+        .await?;
+    Ok(RawMime::new(bytes))
+}
+
+/// Fetches one page of the bound folder's messages (see the module docs). `since`
+/// windows the **initial** snapshot to messages received on or after that date (the
+/// sync-depth cutoff); later pages follow the server's links, which carry the window.
 pub(crate) async fn messages_page(
     client: &GraphClient,
     folder: &MailboxId,
     cursor: Option<&SyncState>,
     page: Option<&PageToken>,
+    since: Option<Date>,
 ) -> Result<SyncPage<Message>, GraphError> {
     let kind = if cursor.is_none() {
         SyncKind::Snapshot
     } else {
         SyncKind::Delta
     };
-    let doc = client.get(&page_url(client, folder, cursor, page)).await?;
+    let doc = client.get(&page_url(client, folder, cursor, page, since)).await?;
 
     let mut changed = Vec::new();
     let mut removed = Vec::new();
@@ -154,12 +172,14 @@ pub(crate) async fn messages_page(
 }
 
 /// The URL for the next page: a continuation `@odata.nextLink`, else the delta
-/// `cursor` (an `@odata.deltaLink`), else the folder's first `messages/delta` call.
+/// `cursor` (an `@odata.deltaLink`), else the folder's first `messages/delta` call —
+/// which, when `since` is set, carries a `receivedDateTime` window.
 fn page_url(
     client: &GraphClient,
     folder: &MailboxId,
     cursor: Option<&SyncState>,
     page: Option<&PageToken>,
+    since: Option<Date>,
 ) -> String {
     if let Some(page) = page {
         page.as_str().to_owned()
@@ -167,11 +187,30 @@ fn page_url(
         cursor.as_str().to_owned()
     } else {
         let select = MESSAGE_SELECT.join(",");
-        client.url(&format!(
+        let mut path = format!(
             "/mailFolders/{}/messages/delta?$select={select}",
             folder.as_str()
-        ))
+        );
+        if let Some(date) = since {
+            // Message delta accepts a `$filter` on `receivedDateTime` on the **initial**
+            // request; the returned deltaLink carries the window, so later pages must not
+            // re-specify it. The space around `ge` is percent-encoded for a valid query.
+            path.push_str(&since_filter(date));
+        }
+        client.url(&path)
     }
+}
+
+/// The `receivedDateTime` lower-bound filter clause for the initial delta, windowing the
+/// sync to `date` 00:00:00 UTC (`&$filter=receivedDateTime ge YYYY-MM-DDT00:00:00Z`, with
+/// the operator spaces percent-encoded).
+fn since_filter(date: Date) -> String {
+    format!(
+        "&$filter=receivedDateTime%20ge%20{:04}-{:02}-{:02}T00:00:00Z",
+        date.year(),
+        u8::from(date.month()),
+        date.day(),
+    )
 }
 
 /// The `value` array of a Graph collection response, or a protocol error.
@@ -210,6 +249,29 @@ mod tests {
         MailboxId::try_from("folder-inbox").unwrap()
     }
 
+    #[test]
+    fn initial_delta_url_windows_by_received_datetime_only_when_since_is_set() {
+        let client = fake_client(vec![]);
+        let since = Date::from_calendar_date(2026, time::Month::April, 1).unwrap();
+
+        // The initial request carries the `receivedDateTime` window (spaces encoded).
+        let windowed = page_url(&client, &inbox(), None, None, Some(since));
+        assert!(windowed.contains("/messages/delta?$select="));
+        assert!(windowed.contains("&$filter=receivedDateTime%20ge%202026-04-01T00:00:00Z"));
+
+        // No `since` → no filter (whole folder).
+        assert!(!page_url(&client, &inbox(), None, None, None).contains("$filter"));
+
+        // A continuation cursor is followed verbatim — the deltaLink already carries the
+        // window, so the filter is never re-appended (which Graph would reject).
+        let cursor = SyncState::new(
+            "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=x",
+        );
+        let followed = page_url(&client, &inbox(), Some(&cursor), None, Some(since));
+        assert_eq!(followed, cursor.as_str());
+        assert!(!followed.contains("$filter"));
+    }
+
     #[tokio::test]
     async fn folders_resolve_roles_by_id_and_null_root_parents() {
         let mailboxes = folders(&fake_client(folder_routes())).await.unwrap();
@@ -235,6 +297,7 @@ mod tests {
             &inbox(),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -258,11 +321,11 @@ mod tests {
             .unwrap_or(next);
         // Page 1 from the initial call; page 2 from following the real nextLink.
         let client = fake_client(vec![("messages/delta", p1.clone()), (next_path, p2)]);
-        let first = messages_page(&client, &inbox(), None, None).await.unwrap();
+        let first = messages_page(&client, &inbox(), None, None, None).await.unwrap();
         assert_eq!(first.changed.len(), 1);
         // Following the real nextLink reaches page 2 — proving continuation works.
         let token = first.next_page.expect("a nextLink continuation");
-        let second = messages_page(&client, &inbox(), None, Some(&token))
+        let second = messages_page(&client, &inbox(), None, Some(&token), None)
             .await
             .unwrap();
         assert_eq!(second.changed.len(), 1);
@@ -277,7 +340,7 @@ mod tests {
             ("delta-token-1", json(CHANGED)),
             ("/me/messages/", json(DETAIL)),
         ]);
-        let page = messages_page(&client, &inbox(), Some(&cursor), None)
+        let page = messages_page(&client, &inbox(), Some(&cursor), None, None)
             .await
             .unwrap();
         assert_eq!(page.kind, SyncKind::Delta);
@@ -287,7 +350,7 @@ mod tests {
 
         // A removed entry → an inline tombstone, no re-fetch.
         let client = fake_client(vec![("delta-token-1", json(REMOVED))]);
-        let page = messages_page(&client, &inbox(), Some(&cursor), None)
+        let page = messages_page(&client, &inbox(), Some(&cursor), None, None)
             .await
             .unwrap();
         assert_eq!(page.removed.len(), 1);
@@ -303,7 +366,7 @@ mod tests {
         // "changed entries are full objects" common case.
         let cursor = SyncState::new("https://graph.test/me/mailFolders/folder-inbox/delta-token-1");
         let client = fake_client(vec![("delta-token-1", json(CHANGED_FULL))]);
-        let page = messages_page(&client, &inbox(), Some(&cursor), None)
+        let page = messages_page(&client, &inbox(), Some(&cursor), None, None)
             .await
             .unwrap();
         assert_eq!(page.changed.len(), 1);
@@ -314,10 +377,10 @@ mod tests {
     #[tokio::test]
     async fn a_response_without_a_value_array_is_a_protocol_error() {
         let client = fake_client(vec![("messages/delta", json(r#"{"unexpected":true}"#))]);
-        assert!(messages_page(&client, &inbox(), None, None).await.is_err());
+        assert!(messages_page(&client, &inbox(), None, None, None).await.is_err());
         // An unrouted request surfaces the fake's error rather than hanging.
         assert!(
-            messages_page(&fake_client(vec![]), &inbox(), None, None)
+            messages_page(&fake_client(vec![]), &inbox(), None, None, None)
                 .await
                 .is_err()
         );
@@ -402,7 +465,7 @@ mod tests {
         let cursor = SyncState::new(
             "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=x",
         );
-        let page = messages_page(&client, &inbox(), Some(&cursor), None)
+        let page = messages_page(&client, &inbox(), Some(&cursor), None, None)
             .await
             .unwrap();
         assert!(page.changed.is_empty());
@@ -415,7 +478,7 @@ mod tests {
         let cursor = SyncState::new("https://graph.test/me/mailFolders/folder-inbox/delta-token-1");
         let client = fake_client(vec![("delta-token-1", json(CHANGED))]);
         assert!(
-            messages_page(&client, &inbox(), Some(&cursor), None)
+            messages_page(&client, &inbox(), Some(&cursor), None, None)
                 .await
                 .is_err()
         );

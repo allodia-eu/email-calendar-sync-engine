@@ -30,6 +30,10 @@ pub(crate) const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
 pub(crate) trait GraphTransport: Send + Sync {
     /// Fetches `url`, returning the parsed JSON or a classified error.
     async fn get(&self, url: &str) -> Result<Value, GraphError>;
+
+    /// Fetches `url`, returning the raw response bytes — for the `$value` endpoint
+    /// that streams a message's RFC 822 MIME rather than JSON.
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError>;
 }
 
 /// The production reqwest transport: bearer auth + immutable-id preference.
@@ -68,6 +72,24 @@ impl GraphTransport for HttpTransport {
             return Err(GraphError::status(status.as_u16(), body));
         }
         Ok(resp.json::<Value>().await?)
+    }
+
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {
+        let resp = self
+            .client
+            .get(url)
+            .bearer_auth(&self.token)
+            .header("Prefer", "IdType=\"ImmutableId\"")
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            // The `$value` error body is JSON like any other Graph error, so classify it
+            // the same way (an expired/moved message → the caller re-syncs and retries).
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GraphError::status(status.as_u16(), body));
+        }
+        Ok(resp.bytes().await?.to_vec())
     }
 }
 
@@ -172,6 +194,18 @@ impl GraphClient {
         self.transport.get(&self.rebase(url)).await
     }
 
+    /// Authenticated `GET` returning the raw response bytes (the `$value` MIME
+    /// stream), rebasing absolute Graph links onto a non-default base like [`get`].
+    ///
+    /// [`get`]: Self::get
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`GraphError`] (a non-2xx is [`GraphError::Status`]).
+    pub(crate) async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {
+        self.transport.get_bytes(&self.rebase(url)).await
+    }
+
     /// Rebases an absolute `graph.microsoft.com` URL onto a non-default base — a
     /// no-op in production (where `base` *is* the Graph root), so a proxy or a test
     /// replay server can catch the absolute `@odata` links Graph returns.
@@ -217,6 +251,32 @@ mod tests {
         let transport = HttpTransport::new("tok".to_owned()).unwrap();
         let doc = transport.get(&base).await.unwrap();
         assert!(doc.get("value").is_some());
+    }
+
+    #[tokio::test]
+    async fn get_bytes_returns_the_raw_body_verbatim() {
+        // `$value` is not JSON — it is the raw RFC 822 MIME; get_bytes returns it as-is.
+        let mime = "From: a@example.com\r\nSubject: Hi\r\n\r\nBody\r\n";
+        let base = mock_server(http("200 OK", mime));
+        let bytes = HttpTransport::new("tok".to_owned())
+            .unwrap()
+            .get_bytes(&base)
+            .await
+            .unwrap();
+        assert_eq!(bytes, mime.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn get_bytes_non_success_is_a_classified_status_error() {
+        // A gone/moved message → the same status classification as any Graph error.
+        let body = r#"{"error":{"code":"ErrorItemNotFound","message":"gone"}}"#;
+        let base = mock_server(http("404 Not Found", body));
+        let err = HttpTransport::new("tok".to_owned())
+            .unwrap()
+            .get_bytes(&base)
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, GraphError::Status { code: Some(c), .. } if c == "ErrorItemNotFound"));
     }
 
     #[tokio::test]
