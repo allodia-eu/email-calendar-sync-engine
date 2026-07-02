@@ -45,12 +45,19 @@ them from the immutable raw blob on demand, so a large inline image never bloats
 relational store (`MessageSourceCache` doc).
 
 `extract_attachments` lists ordinary downloadable attachments from the same raw source,
-returning metadata only (`MessageAttachment`). It skips inline CID image parts because
-those are body resources handled by `extract_inline_parts`; inline parts without a
-`Content-ID` (for example an inline-displayed PDF) remain downloadable. The
-message-scoped `AttachmentPartId` is the parser attachment index for that immutable raw
-source. `extract_attachment` takes that id and returns the selected metadata plus decoded
-bytes (`MessageAttachmentContent`) for a host save/open action.
+returning metadata only (`MessageAttachment`). Its CID rule is the exact complement of
+`extract_inline_parts`: a **binary** part carrying a `Content-ID` is a body resource
+resolved through `extract_inline_parts` and is omitted here (so an embedded `cid:` image is
+not also listed as a file), **unless** the sender explicitly marked it
+`Content-Disposition: attachment`, which keeps it downloadable even with a `Content-ID`.
+This carve-out matters because mail-parser types a non-first `multipart/related` child image
+as `Binary` (not `InlineBinary`) with no disposition, so keying on `InlineBinary`/inline
+disposition alone would leak embedded images into the list. Parts without a `Content-ID`
+(for example an inline-displayed PDF) remain downloadable. The message-scoped
+`AttachmentPartId` is the parser attachment index for that immutable raw source.
+`extract_attachment` takes that id and returns the selected metadata plus decoded bytes
+(`MessageAttachmentContent`) for a host save/open action; suggested file names are sanitized
+(path separators, control codes, and Unicode bidi/zero-width format controls neutralized).
 
 ## Key decision: depend on `mail-parser`, don't hand-roll
 

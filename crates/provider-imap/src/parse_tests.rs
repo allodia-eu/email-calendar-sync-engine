@@ -210,6 +210,47 @@ fn fetch_bodystructure_marks_inline_named_files_without_content_id() {
 }
 
 #[test]
+fn fetch_bodystructure_ignores_a_name_param_on_a_text_body_part() {
+    // A `text/html` body part carrying a stray `name` parameter (no disposition) is the message
+    // body, not a download — it must not raise a spurious paperclip.
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE (("#,
+        r#""TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 10 1)"#,
+        r#"("#,
+        r#""TEXT" "HTML" ("CHARSET" "UTF-8" "NAME" "body.html") NIL NIL "7BIT" 20 1)"#,
+        r#" "ALTERNATIVE" ("BOUNDARY" "a")))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(!rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_marks_inline_files_named_via_rfc2231() {
+    // A non-ASCII filename delivered as RFC 2231 continuations (`FILENAME*0*`/`*1*`) on an
+    // inline part still names a downloadable file.
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("APPLICATION" "OCTET-STREAM" NIL NIL NIL "BASE64" 100 "#,
+        r#"NIL ("INLINE" ("FILENAME*0*" "utf-8''%E2%82%AC" "FILENAME*1*" "rate.bin")) NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_reads_message_global_disposition_like_rfc822() {
+    // `message/global` (RFC 6532) uses the same extended envelope+body+lines layout as
+    // `message/rfc822`, so its `attachment` disposition must be read at the right index.
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("MESSAGE" "GLOBAL" NIL NIL NIL "7BIT" 500 "#,
+        r#"(NIL "sub" NIL NIL NIL NIL NIL NIL NIL "<m@h>") "#,
+        r#"("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 100 5) 20 NIL "#,
+        r#"("ATTACHMENT" ("FILENAME" "forward.eml")) NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(rows[0].has_attachment);
+}
+
+#[test]
 fn fetch_reads_a_references_header_as_a_quoted_string() {
     // `BODY[HEADER.FIELDS (REFERENCES)]` does not tokenize as a single atom key:
     // the section spec splits into `BODY[HEADER.FIELDS` + `(REFERENCES)` + `]`

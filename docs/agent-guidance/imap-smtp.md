@@ -113,7 +113,10 @@ is authoritative for the `provider-caldav` calendar client.
   `\Seen`). The `References` header is not an `ENVELOPE` field, so it rides a
   separate peek-safe body-header item to feed threading (`threading.md`).
   `BODYSTRUCTURE` feeds `Message.has_attachment` without downloading parts: explicit
-  attachments or named non-CID parts count; CID inline resources do not. Flags → keywords:
+  attachments or named non-CID parts count; CID inline resources do not, a `text/plain`/
+  `text/html` body part is never counted on a bare `name=` alone, RFC 2231 split/encoded
+  filenames (`name*0*`) are recognized, and `message/global` is read like `message/rfc822`.
+  This keeps the list-time flag in step with `engine-mime::extract_attachments`. Flags → keywords:
   `\Seen`/`\Flagged`/
   `\Answered`/`\Draft` map to their `$`-keywords; `\Deleted`/`\Recent` are
   deliberately not keywords (expunge/session model); custom keywords pass through.

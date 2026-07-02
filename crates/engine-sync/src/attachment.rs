@@ -28,8 +28,14 @@ where
     P: Provider,
     S: MessageSourceCache,
 {
-    let raw = raw_source(provider, store, account, message).await?;
-    Ok(engine_mime::extract_attachments(&raw))
+    with_raw_source(
+        provider,
+        store,
+        account,
+        message,
+        engine_mime::extract_attachments,
+    )
+    .await
 }
 
 /// Returns one decoded attachment selected by `id`.
@@ -53,27 +59,37 @@ where
     P: Provider,
     S: MessageSourceCache,
 {
-    let raw = raw_source(provider, store, account, message).await?;
-    Ok(engine_mime::extract_attachment(&raw, id))
+    with_raw_source(provider, store, account, message, |raw| {
+        engine_mime::extract_attachment(raw, id)
+    })
+    .await
 }
 
-async fn raw_source<P, S>(
+/// Reads the raw RFC 5322 source (cache-first: the content-addressed blob, else one provider
+/// fetch) and hands it to `extract`.
+///
+/// On a provider fetch the raw is cached best-effort by **move** after `extract` has run — the
+/// read already succeeded, so a cache-write failure never denies it, and no copy of a
+/// potentially large source (the attachment-bearing messages are exactly the big ones) is made.
+async fn with_raw_source<P, S, T>(
     provider: &P,
     store: &S,
     account: &AccountId,
     message: &Message,
-) -> Result<RawMime, SyncError>
+    extract: impl FnOnce(&RawMime) -> T,
+) -> Result<T, SyncError>
 where
     P: Provider,
     S: MessageSourceCache,
 {
     let key = message.id.key();
     if let Some(cached) = store.get_message_source(account, key).await? {
-        return Ok(cached);
+        return Ok(extract(&cached));
     }
     let raw = provider.fetch_message_source(account, message).await?;
-    let _ = store.put_message_source(account, key, raw.clone()).await;
-    Ok(raw)
+    let out = extract(&raw);
+    let _ = store.put_message_source(account, key, raw).await;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -144,6 +160,7 @@ mod tests {
             hits: AtomicUsize::new(0),
         };
         let store = store();
+        assert!(provider.capabilities().message_source());
 
         let attachments = fetch_message_attachments(&provider, &store, &account(), &message())
             .await
