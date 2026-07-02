@@ -142,6 +142,164 @@ impl fmt::Debug for InlinePart {
     }
 }
 
+/// Stable index of an attachment part inside a parsed raw RFC 5322 message.
+///
+/// The id is derived from the immutable raw source cached for a message, so it is stable
+/// for that source and intentionally scoped to one message. Hosts pass it back when the
+/// user downloads one listed attachment; it is not a provider object id.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AttachmentPartId(u32);
+
+impl AttachmentPartId {
+    /// Creates an attachment-part id from the parser's attachment index.
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// The zero-based parser attachment index.
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Debug for AttachmentPartId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("AttachmentPartId").field(&self.0).finish()
+    }
+}
+
+/// Metadata for one downloadable attachment decoded from a raw message source.
+///
+/// This is a derived view of the cached raw MIME, not stored state. It deliberately
+/// carries metadata only; the bytes are fetched for a selected id through
+/// [`MessageAttachmentContent`], so a reading snapshot can list attachments without
+/// copying their content.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageAttachment {
+    id: AttachmentPartId,
+    file_name: String,
+    media_type: String,
+    size: u64,
+    inline: bool,
+    content_id: Option<String>,
+}
+
+impl MessageAttachment {
+    /// Creates attachment metadata.
+    #[must_use]
+    pub fn new(
+        id: AttachmentPartId,
+        file_name: impl Into<String>,
+        media_type: impl Into<String>,
+        size: u64,
+        inline: bool,
+        content_id: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            file_name: file_name.into(),
+            media_type: media_type.into(),
+            size,
+            inline,
+            content_id,
+        }
+    }
+
+    /// The message-scoped attachment part id.
+    #[must_use]
+    pub const fn id(&self) -> AttachmentPartId {
+        self.id
+    }
+
+    /// Suggested display/download file name.
+    #[must_use]
+    pub fn file_name(&self) -> &str {
+        &self.file_name
+    }
+
+    /// The media type (`Content-Type` with parameters stripped).
+    #[must_use]
+    pub fn media_type(&self) -> &str {
+        &self.media_type
+    }
+
+    /// The decoded byte length.
+    #[must_use]
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Whether the part was marked inline rather than as a regular attachment.
+    #[must_use]
+    pub const fn is_inline(&self) -> bool {
+        self.inline
+    }
+
+    /// The `Content-ID` token, when present.
+    #[must_use]
+    pub fn content_id(&self) -> Option<&str> {
+        self.content_id.as_deref()
+    }
+}
+
+impl fmt::Debug for MessageAttachment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MessageAttachment")
+            .field("id", &self.id)
+            .field("file_name_len", &self.file_name.len())
+            .field("media_type", &self.media_type)
+            .field("size", &self.size)
+            .field("inline", &self.inline)
+            .field("has_content_id", &self.content_id.is_some())
+            .finish()
+    }
+}
+
+/// The selected attachment's metadata plus decoded bytes.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageAttachmentContent {
+    attachment: MessageAttachment,
+    bytes: Vec<u8>,
+}
+
+impl MessageAttachmentContent {
+    /// Creates selected attachment content.
+    #[must_use]
+    pub fn new(attachment: MessageAttachment, bytes: Vec<u8>) -> Self {
+        Self { attachment, bytes }
+    }
+
+    /// Metadata for the selected attachment.
+    #[must_use]
+    pub fn attachment(&self) -> &MessageAttachment {
+        &self.attachment
+    }
+
+    /// The decoded attachment bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Consumes this value and returns its decoded bytes.
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl fmt::Debug for MessageAttachmentContent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MessageAttachmentContent")
+            .field("attachment", &self.attachment)
+            .field("bytes_len", &self.bytes.len())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +373,39 @@ mod tests {
         assert!(
             !shown.contains("secretpixels") && !shown.contains("PNG"),
             "inline bytes must not leak: {shown}"
+        );
+    }
+
+    #[test]
+    fn attachment_metadata_exposes_fields_without_bytes() {
+        let id = AttachmentPartId::new(7);
+        let attachment =
+            MessageAttachment::new(id, "report.pdf", "application/pdf", 1234, false, None);
+        assert_eq!(attachment.id().as_u32(), 7);
+        assert_eq!(attachment.file_name(), "report.pdf");
+        assert_eq!(attachment.media_type(), "application/pdf");
+        assert_eq!(attachment.size(), 1234);
+        assert!(!attachment.is_inline());
+        assert_eq!(attachment.content_id(), None);
+    }
+
+    #[test]
+    fn attachment_content_debug_redacts_bytes_and_filename() {
+        let attachment = MessageAttachment::new(
+            AttachmentPartId::new(1),
+            "confidential plan.pdf",
+            "application/pdf",
+            10,
+            false,
+            None,
+        );
+        let content = MessageAttachmentContent::new(attachment, b"secret pdf".to_vec());
+        assert_eq!(content.bytes(), b"secret pdf");
+        let shown = format!("{content:?}");
+        assert!(shown.contains("bytes_len: 10"), "{shown}");
+        assert!(
+            !shown.contains("secret") && !shown.contains("confidential"),
+            "attachment content/filename must not leak: {shown}"
         );
     }
 }

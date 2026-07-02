@@ -12,6 +12,7 @@
 //! (`NIL` / atom / quoted-string / `{n}` literal / parenthesized list), defined in
 //! [`crate::tokenize`]; each response is then read off the resulting [`Item`] tree.
 
+use crate::bodystructure::has_downloadable_part;
 use crate::error::{ImapError, ImapResult};
 use crate::tokenize::{Item, items_of};
 
@@ -67,7 +68,7 @@ pub(crate) struct Envelope {
 }
 
 /// One row of a `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
-/// BODY.PEEK[HEADER.FIELDS (REFERENCES)])`.
+/// BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES)])`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FetchRow {
     /// The mailbox-unique UID (RFC 9051 §2.3.1.1) — the identity component.
@@ -80,6 +81,8 @@ pub(crate) struct FetchRow {
     pub size: Option<u64>,
     /// The parsed `ENVELOPE`, if requested and present.
     pub envelope: Option<Envelope>,
+    /// Whether the BODYSTRUCTURE carries a downloadable/non-inline attachment.
+    pub has_attachment: bool,
     /// The raw `References` header line from `BODY[HEADER.FIELDS (REFERENCES)]`
     /// (e.g. `"References: <a@x> <b@y>\r\n\r\n"`), if requested and present.
     /// `None` (or empty) when the message carries no `References`.
@@ -270,6 +273,7 @@ fn fetch_row(pairs: &[Item]) -> Option<FetchRow> {
     let mut internal_date = None;
     let mut size = None;
     let mut envelope = None;
+    let mut has_attachment = false;
     let mut references = None;
     let mut iter = pairs.iter();
     while let Some(key) = iter.next() {
@@ -298,6 +302,7 @@ fn fetch_row(pairs: &[Item]) -> Option<FetchRow> {
             "INTERNALDATE" => internal_date = value.as_nstring(),
             "RFC822.SIZE" => size = value.as_atom().and_then(|a| a.parse().ok()),
             "ENVELOPE" => envelope = value.as_list().map(envelope_of),
+            "BODYSTRUCTURE" => has_attachment = has_downloadable_part(value),
             _ => {}
         }
     }
@@ -307,6 +312,7 @@ fn fetch_row(pairs: &[Item]) -> Option<FetchRow> {
         internal_date,
         size,
         envelope,
+        has_attachment,
         references,
     })
 }

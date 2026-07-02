@@ -10,6 +10,8 @@ code that turns a raw RFC 5322 message into displayable text.
 ```rust
 pub fn extract_body(raw: &RawMime) -> MessageBody
 pub fn extract_inline_parts(raw: &RawMime) -> Vec<InlinePart>
+pub fn extract_attachments(raw: &RawMime) -> Vec<MessageAttachment>
+pub fn extract_attachment(raw: &RawMime, id: AttachmentPartId) -> Option<MessageAttachmentContent>
 ```
 
 `extract_body` interprets a message's cached raw source (`RawMime`, the Tier-3 blob the
@@ -42,6 +44,21 @@ of the SQLite body cache (`MessageBodyStore`): `engine-sync::fetch_inline_parts`
 them from the immutable raw blob on demand, so a large inline image never bloats the
 relational store (`MessageSourceCache` doc).
 
+`extract_attachments` lists ordinary downloadable attachments from the same raw source,
+returning metadata only (`MessageAttachment`). Its CID rule is the exact complement of
+`extract_inline_parts`: a **binary** part carrying a `Content-ID` is a body resource
+resolved through `extract_inline_parts` and is omitted here (so an embedded `cid:` image is
+not also listed as a file), **unless** the sender explicitly marked it
+`Content-Disposition: attachment`, which keeps it downloadable even with a `Content-ID`.
+This carve-out matters because mail-parser types a non-first `multipart/related` child image
+as `Binary` (not `InlineBinary`) with no disposition, so keying on `InlineBinary`/inline
+disposition alone would leak embedded images into the list. Parts without a `Content-ID`
+(for example an inline-displayed PDF) remain downloadable. The message-scoped
+`AttachmentPartId` is the parser attachment index for that immutable raw source.
+`extract_attachment` takes that id and returns the selected metadata plus decoded bytes
+(`MessageAttachmentContent`) for a host save/open action; suggested file names are sanitized
+(path separators, control codes, and Unicode bidi/zero-width format controls neutralized).
+
 ## Key decision: depend on `mail-parser`, don't hand-roll
 
 Unlike the IMAP/SMTP/CalDAV wire parsers (hand-rolled, to keep protocol invariants
@@ -73,4 +90,6 @@ HTML-only fallback, `multipart/mixed` past an attachment, and adversarial/empty 
 (no panic). `extract_inline_parts` is covered by fixtures for a `multipart/related`
 inline image (decoded bytes, stripped `cid`), an attachment without a `Content-ID` (not
 returned), plain/HTML-only messages (no inline parts), multiple inline parts in order, and
-adversarial/empty input (no panic). Add a fixture for any new decoding behavior.
+adversarial/empty input (no panic). Attachment extraction is covered for metadata-only
+listing, selected byte extraction, CID-image exclusion, inline non-CID files, filename
+sanitization, and adversarial input. Add a fixture for any new decoding behavior.

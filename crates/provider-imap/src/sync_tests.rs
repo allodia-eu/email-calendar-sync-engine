@@ -21,8 +21,8 @@ fn select_resp(tag: &str, validity: u32, uid_next: u32, exists: u32) -> String {
     )
 }
 
-/// A `FETCH` response with one row per UID (each seen, with a tiny envelope and an
-/// empty echoed `References` header — what a server returns for the peek item).
+/// A `FETCH` response with one row per UID (each seen, with a tiny envelope/bodystructure and
+/// an empty echoed `References` header — what a server returns for the peek item).
 fn fetch_resp(tag: &str, uids: &[u32]) -> String {
     use core::fmt::Write as _;
     let mut out = String::new();
@@ -33,6 +33,7 @@ fn fetch_resp(tag: &str, uids: &[u32]) -> String {
             "* {seq} FETCH (UID {uid} FLAGS (\\Seen) \
              INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 10 \
              ENVELOPE (NIL \"s{uid}\" NIL NIL NIL NIL NIL NIL NIL \"<m{uid}@h>\") \
+             BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 2 1) \
              BODY[HEADER.FIELDS (REFERENCES)] \"\")\r\n"
         )
         .unwrap();
@@ -76,7 +77,7 @@ async fn first_sync_snapshots_a_uid_window_newest_first() {
     // The client fetched exactly the newest window, including the References header.
     assert!(written(&recorded).contains(
         "UID FETCH 6:8 (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE \
-         BODY.PEEK[HEADER.FIELDS (REFERENCES)])"
+         BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES)])"
     ));
 }
 

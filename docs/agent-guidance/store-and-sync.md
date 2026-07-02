@@ -214,8 +214,10 @@ through **separate, lease-free** traits in `engine-store` (beside `Store`), keye
   **content-addressed filesystem blob area** (`<db>.blobs/sources/<sha256>.eml`; an
   in-memory store uses a temp dir), deduping identical payloads and verifying the
   content hash on read; SQLite keeps only metadata (`message_source`). The blob I/O
-  runs off the connection lock. This is the content-addressed blob foundation
-  attachments-as-entities will reuse. Kept for losslessness (DKIM/view-source/forward).
+  runs off the connection lock. The same raw-source blob is re-parsed on demand for
+  inline CID parts and downloadable attachment bytes. This is the content-addressed blob
+  foundation durable attachment entities will reuse. Kept for losslessness
+  (DKIM/view-source/forward).
 - **Text — `MessageBodyStore`** (`put_message_body`/`get_message_body`). The extracted
   body (plain + html) lives in the `message_body` table — small, the reading-view fast
   path (no disk read, no re-parse), and the **search** source. A trigger maintains
@@ -224,10 +226,13 @@ through **separate, lease-free** traits in `engine-store` (beside `Store`), keye
   alongside the scope FTS (RRF-fused) and joins to the live `mail_index` so stale rows
   for deleted messages drop out, and to `message_body.account` so IMAP keys that
   collide across accounts cannot cross over (`search.md`).
-- The fetch-through is `engine_sync::fetch_message_body` (text in SQLite → on-disk raw
-  → one provider fetch; best-effort caching of both), surfaced as
-  `Engine::message_body` (`engine-api.md`). Per-attachment blobs + lazy attachment
-  fetch, and embeddings/RAG over the indexed text, are later slices.
+- The fetch-throughs are `engine_sync::fetch_message_body` (text in SQLite → on-disk
+  raw → one provider fetch; best-effort caching of both),
+  `fetch_inline_parts`, `fetch_message_attachments`, and `fetch_message_attachment`
+  (raw blob → one provider fetch if missing; best-effort raw caching). They surface as
+  `Engine::message_body`, `message_inline_parts`, `message_attachments`, and
+  `message_attachment` (`engine-api.md`). Durable per-attachment blob entities, quota
+  eviction, and embeddings/RAG over the indexed text are later slices.
 
 ## Re-normalization on a normalizer-version change
 

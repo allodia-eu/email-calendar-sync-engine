@@ -95,8 +95,20 @@ fn message_from_fetch_builds_a_full_object() {
         message.envelope.message_id[0].as_str(),
         "baseline-0001@test.local"
     );
+    assert!(!message.has_attachment);
     // A message with no synced raw body keeps blob_id None (Tier-1 metadata).
     assert!(message.blob_id.is_none());
+}
+
+#[test]
+fn message_from_fetch_carries_the_bodystructure_attachment_flag() {
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("APPLICATION" "PDF" ("NAME" "report.pdf") "#,
+        r#"NIL NIL "BASE64" 12 NIL ("ATTACHMENT" ("FILENAME" "report.pdf")) NIL))"#,
+    );
+    let rows = parse_fetch(&[line.as_bytes().to_vec()]).unwrap();
+    let message = message_from_fetch(&rows[0], &MailboxId::try_from("INBOX").unwrap(), 1);
+    assert!(message.has_attachment);
 }
 
 #[test]

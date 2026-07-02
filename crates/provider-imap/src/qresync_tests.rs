@@ -83,7 +83,7 @@ async fn a_qresync_delta_carries_flag_changes_and_vanished_removals() {
     assert!(
         sent.contains(
             "UID FETCH 1:* (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE \
-             BODY.PEEK[HEADER.FIELDS (REFERENCES)]) (CHANGEDSINCE 16 VANISHED)"
+             BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES)]) (CHANGEDSINCE 16 VANISHED)"
         ),
         "{sent}"
     );

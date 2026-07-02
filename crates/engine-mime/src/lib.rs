@@ -12,11 +12,15 @@
 //! provider/store layers own *fetching* and *caching* the raw bytes and this layer
 //! only *interprets* them.
 
+mod attachment;
+
 use std::borrow::Cow;
 
 use engine_core::mail::{InlinePart, MessageBody};
 use engine_core::raw::RawMime;
 use mail_parser::{ContentType, GetHeader, HeaderName, HeaderValue, MessageParser, PartType};
+
+pub use attachment::{extract_attachment, extract_attachments};
 
 /// Extracts the displayable [`MessageBody`] from a raw RFC 5322 message.
 ///
