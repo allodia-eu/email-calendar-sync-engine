@@ -1,13 +1,15 @@
 //! The [`Engine`]: a host's entry point to one account store.
 
 use core::time::Duration;
+use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::path::Path;
 
 use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::AccountId;
+use engine_core::ids::{AccountId, ProviderKey, ThreadId};
 use engine_core::mail::{Mailbox, Message};
 use engine_core::sync::{ObjectKind, SearchDomain, SyncScope};
-use engine_core::time::TimeZoneId;
+use engine_core::time::{TimeZoneId, UtcDateTime};
 use engine_core::write::PendingOpId;
 use engine_provider::{Draft, EventDeletion, EventWrite, MailEdit, Provider};
 use engine_recurrence::Horizon;
@@ -356,6 +358,114 @@ impl Engine {
             messages.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
         }
         Ok(messages)
+    }
+
+    /// One account's newest `limit` messages by date — the windowed message list a host
+    /// renders, ranked by `received_at`/`sent_at` (newest first) via the scalar mail index so
+    /// **only the chosen `limit` payloads are deserialized**, not the whole mailbox. Messages
+    /// with no known date sort last (entering the window only if dated ones don't fill it).
+    /// Pair with [`Engine::thread_messages`] to pull a shown conversation's older members and
+    /// [`Engine::messages_by_keys`] to resolve a specific message the window omits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn messages_windowed(
+        &self,
+        account: &AccountId,
+        limit: usize,
+    ) -> Result<Vec<Message>, ApiError> {
+        // Rank every mail scope's index entries by date (cheap — keys + dates, no payloads),
+        // keep the newest `limit`, then deserialize just those.
+        let mut ranked: Vec<(SyncScope, ProviderKey, Option<UtcDateTime>)> = Vec::new();
+        for scope in self.mail_scopes(account).await? {
+            for (key, date, _thread) in self.store.scope_mail_index(&scope).await? {
+                ranked.push((scope.clone(), key, date));
+            }
+        }
+        // Newest first. `Option<UtcDateTime>` orders `None` below any `Some`, so `Reverse` sinks
+        // undated messages to the end — they enter the window only if dated ones leave room.
+        ranked.sort_by_key(|(_, _, date)| Reverse(*date));
+        ranked.truncate(limit);
+        let mut messages = Vec::with_capacity(ranked.len());
+        for (scope, key, _) in &ranked {
+            if let Some(payload) = self.store.object_payload(scope, key).await? {
+                messages.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+            }
+        }
+        Ok(messages)
+    }
+
+    /// Every message on one thread within an account — **all** of its members regardless of
+    /// any date window, so a windowed list can still expand a conversation into its full
+    /// history (a years-old reply included). Resolved through the mail index's `thread_id`, so
+    /// only the thread's own members are read and decoded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn thread_messages(
+        &self,
+        account: &AccountId,
+        thread_id: &str,
+    ) -> Result<Vec<Message>, ApiError> {
+        let mut messages = Vec::new();
+        for scope in self.mail_scopes(account).await? {
+            for (key, _date, thread) in self.store.scope_mail_index(&scope).await? {
+                if thread.as_ref().map(ThreadId::as_str) == Some(thread_id)
+                    && let Some(payload) = self.store.object_payload(&scope, &key).await?
+                {
+                    messages
+                        .push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+                }
+            }
+        }
+        Ok(messages)
+    }
+
+    /// The messages named by provider `keys` within an account — a targeted resolve for
+    /// actions and search hits that reference specific messages a date window may not hold,
+    /// without loading the whole mailbox. Keys not found (moved, tombstoned) are simply absent;
+    /// order is unspecified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn messages_by_keys(
+        &self,
+        account: &AccountId,
+        keys: &[ProviderKey],
+    ) -> Result<Vec<Message>, ApiError> {
+        let mut wanted: HashSet<ProviderKey> = keys.iter().cloned().collect();
+        let mut messages = Vec::new();
+        for scope in self.mail_scopes(account).await? {
+            if wanted.is_empty() {
+                break;
+            }
+            // A provider key is unique within an account and lives in one scope, so each
+            // resolved key is dropped from `wanted` and never probed in a later scope.
+            for key in wanted.iter().cloned().collect::<Vec<_>>() {
+                if let Some(payload) = self.store.object_payload(&scope, &key).await? {
+                    messages
+                        .push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+                    wanted.remove(&key);
+                }
+            }
+        }
+        Ok(messages)
+    }
+
+    /// The account's `Message`-kind sync scopes (its mail folders/labels), for the windowed and
+    /// thread reads — mirrors [`Engine::objects_of`]'s scope filter without materializing any
+    /// payloads.
+    async fn mail_scopes(&self, account: &AccountId) -> Result<Vec<SyncScope>, ApiError> {
+        Ok(self
+            .store
+            .account_scopes(account.clone())
+            .await?
+            .into_iter()
+            .filter(|scope| scope.object_kind() == Some(ObjectKind::Message))
+            .collect())
     }
 
     /// Lists one account's calendars (collections) — the synced calendar containers

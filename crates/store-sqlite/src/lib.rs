@@ -51,8 +51,9 @@ use serde_json::Value;
 
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{
-    ApplyBatch, Clock, DerivedWrite, IndexRowCounts, LeaseRequest, LeasedPendingOp, OpLease,
-    PendingOpState, Result, StorableObject, Store, StoreRead, SyncApplied, SyncClaim, SyncLease,
+    ApplyBatch, Clock, DerivedWrite, IndexRowCounts, LeaseRequest, LeasedPendingOp, MailIndexEntry,
+    OpLease, PendingOpState, Result, StorableObject, Store, StoreRead, SyncApplied, SyncClaim,
+    SyncLease,
 };
 
 use crate::blob::BlobArea;
@@ -452,6 +453,12 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
     async fn scope_objects(&self, scope: &SyncScope) -> Result<Vec<(ProviderKey, Value)>> {
         let key = scope_key(scope);
         self.call(move |conn| scope_ops::scope_objects(conn, &key))
+            .await
+    }
+
+    async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>> {
+        let key = scope_key(scope);
+        self.call(move |conn| derived_ops::scope_mail_index(conn, &key))
             .await
     }
 

@@ -121,6 +121,9 @@ where
     let (store, clock) = make();
     scope_cases::scope_objects_batch_reads_live_objects(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::scope_mail_index_reports_dates_threads_and_excludes_tombstones(&store, &clock)
+        .await;
+    let (store, clock) = make();
     outbox_cases::expired_op_lease_is_rejected(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::claim_filters_dependencies_and_resources(&store, &clock).await;

@@ -10,9 +10,9 @@
 use std::collections::HashSet;
 
 use engine_core::calendar::ParticipationStatus;
-use engine_core::ids::ThreadId;
+use engine_core::ids::{ProviderKey, ThreadId};
 use engine_core::search_index::{EventParticipantRow, FtsField, MailAddressRow, MembershipRow};
-use engine_store::{DerivedWrite, IndexRowCounts, Result};
+use engine_store::{DerivedWrite, IndexRowCounts, MailIndexEntry, Result};
 use rusqlite::{Connection, Transaction};
 
 use crate::convert;
@@ -153,6 +153,43 @@ pub(crate) fn index_row_counts(
         event_index: count_for_key(conn, "event_index", "provider_key", scope_key, key)?,
         participants: count_for_key(conn, "event_participant", "provider_key", scope_key, key)?,
     })
+}
+
+/// The scalar mail-index entries for a scope's live mail objects — each object's
+/// `(provider key, date, thread)`, without the payload. Backs `StoreRead::scope_mail_index`:
+/// a caller ranks by date (a newest-N window) or gathers a thread's members, then decodes
+/// only the chosen few. `mail_index` is cleared on tombstone by [`delete_derived_rows`], so
+/// its rows are exactly the live mail objects — no join with `object` is needed.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`](engine_store::StoreError::Backend) on a backend failure or
+/// a corrupt stored key/date.
+pub(crate) fn scope_mail_index(conn: &Connection, scope_key: &str) -> Result<Vec<MailIndexEntry>> {
+    let mut stmt = conn
+        .prepare("SELECT provider_key, date_utc, thread_id FROM mail_index WHERE scope_key = ?1")
+        .map_err(convert::backend)?;
+    let rows = stmt
+        .query_map([scope_key], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(convert::backend)?;
+    let mut entries = Vec::new();
+    for row in rows {
+        let (key, date, thread) = row.map_err(convert::backend)?;
+        let key = ProviderKey::new(key).map_err(convert::backend)?;
+        let date = convert::parse_opt_instant(date)?;
+        let thread = thread
+            .map(|raw| ThreadId::try_from(raw.as_str()))
+            .transpose()
+            .map_err(convert::backend)?;
+        entries.push((key, date, thread));
+    }
+    Ok(entries)
 }
 
 /// Splits the field-tagged FTS text across the three `fts_doc` columns. `subject`
