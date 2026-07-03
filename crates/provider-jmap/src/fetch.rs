@@ -12,6 +12,8 @@ use std::collections::BTreeSet;
 
 use engine_core::error::FailureClass;
 use engine_core::ids::ProviderKey;
+use engine_core::mail::Message;
+use engine_core::raw::RawMime;
 use engine_core::sync::{SyncState, SyncUpdate};
 use engine_provider::{PageToken, ScopeSync, SyncKind, SyncPage};
 use serde_json::{Map, Value, json};
@@ -23,6 +25,42 @@ use crate::sync_ops::{
     Changes, clamp_limit, is_complete, key_set, keys, next_position, objects, snapshot_or_delta,
     state, total,
 };
+
+/// Downloads a message's raw RFC 5322 source via the session's `downloadUrl`
+/// blob template (RFC 8620 §6.2).
+///
+/// Substitutes the template's `{accountId}`/`{blobId}`/`{type}`/`{name}`
+/// placeholders — `accountId` is the JMAP mail account, `blobId` is the message's
+/// synced blob handle — and GETs the bytes. Placeholder substitution is a plain
+/// replace: JMAP ids are restricted to URL-safe characters (RFC 8620 §1.2) and the
+/// requested `type`/`name` are fixed safe literals.
+///
+/// # Errors
+///
+/// Returns [`JmapError::Protocol`] if the message carries no `blobId` (it was never
+/// synced with one), [`JmapError::Session`] if the server advertised no
+/// `downloadUrl`, or a transport/HTTP error from the download.
+pub(crate) async fn message_source(
+    executor: &dyn Executor,
+    message: &Message,
+) -> Result<RawMime, JmapError> {
+    let blob = message
+        .blob_id
+        .as_ref()
+        .ok_or_else(|| JmapError::protocol("message has no blobId; cannot fetch source"))?;
+    let account = executor.session().mail_account_id()?;
+    let template = executor
+        .session()
+        .download_url()
+        .ok_or_else(|| JmapError::session("server advertised no downloadUrl"))?;
+    let url = template
+        .replace("{accountId}", account)
+        .replace("{blobId}", blob.as_str())
+        .replace("{type}", "application/octet-stream")
+        .replace("{name}", "message");
+    let bytes = executor.download(&url).await?;
+    Ok(RawMime::new(bytes))
+}
 
 /// Syncs a container type (`Foo/get` snapshot; `Foo/changes`+`Foo/get` delta),
 /// recovering to a snapshot on `cannotCalculateChanges`.

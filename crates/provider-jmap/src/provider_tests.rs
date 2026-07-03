@@ -10,10 +10,14 @@ use engine_provider::SyncKind;
 use serde_json::{Value, json};
 
 /// An executor that replays canned response documents, FIFO — driving the
-/// orchestration with real captured Stalwart responses, offline.
+/// orchestration with real captured Stalwart responses, offline. It also serves a
+/// canned blob-download body and records the download URLs it was asked for, so the
+/// `fetch_message_source` template substitution can be asserted without a server.
 struct FakeExecutor {
     session: Session,
     responses: Mutex<VecDeque<Response>>,
+    download_body: Option<Vec<u8>>,
+    download_urls: Mutex<Vec<String>>,
 }
 
 impl FakeExecutor {
@@ -30,7 +34,8 @@ impl FakeExecutor {
                 "urn:ietf:params:jmap:submission": "c",
                 "urn:ietf:params:jmap:calendars": "c"
             },
-            "apiUrl": "https://mail.test.local/jmap/"
+            "apiUrl": "https://mail.test.local/jmap/",
+            "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}"
         });
         Self::from_session(&session_doc, responses)
     }
@@ -46,7 +51,15 @@ impl FakeExecutor {
         Self {
             session,
             responses: Mutex::new(parsed),
+            download_body: None,
+            download_urls: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Serves `body` as the blob-download response for `fetch_message_source`.
+    fn with_download_body(mut self, body: &[u8]) -> Self {
+        self.download_body = Some(body.to_vec());
+        self
     }
 }
 
@@ -58,6 +71,13 @@ impl Executor for FakeExecutor {
             .unwrap()
             .pop_front()
             .ok_or_else(|| JmapError::protocol("fake executor exhausted"))
+    }
+
+    async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError> {
+        self.download_urls.lock().unwrap().push(url.to_owned());
+        self.download_body
+            .clone()
+            .ok_or_else(|| JmapError::status(404, "no blob"))
     }
 
     fn session(&self) -> &Session {
@@ -77,6 +97,62 @@ fn fixture(name: &str) -> Value {
 
 fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()
+}
+
+/// A minimal synced message carrying `blob` as its raw-source blob handle.
+fn message_with_blob(id: &str, blob: &str) -> engine_core::mail::Message {
+    use engine_core::ids::{BlobId, MailboxId, MessageId};
+    use engine_core::membership::Memberships;
+    let mut message = engine_core::mail::Message::new(
+        MessageId::try_from(id).unwrap(),
+        Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
+    );
+    message.blob_id = Some(BlobId::try_from(blob).unwrap());
+    message
+}
+
+#[tokio::test]
+async fn message_source_downloads_the_blob_and_substitutes_the_template() {
+    const MIME: &[u8] = b"From: a@example.com\r\nSubject: Hi\r\n\r\nBody text\r\n";
+    let exec = FakeExecutor::new(vec![]).with_download_body(MIME);
+    let raw = crate::fetch::message_source(&exec, &message_with_blob("m1", "blob-1"))
+        .await
+        .unwrap();
+    assert_eq!(raw.as_bytes(), MIME);
+    // The download template's origin was rebased to the connection and every
+    // placeholder substituted (mail account `c`, the message's blob id).
+    assert_eq!(
+        exec.download_urls.lock().unwrap().as_slice(),
+        ["http://127.0.0.1:18080/download/c/blob-1/message?accept=application/octet-stream"]
+    );
+}
+
+#[tokio::test]
+async fn fetch_message_source_provider_method_returns_the_raw_mime() {
+    let exec = FakeExecutor::new(vec![]).with_download_body(b"raw-bytes");
+    let provider = JmapProvider::with_executor(Box::new(exec));
+    // Advertises the capability now that a download template is present.
+    assert!(provider.capabilities().message_source());
+    let raw = provider
+        .fetch_message_source(&account(), &message_with_blob("m1", "b1"))
+        .await
+        .unwrap();
+    assert_eq!(raw.as_bytes(), b"raw-bytes");
+}
+
+#[tokio::test]
+async fn message_source_without_a_blob_id_is_a_protocol_error() {
+    use engine_core::ids::{MailboxId, MessageId};
+    use engine_core::membership::Memberships;
+    let exec = FakeExecutor::new(vec![]).with_download_body(b"x");
+    let message = engine_core::mail::Message::new(
+        MessageId::try_from("m1").unwrap(),
+        Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
+    );
+    let err = crate::fetch::message_source(&exec, &message)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, JmapError::Protocol(_)));
 }
 
 #[tokio::test]

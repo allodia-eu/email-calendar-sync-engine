@@ -90,6 +90,17 @@ specifics they implement against the Stalwart fixture. Read it before touching
   taxonomy. Sending is outbox-mediated by `engine-sync::submit_mail`: a durable
   `PendingOp` (carrying the serialized draft, idempotent by `Message-ID`) precedes
   the provider call; the result is recorded under the op lease.
+- **Raw source fetch (`fetch_message_source`).** A message's raw RFC 5322 source is
+  downloaded on demand through the session `downloadUrl` blob template (RFC 8620
+  §6.2): the `{accountId}`/`{blobId}`/`{type}`/`{name}` placeholders are substituted
+  (the `blobId` is the one synced onto the object) and the bytes are GET with the
+  same credential as every other call. The template's origin is rebased onto the
+  connection like `apiUrl`, but **without** URL-parsing it (that would percent-encode
+  the `{…}` braces). The `message_source` capability is advertised whenever the
+  session exposes mail + a `downloadUrl`. This is what lets a host render a full
+  body (and, later, attachments), so JMAP reaches read parity with the IMAP/Graph
+  reading path — the source is fetched lazily on first open and cached by the store,
+  never synced eagerly.
 - **Calendar (read).** `Calendar/get` → `Calendar`; `CalendarEvent/get` →
   JSCalendar `Event`, mapping the time model (`start` + `timeZone` → zoned;
   `timeZone: null` + `showWithoutTime` → all-day date; else floating), recurrence
@@ -101,10 +112,16 @@ specifics they implement against the Stalwart fixture. Read it before touching
 
 ## Known limitations (documented, not bugs)
 
-- **Raw MIME is referenced, not stored.** A mail object keeps its `blobId` for
-  on-demand fetch, but durable raw-MIME blob storage awaits the store's blob
-  sub-step, so step 4 syncs Tier-1 metadata only. Calendar raw (`RawJsCalendar`)
-  *is* preserved (it is a serde field on the object).
+- **Raw MIME is fetched on demand, not synced.** Sync ships Tier-1 metadata only;
+  the raw RFC 5322 source is downloaded lazily via the `blobId` when a host opens a
+  message (`fetch_message_source`, above) and cached by the store thereafter.
+  Eager/durable raw-MIME storage *at sync time* is still a later store sub-step.
+  Calendar raw (`RawJsCalendar`) *is* preserved (it is a serde field on the object).
+- **Mail writes are unimplemented.** `edit_mail` (mark-read/flag, move, delete via
+  `Email/set`) is not yet implemented for JMAP (only IMAP has it), so a JMAP account
+  is read + submit today; flag/archive/delete await a later slice.
+- **No push channel.** JMAP EventSource / `StateChange` push (RFC 8620 §7) is not
+  implemented — a JMAP account reconciles by polling. `idle` is not advertised.
 - **Calendar events are still fetched whole**, not paged: only email has a paged
   primitive (`sync_email_page`) so far. Events have no natural recency sort and the
   seed fits one page; when streaming is wanted there, generalize `member_page` with
