@@ -50,6 +50,19 @@ impl Transport {
         let resp = self.authed(self.client.post(url)).json(body).send().await?;
         read_json(resp).await
     }
+
+    /// GETs `url` and returns the raw response body bytes — the blob-download path
+    /// for a message's raw RFC 5322 source (RFC 8620 §6.2). Maps a non-success
+    /// status to [`JmapError::Status`], mirroring [`read_json`].
+    pub(crate) async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, JmapError> {
+        let resp = self.authed(self.client.get(url)).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(JmapError::status(status.as_u16(), body));
+        }
+        Ok(resp.bytes().await?.to_vec())
+    }
 }
 
 /// Reads a JSON body, mapping a non-success status to [`JmapError::Status`] with

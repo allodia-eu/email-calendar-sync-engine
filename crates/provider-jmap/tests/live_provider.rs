@@ -92,6 +92,46 @@ async fn live_mail_fetch() {
 }
 
 #[tokio::test]
+async fn live_message_source() {
+    let Some(harness) = Harness::from_env() else {
+        eprintln!("skipping live_message_source: STALWART_HTTP_ADDR unset");
+        return;
+    };
+    harness
+        .wait_until_ready(std::time::Duration::from_secs(30))
+        .expect("ready");
+    let provider = connect(&harness).await;
+
+    // Advertised because the session exposes mail + a download template.
+    assert!(provider.capabilities().message_source());
+
+    let emails = provider.sync_email(&account(), None).await.unwrap();
+    let SyncUpdate::Snapshot { objects, .. } = &emails.update else {
+        panic!("expected snapshot");
+    };
+    // Pick a known seed message and download its raw RFC 5322 source via blobId.
+    let seed = objects
+        .iter()
+        .find(|m| m.envelope.subject.as_deref() == Some("Harness baseline message"))
+        .expect("seed message present");
+    assert!(seed.blob_id.is_some(), "synced message carries its blobId");
+    let raw = provider
+        .fetch_message_source(&account(), seed)
+        .await
+        .expect("download raw source");
+    let text = String::from_utf8_lossy(raw.as_bytes());
+    // The downloaded bytes are the real RFC 5322 source — headers + the subject.
+    assert!(
+        text.contains("Subject: Harness baseline message"),
+        "got: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase().contains("from:"),
+        "raw source has envelope headers: {text}"
+    );
+}
+
+#[tokio::test]
 async fn live_calendar_fetch() {
     let Some(harness) = Harness::from_env() else {
         eprintln!("skipping live_calendar_fetch: STALWART_HTTP_ADDR unset");

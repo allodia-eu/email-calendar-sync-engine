@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use engine_core::calendar::{Calendar, Event};
 use engine_core::ids::AccountId;
 use engine_core::mail::{Mailbox, Message};
+use engine_core::raw::RawMime;
 use engine_core::sync::{JmapDataType, SyncScope, SyncState};
 use engine_provider::{
     Capabilities, Draft, PageToken, Provider, ProviderResult, ScopeSync, SubmissionReceipt,
@@ -36,6 +37,8 @@ use crate::{JmapClient, JmapConfig};
 #[async_trait]
 pub(crate) trait Executor: Send + Sync {
     async fn execute(&self, request: &Request) -> Result<Response, JmapError>;
+    /// GETs raw bytes from a resolved blob-download URL (the raw message source).
+    async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError>;
     fn session(&self) -> &Session;
 }
 
@@ -43,6 +46,10 @@ pub(crate) trait Executor: Send + Sync {
 impl Executor for JmapClient {
     async fn execute(&self, request: &Request) -> Result<Response, JmapError> {
         JmapClient::execute(self, request).await
+    }
+
+    async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError> {
+        JmapClient::download(self, url).await
     }
 
     fn session(&self) -> &Session {
@@ -191,6 +198,17 @@ impl Provider for JmapProvider {
             event_from_json,
         )
         .await?)
+    }
+
+    async fn fetch_message_source(
+        &self,
+        _account: &AccountId,
+        message: &Message,
+    ) -> ProviderResult<RawMime> {
+        // The message's raw RFC 5322 source is downloaded from the session's
+        // `downloadUrl` blob template using the message's synced `blobId`; one
+        // credential (the connected client) backs the fetch, like every other call.
+        Ok(fetch::message_source(self.executor.as_ref(), message).await?)
     }
 
     async fn submit_email(
