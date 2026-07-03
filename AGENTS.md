@@ -53,11 +53,19 @@ Read before relevant work:
 
 ## Required Verification
 
-Before handing off Rust changes, run:
+**Run this full gate and make it pass before every `git push`** (not only at final hand-off). It
+mirrors the CI **"Format, lint, build, test, docs"** job *exactly* — same commands, same
+warnings-as-errors (`RUSTFLAGS`/`RUSTDOCFLAGS = -D warnings`) — so green here means green there.
+Skipping `cargo fmt` (or running `--check` without fixing) has failed this job on many PRs; a
+freshly hand-written line that overflows the width is the usual culprit, and CI catches it even
+though the code compiles. So: **`cargo fmt --all` first, then verify.**
 
 ```sh
-cargo fmt --check
+cargo fmt --all                       # fix formatting first
+export RUSTFLAGS="-D warnings" RUSTDOCFLAGS="-D warnings"   # match CI: warnings are errors
+cargo fmt --all --check               # must now be clean
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo build --workspace --all-features
 cargo test --workspace --all-features
 cargo doc --workspace --all-features --no-deps
 ```
