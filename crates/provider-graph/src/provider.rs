@@ -14,8 +14,10 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 use engine_core::ids::{AccountId, MailboxId, ProviderKey};
 use engine_core::mail::{Mailbox, Message};
+use engine_core::raw::RawMime;
 use engine_core::sync::{SyncScope, SyncState, SyncUpdate};
 use engine_provider::{Capabilities, PageToken, Provider, ProviderResult, ScopeSync, SyncPage};
+use time::Date;
 
 use crate::fetch;
 use crate::transport::GraphClient;
@@ -33,6 +35,9 @@ pub struct GraphProvider {
     client: GraphClient,
     folder: MailboxId,
     capabilities: Capabilities,
+    /// The sync-depth cutoff: when set, the initial message snapshot is windowed to
+    /// messages received on or after this date (`None` syncs the whole folder).
+    since: Option<Date>,
 }
 
 impl core::fmt::Debug for GraphProvider {
@@ -52,7 +57,17 @@ impl GraphProvider {
             client,
             folder,
             capabilities: Capabilities::none().with_mail(),
+            since: None,
         }
+    }
+
+    /// Windows the initial message snapshot to messages received on or after `since` (the
+    /// app's sync-depth cutoff), the Graph counterpart of `ImapConfig::with_since`. Later
+    /// incremental syncs follow the server's deltaLink, which carries the window.
+    #[must_use]
+    pub fn with_since(mut self, since: Date) -> Self {
+        self.since = Some(since);
+        self
     }
 }
 
@@ -96,7 +111,18 @@ impl Provider for GraphProvider {
         page: Option<&PageToken>,
         _limit: usize,
     ) -> ProviderResult<SyncPage<Message>> {
-        Ok(fetch::messages_page(&self.client, &self.folder, cursor, page).await?)
+        Ok(fetch::messages_page(&self.client, &self.folder, cursor, page, self.since).await?)
+    }
+
+    async fn fetch_message_source(
+        &self,
+        _account: &AccountId,
+        message: &Message,
+    ) -> ProviderResult<RawMime> {
+        // Graph streams a message's full RFC 822 MIME from `/messages/{id}/$value`;
+        // the message's provider key is that immutable id. One credential (the bound
+        // client's token) backs the fetch, like every other call on this provider.
+        Ok(fetch::message_source(&self.client, message.id.key()).await?)
     }
 }
 
@@ -143,6 +169,53 @@ mod tests {
         // The drain default pages `sync_email_page`; the single snapshot page holds 3.
         let email = provider.sync_email(&account(), None).await.unwrap();
         assert!(email.is_snapshot());
+    }
+
+    /// Drains the snapshot to a real [`Message`] whose provider key drives the
+    /// `$value` fetch, mirroring the reading path.
+    async fn first_snapshot_message(provider: &GraphProvider) -> Message {
+        let email = provider.sync_email(&account(), None).await.unwrap();
+        match email.update {
+            SyncUpdate::Snapshot { objects, .. } => objects.into_iter().next().unwrap(),
+            SyncUpdate::Delta { changed, .. } => changed.into_iter().next().unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_message_source_returns_the_raw_mime_from_the_value_endpoint() {
+        // `$value` streams the full RFC 822 MIME, carried here as a raw (string) route.
+        const MIME: &str = "From: a@example.com\r\nSubject: Hi\r\n\r\nBody text\r\n";
+        let folder = MailboxId::try_from("folder-inbox").unwrap();
+        let routes = vec![
+            ("messages/delta", json(SNAPSHOT)),
+            ("/$value", serde_json::Value::String(MIME.to_owned())),
+        ];
+        let provider = GraphProvider::new(fake_client(routes), folder);
+
+        let message = first_snapshot_message(&provider).await;
+        let raw = provider
+            .fetch_message_source(&account(), &message)
+            .await
+            .unwrap();
+        assert_eq!(raw.as_bytes(), MIME.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn fetch_message_source_errors_when_the_source_is_unavailable() {
+        // No `$value` route (the message is gone / not routed) → a classified error,
+        // not a panic — so the reading view surfaces "couldn't load" rather than crash.
+        let folder = MailboxId::try_from("folder-inbox").unwrap();
+        let provider = GraphProvider::new(
+            fake_client(vec![("messages/delta", json(SNAPSHOT))]),
+            folder,
+        );
+        let message = first_snapshot_message(&provider).await;
+        assert!(
+            provider
+                .fetch_message_source(&account(), &message)
+                .await
+                .is_err()
+        );
     }
 
     /// The full folder + message sync, in path-priority order (most specific first):

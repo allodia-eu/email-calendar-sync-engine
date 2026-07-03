@@ -22,6 +22,19 @@ impl GraphTransport for Fake {
             .map(|(_, doc)| doc.clone())
             .ok_or_else(|| GraphError::protocol(format!("no fake route for {url}")))
     }
+
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {
+        // A raw route carries its bytes as a JSON string (the `$value` MIME); anything
+        // else is serialized back to JSON bytes so the seam stays uniform.
+        self.routes
+            .iter()
+            .find(|(key, _)| url.contains(key.as_str()))
+            .map(|(_, doc)| match doc {
+                Value::String(mime) => mime.clone().into_bytes(),
+                other => other.to_string().into_bytes(),
+            })
+            .ok_or_else(|| GraphError::protocol(format!("no fake route for {url}")))
+    }
 }
 
 /// Builds a [`GraphClient`] backed by URL-substring → fixture routes.
