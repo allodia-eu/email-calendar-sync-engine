@@ -31,7 +31,7 @@ pub use lease::{
 };
 pub use outbox::{LeasedPendingOp, PendingOpState};
 pub use source::{MessageBodyStore, MessageSourceCache};
-pub use store::{IndexRowCounts, Store, StoreRead};
+pub use store::{IndexRowCounts, MailIndexEntry, Store, StoreRead};
 
 /// The version of the engine's **normalization** — how providers decode wire data and
 /// how `engine-core` projects it (subject charset decoding, header parsing, address

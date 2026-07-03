@@ -425,6 +425,14 @@ fn threaded_message(id: &str, mailbox: &str, own: &str, references: &[&str]) -> 
     message
 }
 
+/// An inbox message with a delivery date and threading headers, for the windowed and thread
+/// reads (its `received_at` becomes the mail index's sort date).
+fn dated_message(id: &str, own: &str, references: &[&str], received: &str) -> Message {
+    let mut message = threaded_message(id, "a", own, references);
+    message.received_at = Some(received.parse().unwrap());
+    message
+}
+
 fn calendar(id: &str, name: &str) -> Calendar {
     Calendar::new(CalendarId::try_from(id).unwrap(), name)
 }
@@ -457,6 +465,61 @@ async fn syncs_mail_from_a_provider() {
     assert_eq!(report.mailboxes.upserted, 2);
     assert_eq!(report.email.upserted, 2);
     assert_eq!(report.email.tombstoned, 0);
+}
+
+#[tokio::test]
+async fn windowed_read_returns_the_newest_and_thread_read_is_age_independent() {
+    // Inbox: a very old message `old` and a much newer reply `new` on the SAME derived thread,
+    // plus three unrelated newer messages — so the newest-N window drops `old` while the thread
+    // still holds it, and `old` is only reachable by thread/key, never by the window.
+    let provider = FakeProvider {
+        messages: vec![
+            dated_message("old", "old@h", &[], "2020-01-01T00:00:00Z"),
+            dated_message("f1", "f1@h", &[], "2026-02-01T00:00:00Z"),
+            dated_message("f2", "f2@h", &[], "2026-03-01T00:00:00Z"),
+            dated_message("f3", "f3@h", &[], "2026-04-01T00:00:00Z"),
+            // Replies to `old` (shared reference) → the engine derives one thread for both.
+            dated_message("new", "new@h", &["old@h"], "2026-05-01T00:00:00Z"),
+        ],
+        ..FakeProvider::new()
+    };
+    let engine = Engine::open_in_memory().unwrap();
+    engine.sync_mail(&provider, &account()).await.unwrap();
+    // IMAP-shaped mail arrives unthreaded; derivation groups `new` with `old` (shared reference).
+    engine.derive_mail_threads(&account()).await.unwrap();
+
+    // A window of 2 keeps only the two newest by date, newest first — `old` is outside it.
+    let windowed = engine.messages_windowed(&account(), 2).await.unwrap();
+    let keys: Vec<&str> = windowed.iter().map(|m| m.id.key().as_str()).collect();
+    assert_eq!(keys, vec!["new", "f3"], "newest two, newest first");
+
+    // `old` and `new` share the derived thread; reading it returns BOTH, even though `old` is
+    // far outside the window — the whole point of the design.
+    let thread = engine
+        .messages(&account())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id.key().as_str() == "new")
+        .and_then(|m| m.thread_id)
+        .expect("the reply is threaded");
+    let mut members: Vec<String> = engine
+        .thread_messages(&account(), thread.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id.key().as_str().to_owned())
+        .collect();
+    members.sort();
+    assert_eq!(members, vec!["new".to_owned(), "old".to_owned()]);
+
+    // A specific out-of-window key still resolves directly (open/reply/search-hit resolution).
+    let resolved = engine
+        .messages_by_keys(&account(), &[ProviderKey::new("old").unwrap()])
+        .await
+        .unwrap();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].id.key().as_str(), "old");
 }
 
 #[tokio::test]

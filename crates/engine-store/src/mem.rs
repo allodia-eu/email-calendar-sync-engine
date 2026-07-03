@@ -35,7 +35,7 @@ use crate::apply::{
 use crate::error::{Result, StoreError};
 use crate::lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease};
 use crate::outbox::{LeasedPendingOp, PendingOpState};
-use crate::store::{IndexRowCounts, Store, StoreRead};
+use crate::store::{IndexRowCounts, MailIndexEntry, Store, StoreRead};
 
 /// Returns `true` if a lease is held and has not expired at `now`.
 fn is_live(expiry: Option<UtcDateTime>, now: UtcDateTime) -> bool {
@@ -496,6 +496,22 @@ impl<C: Clock> StoreRead for MemStore<C> {
             .unwrap_or_default();
         objects.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(objects)
+    }
+
+    async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>> {
+        let inner = self.lock();
+        // The mail index is cleared on tombstone (`remove_derived`), so its entries are
+        // exactly the scope's live mail objects — no separate liveness join needed.
+        Ok(inner
+            .scopes
+            .get(scope)
+            .map(|c| {
+                c.mail_index
+                    .iter()
+                    .map(|(key, row)| (key.clone(), row.date_utc, row.thread_id.clone()))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {

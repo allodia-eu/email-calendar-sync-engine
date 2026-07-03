@@ -13,8 +13,9 @@
 //! store sits behind `engine-api`.
 
 use async_trait::async_trait;
-use engine_core::ids::{AccountId, ProviderKey};
+use engine_core::ids::{AccountId, ProviderKey, ThreadId};
 use engine_core::sync::{SyncScope, SyncState};
+use engine_core::time::UtcDateTime;
 use engine_core::write::{PendingOp, PendingOpId, PendingOutcome};
 use serde::Serialize;
 use serde_json::Value;
@@ -169,6 +170,12 @@ impl IndexRowCounts {
     }
 }
 
+/// One mail object's scalar index entry — its `(provider key, date, thread)`, the sort/group
+/// keys [`StoreRead::scope_mail_index`] returns without the payload. `date` is the message's
+/// `received_at`/`sent_at` (`None` when neither is known); `thread` is its resolved [`ThreadId`],
+/// if threading ran.
+pub type MailIndexEntry = (ProviderKey, Option<UtcDateTime>, Option<ThreadId>);
+
 /// A minimal lease-free read/inspection surface.
 ///
 /// Enough for the contract suite to verify stored state and for early
@@ -210,6 +217,17 @@ pub trait StoreRead: Send + Sync {
     ///
     /// Returns `StoreError::Backend` on a backend failure.
     async fn scope_objects(&self, scope: &SyncScope) -> Result<Vec<(ProviderKey, Value)>>;
+
+    /// The scalar mail-index entries for a scope's live mail objects: each object's
+    /// [`MailIndexEntry`] — the sort/group keys **without** the payload, so a caller can rank by
+    /// date (a newest-N window) or gather a thread's members and then deserialize only the chosen
+    /// few, instead of reading and decoding the whole mailbox. Empty for a non-mail scope (only
+    /// mail objects carry a mail index). Order is unspecified — callers sort.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>>;
 
     /// The current lifecycle state of a pending op, or `None` if unknown.
     ///
