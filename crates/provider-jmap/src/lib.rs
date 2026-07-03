@@ -26,7 +26,7 @@
 //!   keeps the path but forces the connection origin. Providers that genuinely
 //!   serve their API cross-origin use [`SessionUrlPolicy::TrustAdvertised`].
 //! - **Raw MIME is fetched on demand, not synced.** A normalized mail object keeps
-//!   its JMAP `blobId`; [`JmapProvider::fetch_message_source`] downloads the raw RFC
+//!   its JMAP `blobId`; `JmapProvider::fetch_message_source` downloads the raw RFC
 //!   5322 source through the session `downloadUrl` template (RFC 8620 §6.2) when a
 //!   host opens the message. The sync itself still ships Tier-1 metadata only —
 //!   durable raw-MIME storage at sync time awaits the store's blob sub-step. Calendar
@@ -207,7 +207,7 @@ impl JmapClient {
 
     /// GETs raw bytes from an already-resolved blob-download `url` — the raw RFC
     /// 5322 source behind a message's `blobId` (RFC 8620 §6.2). The `url` is a
-    /// fully-substituted download template (see [`crate::fetch::message_source`]).
+    /// fully-substituted download template (see `crate::fetch::message_source`).
     ///
     /// # Errors
     ///

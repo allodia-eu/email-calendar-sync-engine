@@ -141,7 +141,7 @@ impl Session {
     /// its `{accountId}`/`{blobId}`/`{type}`/`{name}` placeholders intact, or
     /// `None` if the server advertised none. The provider substitutes the
     /// placeholders to fetch a message's raw source
-    /// ([`crate::fetch::message_source`]).
+    /// (`crate::fetch::message_source`).
     pub(crate) fn download_url(&self) -> Option<&str> {
         self.download_url.as_deref()
     }
