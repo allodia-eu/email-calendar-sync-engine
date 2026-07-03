@@ -16,8 +16,8 @@ use engine_core::ids::{AccountId, MailboxId, ProviderKey};
 use engine_core::mail::{Mailbox, Message};
 use engine_core::raw::RawMime;
 use engine_core::sync::{SyncScope, SyncState, SyncUpdate};
-use time::Date;
 use engine_provider::{Capabilities, PageToken, Provider, ProviderResult, ScopeSync, SyncPage};
+use time::Date;
 
 use crate::fetch;
 use crate::transport::GraphClient;
@@ -205,8 +205,10 @@ mod tests {
         // No `$value` route (the message is gone / not routed) → a classified error,
         // not a panic — so the reading view surfaces "couldn't load" rather than crash.
         let folder = MailboxId::try_from("folder-inbox").unwrap();
-        let provider =
-            GraphProvider::new(fake_client(vec![("messages/delta", json(SNAPSHOT))]), folder);
+        let provider = GraphProvider::new(
+            fake_client(vec![("messages/delta", json(SNAPSHOT))]),
+            folder,
+        );
         let message = first_snapshot_message(&provider).await;
         assert!(
             provider

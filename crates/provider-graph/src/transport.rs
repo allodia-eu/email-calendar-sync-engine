@@ -276,7 +276,9 @@ mod tests {
             .get_bytes(&base)
             .await
             .unwrap_err();
-        assert!(matches!(&err, GraphError::Status { code: Some(c), .. } if c == "ErrorItemNotFound"));
+        assert!(
+            matches!(&err, GraphError::Status { code: Some(c), .. } if c == "ErrorItemNotFound")
+        );
     }
 
     #[tokio::test]

@@ -120,7 +120,9 @@ pub(crate) async fn messages_page(
     } else {
         SyncKind::Delta
     };
-    let doc = client.get(&page_url(client, folder, cursor, page, since)).await?;
+    let doc = client
+        .get(&page_url(client, folder, cursor, page, since))
+        .await?;
 
     let mut changed = Vec::new();
     let mut removed = Vec::new();
@@ -321,7 +323,9 @@ mod tests {
             .unwrap_or(next);
         // Page 1 from the initial call; page 2 from following the real nextLink.
         let client = fake_client(vec![("messages/delta", p1.clone()), (next_path, p2)]);
-        let first = messages_page(&client, &inbox(), None, None, None).await.unwrap();
+        let first = messages_page(&client, &inbox(), None, None, None)
+            .await
+            .unwrap();
         assert_eq!(first.changed.len(), 1);
         // Following the real nextLink reaches page 2 — proving continuation works.
         let token = first.next_page.expect("a nextLink continuation");
@@ -377,7 +381,11 @@ mod tests {
     #[tokio::test]
     async fn a_response_without_a_value_array_is_a_protocol_error() {
         let client = fake_client(vec![("messages/delta", json(r#"{"unexpected":true}"#))]);
-        assert!(messages_page(&client, &inbox(), None, None, None).await.is_err());
+        assert!(
+            messages_page(&client, &inbox(), None, None, None)
+                .await
+                .is_err()
+        );
         // An unrouted request surfaces the fake's error rather than hanging.
         assert!(
             messages_page(&fake_client(vec![]), &inbox(), None, None, None)
