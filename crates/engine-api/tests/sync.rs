@@ -513,6 +513,24 @@ async fn windowed_read_returns_the_newest_and_thread_read_is_age_independent() {
     members.sort();
     assert_eq!(members, vec!["new".to_owned(), "old".to_owned()]);
 
+    // Batched completion: over the window (`new`, `f3`), `thread_members` pulls the thread's
+    // out-of-window member `old` in ONE pass, and `exclude` keeps `new` (already in the window)
+    // from being re-read. Unrelated threads (f1/f2/f3) aren't asked for, so they don't come back.
+    let window_threads: std::collections::HashSet<String> = [thread.as_str().to_owned()].into();
+    let window_keys: std::collections::HashSet<String> = ["new".to_owned(), "f3".to_owned()].into();
+    let extra: Vec<String> = engine
+        .thread_members(&account(), &window_threads, &window_keys)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id.key().as_str().to_owned())
+        .collect();
+    assert_eq!(
+        extra,
+        vec!["old".to_owned()],
+        "only the out-of-window member, excluding `new`"
+    );
+
     // A specific out-of-window key still resolves directly (open/reply/search-hit resolution).
     let resolved = engine
         .messages_by_keys(&account(), &[ProviderKey::new("old").unwrap()])

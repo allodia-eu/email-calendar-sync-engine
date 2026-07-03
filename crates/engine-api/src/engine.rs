@@ -423,6 +423,44 @@ impl Engine {
         Ok(messages)
     }
 
+    /// Every message that belongs to **any** of the given `threads` within an account, except the
+    /// ones whose key is in `exclude` — the batched counterpart of [`Engine::thread_messages`] for
+    /// completing a **whole windowed list's** conversations in one pass. It scans the mail index
+    /// **once**, not once per thread (which would be `O(threads × mailbox)` — pathological for a
+    /// large mailbox), so a host pulls every shown conversation's out-of-window members
+    /// (`exclude` = the keys already in the window, so they aren't re-read and re-decoded) in a
+    /// single pass. Empty `threads` returns nothing without touching the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn thread_members(
+        &self,
+        account: &AccountId,
+        threads: &HashSet<String>,
+        exclude: &HashSet<String>,
+    ) -> Result<Vec<Message>, ApiError> {
+        if threads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut messages = Vec::new();
+        for scope in self.mail_scopes(account).await? {
+            for (key, _date, thread) in self.store.scope_mail_index(&scope).await? {
+                let in_thread = thread
+                    .as_ref()
+                    .is_some_and(|thread| threads.contains(thread.as_str()));
+                if in_thread
+                    && !exclude.contains(key.as_str())
+                    && let Some(payload) = self.store.object_payload(&scope, &key).await?
+                {
+                    messages
+                        .push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+                }
+            }
+        }
+        Ok(messages)
+    }
+
     /// The messages named by provider `keys` within an account — a targeted resolve for
     /// actions and search hits that reference specific messages a date window may not hold,
     /// without loading the whole mailbox. Keys not found (moved, tombstoned) are simply absent;
