@@ -308,7 +308,7 @@ jobs:
       # engine-filtered report we just wrote (stalwart-harness already excluded)
       # rather than letting the CLI auto-search; the token is a repo secret.
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./lcov.info
