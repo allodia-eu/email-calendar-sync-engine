@@ -133,7 +133,9 @@ specifics they implement against the Stalwart fixture. Read it before touching
   idempotent reconciliation — so a coalesced/spurious/missed notification cannot
   corrupt the store and a poll-only host stays correct. Reconnection and the
   push-vs-poll policy live in the host. The `idle` capability is advertised whenever
-  the session exposes an EventSource endpoint (`crate::watch`). Stalwart also
+  the session exposes an EventSource endpoint **and** a syncable domain (mail or
+  calendars), so a host never opens a watcher whose `Changed` could not map to a
+  synced scope (`crate::watch`). Stalwart also
   advertises a WebSocket push channel (`supportsPush`); EventSource is chosen as the
   simpler RFC-8620-core transport over the existing HTTP client.
 - **Calendar (read).** `Calendar/get` → `Calendar`; `CalendarEvent/get` →

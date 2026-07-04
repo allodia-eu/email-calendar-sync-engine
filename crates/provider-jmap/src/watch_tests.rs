@@ -193,6 +193,17 @@ fn state_change_hits_matches_across_any_account() {
 }
 
 #[test]
+fn empty_types_ignores_an_empty_per_account_object() {
+    // Under a `*` subscription, an account entry with no changed type must NOT wake —
+    // only an account reporting at least one changed type does.
+    assert!(!state_change_hits(r#"{"changed":{"c":{}}}"#, &[]));
+    assert!(state_change_hits(
+        r#"{"changed":{"c":{"Email":"s2"}}}"#,
+        &[]
+    ));
+}
+
+#[test]
 fn state_change_hits_is_false_for_malformed_or_empty() {
     assert!(!state_change_hits("not json", &["Email".to_owned()]));
     assert!(!state_change_hits(

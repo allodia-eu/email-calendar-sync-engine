@@ -197,7 +197,9 @@ fn classify(event: &SseEvent, types: &[String]) -> Option<WatchEvent> {
 /// `{ "@type": "StateChange", "changed": { "<accountId>": { "<Type>": "<state>" } } }`.
 /// Matching any account is deliberate: the stream is authenticated as one principal, so
 /// any watched-type change is worth a (idempotent) sync, and an over-eager wake is
-/// harmless while a missed one is not. Empty `types` matches any change.
+/// harmless while a missed one is not. Empty `types` matches any account that reports at
+/// least one changed type — an empty per-account object (`{}`, no type changed) is not a
+/// hit, so a bare account entry does not fire a spurious wake.
 fn state_change_hits(data: &str, types: &[String]) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(data) else {
         return false;
@@ -206,9 +208,13 @@ fn state_change_hits(data: &str, types: &[String]) -> bool {
         return false;
     };
     changed.values().any(|per_account| {
-        per_account
-            .as_object()
-            .is_some_and(|map| types.is_empty() || types.iter().any(|t| map.contains_key(t)))
+        per_account.as_object().is_some_and(|map| {
+            if types.is_empty() {
+                !map.is_empty()
+            } else {
+                types.iter().any(|t| map.contains_key(t))
+            }
+        })
     })
 }
 
