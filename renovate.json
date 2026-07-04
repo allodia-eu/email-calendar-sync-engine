@@ -1,6 +1,6 @@
 {
 	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
-	"extends": ["config:recommended", "schedule:weekly"],
+	"extends": ["config:recommended", "schedule:monthly"],
 	"rangeStrategy": "bump",
 	"reviewers": ["dennisameling"],
 	"packageRules": [
@@ -10,6 +10,7 @@
 		},
 		{
 			"description": "Only bump dependencies if those versions have been live for 7+ days",
+			"matchDatasources": ["*"],
 			"minimumReleaseAge": "7 days",
 			"prCreation": "not-pending",
 			"internalChecksFilter": "strict"
