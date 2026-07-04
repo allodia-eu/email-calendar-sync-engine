@@ -171,6 +171,17 @@ fn parser_treats_a_bare_field_as_empty_value() {
 }
 
 #[test]
+fn parser_ignores_id_and_retry_fields() {
+    let mut parser = SseParser::default();
+    // SSE `id:` (Last-Event-ID) and `retry:` fields are irrelevant to a JMAP watcher;
+    // they must be skipped without disturbing the event/data framing.
+    let events = parser.push(b"id: 42\nretry: 5000\nevent: state\ndata: {}\n\n");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "state");
+    assert_eq!(events[0].data, "{}");
+}
+
+#[test]
 fn parser_dispatches_nothing_for_an_empty_record() {
     let mut parser = SseParser::default();
     // A lone blank line with nothing pending yields no event.

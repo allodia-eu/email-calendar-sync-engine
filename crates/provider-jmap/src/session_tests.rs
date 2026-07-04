@@ -157,6 +157,22 @@ fn event_source_without_a_syncable_domain_does_not_advertise_idle() {
 }
 
 #[test]
+fn mail_capability_without_a_primary_account_defaults_to_writable() {
+    // The mail URN is advertised but `primaryAccounts` names no mail account: the
+    // read-only check has no id to consult and defaults to writable, so `mail_writes`
+    // is still advertised (rather than panicking on the missing account).
+    let base = Url::parse("http://127.0.0.1:18080").unwrap();
+    let doc = json!({
+        "capabilities": { "urn:ietf:params:jmap:mail": {} },
+        "primaryAccounts": {},
+        "apiUrl": "https://mail.test.local/jmap/"
+    });
+    let session = Session::parse(&doc, &base, SessionUrlPolicy::RebaseToConnection).unwrap();
+    assert!(session.capabilities().mail());
+    assert!(session.capabilities().mail_writes());
+}
+
+#[test]
 fn no_download_template_means_no_message_source_capability() {
     let base = Url::parse("http://127.0.0.1:18080").unwrap();
     let doc = json!({
