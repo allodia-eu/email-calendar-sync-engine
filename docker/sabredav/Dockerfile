@@ -6,7 +6,7 @@
 # The base image is pinned by multi-arch digest and the PHP deps by the committed
 # composer.lock, so a rebuild is deterministic (mirroring the Stalwart compose's
 # digest pin). Bump deliberately: re-resolve the digest / regenerate the lock.
-FROM php:8.3-cli-bookworm@sha256:4f520b09238c0ca8ee5d91367c7e4ba9a7db309ec969ef901d4599facaccf537
+FROM php:8.5-cli-bookworm@sha256:1ff2cdf2754bcac61128bfda455d418639c0f45a8b1583b4b90f9873a2ba1368
 
 # sabre/dav needs mbstring + a PDO driver; the sqlite3 CLI seeds the schema.
 RUN apt-get update && apt-get install -y --no-install-recommends \

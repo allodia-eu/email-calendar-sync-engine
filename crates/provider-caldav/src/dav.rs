@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use quick_xml::Reader;
+use quick_xml::escape::unescape;
 use quick_xml::events::Event;
 
 use crate::error::CalDavError;
@@ -143,11 +144,21 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                 let name = local_name(empty.name().as_ref());
                 record_resourcetype_child(&path, &name, &mut propstat);
             }
-            Event::Text(bytes) => text.push_str(
-                &bytes
-                    .unescape()
-                    .map_err(|e| CalDavError::xml(e.to_string()))?,
-            ),
+            Event::Text(bytes) => {
+                let decoded = bytes
+                    .decode()
+                    .map_err(|e| CalDavError::xml(e.to_string()))?;
+                let unescaped = unescape(&decoded).map_err(|e| CalDavError::xml(e.to_string()))?;
+                text.push_str(&unescaped);
+            }
+            Event::GeneralRef(bytes) => {
+                let decoded = bytes
+                    .decode()
+                    .map_err(|e| CalDavError::xml(e.to_string()))?;
+                let entity = format!("&{decoded};");
+                let unescaped = unescape(&entity).map_err(|e| CalDavError::xml(e.to_string()))?;
+                text.push_str(&unescaped);
+            }
             Event::CData(bytes) => {
                 text.push_str(&String::from_utf8_lossy(&bytes));
             }
@@ -327,6 +338,16 @@ mod tests {
         assert_eq!(
             response.props.get("calendar-home-set"),
             Some("/dav/cal/alice%40test.local/")
+        );
+    }
+
+    #[test]
+    fn unescapes_entity_escaped_property_text() {
+        let xml = "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/cal/</D:href><D:propstat><D:prop><D:displayname>Alice &amp; Bob &lt;Team&gt;</D:displayname></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>";
+        let parsed = parse_multistatus(xml).unwrap();
+        assert_eq!(
+            parsed.responses[0].props.get("displayname"),
+            Some("Alice & Bob <Team>")
         );
     }
 

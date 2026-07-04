@@ -16,11 +16,11 @@ path = "src/main.rs"
 [dependencies]
 # Blocking HTTP keeps the tool runtime-free; rustls so there is no OpenSSL
 # requirement (mirrors the engine's TLS posture).
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-serde_json = "1"
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls", "form"] }
+serde_json = "1.0.150"
 # PKCE S256: SHA-256 of the verifier, base64url-encoded (no padding).
-sha2 = "0.10"
-base64 = "0.22"
+sha2 = "0.11.0"
+base64 = "0.22.1"
 
 # Detach from the engine workspace above this directory.
 [workspace]

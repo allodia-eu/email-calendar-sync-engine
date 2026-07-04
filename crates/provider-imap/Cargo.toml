@@ -38,7 +38,7 @@ rustls = { workspace = true }
 # Mozilla root certificates for the `imap_explore` example's *verifying* TLS
 # connector against a real IMAP provider. Dev-only: the library itself stays
 # root-store-agnostic — the host injects trust policy.
-webpki-roots = "1"
+webpki-roots = "1.0.8"
 # The gated live test deserializes stored objects to assert the seed invariants.
 serde = { workspace = true }
 serde_json = { workspace = true }

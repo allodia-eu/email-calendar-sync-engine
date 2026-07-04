@@ -21,7 +21,7 @@ thiserror = { workspace = true }
 # requires (store-sqlite bundles C SQLite), so `cargo test --workspace` stays
 # buildable everywhere. Not compiled into the library or the cross-compile build.
 [dev-dependencies]
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.41", default-features = false, features = ["ring", "std", "tls12"] }
 
 [lints]
 workspace = true
