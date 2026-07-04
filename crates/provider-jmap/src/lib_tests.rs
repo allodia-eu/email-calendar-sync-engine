@@ -128,6 +128,14 @@ fn http_ok(body: &str) -> String {
     )
 }
 
+/// A `200 application/octet-stream` response — the raw-blob download shape.
+fn http_bytes(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
 const SESSION_DOC: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{"maxObjectsInGet":500},"urn:ietf:params:jmap:mail":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c"},"apiUrl":"https://mail.test.local/jmap/"}"#;
 
 #[tokio::test]
@@ -231,4 +239,95 @@ async fn bearer_auth_connects() {
     .await
     .unwrap();
     assert!(client.session().capabilities().mail());
+}
+
+// --- Blob download / upload over the real reqwest transport (mock server, no Docker).
+// Exercises `Transport::get_bytes`/`post_bytes` + `JmapClient::download`/`upload` + the
+// `Executor` delegation end-to-end, the paths otherwise only hit by the live tests.
+
+/// A session advertising the download + upload + submission surface these tests need.
+const RICH_SESSION_DOC: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{"maxObjectsInGet":500},"urn:ietf:params:jmap:mail":{},"urn:ietf:params:jmap:submission":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c","urn:ietf:params:jmap:submission":"c"},"apiUrl":"https://mail.test.local/jmap/","downloadUrl":"https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}","uploadUrl":"https://mail.test.local/upload/{accountId}/"}"#;
+
+fn rich_config(base: String) -> JmapConfig {
+    JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session")
+}
+
+#[tokio::test]
+async fn fetch_message_source_downloads_the_blob_through_the_real_client() {
+    use engine_core::ids::{AccountId, BlobId, MailboxId, MessageId};
+    use engine_core::mail::Message;
+    use engine_core::membership::Memberships;
+    use engine_provider::Provider;
+
+    let raw = "From: a@test.local\r\nSubject: probe\r\n\r\nbody";
+    let base = mock_server(vec![http_ok(RICH_SESSION_DOC), http_bytes(raw)]);
+    let provider = JmapProvider::connect(rich_config(base)).await.unwrap();
+
+    let mut msg = Message::new(
+        MessageId::try_from("e1").unwrap(),
+        Memberships::of_one(MailboxId::try_from("mb").unwrap()),
+    );
+    msg.blob_id = Some(BlobId::try_from("blob-1").unwrap());
+    let raw_mime = provider
+        .fetch_message_source(&AccountId::try_from("acct").unwrap(), &msg)
+        .await
+        .unwrap();
+    // The GET body came back verbatim through get_bytes → download → the Executor.
+    assert_eq!(raw_mime.as_bytes(), raw.as_bytes());
+}
+
+#[tokio::test]
+async fn submit_email_uploads_the_attachment_blob_through_the_real_client() {
+    use engine_core::ids::MessageIdHeader;
+    use engine_core::mail::EmailAddress;
+    use engine_provider::{Draft, DraftAttachment, Provider};
+
+    // connect(session) → resolve_context(Mailbox/Identity) → upload(blob) → send.
+    let context = r#"{"methodResponses":[["Mailbox/get",{"list":[{"id":"d","name":"Drafts","role":"drafts"},{"id":"s","name":"Sent","role":"sent"}]},"0"],["Identity/get",{"list":[{"id":"id1"}]},"1"]]}"#;
+    let sent = r#"{"methodResponses":[["Email/set",{"created":{"draft":{"id":"e9"}}},"0"],["EmailSubmission/set",{"created":{"sub":{"id":"sub1"}}},"1"]]}"#;
+    let base = mock_server(vec![
+        http_ok(RICH_SESSION_DOC),
+        http_ok(context),
+        http_ok(r#"{"blobId":"blob-att","type":"application/pdf","size":3}"#),
+        http_ok(sent),
+    ]);
+    let provider = JmapProvider::connect(rich_config(base)).await.unwrap();
+
+    let draft = Draft::new(
+        MessageIdHeader::new("m@test.local").unwrap(),
+        EmailAddress::new("a@test.local"),
+        vec![EmailAddress::new("b@test.local")],
+        "subject",
+        "body",
+    )
+    .with_attachment(DraftAttachment::attachment(
+        "r.pdf",
+        "application/pdf",
+        vec![1, 2, 3],
+    ));
+    let receipt = provider
+        .submit_email(
+            &engine_core::ids::AccountId::try_from("acct").unwrap(),
+            &draft,
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.email_key.as_str(), "e9");
+}
+
+#[tokio::test]
+async fn upload_without_a_blob_id_is_a_protocol_error() {
+    // The upload endpoint returns a body missing `blobId` — a permanent protocol error.
+    let base = mock_server(vec![http_ok(RICH_SESSION_DOC), http_ok("{}")]);
+    let client = JmapClient::connect(rich_config(base.clone()))
+        .await
+        .unwrap();
+    let err = client
+        .upload(&format!("{base}/upload/c/"), "text/plain", b"x")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.failure_class(),
+        engine_core::error::FailureClass::Permanent
+    );
 }

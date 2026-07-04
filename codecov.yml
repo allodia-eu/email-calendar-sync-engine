@@ -1,0 +1,46 @@
+# Codecov configuration for the PIM sync engine — the SINGLE SOURCE OF TRUTH for the
+# coverage thresholds.
+#
+# - `coverage.status.project.default.target` (below) is the whole-repo line-coverage
+#   floor. The CI "Code coverage" job reads THIS value with `yq` and passes it to
+#   `cargo llvm-cov report --fail-under-lines` (see .github/workflows/ci.yml), and the
+#   local pre-PR check does the same (AGENTS.md), so the number lives in exactly one
+#   place. Codecov also enforces it as the `project` status.
+# - `coverage.status.patch.default.target` is enforced by Codecov only (the native
+#   `cargo llvm-cov` has no per-diff metric). It is looser than `project` because the
+#   provider crates have a thin HTTP/TLS boundary whose raw dial glue is only reachable
+#   against a live server (covered by the gated `stalwart` job, excluded from the
+#   offline metric); a strict patch target would red-X a small diff on that plumbing.
+#
+# Real coverage sits ~96–97%; these targets are the floor, not the aim.
+
+coverage:
+  # Round displayed percentages to two decimals, like the CI summary.
+  precision: 2
+  round: down
+  status:
+    project:
+      default:
+        # Whole-repo line-coverage floor. Read by the CI native gate + the local
+        # pre-PR check; also enforced here by Codecov. Must not drop >1% vs. base.
+        target: 95%
+        threshold: 1%
+    patch:
+      default:
+        # New/changed lines target (Codecov-only). Looser than `project` so a handful
+        # of live-only transport lines in a small diff do not turn the PR red.
+        target: 90%
+        threshold: 1%
+
+# Mirror the CI metric's test-support exclusions: the live/integration test files and
+# the Stalwart harness are exercised in the `stalwart` job, not the offline coverage
+# run, so counting them here would understate real coverage.
+ignore:
+  - "crates/stalwart-harness/**"
+  - "crates/*/tests/**"
+  - "**/fuzz/**"
+  - "xtask/**"
+
+comment:
+  layout: "reach, diff, files"
+  require_changes: true

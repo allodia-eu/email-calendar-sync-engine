@@ -298,6 +298,26 @@ async fn connect_reads_a_change_over_a_real_event_stream() {
 }
 
 #[tokio::test]
+async fn connect_with_no_types_subscribes_to_all() {
+    // Empty types → the `*` subscription; a state event still wakes the watcher.
+    let session = r#"{"capabilities":{"urn:ietf:params:jmap:mail":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c"},"apiUrl":"https://mail.test.local/jmap/","eventSourceUrl":"https://mail.test.local/eventsource/?types={types}&closeafter={closeafter}&ping={ping}"}"#;
+    let sse_body = "event: state\ndata: {\"@type\":\"StateChange\",\"changed\":{\"c\":{\"Email\":\"s2\"}}}\n\n";
+    let base = mock_server(vec![
+        http_response("application/json", session),
+        http_response("text/event-stream", sse_body),
+    ]);
+    let mut watcher = JmapWatcher::connect(
+        crate::JmapConfig::new(base, crate::Credentials::basic("a", "b"))
+            .with_session_path("/jmap/session"),
+        &[],
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("open event source");
+    assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::Changed);
+}
+
+#[tokio::test]
 async fn connect_without_event_source_url_is_not_watchable() {
     // A session with no eventSourceUrl → InvalidState (the host polls), through the
     // real connect path.
