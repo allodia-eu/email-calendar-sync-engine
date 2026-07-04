@@ -27,6 +27,7 @@ use tokio_rustls::rustls::pki_types::ServerName;
 
 use crate::error::ImapError;
 use crate::mail::mailbox_from_list;
+use crate::preview::hydrate_previews;
 use crate::sync::sync_page;
 use crate::transport::Connection;
 
@@ -348,7 +349,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     ) -> ProviderResult<SyncPage<Message>> {
         let mut connection = self.connection.lock().await;
         let since = self.since.map(format_imap_date);
-        Ok(sync_page(
+        let mut page = sync_page(
             &mut connection,
             &self.mailbox,
             cursor,
@@ -356,7 +357,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
             limit,
             since.as_deref(),
         )
-        .await?)
+        .await?;
+        // IMAP hands us no server-side snippet (unlike Graph/JMAP), so fill a bounded number
+        // of the page's newest preview-less rows by reading their bodies. One chokepoint for
+        // every path `sync_page` dispatches to (snapshot, sync-depth window, QRESYNC delta).
+        hydrate_previews(&mut connection, &mut page.changed).await;
+        Ok(page)
     }
 
     /// Submits `draft` over SMTP and files the sent copy in Sent.

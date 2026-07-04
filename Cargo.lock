@@ -935,6 +935,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "engine-core",
+ "engine-mime",
  "engine-provider",
  "engine-search",
  "engine-store",
