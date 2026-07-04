@@ -63,6 +63,24 @@ impl Transport {
         }
         Ok(resp.bytes().await?.to_vec())
     }
+
+    /// POSTs raw `bytes` with `Content-Type: content_type` and parses the JSON
+    /// response — the blob-upload path (RFC 8620 §6.1), which returns a
+    /// `{ accountId, blobId, type, size }` object naming the stored blob.
+    pub(crate) async fn post_bytes(
+        &self,
+        url: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> Result<Value, JmapError> {
+        let resp = self
+            .authed(self.client.post(url))
+            .header(reqwest::header::CONTENT_TYPE, content_type.to_owned())
+            .body(bytes)
+            .send()
+            .await?;
+        read_json(resp).await
+    }
 }
 
 /// Reads a JSON body, mapping a non-success status to [`JmapError::Status`] with

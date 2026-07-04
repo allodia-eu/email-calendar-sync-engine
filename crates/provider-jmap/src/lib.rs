@@ -37,16 +37,20 @@ mod error;
 mod fetch;
 mod json;
 mod mail;
+mod mutate;
 mod provider;
 mod request;
 mod session;
 mod submit;
+mod submit_body;
 mod sync_ops;
 mod transport;
+mod watch;
 
 pub use error::JmapError;
 pub use provider::JmapProvider;
 pub use session::{CoreLimits, Session, SessionUrlPolicy};
+pub use watch::{DEFAULT_EVENT_SOURCE_PING, JmapWatcher};
 
 use core::fmt;
 
@@ -214,6 +218,74 @@ impl JmapClient {
     /// Returns [`JmapError`] on a transport/HTTP failure or a non-success status.
     pub(crate) async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError> {
         self.transport.get_bytes(url).await
+    }
+
+    /// Uploads raw `bytes` of `media_type` to an already-resolved blob-upload `url`
+    /// (the session `uploadUrl` with `{accountId}` substituted), returning the
+    /// server-assigned `blobId` (RFC 8620 §6.1) — a draft references it to attach a
+    /// part (`crate::submit`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JmapError`] on a transport/HTTP failure, a non-success status, or an
+    /// upload response missing its `blobId`.
+    pub(crate) async fn upload(
+        &self,
+        url: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Result<String, JmapError> {
+        let value = self
+            .transport
+            .post_bytes(url, media_type, bytes.to_vec())
+            .await?;
+        value
+            .get("blobId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| JmapError::protocol("upload response missing blobId"))
+    }
+
+    /// Opens the JMAP **EventSource** change-notification stream (RFC 8620 §7.3): a
+    /// long-lived `text/event-stream` GET over the session `eventSourceUrl`, watching
+    /// `types` (empty ⇒ all types, `*`), never closing early (`closeafter=no`), and
+    /// asking the server to `ping` every `ping` seconds so the stream stays alive and
+    /// surfaces keep-alives. Returns the streaming response for [`crate::watch`] to
+    /// read chunk by chunk.
+    ///
+    /// # Errors
+    ///
+    /// [`JmapError::Session`] if the server advertised no `eventSourceUrl`, or the
+    /// classified failure of opening the stream (a non-success status is
+    /// [`JmapError::Status`]).
+    pub(crate) async fn open_event_source(
+        &self,
+        types: &[&str],
+        ping: core::time::Duration,
+    ) -> Result<reqwest::Response, JmapError> {
+        let template = self
+            .session
+            .event_source_url()
+            .ok_or_else(|| JmapError::session("server advertised no eventSourceUrl"))?;
+        let types_param = if types.is_empty() {
+            "*".to_owned()
+        } else {
+            types.join(",")
+        };
+        // `ping=0` disables server pings (RFC 8620 §7.3); keep at least 1s so the
+        // stream still emits keep-alives.
+        let ping_secs = ping.as_secs().max(1);
+        let url = template
+            .replace("{types}", &types_param)
+            .replace("{closeafter}", "no")
+            .replace("{ping}", &ping_secs.to_string());
+        let resp = self.transport.get(&url).await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(JmapError::status(status.as_u16(), body));
+        }
+        Ok(resp)
     }
 }
 
