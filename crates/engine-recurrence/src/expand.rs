@@ -210,7 +210,7 @@ impl Materializer<'_> {
             .map_err(|reason| invalid(rid, reason))?
             .unwrap_or(rid);
         let zone = match patch_timezone(patch).map_err(|reason| invalid(rid, reason))? {
-            Some(id) => resolve_zone_id(&id)?,
+            Some(id) => zone::resolve_zone_id(&id)?,
             None => ctx.zone.clone(),
         };
         let duration = patch_duration(patch)
@@ -235,12 +235,12 @@ impl Materializer<'_> {
                 time: Time::MIN,
             }),
             CalendarDateTime::Floating(local) => Ok(Context {
-                zone: resolve_zone_id(self.host_zone)?,
+                zone: zone::resolve_zone_id(self.host_zone)?,
                 date: zone::local_date(*local)?,
                 time: zone::local_time(*local)?,
             }),
             CalendarDateTime::Zoned { local, zone } => Ok(Context {
-                zone: resolve_zone_id(zone)?,
+                zone: zone::resolve_zone_id(zone)?,
                 date: zone::local_date(*local)?,
                 time: zone::local_time(*local)?,
             }),
@@ -286,16 +286,6 @@ fn instance_rid(ctx: &Context, date: Date) -> Result<LocalDateTime, ExpandError>
         u8::try_from(ctx.time.second()).map_err(out_of_range)?,
     )
     .map_err(ExpandError::from)
-}
-
-/// Resolves a [`TimeZoneId`] to a bundled jiff zone, rejecting custom/embedded
-/// zones (their expansion needs the iCalendar `VTIMEZONE` parser, a later step).
-fn resolve_zone_id(id: &TimeZoneId) -> Result<jiff::tz::TimeZone, ExpandError> {
-    if id.is_iana() {
-        zone::iana(id.as_str())
-    } else {
-        Err(ExpandError::UnsupportedZone(id.as_str().to_owned()))
-    }
 }
 
 /// Builds an [`ExpandError::InvalidOverride`] for the given recurrence id.

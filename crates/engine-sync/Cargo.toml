@@ -11,6 +11,7 @@ engine-core = { workspace = true }
 engine-store = { workspace = true }
 engine-provider = { workspace = true }
 engine-recurrence = { workspace = true }
+engine-mime = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

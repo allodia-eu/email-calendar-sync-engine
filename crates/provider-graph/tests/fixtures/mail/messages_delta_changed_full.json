@@ -1,0 +1,26 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=opaque-token-6",
+  "value": [
+    {
+      "@odata.etag": "W/\"CQAAABYAAACwGt3bqyR2Sbk5EX5eSIkhAAAAADMv\"",
+      "@odata.type": "#microsoft.graph.message",
+      "flag": {
+        "flagStatus": "flagged"
+      },
+      "from": {
+        "emailAddress": {
+          "address": "testuser@example.test",
+          "name": "Test User"
+        }
+      },
+      "hasAttachments": false,
+      "id": "message-2",
+      "internetMessageId": "<fixture-message-2@example.test>",
+      "isRead": false,
+      "parentFolderId": "folder-inbox",
+      "receivedDateTime": "2026-06-25T18:19:12Z",
+      "subject": "Fixture: second message with HTML"
+    }
+  ]
+}

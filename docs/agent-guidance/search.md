@@ -69,9 +69,11 @@ Projection decisions (settled with the user):
   several accounts (including several of the same provider) resolves "me"
   independently for each.
 - **Addresses are normalized** (`engine_core::search_index::normalize_addr`,
-  trimmed + lowercased) on **both** the storage and query sides, so a query
-  address matches the stored one. Matching is exact-normalized (substring is a
-  future refinement).
+  trimmed + lowercased) on **both** the storage and query sides, so a scoped
+  `from:`/`to:`/`cc:` query address matches the stored one. That *structured*
+  matching is exact-normalized (full substring on the operator is a future
+  refinement). Separately, the address text is also folded into the FTS `body`
+  (see "FTS5"), so an *unscoped* search-box term prefix-matches an address.
 - **`OccurrenceRow`s are not projected by `search_index`** — expanding recurrence
   to UTC instants needs bundled tzdata, so it lives in `engine_recurrence::expand`
   (`calendar-semantics.md`), which the ingest/maintenance path runs before the store
@@ -89,6 +91,15 @@ The projection's field-tagged text folds onto the three columns: `subject` and
 folds into `body`, so unscoped free text still matches it. One shared index serves
 both domains; the executor restricts by `scope_key`.
 
+**Sender/recipient addresses are part of the indexed text.** `project_message`
+folds each `from`/`to`/`cc` address's email **and** display name into the mail
+`body` field (alongside preview/reply text), so a bare search-box term matches an
+address — essential because a metadata-tier message (e.g. IMAP) has an empty body,
+and the only searchable identity is the address. The `unicode61` tokenizer splits
+`info@allodia.eu` into `info`/`allodia`/`eu` and case-folds, so a typed `allodia`
+matches. This is in addition to the structured `mail_address` rows, which still
+back the exact, scoped `from:`/`to:`/`cc:` filters (the fold does not replace them).
+
 ## Executor
 
 `store-sqlite::search_ops` compiles a query to:
@@ -96,13 +107,24 @@ both domains; the executor restricts by `scope_key`.
 1. a **structured-filter predicate** — `EXISTS` on the junctions plus scalar/date
    conditions, **AND** across filters and **OR** within a repeated one (an `IN`
    list), correlated to the base index table;
-2. an optional **FTS5 `MATCH`** (every term a quoted phrase so user input cannot
-   inject FTS operators; scoped terms carry a column filter), ranked by `bm25()`.
+2. an optional **FTS5 `MATCH`** — every term is a quoted-phrase **prefix** query
+   (`"term"*`): the quoting keeps user input from injecting FTS operators, and the
+   trailing `*` makes search-as-you-type match partial words (a typed `allo`
+   matches `allodia`). Scoped terms carry a column filter (`subject:"allo"*`).
+   Ranked by `bm25()`.
 
-Ranked candidate lists fuse with **RRF** (`engine_search::fuse`). Today FTS is the
-only ranked source, so single-list fusion reproduces the bm25 order; a query with
-no text falls back to a deterministic order (mail by date desc, calendar by key).
-The result is ranked provider keys (`SearchResults`) plus assembled coverage.
+Ranked candidate lists fuse with **RRF** (`engine_search::fuse`). For **mail**, free
+text matches **two** FTS sources fused together: the scope-derived `fts_index`
+(subject + folded address text) and the lease-free **`message_body_fts`** over the
+on-demand-fetched body text (`store-and-sync.md`). The body source is mail-only,
+matches the *unscoped* terms (its single `plain` column has no `subject:`/`location:`
+qualifier), and is joined to `mail_index` (live, in-scope keys only) and
+`message_body.account` (IMAP keys can collide across accounts) — so a body row for a
+deleted message or another account never surfaces. A purely `subject:`-scoped query
+does not search the body. Calendar has the single FTS source. A query with no text
+falls back to a deterministic order (mail by date desc, calendar by key). The result
+is ranked provider keys (`SearchResults`) plus assembled coverage; the fused list is
+truncated to the limit.
 
 ## Coverage
 
@@ -124,4 +146,7 @@ in without changing callers.
   horizon now exists (`engine-recurrence`, ingest/maintenance via `engine-cli`); the
   read-path expansion past the horizon and the temporal-coverage reporting are the
   follow-up (`search-coverage.md`).
-- **Substring/prefix address matching** (currently exact-normalized).
+- **Substring/prefix matching on the *structured* `from:`/`to:`/`cc:` operators**
+  (those junction lookups are still exact-normalized). Unscoped free-text search
+  already prefix-matches addresses through the FTS `body` fold (see "FTS5"); this
+  remaining item is the scoped-operator form.

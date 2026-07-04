@@ -1,0 +1,26 @@
+# Standalone dev tool — NOT part of the engine workspace (its own `[workspace]`
+# table detaches it from `crates/*`), so it never affects the engine's
+# fmt/clippy/coverage gates. It exists only to drive the interactive Microsoft
+# identity-platform OAuth flow against a throwaway test account and to capture
+# real Graph JSON responses as offline test fixtures for `provider-graph`.
+[package]
+name = "graph-oauth"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "graph-oauth"
+path = "src/main.rs"
+
+[dependencies]
+# Blocking HTTP keeps the tool runtime-free; rustls so there is no OpenSSL
+# requirement (mirrors the engine's TLS posture).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde_json = "1"
+# PKCE S256: SHA-256 of the verifier, base64url-encoded (no padding).
+sha2 = "0.10"
+base64 = "0.22"
+
+# Detach from the engine workspace above this directory.
+[workspace]

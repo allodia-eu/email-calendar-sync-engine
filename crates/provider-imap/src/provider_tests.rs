@@ -49,7 +49,69 @@ async fn scopes_are_imap_shaped() {
         }
     );
     assert!(provider.capabilities().mail());
+    // Mail writes (STORE/MOVE/EXPUNGE) need no extra config, so every IMAP provider
+    // advertises them — unlike submission, which is gated on a configured SMTP.
+    assert!(provider.capabilities().mail_writes());
+    assert!(!provider.capabilities().submission());
     assert!(!provider.capabilities().calendars());
+    // This provider's connection never ran CAPABILITY negotiation, so push (IDLE) is
+    // not advertised — it is gated on the server, like submission is on SMTP.
+    assert!(!provider.capabilities().idle());
+}
+
+#[tokio::test]
+async fn idle_capability_reflects_a_post_auth_advertisement() {
+    // A server that advertises IDLE post-auth (Stalwart, Dovecot, …): negotiation
+    // records it, so the built provider advertises push and a host can offer an
+    // "as it comes in" strategy. Connection::open consumes the greeting (`a0`),
+    // login is `a1`, and CAPABILITY is the next tagged command (`a2`).
+    let (stream, _) = MockStream::new(script(&[
+        GREETING,
+        LOGIN_OK,
+        "* CAPABILITY IMAP4rev2 IDLE CONDSTORE QRESYNC\r\na2 OK done\r\n",
+        "* ENABLED QRESYNC\r\na3 OK enabled\r\n",
+    ]));
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    conn.negotiate_qresync().await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+    assert!(
+        provider.capabilities().idle(),
+        "an advertised IDLE becomes the provider's push capability"
+    );
+}
+
+#[tokio::test]
+async fn edit_mail_marks_a_message_read_through_the_provider() {
+    // The trait method is a thin lock-and-call into `mutate`: SELECT (UIDVALIDITY
+    // guard) then a silent STORE. The receipt carries the target key.
+    let select = "* 1 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\na2 OK [READ-WRITE] done\r\n";
+    let (stream, recorded) = MockStream::new(script(&[
+        GREETING,
+        LOGIN_OK,
+        select,
+        "a3 OK STORE done\r\n",
+    ]));
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+
+    let target = engine_core::ids::ProviderKey::new("imap:v7:u42@INBOX").unwrap();
+    let receipt = provider
+        .edit_mail(
+            &account(),
+            &engine_provider::MailEdit::mark_seen(target.clone(), true),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.message_key, target);
+
+    let sent = written(&recorded);
+    assert!(sent.contains("a2 SELECT \"INBOX\""), "{sent}");
+    assert!(
+        sent.contains("a3 UID STORE 42 +FLAGS.SILENT (\\Seen)"),
+        "{sent}"
+    );
 }
 
 #[tokio::test]
@@ -158,6 +220,125 @@ async fn submit_over_smtp_delivers_and_files_the_sent_copy() {
     assert_eq!(receipt.email_key.as_str(), "imap:v50:u9@Sent");
     assert_eq!(receipt.message_id.as_str(), "offline-send@host");
     assert!(written(&smtp_recorded).contains("MAIL FROM:<alice@test.local>"));
+}
+
+#[tokio::test]
+async fn submit_over_hides_bcc_on_the_wire_but_keeps_it_in_the_sent_copy() {
+    // Build the provider over a RECORDED IMAP stream so we can inspect the Sent-copy APPEND.
+    // The script: greeting + login (consumed by `login`), then LIST resolves `\Sent` and the
+    // APPEND literal is accepted.
+    let (imap_stream, imap_recorded) = MockStream::new(script(&[
+        GREETING,
+        LOGIN_OK,
+        "* LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\na2 OK LIST done\r\n",
+        "+ OK send literal\r\n",
+        "a3 OK [APPENDUID 50 9] APPEND completed\r\n",
+    ]));
+    let mut conn = Connection::open(imap_stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+
+    // One reply per command: greeting, EHLO, MAIL, then a RCPT for EACH of To+Cc+Bcc
+    // (three), DATA, queued, bye.
+    let smtp = script(&[
+        "220 mail\r\n",
+        "250 OK\r\n",
+        "250 2.1.0 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "354 go ahead\r\n",
+        "250 2.0.0 queued\r\n",
+        "221 bye\r\n",
+    ]);
+    let (smtp_stream, smtp_recorded) = MockStream::new(smtp);
+
+    let draft = submit_draft()
+        .with_cc(vec![EmailAddress::new("carol@test.local")])
+        .with_bcc(vec![EmailAddress::new("dave@test.local")]);
+    provider
+        .submit_over(smtp_stream, &draft, None)
+        .await
+        .unwrap();
+
+    // --- The over-the-wire message (what recipients receive) ---
+    let conversation = written(&smtp_recorded);
+    // Every recipient — To, Cc, AND Bcc — gets an envelope `RCPT TO`.
+    assert!(
+        conversation.contains("RCPT TO:<bob@test.local>\r\n"),
+        "{conversation}"
+    );
+    assert!(
+        conversation.contains("RCPT TO:<carol@test.local>\r\n"),
+        "{conversation}"
+    );
+    assert!(
+        conversation.contains("RCPT TO:<dave@test.local>\r\n"),
+        "{conversation}"
+    );
+    // The transmitted message carries a visible `Cc:` header but NEVER a `Bcc:` one.
+    assert!(
+        conversation.contains("Cc: carol@test.local\r\n"),
+        "{conversation}"
+    );
+    assert!(!conversation.contains("Bcc:"), "{conversation}");
+    // The Cc address appears twice (the envelope `RCPT TO` AND the `Cc:` header), but the Bcc
+    // address appears exactly ONCE — only in the envelope, never in the transmitted message —
+    // so no recipient can see it.
+    assert_eq!(
+        conversation.matches("carol@test.local").count(),
+        2,
+        "{conversation}"
+    );
+    assert_eq!(
+        conversation.matches("dave@test.local").count(),
+        1,
+        "{conversation}"
+    );
+
+    // --- The filed Sent copy (what the SENDER keeps) ---
+    // The APPENDed Sent copy DOES carry the `Bcc:` header, so the sender's Sent folder records
+    // whom they Bcc'd — the other half of the Outlook/Thunderbird behavior.
+    let appended = written(&imap_recorded);
+    assert!(appended.contains("Bcc: dave@test.local\r\n"), "{appended}");
+    assert!(appended.contains("Cc: carol@test.local\r\n"), "{appended}");
+}
+
+#[tokio::test]
+async fn submit_over_deduplicates_a_recipient_listed_in_both_to_and_cc() {
+    let provider = connected_provider(script(&[
+        GREETING,
+        LOGIN_OK,
+        "* LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\na2 OK LIST done\r\n",
+        "+ OK send literal\r\n",
+        "a3 OK [APPENDUID 50 9] APPEND completed\r\n",
+    ]))
+    .await;
+    // Exactly ONE RCPT reply: bob is in both To and Cc but the envelope de-duplicates him.
+    let smtp = script(&[
+        "220 mail\r\n",
+        "250 OK\r\n",
+        "250 2.1.0 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "354 go ahead\r\n",
+        "250 2.0.0 queued\r\n",
+        "221 bye\r\n",
+    ]);
+    let (smtp_stream, smtp_recorded) = MockStream::new(smtp);
+
+    // submit_draft()'s To is bob@test.local; adding him to Cc must not yield a second RCPT.
+    let draft = submit_draft().with_cc(vec![EmailAddress::new("bob@test.local")]);
+    provider
+        .submit_over(smtp_stream, &draft, None)
+        .await
+        .unwrap();
+
+    let conversation = written(&smtp_recorded);
+    assert_eq!(
+        conversation.matches("RCPT TO:").count(),
+        1,
+        "{conversation}"
+    );
 }
 
 #[tokio::test]
@@ -349,6 +530,7 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
         Some(super::SmtpSender::Plaintext {
             addr: loopback_smtp(),
         }),
+        None,
     );
     assert!(provider.capabilities().submission());
 

@@ -200,6 +200,13 @@ jobs:
           STALWART_PASSWORD: harness-alice-pw
         run: cargo test -p provider-imap --all-features -- --nocapture
 
+      - name: Run the gated CalDAV provider integration tests (live)
+        env:
+          STALWART_HTTP_ADDR: 127.0.0.1:18080
+          STALWART_ACCOUNT: alice@test.local
+          STALWART_PASSWORD: harness-alice-pw
+        run: cargo test -p provider-caldav --all-features -- --nocapture
+
       - name: Dump Stalwart logs on failure
         if: failure()
         working-directory: docker/stalwart
@@ -212,9 +219,58 @@ jobs:
         working-directory: docker/stalwart
         run: docker compose down -v
 
+  # The second CalDAV protocol fixture: a SabreDAV server (the stack Soverin/
+  # Fastmail-style providers run). It validates `provider-caldav` against a
+  # different real implementation than Stalwart — two-step RFC 6764 discovery, the
+  # `http://sabre.io/ns/sync/N` sync-token form — using the same shared calendar
+  # seed. Like `stalwart`, it is the only job that sets `SABREDAV_*`, so its gated
+  # test executes only here; everywhere else it skips.
+  sabredav:
+    name: SabreDAV protocol harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: sabredav
+
+      # The image is pinned by digest and the PHP deps by composer.lock; the
+      # container self-seeds and reports healthy once the marker exists, so
+      # `--wait` returns only when the calendar fixture is ready.
+      - name: Start the SabreDAV fixture and seed it
+        working-directory: docker/sabredav
+        run: docker compose up -d --wait
+
+      - name: Run the gated SabreDAV CalDAV integration test (live)
+        env:
+          SABREDAV_HTTP_ADDR: 127.0.0.1:18081
+        run: cargo test -p provider-caldav --test live_sabredav -- --nocapture
+
+      - name: Dump SabreDAV logs on failure
+        if: failure()
+        working-directory: docker/sabredav
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        working-directory: docker/sabredav
+        run: docker compose down -v
+
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
+    # Filename regex excluding test-support from the OFFLINE metric (live/harness tests
+    # run in the `stalwart` job). Defined once here and reused by every llvm-cov step
+    # below. Codecov's own equivalent lives in codecov.yml's `ignore:` — keep the two in
+    # sync (different tools: a regex here, globs there).
+    env:
+      COVERAGE_IGNORE: 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/|provider-graph/tests/'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -245,7 +301,7 @@ jobs:
       # offline-uncovered client `src` lines are the raw TCP+TLS `connect` glue,
       # which the live tests exercise.
       - name: Export lcov report
-        run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/'
+        run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "$COVERAGE_IGNORE"
 
       # Upload to Codecov before the threshold gate below so coverage is
       # recorded even on builds that dip under the bar. `files` points at the
@@ -258,25 +314,24 @@ jobs:
           files: ./lcov.info
 
       - name: Coverage summary
-        run: cargo llvm-cov report --summary-only --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/'
+        run: cargo llvm-cov report --summary-only --ignore-filename-regex "$COVERAGE_IGNORE"
 
-      # Codecov (the lcov export above) is the real signal; every meaningful path is
-      # tested offline. The *native* line metric reads under it for two reasons:
-      # (1) macro-/generic-/serde-heavy code — region misses inside expansions /
-      # monomorphizations the export formats count as covered — plus `panic!` arms in
-      # passing tests and a few defensive transport/error branches; and (2) the
-      # `provider-imap` IMAP/SMTP client is a *hand-rolled raw TCP + TLS + SMTP*
-      # adapter whose `connect`/`submit_email` dispatch glue cannot be exercised
-      # offline (there is no mockable HTTP layer as for the reqwest-based JMAP client);
-      # it is covered by the gated live `stalwart` job, but that is excluded from this
-      # offline metric. The pure logic (parsers, normalizers, the SMTP conversation,
-      # RFC 2047/base64 codecs) is ~95–98% offline. The backstop is a deliberately
-      # loose **95** floor: a "reliably green" backstop with headroom as more
-      # hand-rolled provider adapters (each with their own un-mockable dial glue)
-      # land. Codecov remains the real signal; tighten this as native stabilizes
-      # higher (e.g. once a mock TLS listener covers the dial path).
+      # The line-coverage floor is defined ONCE in codecov.yml
+      # (coverage.status.project.default.target); this step reads it with `yq` (preinstalled
+      # on GitHub ubuntu runners) so CI, Codecov, and the local pre-PR check (AGENTS.md)
+      # all enforce the same number. It is a deliberately loose backstop, not the aim:
+      # the native line metric reads a touch under the lcov export (region misses inside
+      # macro/generic/serde expansions the export counts as covered, `panic!` arms in
+      # passing tests, a few defensive transport/error branches) and the hand-rolled
+      # `provider-imap` raw TCP+TLS+SMTP dial glue is only exercised by the gated
+      # `stalwart` job, which is excluded from this offline metric. Codecov (the lcov
+      # export above) is the real signal; raise the floor in codecov.yml as native
+      # coverage stabilizes higher.
       - name: Enforce coverage threshold
-        run: cargo llvm-cov report --fail-under-lines 95 --ignore-filename-regex 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/'
+        run: |
+          threshold="$(yq '.coverage.status.project.default.target' codecov.yml | tr -d '%')"
+          echo "Enforcing project line coverage >= ${threshold}% (source: codecov.yml)"
+          cargo llvm-cov report --fail-under-lines "${threshold}" --ignore-filename-regex "$COVERAGE_IGNORE"
 
       - name: Upload lcov report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

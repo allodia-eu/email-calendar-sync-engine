@@ -34,6 +34,27 @@ fn select_without_uidvalidity_is_a_protocol_error() {
 }
 
 #[test]
+fn select_reads_highest_modseq_when_condstore_is_enabled() {
+    // A `SELECT … (CONDSTORE)` adds `[HIGHESTMODSEQ n]`; a plain SELECT does not.
+    let with_modseq = parse_select(&lines(&[
+        "8 EXISTS",
+        "OK [UIDVALIDITY 347529756] UIDs valid",
+        "OK [UIDNEXT 10] Next predicted UID",
+        "OK [HIGHESTMODSEQ 16] Highest Modseq",
+    ]))
+    .unwrap();
+    assert_eq!(with_modseq.highest_modseq, Some(16));
+
+    let plain = parse_select(&lines(&[
+        "8 EXISTS",
+        "OK [UIDVALIDITY 347529756] UIDs valid",
+        "OK [UIDNEXT 10] Next predicted UID",
+    ]))
+    .unwrap();
+    assert_eq!(plain.highest_modseq, None);
+}
+
+#[test]
 fn list_parses_attributes_delimiter_and_name() {
     let rows = parse_list(&lines(&[
         r#"LIST (\HasNoChildren) "/" "INBOX""#,
@@ -57,6 +78,41 @@ fn list_unescapes_a_quoted_name() {
     // A NIL delimiter (flat namespace) is preserved as None.
     let flat = parse_list(&lines(&[r#"LIST () NIL "Flat""#])).unwrap();
     assert_eq!(flat[0].delimiter, None);
+}
+
+#[test]
+fn search_collects_matched_uids() {
+    assert_eq!(parse_search(&lines(&["SEARCH 3 7 9"])), vec![3, 7, 9]);
+}
+
+#[test]
+fn search_with_no_matches_is_empty() {
+    assert_eq!(parse_search(&lines(&["SEARCH"])), Vec::<u32>::new());
+}
+
+#[test]
+fn search_reads_the_extended_esearch_all_set() {
+    // A server may answer the extended ESEARCH form instead; the `ALL` sequence-set's
+    // numbers are collected (range endpoints suffice for the lowest UID the caller needs).
+    assert_eq!(
+        parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 5:8"#])),
+        vec![5, 8]
+    );
+    assert_eq!(
+        parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 1:3,7"#])),
+        vec![1, 3, 7]
+    );
+}
+
+#[test]
+fn search_skips_unrelated_lines_and_zero_match_esearch() {
+    // A non-search untagged line is ignored, and an ESEARCH carrying no `ALL` (zero
+    // matches) yields nothing.
+    assert_eq!(parse_search(&lines(&["OK noted"])), Vec::<u32>::new());
+    assert_eq!(
+        parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID"#])),
+        Vec::<u32>::new()
+    );
 }
 
 #[test]
@@ -107,6 +163,144 @@ fn fetch_parses_uid_flags_internaldate_size_and_envelope() {
         env.message_id.as_deref(),
         Some("<baseline-0001@test.local>")
     );
+}
+
+#[test]
+fn fetch_bodystructure_marks_regular_attachments() {
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE (("#,
+        r#""TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 2 1)"#,
+        r#"("#,
+        r#""APPLICATION" "PDF" ("NAME" "report.pdf") NIL NIL "BASE64" 3 NIL "#,
+        r#"("ATTACHMENT" ("FILENAME" "report.pdf")) NIL)"#,
+        r#" "MIXED" ("BOUNDARY" "b")))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_keeps_cid_inline_images_out_of_the_attachment_flag() {
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("IMAGE" "PNG" ("NAME" "logo.png") "#,
+        r#""<logo@cid>" NIL "BASE64" 12 NIL ("INLINE" ("FILENAME" "logo.png")) NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(!rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_keeps_undisposed_cid_images_out_of_the_attachment_flag() {
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("IMAGE" "PNG" ("NAME" "logo.png") "#,
+        r#""<logo@cid>" NIL "BASE64" 12 NIL NIL NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(!rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_marks_inline_named_files_without_content_id() {
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("APPLICATION" "PDF" ("NAME" "preview.pdf") "#,
+        r#"NIL NIL "BASE64" 12 NIL ("INLINE" ("FILENAME" "preview.pdf")) NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_ignores_a_name_param_on_a_text_body_part() {
+    // A `text/html` body part carrying a stray `name` parameter (no disposition) is the message
+    // body, not a download — it must not raise a spurious paperclip.
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE (("#,
+        r#""TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 10 1)"#,
+        r#"("#,
+        r#""TEXT" "HTML" ("CHARSET" "UTF-8" "NAME" "body.html") NIL NIL "7BIT" 20 1)"#,
+        r#" "ALTERNATIVE" ("BOUNDARY" "a")))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(!rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_marks_inline_files_named_via_rfc2231() {
+    // A non-ASCII filename delivered as RFC 2231 continuations (`FILENAME*0*`/`*1*`) on an
+    // inline part still names a downloadable file.
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("APPLICATION" "OCTET-STREAM" NIL NIL NIL "BASE64" 100 "#,
+        r#"NIL ("INLINE" ("FILENAME*0*" "utf-8''%E2%82%AC" "FILENAME*1*" "rate.bin")) NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_bodystructure_reads_message_global_disposition_like_rfc822() {
+    // `message/global` (RFC 6532) uses the same extended envelope+body+lines layout as
+    // `message/rfc822`, so its `attachment` disposition must be read at the right index.
+    let line = concat!(
+        r#"1 FETCH (UID 1 BODYSTRUCTURE ("MESSAGE" "GLOBAL" NIL NIL NIL "7BIT" 500 "#,
+        r#"(NIL "sub" NIL NIL NIL NIL NIL NIL NIL "<m@h>") "#,
+        r#"("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 100 5) 20 NIL "#,
+        r#"("ATTACHMENT" ("FILENAME" "forward.eml")) NIL))"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert!(rows[0].has_attachment);
+}
+
+#[test]
+fn fetch_reads_a_references_header_as_a_quoted_string() {
+    // `BODY[HEADER.FIELDS (REFERENCES)]` does not tokenize as a single atom key:
+    // the section spec splits into `BODY[HEADER.FIELDS` + `(REFERENCES)` + `]`
+    // before the value. The parser must consume the whole spec and keep the value.
+    let line = concat!(
+        r#"1 FETCH (UID 1 ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL "<m@h>") "#,
+        r#"BODY[HEADER.FIELDS (REFERENCES)] "References: <a@x> <b@y>")"#,
+    );
+    let rows = parse_fetch(&lines(&[line])).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].uid, 1);
+    assert_eq!(
+        rows[0].references.as_deref(),
+        Some("References: <a@x> <b@y>")
+    );
+    // The envelope alongside it is still parsed (the spec drain stops at `]`).
+    assert_eq!(
+        rows[0].envelope.as_ref().unwrap().message_id.as_deref(),
+        Some("<m@h>")
+    );
+}
+
+#[test]
+fn fetch_reads_a_references_header_as_a_literal() {
+    // The same item delivered as a `{n}` literal the transport inlined.
+    let mut line = b"2 FETCH (UID 7 BODY[HEADER.FIELDS (REFERENCES)] {27}\r\n".to_vec();
+    line.extend_from_slice(b"References: <a@x> <b@y>\r\n\r\n");
+    line.push(b')');
+    let rows = parse_fetch(&[line]).unwrap();
+    assert_eq!(rows[0].uid, 7);
+    assert_eq!(
+        rows[0].references.as_deref(),
+        Some("References: <a@x> <b@y>\r\n\r\n")
+    );
+}
+
+#[test]
+fn fetch_handles_a_missing_or_empty_references_header() {
+    // An empty echoed value (no References header) leaves the row's references
+    // empty; a row that omits the item entirely leaves it None.
+    let with_empty = concat!(
+        r#"1 FETCH (UID 1 ENVELOPE (NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL) "#,
+        r#"BODY[HEADER.FIELDS (REFERENCES)] "")"#,
+    );
+    let rows = parse_fetch(&lines(&[with_empty])).unwrap();
+    assert_eq!(rows[0].references.as_deref(), Some(""));
+
+    let without = "2 FETCH (UID 2 RFC822.SIZE 10)";
+    let rows = parse_fetch(&lines(&[without])).unwrap();
+    assert_eq!(rows[0].references, None);
 }
 
 #[test]
@@ -176,4 +370,45 @@ fn envelope_handles_all_nil_addresses() {
     assert!(env.from.is_empty() && env.to.is_empty());
     assert_eq!(env.subject, None);
     assert_eq!(env.message_id, None);
+}
+
+#[test]
+fn fetch_body_extracts_the_literal_payload_for_its_uid() {
+    // The transport inlines the `{n}` literal: the untagged entry is the framing,
+    // the n raw bytes, then the closing `)`.
+    let body = "Subject: x\r\n\r\nbody bytes";
+    let line = format!("3 FETCH (UID 7 BODY[] {{{}}}\r\n{body})", body.len());
+    let raw = parse_fetch_body(&lines(&[&line]), 7).unwrap();
+    assert_eq!(raw, body.as_bytes());
+}
+
+#[test]
+fn fetch_body_ignores_a_line_for_another_uid() {
+    // A piggybacked FETCH for a different UID (and the `UID 70` red herring) must not
+    // be mistaken for our UID 7's body.
+    let body = "wrong message";
+    let line = format!("3 FETCH (UID 70 BODY[] {{{}}}\r\n{body})", body.len());
+    assert!(parse_fetch_body(&lines(&[&line]), 7).is_none());
+}
+
+#[test]
+fn fetch_body_without_a_literal_for_the_uid_is_none() {
+    // No `BODY[]` section for the UID (expunged / not returned) → None, never a panic.
+    assert!(parse_fetch_body(&lines(&["3 FETCH (UID 7 FLAGS (\\Seen))"]), 7).is_none());
+    assert!(parse_fetch_body(&lines(&[]), 7).is_none());
+}
+
+#[test]
+fn fetch_body_truncated_below_announced_length_is_none() {
+    // The server announced 999 bytes but sent far fewer: reject rather than read out
+    // of bounds.
+    let line = "3 FETCH (UID 7 BODY[] {999}\r\nonly a few bytes)";
+    assert!(parse_fetch_body(&lines(&[line]), 7).is_none());
+}
+
+#[test]
+fn fetch_body_with_malformed_framing_is_none() {
+    // `BODY[]` present but no `{n}` length framing follows.
+    let line = "3 FETCH (UID 7 BODY[] NIL)";
+    assert!(parse_fetch_body(&lines(&[line]), 7).is_none());
 }

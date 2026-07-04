@@ -13,11 +13,16 @@ Read before relevant work:
 - `docs/agent-guidance/providers.md` before touching protocol/provider code.
 - `docs/agent-guidance/jmap.md` before touching the JMAP client (`engine-provider`, `provider-jmap`, `engine-sync`).
 - `docs/agent-guidance/imap-smtp.md` before touching the IMAP/SMTP client (`provider-imap`, and the submission paths in `engine-provider`/`engine-sync`).
+- `docs/agent-guidance/caldav.md` before touching the CalDAV calendar client (`provider-caldav`, the calendar sync path in `engine-provider`/`engine-sync`, or the SabreDAV fixture under `docker/sabredav/`).
+- `docs/agent-guidance/graph.md` before touching the Microsoft Graph mail client (`provider-graph`, the Graph mail sync path, or the OAuth/capture tool under `tools/graph-oauth/`).
 - `docs/agent-guidance/store-and-sync.md` before touching the store trait, sync orchestration, or the outbox.
 - `docs/agent-guidance/search.md` before touching the query AST/DSL, the search executor, or projection→index rows.
 - `docs/agent-guidance/search-coverage.md` before touching search result completeness or provider-search fallback.
+- `docs/agent-guidance/mime.md` before touching MIME body extraction (`engine-mime`, the `MessageBody` type, or message-body fetch/caching in `engine-provider`/`engine-sync`/`store-sqlite`).
+- `docs/agent-guidance/threading.md` before touching email threading (`Message.thread_id`, the `Thread` model, the derivation pass, or `Engine::derive_mail_threads`).
 - `docs/agent-guidance/calendar-semantics.md` before touching timezone handling, recurrence, or scheduling (iTIP/iMIP).
 - `docs/agent-guidance/stalwart-harness.md` before touching the Stalwart Docker harness, the seed fixtures, or the protocol smoke tests (`docker/stalwart/`, `crates/stalwart-harness`).
+- `docs/agent-guidance/engine-api.md` before touching the host facade (`engine-api`) or the bindings/reference-host seams (UniFFI, C ABI, CLI host).
 
 ## Hard Rules
 
@@ -48,19 +53,44 @@ Read before relevant work:
 
 ## Required Verification
 
-Before handing off Rust changes, run:
+**Run this full gate and make it pass before every `git push`** (not only at final hand-off). It
+mirrors the CI **"Format, lint, build, test, docs"** job *exactly* — same commands, same
+warnings-as-errors (`RUSTFLAGS`/`RUSTDOCFLAGS = -D warnings`) — so green here means green there.
+Skipping `cargo fmt` (or running `--check` without fixing) has failed this job on many PRs; a
+freshly hand-written line that overflows the width is the usual culprit, and CI catches it even
+though the code compiles. So: **`cargo fmt --all` first, then verify.**
 
 ```sh
-cargo fmt --check
+cargo fmt --all                       # fix formatting first
+export RUSTFLAGS="-D warnings" RUSTDOCFLAGS="-D warnings"   # match CI: warnings are errors
+cargo fmt --all --check               # must now be clean
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo build --workspace --all-features
 cargo test --workspace --all-features
 cargo doc --workspace --all-features --no-deps
 ```
 
-When coverage tooling is available, also run:
+### Coverage (catch a dip before the PR)
+
+The enforced **line-coverage floor** and the per-diff **patch target** live in one
+place — **`codecov.yml`** (`coverage.status.project.default.target` and
+`…patch.default.target`). CI's coverage job reads the floor from there with `yq`, and
+Codecov enforces both, so the number is defined once. Run the same check locally before
+`git push` so you catch a regression before CI does. The offline metric excludes the
+live/harness tests (they run in the gated `stalwart` job); the exclusion list mirrors
+CI's `COVERAGE_IGNORE` (see `.github/workflows/ci.yml`):
 
 ```sh
-cargo llvm-cov --workspace --all-features --fail-under-lines 100
+cargo llvm-cov --no-report --workspace --all-features
+threshold="$(yq '.coverage.status.project.default.target' codecov.yml | tr -d '%')"   # single source
+cargo llvm-cov report --fail-under-lines "$threshold" \
+  --ignore-filename-regex 'stalwart-harness/|provider-[a-z]+/tests/'
 ```
+
+New/changed lines must clear the **patch** target too, so cover new code. A provider's
+thin HTTP/TLS transport boundary is the one place offline coverage is hard; drive it
+with a mock HTTP server / fake executor rather than leaving it to the live tests
+(`provider-jmap`'s `lib_tests.rs` + `watch_tests.rs` are the pattern). To find the exact
+uncovered lines: `cargo llvm-cov -p <crate> --all-features --show-missing-lines`.
 
 If a command cannot run, say exactly why and what remains unverified.

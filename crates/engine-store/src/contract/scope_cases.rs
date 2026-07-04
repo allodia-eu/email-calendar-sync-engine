@@ -8,6 +8,7 @@ use engine_core::sync::{SyncState, SyncUpdate};
 use engine_core::write::{PendingOpId, PendingOutcome};
 
 use engine_core::calendar::ParticipationStatus;
+use engine_core::ids::ThreadId;
 use engine_core::search_index::{
     AddressField, EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow, MembershipKind,
     MembershipRow, ParticipantField,
@@ -665,6 +666,212 @@ pub(super) async fn structured_index_rows_replace_and_clear<S: Store + StoreRead
     assert!(
         store
             .index_row_counts(&scope, &event)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// `account_scopes` lists exactly the scopes a store has claimed for an account —
+/// across data types, in ascending `SyncScope` order — and nothing from another
+/// account, so a per-account search enumerates them instead of hard-coding which
+/// scopes a provider uses. An account the store has never seen has none.
+pub(super) async fn account_scopes_enumerates_an_accounts_scopes<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let a = acct("acct-enum-a");
+    let b = acct("acct-enum-b");
+    // Claiming a scope registers it; claim two data types for A and one for B.
+    for scope in [mailbox_scope(&a), email_scope(&a)] {
+        store
+            .claim_sync_scope(a.clone(), &scope, lease_request("worker", 300))
+            .await
+            .unwrap();
+    }
+    store
+        .claim_sync_scope(b.clone(), &email_scope(&b), lease_request("worker", 300))
+        .await
+        .unwrap();
+
+    // A's scopes only, in ascending order (the suite asserts the exact ordered set).
+    let mut expected = vec![email_scope(&a), mailbox_scope(&a)];
+    expected.sort();
+    assert_eq!(store.account_scopes(a).await.unwrap(), expected);
+    assert_eq!(
+        store.account_scopes(b).await.unwrap(),
+        vec![email_scope(&acct("acct-enum-b"))]
+    );
+    // An account the store has never seen has no scopes.
+    assert!(
+        store
+            .account_scopes(acct("acct-enum-none"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// `scope_mail_index` returns each live mail object's `(key, date, thread)` — the scalar
+/// sort/group keys backing the windowed and threaded reads — with dates and thread ids
+/// intact, undated/unthreaded messages reported as `None`, and a tombstoned object excluded
+/// (its index row is cleared with it).
+pub(super) async fn scope_mail_index_reports_dates_threads_and_excludes_tombstones<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-mailidx");
+    let scope = email_scope(&account);
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+
+    // Three messages: two share a thread with distinct dates, one is undated + unthreaded.
+    let thread = ThreadId::try_from("t-shared").unwrap();
+    let mut derived = DerivedWrite::empty();
+    derived.mail_index.push(MailIndexRow {
+        key: pk("m1"),
+        date_utc: Some("2026-01-03T00:00:00Z".parse().unwrap()),
+        has_attachment: false,
+        thread_id: Some(thread.clone()),
+    });
+    derived.mail_index.push(MailIndexRow {
+        key: pk("m2"),
+        date_utc: Some("2026-01-01T00:00:00Z".parse().unwrap()),
+        has_attachment: false,
+        thread_id: Some(thread.clone()),
+    });
+    derived.mail_index.push(MailIndexRow {
+        key: pk("m3"),
+        date_utc: None,
+        has_attachment: false,
+        thread_id: None,
+    });
+    let update = SyncUpdate::delta(
+        vec![
+            TestObject::new("m1", "A"),
+            TestObject::new("m2", "B"),
+            TestObject::new("m3", "C"),
+        ],
+        vec![],
+    );
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&update, &derived, &[], &SyncState::new("mi-1")),
+        )
+        .await
+        .unwrap();
+
+    let mut entries = store.scope_mail_index(&scope).await.unwrap();
+    entries.sort_by(|a, b| a.0.cmp(&b.0)); // order is unspecified; sort by key to assert.
+    assert_eq!(
+        entries,
+        vec![
+            (
+                pk("m1"),
+                Some("2026-01-03T00:00:00Z".parse().unwrap()),
+                Some(thread.clone()),
+            ),
+            (
+                pk("m2"),
+                Some("2026-01-01T00:00:00Z".parse().unwrap()),
+                Some(thread.clone()),
+            ),
+            (pk("m3"), None, None),
+        ]
+    );
+
+    // Tombstoning m2 clears its index row too, so it drops out of the scan.
+    let drop_m2: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![pk("m2")]);
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(
+                &drop_m2,
+                &DerivedWrite::empty(),
+                &[],
+                &SyncState::new("mi-2"),
+            ),
+        )
+        .await
+        .unwrap();
+    let keys: Vec<_> = store
+        .scope_mail_index(&scope)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(key, _, _)| key)
+        .collect();
+    assert_eq!(keys.len(), 2);
+    assert!(!keys.contains(&pk("m2")));
+}
+
+/// `scope_objects` batch-reads a scope's live objects as `(key, payload)` pairs in key
+/// order — the read backing per-account views — matching `object_payload` per key and
+/// excluding tombstoned objects.
+pub(super) async fn scope_objects_batch_reads_live_objects<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-objects");
+    let scope = email_scope(&account);
+    let derived = DerivedWrite::empty();
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+
+    let update = SyncUpdate::delta(
+        vec![
+            TestObject::new("a", "A"),
+            TestObject::new("b", "B"),
+            TestObject::new("c", "C"),
+        ],
+        vec![],
+    );
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&update, &derived, &[], &SyncState::new("c1")),
+        )
+        .await
+        .unwrap();
+    // Drop `b`: a tombstoned object must not appear in the batch read.
+    let drop_b: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![pk("b")]);
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&drop_b, &derived, &[], &SyncState::new("c2")),
+        )
+        .await
+        .unwrap();
+
+    // The two live objects, in ascending key order (so a multi-object sort runs).
+    let objects = store.scope_objects(&scope).await.unwrap();
+    assert_eq!(
+        objects
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>(),
+        vec![pk("a"), pk("c")]
+    );
+    // The batched payload matches the single-key read.
+    assert_eq!(
+        Some(&objects[0].1),
+        store
+            .object_payload(&scope, &pk("a"))
+            .await
+            .unwrap()
+            .as_ref()
+    );
+    // A scope the store has never seen reads back empty.
+    assert!(
+        store
+            .scope_objects(&email_scope(&acct("acct-objects-none")))
             .await
             .unwrap()
             .is_empty()

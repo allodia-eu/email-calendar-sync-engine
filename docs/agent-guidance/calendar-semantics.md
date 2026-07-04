@@ -38,6 +38,25 @@ expansion, or scheduling.
   inherent to floating time, not a defect.
 - **All-day / date-only** values are zoneless calendar dates: no DST, never
   attach a zone.
+- **Read-side display resolution.** A host rendering a single stored event's
+  start (not the materialized occurrence rows) resolves it through
+  `engine_recurrence::resolve_instant` (re-exported from `engine-api`), the
+  read-side counterpart to expansion: a zoned start — UTC (`Etc/UTC`) or a named
+  IANA zone — resolves to its absolute UTC instant through the *same* bundled
+  tzdata, so the host can localize to the device zone regardless of the authoring
+  zone; a floating or all-day value returns `None` (no fixed instant) and the host
+  shows wall-clock/date text; a custom/embedded zone returns `UnsupportedZone`.
+  Hosts must localize off the resolved instant — never the bare wall-clock — or a
+  non-UTC event displays in the wrong zone.
+- **Total-order key for sorting + the display zone.** Sorting an agenda that mixes
+  zoned, floating, and all-day values needs an instant for *every* value, so
+  `resolve_instant_in(value, host_zone)` resolves a floating value through the
+  caller's display zone and an all-day value to that zone's local midnight (a
+  zoned value still resolves through its own zone). The display zone is a **host
+  app preference**, not engine-domain state: the host detects the OS zone natively,
+  the product-core persists the user's chosen zone, and the engine only resolves
+  and validates against it. `is_supported_zone` lets a host reject a picked or
+  device-reported zone the bundled tzdb cannot resolve before adopting it.
 - Normalization target: JSCalendar (`LocalDateTime` + IANA `timeZone`, or UTC)
   and iCalendar (`DTSTART` with `TZID`/`VTIMEZONE`, UTC `Z`, or floating) both map
   to one engine time model — an instant resolved through its zone, or wall-clock
@@ -52,11 +71,18 @@ expansion, or scheduling.
 ## Inbound scheduling (iTIP/iMIP)
 
 The Write Contract covers *outbound* scheduling. Inbound is the missing half:
-recognizing and reconciling scheduling messages that arrive through sync.
+recognizing and reconciling scheduling messages that arrive through sync. The
+**inbound parse/reconcile/trust/apply pipeline and the RSVP write primitive are
+implemented**; the precise deferrals are listed at the end of this section.
 
 - **iMIP is iTIP over email:** a message with a `text/calendar` part carrying a
   `METHOD`. The mail sync path must detect these and hand them to the calendar
-  layer — this is the mail↔calendar bridge.
+  layer — this is the mail↔calendar bridge. **Implemented:** the detection step is
+  `engine_core::scheduling::find_calendar_part` (a pure walk of the MIME tree for a
+  `text/calendar` part), and the parse is `provider_caldav::imip::parse` →
+  `engine_core::scheduling::SchedulingMessage` (the iCalendar parser, reused, plus
+  the `VCALENDAR` `METHOD` and the `VEVENT` `DTSTAMP`). *Fetching* the part's bytes
+  on the mail path and handing them to the bridge is the deferred mail-sync wiring.
 - **Capability split.** Prefer server-side scheduling where the provider has it:
   CalDAV Scheduling Inbox (RFC 6638) or JMAP Calendars scheduling. Pure
   IMAP/SMTP has none, so the client parses iMIP from the mail stream and sends
@@ -67,19 +93,52 @@ recognizing and reconciling scheduling messages that arrive through sync.
   identities. Reconcile scheduling by `(UID, SEQUENCE, RECURRENCE-ID)`, never by
   email identity — the same `UID` can arrive repeatedly and across folders. A
   higher `SEQUENCE` supersedes; `RECURRENCE-ID` targets a single instance.
-- **`METHOD` handling:**
-  - `REQUEST` → create or update the event (needs-action by default).
-  - `REPLY` → update the replying attendee's `PARTSTAT` on the organizer's copy.
-  - `CANCEL` → cancel the event or the targeted instance.
-  - `COUNTER` / `DECLINECOUNTER` / `REFRESH` / `ADD` → classify and surface; full
-    handling may be staged.
+  **Implemented:** `SchedulingMessage::instance_key()` keys on `(UID,
+  RECURRENCE-ID)` and `::revision()` on `(SEQUENCE, DTSTAMP)`; `reconcile`'s
+  supersession gate drops a message that does not strictly supersede the highest
+  revision already applied for its key (the synthetic `EventId`/`CalendarId` a
+  parsed message carries are placeholders — storage identity is assigned later).
+- **`METHOD` handling.** **Implemented** as `engine_core::scheduling::reconcile`
+  returning a `ScheduleAction` (after the trust gate and supersession check):
+  - `REQUEST` → `ScheduleEvent` (create or update; attendees default to
+    needs-action).
+  - `REPLY` → `RecordReply { attendee, status }`, applied to the organizer's stored
+    copy by `apply_reply`.
+  - `CANCEL` → `Cancel`, applied by `cancel` (a series cancel tombstones the event;
+    an instance cancel excludes that occurrence).
+  - `COUNTER` / `DECLINECOUNTER` / `REFRESH` / `ADD` / `PUBLISH` → `Surface(method)`
+    — classified and surfaced to the host; full handling stays staged.
 - **Responding** is an outbox operation that separates calendar storage (my
   `PARTSTAT`) from delivery (the iTIP `REPLY` via iMIP or provider scheduling),
-  consistent with the Write Contract.
+  consistent with the Write Contract. **Implemented:**
+  `provider_caldav::imip::set_my_partstat` patches *my* `PARTSTAT` into a stored
+  event's raw iCalendar (round-trip from raw plus a targeted edit — every other
+  property survives verbatim), producing the body for an
+  `EventWrite::update`/`If-Match` driven by the existing
+  `engine_sync::write_calendar_event` outbox driver. On a CalDAV auto-schedule
+  server (RFC 6638) this both stores my `PARTSTAT` and lets the server deliver the
+  iTIP `REPLY` to the organizer, so no separate delivery step is needed. Building
+  and **delivering** a standalone iTIP `REPLY` over **client** iMIP (SMTP) is
+  deferred with the rest of that path (the SMTP assembler is `text/plain`-only —
+  `imap-smtp.md`).
 - **Security.** Scheduling messages are hostile input. Validate `ORGANIZER` and
   attendee identities against the message's authenticated sender (From / DKIM /
   authenticated submission) before applying anything; never auto-apply changes
-  from an unauthenticated or mismatched sender.
+  from an unauthenticated or mismatched sender. **Implemented** as the trust gate
+  that runs **first** in `reconcile`: `SchedulingMessage::trust` →
+  `evaluate_imip_trust` rejects an unauthenticated or identity-mismatched message
+  (`ScheduleAction::Rejected`) before its contents are considered.
+
+**Deferred (documented, not bugs):** (1) the **mail-sync wiring** that fetches the
+detected part's bytes (a Tier-3 fetch) and drives `reconcile`/apply from a real
+sync; (2) **`ClientImip` local-origin persistence** — storing a brand-new inbound
+`REQUEST` as a local event has no provider-less single-event store path yet (the
+store's writes are sync- or outbox-mediated), so the apply helpers run but
+persisting a not-yet-on-a-server event waits on that path; (3) the **CalDAV
+Scheduling Inbox** `REPORT` (RFC 6638) and a live Stalwart scheduling test; and
+(4) **iMIP-over-SMTP `REPLY` delivery** (the multipart `text/calendar` assembler).
+The `ServerAutoSchedule` RSVP path (patch + conditional `PUT`) is fully wired and
+offline-tested end to end.
 
 ## JSCalendar ↔ iCalendar boundary
 
@@ -98,7 +157,9 @@ recognizing and reconciling scheduling messages that arrive through sync.
   (model invariant). Provider writes round-trip from raw plus targeted patches,
   never by re-serializing the lossy projection. The projection exists for
   display, search, and engine logic and is explicitly **not**
-  round-trip-authoritative.
+  round-trip-authoritative. The CalDAV write slice enforces this — a `PUT` carries
+  the round-tripped `RawIcal`, locked by a test that an updated event's `X-`
+  property and `VALARM` survive on the wire (`caldav.md`).
 
 ## Supported recurrence subset
 
@@ -119,8 +180,10 @@ materializes occurrences, so time-range search matches single events too.
 
 Staged (return an error, not expanded): `BYYEARDAY`, `BYWEEKNO`, `BYSETPOS`,
 year-relative nth `BYDAY`; sub-daily frequencies; `RSCALE` (preserved, never
-expanded, per above); custom/embedded-`VTIMEZONE` zones (need the iCalendar
-parser, a later provider step); and cross-object master/override-instance
+expanded, per above); custom/embedded-`VTIMEZONE` zones (the iCalendar parser
+landed with `provider-caldav` — `caldav.md` — and an IANA `TZID` is resolved
+where present, but feeding a genuinely custom embedded `VTIMEZONE` into the
+expander is still staged); and cross-object master/override-instance
 reconciliation (the expander is a pure single-`Event` function — a recurring
 master expands its inline overrides, a standalone override-instance object
 expands to its own occurrence; deduplicating a master against sibling override

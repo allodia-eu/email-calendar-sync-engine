@@ -1,0 +1,132 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=opaque-token-1",
+  "value": [
+    {
+      "@odata.etag": "W/\"CQAAABYAAACwGt3bqyR2Sbk5EX5eSIkhAAAAAAZc\"",
+      "@odata.type": "#microsoft.graph.message",
+      "bccRecipients": [],
+      "bodyPreview": "Example fixture message preview text.",
+      "categories": [],
+      "ccRecipients": [],
+      "conversationId": "conversation-1",
+      "flag": {
+        "flagStatus": "notFlagged"
+      },
+      "from": {
+        "emailAddress": {
+          "address": "testuser@example.test",
+          "name": "Test User"
+        }
+      },
+      "hasAttachments": false,
+      "id": "message-1",
+      "importance": "low",
+      "internetMessageId": "<fixture-message-1@example.test>",
+      "isDraft": false,
+      "isRead": false,
+      "parentFolderId": "folder-inbox",
+      "receivedDateTime": "2026-06-25T18:19:14Z",
+      "sender": {
+        "emailAddress": {
+          "address": "testuser@example.test",
+          "name": "Test User"
+        }
+      },
+      "sentDateTime": "2026-06-25T18:19:05Z",
+      "subject": "Fixture: third message for paging",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "testuser@example.test",
+            "name": "Test User"
+          }
+        }
+      ]
+    },
+    {
+      "@odata.etag": "W/\"CQAAABYAAACwGt3bqyR2Sbk5EX5eSIkhAAAAAAZT\"",
+      "@odata.type": "#microsoft.graph.message",
+      "bccRecipients": [],
+      "bodyPreview": "Example fixture message preview text.",
+      "categories": [],
+      "ccRecipients": [],
+      "conversationId": "conversation-2",
+      "flag": {
+        "flagStatus": "notFlagged"
+      },
+      "from": {
+        "emailAddress": {
+          "address": "testuser@example.test",
+          "name": "Test User"
+        }
+      },
+      "hasAttachments": false,
+      "id": "message-2",
+      "importance": "high",
+      "internetMessageId": "<fixture-message-2@example.test>",
+      "isDraft": false,
+      "isRead": false,
+      "parentFolderId": "folder-inbox",
+      "receivedDateTime": "2026-06-25T18:19:12Z",
+      "sender": {
+        "emailAddress": {
+          "address": "testuser@example.test",
+          "name": "Test User"
+        }
+      },
+      "sentDateTime": "2026-06-25T18:19:05Z",
+      "subject": "Fixture: second message with HTML",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "testuser@example.test",
+            "name": "Test User"
+          }
+        }
+      ]
+    },
+    {
+      "@odata.etag": "W/\"ChangeKeyFixture0001\"",
+      "@odata.type": "#microsoft.graph.message",
+      "bccRecipients": [],
+      "bodyPreview": "Example fixture message preview text.",
+      "categories": [],
+      "ccRecipients": [],
+      "conversationId": "conversation-3",
+      "flag": {
+        "flagStatus": "notFlagged"
+      },
+      "from": {
+        "emailAddress": {
+          "address": "testuser@example.test",
+          "name": "Test User"
+        }
+      },
+      "hasAttachments": false,
+      "id": "message-3",
+      "importance": "normal",
+      "internetMessageId": "<fixture-message-3@example.test>",
+      "isDraft": false,
+      "isRead": false,
+      "parentFolderId": "folder-inbox",
+      "receivedDateTime": "2026-06-25T18:19:09Z",
+      "sender": {
+        "emailAddress": {
+          "address": "testuser@example.test",
+          "name": "Test User"
+        }
+      },
+      "sentDateTime": "2026-06-25T18:19:04Z",
+      "subject": "Fixture: first message",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "testuser@example.test",
+            "name": "Test User"
+          }
+        }
+      ]
+    }
+  ]
+}

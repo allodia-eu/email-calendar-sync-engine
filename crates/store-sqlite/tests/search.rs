@@ -8,15 +8,15 @@ use engine_core::calendar::{
     Event, Location, Participant, ParticipantRole, ParticipationStatus, VirtualLocation,
 };
 use engine_core::ids::{CalendarId, EventId, MailboxId, MessageId, ProviderKey, Uid};
-use engine_core::mail::{EmailAddress, Keyword, Message, SystemKeyword};
+use engine_core::mail::{EmailAddress, Keyword, Message, MessageBody, SystemKeyword};
 use engine_core::membership::Memberships;
 use engine_core::search_index::{OwnerAddresses, project_event, project_message};
 use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
 use engine_core::time::{CalendarDateTime, LocalDateTime, TimeZoneId};
 use engine_search::{CalendarQuery, MailQuery};
 use engine_store::{
-    ApplyBatch, DerivedWrite, LeaseRequest, ManualClock, OccurrenceRow, Store, TzdataVersion,
-    WorkerId,
+    ApplyBatch, DerivedWrite, LeaseRequest, ManualClock, MessageBodyStore, OccurrenceRow, Store,
+    TzdataVersion, WorkerId,
 };
 use store_sqlite::SqliteStore;
 
@@ -85,6 +85,118 @@ fn parse_mail(query: &str) -> MailQuery {
 }
 
 #[tokio::test]
+async fn search_matches_a_word_only_in_a_fetched_body_and_survives_re_snapshot() {
+    let store = store();
+    let scope = mail_scope();
+    // The subject and addresses deliberately omit the word "quarterly".
+    ingest_mail(
+        &store,
+        &scope,
+        vec![message("m1", "Status update", "a@example.com", "inbox")],
+    )
+    .await;
+
+    // Before the body is fetched, the word is not searchable.
+    let before = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("quarterly"), 10)
+        .await
+        .unwrap();
+    assert!(before.keys().is_empty(), "body word not yet indexed");
+
+    // The on-demand body fetch caches the extracted text (lease-free).
+    let body = MessageBody::new(Some("Here are the quarterly numbers.".to_owned()), None);
+    store
+        .put_message_body(&account(), &ProviderKey::new("m1").unwrap(), &body)
+        .await
+        .unwrap();
+
+    let after = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("quarter"), 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        after.keys().len(),
+        1,
+        "body text is searchable (prefix too)"
+    );
+    assert_eq!(after.keys()[0].as_str(), "m1");
+
+    // A full re-snapshot (the IMAP reconcile path) re-projects the scope-derived
+    // rows but must NOT wipe the lease-free body index.
+    let claim = store
+        .claim_sync_scope(account(), &scope, lease())
+        .await
+        .unwrap();
+    let msg = message("m1", "Status update", "a@example.com", "inbox");
+    let mut derived = DerivedWrite::empty();
+    derived.removed.push(ProviderKey::new("m1").unwrap());
+    derived.push_mail(project_message(&msg));
+    let snapshot = SyncUpdate::snapshot(
+        vec![msg],
+        std::collections::BTreeSet::from([ProviderKey::new("m1").unwrap()]),
+    );
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&snapshot, &derived, &[], &SyncState::new("c2")),
+        )
+        .await
+        .unwrap();
+    store.release_sync_scope(claim.lease).await.unwrap();
+
+    let survived = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("quarterly"), 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        survived.keys().len(),
+        1,
+        "body search survives a re-snapshot that re-derived the message"
+    );
+}
+
+#[tokio::test]
+async fn body_search_ignores_a_tombstoned_message_and_other_accounts() {
+    let store = store();
+    let scope = mail_scope();
+    ingest_mail(
+        &store,
+        &scope,
+        vec![message("m1", "Status update", "a@example.com", "inbox")],
+    )
+    .await;
+    let body = MessageBody::new(Some("the quarterly numbers".to_owned()), None);
+    store
+        .put_message_body(&account(), &ProviderKey::new("m1").unwrap(), &body)
+        .await
+        .unwrap();
+
+    // A body row for another account's key (same string) must not surface in this
+    // account's search.
+    let other = engine_core::ids::AccountId::try_from("acct-2").unwrap();
+    store
+        .put_message_body(&other, &ProviderKey::new("m1").unwrap(), &body)
+        .await
+        .unwrap();
+    // And one for a key with no live mail_index row (tombstoned/never-synced).
+    store
+        .put_message_body(&account(), &ProviderKey::new("ghost").unwrap(), &body)
+        .await
+        .unwrap();
+
+    let hits = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("quarterly"), 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        hits.keys().len(),
+        1,
+        "only the live, in-account, in-scope key"
+    );
+    assert_eq!(hits.keys()[0].as_str(), "m1");
+}
+
+#[tokio::test]
 async fn from_filter_returns_only_matching_messages() {
     let store = store();
     let scope = mail_scope();
@@ -110,6 +222,64 @@ async fn from_filter_returns_only_matching_messages() {
     assert_eq!(results.keys().len(), 1);
     assert_eq!(results.keys()[0].as_str(), "m1");
     assert!(results.coverage.is_complete());
+}
+
+#[tokio::test]
+async fn prefix_term_matches_partial_word_in_subject() {
+    let store = store();
+    let scope = mail_scope();
+    ingest_mail(
+        &store,
+        &scope,
+        vec![
+            message("hit", "Allodia weekly", "a@example.com", "inbox"),
+            message("miss", "unrelated digest", "a@example.com", "inbox"),
+        ],
+    )
+    .await;
+
+    // Search-as-you-type: typing "allo" prefix-matches the subject token
+    // "Allodia"; the unrelated message is excluded.
+    let results = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("allo"), 10)
+        .await
+        .unwrap();
+    assert_eq!(results.keys().len(), 1);
+    assert_eq!(results.keys()[0].as_str(), "hit");
+}
+
+#[tokio::test]
+async fn address_is_searchable_as_free_text_and_by_prefix() {
+    let store = store();
+    let scope = mail_scope();
+    // A metadata-tier message: the subject never mentions "allodia", and there is
+    // no body preview — the only "allodia" is in the sender address, which the
+    // projection folds into the FTS body.
+    ingest_mail(
+        &store,
+        &scope,
+        vec![
+            message("addr", "Weekly update", "info@allodia.eu", "inbox"),
+            message("other", "Weekly update", "bob@example.com", "inbox"),
+        ],
+    )
+    .await;
+
+    // The full token "allodia" (from the address) matches via the FTS body...
+    let full = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("allodia"), 10)
+        .await
+        .unwrap();
+    assert_eq!(full.keys().len(), 1);
+    assert_eq!(full.keys()[0].as_str(), "addr");
+
+    // ...and so does the prefix "allo".
+    let prefix = store
+        .search_mail(std::slice::from_ref(&scope), &parse_mail("allo"), 10)
+        .await
+        .unwrap();
+    assert_eq!(prefix.keys().len(), 1);
+    assert_eq!(prefix.keys()[0].as_str(), "addr");
 }
 
 #[tokio::test]

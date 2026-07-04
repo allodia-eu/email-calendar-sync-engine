@@ -43,11 +43,12 @@ pim-sync-engine/
 │   ├── provider-smtp/           # SMTP submission support.
 │   ├── provider-caldav/         # CalDAV/CardDAV support.
 │   ├── provider-gmail/          # Future Gmail adapter.
-│   ├── provider-graph/          # Future Microsoft Graph adapter.
+│   ├── provider-graph/          # Microsoft Graph mail read/sync (implemented; graph.md).
 │   ├── engine-store/            # Store trait and contract tests.
 │   ├── store-sqlite/            # SQLite, at-rest seam (plain or SQLCipher), FTS5, vectors.
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
 │   ├── engine-recurrence/       # Deterministic recurrence -> occurrence expansion (bundled tzdb).
+│   ├── engine-mime/             # MIME/RFC 5322 body extraction (mail-parser) -> MessageBody (implemented).
 │   ├── engine-index/            # Text extraction, chunks, embedding seam.
 │   ├── engine-cli/              # Headless ingestion/search/maintenance harness (CLI host).
 │   ├── crypto-keystore/         # Platform credential/key abstraction.
@@ -90,7 +91,7 @@ pim-sync-engine/
 The default mobile-safe sync policy is tiered:
 - **Tier 1:** headers, envelope, flags/keywords, collection membership, provider ids, threading inputs, event metadata.
 - **Tier 2:** snippets and recent body text, extracted from plain-text and HTML parts, for FTS.
-- **Tier 3:** full bodies and attachments fetched on demand and cached with quotas.
+- **Tier 3:** full bodies and attachments fetched on demand and cached with quotas. **Implemented** for bodies and downloadable attachments, split by *text vs bytes* (`store-and-sync.md`): `Provider::fetch_message_source` returns the raw RFC 5322 source, cached lease-free in a content-addressed filesystem blob area (not SQLite); `engine-mime` extracts the displayable text, which is stored in SQLite and **indexed for search** through a lease-free body FTS, and derives inline CID parts plus selected downloadable attachment bytes from the cached raw source on demand. Surfaced as `Engine::message_body`, `message_inline_parts`, `message_attachments`, and `message_attachment` (and `search_mail` matches the body). Quota/eviction, durable per-attachment blob entities, and embeddings/RAG over the indexed text are later refinements.
 
 Desktop or server hosts may request fuller replication, but the engine cannot assume it. Search APIs must return coverage metadata. Completeness is several independent axes — local object/content coverage, time-range (recurrence-horizon) coverage, and remote augmentation — not one value; `docs/agent-guidance/search-coverage.md` is authoritative. Provider search fallbacks such as JMAP `Email/query` or IMAP `SEARCH` are capabilities used when local coverage is incomplete.
 
@@ -158,9 +159,9 @@ The engine also exposes an injectable clock/time source for recurrence expansion
 1. **Repository discipline and RFC-backed model.** Add workspace skeleton, strict lint/test policy, model fixtures, and `engine-core` tests first.
 2. **SQLite store and search without network.** Implement schema, structured query AST, FTS, recurrence fixtures, and ingestion CLI.
 3. **Stalwart Docker harness.** Seed deterministic accounts, messages, calendars, and protocol endpoints for local/CI tests (contacts/CardDAV deferred until contacts land, after step 5). Implemented under `docker/stalwart/` + `crates/stalwart-harness`; see `stalwart-harness.md`.
-4. **JMAP read/write.** Implement JMAP sync, JSCalendar normalization, mail submission, calendar writes, RSVP patches, and conference links. **Implemented** for mail (read/sync + submission) and calendar **read** under `engine-provider` + `provider-jmap` + a thin `engine-sync` loop; `jmap.md` is authoritative. JMAP calendar *writes*/RSVP are deferred to a later slice (CalDAV in step 5 is the more-deployed calendar-write path).
-5. **IMAP/SMTP + CalDAV/CardDAV.** Implement legacy protocol adapters against the same Stalwart fixture. **IMAP read/sync + SMTP submission are implemented** under `provider-imap` (a mailbox-bound `Provider`; `imap-smtp.md` is authoritative). **CalDAV/CardDAV is the remaining slice** (the more-deployed calendar-write path).
-6. **Bindings and reference host.** Add UniFFI/CLI/desktop seams in small, tested slices.
+4. **JMAP read/write.** Implement JMAP sync, JSCalendar normalization, mail submission, calendar writes, RSVP patches, and conference links. **Implemented** for mail — read/sync, submission (**with attachments**, via RFC 8620 blob upload), on-demand raw-source fetch, **mail writes** (`edit_mail` mark-read/flag/move/delete via `Email/set`), and **push** (EventSource `StateChange` → the neutral `Watch`) — and calendar **read**, under `engine-provider` + `provider-jmap` + a thin `engine-sync` loop; `jmap.md` is authoritative. JMAP calendar *writes*/RSVP remain deferred to a later slice (CalDAV in step 5 is the more-deployed calendar-write path).
+5. **IMAP/SMTP + CalDAV/CardDAV.** Implement legacy protocol adapters against the same Stalwart fixture. **IMAP read/sync + SMTP submission are implemented** under `provider-imap` (a mailbox-bound `Provider`; `imap-smtp.md` is authoritative). **CalDAV calendar read/sync and writes are implemented** under `provider-caldav` (a collection-bound `Provider` parsing iCalendar into the same `Event` projection JMAP produces, plus conditional `PUT`/`DELETE`; `caldav.md` is authoritative). **iTIP/iMIP inbound parse/reconcile/trust/apply + the RSVP write primitive are implemented** in `engine_core::scheduling` + `provider_caldav::imip` (`calendar-semantics.md`). The residual step-5 scheduling deferrals (mail-sync wiring, the CalDAV Scheduling-Inbox `REPORT`, client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and **CardDAV/contacts** follow after step 5.
+6. **Bindings and reference host.** Add the `engine-api` facade, then the UniFFI/CLI/desktop seams over it, in small, tested slices. **The `engine-api` facade is implemented** for store lifecycle and provider-driven mail/calendar sync — an `Engine` over a concrete `SqliteStore` driven by a host `SystemClock`, generic over `Provider` so it stays provider-agnostic; `engine-api.md` is authoritative. Search, the write/outbox surface, streaming progress, and the UniFFI/C-ABI bindings themselves are the remaining slices.
 7. **External provider smoke tests.** Add optional live-provider tests only after deterministic protocol tests pass.
 
 Contacts and CardDAV follow the mail and calendar spine rather than leading it: they reuse the provider-object identity and membership model and raw vCard preservation, land after step 5, and are not part of the initial search AST. The repository's mail/calendar focus is deliberate; contact sync and search are additive, not v1 gates.

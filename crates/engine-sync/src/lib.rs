@@ -98,6 +98,35 @@ where
     Ok(MailSyncReport { mailboxes, email })
 }
 
+/// Syncs **only** one account's mailbox list (folder discovery) from `provider`,
+/// skipping the email members.
+///
+/// The cross-folder orchestrator runs this **once per account**, then fans out the
+/// per-folder email syncs ([`sync_email_streamed`]) concurrently. The folder-list
+/// container is a single shared scope (`store-and-sync.md` referential apply order),
+/// so syncing it once up front avoids the contention a repeated per-folder mailbox
+/// sync would cause — letting the independent per-folder email scopes proceed in
+/// parallel without fighting over it.
+///
+/// # Errors
+///
+/// Returns [`SyncError`] if the provider fetch fails or the store rejects the apply
+/// for a reason other than a recoverable `StaleLease`.
+pub async fn sync_mailbox_list<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+) -> Result<SyncApplied, SyncError>
+where
+    P: Provider,
+    S: Store,
+{
+    let req = LeaseRequest::new(worker, ttl);
+    run_scope(store, account, &MailboxScope(provider), &req).await
+}
+
 /// What one `sync_calendar` run applied, per scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CalendarSyncReport {
@@ -342,10 +371,19 @@ fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
     }
 }
 
+mod attachment;
+mod body;
 mod outbox;
 mod stream;
-pub use outbox::{SubmitOutcome, submit_mail};
-pub use stream::{ProgressSink, SyncProgress, sync_mail_streamed};
+mod threading;
+pub use attachment::{fetch_message_attachment, fetch_message_attachments};
+pub use body::{fetch_inline_parts, fetch_message_body};
+pub use outbox::{
+    CalendarWriteOutcome, MailEditOutcome, SubmitOutcome, delete_calendar_event, edit_mail,
+    submit_mail, write_calendar_event,
+};
+pub use stream::{ProgressSink, SyncProgress, sync_email_streamed, sync_mail_streamed};
+pub use threading::{ThreadDeriveReport, derive_mail_threads};
 
 #[cfg(test)]
 mod tests;

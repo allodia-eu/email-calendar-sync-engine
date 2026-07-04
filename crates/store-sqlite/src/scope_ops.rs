@@ -296,6 +296,30 @@ pub(crate) fn object_keys(conn: &Connection, scope_key: &str) -> Result<Vec<Prov
     Ok(keys)
 }
 
+/// Every scope the store knows for `account`, decoded from its stored JSON
+/// `scope_key` (the canonical [`SyncScope`] form `convert::scope_key` writes) and
+/// sorted ascending — so a per-account search can enumerate scopes rather than
+/// hard-code which a provider uses.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure or a corrupt scope key.
+pub(crate) fn account_scopes(conn: &Connection, account: &AccountId) -> Result<Vec<SyncScope>> {
+    let mut stmt = conn
+        .prepare("SELECT scope_key FROM sync_scope WHERE account = ?1")
+        .map_err(convert::backend)?;
+    let rows = stmt
+        .query_map([account.as_str()], |r| r.get::<_, String>(0))
+        .map_err(convert::backend)?;
+    let mut scopes = Vec::new();
+    for row in rows {
+        let key = row.map_err(convert::backend)?;
+        scopes.push(serde_json::from_str::<SyncScope>(&key).map_err(convert::backend)?);
+    }
+    scopes.sort();
+    Ok(scopes)
+}
+
 /// The stored payload for one object, or `None` if absent/tombstoned.
 ///
 /// # Errors
@@ -318,6 +342,36 @@ pub(crate) fn object_payload(
         Some(text) => Ok(Some(serde_json::from_str(&text).map_err(convert::backend)?)),
         None => Ok(None),
     }
+}
+
+/// Every live object in a scope as `(provider_key, payload)`, ordered by key (the
+/// reference store sorts the same way; SQLite's default `BINARY` collation matches
+/// `ProviderKey`'s `Ord`). A batch read backing per-account views.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure or a corrupt payload.
+pub(crate) fn scope_objects(
+    conn: &Connection,
+    scope_key: &str,
+) -> Result<Vec<(ProviderKey, Value)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT provider_key, payload FROM object WHERE scope_key = ?1 ORDER BY provider_key",
+        )
+        .map_err(convert::backend)?;
+    let rows = stmt
+        .query_map([scope_key], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(convert::backend)?;
+    let mut objects = Vec::new();
+    for row in rows {
+        let (key, payload) = row.map_err(convert::backend)?;
+        let value = serde_json::from_str(&payload).map_err(convert::backend)?;
+        objects.push((ProviderKey::new(key).map_err(convert::backend)?, value));
+    }
+    Ok(objects)
 }
 
 /// Fails with [`StoreError::StaleLease`] unless the scope's stored generation

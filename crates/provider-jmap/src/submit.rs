@@ -21,6 +21,7 @@ use crate::error::JmapError;
 use crate::mail::mailbox_from_json;
 use crate::provider::Executor;
 use crate::request::{Request, capability};
+use crate::submit_body::body;
 use crate::sync_ops::objects;
 
 /// The server-assigned ids a submission needs as literals.
@@ -30,7 +31,8 @@ struct SubmitContext {
     identity: String,
 }
 
-/// Sends `draft`: resolves context, then creates + submits + files it.
+/// Sends `draft`: resolves context, uploads any attachment blobs, then creates +
+/// submits + files it.
 pub(crate) async fn send(
     executor: &dyn Executor,
     mail_account: &str,
@@ -38,10 +40,13 @@ pub(crate) async fn send(
     draft: &Draft,
 ) -> Result<SubmissionReceipt, JmapError> {
     let context = resolve_context(executor, mail_account, submission_account).await?;
+    // Attachment bytes must be uploaded first: the draft references each by the
+    // server-assigned `blobId` (RFC 8620 §6.1), which can only be known after upload.
+    let blob_ids = upload_attachments(executor, mail_account, draft).await?;
 
     let mut req = Request::new([capability::CORE, capability::MAIL, capability::SUBMISSION]);
     let mut email_create = Map::new();
-    email_create.insert("draft".to_owned(), build_draft(&context, draft));
+    email_create.insert("draft".to_owned(), build_draft(&context, draft, &blob_ids));
     let email_set = req.invoke(
         "Email/set",
         json!({ "accountId": mail_account, "create": email_create }),
@@ -64,6 +69,37 @@ pub(crate) async fn send(
         resp.result(&submission_set)?,
         &draft.message_id,
     )
+}
+
+/// Uploads every draft attachment's bytes, returning the `blobId`s in attachment
+/// order (RFC 8620 §6.1). A no-op for an attachment-free draft.
+///
+/// # Errors
+///
+/// [`JmapError::Session`] if the draft has attachments but the server advertised no
+/// `uploadUrl`, or the classified failure of an upload.
+async fn upload_attachments(
+    executor: &dyn Executor,
+    mail_account: &str,
+    draft: &Draft,
+) -> Result<Vec<String>, JmapError> {
+    if draft.attachments.is_empty() {
+        return Ok(Vec::new());
+    }
+    let url = executor
+        .session()
+        .upload_url()
+        .ok_or_else(|| JmapError::session("server advertised no uploadUrl; cannot attach"))?
+        .replace("{accountId}", mail_account);
+    let mut blob_ids = Vec::with_capacity(draft.attachments.len());
+    for attachment in &draft.attachments {
+        blob_ids.push(
+            executor
+                .upload(&url, &attachment.media_type, &attachment.content)
+                .await?,
+        );
+    }
+    Ok(blob_ids)
 }
 
 /// Reads the Drafts/Sent mailbox ids and the submission identity id in one request.
@@ -106,10 +142,12 @@ fn first_identity(result: &Value) -> Result<String, JmapError> {
         .ok_or_else(|| JmapError::session("account has no submission identity"))
 }
 
-/// Builds the `Email/set` create object for the draft.
-fn build_draft(context: &SubmitContext, draft: &Draft) -> Value {
+/// Builds the `Email/set` create object for the draft, referencing the uploaded
+/// attachment `blob_ids` (one per `draft.attachments`, in order).
+fn build_draft(context: &SubmitContext, draft: &Draft, blob_ids: &[String]) -> Value {
     let mut mailbox_ids = Map::new();
     mailbox_ids.insert(context.drafts.clone(), Value::Bool(true));
+    let (body_structure, body_values) = body(draft, blob_ids);
     json!({
         "mailboxIds": mailbox_ids,
         "keywords": { "$draft": true, "$seen": true },
@@ -117,8 +155,8 @@ fn build_draft(context: &SubmitContext, draft: &Draft) -> Value {
         "to": draft.to.iter().map(address).collect::<Vec<_>>(),
         "subject": draft.subject,
         "messageId": [draft.message_id.as_str()],
-        "bodyStructure": { "partId": "text", "type": "text/plain" },
-        "bodyValues": { "text": { "value": draft.text_body } },
+        "bodyStructure": body_structure,
+        "bodyValues": body_values,
     })
 }
 
@@ -263,7 +301,7 @@ mod tests {
             "Subject",
             "Body",
         );
-        let create = build_draft(&context, &draft);
+        let create = build_draft(&context, &draft, &[]);
         assert_eq!(create["mailboxIds"]["d"], json!(true));
         assert_eq!(create["keywords"]["$draft"], json!(true));
         assert_eq!(create["messageId"][0], "step4-send-probe-0002@test.local");
@@ -276,5 +314,30 @@ mod tests {
         assert_eq!(on_success["#sub"]["mailboxIds/d"], Value::Null);
         assert_eq!(on_success["#sub"]["mailboxIds/e"], json!(true));
         assert_eq!(on_success["#sub"]["keywords/$draft"], Value::Null);
+    }
+
+    #[test]
+    fn build_draft_carries_html_as_alternative_body() {
+        let context = SubmitContext {
+            drafts: "d".to_owned(),
+            sent: "e".to_owned(),
+            identity: "b".to_owned(),
+        };
+        let draft = Draft::new(
+            message_id(),
+            EmailAddress::new("alice@test.local"),
+            vec![EmailAddress::new("bob@test.local")],
+            "Subject",
+            "Plain",
+        )
+        .with_html_body("<p>Plain</p>");
+
+        let create = build_draft(&context, &draft, &[]);
+
+        assert_eq!(create["bodyStructure"]["type"], "multipart/alternative");
+        assert_eq!(create["bodyStructure"]["subParts"][0]["partId"], "text");
+        assert_eq!(create["bodyStructure"]["subParts"][1]["partId"], "html");
+        assert_eq!(create["bodyValues"]["text"]["value"], "Plain");
+        assert_eq!(create["bodyValues"]["html"]["value"], "<p>Plain</p>");
     }
 }

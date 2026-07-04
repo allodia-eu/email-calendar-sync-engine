@@ -186,6 +186,92 @@ async fn streamed_email_commits_each_page_and_reports_progress() {
 }
 
 #[tokio::test]
+async fn mailbox_list_sync_applies_folders_without_email() {
+    // The once-per-account container step: only the mailbox list is applied; the email
+    // scope stays untouched, so the per-folder email streams can fan out afterwards.
+    let provider = FakeMail::new(
+        vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
+        vec![message("m1", "a", "Hello")],
+    );
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    let applied = sync_mailbox_list(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(applied.upserted, 1); // the one folder
+    assert_eq!(
+        store
+            .object_keys(&provider.mailbox_scope(&account()))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    // Email was deliberately not synced by the list-only call.
+    assert!(
+        store
+            .object_keys(&provider.email_scope(&account()))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn folder_email_stream_commits_email_without_a_mailbox_sync() {
+    // The per-folder counterpart streams only email — no mailbox-list step — and
+    // reports progress, so several folders can run it concurrently after one list sync.
+    let store = Arc::new(SqliteStore::open_in_memory(clock()).unwrap());
+    let provider = PagedMail::new(
+        vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
+        vec![
+            vec![message("m1", "a", "One"), message("m2", "a", "Two")],
+            vec![message("m3", "a", "Three")],
+        ],
+        Arc::clone(&store),
+        clock(),
+    );
+
+    let recorded: Mutex<Vec<SyncProgress>> = Mutex::new(Vec::new());
+    let applied = sync_email_streamed(
+        &provider,
+        &*store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        2,
+        &|progress: SyncProgress| recorded.lock().unwrap().push(progress),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(applied.upserted, 3);
+    let email_scope = provider.email_scope(&account());
+    assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 3);
+    // The mailbox scope was never touched by the email-only stream.
+    assert!(
+        store
+            .object_keys(&provider.mailbox_scope(&account()))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // Progress reported per committed page (2 → 3) for the email scope.
+    let seq = recorded.lock().unwrap();
+    assert_eq!(
+        seq.iter().map(|p| p.fetched).collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert!(seq.iter().all(|p| p.scope == email_scope));
+}
+
+#[tokio::test]
 async fn streamed_resync_applies_a_delta_page() {
     let provider = FakeMail::new(
         vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],

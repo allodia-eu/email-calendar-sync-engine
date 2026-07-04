@@ -91,6 +91,39 @@ where
     Ok(MailSyncReport { mailboxes, email })
 }
 
+/// Streams **only** one account's email for the mailbox `provider` is bound to — the
+/// per-folder counterpart of [`sync_mail_streamed`] that skips the mailbox-list
+/// container step.
+///
+/// The cross-folder orchestrator runs [`sync_mailbox_list`](crate::sync_mailbox_list)
+/// once per account, then calls this for each folder provider **concurrently**: each
+/// folder is a distinct member scope (e.g. `ImapMailbox`), so their per-folder leases
+/// never contend, and the independent IMAP sessions sync in parallel. Each committed
+/// page reports through `progress` and only the final page advances the cursor, so a
+/// mid-stream crash re-runs the pass idempotently (as in [`sync_mail_streamed`]).
+///
+/// # Errors
+///
+/// Returns [`SyncError`] if the provider fetch fails or the store rejects an apply for
+/// a reason other than a recoverable `StaleLease`.
+pub async fn sync_email_streamed<P, S, K>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+    page_limit: usize,
+    progress: &K,
+) -> Result<SyncApplied, SyncError>
+where
+    P: Provider,
+    S: Store,
+    K: ProgressSink,
+{
+    let req = LeaseRequest::new(worker, ttl);
+    stream_email(provider, store, account, &req, page_limit, progress).await
+}
+
 /// Streams the email scope page by page under one lease: each page commits
 /// additively (cursor held) and only the last advances the cursor and — for a
 /// snapshot pass — tombstones against the **accumulated** present set. A

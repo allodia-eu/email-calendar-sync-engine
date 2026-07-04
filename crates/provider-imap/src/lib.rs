@@ -37,24 +37,44 @@
 //!   hostile input is rejected, never panicked on.
 //! - `mail` — normalize parsed rows into [`Message`](engine_core::mail::Message) /
 //!   [`Mailbox`](engine_core::mail::Mailbox).
-//! - `cursor` — the per-mailbox `SyncState` (UIDVALIDITY/UIDNEXT) and opaque
-//!   [`PageToken`](engine_provider::PageToken) encodings.
+//! - `cursor` — the per-mailbox `SyncState` (UIDVALIDITY/UIDNEXT, plus an optional
+//!   QRESYNC `HIGHESTMODSEQ`) and opaque [`PageToken`](engine_provider::PageToken)
+//!   encodings.
 //! - `sync` — the snapshot/delta + UID-window paging orchestration.
+//! - `qresync` — the QRESYNC incremental delta (RFC 7162): flag changes + expunges of
+//!   already-synced mail via `CHANGEDSINCE`/`VANISHED`, when the session negotiates it.
+//! - `mutate` — applying a [`MailEdit`](engine_provider::MailEdit) (`UID
+//!   STORE`/`MOVE`/`EXPUNGE`) to the bound mailbox.
+//! - `filing` — SMTP submission + `APPEND` filing of sent copies and drafts.
 //! - `provider` — [`ImapProvider`], the [`Provider`](engine_provider::Provider) impl.
+//! - `idle` / `watch` — push via `IDLE` (RFC 2177): [`ImapWatcher`] holds a dedicated
+//!   standing connection and turns the `IDLE`/`DONE` keep-alive loop into a
+//!   [`Watch`](engine_provider::Watch) stream of change notifications, so a host can
+//!   sync "as it comes in" instead of polling.
 //!
 //! Tier-1 metadata only: like step 4, the raw RFC 5322 body is not materialized
 //! yet (durable blob storage is a later store sub-step).
 
 mod base64;
+mod bodystructure;
 mod cursor;
 mod encoded_word;
 mod error;
+mod fetch;
+mod filing;
+mod idle;
 mod mail;
+mod mutate;
 mod parse;
+mod parse_qresync;
 mod provider;
+mod qresync;
 mod smtp;
 mod sync;
+mod target;
+mod tokenize;
 mod transport;
+mod watch;
 
 #[cfg(test)]
 mod integration;
@@ -63,3 +83,4 @@ mod mock;
 
 pub use error::ImapError;
 pub use provider::{ImapConfig, ImapProvider};
+pub use watch::{DEFAULT_IDLE_KEEPALIVE, ImapWatcher};

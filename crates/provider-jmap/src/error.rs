@@ -43,6 +43,17 @@ pub enum JmapError {
         error_type: String,
     },
 
+    /// A `/set` method rejected an individual object with a `SetError` (RFC 8620
+    /// §5.3) — the method call itself succeeded, but the create/update/destroy of one
+    /// object failed. Classified per the set-error `type`.
+    #[error("JMAP set error '{error_type}' for object '{object_id}'")]
+    Set {
+        /// The id (or creation id) of the object that failed.
+        object_id: String,
+        /// The JMAP `SetError` `type` string.
+        error_type: String,
+    },
+
     /// The batched response carried no entry for a call id that was sent.
     #[error("no method response for call '{0}'")]
     MissingResponse(String),
@@ -76,6 +87,14 @@ impl JmapError {
         Self::Session(detail.into())
     }
 
+    /// Builds a [`JmapError::Set`] from a rejected object id and its `SetError` type.
+    pub(crate) fn set(object_id: impl Into<String>, error_type: impl Into<String>) -> Self {
+        Self::Set {
+            object_id: object_id.into(),
+            error_type: error_type.into(),
+        }
+    }
+
     /// The engine-neutral class this protocol error maps to.
     #[must_use]
     pub fn failure_class(&self) -> FailureClass {
@@ -88,7 +107,24 @@ impl JmapError {
                 FailureClass::Permanent
             }
             Self::Method { error_type, .. } => method_class(error_type),
+            Self::Set { error_type, .. } => set_error_class(error_type),
         }
+    }
+}
+
+/// Maps a JMAP `SetError` `type` (RFC 8620 §5.3) to a [`FailureClass`]. A `notFound`
+/// or `stateMismatch` means the target moved on server-side — a
+/// [`Conflict`](FailureClass::Conflict) the caller resolves by re-syncing then
+/// retrying, exactly like an IMAP write against a stale UID. `rateLimit`/`overQuota`
+/// are retryable-after-backoff; a server fault is retryable; everything else
+/// (`forbidden`, `invalidProperties`, `invalidPatch`, `tooLarge`, …) is a request the
+/// server will keep rejecting.
+fn set_error_class(error_type: &str) -> FailureClass {
+    match error_type {
+        "notFound" | "stateMismatch" => FailureClass::Conflict,
+        "rateLimit" | "overQuota" => FailureClass::RateLimited,
+        "serverUnavailable" | "serverFail" | "serverPartialFail" => FailureClass::Retryable,
+        _ => FailureClass::Permanent,
     }
 }
 
@@ -173,6 +209,37 @@ mod tests {
                 error_type: "unknownMethod".into(),
             }
             .failure_class(),
+            FailureClass::Permanent
+        );
+    }
+
+    #[test]
+    fn set_errors_classify_per_rfc_8620() {
+        // A target that moved on server-side is a conflict → re-sync then retry.
+        assert_eq!(
+            JmapError::set("e1", "notFound").failure_class(),
+            FailureClass::Conflict
+        );
+        assert_eq!(
+            JmapError::set("e1", "stateMismatch").failure_class(),
+            FailureClass::Conflict
+        );
+        // Quota/rate pushback is retryable after backoff.
+        assert_eq!(
+            JmapError::set("e1", "overQuota").failure_class(),
+            FailureClass::RateLimited
+        );
+        assert_eq!(
+            JmapError::set("e1", "serverPartialFail").failure_class(),
+            FailureClass::Retryable
+        );
+        // A request the server keeps rejecting is permanent.
+        assert_eq!(
+            JmapError::set("e1", "forbidden").failure_class(),
+            FailureClass::Permanent
+        );
+        assert_eq!(
+            JmapError::set("e1", "invalidPatch").failure_class(),
             FailureClass::Permanent
         );
     }

@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "BadRequest",
+    "innerError": {
+      "client-request-id": "00000000-0000-0000-0000-000000000000",
+      "date": "2026-01-01T00:00:00",
+      "request-id": "00000000-0000-0000-0000-000000000000"
+    },
+    "message": "Parsing OData Select and Expand failed: Could not find a property named 'wellKnownName' on type 'microsoft.graph.mailFolder'."
+  }
+}

@@ -35,7 +35,7 @@ use crate::apply::{
 use crate::error::{Result, StoreError};
 use crate::lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease};
 use crate::outbox::{LeasedPendingOp, PendingOpState};
-use crate::store::{IndexRowCounts, Store, StoreRead};
+use crate::store::{IndexRowCounts, MailIndexEntry, Store, StoreRead};
 
 /// Returns `true` if a lease is held and has not expired at `now`.
 fn is_live(expiry: Option<UtcDateTime>, now: UtcDateTime) -> bool {
@@ -451,6 +451,18 @@ impl<C: Clock> Store for MemStore<C> {
 
 #[async_trait]
 impl<C: Clock> StoreRead for MemStore<C> {
+    async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>> {
+        let inner = self.lock();
+        let mut scopes: Vec<SyncScope> = inner
+            .scopes
+            .keys()
+            .filter(|scope| scope.account() == &account)
+            .cloned()
+            .collect();
+        scopes.sort();
+        Ok(scopes)
+    }
+
     async fn object_keys(&self, scope: &SyncScope) -> Result<Vec<ProviderKey>> {
         let inner = self.lock();
         let mut keys: Vec<ProviderKey> = inner
@@ -468,6 +480,38 @@ impl<C: Clock> StoreRead for MemStore<C> {
             .scopes
             .get(scope)
             .and_then(|c| c.objects.get(key).cloned()))
+    }
+
+    async fn scope_objects(&self, scope: &SyncScope) -> Result<Vec<(ProviderKey, Value)>> {
+        let inner = self.lock();
+        let mut objects: Vec<(ProviderKey, Value)> = inner
+            .scopes
+            .get(scope)
+            .map(|c| {
+                c.objects
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        objects.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(objects)
+    }
+
+    async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>> {
+        let inner = self.lock();
+        // The mail index is cleared on tombstone (`remove_derived`), so its entries are
+        // exactly the scope's live mail objects — no separate liveness join needed.
+        Ok(inner
+            .scopes
+            .get(scope)
+            .map(|c| {
+                c.mail_index
+                    .iter()
+                    .map(|(key, row)| (key.clone(), row.date_utc, row.thread_id.clone()))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {

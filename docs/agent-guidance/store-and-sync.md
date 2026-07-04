@@ -48,9 +48,20 @@ is an enum, not a single id:
   (no folder-list cursor), applied before the per-mailbox email it parents
   (`imap-smtp.md`).
 - **CalDAV/CardDAV:** state is **per collection** (RFC 6578 sync-token, or
-  CTag + per-resource ETags). Scope = `(account, CollectionKey)`.
+  CTag + per-resource ETags). Scope = `(account, CollectionKey)`
+  (`DavCollection`). The account's **collection list** (calendar/address-book
+  discovery) is a separate per-account container scope, `DavCollectionList{account}`
+  — a `PROPFIND` of the home re-snapshots it each pass (no list cursor), applied
+  before the per-collection members it parents (`caldav.md`), exactly as
+  `ImapMailboxList` parents `ImapMailbox`.
 - **SMTP** is not a sync scope. It is an outbox transport only; the outbox is
   leased per account (see below).
+- **Push (IMAP `IDLE`) is not a sync scope either.** A `Watch` session
+  (`providers.md`, `imap-smtp.md`) only signals that a scope *may* have changed; the
+  host responds by running that scope's normal sync, under the same lease and atomic
+  apply as a poll. Push adds no lease semantics and writes nothing itself — it is a
+  latency optimization over polling, and the scope sync stays the authoritative,
+  idempotent reconciliation.
 
 Consequences that the orchestrator must not paper over:
 
@@ -178,15 +189,82 @@ state — plus a `tzdata-version` index to find *only* stale scopes, and an
 occurrence-only clear so a pure horizon advance need not re-project unchanged text —
 is the sync orchestrator's job, a later step.
 
-On-demand fetched bodies **are** indexed (resolving the "does opening old mail
-make it searchable?" question: yes). Search coverage metadata must therefore
-reflect that local coverage can grow over time; it is not a static property of
-the corpus.
+On-demand fetched bodies **are** searchable (resolving the "does opening old mail
+make it searchable?" question: yes), via a separate lease-free body index — **not**
+the scope-derived FTS — so opening a message indexes its body immediately and a
+later re-snapshot cannot wipe it (below). Search coverage metadata must therefore
+reflect that local coverage can grow over time; it is not a static property of the
+corpus.
+
+## On-demand message content: text vs bytes (Tier-3 bodies)
+
+A message's on-demand content splits by **text vs bytes** (`north-star.md`):
+searchable text in SQLite, the heavy byte payload on the filesystem. Both are cached
+through **separate, lease-free** traits in `engine-store` (beside `Store`), keyed by
+`(account, ProviderKey)`:
+
+- They sit **outside** the scope-fencing/lease contract on purpose. The raw bytes for
+  a `(UIDVALIDITY, UID)` (or JMAP blob) are immutable and the extracted text is a pure
+  function of them, so the caches are idempotent and need no lease — a host opens and
+  searches a message *while a sync of its scope is in flight*; taking the scope lease
+  would needlessly serialize reads behind sync.
+- **Bytes — `MessageSourceCache`** (`put_message_source`/`get_message_source`). The
+  raw RFC 5322 source (the whole `BODY.PEEK[]`, which carries the attachments) can be
+  1–15 MB, so it does **not** live in SQLite. `store-sqlite` writes it to a
+  **content-addressed filesystem blob area** (`<db>.blobs/sources/<sha256>.eml`; an
+  in-memory store uses a temp dir), deduping identical payloads and verifying the
+  content hash on read; SQLite keeps only metadata (`message_source`). The blob I/O
+  runs off the connection lock. The same raw-source blob is re-parsed on demand for
+  inline CID parts and downloadable attachment bytes. This is the content-addressed blob
+  foundation durable attachment entities will reuse. Kept for losslessness
+  (DKIM/view-source/forward).
+- **Text — `MessageBodyStore`** (`put_message_body`/`get_message_body`). The extracted
+  body (plain + html) lives in the `message_body` table — small, the reading-view fast
+  path (no disk read, no re-parse), and the **search** source. A trigger maintains
+  `message_body_fts` (FTS5 over the plain text). Because this index is lease-free and
+  sync never touches it, an IMAP re-snapshot cannot wipe it; `search_mail` matches it
+  alongside the scope FTS (RRF-fused) and joins to the live `mail_index` so stale rows
+  for deleted messages drop out, and to `message_body.account` so IMAP keys that
+  collide across accounts cannot cross over (`search.md`).
+- The fetch-throughs are `engine_sync::fetch_message_body` (text in SQLite → on-disk
+  raw → one provider fetch; best-effort caching of both),
+  `fetch_inline_parts`, `fetch_message_attachments`, and `fetch_message_attachment`
+  (raw blob → one provider fetch if missing; best-effort raw caching). They surface as
+  `Engine::message_body`, `message_inline_parts`, `message_attachments`, and
+  `message_attachment` (`engine-api.md`). Durable per-attachment blob entities, quota
+  eviction, and embeddings/RAG over the indexed text are later slices.
+
+## Re-normalization on a normalizer-version change
+
+The store is a re-derivable cache of **normalized** provider data — how a provider
+decodes wire bytes into objects (subject charset, header parsing) and how
+`engine-core` projects them. When that logic changes, already-synced objects hold the
+*old* normalization and an incremental delta sync will never refresh them (it only
+fetches what changed on the server, not what the engine now decodes differently).
+
+`engine_store::NORMALIZER_VERSION` is the marker for that logic. A backend records it
+(store-sqlite: a `meta` row) and, **on open**, clears every scope cursor when the stored
+value differs — so the next sync re-snapshots and re-normalizes everything. A pre-marker
+database (no row) reads as a mismatch and gets exactly that one-time re-sync. Bump
+`NORMALIZER_VERSION` whenever a change alters the bytes-to-object mapping in any provider
+or in `engine-core` (e.g. the Windows-1252 subject fix); a purely additive change need
+not. The cursor clear leaves scope rows and objects in place — the re-snapshot overwrites
+and tombstones them — so nothing is orphaned, and the durable outbox is untouched.
+
+The **host-triggered reset** (`Engine::reset`) uses the same primitive: clear the cursors
+so the next sync is a full refetch. It is the manual counterpart of the automatic
+version-driven clear — a "reset / clean state" action a host exposes, and the escape hatch
+if a store is ever suspected stale.
 
 ## The outbox
 
 Pending ops are durable before any side effect and are claimed with the same
-fencing discipline as scopes.
+fencing discipline as scopes. The thin inline drivers built on this are
+`engine_sync::{submit_mail, write_calendar_event, delete_calendar_event, edit_mail}`
+— the last applies a `MailEdit` (mark-read/flag, move, or permanent delete) and
+serializes on the target message key (`mail:{key}`), recording a plain classified
+`Failed` on error (no `NeedsConfirmation`: a mail edit is not post-`DATA`-ambiguous
+like an SMTP send, and a stale-target `Conflict` self-corrects after a re-sync).
 
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the
@@ -268,11 +346,13 @@ fencing vocabulary lives in `engine-store`, beside the trait that issues it. The
 trait is **encryption-agnostic** — at-rest encryption is a `store-sqlite`
 construction detail (plain SQLite over OS file encryption by default, SQLCipher
 opt-in), so the same contract holds either way. A small `StoreRead` companion
-(lease-free object/key inspection) backs the contract suite and early reads.
+(lease-free object/key inspection, plus `account_scopes` to enumerate an account's
+claimed scopes and `scope_objects` to batch-read a scope's objects — for per-account
+search and views) backs the contract suite and early reads.
 
 Supporting types (abbreviated):
 
-- `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailboxList { account }` (the IMAP folder-list container), `ImapMailbox { account, mailbox }`, `DavCollection { account, collection }`.
+- `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailboxList { account }` (the IMAP folder-list container), `ImapMailbox { account, mailbox }`, `DavCollectionList { account }` (the CalDAV/CardDAV collection-list container), `DavCollection { account, collection }`.
 - `SyncLease` / `OpLease` — opaque, store-issued; expose fencing token, bound identity, and expiry.
 - `StorableObject` — the trait domain objects implement so the store keys and persists them mechanically; `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
 - `DerivedWrite` — precomputed FTS rows, structured-filter rows (scalar index rows

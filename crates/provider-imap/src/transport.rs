@@ -22,13 +22,35 @@ const MAX_LITERAL: usize = 64 * 1024 * 1024;
 pub(crate) struct Connection<S> {
     inner: BufReader<S>,
     tag: u32,
+    /// Whether QRESYNC (RFC 7162) was negotiated for this session — set by
+    /// [`Connection::negotiate_qresync`]. When `true`, the sync layer opens mailboxes
+    /// with CONDSTORE and reconciles deltas via `CHANGEDSINCE`/`VANISHED`.
+    qresync: bool,
+    /// Whether the server advertised `IDLE` (RFC 2177) in its post-auth `CAPABILITY` —
+    /// recorded by [`Connection::negotiate_qresync`] from the same response. When
+    /// `true`, a [`crate::watch::ImapWatcher`] can keep a standing connection idling to
+    /// push change notifications; when `false`, the host must fall back to polling.
+    idle_advertised: bool,
 }
 
 impl<S> core::fmt::Debug for Connection<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Connection")
             .field("tag", &self.tag)
+            .field("qresync", &self.qresync)
+            .field("idle_advertised", &self.idle_advertised)
             .finish_non_exhaustive()
+    }
+}
+
+impl<S> Connection<S> {
+    /// Whether the server advertised `IDLE` (RFC 2177) post-auth — the precondition a
+    /// [`crate::watch::ImapWatcher`] checks before opening a standing IDLE session, and
+    /// what [`ImapProvider::build`](crate::provider) reads to advertise
+    /// [`Capabilities::idle`](engine_provider::Capabilities::idle). A plain field read,
+    /// so it needs no stream bounds (the unbounded provider builder consults it).
+    pub(crate) fn idle_advertised(&self) -> bool {
+        self.idle_advertised
     }
 }
 
@@ -44,9 +66,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let mut connection = Self {
             inner: BufReader::new(stream),
             tag: 0,
+            qresync: false,
+            idle_advertised: false,
         };
         connection.read_greeting().await?;
         Ok(connection)
+    }
+
+    /// Whether QRESYNC (RFC 7162) is enabled for this session.
+    pub(crate) fn qresync_enabled(&self) -> bool {
+        self.qresync
+    }
+
+    /// Forces the QRESYNC flag on, for tests that drive the sync layer over a mock
+    /// transcript without replaying the live `CAPABILITY`/`ENABLE` negotiation.
+    #[cfg(test)]
+    pub(crate) fn force_qresync(&mut self) {
+        self.qresync = true;
     }
 
     /// Reads the untagged greeting: `* OK`/`* PREAUTH` is success, `* BYE` is a
@@ -66,15 +102,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         }
     }
 
-    fn next_tag(&mut self) -> String {
+    /// Allocates the next command tag (`a1`, `a2`, …). `pub(crate)` so the IDLE
+    /// primitives in [`crate::idle`] can tag the `IDLE` command they manage outside
+    /// the normal request/response [`command`](Self::command) round trip.
+    pub(crate) fn next_tag(&mut self) -> String {
         self.tag += 1;
         format!("a{}", self.tag)
+    }
+
+    /// Writes raw bytes and flushes — the unframed send the IDLE primitives need to
+    /// issue `<tag> IDLE\r\n` and the bare `DONE\r\n` continuation
+    /// ([`crate::idle`]), which fall outside [`command`](Self::command)'s tagged
+    /// request/response shape.
+    pub(crate) async fn send_raw(&mut self, bytes: &[u8]) -> ImapResult<()> {
+        self.inner.write_all(bytes).await?;
+        self.inner.flush().await?;
+        Ok(())
     }
 
     /// Reads one logical line: bytes through the next `\n`, with any `{n}` literal
     /// the line announces inlined (the n bytes, then the continuation). Literals
     /// can themselves announce further literals, so this loops.
-    async fn read_line(&mut self) -> ImapResult<Vec<u8>> {
+    ///
+    /// `pub(crate)` so the IDLE read loop ([`crate::idle`]) can consume the
+    /// unsolicited untagged responses the server streams while idling, reusing the
+    /// same literal-aware framing as the command path.
+    pub(crate) async fn read_line(&mut self) -> ImapResult<Vec<u8>> {
         let mut line = Vec::new();
         loop {
             let before = line.len();
@@ -155,6 +208,41 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         }
     }
 
+    /// Detects QRESYNC (RFC 7162) and, when the server advertises it, `ENABLE`s it so
+    /// later deltas can use `CHANGEDSINCE`/`VANISHED` to reconcile flag changes and
+    /// expunges incrementally. Capabilities are queried with an explicit `CAPABILITY`
+    /// **after** login, because servers (Stalwart included) advertise CONDSTORE/QRESYNC
+    /// only post-authentication. Best-effort: a server that lists QRESYNC but rejects
+    /// `ENABLE` (a `NO`/`BAD`), or that answers `OK` without confirming `* ENABLED
+    /// QRESYNC`, leaves the session in the non-QRESYNC baseline rather than failing the
+    /// connection; a transport error still propagates.
+    pub(crate) async fn negotiate_qresync(&mut self) -> ImapResult<()> {
+        let response = self.command("CAPABILITY").await?;
+        let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
+        // Record IDLE (RFC 2177) from the same post-auth list so a watcher (and the
+        // provider's advertised `Capabilities::idle`) knows whether push is available.
+        self.idle_advertised = capabilities
+            .iter()
+            .any(|cap| cap.eq_ignore_ascii_case("IDLE"));
+        if capabilities
+            .iter()
+            .any(|cap| cap.eq_ignore_ascii_case("QRESYNC"))
+        {
+            match self.command("ENABLE QRESYNC").await {
+                // Trust the enable only if `* ENABLED QRESYNC` confirms it (a bare
+                // `* ENABLED` + OK enables nothing, RFC 5161); otherwise stay baseline.
+                Ok(response) => {
+                    if crate::parse_qresync::enabled_lists_qresync(&response.untagged) {
+                        self.qresync = true;
+                    }
+                }
+                Err(ImapError::No(_) | ImapError::Bad(_)) => {}
+                Err(other) => return Err(other),
+            }
+        }
+        Ok(())
+    }
+
     /// `SELECT mailbox`, returning its UID space and message count. Response codes
     /// in either an untagged `* OK [..]` or the tagged completion are honored.
     pub(crate) async fn select(&mut self, mailbox: &str) -> ImapResult<SelectData> {
@@ -162,10 +250,77 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         parse::parse_select(&response.into_all_lines())
     }
 
+    /// `SELECT mailbox (CONDSTORE)` — opens the mailbox CONDSTORE-aware (RFC 7162
+    /// §3.1.8) so the response carries `[HIGHESTMODSEQ n]`, the baseline a QRESYNC
+    /// delta records in its cursor. Used in place of [`Connection::select`] for the
+    /// sync path on a QRESYNC session.
+    pub(crate) async fn select_condstore(&mut self, mailbox: &str) -> ImapResult<SelectData> {
+        let response = self
+            .command(&format!("SELECT {} (CONDSTORE)", quote(mailbox)))
+            .await?;
+        parse::parse_select(&response.into_all_lines())
+    }
+
+    /// `EXAMINE mailbox` — the read-only `SELECT` (RFC 9051 §6.3.2): same response
+    /// shape, but opens the mailbox without write intent and does not reset
+    /// `\Recent`, so a body peek needs no write access to the folder.
+    pub(crate) async fn examine(&mut self, mailbox: &str) -> ImapResult<SelectData> {
+        let response = self.command(&format!("EXAMINE {}", quote(mailbox))).await?;
+        parse::parse_select(&response.into_all_lines())
+    }
+
     /// `UID FETCH <set> (<items>)`, returning the parsed rows.
     pub(crate) async fn uid_fetch(&mut self, set: &str, items: &str) -> ImapResult<Vec<FetchRow>> {
         let response = self.command(&format!("UID FETCH {set} ({items})")).await?;
         parse::parse_fetch(&response.untagged)
+    }
+
+    /// `UID FETCH <set> (<items>) (CHANGEDSINCE <modseq> VANISHED)` — the QRESYNC
+    /// incremental delta (RFC 7162 §3.1.4.1, §3.2.5). The server returns a `FETCH` for
+    /// every message whose mod-sequence is greater than `modseq` (new arrivals *and*
+    /// flag changes, with full metadata) and a `* VANISHED (EARLIER) <set>` listing the
+    /// UIDs expunged since `modseq`. Returns the changed rows paired with the expanded
+    /// vanished UIDs, both read from the one command's untagged responses.
+    pub(crate) async fn uid_fetch_changedsince(
+        &mut self,
+        set: &str,
+        items: &str,
+        modseq: u64,
+    ) -> ImapResult<(Vec<FetchRow>, Vec<u32>)> {
+        let response = self
+            .command(&format!(
+                "UID FETCH {set} ({items}) (CHANGEDSINCE {modseq} VANISHED)"
+            ))
+            .await?;
+        let rows = parse::parse_fetch(&response.untagged)?;
+        let vanished = crate::parse_qresync::parse_vanished(&response.untagged);
+        Ok((rows, vanished))
+    }
+
+    /// `UID SEARCH SINCE <date>` — the UIDs of messages whose `INTERNALDATE` is on or
+    /// after `date` (an IMAP `dd-Mon-yyyy` date, RFC 9051 §6.4.4), used to find the
+    /// floor of a sync-depth window so a snapshot fetches only recent mail. `date` is
+    /// caller-formatted from a calendar date (digits + a fixed month abbreviation), so
+    /// it carries no quoting or injection risk. Returns the matched UIDs (empty if none
+    /// match), tolerating both the classic `* SEARCH` and extended `* ESEARCH` reply.
+    pub(crate) async fn uid_search_since(&mut self, date: &str) -> ImapResult<Vec<u32>> {
+        let response = self.command(&format!("UID SEARCH SINCE {date}")).await?;
+        Ok(parse::parse_search(&response.untagged))
+    }
+
+    /// `UID FETCH <uid> (BODY.PEEK[])`, returning the raw RFC 5322 bytes of the
+    /// message (the whole source, headers + every part), or `None` if the server
+    /// returned no `BODY[]` for that UID — i.e. it was expunged since the last sync
+    /// (fetching a non-existent UID is a tagged `OK` with no data, RFC 9051 §6.4.8).
+    /// `.PEEK` does not set `\Seen` — fetching a body to read it must not silently
+    /// mark it read; the host decides that via a separate edit. Only the matching
+    /// UID's data is accepted, so an unsolicited `FETCH` for another UID (a
+    /// concurrent flag update) cannot return the wrong message's bytes.
+    pub(crate) async fn uid_fetch_body(&mut self, uid: u32) -> ImapResult<Option<Vec<u8>>> {
+        let response = self
+            .command(&format!("UID FETCH {uid} (BODY.PEEK[])"))
+            .await?;
+        Ok(parse::parse_fetch_body(&response.untagged, uid))
     }
 
     /// `LIST "" "*"`, returning every mailbox.
@@ -224,6 +379,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let response = self.read_response(&tag).await?;
         Ok(parse_append_uid(&response.detail))
     }
+
+    /// `UID STORE <set> <item>` — alters the flags of the named UIDs, where `item`
+    /// is e.g. `+FLAGS.SILENT (\Seen)` or `-FLAGS.SILENT (\Flagged)` (RFC 9051
+    /// §6.4.6). The `.SILENT` suffix suppresses the per-message `FETCH` echo, so no
+    /// response parsing is needed — a tagged `OK` is success, a `NO`/`BAD` an error.
+    pub(crate) async fn uid_store(&mut self, set: &str, item: &str) -> ImapResult<()> {
+        self.command(&format!("UID STORE {set} {item}")).await?;
+        Ok(())
+    }
+
+    /// `UID MOVE <set> <mailbox>` — moves the named UIDs to `dest` (RFC 6851), so
+    /// the move is atomic server-side (copy + `\Deleted` + expunge in one command,
+    /// where supported). The destination is a quoted string.
+    pub(crate) async fn uid_move(&mut self, set: &str, dest: &str) -> ImapResult<()> {
+        self.command(&format!("UID MOVE {set} {}", quote(dest)))
+            .await?;
+        Ok(())
+    }
+
+    /// `UID EXPUNGE <set>` — permanently removes only the named `\Deleted` UIDs
+    /// (UIDPLUS, RFC 4315), so a concurrent `\Deleted` mark elsewhere in the mailbox
+    /// is not collaterally expunged.
+    pub(crate) async fn uid_expunge(&mut self, set: &str) -> ImapResult<()> {
+        self.command(&format!("UID EXPUNGE {set}")).await?;
+        Ok(())
+    }
 }
 
 /// Extracts `(validity, uid)` from an `[APPENDUID validity uid]` response code
@@ -269,7 +450,9 @@ fn trailing_literal_len(line: &[u8]) -> Option<usize> {
 }
 
 /// Strips an ASCII prefix, returning the remainder without its trailing CRLF.
-fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+/// `pub(crate)` so [`crate::idle`] can peel the `* ` from an untagged line before
+/// classifying the IDLE notification it carries.
+pub(crate) fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     let rest = line.strip_prefix(prefix)?;
     let rest = rest.strip_suffix(b"\n").unwrap_or(rest);
     Some(rest.strip_suffix(b"\r").unwrap_or(rest))

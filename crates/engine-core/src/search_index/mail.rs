@@ -66,10 +66,12 @@ pub struct MailProjection {
 /// Projects a normalized [`Message`] into its search-index rows.
 ///
 /// Text projection is deliberately basic here — `subject` plus the available
-/// preview/reply text — because full MIME/HTML extraction and chunking belong to
-/// a later `engine-index` step (`north-star.md` workspace shape). The structured
-/// rows are complete: every `from`/`to`/`cc` address, mailbox membership, and
-/// keyword the message carries.
+/// preview/reply text and the sender/recipient address text — because full
+/// MIME/HTML extraction and chunking belong to a later `engine-index` step
+/// (`north-star.md` workspace shape). The address text is folded into `body` so an
+/// unscoped search term matches sender/recipient identity (search.md). The
+/// structured rows are complete: every `from`/`to`/`cc` address, mailbox
+/// membership, and keyword the message carries.
 #[must_use]
 pub fn project_message(message: &Message) -> MailProjection {
     let key = message.id.key().clone();
@@ -80,7 +82,11 @@ pub fn project_message(message: &Message) -> MailProjection {
     {
         fields.push(FtsField::new("subject", subject));
     }
-    let body = body_text(message);
+    // The body folds together the preview/reply text *and* the sender/recipient
+    // address text, so a bare (unscoped) search-box term matches an address even
+    // when the body is empty (metadata-tier sync). The structured `mail_address`
+    // rows below still back the exact `from:`/`to:`/`cc:` filters.
+    let body = join_nonempty([body_text(message), address_text(message)]);
     if !body.is_empty() {
         fields.push(FtsField::new("body", body));
     }
@@ -136,6 +142,43 @@ fn body_text(message: &Message) -> String {
     parts.join(" ")
 }
 
+/// The searchable address text: every `from`/`to`/`cc` address's email and display
+/// name, space-joined. Folded into the FTS `body` so an unscoped term matches
+/// sender/recipient identity; the FTS tokenizer splits and case-folds, so a typed
+/// `allodia` (or the prefix `allo`) matches the address `info@allodia.eu`.
+fn address_text(message: &Message) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for list in [
+        &message.envelope.from,
+        &message.envelope.to,
+        &message.envelope.cc,
+    ] {
+        for address in list {
+            let email = address.email.trim();
+            if !email.is_empty() {
+                parts.push(email);
+            }
+            if let Some(name) = address.name.as_deref() {
+                let name = name.trim();
+                if !name.is_empty() {
+                    parts.push(name);
+                }
+            }
+        }
+    }
+    parts.join(" ")
+}
+
+/// Joins the non-empty segments with a single space, so an empty body or empty
+/// address set never leaves a leading/trailing or doubled space.
+fn join_nonempty<const N: usize>(parts: [String; N]) -> String {
+    parts
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Appends a normalized junction row for each non-empty address.
 fn push_addresses(
     out: &mut Vec<MailAddressRow>,
@@ -186,12 +229,17 @@ mod tests {
 
         let p = project_message(&msg);
 
-        // FTS: subject + body.
+        // FTS: subject + body. The body folds the preview together with the
+        // address text (email + display name), so an unscoped term matches an
+        // address. The blank `to` contributes nothing.
         assert_eq!(
             p.fts.fields,
             vec![
                 FtsField::new("subject", "Quarterly Report"),
-                FtsField::new("body", "see attached"),
+                FtsField::new(
+                    "body",
+                    "see attached Alice@Example.com Alice bob@example.com"
+                ),
             ]
         );
         // Addresses: from normalized + lowercased, name kept; the blank `to` dropped.
@@ -249,6 +297,24 @@ mod tests {
         assert_eq!(
             p.fts.fields,
             vec![FtsField::new("body", "preview reply body")]
+        );
+    }
+
+    #[test]
+    fn addresses_are_folded_into_the_body_without_a_preview() {
+        // A metadata-tier message with no preview/reply and a subject that does
+        // not mention the address still gets a body of the address text, so an
+        // unscoped term can match the sender/recipient identity.
+        let mut msg = message();
+        msg.envelope.subject = Some("Weekly update".into());
+        msg.envelope.from = vec![EmailAddress::new("info@allodia.eu")];
+        let p = project_message(&msg);
+        assert_eq!(
+            p.fts.fields,
+            vec![
+                FtsField::new("subject", "Weekly update"),
+                FtsField::new("body", "info@allodia.eu"),
+            ]
         );
     }
 }

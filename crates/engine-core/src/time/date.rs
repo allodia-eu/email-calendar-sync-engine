@@ -31,6 +31,12 @@ impl CalendarDate {
             .map_err(|_| TimeError::OutOfRange)
     }
 
+    /// The underlying `time` value, for date arithmetic within the time module
+    /// (e.g. an all-day `DTSTART`/`DTEND` span in whole days).
+    pub(crate) fn as_date(self) -> Date {
+        self.0
+    }
+
     /// Returns the year.
     #[must_use]
     pub fn year(self) -> i32 {

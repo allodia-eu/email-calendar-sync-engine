@@ -1,0 +1,12 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=opaque-token-5",
+  "value": [
+    {
+      "@odata.type": "#microsoft.graph.message",
+      "id": "message-3",
+      "isRead": true,
+      "parentFolderId": "folder-inbox"
+    }
+  ]
+}

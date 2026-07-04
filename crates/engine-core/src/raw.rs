@@ -37,6 +37,13 @@ impl RawMime {
         &self.0
     }
 
+    /// Consumes the payload, returning its owned bytes without copying — so a large
+    /// raw message can move into the store's blob writer rather than being cloned.
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0.into_vec()
+    }
+
     /// Returns the length of the payload in bytes.
     #[must_use]
     pub fn len(&self) -> usize {

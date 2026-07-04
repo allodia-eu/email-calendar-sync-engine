@@ -105,9 +105,18 @@ const CALENDAR: Source = Source {
     alias: "ei",
 };
 
-/// Runs a search for mail in `scope_keys`, returning ranked `(provider_key, score)`.
+/// Runs a search for `account`'s mail in `scope_keys`, returning ranked
+/// `(provider_key, score)`.
+///
+/// Free text is matched against two FTS sources and fused with RRF: the
+/// scope-derived `fts_index` (subject + sender/recipient text), and the lease-free
+/// `message_body_fts` over the on-demand-fetched body text. The body source is joined
+/// to `mail_index` so only **live, in-scope** keys count (a stale body row for a
+/// since-deleted message is dropped), and to `message_body.account` so IMAP keys that
+/// collide across accounts cannot cross over.
 pub(crate) fn search_mail(
     conn: &Connection,
+    account: &str,
     scope_keys: &[String],
     query: &MailQuery,
     limit: usize,
@@ -117,7 +126,11 @@ pub(crate) fn search_mail(
     }
     let filter = mail_filter(query);
     match fts_match(&query.text) {
-        Some(text) => fts_query(conn, &MAIL, scope_keys, &filter, &text, limit),
+        Some(text) => {
+            let metadata = fts_candidates(conn, &MAIL, scope_keys, &filter, &text, limit)?;
+            let body = body_candidates(conn, account, scope_keys, &filter, &query.text, limit)?;
+            Ok(fuse_keys(&[metadata.as_slice(), body.as_slice()], limit))
+        }
         None => scalar_query(conn, &MAIL, scope_keys, &filter, "mi.date_utc DESC", limit),
     }
 }
@@ -134,7 +147,10 @@ pub(crate) fn search_calendar(
     }
     let filter = calendar_filter(query);
     match fts_match(&query.text) {
-        Some(text) => fts_query(conn, &CALENDAR, scope_keys, &filter, &text, limit),
+        Some(text) => {
+            let keys = fts_candidates(conn, &CALENDAR, scope_keys, &filter, &text, limit)?;
+            Ok(fuse_keys(&[keys.as_slice()], limit))
+        }
         // No text and no relevance signal yet: order by key for determinism.
         None => scalar_query(
             conn,
@@ -309,8 +325,9 @@ fn occurrence_bounds(
 }
 
 /// Builds the FTS5 `MATCH` string for a domain's text, or `None` if empty. Every
-/// term is a quoted phrase so user input cannot inject FTS operators; scoped terms
-/// carry a column filter.
+/// term is a quoted-phrase **prefix** query (`"term"*`) so search-as-you-type
+/// matches partial words (`allo` matches `allodia`); the quoting still keeps user
+/// input from injecting FTS operators, and scoped terms carry a column filter.
 fn fts_match(text: &TextQuery) -> Option<String> {
     if text.is_empty() {
         return None;
@@ -326,9 +343,10 @@ fn fts_match(text: &TextQuery) -> Option<String> {
     Some(parts.join(" "))
 }
 
-/// Wraps a term as an FTS5 phrase, doubling embedded quotes.
+/// Wraps a term as an FTS5 prefix query: a quoted phrase (embedded quotes doubled)
+/// followed by `*`, so the term matches any token that *starts with* it.
 fn quote_term(term: &str) -> String {
-    format!("\"{}\"", term.replace('"', "\"\""))
+    format!("\"{}\"*", term.replace('"', "\"\""))
 }
 
 /// `?,?,…` for an `IN` list of `n` values (`n >= 1`).
@@ -340,16 +358,16 @@ fn in_list(n: usize) -> String {
     out
 }
 
-/// Runs the FTS-ranked query and fuses the single full-text candidate list with
-/// RRF (the integration point a vector source later joins).
-fn fts_query(
+/// Runs the scope-derived FTS-ranked query, returning the candidate keys in rank
+/// order (best first) — one input list to [`fuse_keys`].
+fn fts_candidates(
     conn: &Connection,
     source: &Source,
     scope_keys: &[String],
     filter: &Filter,
     text: &str,
     limit: usize,
-) -> Result<Vec<(String, f64)>> {
+) -> Result<Vec<String>> {
     let Source { from, alias } = *source;
     let sql = format!(
         "SELECT {alias}.provider_key, bm25(fts_index) AS rank \
@@ -365,10 +383,67 @@ fn fts_query(
     params.extend(scope_keys.iter().map(|s| Param::Text(s.clone())));
     params.extend(filter.params.iter().cloned());
     params.push(Param::Int(limit_param(limit)));
-    let keys = run(conn, &sql, &params)?;
+    run(conn, &sql, &params)
+}
 
-    let fused = fuse(&[keys.as_slice()], RrfK::DEFAULT);
-    Ok(fused.into_iter().map(|f| (f.key, f.score)).collect())
+/// Runs the lease-free body-text FTS, returning the candidate keys in rank order, or
+/// empty when the query has no free-text terms (a purely `subject:`-scoped query does
+/// not search the body). The body `message_body_fts` is joined to `mail_index` (live,
+/// in-scope keys only) and filtered by `account`, and the same structured `filter`
+/// applies (it correlates to the joined `mi`).
+fn body_candidates(
+    conn: &Connection,
+    account: &str,
+    scope_keys: &[String],
+    filter: &Filter,
+    text: &TextQuery,
+    limit: usize,
+) -> Result<Vec<String>> {
+    let Some(match_text) = body_match(text) else {
+        return Ok(Vec::new());
+    };
+    let sql = format!(
+        "SELECT mb.provider_key, bm25(message_body_fts) AS rank \
+         FROM message_body mb \
+         JOIN message_body_fts ON message_body_fts.rowid = mb.rowid \
+         JOIN mail_index mi ON mi.provider_key = mb.provider_key AND mi.scope_key IN ({}) \
+         WHERE mb.account = ? AND message_body_fts MATCH ?{} \
+         ORDER BY rank LIMIT ?",
+        in_list(scope_keys.len()),
+        filter.sql,
+    );
+    let mut params: Vec<Param> = scope_keys.iter().map(|s| Param::Text(s.clone())).collect();
+    params.push(Param::Text(account.to_owned()));
+    params.push(Param::Text(match_text));
+    params.extend(filter.params.iter().cloned());
+    params.push(Param::Int(limit_param(limit)));
+    run(conn, &sql, &params)
+}
+
+/// The FTS5 `MATCH` for the body source: the **unscoped** free-text terms only (the
+/// body has a single `plain` column; `subject:`/`location:` qualifiers do not apply),
+/// or `None` if there are none.
+fn body_match(text: &TextQuery) -> Option<String> {
+    if text.unscoped.is_empty() {
+        return None;
+    }
+    Some(
+        text.unscoped
+            .iter()
+            .map(|t| quote_term(t))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// Fuses one or more rank-ordered candidate lists with RRF and truncates to `limit`
+/// (the integration point a vector source later joins).
+fn fuse_keys(lists: &[&[String]], limit: usize) -> Vec<(String, f64)> {
+    fuse(lists, RrfK::DEFAULT)
+        .into_iter()
+        .take(limit)
+        .map(|f| (f.key, f.score))
+        .collect()
 }
 
 /// Runs the no-text structured query, ordered by `order`, with score `0.0`.
@@ -409,4 +484,40 @@ fn run(conn: &Connection, sql: &str, params: &[Param]) -> Result<Vec<String>> {
         keys.push(row.map_err(convert::backend)?);
     }
     Ok(keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_search::ScopedTerm;
+
+    /// Each term becomes a quoted-phrase prefix query (`"term"*`); scoped terms
+    /// keep their column filter. This is the search-as-you-type form, so a typed
+    /// `allo` matches a stored `allodia`.
+    #[test]
+    fn fts_match_builds_prefix_phrases() {
+        let text = TextQuery {
+            unscoped: vec!["allo".into(), "bar".into()],
+            scoped: vec![ScopedTerm {
+                field: TextField::Subject,
+                text: "allo".into(),
+            }],
+        };
+        assert_eq!(
+            fts_match(&text).as_deref(),
+            Some(r#""allo"* "bar"* subject:"allo"*"#)
+        );
+    }
+
+    #[test]
+    fn fts_match_is_none_for_empty_text() {
+        assert_eq!(fts_match(&TextQuery::default()), None);
+    }
+
+    /// Embedded quotes are doubled (injection-safe) and the `*` is appended after
+    /// the closing quote, not inside it.
+    #[test]
+    fn quote_term_doubles_quotes_then_appends_star() {
+        assert_eq!(quote_term(r#"a"b"#), r#""a""b"*"#);
+    }
 }

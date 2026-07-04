@@ -54,6 +54,12 @@ impl LocalDateTime {
         from_components(year, month, day, hour, minute, second).map(Self)
     }
 
+    /// The underlying `time` value, for wall-clock arithmetic within the time
+    /// module (e.g. deriving a [`super::Duration`] from `DTSTART`/`DTEND`).
+    pub(crate) fn as_primitive(self) -> PrimitiveDateTime {
+        self.0
+    }
+
     /// Returns the year.
     #[must_use]
     pub fn year(self) -> i32 {
