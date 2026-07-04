@@ -28,17 +28,16 @@ tempfile = "3.27.0"
 # pinned release recorded on each occurrence.
 jiff = { version = "0.2.29", default-features = false, features = ["std", "tzdb-bundle-always"] }
 jiff-tzdb = "0.1.6"
-# Product JMAP client HTTP stack. rustls (pure-Rust TLS) cross-compiles to
-# iOS/Android without OpenSSL; default features are off so we do not pull native
-# TLS. The harness speaks plaintext HTTP, but real providers are HTTPS, so TLS
-# stays in the transport (`docs/agent-guidance/jmap.md`).
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-tls", "charset"] }
+# Product HTTP stack for JMAP, CalDAV, and Graph. reqwest 0.13 renamed
+# `rustls-tls` to `rustls`; default features stay off so we do not pull native TLS.
+# The harness speaks plaintext HTTP, but real providers are HTTPS, so TLS stays in
+# the transport (`docs/agent-guidance/jmap.md`, `caldav.md`, `graph.md`).
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset"] }
 # Pure-Rust TLS for the hand-rolled IMAP transport (implicit-TLS on 993). `ring`
-# (not the default `aws-lc-rs`) keeps the workspace on one crypto provider —
-# reqwest's `rustls-tls` above already pulls rustls+ring — so this adds no new
-# C/cross-compile surface for the iOS/Android builds. The transport is generic over
-# any async stream; this only backs the live `connect()` path, with the host
-# injecting trust policy (`docs/agent-guidance/imap-smtp.md`).
+# (not rustls' default `aws-lc-rs`) keeps the hand-rolled transport's crypto
+# provider explicit. The transport is generic over any async stream; this only
+# backs the live `connect()` path, with the host injecting trust policy
+# (`docs/agent-guidance/imap-smtp.md`).
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 # The no-verify verifier for Stalwart's self-signed test cert lives in test code
 # only (a dev-dependency), never the host store — same posture as stalwart-harness.
