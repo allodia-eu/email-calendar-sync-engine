@@ -9,6 +9,9 @@ publish.workspace = true
 [dependencies]
 engine-core = { workspace = true }
 engine-provider = { workspace = true }
+# Deriving a list preview from a synced body (IMAP has no server-side snippet, unlike
+# Graph/JMAP): the shared MIME parser turns a raw message into decoded text.
+engine-mime = { workspace = true }
 # `io-util` for the line-protocol reader/writer over any async stream; `net` for
 # the live TCP connect; `time` for the IDLE watcher's keep-alive timeout (the
 # RFC 2177 re-issue clock). The protocol is generic over `AsyncRead + AsyncWrite`,

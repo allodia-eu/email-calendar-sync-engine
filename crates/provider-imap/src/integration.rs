@@ -49,6 +49,21 @@ fn fetch_frag(tag: &str, uids: &[u32]) -> String {
     out
 }
 
+/// A `UID FETCH <uid> (BODY.PEEK[])` reply: the server echoes `BODY[]` with a small
+/// text body, so preview hydration (which the provider runs after each metadata page)
+/// has a message to extract a snippet from. Preview hydration is capped and newest-first,
+/// so a metadata page's messages are each followed by one of these, newest UID first.
+fn body_frag(tag: &str, uid: u32) -> String {
+    let body = format!(
+        "From: alice@test.local\r\nSubject: report {uid}\r\n\
+         Content-Type: text/plain\r\n\r\nPreview body for report {uid}.\r\n"
+    );
+    format!(
+        "* {uid} FETCH (UID {uid} BODY[] {{{}}}\r\n{body})\r\n{tag} OK FETCH done\r\n",
+        body.len()
+    )
+}
+
 const LIST_FRAG: &str = "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n\
                          * LIST (\\HasNoChildren) \"/\" \"Archive\"\r\n\
                          a2 OK LIST done\r\n";
@@ -73,22 +88,34 @@ fn select_condstore_frag(
 async fn streamed_imap_sync_lands_in_the_store_with_progress() {
     // INBOX with 5 messages (UIDs 1..=5, UIDNEXT 6). Page size 2 → windows
     // 4:5, 2:3, 1:1 — newest first, three committed pages.
+    // Each committed page is a SELECT + metadata FETCH, then preview hydration reads each
+    // of that page's bodies (newest UID first) over the still-selected mailbox.
     let s3 = select_frag("a3", 100, 6, 5);
     let f4 = fetch_frag("a4", &[4, 5]);
-    let s5 = select_frag("a5", 100, 6, 5);
-    let f6 = fetch_frag("a6", &[2, 3]);
+    let b5 = body_frag("a5", 5);
+    let b6 = body_frag("a6", 4);
     let s7 = select_frag("a7", 100, 6, 5);
-    let f8 = fetch_frag("a8", &[1]);
+    let f8 = fetch_frag("a8", &[2, 3]);
+    let b9 = body_frag("a9", 3);
+    let b10 = body_frag("a10", 2);
+    let s11 = select_frag("a11", 100, 6, 5);
+    let f12 = fetch_frag("a12", &[1]);
+    let b13 = body_frag("a13", 1);
     let server = script(&[
         "* OK ready\r\n",
         "a1 OK LOGIN ok\r\n",
         LIST_FRAG,
         &s3,
         &f4,
-        &s5,
-        &f6,
+        &b5,
+        &b6,
         &s7,
         &f8,
+        &b9,
+        &b10,
+        &s11,
+        &f12,
+        &b13,
     ]);
 
     let (stream, _) = MockStream::new(server);
@@ -206,22 +233,33 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
     // re-snapshot, proving the incremental path end to end.
     let snap_select = select_condstore_frag("a3", 100, 4, 3, 10);
     let snap_fetch = fetch_frag("a4", &[1, 2, 3]);
-    let delta_select = select_condstore_frag("a5", 100, 4, 2, 15);
+    // The snapshot's three messages each get their preview hydrated (newest UID first).
+    let snap_b5 = body_frag("a5", 3);
+    let snap_b6 = body_frag("a6", 2);
+    let snap_b7 = body_frag("a7", 1);
+    let delta_select = select_condstore_frag("a8", 100, 4, 2, 15);
     // The CHANGEDSINCE delta: UID 2 vanished, UID 1 came back \Flagged.
     let delta_changes = "* VANISHED (EARLIER) 2\r\n\
          * 1 FETCH (UID 1 FLAGS (\\Seen \\Flagged) \
          INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
          ENVELOPE (NIL \"report 1\" ((\"A\" NIL \"alice\" \"test.local\")) NIL NIL \
          ((\"B\" NIL \"bob\" \"test.local\")) NIL NIL NIL \"<m1@test.local>\"))\r\n\
-         a6 OK UID FETCH completed\r\n";
+         a9 OK UID FETCH completed\r\n";
+    // The re-upserted UID 1 arrives preview-less (a fresh metadata build), so hydration
+    // re-reads its body once.
+    let delta_b10 = body_frag("a10", 1);
     let server = script(&[
         "* OK ready\r\n",
         "a1 OK LOGIN ok\r\n",
         LIST_FRAG,
         &snap_select,
         &snap_fetch,
+        &snap_b5,
+        &snap_b6,
+        &snap_b7,
         &delta_select,
         delta_changes,
+        &delta_b10,
     ]);
 
     let (stream, _) = MockStream::new(server);
