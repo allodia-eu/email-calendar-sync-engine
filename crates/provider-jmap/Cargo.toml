@@ -20,7 +20,8 @@ thiserror = { workspace = true }
 fuzzing = []
 
 [dev-dependencies]
-tokio = { workspace = true }
+# `time` (workspace default omits it) powers the live watch test's bounded wait.
+tokio = { workspace = true, features = ["time"] }
 stalwart-harness = { path = "../stalwart-harness" }
 # The gated live integration test drives the full loop through the real store.
 engine-store = { workspace = true }

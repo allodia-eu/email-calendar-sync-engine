@@ -8,7 +8,9 @@ Recommended first provider spine:
 1. Reproducible Stalwart Docker protocol harness. **Implemented** (step 3).
 2. JMAP read/write against Stalwart. **Implemented** (step 4); `jmap.md` is
    authoritative for the client (`engine-provider`/`provider-jmap`/`engine-sync`).
-   JMAP calendar *writes*/RSVP are deferred to a later slice.
+   Mail read/sync, submission (**with attachments**), on-demand raw-source fetch,
+   **mail writes** (`edit_mail` via `Email/set`), and **push** (EventSource `Watch`)
+   are all implemented; only JMAP calendar *writes*/RSVP are deferred to a later slice.
 3. IMAP/SMTP + CalDAV/CardDAV against the same Stalwart fixture. The **IMAP/SMTP
    mail half is implemented** (step 5a); `imap-smtp.md` is authoritative for the
    `provider-imap` client. **CalDAV calendar read/sync (step 5b) and writes
@@ -46,7 +48,7 @@ If product pressure changes the order, the domain model tests still need JMAP an
 - Provider adapters must expose whether a sync response is a delta or a complete snapshot.
 - Provider object ids may not be stable across container moves; adapters expose a stable or immutable id as the `ProviderKey`, plus a version token (ETag, `changeKey`, MODSEQ) for concurrency.
 - Sync cursors are provider-specific (state strings, MODSEQ, sync-tokens, history ids, delta tokens); calendar sync may be inherently time-windowed (a date-bounded view), surfaced as scoped, possibly-incomplete coverage.
-- Providers that support push or idle signals emit wake hints; the engine still performs pull sync to fetch changes. This is a **provider-neutral** capability: the `idle` capability flag advertises it, and a `Watch` session (`engine-provider`) yields a `WatchEvent` stream (`Changed` | `KeepAlive`) for one scope. A watch event carries **no data** and is never a source of truth — it means only "run the scope's normal sync," which is the authoritative, idempotent reconciliation. So a missed/coalesced/spurious notification cannot corrupt the store; push only lowers the *latency* of seeing a change, and a poll-only host is fully correct. (**Implemented** for IMAP `IDLE` — `imap-smtp.md`; a JMAP push channel / Graph webhook are later slices over the same `Watch` contract.)
+- Providers that support push or idle signals emit wake hints; the engine still performs pull sync to fetch changes. This is a **provider-neutral** capability: the `idle` capability flag advertises it, and a `Watch` session (`engine-provider`) yields a `WatchEvent` stream (`Changed` | `KeepAlive`) for one scope. A watch event carries **no data** and is never a source of truth — it means only "run the scope's normal sync," which is the authoritative, idempotent reconciliation. So a missed/coalesced/spurious notification cannot corrupt the store; push only lowers the *latency* of seeing a change, and a poll-only host is fully correct. (**Implemented** for IMAP `IDLE` — `imap-smtp.md` — and for **JMAP EventSource** (`StateChange`, RFC 8620 §7.3) via `JmapWatcher` — `jmap.md`; a Graph webhook is a later slice over the same `Watch` contract.)
 
 ## Stalwart Test Spine
 
@@ -69,6 +71,8 @@ calendar suite is read-only for now):
 - CalendarEvent read/write with JSCalendar recurrence, participants, and virtual locations.
 - Provider search fallback for locally incomplete bodies.
 - Push/EventSource or equivalent state-change wake hints where available.
+  (**Implemented**: `JmapWatcher` over the session `eventSourceUrl` maps
+  `StateChange` events onto the neutral `Watch` stream — `jmap.md`.)
 
 ## IMAP/SMTP/CalDAV Requirements
 
@@ -89,7 +93,7 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
 - SMTP post-DATA ambiguity must enter `NeedsConfirmation`; never blind-retry.
 - SMTP per-recipient acceptance/rejection before DATA must be represented.
 - Sent folder placement must reconcile by generated Message-ID.
-- Mail mutations (mark-read/flag, move, delete) are one provider-neutral method, `edit_mail(account, &MailEdit) -> MailEditReceipt`, gated by the `mail_writes` capability (distinct from read `mail`, like `calendar_writes` vs `calendars`). `MailEdit` mirrors the three independent mail axes (`modeling.md`): `SetKeywords{add,remove}` (the `$seen`/`$flagged` state), `MoveTo{destination}` (membership — and the mechanism behind a Trash "delete"), and `Delete` (permanent). It is outbox-driven by `engine_sync::edit_mail`, exactly like the calendar writes. JMAP maps all three to one `Email/set` (keywords/mailboxIds patch or `destroy`); IMAP maps them to `UID STORE`, `UID MOVE`, and `UID STORE \Deleted` + `UID EXPUNGE`. A stale target (an IMAP UID under a changed `UIDVALIDITY`) is a `Conflict` → re-sync then retry. (Shape + capability + trait method **implemented** in `engine-provider`; the IMAP adapter implements it — `imap-smtp.md`.)
+- Mail mutations (mark-read/flag, move, delete) are one provider-neutral method, `edit_mail(account, &MailEdit) -> MailEditReceipt`, gated by the `mail_writes` capability (distinct from read `mail`, like `calendar_writes` vs `calendars`). `MailEdit` mirrors the three independent mail axes (`modeling.md`): `SetKeywords{add,remove}` (the `$seen`/`$flagged` state), `MoveTo{destination}` (membership — and the mechanism behind a Trash "delete"), and `Delete` (permanent). It is outbox-driven by `engine_sync::edit_mail`, exactly like the calendar writes. JMAP maps all three to one `Email/set` (keywords/mailboxIds patch or `destroy`); IMAP maps them to `UID STORE`, `UID MOVE`, and `UID STORE \Deleted` + `UID EXPUNGE`. A stale target (an IMAP UID under a changed `UIDVALIDITY`) is a `Conflict` → re-sync then retry. (Shape + capability + trait method **implemented** in `engine-provider`; the IMAP adapter implements it — `imap-smtp.md` — as does the JMAP adapter, folding all three edits onto one `Email/set` — `jmap.md`.)
 - CalDAV/CardDAV sync uses RFC 6578 sync-token where supported; otherwise CTag plus per-resource ETag diffing. (**Implemented** for the sync-token path in `provider-caldav`; the CTag fallback is a documented follow-up — `caldav.md`.)
 - CalDAV writes use ETags and `If-Match`; conflicts refetch before merge. (**Implemented** in `provider-caldav` — conditional `PUT` (`If-None-Match`/`If-Match`) + `DELETE`, outbox-driven by `engine_sync::write_calendar_event`/`delete_calendar_event`, a `412` → `Conflict`; `caldav.md`.)
 - iTIP/iMIP scheduling is distinct from ordinary event storage. (**Implemented** for the inbound half: detect (`find_calendar_part`) → parse (`provider_caldav::imip::parse`) → `reconcile`/trust → apply, and the RSVP write primitive (`set_my_partstat` → conditional `PUT` via the existing outbox driver). The CalDAV Scheduling-Inbox `REPORT`, client-iMIP SMTP delivery, and `ClientImip` local-origin persistence stay deferred; `calendar-semantics.md`.)

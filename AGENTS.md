@@ -70,10 +70,27 @@ cargo test --workspace --all-features
 cargo doc --workspace --all-features --no-deps
 ```
 
-When coverage tooling is available, also run:
+### Coverage (catch a dip before the PR)
+
+The enforced **line-coverage floor** and the per-diff **patch target** live in one
+place — **`codecov.yml`** (`coverage.status.project.default.target` and
+`…patch.default.target`). CI's coverage job reads the floor from there with `yq`, and
+Codecov enforces both, so the number is defined once. Run the same check locally before
+`git push` so you catch a regression before CI does. The offline metric excludes the
+live/harness tests (they run in the gated `stalwart` job); the exclusion list mirrors
+CI's `COVERAGE_IGNORE` (see `.github/workflows/ci.yml`):
 
 ```sh
-cargo llvm-cov --workspace --all-features --fail-under-lines 100
+cargo llvm-cov --no-report --workspace --all-features
+threshold="$(yq '.coverage.status.project.default.target' codecov.yml | tr -d '%')"   # single source
+cargo llvm-cov report --fail-under-lines "$threshold" \
+  --ignore-filename-regex 'stalwart-harness/|provider-[a-z]+/tests/'
 ```
+
+New/changed lines must clear the **patch** target too, so cover new code. A provider's
+thin HTTP/TLS transport boundary is the one place offline coverage is hard; drive it
+with a mock HTTP server / fake executor rather than leaving it to the live tests
+(`provider-jmap`'s `lib_tests.rs` + `watch_tests.rs` are the pattern). To find the exact
+uncovered lines: `cargo llvm-cov -p <crate> --all-features --show-missing-lines`.
 
 If a command cannot run, say exactly why and what remains unverified.

@@ -61,6 +61,8 @@ impl Default for CoreLimits {
 pub struct Session {
     api_url: String,
     download_url: Option<String>,
+    upload_url: Option<String>,
+    event_source_url: Option<String>,
     mail_account_id: Option<String>,
     submission_account_id: Option<String>,
     calendar_account_id: Option<String>,
@@ -86,13 +88,19 @@ impl Session {
             .ok_or_else(|| JmapError::session("apiUrl missing"))?;
         let api_url = resolve_against(base, advertised_api, policy)?;
 
-        // The download URL is a URI *template* (`{accountId}`/`{blobId}`/… , RFC
-        // 8620 §2), so it is rebased origin-only — running the braces through URL
-        // parsing (as `resolve_against` does) would percent-encode them.
-        let download_url = value
-            .get("downloadUrl")
-            .and_then(Value::as_str)
-            .map(|url| rebase_template(base, url, policy));
+        // The download/upload/event-source URLs are URI *templates*
+        // (`{accountId}`/`{blobId}`/…, RFC 8620 §2), so they are rebased origin-only —
+        // running the braces through URL parsing (as `resolve_against` does) would
+        // percent-encode them.
+        let template = |field: &str| {
+            value
+                .get(field)
+                .and_then(Value::as_str)
+                .map(|url| rebase_template(base, url, policy))
+        };
+        let download_url = template("downloadUrl");
+        let upload_url = template("uploadUrl");
+        let event_source_url = template("eventSourceUrl");
 
         let primary = value.get("primaryAccounts");
         let account_for = |urn: &str| {
@@ -101,6 +109,7 @@ impl Session {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         };
+        let mail_account_id = account_for(capability::MAIL);
 
         let caps = value.get("capabilities");
         let has = |urn: &str| caps.is_some_and(|c| c.get(urn).is_some());
@@ -109,6 +118,22 @@ impl Session {
         // exposes mail and a download template — see [`crate::fetch::message_source`].
         if capabilities.mail() && download_url.is_some() {
             capabilities = capabilities.with_message_source();
+        }
+        // Mail writes (`Email/set`) work whenever the account exposes mail and is not
+        // read-only. RFC 8621 makes `Email/set` part of the mail capability itself;
+        // the only server-side gate is the account's `isReadOnly` flag (RFC 8620
+        // §2). A read-only account that is somehow written anyway rejects the set with
+        // a `forbidden` `SetError` (→ `Permanent`), so a mis-advertisement is safe.
+        if capabilities.mail() && !account_is_read_only(value, mail_account_id.as_deref()) {
+            capabilities = capabilities.with_mail_writes();
+        }
+        // Push (change notification) works whenever the server advertises an
+        // EventSource endpoint (RFC 8620 §7.3) *and* the account exposes a domain the
+        // engine can watch (mail or calendars) — otherwise a `Changed` could never map
+        // to a synced scope. Gated on a syncable domain like the other capabilities,
+        // not on the transport alone. See [`crate::watch::JmapWatcher`].
+        if event_source_url.is_some() && (capabilities.mail() || capabilities.calendars()) {
+            capabilities = capabilities.with_idle();
         }
 
         let limits = caps
@@ -119,7 +144,9 @@ impl Session {
         Ok(Self {
             api_url,
             download_url,
-            mail_account_id: account_for(capability::MAIL),
+            upload_url,
+            event_source_url,
+            mail_account_id,
             submission_account_id: account_for(capability::SUBMISSION),
             calendar_account_id: account_for(capability::CALENDARS),
             limits,
@@ -144,6 +171,22 @@ impl Session {
     /// (`crate::fetch::message_source`).
     pub(crate) fn download_url(&self) -> Option<&str> {
         self.download_url.as_deref()
+    }
+
+    /// The connection-resolved blob **upload** URI template (RFC 8620 §6.1), with
+    /// its `{accountId}` placeholder intact, or `None` if the server advertised none.
+    /// The provider substitutes the placeholder to upload a draft attachment's bytes
+    /// before referencing the returned `blobId` in an `Email/set` (`crate::submit`).
+    pub(crate) fn upload_url(&self) -> Option<&str> {
+        self.upload_url.as_deref()
+    }
+
+    /// The connection-resolved **EventSource** URI template (RFC 8620 §7.3), with its
+    /// `{types}`/`{closeafter}`/`{ping}` placeholders intact, or `None` if the server
+    /// advertised no push endpoint. [`crate::watch::JmapWatcher`] substitutes the
+    /// placeholders to open the change-notification stream.
+    pub(crate) fn event_source_url(&self) -> Option<&str> {
+        self.event_source_url.as_deref()
     }
 
     /// The JMAP account id for mail (the server's id, not the engine's).
@@ -243,6 +286,21 @@ fn rebase_template(base: &Url, advertised: &str, policy: SessionUrlPolicy) -> St
     }
 }
 
+/// Whether the mail account is read-only (`accounts.<id>.isReadOnly`, RFC 8620 §2).
+/// Defaults to writable when the account object or the flag is absent, matching the
+/// RFC default (`isReadOnly` is optional and defaults to `false`).
+fn account_is_read_only(session: &Value, mail_account_id: Option<&str>) -> bool {
+    let Some(id) = mail_account_id else {
+        return false;
+    };
+    session
+        .get("accounts")
+        .and_then(|accounts| accounts.get(id))
+        .and_then(|account| account.get("isReadOnly"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Builds the engine capability set from a "has this URN?" predicate.
 fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabilities {
     let mut caps = engine_provider::Capabilities::none();
@@ -277,123 +335,5 @@ fn parse_limits(core: &Value) -> CoreLimits {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    /// A representative session subset, mirroring the live Stalwart shape (account
-    /// id `"c"`, an advertised foreign `apiUrl`, the core limits).
-    fn session_doc() -> Value {
-        json!({
-            "capabilities": {
-                "urn:ietf:params:jmap:core": {
-                    "maxCallsInRequest": 16,
-                    "maxObjectsInGet": 500,
-                    "maxObjectsInSet": 500
-                },
-                "urn:ietf:params:jmap:mail": {},
-                "urn:ietf:params:jmap:submission": {},
-                "urn:ietf:params:jmap:calendars": {}
-            },
-            "primaryAccounts": {
-                "urn:ietf:params:jmap:mail": "c",
-                "urn:ietf:params:jmap:submission": "c",
-                "urn:ietf:params:jmap:calendars": "c"
-            },
-            "apiUrl": "https://mail.test.local/jmap/",
-            "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}",
-            "state": "2f72d7c8"
-        })
-    }
-
-    #[test]
-    fn rebases_api_url_onto_connection_base_by_default() {
-        let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let session =
-            Session::parse(&session_doc(), &base, SessionUrlPolicy::RebaseToConnection).unwrap();
-        // The advertised foreign HTTPS origin is replaced by the connection origin.
-        assert_eq!(session.api_url(), "http://127.0.0.1:18080/jmap/");
-        assert_eq!(session.mail_account_id().unwrap(), "c");
-        assert_eq!(session.submission_account_id().unwrap(), "c");
-        assert_eq!(session.calendar_account_id().unwrap(), "c");
-        assert_eq!(session.state(), Some("2f72d7c8"));
-    }
-
-    #[test]
-    fn trust_advertised_keeps_the_server_origin() {
-        let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let session =
-            Session::parse(&session_doc(), &base, SessionUrlPolicy::TrustAdvertised).unwrap();
-        assert_eq!(session.api_url(), "https://mail.test.local/jmap/");
-    }
-
-    #[test]
-    fn rebases_download_template_onto_connection_keeping_placeholders() {
-        let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let session =
-            Session::parse(&session_doc(), &base, SessionUrlPolicy::RebaseToConnection).unwrap();
-        // Origin rebased to the connection; the `{…}` placeholders survive intact
-        // (they would be percent-encoded if run through URL parsing).
-        assert_eq!(
-            session.download_url(),
-            Some("http://127.0.0.1:18080/download/{accountId}/{blobId}/{name}?accept={type}")
-        );
-        // TrustAdvertised keeps the server origin, still un-mangled.
-        let trusted =
-            Session::parse(&session_doc(), &base, SessionUrlPolicy::TrustAdvertised).unwrap();
-        assert_eq!(
-            trusted.download_url(),
-            Some("https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}")
-        );
-    }
-
-    #[test]
-    fn reads_capabilities_and_limits() {
-        let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let session =
-            Session::parse(&session_doc(), &base, SessionUrlPolicy::RebaseToConnection).unwrap();
-        let caps = session.capabilities();
-        assert!(caps.mail() && caps.submission() && caps.calendars());
-        // Mail + a download template ⇒ on-demand message-source fetch is advertised.
-        assert!(caps.message_source());
-        assert_eq!(session.limits().max_objects_in_get, 500);
-        assert_eq!(session.limits().max_calls_in_request, 16);
-    }
-
-    #[test]
-    fn no_download_template_means_no_message_source_capability() {
-        let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let doc = json!({
-            "capabilities": { "urn:ietf:params:jmap:mail": {} },
-            "primaryAccounts": { "urn:ietf:params:jmap:mail": "c" },
-            "apiUrl": "https://mail.test.local/jmap/"
-        });
-        let session = Session::parse(&doc, &base, SessionUrlPolicy::RebaseToConnection).unwrap();
-        assert!(session.capabilities().mail());
-        assert!(!session.capabilities().message_source());
-        assert_eq!(session.download_url(), None);
-    }
-
-    #[test]
-    fn missing_api_url_is_a_session_error() {
-        let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let doc = json!({ "capabilities": {}, "primaryAccounts": {} });
-        assert!(matches!(
-            Session::parse(&doc, &base, SessionUrlPolicy::RebaseToConnection),
-            Err(JmapError::Session(_))
-        ));
-    }
-
-    #[test]
-    fn absent_core_capability_falls_back_to_default_limits() {
-        let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let doc = json!({
-            "capabilities": { "urn:ietf:params:jmap:mail": {} },
-            "primaryAccounts": { "urn:ietf:params:jmap:mail": "c" },
-            "apiUrl": "https://mail.test.local/jmap/"
-        });
-        let session = Session::parse(&doc, &base, SessionUrlPolicy::RebaseToConnection).unwrap();
-        assert_eq!(session.limits(), CoreLimits::default());
-        assert!(session.mail_account_id().is_ok());
-    }
-}
+#[path = "session_tests.rs"]
+mod tests;

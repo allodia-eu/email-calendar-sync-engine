@@ -39,6 +39,9 @@ pub(crate) trait Executor: Send + Sync {
     async fn execute(&self, request: &Request) -> Result<Response, JmapError>;
     /// GETs raw bytes from a resolved blob-download URL (the raw message source).
     async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError>;
+    /// POSTs raw `bytes` of `media_type` to a resolved blob-upload URL, returning the
+    /// server-assigned `blobId` (RFC 8620 §6.1) — used to attach a draft's parts.
+    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError>;
     fn session(&self) -> &Session;
 }
 
@@ -50,6 +53,10 @@ impl Executor for JmapClient {
 
     async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError> {
         JmapClient::download(self, url).await
+    }
+
+    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError> {
+        JmapClient::upload(self, url, media_type, bytes).await
     }
 
     fn session(&self) -> &Session {
@@ -198,6 +205,18 @@ impl Provider for JmapProvider {
             event_from_json,
         )
         .await?)
+    }
+
+    async fn edit_mail(
+        &self,
+        _account: &AccountId,
+        edit: &engine_provider::MailEdit,
+    ) -> ProviderResult<engine_provider::MailEditReceipt> {
+        // All three edits (keyword patch / mailboxIds move / destroy) fold onto one
+        // `Email/set`; the target's JMAP id is account-global, so the receipt key is
+        // unchanged and the next sync reconciles membership (`crate::mutate`).
+        let account = self.mail_account()?;
+        Ok(crate::mutate::edit_mail(self.executor.as_ref(), &account, edit).await?)
     }
 
     async fn fetch_message_source(
