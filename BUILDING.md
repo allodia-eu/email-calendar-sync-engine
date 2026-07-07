@@ -15,6 +15,10 @@ model. More crates land per the build order in
   rustup component add rustfmt clippy
   ```
 
+  The workspace [`rustfmt.toml`](rustfmt.toml) uses nightly-only options, so **formatting
+  runs on nightly** (`cargo +nightly fmt`); CI pins the nightly for reproducibility. Everything
+  else (clippy, build, test, docs) runs on stable.
+
 ## Common tasks
 
 ```sh
@@ -35,7 +39,7 @@ These four checks are mandatory before a change lands (see
 runs them on every push and pull request:
 
 ```sh
-cargo fmt --check
+cargo +nightly fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo doc --workspace --all-features --no-deps

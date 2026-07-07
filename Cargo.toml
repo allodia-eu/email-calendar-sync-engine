@@ -86,8 +86,11 @@ missing_docs = "warn"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 
+# Clippy's `pedantic` group is a hard error (`priority = -1` lets the per-lint `allow`s
+# below win). The allows are the ones that fire almost entirely on false positives for this
+# codebase; everything else in `pedantic` is fixed, not silenced.
 [workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
 # Our module/type naming (e.g. `mail::MailboxId`) intentionally repeats the module
 # name for clarity at the call site; this pedantic lint fights that convention.
 module_name_repetitions = "allow"
@@ -96,3 +99,13 @@ module_name_repetitions = "allow"
 # protocol-heavy prose where these are proper nouns, not code, so the lint fires
 # almost entirely on false positives.
 doc_markdown = "allow"
+# `must_use_candidate` flags nearly every pure getter/builder; the signal-to-noise is too
+# low to gate the build on.
+must_use_candidate = "allow"
+# `too_many_lines` (a per-function 100-line threshold) fights the under-500-lines-per-file
+# rule (AGENTS.md) and fires on cohesive-but-long functions.
+too_many_lines = "allow"
+# Internal invariant `expect()`s (e.g. a poisoned lock) are unrecoverable programmer errors,
+# not documented API behavior a caller can act on, so a uniform "# Panics" note is noise.
+# (`missing_errors_doc` stays denied — a fallible result IS part of the contract.)
+missing_panics_doc = "allow"

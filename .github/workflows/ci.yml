@@ -23,16 +23,28 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # rustfmt runs on a PINNED nightly: the workspace rustfmt.toml uses nightly-only
+      # options (crate-granular grouped imports, wrap_comments, style_edition 2024, …) and
+      # nightly rustfmt output drifts between dates — pinning keeps `fmt --check` reproducible
+      # against what contributors run locally (`cargo +nightly fmt`). Bump this date and
+      # re-run fmt when intentionally adopting a newer nightly. Everything else stays on
+      # stable (installed last, so it is the default toolchain for clippy/build/test/docs).
+      - name: Install nightly rustfmt (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-07
+          components: rustfmt
+
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
-          components: rustfmt, clippy
+          components: clippy
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Format
-        run: cargo fmt --all --check
+        run: cargo +nightly-2026-07-07 fmt --all --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings

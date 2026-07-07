@@ -58,12 +58,20 @@ mirrors the CI **"Format, lint, build, test, docs"** job *exactly* — same comm
 warnings-as-errors (`RUSTFLAGS`/`RUSTDOCFLAGS = -D warnings`) — so green here means green there.
 Skipping `cargo fmt` (or running `--check` without fixing) has failed this job on many PRs; a
 freshly hand-written line that overflows the width is the usual culprit, and CI catches it even
-though the code compiles. So: **`cargo fmt --all` first, then verify.**
+though the code compiles. So: **`cargo +nightly fmt --all` first, then verify.**
+
+Format on **nightly**: the workspace [`rustfmt.toml`](rustfmt.toml) uses nightly-only options
+(crate-granular grouped imports, `wrap_comments`, `style_edition = "2024"`,
+`error_on_line_overflow`, …), so a plain stable `cargo fmt` silently ignores them and leaves the
+repo unformatted. CI runs the fmt check on a **pinned** nightly (`nightly-2026-07-07`, in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)) so its output is reproducible against what
+you run locally; bump that pin **and** re-run fmt when intentionally adopting a newer nightly.
+Build/clippy/test/docs stay on stable.
 
 ```sh
-cargo fmt --all                       # fix formatting first
+cargo +nightly fmt --all              # fix formatting first (nightly rustfmt.toml)
 export RUSTFLAGS="-D warnings" RUSTDOCFLAGS="-D warnings"   # match CI: warnings are errors
-cargo fmt --all --check               # must now be clean
+cargo +nightly fmt --all --check      # must now be clean
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo build --workspace --all-features
 cargo test --workspace --all-features

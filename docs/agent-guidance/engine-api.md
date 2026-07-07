@@ -179,7 +179,7 @@ outbox facade: a successful `submit_mail` commits the op `Succeeded` (read back 
 `pending_op_state`), a failed send surfaces as `ApiError::Sync`, and an unknown op id
 reads back `None`. A streamed `sync_mail_streamed` with a closure sink then asserts
 one progress event lands with `fetched == total == 2`. Run the standard gate (`AGENTS.md`):
-`cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
+`cargo +nightly fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own
 lines are 100%-covered by these tests (no live provider needed).
 
