@@ -197,6 +197,48 @@ fn parse_wall_clock(s: &str) -> Result<PrimitiveDateTime, TimeError> {
     Ok(PrimitiveDateTime::new(date, time))
 }
 
+/// Splits a trailing RFC 3339 numeric offset (`±hh:mm`) off an offset date-time,
+/// returning the wall-clock body and the offset as a signed span, where the sign
+/// convention is `local = UTC + offset`. Operates on bytes so adversarial
+/// (multi-byte) input can only error, never panic.
+fn split_numeric_offset(s: &str) -> Result<(&str, time::Duration), TimeError> {
+    let malformed = || TimeError::Malformed {
+        expected: "RFC 3339 date-time ending in Z or ±hh:mm",
+        found: s.to_owned(),
+    };
+    let bytes = s.as_bytes();
+    let Some(start) = bytes.len().checked_sub(6) else {
+        return Err(malformed());
+    };
+    // The offset is the final six ASCII bytes: sign, hh, ':', mm.
+    let off = &bytes[start..];
+    let sign: i64 = match off[0] {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return Err(malformed()),
+    };
+    if off[3] != b':' {
+        return Err(malformed());
+    }
+    let two = |hi: u8, lo: u8| -> Result<i64, TimeError> {
+        if hi.is_ascii_digit() && lo.is_ascii_digit() {
+            Ok(i64::from(hi - b'0') * 10 + i64::from(lo - b'0'))
+        } else {
+            Err(malformed())
+        }
+    };
+    let hours = two(off[1], off[2])?;
+    let minutes = two(off[4], off[5])?;
+    if hours > 23 || minutes > 59 {
+        return Err(TimeError::OutOfRange);
+    }
+    // `start` is a char boundary: the trailing six bytes are all ASCII.
+    Ok((
+        &s[..start],
+        time::Duration::minutes(sign * (hours * 60 + minutes)),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +272,31 @@ mod tests {
         // Trailing-zero fractions normalize away.
         let dt = parse_wall_clock("2010-10-10T10:10:10.000").unwrap();
         assert_eq!(format_wall_clock(dt), "2010-10-10T10:10:10");
+    }
+
+    #[test]
+    fn numeric_offset_splits_with_sign_and_rejects_junk() {
+        let (body, offset) = split_numeric_offset("2026-07-05T14:13:58+02:00").unwrap();
+        assert_eq!(body, "2026-07-05T14:13:58");
+        assert_eq!(offset, time::Duration::minutes(120));
+        let (_, negative) = split_numeric_offset("2026-07-05T09:00:00-05:30").unwrap();
+        assert_eq!(negative, time::Duration::minutes(-330));
+        // Too short to hold an offset, a bad sign, a missing colon, non-digits,
+        // and out-of-range fields all error rather than panic.
+        assert!(split_numeric_offset("short").is_err());
+        assert!(split_numeric_offset("2026-07-05T14:13:58*02:00").is_err());
+        assert!(split_numeric_offset("2026-07-05T14:13:58+02x00").is_err());
+        assert!(split_numeric_offset("2026-07-05T14:13:58+ab:cd").is_err());
+        assert_eq!(
+            split_numeric_offset("2026-07-05T14:13:58+25:00"),
+            Err(TimeError::OutOfRange)
+        );
+        assert_eq!(
+            split_numeric_offset("2026-07-05T14:13:58+00:99"),
+            Err(TimeError::OutOfRange)
+        );
+        // A multi-byte tail cannot be a valid offset (and must not panic).
+        assert!(split_numeric_offset("2026-07-05T14:13:58+0é:00").is_err());
     }
 
     #[test]
