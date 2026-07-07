@@ -333,6 +333,55 @@ async fn reset_clears_cursors_and_forces_a_full_resync() {
 }
 
 #[tokio::test]
+async fn forget_account_purges_the_account_and_a_re_add_starts_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("engine.sqlite");
+    let engine = Engine::open(&db).unwrap();
+
+    // Sync the account: mail (2) and calendar (1) land, and the scopes carry cursors —
+    // a second mail sync is an empty delta off the persisted cursor.
+    engine
+        .sync_mail(&FakeProvider::new(), &account())
+        .await
+        .unwrap();
+    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+    engine
+        .sync_calendar(&FakeProvider::new(), &account(), horizon(), &zone)
+        .await
+        .unwrap();
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+    let redelta = engine
+        .sync_mail(&FakeProvider::new(), &account())
+        .await
+        .unwrap();
+    assert_eq!(redelta.email.upserted, 0, "cursor persisted before forget");
+
+    // Forgetting the account drops its objects and scopes: reads are empty, and search
+    // (which ranks over the derived rows) finds nothing.
+    engine.forget_account(&account()).await.unwrap();
+    assert!(engine.messages(&account()).await.unwrap().is_empty());
+    assert!(engine.mailboxes(&account()).await.unwrap().is_empty());
+    assert!(
+        engine
+            .search_mail(&account(), "report", 10)
+            .await
+            .unwrap()
+            .hits
+            .is_empty()
+    );
+
+    // Re-adding the same account starts clean: the scopes were forgotten, so the next
+    // sync is a full snapshot again (upserted == 2), not an empty delta off a stale
+    // cursor. That is the remove-then-re-add guarantee.
+    let readd = engine
+        .sync_mail(&FakeProvider::new(), &account())
+        .await
+        .unwrap();
+    assert_eq!(readd.email.upserted, 2, "re-add re-snapshots from scratch");
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn vacuum_compacts_the_store_without_losing_data() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("engine.sqlite");
