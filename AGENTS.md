@@ -26,7 +26,9 @@ Read before relevant work:
 
 ## Hard Rules
 
-- Files must stay under 500 lines. Split by responsibility before crossing that limit.
+- Files must stay under 500 lines. Split by responsibility before crossing that limit. This is
+  CI-enforced by [`scripts/ci/check-file-length.sh`](scripts/ci/check-file-length.sh) (rustfmt and
+  clippy have no per-file length lint), which runs in CI and locally from the repo root.
 - Prefer small, testable modules over broad abstractions.
 - Do not add speculative features, knobs, or provider shortcuts.
 - Do not refactor unrelated code. Mention unrelated issues in the final answer instead.
@@ -69,6 +71,7 @@ you run locally; bump that pin **and** re-run fmt when intentionally adopting a 
 Build/clippy/test/docs stay on stable.
 
 ```sh
+scripts/ci/check-file-length.sh       # every tracked *.rs must be <= 500 lines
 cargo +nightly fmt --all              # fix formatting first (nightly rustfmt.toml)
 export RUSTFLAGS="-D warnings" RUSTDOCFLAGS="-D warnings"   # match CI: warnings are errors
 cargo +nightly fmt --all --check      # must now be clean

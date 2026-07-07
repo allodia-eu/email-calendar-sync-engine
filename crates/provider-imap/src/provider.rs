@@ -445,3 +445,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
 #[cfg(test)]
 #[path = "provider_tests.rs"]
 mod tests;
+
+// The `submit_over` submission tests live in a sibling file so `provider_tests.rs`
+// stays under the line limit.
+#[cfg(test)]
+#[path = "provider_submit_over_tests.rs"]
+mod submit_over_tests;

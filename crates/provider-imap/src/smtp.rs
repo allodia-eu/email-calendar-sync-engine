@@ -491,3 +491,7 @@ mod mime_tests;
 #[cfg(test)]
 #[path = "smtp_cc_bcc_tests.rs"]
 mod cc_bcc_tests;
+
+#[cfg(test)]
+#[path = "smtp_assemble_tests.rs"]
+mod assemble_tests;

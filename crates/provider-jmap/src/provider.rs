@@ -252,5 +252,13 @@ impl Provider for JmapProvider {
 }
 
 #[cfg(test)]
+#[path = "provider_test_support.rs"]
+mod provider_test_support;
+
+#[cfg(test)]
 #[path = "provider_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "provider_write_tests.rs"]
+mod write_tests;

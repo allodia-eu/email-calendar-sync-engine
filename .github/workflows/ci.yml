@@ -43,6 +43,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
+      # No rustfmt/clippy lint enforces a per-file line cap, so this script is the machine
+      # enforcement of the AGENTS.md 500-line rule. Dependency-free, so it runs first.
+      - name: File length (<= 500 lines per *.rs)
+        run: scripts/ci/check-file-length.sh
+
       - name: Format
         run: cargo +nightly-2026-07-07 fmt --all --check
 

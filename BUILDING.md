@@ -39,6 +39,7 @@ These four checks are mandatory before a change lands (see
 runs them on every push and pull request:
 
 ```sh
+scripts/ci/check-file-length.sh
 cargo +nightly fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
@@ -46,7 +47,9 @@ cargo doc --workspace --all-features --no-deps
 ```
 
 Warnings are errors: the workspace forbids `unsafe`, requires docs on public
-items, and runs clippy at the `pedantic` level.
+items, and runs clippy at the `pedantic` level. Every tracked `*.rs` file must
+also stay under 500 lines — [`scripts/ci/check-file-length.sh`](scripts/ci/check-file-length.sh)
+enforces that (rustfmt and clippy have no per-file length lint).
 
 ## Code coverage
 
