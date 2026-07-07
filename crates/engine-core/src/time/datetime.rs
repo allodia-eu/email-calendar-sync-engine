@@ -5,7 +5,7 @@ use core::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 use time::{Date, Month, PrimitiveDateTime, Time};
 
-use super::{TimeError, format_wall_clock, parse_wall_clock};
+use super::{TimeError, format_wall_clock, parse_wall_clock, split_numeric_offset};
 
 /// Builds a [`PrimitiveDateTime`] from individual components, validating each.
 fn from_components(
@@ -200,6 +200,32 @@ impl UtcDateTime {
         self.0.nanosecond()
     }
 
+    /// Parses an RFC 3339 `date-time` — the JMAP/JSCalendar `Date` type (RFC 8620
+    /// §1.4) — accepting either a `Z` UTC designator or a numeric `±hh:mm` offset,
+    /// and normalizing the result to a true UTC instant.
+    ///
+    /// [`FromStr`](Self::from_str) is deliberately strict about the `Z`-only
+    /// `UTCDate` form used for genuine metadata instants. This method handles the
+    /// fuller `Date` grammar that servers legitimately emit for header-derived
+    /// values such as a message's `Date` (JMAP `sentAt`), which carries the
+    /// sender's local offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError`] if the input is not a wall-clock date-time followed
+    /// by `Z` or a valid numeric offset.
+    pub fn parse_rfc3339(s: &str) -> Result<Self, TimeError> {
+        if let Some(body) = s.strip_suffix('Z') {
+            return parse_wall_clock(body).map(Self);
+        }
+        let (body, offset) = split_numeric_offset(s)?;
+        // local = UTC + offset, so UTC = local − offset.
+        parse_wall_clock(body)?
+            .checked_sub(offset)
+            .map(Self)
+            .ok_or(TimeError::OutOfRange)
+    }
+
     /// Returns this instant advanced by `span`, or `None` on overflow.
     ///
     /// Infrastructural spans — lease TTLs, retry backoff, confirmation timeouts —
@@ -282,6 +308,66 @@ mod tests {
         // RFC 8984 §1.4.4: `.000` is invalid input; we normalize it away.
         let dt: UtcDateTime = "2010-10-10T10:10:10.000Z".parse().unwrap();
         assert_eq!(dt.to_string(), "2010-10-10T10:10:10Z");
+    }
+
+    #[test]
+    fn rfc3339_parses_offsets_and_normalizes_to_utc() {
+        // `Z` behaves exactly like the strict parser.
+        assert_eq!(
+            UtcDateTime::parse_rfc3339("2026-07-05T12:13:58Z").unwrap(),
+            "2026-07-05T12:13:58Z".parse().unwrap()
+        );
+        // A positive offset is subtracted; `+00:00` equals `Z`.
+        assert_eq!(
+            UtcDateTime::parse_rfc3339("2026-07-05T14:13:58+02:00")
+                .unwrap()
+                .to_string(),
+            "2026-07-05T12:13:58Z"
+        );
+        assert_eq!(
+            UtcDateTime::parse_rfc3339("2026-07-05T12:13:58+00:00")
+                .unwrap()
+                .to_string(),
+            "2026-07-05T12:13:58Z"
+        );
+        // A negative offset is added, rolling across the day boundary.
+        assert_eq!(
+            UtcDateTime::parse_rfc3339("2026-07-05T23:00:00-05:00")
+                .unwrap()
+                .to_string(),
+            "2026-07-06T04:00:00Z"
+        );
+        // A positive offset can roll back into the previous day.
+        assert_eq!(
+            UtcDateTime::parse_rfc3339("2026-07-05T00:30:00+02:00")
+                .unwrap()
+                .to_string(),
+            "2026-07-04T22:30:00Z"
+        );
+        // Fractional seconds survive the offset normalization.
+        assert_eq!(
+            UtcDateTime::parse_rfc3339("2026-07-05T14:13:58.5+02:00")
+                .unwrap()
+                .to_string(),
+            "2026-07-05T12:13:58.5Z"
+        );
+    }
+
+    #[test]
+    fn rfc3339_rejects_malformed_and_overflowing_input() {
+        assert!(UtcDateTime::parse_rfc3339("").is_err());
+        assert!(UtcDateTime::parse_rfc3339("not-a-date").is_err());
+        // A bare wall clock (no `Z`, no offset) is not a valid instant.
+        assert!(UtcDateTime::parse_rfc3339("2026-07-05T14:13:58").is_err());
+        // A malformed body with a valid offset still fails.
+        assert!(UtcDateTime::parse_rfc3339("2026-13-05T14:13:58+02:00").is_err());
+        // Normalizing past the representable range saturates to an error.
+        assert_eq!(
+            UtcDateTime::parse_rfc3339("9999-12-31T23:00:00-23:00"),
+            Err(TimeError::OutOfRange)
+        );
+        // FromStr stays strict: an offset is not a valid `UTCDate`.
+        assert!("2026-07-05T14:13:58+02:00".parse::<UtcDateTime>().is_err());
     }
 
     #[test]

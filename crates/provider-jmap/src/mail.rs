@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::{
     error::JmapError,
-    json::{datetime, opt_str, req_str, true_keys, wrap_id},
+    json::{datetime, opt_str, req_str, sent_at, true_keys, wrap_id},
 };
 
 /// The `Email` properties fetched in `Email/get` — exactly the fields
@@ -109,7 +109,7 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, JmapError> {
     }
     message.size = value.get("size").and_then(Value::as_u64);
     message.received_at = datetime(value, "receivedAt")?;
-    message.sent_at = datetime(value, "sentAt")?;
+    message.sent_at = sent_at(value);
     message.has_attachment = value
         .get("hasAttachment")
         .and_then(Value::as_bool)
@@ -318,6 +318,35 @@ mod tests {
         assert_eq!(mailbox.role, Some(MailboxRole::Archive));
         assert_eq!(mailbox.sort_order, 5);
         assert!(!mailbox.subscribed);
+    }
+
+    #[test]
+    fn sent_at_offset_normalizes_and_bad_values_are_non_fatal() {
+        // RFC 8621 §4.1.1 `sentAt` is a `Date` (RFC 8620 §1.4): a numeric offset
+        // is legal and must normalize to UTC, not abort the sync (issue #38).
+        let offset = message_from_json(&serde_json::json!({
+            "id": "m1", "mailboxIds": { "inbox": true },
+            "sentAt": "2026-07-05T14:13:58+02:00",
+        }))
+        .unwrap();
+        assert_eq!(offset.sent_at.unwrap().to_string(), "2026-07-05T12:13:58Z");
+
+        // A single unparseable `sentAt` degrades that one field to `None`; the
+        // message (and thus the mailbox sync) still succeeds (issue #38).
+        let malformed = message_from_json(&serde_json::json!({
+            "id": "m2", "mailboxIds": { "inbox": true },
+            "sentAt": "not-a-date", "receivedAt": "2026-07-05T10:00:00Z",
+        }))
+        .unwrap();
+        assert!(malformed.sent_at.is_none());
+        assert!(malformed.received_at.is_some());
+
+        // An absent `sentAt` is `None`, unchanged.
+        let absent = message_from_json(&serde_json::json!({
+            "id": "m3", "mailboxIds": { "inbox": true },
+        }))
+        .unwrap();
+        assert!(absent.sent_at.is_none());
     }
 
     #[test]

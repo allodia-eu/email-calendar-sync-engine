@@ -80,6 +80,16 @@ specifics they implement against the Stalwart fixture. Read it before touching
   IMAP COPY surfaces in JMAP as **one** object with two `mailboxIds` (multi-
   membership), while the duplicate-`Message-ID` pair stays **two distinct**
   objects — `Message-ID` is a hint, never identity.
+- **Date-typed fields.** RFC 8620 §1.4 distinguishes `UTCDate` (Z-only) from
+  `Date` (a full RFC 3339 `date-time` that may carry a numeric offset). Honor the
+  distinction per property: `receivedAt` (and JSCalendar `created`/`updated`) are
+  `UTCDate` and parse strictly through `json::datetime`; **`sentAt`** is a `Date`
+  (RFC 8621 §4.1.1 — the message `Date` header, which servers such as Fastmail
+  emit in the sender's local offset), so `json::sent_at` parses it through
+  `UtcDateTime::parse_rfc3339` (accepts `Z` **or** `±hh:mm`, normalizing to UTC).
+  Blast radius: a malformed **optional** per-message field degrades that one field
+  (`sentAt` → `None`) and never aborts the mailbox sync — do not re-tighten it to a
+  `?` that raises a `Permanent` error for the whole page (issue #38).
 - **Submission.** `Email/set` creates the draft, `EmailSubmission/set` submits it
   (referencing the draft by creation id `#draft`), and `onSuccessUpdateEmail`
   files the sent copy (Drafts→Sent, clear `$draft`). Stalwart **requires an
