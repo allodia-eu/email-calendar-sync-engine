@@ -48,35 +48,27 @@ impl Provider for FakeJmap {
         ))
     }
 
-    async fn sync_email_page(
-        &self,
-        _account: &AccountId,
-        cursor: Option<&SyncState>,
-        page: Option<&PageToken>,
-        _limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        // One email in a single page: the continuation is always `None`.
-        assert!(page.is_none(), "fake yields a single page");
+    fn stream_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        _window: SyncWindow,
+        _fetch_batch: usize,
+        _chunk_size: usize,
+    ) -> EmailStream<'a> {
         let msg = Message::new(
             MessageId::try_from("eaaaaab").unwrap(),
             Memberships::of_one(MailboxId::try_from("a").unwrap()),
         );
         let key = msg.id.key().clone();
-        // A first sync (no cursor) is a snapshot; a later one is a delta.
-        let (kind, present) = if cursor.is_none() {
-            (SyncKind::Snapshot, vec![key])
+        // A first sync (no cursor) is a one-chunk reconciling snapshot (so the drain
+        // covers the tombstone path); a later one is an additive empty delta.
+        let chunk = if cursor.is_none() {
+            EmailChunk::reconcile_last(vec![msg], vec![key], Some(1), SyncState::new("email-2"))
         } else {
-            (SyncKind::Delta, vec![])
+            EmailChunk::additive(Vec::new(), Vec::new(), None, SyncState::new("email-2"))
         };
-        Ok(SyncPage {
-            kind,
-            changed: vec![msg],
-            removed: vec![],
-            present,
-            next_page: None,
-            next_cursor: SyncState::new("email-2"),
-            total: Some(1),
-        })
+        Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
 }
 
@@ -118,25 +110,29 @@ async fn provider_returns_scoped_updates_and_cursors() {
 }
 
 #[tokio::test]
-async fn email_page_primitive_drives_the_drain_default() {
+async fn email_stream_primitive_drives_the_drain_default() {
+    use futures_util::StreamExt;
+
     let provider = FakeJmap {
         caps: Capabilities::none().with_mail(),
     };
 
-    // The paged primitive: a first pass (no cursor) is a one-page snapshot
-    // that carries the ids it covers and its own progress total.
-    let page = provider
-        .sync_email_page(&account(), None, None, 50)
-        .await
-        .unwrap();
-    assert_eq!(page.kind, SyncKind::Snapshot);
-    assert_eq!(page.total, Some(1));
-    assert!(page.next_page.is_none());
-    assert_eq!(page.present.len(), 1);
-    assert_eq!(page.next_cursor.as_str(), "email-2");
+    // The streaming primitive: a first pass (no cursor) is a one-chunk reconciling
+    // snapshot that carries the ids it covers, its progress total, and the cursor.
+    let chunks: Vec<_> = provider
+        .stream_email(&account(), None, SyncWindow::full(), 50, 0)
+        .collect()
+        .await;
+    assert_eq!(chunks.len(), 1);
+    let chunk = chunks.into_iter().next().unwrap().unwrap();
+    assert_eq!(chunk.mode, PassMode::Reconcile);
+    assert_eq!(chunk.total, Some(1));
+    assert!(chunk.is_reconcile_final());
+    assert_eq!(chunk.present.len(), 1);
+    assert_eq!(chunk.advance_to.as_ref().unwrap().as_str(), "email-2");
 
-    // The default drain merges the page(s) back into one snapshot update,
-    // advancing to the final page's cursor — adapters implement only paging.
+    // The default drain merges the chunk(s) back into one snapshot update,
+    // advancing to the final chunk's cursor — adapters implement only streaming.
     let drained = provider.sync_email(&account(), None).await.unwrap();
     assert!(drained.is_snapshot());
     assert_eq!(drained.next_cursor.as_str(), "email-2");
@@ -183,6 +179,7 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
         mail::EmailAddress,
         raw::RawIcal,
     };
+    use futures_util::StreamExt;
 
     let email_scope = SyncScope::JmapType {
         account: account(),
@@ -203,11 +200,12 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
     assert_eq!(over.email_scope(&account()), email_scope);
     assert_eq!(over.mailbox_scope(&account()), mailbox_scope);
     assert!(over.sync_mailboxes(&account(), None).await.is_ok());
-    let page = over
-        .sync_email_page(&account(), None, None, 50)
-        .await
-        .unwrap();
-    assert_eq!(page.kind, SyncKind::Snapshot);
+    let chunks: Vec<_> = over
+        .stream_email(&account(), None, SyncWindow::full(), 50, 0)
+        .collect()
+        .await;
+    let chunk = chunks.into_iter().next().unwrap().unwrap();
+    assert_eq!(chunk.mode, PassMode::Reconcile);
     assert!(
         over.sync_email(&account(), None)
             .await
@@ -238,11 +236,17 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
             data_type: JmapDataType::CalendarEvent,
         }
     );
+    // The bare stream default yields a single classified `Err`, so a
+    // capability-checking caller never relies on it.
+    let stream_first = bare
+        .stream_email(&account(), None, SyncWindow::full(), 0, 0)
+        .next()
+        .await
+        .unwrap()
+        .unwrap_err();
     let rejected = [
         bare.sync_mailboxes(&account(), None).await.unwrap_err(),
-        bare.sync_email_page(&account(), None, None, 0)
-            .await
-            .unwrap_err(),
+        stream_first,
         bare.sync_email(&account(), None).await.unwrap_err(),
         bare.sync_calendars(&account(), None).await.unwrap_err(),
         bare.sync_events(&account(), None).await.unwrap_err(),

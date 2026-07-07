@@ -2,11 +2,27 @@
 //! snapshot pagination, raw message-source download, and error propagation —
 //! driven offline by the shared `provider_test_support` harness.
 
-use engine_core::sync::SyncUpdate;
-use engine_provider::SyncKind;
+use engine_core::sync::{SyncUpdate, SyncWindow};
+use engine_provider::{EmailChunk, EmailStream};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 
 use super::{provider_test_support::*, *};
+
+/// Drains an email chunk stream into its chunks, so a test can assert the pass's
+/// aggregate shape (the intra-pass paging is now the adapter's internal detail).
+async fn drain(mut stream: EmailStream<'_>) -> Vec<EmailChunk> {
+    let mut chunks = Vec::new();
+    while let Some(item) = stream.next().await {
+        chunks.push(item.unwrap());
+    }
+    chunks
+}
+
+/// The number of messages upserted across a drained pass's chunks.
+fn upserted(chunks: &[EmailChunk]) -> usize {
+    chunks.iter().map(|c| c.changed.len()).sum()
+}
 
 #[tokio::test]
 async fn message_source_downloads_the_blob_and_substitutes_the_template() {
@@ -97,28 +113,20 @@ fn email_query_page(ids: &[&str], total: usize) -> Value {
 
 #[tokio::test]
 async fn email_snapshot_pages_chain_until_exhausted() {
-    // Three emails over two pages of two: page one hands back a continuation
-    // token; page two, a short page, completes the pass.
+    // Three emails over two internal pages of two (fetch_batch = 2): the stream drains
+    // both and yields a reconciling pass whose present set covers all three.
     let p = provider(vec![
         email_query_page(&["e1", "e2"], 3),
         email_query_page(&["e3"], 3),
     ]);
 
-    let page1 = p.sync_email_page(&account(), None, None, 2).await.unwrap();
-    assert_eq!(page1.kind, SyncKind::Snapshot);
-    assert_eq!(page1.total, Some(3));
-    assert_eq!(page1.changed.len(), 2);
-    assert_eq!(page1.present.len(), 2);
-    let token = page1.next_page.expect("a full first page implies more");
-
-    // The opaque token resumes the pass at the next position.
-    let page2 = p
-        .sync_email_page(&account(), None, Some(&token), 2)
-        .await
-        .unwrap();
-    assert_eq!(page2.changed.len(), 1);
-    assert_eq!(page2.present.len(), 1);
-    assert!(page2.next_page.is_none(), "the snapshot pass is complete");
+    let chunks = drain(p.stream_email(&account(), None, SyncWindow::full(), 2, 0)).await;
+    assert_eq!(upserted(&chunks), 3);
+    let present: usize = chunks.iter().map(|c| c.present.len()).sum();
+    assert_eq!(present, 3, "every snapshot id rides the reconcile chunks");
+    // The pass total shows from the first commit; the last chunk tombstones+advances.
+    assert_eq!(chunks[0].total, Some(3));
+    assert!(chunks.last().unwrap().is_reconcile_final());
 }
 
 #[tokio::test]
@@ -139,18 +147,9 @@ async fn email_snapshot_without_total_pages_until_a_short_page() {
     };
     let p = provider(vec![page(&["e1", "e2"]), page(&["e3"])]);
 
-    let first = p.sync_email_page(&account(), None, None, 2).await.unwrap();
-    assert_eq!(first.total, None);
-    let token = first
-        .next_page
-        .expect("a full page implies more when no total is known");
-
-    let second = p
-        .sync_email_page(&account(), None, Some(&token), 2)
-        .await
-        .unwrap();
-    assert!(second.next_page.is_none(), "a short page ends the pass");
-    assert_eq!(second.changed.len(), 1);
+    let chunks = drain(p.stream_email(&account(), None, SyncWindow::full(), 2, 0)).await;
+    assert_eq!(chunks[0].total, None, "no total advertised");
+    assert_eq!(upserted(&chunks), 3, "both pages drained despite no total");
 }
 
 #[tokio::test]
@@ -173,21 +172,21 @@ async fn email_delta_pages_follow_has_more_changes() {
     });
     let p = provider(vec![page1, page2]);
 
-    let first = p
-        .sync_email_page(&account(), Some(&SyncState::new("s1")), None, 1)
-        .await
-        .unwrap();
-    assert_eq!(first.kind, SyncKind::Delta);
-    assert_eq!(first.changed.len(), 1);
-    let token = first.next_page.expect("hasMoreChanges → another page");
-
-    let second = p
-        .sync_email_page(&account(), Some(&SyncState::new("s1")), Some(&token), 1)
-        .await
-        .unwrap();
-    assert!(second.next_page.is_none(), "no more changes");
-    assert_eq!(second.removed.len(), 1);
-    assert_eq!(second.next_cursor.as_str(), "s3");
+    let chunks = drain(p.stream_email(
+        &account(),
+        Some(&SyncState::new("s1")),
+        SyncWindow::full(),
+        1,
+        0,
+    ))
+    .await;
+    // An additive delta: one created upsert, one destroyed key, advancing to s3.
+    assert_eq!(upserted(&chunks), 1);
+    let removed: usize = chunks.iter().map(|c| c.removed.len()).sum();
+    assert_eq!(removed, 1);
+    let last = chunks.last().unwrap();
+    assert!(!last.is_reconcile_final(), "a delta never tombstones");
+    assert_eq!(last.advance_to.as_ref().unwrap().as_str(), "s3");
 }
 
 #[tokio::test]

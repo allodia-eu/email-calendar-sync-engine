@@ -10,12 +10,12 @@ use engine_core::{
     ids::AccountId,
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{SyncScope, SyncState},
+    sync::{SyncScope, SyncState, SyncWindow},
 };
 
 use crate::{
-    Capabilities, Draft, EventDeletion, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
-    PageToken, Provider, ProviderResult, ScopeSync, SubmissionReceipt, SyncPage,
+    Capabilities, Draft, EmailStream, EventDeletion, EventWrite, EventWriteReceipt, MailEdit,
+    MailEditReceipt, Provider, ProviderResult, ScopeSync, SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -53,14 +53,19 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         (**self).sync_mailboxes(account, cursor).await
     }
 
-    async fn sync_email_page(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-        page: Option<&PageToken>,
-        limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        (**self).sync_email_page(account, cursor, page, limit).await
+    fn default_sync_window(&self) -> SyncWindow {
+        (**self).default_sync_window()
+    }
+
+    fn stream_email<'a>(
+        &'a self,
+        account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        window: SyncWindow,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        (**self).stream_email(account, cursor, window, fetch_batch, chunk_size)
     }
 
     async fn sync_email(

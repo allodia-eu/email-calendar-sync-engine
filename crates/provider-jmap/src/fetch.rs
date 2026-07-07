@@ -260,7 +260,7 @@ pub(crate) struct MemberFetch<'a> {
 }
 
 /// Fetches **one page** of a member type — the paged primitive behind
-/// [`engine_provider::Provider::sync_email_page`].
+/// [`engine_provider::Provider::stream_email`].
 ///
 /// `sort` is the `Foo/query` comparator array (e.g. `receivedAt` descending so a
 /// fresh sync surfaces recent objects first). `page` carries the continuation
@@ -275,6 +275,7 @@ pub(crate) async fn member_page<T>(
     cursor: Option<&SyncState>,
     page: Option<&PageToken>,
     limit: usize,
+    filter: Option<&Value>,
     normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
 ) -> Result<SyncPage<T>, JmapError> {
     let limit = clamp_limit(limit, fetch.executor.session().limits().max_objects_in_get);
@@ -282,17 +283,17 @@ pub(crate) async fn member_page<T>(
         // A continuation page: the token carries the mode and offset forward.
         Some(token) => match PageCursor::parse(token)? {
             PageCursor::Snapshot(position) => {
-                snapshot_page(fetch, sort, position, limit, normalize).await
+                snapshot_page(fetch, sort, position, limit, filter, normalize).await
             }
             PageCursor::Delta(since) => delta_page(fetch, &since, limit, normalize).await,
         },
         // The first page: a snapshot when there is no cursor, otherwise a delta
         // that recovers to a snapshot on `cannotCalculateChanges`.
         None => match cursor {
-            None => snapshot_page(fetch, sort, 0, limit, normalize).await,
+            None => snapshot_page(fetch, sort, 0, limit, filter, normalize).await,
             Some(since) => match delta_page(fetch, since, limit, normalize).await {
                 Err(e) if e.failure_class() == FailureClass::NeedsResync => {
-                    snapshot_page(fetch, sort, 0, limit, normalize).await
+                    snapshot_page(fetch, sort, 0, limit, filter, normalize).await
                 }
                 other => other,
             },
@@ -308,20 +309,24 @@ async fn snapshot_page<T>(
     sort: Value,
     position: usize,
     limit: usize,
+    filter: Option<&Value>,
     normalize: impl Fn(&Value) -> Result<T, JmapError>,
 ) -> Result<SyncPage<T>, JmapError> {
     let mut req = Request::new(fetch.using.iter().copied());
     let query_method = format!("{}/query", fetch.type_name);
-    let query = req.invoke(
-        query_method.clone(),
-        json!({
-            "accountId": fetch.account,
-            "sort": sort,
-            "position": position,
-            "limit": limit,
-            "calculateTotal": true,
-        }),
-    );
+    let mut query_args = json!({
+        "accountId": fetch.account,
+        "sort": sort,
+        "position": position,
+        "limit": limit,
+        "calculateTotal": true,
+    });
+    // A sync-depth window bounds the snapshot to recent mail via a `receivedAt`
+    // filter (RFC 8621 §4.4.1); a delta never applies it (new arrivals are recent).
+    if let (Some(filter), Some(args)) = (filter, query_args.as_object_mut()) {
+        args.insert("filter".to_owned(), filter.clone());
+    }
+    let query = req.invoke(query_method.clone(), query_args);
     let get = req.invoke(
         format!("{}/get", fetch.type_name),
         back_ref_get(

@@ -16,10 +16,15 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# `StreamExt` to drive the provider's email chunk stream in the streaming loop.
+futures-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 store-sqlite = { workspace = true }
+# `try_stream!` to build the fake providers' chunk streams in the sync tests.
+async-stream = { workspace = true }
+futures-util = { workspace = true }
 
 [lints]
 workspace = true

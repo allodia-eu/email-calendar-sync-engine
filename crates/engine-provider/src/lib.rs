@@ -26,6 +26,7 @@ mod capability;
 mod error;
 mod mail_edit;
 mod page;
+mod stream;
 mod submit;
 mod sync;
 mod watch;
@@ -40,11 +41,12 @@ use engine_core::{
     ids::AccountId,
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
 };
 pub use error::{ProviderError, ProviderResult};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use page::{PageToken, SyncKind, SyncPage};
+pub use stream::{EmailChunk, EmailStream, PassMode, split_page};
 pub use submit::{
     ContentIdError, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,
     SubmissionReceipt,
@@ -53,7 +55,7 @@ pub use sync::ScopeSync;
 pub use watch::{Watch, WatchEvent};
 
 /// Default page size [`Provider::sync_email`] uses to drain
-/// [`Provider::sync_email_page`]. Streaming callers pass their own, smaller limit
+/// [`Provider::stream_email`]. Streaming callers pass their own, smaller limit
 /// for a more responsive UI (see `engine-sync`).
 const DEFAULT_DRAIN_PAGE: usize = 500;
 
@@ -116,50 +118,61 @@ pub trait Provider: Send + Sync {
         ))
     }
 
-    /// Fetches **one page** of the account's mail objects since `cursor` — the
-    /// paged primitive every adapter implements.
+    /// The default sync window the **whole-scope** [`Provider::sync_email`]
+    /// convenience fetches under, when a caller does not stream with an explicit
+    /// one. Defaults to the full history; a provider whose depth is configured at
+    /// construction (IMAP `with_since`) overrides it. The streaming path takes its
+    /// window explicitly (see [`Provider::stream_email`]), so a host changes depth
+    /// per sync without reconnecting.
+    fn default_sync_window(&self) -> SyncWindow {
+        SyncWindow::full()
+    }
+
+    /// Streams one email sync pass since `cursor`, bounded by `window`, as
+    /// incremental [`EmailChunk`]s — the paged primitive every mail adapter
+    /// implements.
     ///
-    /// `page` is the opaque continuation from the previous page's
-    /// [`SyncPage::next_page`] (`None` starts the pass); `limit` bounds the page
-    /// size, and the adapter may clamp it to a protocol maximum (JMAP
-    /// `maxObjectsInGet`) and treats `0` as that maximum. A first pass (`cursor`
-    /// `None`, or when the provider can no longer compute a delta —
-    /// `cannotCalculateChanges`) is a [`SyncKind::Snapshot`]; each snapshot page
-    /// carries the ids it covers in [`SyncPage::present`] so the orchestrator can
-    /// tombstone at end of pass. All pages of one pass share
-    /// [`SyncPage::kind`]/[`SyncPage::total`]; [`SyncPage::next_cursor`] is only
-    /// meaningful on the final page.
+    /// The two knobs it separates (`store-and-sync.md`):
+    /// - `fetch_batch` bounds each **network round trip** (an IMAP `UID FETCH` window, a JMAP
+    ///   `Email/get` page, a Graph `$top`); `0` means the adapter's protocol maximum.
+    /// - `chunk_size` bounds how many messages accumulate before a chunk is **yielded** — the
+    ///   streaming granularity a host commits and renders; `0` means one chunk per batch.
     ///
-    /// [`Provider::sync_email`] drains this into one update; a responsive caller
-    /// drives it directly and applies each page as it lands (`engine-sync`). Mail
-    /// providers ([`Capabilities::mail`]) override this; the default rejects.
+    /// A large `fetch_batch` with a small `chunk_size` gives *both* few round trips
+    /// *and* row-as-it-arrives commits. The returned [`EmailStream`] borrows `self`
+    /// and the arguments; the adapter's fetch advances only as the stream is polled
+    /// (backpressure). Each chunk carries a [`PassMode`] and an optional
+    /// [`advance_to`](EmailChunk::advance_to) checkpoint telling the orchestrator
+    /// how to apply and how far to advance the cursor, so a killed cold sync resumes
+    /// (`store-and-sync.md`).
     ///
-    /// # Errors
-    ///
-    /// Returns a [`ProviderError`] classified per
-    /// [`FailureClass`](engine_core::error::FailureClass).
-    async fn sync_email_page(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-        page: Option<&PageToken>,
-        limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        let _ = (account, cursor, page, limit);
-        Err(ProviderError::invalid_state(
-            "provider does not support mail sync",
-        ))
+    /// Mail providers ([`Capabilities::mail`]) override this; the default yields a
+    /// single classified `Err`, so a capability-checking caller never relies on it.
+    fn stream_email<'a>(
+        &'a self,
+        account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        window: SyncWindow,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        let _ = (account, cursor, window, fetch_batch, chunk_size);
+        Box::pin(futures_util::stream::once(async {
+            Err(ProviderError::invalid_state(
+                "provider does not support mail sync",
+            ))
+        }))
     }
 
     /// Fetches the account's mail objects since `cursor` as a single combined
     /// update (a full snapshot when `cursor` is `None`, or when the provider can
     /// no longer compute a delta — JMAP `cannotCalculateChanges`).
     ///
-    /// This default **drains** [`Provider::sync_email_page`] page by page and
-    /// merges the pages into one [`ScopeSync`], so adapters implement only the
-    /// paged primitive. Callers that want a responsive, incrementally-applied sync
-    /// should drive [`Provider::sync_email_page`] directly (see `engine-sync`'s
-    /// streaming loop) rather than this whole-scope convenience.
+    /// This default **drains** [`Provider::stream_email`] into one [`ScopeSync`], so
+    /// adapters implement only the streaming primitive. Callers that want a
+    /// responsive, incrementally-applied sync drive [`Provider::stream_email`]
+    /// directly (see `engine-sync`'s streaming loop) rather than this whole-scope
+    /// convenience. It fetches under [`Provider::default_sync_window`].
     ///
     /// # Errors
     ///
@@ -170,29 +183,39 @@ pub trait Provider: Send + Sync {
         account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Message>> {
+        use futures_util::StreamExt;
+
         let mut changed = Vec::new();
         let mut removed = Vec::new();
         let mut present = BTreeSet::new();
-        let mut page_token: Option<PageToken> = None;
-        let kind;
-        let next_cursor;
-        loop {
-            let page = self
-                .sync_email_page(account, cursor, page_token.as_ref(), DEFAULT_DRAIN_PAGE)
-                .await?;
-            changed.extend(page.changed);
-            removed.extend(page.removed);
-            present.extend(page.present);
-            let Some(token) = page.next_page else {
-                kind = page.kind;
-                next_cursor = page.next_cursor;
-                break;
-            };
-            page_token = Some(token);
+        let mut mode = PassMode::Additive;
+        let mut next_cursor: Option<SyncState> = None;
+        let mut stream = self.stream_email(
+            account,
+            cursor,
+            self.default_sync_window(),
+            DEFAULT_DRAIN_PAGE,
+            0,
+        );
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            mode = chunk.mode;
+            changed.extend(chunk.changed);
+            removed.extend(chunk.removed);
+            present.extend(chunk.present);
+            if let Some(cursor) = chunk.advance_to {
+                next_cursor = Some(cursor);
+            }
         }
-        let update = match kind {
-            SyncKind::Snapshot => SyncUpdate::snapshot(changed, present),
-            SyncKind::Delta => SyncUpdate::delta(changed, removed),
+        let next_cursor = next_cursor.ok_or_else(|| {
+            ProviderError::invalid_state("email stream ended without a final cursor")
+        })?;
+        // A reconcile pass tombstones against the accumulated present set; an
+        // additive pass (cold backfill or delta) carries only explicit removals.
+        // For a first sync both are equivalent (nothing local to tombstone).
+        let update = match mode {
+            PassMode::Reconcile => SyncUpdate::snapshot(changed, present),
+            PassMode::Additive => SyncUpdate::delta(changed, removed),
         };
         Ok(ScopeSync::new(update, next_cursor))
     }

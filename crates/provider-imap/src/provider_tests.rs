@@ -3,9 +3,10 @@
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader},
     mail::{EmailAddress, MailboxRole},
-    sync::SyncScope,
+    sync::{SyncScope, SyncWindow},
 };
-use engine_provider::{Draft, Provider};
+use engine_provider::{Draft, EmailChunk, Provider};
+use futures_util::StreamExt;
 
 use super::{ImapConfig, ImapProvider};
 use crate::{
@@ -149,7 +150,7 @@ async fn sync_mailboxes_lists_folders_as_a_snapshot() {
 }
 
 #[tokio::test]
-async fn sync_email_page_returns_a_snapshot_page() {
+async fn a_first_sync_streams_a_resumable_backfill() {
     let select = "* 3 EXISTS\r\n* OK [UIDVALIDITY 1000] v\r\n\
                   * OK [UIDNEXT 4] n\r\na2 OK [READ-WRITE] done\r\n";
     let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
@@ -158,20 +159,35 @@ async fn sync_email_page_returns_a_snapshot_page() {
                  a3 OK FETCH done\r\n";
     let provider = connected_provider(script(&[GREETING, LOGIN_OK, select, fetch])).await;
 
-    let page = provider
-        .sync_email_page(&account(), None, None, 50)
-        .await
-        .unwrap();
-    assert_eq!(page.kind, engine_provider::SyncKind::Snapshot);
-    assert_eq!(page.changed.len(), 3);
-    assert_eq!(page.present.len(), 3);
-    assert!(page.next_page.is_none());
+    let account = account();
+    let mut stream = Box::pin(provider.stream_email(&account, None, SyncWindow::full(), 50, 0));
+    let mut chunks: Vec<EmailChunk> = Vec::new();
+    while let Some(item) = stream.next().await {
+        chunks.push(item.unwrap());
+    }
+    // A fresh cold backfill streams the content, then its completing chunk reconciles
+    // against the full present set (so a reset over a non-empty store tombstones stale
+    // rows). Here the three messages fit one fetch group — the last (only) chunk.
+    let last = chunks.last().unwrap();
+    assert!(
+        last.is_reconcile_final(),
+        "a fresh backfill reconciles on completion"
+    );
+    assert_eq!(
+        last.present.len(),
+        3,
+        "the full present set drives tombstoning"
+    );
+    let upserted: usize = chunks.iter().map(|c| c.changed.len()).sum();
+    assert_eq!(upserted, 3);
+    assert_eq!(last.advance_to.as_ref().unwrap().as_str(), "v1000;n4");
 }
 
 #[tokio::test]
-async fn the_drain_default_merges_pages_into_one_snapshot() {
-    // `sync_email` (the trait default) drains `sync_email_page`; with the seed
-    // fitting one window it is a single snapshot update.
+async fn the_drain_default_merges_a_first_sync_into_a_reconciling_snapshot() {
+    // `sync_email` (the trait default) drains `stream_email`; a fresh backfill's
+    // completing reconcile makes the drained update a snapshot (present-set driven), so
+    // a reset over an existing store tombstones — matching JMAP/Graph first-sync.
     let select = "* 3 EXISTS\r\n* OK [UIDVALIDITY 1000] v\r\n\
                   * OK [UIDNEXT 4] n\r\na2 OK [READ-WRITE] done\r\n";
     let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
@@ -181,7 +197,10 @@ async fn the_drain_default_merges_pages_into_one_snapshot() {
     let provider = connected_provider(script(&[GREETING, LOGIN_OK, select, fetch])).await;
 
     let sync = provider.sync_email(&account(), None).await.unwrap();
-    assert!(sync.is_snapshot());
+    assert!(
+        sync.is_snapshot(),
+        "a fresh backfill reconciles on completion"
+    );
     assert_eq!(sync.next_cursor.as_str(), "v1000;n4");
 }
 

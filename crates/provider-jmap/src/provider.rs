@@ -15,11 +15,11 @@ use engine_core::{
     ids::AccountId,
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{JmapDataType, SyncScope, SyncState},
+    sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{
-    Capabilities, Draft, PageToken, Provider, ProviderResult, ScopeSync, SubmissionReceipt,
-    SyncPage,
+    Capabilities, Draft, EmailChunk, EmailStream, PageToken, PassMode, Provider, ProviderResult,
+    ScopeSync, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
@@ -155,24 +155,84 @@ impl Provider for JmapProvider {
         .await?)
     }
 
-    async fn sync_email_page(
-        &self,
-        _account: &AccountId,
-        cursor: Option<&SyncState>,
-        page: Option<&PageToken>,
-        limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        let account = self.mail_account()?;
-        let fetch = MemberFetch {
-            executor: self.executor.as_ref(),
-            account: &account,
-            using: &[capability::CORE, capability::MAIL],
-            type_name: "Email",
-            properties: Some(EMAIL_PROPERTIES),
-        };
+    fn stream_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        window: SyncWindow,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
         // Newest-first, so a fresh sync surfaces recent mail before it finishes.
         let sort = json!([{ "property": "receivedAt", "isAscending": false }]);
-        Ok(fetch::member_page(&fetch, sort, cursor, page, limit, message_from_json).await?)
+        // A sync-depth window bounds a snapshot via `receivedAt` (RFC 8621 §4.4.1);
+        // a delta ignores it (new arrivals are recent by definition).
+        let filter = window
+            .floor()
+            .map(|date| json!({ "after": format!("{date}T00:00:00Z") }));
+        Box::pin(async_stream::try_stream! {
+            let account = self.mail_account()?;
+            let fetch = MemberFetch {
+                executor: self.executor.as_ref(),
+                account: &account,
+                using: &[capability::CORE, capability::MAIL],
+                type_name: "Email",
+                properties: Some(EMAIL_PROPERTIES),
+            };
+            // The JMAP round trip is atomic, so each page is fetched whole and
+            // re-chunked for incremental commit; intermediate chunks hold the cursor
+            // and a final marker advances it (JMAP is not cheaply resumable mid-pass).
+            let mut page_token: Option<PageToken> = None;
+            let mut mode: Option<PassMode> = None;
+            let mut total: Option<usize> = None;
+            let final_cursor = loop {
+                let page = fetch::member_page(
+                    &fetch,
+                    sort.clone(),
+                    cursor,
+                    page_token.as_ref(),
+                    fetch_batch,
+                    filter.as_ref(),
+                    message_from_json,
+                )
+                .await?;
+                total = total.or(page.total);
+                // Decide the pass mode once, from the first page. A JMAP page arrives
+                // whole and is not cheaply resumable mid-pass, so a snapshot (first
+                // sync or `cannotCalculateChanges`) reconciles — its present set
+                // tombstones absent rows; a delta is additive.
+                let pass_mode = *mode.get_or_insert(match page.kind {
+                    SyncKind::Snapshot => PassMode::Reconcile,
+                    SyncKind::Delta => PassMode::Additive,
+                });
+                let is_last = page.next_page.is_none();
+                let next_cursor = page.next_cursor.clone();
+                for chunk in split_page(
+                    pass_mode,
+                    page.changed,
+                    page.removed,
+                    page.present,
+                    total,
+                    chunk_size,
+                ) {
+                    yield chunk;
+                }
+                if is_last {
+                    break next_cursor;
+                }
+                page_token = page.next_page;
+            };
+            // The final marker carries the cursor (and, for reconcile, tombstones
+            // against the accumulated present set).
+            yield match mode.unwrap_or(PassMode::Additive) {
+                PassMode::Additive => {
+                    EmailChunk::additive(Vec::new(), Vec::new(), total, final_cursor)
+                }
+                PassMode::Reconcile => {
+                    EmailChunk::reconcile_last(Vec::new(), Vec::new(), total, final_cursor)
+                }
+            };
+        })
     }
 
     async fn sync_calendars(

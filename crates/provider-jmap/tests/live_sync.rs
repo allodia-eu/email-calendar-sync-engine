@@ -24,7 +24,7 @@ use engine_provider::Provider;
 use engine_recurrence::Horizon;
 use engine_search::MailQuery;
 use engine_store::{ManualClock, StoreRead, WorkerId};
-use engine_sync::{SyncProgress, sync_calendar, sync_mail, sync_mail_streamed};
+use engine_sync::{StreamTuning, SyncCommit, sync_calendar, sync_mail, sync_mail_streamed};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
@@ -230,17 +230,22 @@ async fn streamed_mail_sync_commits_pages_and_reports_progress() {
             .expect("store");
     let account = AccountId::try_from("live-stream").unwrap();
 
-    // Page size 3 over the (≥9) seed forces several pages; the closure sink records
-    // the running progress after each committed page.
-    let recorded: Mutex<Vec<SyncProgress>> = Mutex::new(Vec::new());
+    // Fetch batch 3 over the (≥9) seed forces several round trips; the observer
+    // records the running progress and scope after each committed chunk.
+    let recorded: Mutex<Vec<(usize, Option<usize>, SyncScope)>> = Mutex::new(Vec::new());
     let report = sync_mail_streamed(
         &provider,
         &store,
         &account,
         WorkerId::new("live-stream"),
         Duration::from_mins(5),
-        3,
-        &|progress: SyncProgress| recorded.lock().unwrap().push(progress),
+        StreamTuning::new(3, 0),
+        &|commit: &SyncCommit<'_>| {
+            recorded
+                .lock()
+                .unwrap()
+                .push((commit.fetched, commit.total, commit.scope.clone()));
+        },
     )
     .await
     .expect("sync_mail_streamed");
@@ -257,22 +262,22 @@ async fn streamed_mail_sync_commits_pages_and_reports_progress() {
     );
 
     let seq = recorded.lock().unwrap();
-    // Several pages committed incrementally, each firing one progress report.
+    // Several chunks committed incrementally, each firing one progress report.
     assert!(
         seq.len() >= 2,
-        "expected several committed pages, got {}",
+        "expected several committed chunks, got {}",
         seq.len()
     );
     // An intermediate report saw fewer than the full set — proof a host could
     // render mail mid-sync rather than only at the end.
     assert!(
-        seq.iter().any(|p| p.fetched < stored),
+        seq.iter().any(|(fetched, ..)| *fetched < stored),
         "expected an intermediate, pre-final progress report"
     );
     // Progress is monotonic, scoped to email, and ends at the full stored set
     // against a known denominator.
-    assert!(seq.windows(2).all(|w| w[0].fetched <= w[1].fetched));
-    assert!(seq.iter().all(|p| p.scope == email_scope));
-    assert_eq!(seq.last().unwrap().total, Some(stored));
-    assert_eq!(seq.last().unwrap().fetched, stored);
+    assert!(seq.windows(2).all(|w| w[0].0 <= w[1].0));
+    assert!(seq.iter().all(|(_, _, scope)| *scope == email_scope));
+    assert_eq!(seq.last().unwrap().1, Some(stored));
+    assert_eq!(seq.last().unwrap().0, stored);
 }

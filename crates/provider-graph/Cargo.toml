@@ -15,11 +15,13 @@ reqwest = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-# The sync-depth cutoff date for the `receivedDateTime` window on the initial delta.
-time = { workspace = true }
+# `async-stream` builds the `stream_email` chunk stream with `try_stream!`.
+async-stream = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+# `StreamExt` drains `stream_email` into its chunks in the offline tests.
+futures-util = { workspace = true }
 
 [lints]
 workspace = true

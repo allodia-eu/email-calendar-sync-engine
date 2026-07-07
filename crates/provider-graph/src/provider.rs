@@ -4,8 +4,8 @@
 //! Graph mail `delta` is per-folder (`jmap.md`/this crate's docs), so — like
 //! `provider-imap` — a [`GraphProvider`] is bound to a single folder: its
 //! [`email_scope`](Provider::email_scope) names that folder
-//! ([`SyncScope::GraphFolder`]) and [`sync_email_page`](Provider::sync_email_page)
-//! pages its `messages/delta`. The folder list syncs under the per-account
+//! ([`SyncScope::GraphFolder`]) and [`stream_email`](Provider::stream_email)
+//! streams its `messages/delta`. The folder list syncs under the per-account
 //! [`SyncScope::GraphFolderList`]. The cross-folder fan-out is the orchestrator's
 //! job.
 
@@ -16,10 +16,13 @@ use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{SyncScope, SyncState, SyncUpdate},
+    sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
+    time::CalendarDate,
 };
-use engine_provider::{Capabilities, PageToken, Provider, ProviderResult, ScopeSync, SyncPage};
-use time::Date;
+use engine_provider::{
+    Capabilities, EmailChunk, EmailStream, PageToken, PassMode, Provider, ProviderResult,
+    ScopeSync, SyncKind, split_page,
+};
 
 use crate::{fetch, transport::GraphClient};
 
@@ -36,9 +39,12 @@ pub struct GraphProvider {
     client: GraphClient,
     folder: MailboxId,
     capabilities: Capabilities,
-    /// The sync-depth cutoff: when set, the initial message snapshot is windowed to
-    /// messages received on or after this date (`None` syncs the whole folder).
-    since: Option<Date>,
+    /// The sync-depth cutoff the whole-scope drain ([`Provider::sync_email`]) syncs
+    /// under via [`Provider::default_sync_window`]: when set, its initial message
+    /// snapshot is windowed to messages received on or after this date (`None` syncs
+    /// the whole folder). The streaming [`Provider::stream_email`] takes its window
+    /// per call instead.
+    since: Option<CalendarDate>,
 }
 
 impl core::fmt::Debug for GraphProvider {
@@ -62,11 +68,12 @@ impl GraphProvider {
         }
     }
 
-    /// Windows the initial message snapshot to messages received on or after `since` (the
-    /// app's sync-depth cutoff), the Graph counterpart of `ImapConfig::with_since`. Later
-    /// incremental syncs follow the server's deltaLink, which carries the window.
+    /// Sets the default sync-depth cutoff for the whole-scope [`Provider::sync_email`]
+    /// drain: its initial message snapshot is windowed to messages received on or after
+    /// `since`. Later incremental syncs follow the server's deltaLink, which carries the
+    /// window. Streaming callers pass a window per call to [`Provider::stream_email`].
     #[must_use]
-    pub fn with_since(mut self, since: Date) -> Self {
+    pub fn with_since(mut self, since: CalendarDate) -> Self {
         self.since = Some(since);
         self
     }
@@ -105,14 +112,78 @@ impl Provider for GraphProvider {
         ))
     }
 
-    async fn sync_email_page(
-        &self,
-        _account: &AccountId,
-        cursor: Option<&SyncState>,
-        page: Option<&PageToken>,
-        _limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        Ok(fetch::messages_page(&self.client, &self.folder, cursor, page, self.since).await?)
+    /// The whole-scope [`Provider::sync_email`] drain windows under the cutoff fixed at
+    /// construction ([`GraphProvider::with_since`]); [`Provider::stream_email`] takes its
+    /// window per call.
+    fn default_sync_window(&self) -> SyncWindow {
+        self.since.map_or_else(SyncWindow::full, SyncWindow::since)
+    }
+
+    fn stream_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        window: SyncWindow,
+        // Graph consumer `messages/delta` page size is server-controlled (`graph.md`),
+        // so the fetch-batch knob has no lever here; each server page is drained whole.
+        _fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        // A sync-depth window bounds a snapshot via a `receivedDateTime` `$filter`; a
+        // delta ignores it (new arrivals are recent, and the deltaLink carries the
+        // window).
+        let floor = window.floor();
+        Box::pin(async_stream::try_stream! {
+            // Each Graph page is fetched whole over HTTP and re-chunked for incremental
+            // commit; intermediate chunks hold the cursor and a final marker advances it
+            // (a delta is not cheaply resumable mid-pass).
+            let mut page_token: Option<PageToken> = None;
+            let mut mode: Option<PassMode> = None;
+            let mut total: Option<usize> = None;
+            let final_cursor = loop {
+                let page = fetch::messages_page(
+                    &self.client,
+                    &self.folder,
+                    cursor,
+                    page_token.as_ref(),
+                    floor,
+                )
+                .await?;
+                total = total.or(page.total);
+                // Decide the pass mode once, from the first page: a snapshot (first sync)
+                // reconciles — its present set tombstones absent rows; a delta is additive.
+                let pass_mode = *mode.get_or_insert(match page.kind {
+                    SyncKind::Snapshot => PassMode::Reconcile,
+                    SyncKind::Delta => PassMode::Additive,
+                });
+                let is_last = page.next_page.is_none();
+                let next_cursor = page.next_cursor.clone();
+                for chunk in split_page(
+                    pass_mode,
+                    page.changed,
+                    page.removed,
+                    page.present,
+                    total,
+                    chunk_size,
+                ) {
+                    yield chunk;
+                }
+                if is_last {
+                    break next_cursor;
+                }
+                page_token = page.next_page;
+            };
+            // The final marker carries the cursor (and, for reconcile, tombstones against
+            // the accumulated present set).
+            yield match mode.unwrap_or(PassMode::Additive) {
+                PassMode::Additive => {
+                    EmailChunk::additive(Vec::new(), Vec::new(), total, final_cursor)
+                }
+                PassMode::Reconcile => {
+                    EmailChunk::reconcile_last(Vec::new(), Vec::new(), total, final_cursor)
+                }
+            };
+        })
     }
 
     async fn fetch_message_source(
@@ -129,13 +200,43 @@ impl Provider for GraphProvider {
 
 #[cfg(test)]
 mod tests {
+    use futures_util::StreamExt;
+    use serde_json::json as jval;
+
     use super::*;
     use crate::test_support::{fake_client, folder_routes, json};
 
     const SNAPSHOT: &str = include_str!("../tests/fixtures/mail/messages_delta_snapshot.json");
+    const CHANGED_FULL: &str =
+        include_str!("../tests/fixtures/mail/messages_delta_changed_full.json");
 
     fn account() -> AccountId {
         AccountId::try_from("acct-1").unwrap()
+    }
+
+    /// Drains an email chunk stream into its chunks, so a test asserts the pass's
+    /// aggregate shape (the intra-pass paging is the adapter's internal detail).
+    async fn drain(mut stream: EmailStream<'_>) -> Vec<EmailChunk> {
+        let mut chunks = Vec::new();
+        while let Some(item) = stream.next().await {
+            chunks.push(item.unwrap());
+        }
+        chunks
+    }
+
+    /// The number of messages upserted across a drained pass's chunks.
+    fn upserted(chunks: &[EmailChunk]) -> usize {
+        chunks.iter().map(|c| c.changed.len()).sum()
+    }
+
+    /// A synthetic `messages/delta` page: full messages (each carries `@odata.etag`, so
+    /// no re-fetch) plus the continuation link that decides whether the pass ends.
+    fn delta_page(ids: &[&str], link_key: &str, link: &str) -> serde_json::Value {
+        let value: Vec<serde_json::Value> = ids
+            .iter()
+            .map(|id| jval!({ "id": id, "parentFolderId": "folder-inbox", "@odata.etag": "e" }))
+            .collect();
+        jval!({ "value": value, link_key: link })
     }
 
     #[tokio::test]
@@ -167,9 +268,103 @@ mod tests {
         let folders = provider.sync_mailboxes(&account(), None).await.unwrap();
         assert!(folders.is_snapshot());
 
-        // The drain default pages `sync_email_page`; the single snapshot page holds 3.
+        // The whole-scope drain streams `stream_email`; the single snapshot page holds 3.
         let email = provider.sync_email(&account(), None).await.unwrap();
         assert!(email.is_snapshot());
+    }
+
+    #[tokio::test]
+    async fn snapshot_stream_reconciles_and_chunks_a_single_page() {
+        // The initial pass (no cursor) is a snapshot → a reconciling pass whose present
+        // set drives end-of-pass tombstoning. `chunk_size = 2` splits the 3-message page
+        // into two content chunks, then a final marker tombstones and advances.
+        let provider = GraphProvider::new(
+            fake_client(vec![("messages/delta", json(SNAPSHOT))]),
+            MailboxId::try_from("folder-inbox").unwrap(),
+        );
+
+        let chunks = drain(provider.stream_email(&account(), None, SyncWindow::full(), 0, 2)).await;
+        assert_eq!(upserted(&chunks), 3);
+        let present: usize = chunks.iter().map(|c| c.present.len()).sum();
+        assert_eq!(present, 3, "every snapshot id rides the reconcile chunks");
+        // Graph consumer delta advertises no total, and only the final chunk advances.
+        assert_eq!(chunks[0].total, None);
+        assert_eq!(
+            chunks.iter().filter(|c| c.advance_to.is_some()).count(),
+            1,
+            "intermediate chunks hold the cursor"
+        );
+        let last = chunks.last().unwrap();
+        assert!(last.is_reconcile_final());
+        assert!(
+            last.advance_to
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .contains("deltatoken")
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_stream_drains_multiple_pages() {
+        // Page one reports an `@odata.nextLink`; page two is terminal (`@odata.deltaLink`).
+        // The stream drains both before the final marker (skiptoken route first, so it
+        // wins over the initial `messages/delta` substring match).
+        let page1 = delta_page(
+            &["m1"],
+            "@odata.nextLink",
+            "https://graph.microsoft.com/v1.0/me/mailFolders/folder-inbox/messages/delta?$skiptoken=PAGE2",
+        );
+        let page2 = delta_page(
+            &["m2"],
+            "@odata.deltaLink",
+            "https://graph.microsoft.com/v1.0/me/mailFolders/folder-inbox/messages/delta?$deltatoken=FINAL",
+        );
+        let provider = GraphProvider::new(
+            fake_client(vec![("skiptoken=PAGE2", page2), ("messages/delta", page1)]),
+            MailboxId::try_from("folder-inbox").unwrap(),
+        );
+
+        let chunks = drain(provider.stream_email(&account(), None, SyncWindow::full(), 0, 0)).await;
+        assert_eq!(upserted(&chunks), 2, "both pages drained");
+        let present: usize = chunks.iter().map(|c| c.present.len()).sum();
+        assert_eq!(present, 2);
+        let last = chunks.last().unwrap();
+        assert!(last.is_reconcile_final());
+        assert!(
+            last.advance_to
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .contains("deltatoken=FINAL")
+        );
+    }
+
+    #[tokio::test]
+    async fn delta_stream_is_additive_and_advances_to_the_delta_link() {
+        // A pass resumed from a cursor is a delta → additive (never tombstones). A full
+        // changed entry (with `@odata.etag`) is used directly, and the terminal
+        // `@odata.deltaLink` becomes the advanced cursor.
+        let cursor = SyncState::new("https://graph.test/me/mailFolders/folder-inbox/delta-token-1");
+        let provider = GraphProvider::new(
+            fake_client(vec![("delta-token-1", json(CHANGED_FULL))]),
+            MailboxId::try_from("folder-inbox").unwrap(),
+        );
+
+        let chunks =
+            drain(provider.stream_email(&account(), Some(&cursor), SyncWindow::full(), 0, 0)).await;
+        assert_eq!(upserted(&chunks), 1);
+        assert_eq!(chunks.iter().map(|c| c.present.len()).sum::<usize>(), 0);
+        let last = chunks.last().unwrap();
+        assert_eq!(last.mode, PassMode::Additive);
+        assert!(!last.is_reconcile_final(), "a delta never tombstones");
+        assert!(
+            last.advance_to
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .contains("deltatoken")
+        );
     }
 
     /// Drains the snapshot to a real [`Message`] whose provider key drives the

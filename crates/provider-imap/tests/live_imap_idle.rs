@@ -76,12 +76,12 @@ async fn live_idle_pushes_a_change_notification() {
     // message's key (the toggle target). The key is from this same connection, so its
     // UIDVALIDITY is current for the edit.
     let mutator = connect(&harness, "Idle").await;
-    let page = mutator
-        .sync_email_page(&account, None, None, 10)
-        .await
-        .expect("sync Idle");
-    let key = page
-        .changed
+    let sync = mutator.sync_email(&account, None).await.expect("sync Idle");
+    let changed = match &sync.update {
+        engine_core::sync::SyncUpdate::Delta { changed, .. } => changed,
+        engine_core::sync::SyncUpdate::Snapshot { objects, .. } => objects,
+    };
+    let key = changed
         .first()
         .expect("Idle was seeded with one message")
         .id

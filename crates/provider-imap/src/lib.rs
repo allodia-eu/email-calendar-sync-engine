@@ -17,8 +17,8 @@
 //!   [`SyncScope::ImapMailbox`](engine_core::sync::SyncScope) per folder. So an [`ImapProvider`] is
 //!   **bound to a single mailbox** for email: its
 //!   [`email_scope`](engine_provider::Provider::email_scope) names that mailbox, and
-//!   [`sync_email_page`](engine_provider::Provider::sync_email_page) is a UID-window `FETCH` over
-//!   it. The folder list syncs under the per-account
+//!   [`stream_email`](engine_provider::Provider::stream_email) is a UID-window `FETCH` over it. The
+//!   folder list syncs under the per-account
 //!   [`SyncScope::ImapMailboxList`](engine_core::sync::SyncScope). The cross-folder fan-out is the
 //!   later orchestrator's job.
 //! - **Identity is synthesized.** A mail object's key is `(mailbox, UIDVALIDITY, UID)`, so an IMAP
@@ -59,6 +59,7 @@ mod cursor;
 mod encoded_word;
 mod error;
 mod fetch;
+mod fetch_stream;
 mod filing;
 mod idle;
 mod mail;
@@ -69,6 +70,7 @@ mod preview;
 mod provider;
 mod qresync;
 mod smtp;
+mod stream;
 mod sync;
 mod target;
 mod tokenize;

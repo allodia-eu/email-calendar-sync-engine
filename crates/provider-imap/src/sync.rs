@@ -1,5 +1,5 @@
 //! IMAP snapshot/delta paging — the per-mailbox sync logic behind
-//! [`Provider::sync_email_page`](engine_provider::Provider::sync_email_page).
+//! [`Provider::stream_email`](engine_provider::Provider::stream_email).
 //!
 //! Each call `SELECT`s the bound mailbox (reading its current `UIDVALIDITY`/
 //! `UIDNEXT`) and fetches one **UID window**, newest UIDs first, so a streaming host
@@ -50,6 +50,10 @@ pub(crate) const FETCH_ITEMS: &str = concat!(
 /// `UID SEARCH SINCE`), so a large mailbox syncs just recent messages. It never
 /// narrows a delta — new arrivals are recent by definition — nor changes paging once
 /// the floor is set.
+// The streaming path drives [`sync_page_selected`] directly with its own `SELECT`;
+// this `SELECT`-and-page wrapper now exists only to exercise that page logic in the
+// offline `sync_tests`.
+#[cfg(test)]
 pub(crate) async fn sync_page<S>(
     conn: &mut Connection<S>,
     mailbox: &MailboxId,
@@ -69,12 +73,34 @@ where
     } else {
         conn.select(mailbox.as_str()).await?
     };
-    let uid_validity = select.uid_validity;
     let uid_next = effective_uid_next(conn, &select).await?;
+    sync_page_selected(conn, mailbox, &select, uid_next, cursor, page, limit, since).await
+}
+
+/// The page logic **after** the `SELECT`, taking already-read [`SelectData`] and the
+/// resolved `UIDNEXT` — so a caller that has already selected the mailbox (the
+/// streaming path) drives the delta/reset page without a redundant second `SELECT`.
+#[allow(clippy::too_many_arguments)] // the post-SELECT page inputs are all distinct
+pub(crate) async fn sync_page_selected<S>(
+    conn: &mut Connection<S>,
+    mailbox: &MailboxId,
+    select: &SelectData,
+    uid_next: u32,
+    cursor: Option<&SyncState>,
+    page: Option<&PageToken>,
+    limit: usize,
+    since: Option<&str>,
+) -> ImapResult<SyncPage<Message>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let qresync = conn.qresync_enabled();
+    let uid_validity = select.uid_validity;
     let next_cursor = MailboxCursor {
         uid_validity,
         uid_next,
         highest_modseq: select.highest_modseq,
+        backfill_low: None,
     }
     .encode();
 
@@ -305,7 +331,7 @@ where
 /// Compacts a **sorted-ascending** UID list into an IMAP sequence-set (`5,7,10:12`),
 /// collapsing contiguous runs into ranges so the `UID FETCH` command stays short even
 /// for a few hundred UIDs.
-fn uid_set_spec(sorted: &[u32]) -> String {
+pub(crate) fn uid_set_spec(sorted: &[u32]) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut index = 0;
     while index < sorted.len() {
@@ -342,7 +368,10 @@ fn empty_page(kind: SyncKind, next_cursor: SyncState, total: Option<usize>) -> S
 
 /// The mailbox's `UIDNEXT`: the advertised value, or — when the server omits it —
 /// one past the highest existing UID (`1` for an empty mailbox).
-async fn effective_uid_next<S>(conn: &mut Connection<S>, select: &SelectData) -> ImapResult<u32>
+pub(crate) async fn effective_uid_next<S>(
+    conn: &mut Connection<S>,
+    select: &SelectData,
+) -> ImapResult<u32>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {

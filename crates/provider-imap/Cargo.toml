@@ -18,6 +18,10 @@ engine-mime = { workspace = true }
 # so the offline tests drive it over an in-memory duplex with no socket or TLS.
 tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
 tokio-rustls = { workspace = true }
+# `try_stream!` builds the resumable, incremental email chunk stream; `futures-util`
+# drives the inner streamed FETCH loop.
+async-stream = { workspace = true }
+futures-util = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 # Parsing IMAP `INTERNALDATE` (`dd-Mon-yyyy hh:mm:ss +zzzz`) into a UTC instant

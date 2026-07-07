@@ -10,10 +10,15 @@ publish.workspace = true
 engine-core = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
+# `futures-core` for the `Stream` in the email streaming primitive's return type;
+# `futures-util` for the drain default that collects the stream into one update.
+futures-core = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
+futures-util = { workspace = true }
 
 [lints]
 workspace = true

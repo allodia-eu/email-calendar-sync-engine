@@ -73,6 +73,19 @@ account-wide message delta, so sync is per folder.
   follows the doc verbatim: initial `messages/delta` with `$select`, drain
   `@odata.nextLink` to the terminal `@odata.deltaLink` (the persisted cursor),
   following the returned URLs as-is since the token encodes the `$select`.
+- **Streaming + sync-depth window.** `stream_email` streams the folder's mail as
+  `EmailChunk`s: each `messages/delta` page is fetched whole over HTTP and re-chunked
+  with `split_page` — a first-sync snapshot into `Reconcile` chunks (whose accumulated
+  `present` set tombstones absent rows at end of pass), a delta into `Additive` chunks —
+  and a final marker chunk carries the `@odata.deltaLink` cursor. A consumer delta is
+  not cheaply resumable mid-pass, so intermediate chunks **hold** the cursor and a crash
+  re-runs the pass. A `SyncWindow { since }` passed **per sync** bounds the initial
+  snapshot via a `receivedDateTime ge` `$filter`, so a large folder syncs only recent
+  mail; a delta ignores it (new arrivals are recent, and the deltaLink carries the
+  window). `GraphProvider::with_since` survives only as the `default_sync_window` the
+  whole-scope `sync_email` drain fetches under. The `chunk_size` knob is the commit
+  granularity; the `fetch_batch` knob has no lever yet (page size is server-controlled —
+  see Known limitations).
 - **Keyword/revision mapping.** `isRead`→`$seen`, `isDraft`→`$draft`,
   `flag.flagStatus == "flagged"`→`$flagged`; `internetMessageId` is preserved
   bracket-stripped as a threading hint (never identity); `conversationId`→thread
@@ -132,7 +145,7 @@ shared mailboxes; verification awaits a work/school account.)
 - **Page size is server-controlled.** The delta cycle drains every server page
   (correct), but the adapter does not yet send `Prefer: odata.maxpagesize` — the
   page-size control the delta-query-messages doc documents — so it ignores the
-  `sync_email_page` `limit`. A follow-up for responsive streaming. (`$top` does
+  `stream_email` `fetch_batch`. A follow-up for responsive streaming. (`$top` does
   *not* paginate consumer delta, which is why the header is the right lever.)
 - **National clouds aren't auto-rebased.** `with_base` rebasing rewrites only the
   commercial-cloud origin (`graph.microsoft.com/v1.0`); links a national-cloud

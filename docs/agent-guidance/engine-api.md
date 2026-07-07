@@ -14,7 +14,9 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - An [`Engine`] owns **one durable [`SqliteStore`]** driven by a host wall clock
   ([`SystemClock`]), and exposes high-level operations over it.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
-  (or `sync_mail_streamed` for live progress); read with `mailboxes` / `messages` /
+  (or `sync_mail_streamed` — or the per-folder `sync_mailbox_list` +
+  `sync_folder_email_streamed` — for live progress and change events); read with
+  `mailboxes` / `messages` /
   `calendars` / `events` and `search_mail` / `search_calendar` (which now also
   matches fetched **body** text); open a message with `message_body` (fetch-on-demand;
   caches the raw bytes on disk and the extracted text in SQLite, so reopen is a fast
@@ -83,7 +85,9 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   future slice wants transparent serialization, add a per-account async lock in the
   facade — do not widen `run_scope` to swallow `ScopeHeld`.
 - **Re-export signature types.** Types that appear in the facade's own signatures
-  (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`) are
+  (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
+  streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,
+  `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `CalendarDate`) are
   re-exported so a host depends on `engine-api` alone. The concrete provider still
   comes from the adapter crate.
 - **Display-side timezone resolution.** `resolve_instant` / `resolve_instant_in` /
@@ -125,13 +129,22 @@ Step 6 lands in small, tested slices. Order and status:
    `CalendarWriteOutcome` / op id; a host builds the create body with
    `provider_caldav::build_event_ical` (the write types are re-exported from
    `engine-api`). A `412` precondition failure surfaces as a `Conflict` (`caldav.md`).
-4. **Streaming progress — _done_.** `Engine::sync_mail_streamed` drives
-   `engine-sync`'s `sync_mail_streamed`: the email scope commits page by page under one
-   lease, reporting `SyncProgress { scope, fetched, total }` to the host's
-   `ProgressSink` after each committed page — so a UI shows recent mail and a
-   "downloaded Y of X" bar before the sync finishes. Only the final page advances the
-   cursor (a mid-stream crash re-runs the pass idempotently). A closure is a sink via
-   the blanket `ProgressSink for Fn(SyncProgress)` impl.
+4. **Streaming sync — _done_.** `Engine::sync_mail_streamed(provider, account, tuning,
+   observer)` drives `engine-sync`'s `sync_mail_streamed`: the email scope commits
+   **chunk by chunk** under one lease, reporting a `SyncCommit { scope, fetched, total,
+   upserted, removed }` to the host's `SyncObserver` after each committed chunk — so a
+   UI shows recent mail and a "downloaded Y of X" bar before the sync finishes **and**
+   splices its list from the exact `upserted`/`removed` rows without re-querying the
+   mailbox. An additive pass (cold backfill or delta) checkpoints the cursor per chunk,
+   so a mid-stream crash resumes where it stopped; a reconcile re-snapshot holds the
+   cursor until its tombstoning final chunk (`store-and-sync.md`). `StreamTuning` sets
+   the per-sync depth `window` and decouples the fetch batch (round trips) from the
+   chunk size (commit granularity). For a **concurrent per-folder fan-out** (IMAP/Graph)
+   `Engine::sync_mailbox_list` syncs the folder list once and
+   `Engine::sync_folder_email_streamed` streams each folder's mail in parallel, all
+   reporting into one observer — e.g. `AccountProgress`, which folds per-folder commits
+   into a single account-level "downloaded Y of X". A closure is a `SyncObserver` via
+   the blanket impl, and `IgnoreCommits` is the no-op sink.
 5. **Bindings.** `bindings-uniffi` (Kotlin/Swift) and `bindings-ffi-c` (C ABI)
    over `engine-api`. These need `unsafe`/codegen, so they override the workspace
    `unsafe_code = "forbid"` lint locally (isolated + documented, per `AGENTS.md`),
@@ -177,8 +190,8 @@ mail/event with complete coverage, a malformed query is `ApiError::Query`, and a
 unsynced account returns an empty answer. A `SubmittingProvider` then exercises the
 outbox facade: a successful `submit_mail` commits the op `Succeeded` (read back via
 `pending_op_state`), a failed send surfaces as `ApiError::Sync`, and an unknown op id
-reads back `None`. A streamed `sync_mail_streamed` with a closure sink then asserts
-one progress event lands with `fetched == total == 2`. Run the standard gate (`AGENTS.md`):
+reads back `None`. A streamed `sync_mail_streamed` with a closure observer then asserts
+one `SyncCommit` lands with `fetched == total == 2`. Run the standard gate (`AGENTS.md`):
 `cargo +nightly fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own
 lines are 100%-covered by these tests (no live provider needed).
