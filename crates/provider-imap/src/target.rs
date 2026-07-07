@@ -13,8 +13,7 @@ use engine_core::ids::ProviderKey;
 use engine_provider::{ProviderError, ProviderResult};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::mail::parse_message_key;
-use crate::transport::Connection;
+use crate::{mail::parse_message_key, transport::Connection};
 
 /// How to open the target mailbox: `ReadWrite` (`SELECT`) for a mutation, or
 /// `ReadOnly` (`EXAMINE`) for a non-mutating read so the peek takes no write-intent
@@ -30,10 +29,10 @@ pub(crate) enum Access {
 ///
 /// # Errors
 ///
-/// - [`ProviderError::invalid_state`] if `key` is not a parseable IMAP key or its
-///   mailbox name carries a control character.
-/// - [`ProviderError::conflict`] if the mailbox's `UIDVALIDITY` no longer matches
-///   the key's (stale key; re-sync first).
+/// - [`ProviderError::invalid_state`] if `key` is not a parseable IMAP key or its mailbox name
+///   carries a control character.
+/// - [`ProviderError::conflict`] if the mailbox's `UIDVALIDITY` no longer matches the key's (stale
+///   key; re-sync first).
 /// - A classified [`ProviderError`] from the underlying `SELECT`/`EXAMINE`.
 pub(crate) async fn select_target<'k, S>(
     connection: &mut Connection<S>,

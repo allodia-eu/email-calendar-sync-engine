@@ -29,16 +29,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use engine_core::ids::MailboxId;
 use engine_provider::{ProviderError, ProviderResult, Watch, WatchEvent};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
-use tokio::time::{Instant, timeout};
-use tokio_rustls::TlsConnector;
-use tokio_rustls::client::TlsStream;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+    time::{Instant, timeout},
+};
+use tokio_rustls::{TlsConnector, client::TlsStream};
 
-use crate::ImapConfig;
-use crate::idle;
-use crate::provider::connect_session;
-use crate::transport::Connection;
+use crate::{ImapConfig, idle, provider::connect_session, transport::Connection};
 
 /// The recommended IMAP `IDLE` keep-alive interval (28 minutes) — a margin under
 /// RFC 2177's guidance to re-issue `IDLE` at least every 29 minutes so the server does

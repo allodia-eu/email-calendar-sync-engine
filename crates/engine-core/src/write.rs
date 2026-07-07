@@ -7,22 +7,18 @@
 //!
 //! Invariants this contract encodes:
 //!
-//! - **Idempotent enqueue** — each op carries an [`IdempotencyKey`]; re-enqueuing
-//!   the same key returns the existing [`PendingOpId`] rather than duplicating.
-//! - **Dependencies** — an op may `depends_on` earlier ops, so offline
-//!   create-then-edit flows order correctly; a [`CreationId`] stands in for a
-//!   provider id that is not yet known.
-//! - **Serialized resources** — ops sharing a [`ResourceKey`] are not run
-//!   concurrently.
+//! - **Idempotent enqueue** — each op carries an [`IdempotencyKey`]; re-enqueuing the same key
+//!   returns the existing [`PendingOpId`] rather than duplicating.
+//! - **Dependencies** — an op may `depends_on` earlier ops, so offline create-then-edit flows order
+//!   correctly; a [`CreationId`] stands in for a provider id that is not yet known.
+//! - **Serialized resources** — ops sharing a [`ResourceKey`] are not run concurrently.
 //! - **Ambiguous sends never blind-retry** — an ambiguous outcome enters
 //!   [`PendingOutcome::NeedsConfirmation`], distinct from a plain failure.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::FailureClass;
-use crate::ids::ProviderKey;
-use crate::time::Duration;
+use crate::{error::FailureClass, ids::ProviderKey, time::Duration};
 
 /// Defines a non-empty string newtype used by the write contract.
 macro_rules! nonempty_str {
@@ -170,8 +166,9 @@ pub enum PendingOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn keys_reject_empty() {

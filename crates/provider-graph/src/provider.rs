@@ -12,15 +12,16 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
-use engine_core::ids::{AccountId, MailboxId, ProviderKey};
-use engine_core::mail::{Mailbox, Message};
-use engine_core::raw::RawMime;
-use engine_core::sync::{SyncScope, SyncState, SyncUpdate};
+use engine_core::{
+    ids::{AccountId, MailboxId, ProviderKey},
+    mail::{Mailbox, Message},
+    raw::RawMime,
+    sync::{SyncScope, SyncState, SyncUpdate},
+};
 use engine_provider::{Capabilities, PageToken, Provider, ProviderResult, ScopeSync, SyncPage};
 use time::Date;
 
-use crate::fetch;
-use crate::transport::GraphClient;
+use crate::{fetch, transport::GraphClient};
 
 /// The folder list is re-discovered as a snapshot each pass (`GET /me/mailFolders`),
 /// so it carries no provider cursor of its own — like IMAP's folder list.

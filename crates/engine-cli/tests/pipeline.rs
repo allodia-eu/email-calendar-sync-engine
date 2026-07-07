@@ -4,11 +4,13 @@
 use engine_cli::{
     Fixture, Horizon, ingest, open_in_memory, reexpand_calendar, search_calendar, search_mail,
 };
-use engine_core::calendar::{Event, Frequency, Recurrence, RecurrenceRule};
-use engine_core::ids::{AccountId, CalendarId, EventId, MailboxId, MessageId, Uid};
-use engine_core::mail::{EmailAddress, Message};
-use engine_core::membership::Memberships;
-use engine_core::time::{CalendarDateTime, LocalDateTime, TimeZoneId, UtcDateTime};
+use engine_core::{
+    calendar::{Event, Frequency, Recurrence, RecurrenceRule},
+    ids::{AccountId, CalendarId, EventId, MailboxId, MessageId, Uid},
+    mail::{EmailAddress, Message},
+    membership::Memberships,
+    time::{CalendarDateTime, LocalDateTime, TimeZoneId, UtcDateTime},
+};
 
 fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()

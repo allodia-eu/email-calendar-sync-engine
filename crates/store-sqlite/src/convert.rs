@@ -7,10 +7,12 @@
 
 use core::time::Duration;
 
-use engine_core::search_index::{AddressField, MembershipKind, ParticipantField};
-use engine_core::sync::SyncScope;
-use engine_core::time::UtcDateTime;
-use engine_core::write::PendingOpId;
+use engine_core::{
+    search_index::{AddressField, MembershipKind, ParticipantField},
+    sync::SyncScope,
+    time::UtcDateTime,
+    write::PendingOpId,
+};
 use engine_store::{PendingOpState, Result, StoreError};
 
 /// Wraps any backend failure (rusqlite, serde, integer range) as a redacted
@@ -142,9 +144,12 @@ pub(crate) fn op_id_from_i64(id: i64) -> Result<PendingOpId> {
 
 #[cfg(test)]
 mod tests {
+    use engine_core::{
+        ids::AccountId,
+        sync::{JmapDataType, SyncScope},
+    };
+
     use super::*;
-    use engine_core::ids::AccountId;
-    use engine_core::sync::{JmapDataType, SyncScope};
 
     fn instant(text: &str) -> UtcDateTime {
         text.parse().expect("valid instant")

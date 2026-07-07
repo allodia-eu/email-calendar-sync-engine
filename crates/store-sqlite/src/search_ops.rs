@@ -4,12 +4,11 @@
 //! this module is the SQLite half (`north-star.md` Search Contract). It compiles a
 //! [`MailQuery`]/[`CalendarQuery`] into:
 //!
-//! - a **structured-filter predicate** over the normalized scalar and junction
-//!   tables (address/participant/membership lookups, scalar flags, date and
-//!   occurrence ranges) — exact, indexed equality, AND across filters and OR
-//!   within a repeated one;
-//! - an optional **FTS5 `MATCH`** over `fts_index`, ranked by `bm25()`, for the
-//!   free-text and `subject:`/`location:` terms;
+//! - a **structured-filter predicate** over the normalized scalar and junction tables
+//!   (address/participant/membership lookups, scalar flags, date and occurrence ranges) — exact,
+//!   indexed equality, AND across filters and OR within a repeated one;
+//! - an optional **FTS5 `MATCH`** over `fts_index`, ranked by `bm25()`, for the free-text and
+//!   `subject:`/`location:` terms;
 //!
 //! then fuses the ranked candidate sources with reciprocal-rank fusion
 //! (`engine_search::fuse`). Vector KNN is a later, feature-gated source that joins
@@ -19,10 +18,9 @@
 //! Address values are normalized with the same `engine_core::search_index`
 //! function the projection used, so a query address matches the stored one.
 
-use engine_core::coverage::SearchCoverage;
-use engine_core::ids::ProviderKey;
-use engine_core::search_index::normalize_addr;
-use engine_core::time::CalendarDate;
+use engine_core::{
+    coverage::SearchCoverage, ids::ProviderKey, search_index::normalize_addr, time::CalendarDate,
+};
 use engine_search::{
     CalendarQuery, MailQuery, RrfK, SearchHit, SearchResults, TextField, TextQuery, assemble, fuse,
 };
@@ -488,8 +486,9 @@ fn run(conn: &Connection, sql: &str, params: &[Param]) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use engine_search::ScopedTerm;
+
+    use super::*;
 
     /// Each term becomes a quoted-phrase prefix query (`"term"*`); scoped terms
     /// keep their column filter. This is the search-as-you-type form, so a typed

@@ -10,24 +10,27 @@
 //! wall-clock time. Recurrence (rule + overrides) maps into the structural
 //! [`Recurrence`] the expander consumes.
 
+use core::num::{NonZeroI32, NonZeroU32};
 use std::collections::{BTreeMap, BTreeSet};
 
-use core::num::{NonZeroI32, NonZeroU32};
-
-use engine_core::calendar::{
-    Calendar, Event, EventStatus, FreeBusyStatus, Frequency, Location, NDay, Participant,
-    ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound, RecurrenceOverride,
-    RecurrenceRule, VirtualLocation, Weekday,
+use engine_core::{
+    calendar::{
+        Calendar, Event, EventStatus, FreeBusyStatus, Frequency, Location, NDay, Participant,
+        ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
+        RecurrenceOverride, RecurrenceRule, VirtualLocation, Weekday,
+    },
+    ids::{CalendarId, EventId, Uid},
+    membership::Memberships,
+    patch::PatchObject,
+    raw::RawJsCalendar,
+    time::{CalendarDate, CalendarDateTime, Duration, LocalDateTime, TimeZoneId},
 };
-use engine_core::ids::{CalendarId, EventId, Uid};
-use engine_core::membership::Memberships;
-use engine_core::patch::PatchObject;
-use engine_core::raw::RawJsCalendar;
-use engine_core::time::{CalendarDate, CalendarDateTime, Duration, LocalDateTime, TimeZoneId};
 use serde_json::Value;
 
-use crate::error::JmapError;
-use crate::json::{datetime, opt_str, req_str, true_keys, wrap_id};
+use crate::{
+    error::JmapError,
+    json::{datetime, opt_str, req_str, true_keys, wrap_id},
+};
 
 /// Normalizes one JMAP `Calendar` object into a [`Calendar`] container.
 ///

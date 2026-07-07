@@ -9,9 +9,11 @@
 
 use std::collections::HashSet;
 
-use engine_core::calendar::ParticipationStatus;
-use engine_core::ids::{ProviderKey, ThreadId};
-use engine_core::search_index::{EventParticipantRow, FtsField, MailAddressRow, MembershipRow};
+use engine_core::{
+    calendar::ParticipationStatus,
+    ids::{ProviderKey, ThreadId},
+    search_index::{EventParticipantRow, FtsField, MailAddressRow, MembershipRow},
+};
 use engine_store::{DerivedWrite, IndexRowCounts, MailIndexEntry, Result};
 use rusqlite::{Connection, Transaction};
 
@@ -326,14 +328,16 @@ fn count_for_key(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use engine_core::ids::{AccountId, ProviderKey};
-    use engine_core::search_index::FtsRow;
-    use engine_core::sync::{JmapDataType, SyncScope};
-    use engine_core::time::UtcDateTime;
+    use engine_core::{
+        ids::{AccountId, ProviderKey},
+        search_index::FtsRow,
+        sync::{JmapDataType, SyncScope},
+        time::UtcDateTime,
+    };
     use engine_store::{FtsField, OccurrenceRow, TzdataVersion, WorkerId};
     use rusqlite::Connection;
 
+    use super::*;
     use crate::scope_ops::{OwnedUpdate, apply, claim, maintenance};
 
     fn instant(text: &str) -> UtcDateTime {

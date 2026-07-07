@@ -11,14 +11,14 @@
 use engine_api::{
     AccountId, ApiError, Engine, Horizon, PendingOpId, PendingOpState, SyncProgress, TimeZoneId,
 };
-use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::{
-    CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, ThreadId, Uid,
+use engine_core::{
+    calendar::{Calendar, Event},
+    ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, ThreadId, Uid},
+    mail::{EmailAddress, Mailbox, MailboxRole, Message},
+    membership::Memberships,
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+    time::{CalendarDateTime, LocalDateTime},
 };
-use engine_core::mail::{EmailAddress, Mailbox, MailboxRole, Message};
-use engine_core::membership::Memberships;
-use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
-use engine_core::time::{CalendarDateTime, LocalDateTime};
 use engine_provider::{
     Capabilities, Draft, MailEdit, MailEditReceipt, PageToken, Provider, ProviderError,
     ProviderResult, ScopeSync, SubmissionReceipt, SyncKind, SyncPage,
@@ -850,8 +850,10 @@ async fn edit_mail_surfaces_a_failed_edit() {
 
 #[tokio::test]
 async fn clear_mail_cursors_forces_a_reconciling_resnapshot() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     let engine = Engine::open_in_memory().unwrap();
     let dropped = Arc::new(AtomicBool::new(false));

@@ -13,13 +13,17 @@
 //! on-demand fetch) but not materialized here — durable raw-MIME blob storage is a
 //! later store sub-step (`docs/agent-guidance/jmap.md`).
 
-use engine_core::ids::{BlobId, MailboxId, MessageId, MessageIdHeader, ThreadId};
-use engine_core::mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message};
-use engine_core::membership::Memberships;
+use engine_core::{
+    ids::{BlobId, MailboxId, MessageId, MessageIdHeader, ThreadId},
+    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message},
+    membership::Memberships,
+};
 use serde_json::Value;
 
-use crate::error::JmapError;
-use crate::json::{datetime, opt_str, req_str, true_keys, wrap_id};
+use crate::{
+    error::JmapError,
+    json::{datetime, opt_str, req_str, true_keys, wrap_id},
+};
 
 /// The `Email` properties fetched in `Email/get` — exactly the fields
 /// [`message_from_json`] reads (RFC 8621 §4.1). Tier-1 metadata: the body parts
@@ -160,8 +164,9 @@ fn message_ids(value: &Value, key: &str) -> Result<Vec<MessageIdHeader>, JmapErr
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use engine_core::mail::SystemKeyword;
+
+    use super::*;
 
     const MAILBOX_GET: &str = include_str!("../tests/fixtures/mailbox_get.json");
     const EMAIL_GET: &str = include_str!("../tests/fixtures/email_get.json");

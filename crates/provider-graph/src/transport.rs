@@ -16,8 +16,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::error::GraphError;
-use crate::principal::MailboxPrincipal;
+use crate::{error::GraphError, principal::MailboxPrincipal};
 
 /// The Microsoft Graph v1.0 API root.
 pub(crate) const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
@@ -219,9 +218,11 @@ impl GraphClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use engine_core::error::FailureClass;
     use std::io::{Read, Write};
+
+    use engine_core::error::FailureClass;
+
+    use super::*;
 
     /// A blocking single-shot mock HTTP server: serves `response` to one
     /// connection, so the live reqwest transport runs offline (no network).

@@ -13,44 +13,42 @@
 //!
 //! # Shape (and how it differs from JMAP)
 //!
-//! - **Email scope is per mailbox.** A JMAP account has one `Email` scope; an IMAP
-//!   account has one [`SyncScope::ImapMailbox`](engine_core::sync::SyncScope) per
-//!   folder. So an [`ImapProvider`] is **bound to a single mailbox** for email:
-//!   its [`email_scope`](engine_provider::Provider::email_scope) names that
-//!   mailbox, and [`sync_email_page`](engine_provider::Provider::sync_email_page)
-//!   is a UID-window `FETCH` over it. The folder list syncs under the per-account
-//!   [`SyncScope::ImapMailboxList`](engine_core::sync::SyncScope). The cross-folder
-//!   fan-out is the later orchestrator's job.
-//! - **Identity is synthesized.** A mail object's key is `(mailbox, UIDVALIDITY,
-//!   UID)`, so an IMAP copy in another folder is a **distinct** object with a
-//!   single membership (contrast JMAP, where the same copy is one object with two
-//!   memberships). `Message-ID` is a hint, never identity.
-//! - **A UIDVALIDITY reset is a snapshot.** When the mailbox's UID space is
-//!   renumbered, every old key is invalid; the pass becomes a snapshot (rediscovery)
-//!   that tombstones the stale rows — the IMAP analogue of `cannotCalculateChanges`.
+//! - **Email scope is per mailbox.** A JMAP account has one `Email` scope; an IMAP account has one
+//!   [`SyncScope::ImapMailbox`](engine_core::sync::SyncScope) per folder. So an [`ImapProvider`] is
+//!   **bound to a single mailbox** for email: its
+//!   [`email_scope`](engine_provider::Provider::email_scope) names that mailbox, and
+//!   [`sync_email_page`](engine_provider::Provider::sync_email_page) is a UID-window `FETCH` over
+//!   it. The folder list syncs under the per-account
+//!   [`SyncScope::ImapMailboxList`](engine_core::sync::SyncScope). The cross-folder fan-out is the
+//!   later orchestrator's job.
+//! - **Identity is synthesized.** A mail object's key is `(mailbox, UIDVALIDITY, UID)`, so an IMAP
+//!   copy in another folder is a **distinct** object with a single membership (contrast JMAP, where
+//!   the same copy is one object with two memberships). `Message-ID` is a hint, never identity.
+//! - **A UIDVALIDITY reset is a snapshot.** When the mailbox's UID space is renumbered, every old
+//!   key is invalid; the pass becomes a snapshot (rediscovery) that tombstones the stale rows — the
+//!   IMAP analogue of `cannotCalculateChanges`.
 //!
 //! # Layers
 //!
-//! - `transport` — connect (TCP + injected `tokio-rustls` connector) and the
-//!   tagged line protocol over any `AsyncRead + AsyncWrite` stream.
-//! - `parse` — pure response parsers (`SELECT`/`SEARCH`/`FETCH`/`ENVELOPE`/`LIST`);
-//!   hostile input is rejected, never panicked on.
+//! - `transport` — connect (TCP + injected `tokio-rustls` connector) and the tagged line protocol
+//!   over any `AsyncRead + AsyncWrite` stream.
+//! - `parse` — pure response parsers (`SELECT`/`SEARCH`/`FETCH`/`ENVELOPE`/`LIST`); hostile input
+//!   is rejected, never panicked on.
 //! - `mail` — normalize parsed rows into [`Message`](engine_core::mail::Message) /
 //!   [`Mailbox`](engine_core::mail::Mailbox).
-//! - `cursor` — the per-mailbox `SyncState` (UIDVALIDITY/UIDNEXT, plus an optional
-//!   QRESYNC `HIGHESTMODSEQ`) and opaque [`PageToken`](engine_provider::PageToken)
-//!   encodings.
+//! - `cursor` — the per-mailbox `SyncState` (UIDVALIDITY/UIDNEXT, plus an optional QRESYNC
+//!   `HIGHESTMODSEQ`) and opaque [`PageToken`](engine_provider::PageToken) encodings.
 //! - `sync` — the snapshot/delta + UID-window paging orchestration.
 //! - `qresync` — the QRESYNC incremental delta (RFC 7162): flag changes + expunges of
 //!   already-synced mail via `CHANGEDSINCE`/`VANISHED`, when the session negotiates it.
-//! - `mutate` — applying a [`MailEdit`](engine_provider::MailEdit) (`UID
-//!   STORE`/`MOVE`/`EXPUNGE`) to the bound mailbox.
+//! - `mutate` — applying a [`MailEdit`](engine_provider::MailEdit) (`UID STORE`/`MOVE`/`EXPUNGE`)
+//!   to the bound mailbox.
 //! - `filing` — SMTP submission + `APPEND` filing of sent copies and drafts.
 //! - `provider` — [`ImapProvider`], the [`Provider`](engine_provider::Provider) impl.
-//! - `idle` / `watch` — push via `IDLE` (RFC 2177): [`ImapWatcher`] holds a dedicated
-//!   standing connection and turns the `IDLE`/`DONE` keep-alive loop into a
-//!   [`Watch`](engine_provider::Watch) stream of change notifications, so a host can
-//!   sync "as it comes in" instead of polling.
+//! - `idle` / `watch` — push via `IDLE` (RFC 2177): [`ImapWatcher`] holds a dedicated standing
+//!   connection and turns the `IDLE`/`DONE` keep-alive loop into a
+//!   [`Watch`](engine_provider::Watch) stream of change notifications, so a host can sync "as it
+//!   comes in" instead of polling.
 //!
 //! Tier-1 metadata only: like step 4, the raw RFC 5322 body is not materialized
 //! yet (durable blob storage is a later store sub-step).

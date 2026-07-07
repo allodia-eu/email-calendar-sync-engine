@@ -3,19 +3,22 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::coverage::{LocalCoverage, RemoteCoverage, SearchCoverage, TemporalCoverage};
-use engine_core::error::FailureClass;
-use engine_core::ids::{AccountId, DavCollectionId, MailboxId, ProviderKey, Uid};
-use engine_core::patch::PatchObject;
-use engine_core::scheduling::{
-    ImipTrust, ImipUntrusted, InstanceKey, Revision, ScheduleMethod, SchedulingMode,
-    evaluate_imip_trust,
-};
-use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
-use engine_core::time::CalendarDateTime;
-use engine_core::version::{ChangeKey, ETag, ModSeq, RevisionTokens, ScheduleTag};
-use engine_core::write::{
-    CreationId, IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey, WriteKeyError,
+use engine_core::{
+    coverage::{LocalCoverage, RemoteCoverage, SearchCoverage, TemporalCoverage},
+    error::FailureClass,
+    ids::{AccountId, DavCollectionId, MailboxId, ProviderKey, Uid},
+    patch::PatchObject,
+    scheduling::{
+        ImipTrust, ImipUntrusted, InstanceKey, Revision, ScheduleMethod, SchedulingMode,
+        evaluate_imip_trust,
+    },
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+    time::CalendarDateTime,
+    version::{ChangeKey, ETag, ModSeq, RevisionTokens, ScheduleTag},
+    write::{
+        CreationId, IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey,
+        WriteKeyError,
+    },
 };
 
 fn account() -> AccountId {

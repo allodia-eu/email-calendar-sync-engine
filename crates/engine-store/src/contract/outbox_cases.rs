@@ -3,15 +3,18 @@
 
 use core::time::Duration;
 
-use engine_core::error::FailureClass;
-use engine_core::write::{PendingOpId, PendingOutcome};
-
-use crate::error::StoreError;
-use crate::lease::{FenceToken, ManualClock, OpLease, WorkerId};
-use crate::outbox::PendingOpState;
-use crate::store::{Store, StoreRead};
+use engine_core::{
+    error::FailureClass,
+    write::{PendingOpId, PendingOutcome},
+};
 
 use super::{acct, lease_request, pending_op, pk};
+use crate::{
+    error::StoreError,
+    lease::{FenceToken, ManualClock, OpLease, WorkerId},
+    outbox::PendingOpState,
+    store::{Store, StoreRead},
+};
 
 /// `mark_pending_op` under an expired op lease is rejected after the op was
 /// re-claimed; the new lease succeeds.

@@ -11,26 +11,25 @@
 //! # Layers
 //!
 //! - `transport` — reqwest HTTP with auth and error mapping.
-//! - `request` — the `{ using, methodCalls }` envelope, `#id` back-references,
-//!   and typed response lookup.
-//! - `session` — the session resource: capabilities, account ids, limits, and
-//!   the [`SessionUrlPolicy`] for resolving advertised URLs.
-//! - [`JmapClient`] — connect + execute, the low-level handle the normalization
-//!   and `Provider` impl build on.
+//! - `request` — the `{ using, methodCalls }` envelope, `#id` back-references, and typed response
+//!   lookup.
+//! - `session` — the session resource: capabilities, account ids, limits, and the
+//!   [`SessionUrlPolicy`] for resolving advertised URLs.
+//! - [`JmapClient`] — connect + execute, the low-level handle the normalization and `Provider` impl
+//!   build on.
 //!
 //! # Two real-world notes
 //!
-//! - **Advertised origin ≠ connection origin.** Stalwart advertises
-//!   `https://mail.test.local/` in its session while tests connect to
-//!   `127.0.0.1:18080`; [`SessionUrlPolicy::RebaseToConnection`] (the default)
-//!   keeps the path but forces the connection origin. Providers that genuinely
-//!   serve their API cross-origin use [`SessionUrlPolicy::TrustAdvertised`].
-//! - **Raw MIME is fetched on demand, not synced.** A normalized mail object keeps
-//!   its JMAP `blobId`; `JmapProvider::fetch_message_source` downloads the raw RFC
-//!   5322 source through the session `downloadUrl` template (RFC 8620 §6.2) when a
-//!   host opens the message. The sync itself still ships Tier-1 metadata only —
-//!   durable raw-MIME storage at sync time awaits the store's blob sub-step. Calendar
-//!   raw (`RawJsCalendar`) *is* preserved on the object (`docs/agent-guidance/jmap.md`).
+//! - **Advertised origin ≠ connection origin.** Stalwart advertises `https://mail.test.local/` in
+//!   its session while tests connect to `127.0.0.1:18080`; [`SessionUrlPolicy::RebaseToConnection`]
+//!   (the default) keeps the path but forces the connection origin. Providers that genuinely serve
+//!   their API cross-origin use [`SessionUrlPolicy::TrustAdvertised`].
+//! - **Raw MIME is fetched on demand, not synced.** A normalized mail object keeps its JMAP
+//!   `blobId`; `JmapProvider::fetch_message_source` downloads the raw RFC 5322 source through the
+//!   session `downloadUrl` template (RFC 8620 §6.2) when a host opens the message. The sync itself
+//!   still ships Tier-1 metadata only — durable raw-MIME storage at sync time awaits the store's
+//!   blob sub-step. Calendar raw (`RawJsCalendar`) *is* preserved on the object
+//!   (`docs/agent-guidance/jmap.md`).
 
 mod calendar;
 mod error;
@@ -47,18 +46,19 @@ mod sync_ops;
 mod transport;
 mod watch;
 
+use core::fmt;
+
 pub use error::JmapError;
 pub use provider::JmapProvider;
+use reqwest::Url;
 pub use session::{CoreLimits, Session, SessionUrlPolicy};
 pub use watch::{DEFAULT_EVENT_SOURCE_PING, JmapWatcher};
 
-use core::fmt;
-
-use reqwest::Url;
-
-use crate::request::{Request, Response};
-use crate::session::resolve_against;
-use crate::transport::Transport;
+use crate::{
+    request::{Request, Response},
+    session::resolve_against,
+    transport::Transport,
+};
 
 /// The maximum number of redirects followed while discovering the session
 /// resource (the well-known endpoint 307-redirects to the session URL).

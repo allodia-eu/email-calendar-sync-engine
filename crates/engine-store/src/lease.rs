@@ -12,10 +12,12 @@
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
-use engine_core::ids::AccountId;
-use engine_core::sync::{SyncScope, SyncState};
-use engine_core::time::UtcDateTime;
-use engine_core::write::PendingOpId;
+use engine_core::{
+    ids::AccountId,
+    sync::{SyncScope, SyncState},
+    time::UtcDateTime,
+    write::PendingOpId,
+};
 use serde::{Deserialize, Serialize};
 
 /// Identifies the worker holding or requesting a lease.

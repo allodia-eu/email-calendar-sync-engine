@@ -5,8 +5,7 @@
 //! a fresh `:memory:` database (one connection = one database), so the cases stay
 //! isolated.
 
-use engine_store::ManualClock;
-use engine_store::contract;
+use engine_store::{ManualClock, contract};
 use store_sqlite::SqliteStore;
 
 #[tokio::test]

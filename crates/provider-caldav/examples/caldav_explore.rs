@@ -31,9 +31,7 @@
 
 use std::env;
 
-use engine_core::ids::AccountId;
-use engine_core::sync::SyncUpdate;
-use engine_core::time::CalendarDateTime;
+use engine_core::{ids::AccountId, sync::SyncUpdate, time::CalendarDateTime};
 use engine_provider::Provider;
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 
@@ -137,8 +135,7 @@ async fn write_demo(
     provider: &CalDavProvider,
     account: &AccountId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use engine_core::ids::Uid;
-    use engine_core::raw::RawIcal;
+    use engine_core::{ids::Uid, raw::RawIcal};
     use engine_provider::{EventDeletion, EventWrite};
 
     let uid = Uid::new("caldav-explore-demo@example.invalid")?;

@@ -1,12 +1,17 @@
 //! Offline tests for the `Provider` impl, driven over a mock stream.
 
-use super::{ImapConfig, ImapProvider};
-use crate::mock::{MockStream, script, written};
-use crate::transport::Connection;
-use engine_core::ids::{AccountId, MailboxId, MessageIdHeader};
-use engine_core::mail::{EmailAddress, MailboxRole};
-use engine_core::sync::SyncScope;
+use engine_core::{
+    ids::{AccountId, MailboxId, MessageIdHeader},
+    mail::{EmailAddress, MailboxRole},
+    sync::SyncScope,
+};
 use engine_provider::{Draft, Provider};
+
+use super::{ImapConfig, ImapProvider};
+use crate::{
+    mock::{MockStream, script, written},
+    transport::Connection,
+};
 
 fn submit_draft() -> Draft {
     Draft::new(

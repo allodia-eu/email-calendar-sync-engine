@@ -10,20 +10,24 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::error::FailureClass;
-use engine_core::ids::ProviderKey;
-use engine_core::mail::Message;
-use engine_core::raw::RawMime;
-use engine_core::sync::{SyncState, SyncUpdate};
+use engine_core::{
+    error::FailureClass,
+    ids::ProviderKey,
+    mail::Message,
+    raw::RawMime,
+    sync::{SyncState, SyncUpdate},
+};
 use engine_provider::{PageToken, ScopeSync, SyncKind, SyncPage};
 use serde_json::{Map, Value, json};
 
-use crate::error::JmapError;
-use crate::provider::Executor;
-use crate::request::{Request, result_ref, with_back_reference};
-use crate::sync_ops::{
-    Changes, clamp_limit, is_complete, key_set, keys, next_position, objects, snapshot_or_delta,
-    state, total,
+use crate::{
+    error::JmapError,
+    provider::Executor,
+    request::{Request, result_ref, with_back_reference},
+    sync_ops::{
+        Changes, clamp_limit, is_complete, key_set, keys, next_position, objects,
+        snapshot_or_delta, state, total,
+    },
 };
 
 /// Downloads a message's raw RFC 5322 source via the session's `downloadUrl`

@@ -5,8 +5,10 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::error::GraphError;
-use crate::transport::{GraphClient, GraphTransport};
+use crate::{
+    error::GraphError,
+    transport::{GraphClient, GraphTransport},
+};
 
 /// Returns the first routed fixture whose key is a substring of the requested URL.
 struct Fake {

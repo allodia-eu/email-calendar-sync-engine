@@ -14,28 +14,31 @@
 //! [`contract`]: crate::contract
 
 use core::fmt;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Mutex;
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Mutex,
+};
 
 use async_trait::async_trait;
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::sync::{SyncScope, SyncState, SyncUpdate};
-use engine_core::time::UtcDateTime;
-use engine_core::write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey};
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    search_index::{
+        EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow, MembershipRow,
+    },
+    sync::{SyncScope, SyncState, SyncUpdate},
+    time::UtcDateTime,
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
+};
 use serde::Serialize;
 use serde_json::Value;
 
-use engine_core::search_index::{
-    EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow, MembershipRow,
+use crate::{
+    apply::{ApplyBatch, DerivedWrite, FtsField, OccurrenceRow, StorableObject, SyncApplied},
+    error::{Result, StoreError},
+    lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease},
+    outbox::{LeasedPendingOp, PendingOpState},
+    store::{IndexRowCounts, MailIndexEntry, Store, StoreRead},
 };
-
-use crate::apply::{
-    ApplyBatch, DerivedWrite, FtsField, OccurrenceRow, StorableObject, SyncApplied,
-};
-use crate::error::{Result, StoreError};
-use crate::lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease};
-use crate::outbox::{LeasedPendingOp, PendingOpState};
-use crate::store::{IndexRowCounts, MailIndexEntry, Store, StoreRead};
 
 /// Returns `true` if a lease is held and has not expired at `now`.
 fn is_live(expiry: Option<UtcDateTime>, now: UtcDateTime) -> bool {
@@ -542,8 +545,10 @@ impl<C: Clock> StoreRead for MemStore<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apply::{FtsRow, TzdataVersion};
-    use crate::lease::{ManualClock, WorkerId};
+    use crate::{
+        apply::{FtsRow, TzdataVersion},
+        lease::{ManualClock, WorkerId},
+    };
 
     fn key(value: &str) -> ProviderKey {
         ProviderKey::new(value).unwrap()

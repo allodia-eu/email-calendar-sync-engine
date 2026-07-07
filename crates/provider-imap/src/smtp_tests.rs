@@ -1,12 +1,11 @@
 //! Offline tests for the SMTP submission conversation, over a mock stream.
 
+use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
+use engine_provider::Draft;
+use time::{OffsetDateTime, macros::datetime};
+
 use super::*;
 use crate::mock::{MockStream, script, written};
-use engine_core::ids::MessageIdHeader;
-use engine_core::mail::EmailAddress;
-use engine_provider::Draft;
-use time::OffsetDateTime;
-use time::macros::datetime;
 
 fn draft(to: &[&str], body: &str) -> Draft {
     Draft::new(

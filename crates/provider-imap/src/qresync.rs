@@ -8,11 +8,11 @@
 //! carries a prior `HIGHESTMODSEQ`, this module replaces that delta with a single
 //! `UID FETCH 1:* (<items>) (CHANGEDSINCE <modseq> VANISHED)`:
 //!
-//! - every message whose mod-sequence exceeds the baseline comes back with full
-//!   metadata — both genuinely new arrivals and flag-only changes to existing mail —
-//!   so the store upserts them by their stable `(mailbox, UIDVALIDITY, UID)` key; and
-//! - a `* VANISHED (EARLIER) <set>` lists the UIDs expunged since the baseline, which
-//!   become the page's `removed` keys, so the store tombstones them inline.
+//! - every message whose mod-sequence exceeds the baseline comes back with full metadata — both
+//!   genuinely new arrivals and flag-only changes to existing mail — so the store upserts them by
+//!   their stable `(mailbox, UIDVALIDITY, UID)` key; and
+//! - a `* VANISHED (EARLIER) <set>` lists the UIDs expunged since the baseline, which become the
+//!   page's `removed` keys, so the store tombstones them inline.
 //!
 //! The pass is a **single page** — for periodic sync the changed set is what moved
 //! since the last sync, but a bulk server-side change (e.g. "mark all read") returns
@@ -26,16 +26,20 @@
 
 use std::cmp::Reverse;
 
-use engine_core::ids::{MailboxId, ProviderKey};
-use engine_core::mail::Message;
-use engine_core::sync::SyncState;
+use engine_core::{
+    ids::{MailboxId, ProviderKey},
+    mail::Message,
+    sync::SyncState,
+};
 use engine_provider::{SyncKind, SyncPage};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::error::ImapResult;
-use crate::mail::{message_from_fetch, message_key};
-use crate::sync::FETCH_ITEMS;
-use crate::transport::Connection;
+use crate::{
+    error::ImapResult,
+    mail::{message_from_fetch, message_key},
+    sync::FETCH_ITEMS,
+    transport::Connection,
+};
 
 /// Fetches the QRESYNC delta since `since_modseq` over the bound mailbox: the changed
 /// messages (new arrivals + flag changes, full metadata, newest UID first) and the

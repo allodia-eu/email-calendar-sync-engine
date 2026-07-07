@@ -16,21 +16,18 @@
 //!
 //! Layers (mirroring `provider-jmap`'s `Executor` seam so the whole protocol is
 //! offline-testable by replaying captured transcripts):
-//! - [`ical`] — the iCalendar parser: text → normalized
-//!   [`Event`](engine_core::calendar::Event)s, folding a resource's master +
-//!   `RECURRENCE-ID` override `VEVENT`s into one event.
+//! - [`ical`] — the iCalendar parser: text → normalized [`Event`](engine_core::calendar::Event)s,
+//!   folding a resource's master + `RECURRENCE-ID` override `VEVENT`s into one event.
 //! - `dav` — the WebDAV `multistatus` XML parser.
-//! - `transport` — the HTTP `DavExecutor` seam (read reports + writes) + its
-//!   `reqwest` implementation.
+//! - `transport` — the HTTP `DavExecutor` seam (read reports + writes) + its `reqwest`
+//!   implementation.
 //! - `discovery`/`calendar` — principal → calendar-home → collection listing.
 //! - `sync` — the `sync-collection` REPORT (RFC 6578) snapshot/delta logic.
-//! - `write` — conditional `PUT`/`DELETE` (`If-Match`/`If-None-Match`) of event
-//!   resources.
-//! - [`imip`] — iMIP (iTIP over email, RFC 6047): parsing an inbound
-//!   `text/calendar` scheduling message into an
-//!   [`engine_core::scheduling::SchedulingMessage`], and the RSVP write primitive
-//!   that patches my `PARTSTAT` into a stored event's raw for a conditional `PUT`
-//!   back (`calendar-semantics.md`).
+//! - `write` — conditional `PUT`/`DELETE` (`If-Match`/`If-None-Match`) of event resources.
+//! - [`imip`] — iMIP (iTIP over email, RFC 6047): parsing an inbound `text/calendar` scheduling
+//!   message into an [`engine_core::scheduling::SchedulingMessage`], and the RSVP write primitive
+//!   that patches my `PARTSTAT` into a stored event's raw for a conditional `PUT` back
+//!   (`calendar-semantics.md`).
 //! - `provider` — the [`Provider`](engine_provider::Provider) implementation.
 
 mod calendar;

@@ -3,17 +3,19 @@
 //! Kept in its own module so the already-large `engine.rs` does not grow; it is a
 //! second `impl Engine` block over the same store.
 
-use engine_core::ids::AccountId;
-use engine_core::mail::{
-    AttachmentPartId, InlinePart, Message, MessageAttachment, MessageAttachmentContent, MessageBody,
+use engine_core::{
+    ids::AccountId,
+    mail::{
+        AttachmentPartId, InlinePart, Message, MessageAttachment, MessageAttachmentContent,
+        MessageBody,
+    },
 };
 use engine_provider::Provider;
 use engine_sync::{
     fetch_inline_parts, fetch_message_attachment, fetch_message_attachments, fetch_message_body,
 };
 
-use crate::engine::map_sync_error;
-use crate::{ApiError, Engine};
+use crate::{ApiError, Engine, engine::map_sync_error};
 
 impl Engine {
     /// Returns the displayable body of `message`, fetching its raw RFC 5322 source
@@ -116,9 +118,11 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use engine_core::ids::{AccountId, MailboxId, MessageId};
-    use engine_core::membership::Memberships;
-    use engine_core::raw::RawMime;
+    use engine_core::{
+        ids::{AccountId, MailboxId, MessageId},
+        membership::Memberships,
+        raw::RawMime,
+    };
     use engine_provider::{Capabilities, Provider, ProviderResult};
 
     use crate::Engine;

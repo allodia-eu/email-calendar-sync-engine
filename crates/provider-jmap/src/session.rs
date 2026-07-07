@@ -3,10 +3,9 @@
 //!
 //! Two real-world subtleties this handles:
 //!
-//! - **The account id is looked up, not assumed.** The JMAP account id (e.g.
-//!   `"c"`) is whatever the server assigned and is read from `primaryAccounts`
-//!   per capability; it is distinct from the engine's host-assigned
-//!   [`AccountId`](engine_core::ids::AccountId).
+//! - **The account id is looked up, not assumed.** The JMAP account id (e.g. `"c"`) is whatever the
+//!   server assigned and is read from `primaryAccounts` per capability; it is distinct from the
+//!   engine's host-assigned [`AccountId`](engine_core::ids::AccountId).
 //! - **The advertised `apiUrl` may point at a different origin** than the one the
 //!   client connected to (Stalwart advertises its configured public host,
 //!   `https://mail.test.local/`, while tests connect to `127.0.0.1:18080`). The
@@ -17,8 +16,7 @@
 use reqwest::Url;
 use serde_json::Value;
 
-use crate::error::JmapError;
-use crate::request::capability;
+use crate::{error::JmapError, request::capability};
 
 /// How to resolve the session's advertised URLs against the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

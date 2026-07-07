@@ -7,18 +7,15 @@
 //!
 //! Two families of id live here:
 //!
-//! - **Object keys** wrap a [`ProviderKey`]: opaque, provider-assigned,
-//!   immutable, and stable across container moves (the adapter substitutes a
-//!   provider's immutable-id form where its natural id is not — Graph default
-//!   ids change on move). [`AccountId`], [`MailboxId`], [`MessageId`],
-//!   [`ThreadId`], [`BlobId`], [`PartId`], [`CalendarId`], and [`EventId`] are
-//!   distinct types so a mailbox key can never be passed where a message key is
-//!   expected.
-//! - **Content ids** are carried *inside* a message or event and identify it
-//!   across systems rather than within one provider: [`MessageIdHeader`] (the
-//!   RFC 5322 `Message-ID`, a threading/reconciliation hint, not hard identity)
-//!   and [`Uid`] (the iCalendar/JSCalendar `UID`, the scheduling reconciliation
-//!   key).
+//! - **Object keys** wrap a [`ProviderKey`]: opaque, provider-assigned, immutable, and stable
+//!   across container moves (the adapter substitutes a provider's immutable-id form where its
+//!   natural id is not — Graph default ids change on move). [`AccountId`], [`MailboxId`],
+//!   [`MessageId`], [`ThreadId`], [`BlobId`], [`PartId`], [`CalendarId`], and [`EventId`] are
+//!   distinct types so a mailbox key can never be passed where a message key is expected.
+//! - **Content ids** are carried *inside* a message or event and identify it across systems rather
+//!   than within one provider: [`MessageIdHeader`] (the RFC 5322 `Message-ID`, a
+//!   threading/reconciliation hint, not hard identity) and [`Uid`] (the iCalendar/JSCalendar `UID`,
+//!   the scheduling reconciliation key).
 //!
 //! The generic [`ProviderKey`] is intentionally **not** constrained to the JMAP
 //! `Id` alphabet: it must also hold Microsoft Graph, Gmail, and CalDAV keys,

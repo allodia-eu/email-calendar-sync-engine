@@ -8,9 +8,11 @@
 //! and search a message while a sync of the same scope is in flight.
 
 use async_trait::async_trait;
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::mail::MessageBody;
-use engine_core::raw::RawMime;
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    mail::MessageBody,
+    raw::RawMime,
+};
 
 use crate::error::Result;
 

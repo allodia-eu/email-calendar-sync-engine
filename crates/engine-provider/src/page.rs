@@ -6,8 +6,7 @@
 //! continue; the orchestrator commits each page additively for a responsive UI,
 //! reports progress, and persists the cursor only once the pass completes.
 
-use engine_core::ids::ProviderKey;
-use engine_core::sync::SyncState;
+use engine_core::{ids::ProviderKey, sync::SyncState};
 
 /// Whether a sync pass is a full/bounded snapshot or an incremental delta.
 ///

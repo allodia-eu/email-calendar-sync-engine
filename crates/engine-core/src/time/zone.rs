@@ -12,11 +12,11 @@ use super::TimeError;
 /// with the IANA database for the same `TZID`, so the engine records *which*
 /// source applies to each value:
 ///
-/// - [`TimeZoneId::Iana`] — a name from the bundled IANA tzdata; the engine
-///   expands recurrence with IANA rules (consistent and updatable). The embedded
-///   `VTIMEZONE`, if any, is still preserved in `RawIcal`.
-/// - [`TimeZoneId::Custom`] — an unknown or custom zone; the engine expands using
-///   the embedded `VTIMEZONE` rules carried alongside the event.
+/// - [`TimeZoneId::Iana`] — a name from the bundled IANA tzdata; the engine expands recurrence with
+///   IANA rules (consistent and updatable). The embedded `VTIMEZONE`, if any, is still preserved in
+///   `RawIcal`.
+/// - [`TimeZoneId::Custom`] — an unknown or custom zone; the engine expands using the embedded
+///   `VTIMEZONE` rules carried alongside the event.
 ///
 /// The id string is stored verbatim. This type does **not** validate that an
 /// IANA name actually resolves (that needs the tzdata, which lives in another

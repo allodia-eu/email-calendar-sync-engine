@@ -7,10 +7,12 @@
 
 use core::time::Duration;
 
-use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::sync::SyncScope;
-use engine_core::time::TimeZoneId;
+use engine_core::{
+    calendar::{Calendar, Event},
+    ids::{AccountId, ProviderKey},
+    sync::SyncScope,
+    time::TimeZoneId,
+};
 use engine_provider::Provider;
 use engine_recurrence::Horizon;
 use engine_store::{ManualClock, StoreRead, WorkerId};
@@ -277,11 +279,13 @@ async fn mints_a_resource_href_under_the_bound_collection() {
 // from raw, never from a re-serialized projection.
 #[tokio::test]
 async fn an_update_round_trips_raw_ical_preserving_non_jscalendar_properties() {
-    use crate::ical::parse_calendar_object;
-    use crate::test_support::wrote;
-    use engine_core::ids::{CalendarId, EventId};
-    use engine_core::version::ETag;
+    use engine_core::{
+        ids::{CalendarId, EventId},
+        version::ETag,
+    };
     use engine_provider::EventWrite;
+
+    use crate::{ical::parse_calendar_object, test_support::wrote};
 
     let resource = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
         UID:rt-9001@test.local\r\nDTSTART;TZID=Europe/Amsterdam:20260318T100000\r\n\
@@ -346,17 +350,22 @@ const INVITE_REQUEST: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//T//EN\
 // real store); splitting it would obscure the single inbound→outbound flow.
 #[tokio::test]
 async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
-    use crate::ical::parse_calendar_object;
-    use crate::imip;
-    use crate::test_support::{ok, wrote};
-    use crate::transport::{DavMethod, Precondition};
-    use engine_core::calendar::ParticipationStatus;
-    use engine_core::ids::CalendarId;
-    use engine_core::raw::RawIcal;
-    use engine_core::scheduling::{ScheduleAction, reconcile};
-    use engine_core::version::ETag;
+    use engine_core::{
+        calendar::ParticipationStatus,
+        ids::CalendarId,
+        raw::RawIcal,
+        scheduling::{ScheduleAction, reconcile},
+        version::ETag,
+    };
     use engine_provider::EventWrite;
     use engine_sync::write_calendar_event;
+
+    use crate::{
+        ical::parse_calendar_object,
+        imip,
+        test_support::{ok, wrote},
+        transport::{DavMethod, Precondition},
+    };
 
     // (1) Parse the inbound iMIP REQUEST off the mail path.
     let message = imip::parse(INVITE_REQUEST).expect("parse imip request");
@@ -451,8 +460,9 @@ async fn a_parsed_request_whose_organizer_mismatches_the_sender_is_rejected() {
     // The required security test (`calendar-semantics.md`), end to end on a *parsed*
     // message: the body's ORGANIZER is boss, but the authenticated sender is an
     // attacker — the bridge refuses it, so no write is ever planned.
-    use crate::imip;
     use engine_core::scheduling::{ImipUntrusted, ScheduleAction, reconcile};
+
+    use crate::imip;
 
     let message = imip::parse(INVITE_REQUEST).expect("parse imip request");
     let action = reconcile(&message, Some("attacker@evil.example"), None);

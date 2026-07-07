@@ -16,8 +16,10 @@ use engine_core::calendar::{
     Location, Participant, ParticipantRole, ParticipationStatus, VirtualLocation,
 };
 
-use super::component::Component;
-use super::unfold::{ContentLine, unescape_text};
+use super::{
+    component::Component,
+    unfold::{ContentLine, unescape_text},
+};
 
 /// Collects the merged participants of a `VEVENT` (organizer + attendees).
 pub(crate) fn parse_participants(vevent: &Component) -> Vec<Participant> {
@@ -155,8 +157,7 @@ fn cal_address(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::component::parse_components;
-    use super::*;
+    use super::{super::component::parse_components, *};
 
     fn vevent(body: &str) -> Component {
         let text =

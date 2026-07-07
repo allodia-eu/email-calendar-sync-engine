@@ -1,8 +1,9 @@
 //! Offline tests for the IMAP line protocol, driven over a scripted mock stream.
 
+use engine_core::error::FailureClass;
+
 use super::*;
 use crate::mock::{MockStream, script, written};
-use engine_core::error::FailureClass;
 
 const GREETING: &str = "* OK [CAPABILITY IMAP4rev1] Stalwart ready\r\n";
 

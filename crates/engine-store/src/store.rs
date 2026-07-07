@@ -13,17 +13,21 @@
 //! store sits behind `engine-api`.
 
 use async_trait::async_trait;
-use engine_core::ids::{AccountId, ProviderKey, ThreadId};
-use engine_core::sync::{SyncScope, SyncState};
-use engine_core::time::UtcDateTime;
-use engine_core::write::{PendingOp, PendingOpId, PendingOutcome};
+use engine_core::{
+    ids::{AccountId, ProviderKey, ThreadId},
+    sync::{SyncScope, SyncState},
+    time::UtcDateTime,
+    write::{PendingOp, PendingOpId, PendingOutcome},
+};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::apply::{ApplyBatch, DerivedWrite, StorableObject, SyncApplied};
-use crate::error::Result;
-use crate::lease::{LeaseRequest, OpLease, SyncClaim, SyncLease};
-use crate::outbox::{LeasedPendingOp, PendingOpState};
+use crate::{
+    apply::{ApplyBatch, DerivedWrite, StorableObject, SyncApplied},
+    error::Result,
+    lease::{LeaseRequest, OpLease, SyncClaim, SyncLease},
+    outbox::{LeasedPendingOp, PendingOpState},
+};
 
 /// The store writer, lease, and outbox contract.
 ///

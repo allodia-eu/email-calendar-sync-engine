@@ -6,9 +6,11 @@
 //! Compatible disambiguation, which matches RFC 5545's gap/fold handling.
 
 use engine_core::time::{CalendarDate, Duration, LocalDateTime, TimeZoneId, UtcDateTime};
-use jiff::civil::{Date, DateTime, Time};
-use jiff::tz::TimeZone;
-use jiff::{SignedDuration, Span, Timestamp, Zoned};
+use jiff::{
+    SignedDuration, Span, Timestamp, Zoned,
+    civil::{Date, DateTime, Time},
+    tz::TimeZone,
+};
 
 use crate::ExpandError;
 

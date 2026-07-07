@@ -13,15 +13,13 @@
 //! watcher and the mutator are deliberately distinct connections — push needs the
 //! watch socket to keep idling while another session makes the change.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use engine_core::ids::{AccountId, MailboxId};
 use engine_provider::{MailEdit, Provider, WatchEvent};
 use provider_imap::{ImapConfig, ImapProvider, ImapWatcher};
 use stalwart_harness::Harness;
-use tokio_rustls::TlsConnector;
-use tokio_rustls::client::TlsStream;
+use tokio_rustls::{TlsConnector, client::TlsStream};
 
 /// A TLS connector that accepts the harness's self-signed cert. Test-only; it never
 /// touches a host trust store. Mirrors the verifier in `live_imap_qresync.rs`.
@@ -138,12 +136,12 @@ async fn live_idle_pushes_a_change_notification() {
 /// harness's self-signed cert. Compiled only into this gated test; never reaches the
 /// host store. Mirrors `live_imap_qresync.rs`.
 mod no_verify {
-    use tokio_rustls::rustls::client::danger::{
-        HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+    use tokio_rustls::rustls::{
+        DigitallySignedStruct, Error, SignatureScheme,
+        client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+        crypto::ring::default_provider,
+        pki_types::{CertificateDer, ServerName, UnixTime},
     };
-    use tokio_rustls::rustls::crypto::ring::default_provider;
-    use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme};
 
     #[derive(Debug)]
     pub(super) struct AcceptAny;

@@ -3,9 +3,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::{FtsField, FtsRow, MembershipKind, MembershipRow, normalize_addr};
-use crate::ids::{ProviderKey, ThreadId};
-use crate::mail::{EmailAddress, Message};
-use crate::time::UtcDateTime;
+use crate::{
+    ids::{ProviderKey, ThreadId},
+    mail::{EmailAddress, Message},
+    time::UtcDateTime,
+};
 
 /// Which address header an address-junction row came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -203,9 +205,11 @@ fn push_addresses(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{MailboxId, MessageId};
-    use crate::mail::{Keyword, SystemKeyword};
-    use crate::membership::Memberships;
+    use crate::{
+        ids::{MailboxId, MessageId},
+        mail::{Keyword, SystemKeyword},
+        membership::Memberships,
+    };
 
     fn message() -> Message {
         Message::new(

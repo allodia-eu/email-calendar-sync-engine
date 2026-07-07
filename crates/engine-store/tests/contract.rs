@@ -1,8 +1,6 @@
 //! The in-memory reference store must satisfy the full store contract.
 
-use engine_store::ManualClock;
-use engine_store::contract;
-use engine_store::mem::MemStore;
+use engine_store::{ManualClock, contract, mem::MemStore};
 
 #[tokio::test]
 async fn in_memory_store_satisfies_contract() {

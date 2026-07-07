@@ -1,13 +1,19 @@
 //! Offline tests for [`edit_mail`], driven over a scripted mock stream.
 
-use super::edit_mail;
-use crate::mock::{MockStream, script, written};
-use crate::transport::Connection;
-use engine_core::error::FailureClass;
-use engine_core::ids::{MailboxId, ProviderKey};
-use engine_core::mail::{Keyword, SystemKeyword};
-use engine_provider::MailEdit;
 use std::collections::BTreeSet;
+
+use engine_core::{
+    error::FailureClass,
+    ids::{MailboxId, ProviderKey},
+    mail::{Keyword, SystemKeyword},
+};
+use engine_provider::MailEdit;
+
+use super::edit_mail;
+use crate::{
+    mock::{MockStream, script, written},
+    transport::Connection,
+};
 
 const GREETING: &str = "* OK ready\r\n";
 const LOGIN_OK: &str = "a1 OK LOGIN ok\r\n";

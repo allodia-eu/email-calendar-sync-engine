@@ -11,8 +11,7 @@
 //! The IMAP `\Recent` and `\Deleted` flags are deliberately **not** keywords:
 //! `\Recent` is a session flag and `\Deleted` belongs to IMAP's expunge model.
 
-use core::fmt;
-use core::str::FromStr;
+use core::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 

@@ -254,9 +254,11 @@ fn rich_config(base: String) -> JmapConfig {
 
 #[tokio::test]
 async fn fetch_message_source_downloads_the_blob_through_the_real_client() {
-    use engine_core::ids::{AccountId, BlobId, MailboxId, MessageId};
-    use engine_core::mail::Message;
-    use engine_core::membership::Memberships;
+    use engine_core::{
+        ids::{AccountId, BlobId, MailboxId, MessageId},
+        mail::Message,
+        membership::Memberships,
+    };
     use engine_provider::Provider;
 
     let raw = "From: a@test.local\r\nSubject: probe\r\n\r\nbody";
@@ -278,8 +280,7 @@ async fn fetch_message_source_downloads_the_blob_through_the_real_client() {
 
 #[tokio::test]
 async fn submit_email_uploads_the_attachment_blob_through_the_real_client() {
-    use engine_core::ids::MessageIdHeader;
-    use engine_core::mail::EmailAddress;
+    use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
     use engine_provider::{Draft, DraftAttachment, Provider};
 
     // connect(session) → resolve_context(Mailbox/Identity) → upload(blob) → send.

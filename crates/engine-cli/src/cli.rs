@@ -7,8 +7,10 @@
 
 use std::collections::HashMap;
 
-use engine_core::ids::AccountId;
-use engine_core::time::{TimeZoneId, UtcDateTime};
+use engine_core::{
+    ids::AccountId,
+    time::{TimeZoneId, UtcDateTime},
+};
 
 use crate::{
     CliError, Fixture, Horizon, ingest, open, reexpand_calendar, search_calendar, search_mail,
@@ -161,11 +163,14 @@ impl Flags {
 
 #[cfg(test)]
 mod tests {
+    use engine_core::{
+        calendar::{Event, Frequency, Recurrence, RecurrenceRule},
+        ids::{CalendarId, EventId, Uid},
+        membership::Memberships,
+        time::{CalendarDateTime, LocalDateTime},
+    };
+
     use super::*;
-    use engine_core::calendar::{Event, Frequency, Recurrence, RecurrenceRule};
-    use engine_core::ids::{CalendarId, EventId, Uid};
-    use engine_core::membership::Memberships;
-    use engine_core::time::{CalendarDateTime, LocalDateTime};
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| (*s).to_owned()).collect()

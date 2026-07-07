@@ -7,8 +7,7 @@
 //! (`north-star.md` cross-platform notes). These types are store-agnostic: any
 //! backend's executor produces them.
 
-use engine_core::coverage::SearchCoverage;
-use engine_core::ids::ProviderKey;
+use engine_core::{coverage::SearchCoverage, ids::ProviderKey};
 
 /// One ranked search hit: an object key and its fused rank score.
 ///

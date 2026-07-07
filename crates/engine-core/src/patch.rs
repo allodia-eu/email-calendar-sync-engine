@@ -120,8 +120,9 @@ impl From<PatchObject> for BTreeMap<String, Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn valid_patch_is_accepted() {

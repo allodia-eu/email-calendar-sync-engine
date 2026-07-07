@@ -11,16 +11,16 @@
 //! Types:
 //!
 //! - [`CalendarDate`] — a zoneless calendar date (RFC 5545 `DATE`; all-day).
-//! - [`LocalDateTime`] — wall-clock date-time with no zone (the spine type;
-//!   JSCalendar `LocalDateTime`, RFC 8984 §1.4.5).
-//! - [`UtcDateTime`] — a true UTC instant, for metadata timestamps only
-//!   (JSCalendar `UTCDateTime`, RFC 8984 §1.4.4).
-//! - [`TimeZoneId`] — an IANA zone name or a custom (embedded-VTIMEZONE) id,
-//!   recording which expansion source applies.
-//! - [`CalendarDateTime`] — the four-case scheduled-time value
-//!   (date / floating / zoned, with UTC as zoned `Etc/UTC`).
-//! - [`Duration`] / [`SignedDuration`] — nominal-days-plus-absolute-time lengths;
-//!   signed only for alert offsets.
+//! - [`LocalDateTime`] — wall-clock date-time with no zone (the spine type; JSCalendar
+//!   `LocalDateTime`, RFC 8984 §1.4.5).
+//! - [`UtcDateTime`] — a true UTC instant, for metadata timestamps only (JSCalendar `UTCDateTime`,
+//!   RFC 8984 §1.4.4).
+//! - [`TimeZoneId`] — an IANA zone name or a custom (embedded-VTIMEZONE) id, recording which
+//!   expansion source applies.
+//! - [`CalendarDateTime`] — the four-case scheduled-time value (date / floating / zoned, with UTC
+//!   as zoned `Etc/UTC`).
+//! - [`Duration`] / [`SignedDuration`] — nominal-days-plus-absolute-time lengths; signed only for
+//!   alert offsets.
 //!
 //! All string types round-trip their canonical RFC form through `Display`,
 //! `FromStr`, and `serde` (as a string).

@@ -1,7 +1,6 @@
 //! Shared JSON-extraction helpers for Microsoft Graph object normalization.
 
-use engine_core::ids::IdError;
-use engine_core::time::UtcDateTime;
+use engine_core::{ids::IdError, time::UtcDateTime};
 use serde_json::Value;
 
 use crate::error::GraphError;

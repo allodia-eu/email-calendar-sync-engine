@@ -1,18 +1,16 @@
 //! iMIP (iTIP over email, RFC 6047) entry points: parsing an inbound scheduling
 //! message, and the outbound RSVP patch.
 //!
-//! - [`parse`] turns a `text/calendar` body into an
-//!   [`engine_core::scheduling::SchedulingMessage`] (delegating to the iCalendar
-//!   parser), which the pure `engine_core::scheduling` layer reconciles and trusts.
-//! - [`set_my_partstat`] is the **RSVP write primitive** (`calendar-semantics.md`):
-//!   it patches *my* `PARTSTAT` into a stored event's raw iCalendar, leaving every
-//!   other property byte-for-byte intact, so the result can be `PUT` back under
-//!   `If-Match` through the existing `engine_sync::write_calendar_event` outbox
-//!   driver. This separates calendar storage (my `PARTSTAT`) from delivery: a CalDAV
-//!   auto-schedule server (RFC 6638) sends the iTIP `REPLY` to the organizer when it
-//!   sees the changed `PARTSTAT`.
-//!   Storage round-trips **from raw plus a targeted patch**, never by re-serializing
-//!   the lossy projection (`modeling.md`).
+//! - [`parse`] turns a `text/calendar` body into an [`engine_core::scheduling::SchedulingMessage`]
+//!   (delegating to the iCalendar parser), which the pure `engine_core::scheduling` layer
+//!   reconciles and trusts.
+//! - [`set_my_partstat`] is the **RSVP write primitive** (`calendar-semantics.md`): it patches *my*
+//!   `PARTSTAT` into a stored event's raw iCalendar, leaving every other property byte-for-byte
+//!   intact, so the result can be `PUT` back under `If-Match` through the existing
+//!   `engine_sync::write_calendar_event` outbox driver. This separates calendar storage (my
+//!   `PARTSTAT`) from delivery: a CalDAV auto-schedule server (RFC 6638) sends the iTIP `REPLY` to
+//!   the organizer when it sees the changed `PARTSTAT`. Storage round-trips **from raw plus a
+//!   targeted patch**, never by re-serializing the lossy projection (`modeling.md`).
 //!
 //! Building a standalone iTIP `REPLY` document for **client**-side iMIP delivery
 //! over SMTP is deferred with the rest of that path (the SMTP assembler is
@@ -21,12 +19,12 @@
 
 use core::ops::Range;
 
-use engine_core::calendar::ParticipationStatus;
-use engine_core::raw::RawIcal;
-use engine_core::scheduling::SchedulingMessage;
+use engine_core::{calendar::ParticipationStatus, raw::RawIcal, scheduling::SchedulingMessage};
 
-use crate::error::CalDavError;
-use crate::ical::{split_once_unquoted, split_unquoted};
+use crate::{
+    error::CalDavError,
+    ical::{split_once_unquoted, split_unquoted},
+};
 
 /// Parses a `text/calendar` iMIP body (a `METHOD` + a `VEVENT`) into a normalized
 /// [`SchedulingMessage`] for the pure scheduling layer to reconcile.
@@ -229,8 +227,9 @@ fn normalize(address: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use engine_core::ids::{CalendarId, EventId};
+
+    use super::*;
 
     /// A stored (no METHOD) resource where `me` is a needs-action attendee, plus a
     /// VALARM and an X- property the lossy projection cannot express.

@@ -12,10 +12,10 @@ use crate::ids::ProviderKey;
 /// It is **either a delta or a snapshot** (`store-and-sync.md`):
 ///
 /// - A [`SyncUpdate::Delta`] lists changed objects and explicitly removed keys.
-/// - A [`SyncUpdate::Snapshot`] carries the **complete** current provider-id set
-///   for the scope in `present`; the store tombstones any local row in the scope
-///   whose key is absent from `present`. `cannotCalculateChanges` (JMAP) and a
-///   `UIDVALIDITY` reset (IMAP) produce snapshots, not deltas.
+/// - A [`SyncUpdate::Snapshot`] carries the **complete** current provider-id set for the scope in
+///   `present`; the store tombstones any local row in the scope whose key is absent from `present`.
+///   `cannotCalculateChanges` (JMAP) and a `UIDVALIDITY` reset (IMAP) produce snapshots, not
+///   deltas.
 ///
 /// `T` is the normalized object type for the scope (a message, event, mailbox,
 /// or calendar). Removed/present keys use the universal [`ProviderKey`], which

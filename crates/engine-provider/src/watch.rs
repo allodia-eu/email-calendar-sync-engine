@@ -32,11 +32,10 @@
 //! To close the inherent notification gap (a change that lands while not idling is
 //! never delivered), a host should:
 //!
-//! 1. **Sync once** before trusting the watch (catch anything that changed while not
-//!    connected).
+//! 1. **Sync once** before trusting the watch (catch anything that changed while not connected).
 //! 2. Loop on [`Watch::next`]: on [`WatchEvent::Changed`] sync the scope; on
-//!    [`WatchEvent::KeepAlive`] optionally run a cheap reconcile sync (a backstop for
-//!    a silently-missed notification or a half-dead link).
+//!    [`WatchEvent::KeepAlive`] optionally run a cheap reconcile sync (a backstop for a
+//!    silently-missed notification or a half-dead link).
 //! 3. On `Err`, apply its reconnect policy and **sync again** before re-watching.
 //!
 //! The adapter does its part by keeping the watch connection idling *continuously*
@@ -88,17 +87,19 @@ pub trait Watch: Send {
     ///
     /// Returns a classified [`ProviderError`](crate::ProviderError) when the
     /// connection drops or the server errors; the host reconnects per its own policy
-    /// (a transport drop is [`FailureClass::Retryable`](engine_core::error::FailureClass::Retryable)).
-    /// Prefer not to drop the returned future mid-flight if the session will be
-    /// reused; to stop watching, drop the session.
+    /// (a transport drop is
+    /// [`FailureClass::Retryable`](engine_core::error::FailureClass::Retryable)). Prefer not to
+    /// drop the returned future mid-flight if the session will be reused; to stop watching,
+    /// drop the session.
     async fn next(&mut self) -> ProviderResult<WatchEvent>;
 }
 
 #[cfg(test)]
 mod tests {
+    use engine_core::error::FailureClass;
+
     use super::*;
     use crate::ProviderError;
-    use engine_core::error::FailureClass;
 
     /// A scripted watch: yields a `Changed`, then a `KeepAlive`, then a transport
     /// error — proving the contract is implementable and object-safe, and that a host

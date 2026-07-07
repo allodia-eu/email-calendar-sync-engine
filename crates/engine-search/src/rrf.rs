@@ -11,9 +11,10 @@
 //! rowid, …), so the same fusion runs over any store's native candidates
 //! (`search-coverage.md`, `north-star.md` Search Contract).
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
-use std::hash::Hash;
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    hash::Hash,
+};
 
 /// The RRF smoothing constant `k`.
 ///

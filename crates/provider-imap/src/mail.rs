@@ -13,12 +13,12 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::ids::{MailboxId, MessageId, MessageIdHeader, ProviderKey};
-use engine_core::mail::{
-    EmailAddress, Envelope, Keyword, Mailbox, MailboxRole, Message, SystemKeyword,
+use engine_core::{
+    ids::{MailboxId, MessageId, MessageIdHeader, ProviderKey},
+    mail::{EmailAddress, Envelope, Keyword, Mailbox, MailboxRole, Message, SystemKeyword},
+    membership::Memberships,
+    time::UtcDateTime,
 };
-use engine_core::membership::Memberships;
-use engine_core::time::UtcDateTime;
 use time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 
 use crate::parse::{Address, FetchRow, ListRow};

@@ -5,8 +5,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use async_trait::async_trait;
 
-use crate::error::CalDavError;
-use crate::transport::{DavExecutor, DavMethod, HttpResponse, WriteRequest};
+use crate::{
+    error::CalDavError,
+    transport::{DavExecutor, DavMethod, HttpResponse, WriteRequest},
+};
 
 /// A fake [`DavExecutor`] that replays canned responses in request order and
 /// records each request's `(method, href)` for assertions. Reads and writes draw

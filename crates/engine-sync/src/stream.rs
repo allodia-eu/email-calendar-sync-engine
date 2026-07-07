@@ -10,8 +10,10 @@
 use core::time::Duration;
 use std::collections::BTreeSet;
 
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::sync::{SyncScope, SyncUpdate};
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    sync::{SyncScope, SyncUpdate},
+};
 use engine_provider::{PageToken, Provider, SyncKind, SyncPage};
 use engine_store::{ApplyBatch, LeaseRequest, Store, StoreError, SyncApplied, WorkerId};
 

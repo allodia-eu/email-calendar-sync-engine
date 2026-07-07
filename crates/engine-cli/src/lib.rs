@@ -21,17 +21,18 @@ mod ingest;
 
 use std::path::Path;
 
-use engine_core::calendar::Event;
-use engine_core::ids::AccountId;
-use engine_core::mail::Message;
-use engine_core::sync::{JmapDataType, SyncScope};
+pub use cli::{USAGE, run};
+use engine_core::{
+    calendar::Event,
+    ids::AccountId,
+    mail::Message,
+    sync::{JmapDataType, SyncScope},
+};
+pub use engine_recurrence::Horizon;
 use engine_search::{CalendarQuery, MailQuery, ParseError, SearchResults};
 use engine_store::{Clock, ManualClock, StoreError};
-use store_sqlite::SqliteStore;
-
-pub use cli::{USAGE, run};
-pub use engine_recurrence::Horizon;
 pub use ingest::{IngestReport, ingest, reexpand_calendar};
+use store_sqlite::SqliteStore;
 
 /// The fixed instant the harness clock reports. A single-process CLI never races a
 /// lease, so any stable instant works; the TTL keeps each claim live for the run.

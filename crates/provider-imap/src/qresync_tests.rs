@@ -2,10 +2,11 @@
 //! captured from a live Stalwart `UID FETCH … (CHANGEDSINCE … VANISHED)` (an observed
 //! provider transcript, per `providers.md`).
 
-use super::*;
-use crate::mock::{MockStream, script, written};
 use engine_core::mail::SystemKeyword;
 use engine_provider::SyncKind;
+
+use super::*;
+use crate::mock::{MockStream, script, written};
 
 /// Opens a connection over `server` and logs in (consuming the greeting + `a1`).
 async fn logged_in(server: Vec<u8>) -> Connection<MockStream> {

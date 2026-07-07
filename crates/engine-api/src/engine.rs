@@ -1,16 +1,16 @@
 //! The [`Engine`]: a host's entry point to one account store.
 
 use core::time::Duration;
-use std::cmp::Reverse;
-use std::collections::HashSet;
-use std::path::Path;
+use std::{cmp::Reverse, collections::HashSet, path::Path};
 
-use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::{AccountId, ProviderKey, ThreadId};
-use engine_core::mail::{Mailbox, Message};
-use engine_core::sync::{ObjectKind, SearchDomain, SyncScope};
-use engine_core::time::{TimeZoneId, UtcDateTime};
-use engine_core::write::PendingOpId;
+use engine_core::{
+    calendar::{Calendar, Event},
+    ids::{AccountId, ProviderKey, ThreadId},
+    mail::{Mailbox, Message},
+    sync::{ObjectKind, SearchDomain, SyncScope},
+    time::{TimeZoneId, UtcDateTime},
+    write::PendingOpId,
+};
 use engine_provider::{Draft, EventDeletion, EventWrite, MailEdit, Provider};
 use engine_recurrence::Horizon;
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
@@ -24,8 +24,7 @@ use engine_sync::{
 use serde_json::Value;
 use store_sqlite::SqliteStore;
 
-use crate::ApiError;
-use crate::clock::SystemClock;
+use crate::{ApiError, clock::SystemClock};
 
 /// The worker identity this engine stamps on every lease it claims.
 ///

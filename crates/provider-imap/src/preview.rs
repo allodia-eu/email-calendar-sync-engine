@@ -10,12 +10,10 @@
 //! `BODY.PEEK[]` — previewing a body must never mark it `\Seen`; an expunged or unreadable
 //! message is skipped, never fatal.
 
-use engine_core::mail::Message;
-use engine_core::raw::RawMime;
+use engine_core::{mail::Message, raw::RawMime};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::mail::parse_message_key;
-use crate::transport::Connection;
+use crate::{mail::parse_message_key, transport::Connection};
 
 /// How many preview-less messages of one page to hydrate. The page is newest-first, so this
 /// covers the top of the folder — what a user sees first.

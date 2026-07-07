@@ -6,9 +6,11 @@
 //! enough to poll readiness and to exercise the JMAP and CalDAV endpoints; it is
 //! not a general-purpose HTTP client.
 
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::{
+    io::{Read, Write},
+    net::{TcpStream, ToSocketAddrs},
+    time::Duration,
+};
 
 use crate::HarnessError;
 

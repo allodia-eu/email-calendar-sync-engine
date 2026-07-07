@@ -5,11 +5,10 @@
 //! `Email/set` call:
 //!
 //! - [`MailEdit::SetKeywords`] → a `keywords/<kw>` [PatchObject](https://www.rfc-editor.org/rfc/rfc8620#section-5.3)
-//!   (`true` to set a keyword, `null` to clear it) — mark read/unread (`$seen`),
-//!   flag/unflag (`$flagged`), or any user keyword.
-//! - [`MailEdit::MoveTo`] → a `mailboxIds` **replacement** so the message ends up in
-//!   exactly the destination (the neutral meaning of a move, and the
-//!   single-membership common case).
+//!   (`true` to set a keyword, `null` to clear it) — mark read/unread (`$seen`), flag/unflag
+//!   (`$flagged`), or any user keyword.
+//! - [`MailEdit::MoveTo`] → a `mailboxIds` **replacement** so the message ends up in exactly the
+//!   destination (the neutral meaning of a move, and the single-membership common case).
 //! - [`MailEdit::Delete`] → a `destroy`.
 //!
 //! A JMAP object id is account-global and **stable across a move**, so the receipt's
@@ -24,9 +23,11 @@
 use engine_provider::{MailEdit, MailEditReceipt};
 use serde_json::{Map, Value, json};
 
-use crate::error::JmapError;
-use crate::provider::Executor;
-use crate::request::{Request, capability};
+use crate::{
+    error::JmapError,
+    provider::Executor,
+    request::{Request, capability},
+};
 
 /// Applies `edit` to its target message under `mail_account` via `Email/set`,
 /// returning a receipt carrying the (unchanged) target key.
@@ -129,11 +130,15 @@ fn check_set_result(result: &Value, edit: &MailEdit, target: &str) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use engine_core::error::FailureClass;
-    use engine_core::ids::{MailboxId, ProviderKey};
-    use engine_core::mail::{Keyword, SystemKeyword};
     use std::collections::BTreeSet;
+
+    use engine_core::{
+        error::FailureClass,
+        ids::{MailboxId, ProviderKey},
+        mail::{Keyword, SystemKeyword},
+    };
+
+    use super::*;
 
     fn target() -> ProviderKey {
         ProviderKey::new("eaaaaab").unwrap()

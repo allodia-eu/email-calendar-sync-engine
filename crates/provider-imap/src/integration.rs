@@ -6,24 +6,25 @@
 //! host-visible as it lands, progress reported per page, and the derived FTS rows
 //! making the mail searchable — the whole cycle the store contract prescribes.
 
-use core::fmt::Write as _;
-use core::time::Duration;
+use core::{fmt::Write as _, time::Duration};
 use std::sync::Mutex;
 
-use engine_core::ids::{AccountId, ProviderKey};
+use engine_core::{
+    ids::{AccountId, MailboxId, MessageId, ProviderKey},
+    mail::{Message, SystemKeyword},
+    membership::Memberships,
+};
+use engine_provider::Provider;
 use engine_search::MailQuery;
 use engine_store::{ManualClock, StoreRead, WorkerId};
-use engine_sync::{SyncProgress, sync_mail_streamed};
+use engine_sync::{SyncProgress, fetch_message_body, sync_email_streamed, sync_mail_streamed};
 use store_sqlite::SqliteStore;
 
-use crate::ImapProvider;
-use crate::mock::{MockStream, script};
-use crate::transport::Connection;
-use engine_core::ids::{MailboxId, MessageId};
-use engine_core::mail::{Message, SystemKeyword};
-use engine_core::membership::Memberships;
-use engine_provider::Provider;
-use engine_sync::{fetch_message_body, sync_email_streamed};
+use crate::{
+    ImapProvider,
+    mock::{MockStream, script},
+    transport::Connection,
+};
 
 fn select_frag(tag: &str, validity: u32, uid_next: u32, exists: u32) -> String {
     format!(

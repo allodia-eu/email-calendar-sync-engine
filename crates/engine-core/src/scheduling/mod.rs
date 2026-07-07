@@ -3,25 +3,23 @@
 //! This models inbound scheduling (`calendar-semantics.md`) independent of
 //! transport, in pure layers:
 //!
-//! - **Keys** — an instance is keyed by [`InstanceKey`] (`UID` +
-//!   `RECURRENCE-ID`); among messages for one key the highest [`Revision`]
-//!   (`SEQUENCE`, then `DTSTAMP`) wins (RFC 5546 §2.1.5), so a stale
-//!   lower-`SEQUENCE` message never overrides a newer one.
-//! - **Trust** — from the body, not the envelope (RFC 6047 §2.2.1/§2.3): a
-//!   `REQUEST`/`CANCEL` is honored only when the authenticated sender matches the
-//!   `ORGANIZER`, a `REPLY` only when it matches the replying `ATTENDEE`; an
-//!   unauthenticated or mismatched message is never auto-applied
-//!   ([`evaluate_imip_trust`]).
-//! - **Message** — the normalized, parsed iTIP message ([`SchedulingMessage`]):
-//!   the [`ScheduleMethod`] plus the carried event, from which the key, revision,
-//!   and trust identities are derived. Producing it from a `text/calendar` body is
-//!   the iCalendar parser's job (`provider-caldav`); this crate owns the shape.
-//! - **Reconcile** — the decision ([`ScheduleAction`] from [`reconcile`]) and the
-//!   pure application of it to a stored [`Event`](crate::calendar::Event): trust
-//!   gate → supersession → `METHOD` dispatch (create/update, set `PARTSTAT`
-//!   via [`apply_reply`], [`cancel`], or classify-and-surface the staged methods).
-//! - **Detect** — the mail↔calendar bridge entry point: finding the iMIP
-//!   `text/calendar` part in a message's MIME tree ([`find_calendar_part`]).
+//! - **Keys** — an instance is keyed by [`InstanceKey`] (`UID` + `RECURRENCE-ID`); among messages
+//!   for one key the highest [`Revision`] (`SEQUENCE`, then `DTSTAMP`) wins (RFC 5546 §2.1.5), so a
+//!   stale lower-`SEQUENCE` message never overrides a newer one.
+//! - **Trust** — from the body, not the envelope (RFC 6047 §2.2.1/§2.3): a `REQUEST`/`CANCEL` is
+//!   honored only when the authenticated sender matches the `ORGANIZER`, a `REPLY` only when it
+//!   matches the replying `ATTENDEE`; an unauthenticated or mismatched message is never
+//!   auto-applied ([`evaluate_imip_trust`]).
+//! - **Message** — the normalized, parsed iTIP message ([`SchedulingMessage`]): the
+//!   [`ScheduleMethod`] plus the carried event, from which the key, revision, and trust identities
+//!   are derived. Producing it from a `text/calendar` body is the iCalendar parser's job
+//!   (`provider-caldav`); this crate owns the shape.
+//! - **Reconcile** — the decision ([`ScheduleAction`] from [`reconcile`]) and the pure application
+//!   of it to a stored [`Event`](crate::calendar::Event): trust gate → supersession → `METHOD`
+//!   dispatch (create/update, set `PARTSTAT` via [`apply_reply`], [`cancel`], or
+//!   classify-and-surface the staged methods).
+//! - **Detect** — the mail↔calendar bridge entry point: finding the iMIP `text/calendar` part in a
+//!   message's MIME tree ([`find_calendar_part`]).
 //!
 //! Detecting the part on the mail path, fetching its bytes, parsing it, and
 //! delivering an iTIP reply are the transport layers' jobs; this module fixes the
@@ -37,9 +35,8 @@ pub use detect::find_calendar_part;
 pub use key::{InstanceKey, Revision};
 pub use message::SchedulingMessage;
 pub use reconcile::{ScheduleAction, apply_reply, cancel, reconcile};
-pub use trust::{ImipTrust, ImipUntrusted, evaluate_imip_trust};
-
 use serde::{Deserialize, Serialize};
+pub use trust::{ImipTrust, ImipUntrusted, evaluate_imip_trust};
 
 open_enum! {
     /// An iTIP scheduling method (RFC 5546 §1.4). Canonical spelling is

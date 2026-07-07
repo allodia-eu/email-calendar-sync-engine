@@ -25,9 +25,11 @@
 use core::time::Duration;
 use std::collections::{BTreeSet, HashMap};
 
-use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey, ThreadId};
-use engine_core::mail::Message;
-use engine_core::sync::{ObjectKind, SyncScope, SyncUpdate};
+use engine_core::{
+    ids::{AccountId, MessageIdHeader, ProviderKey, ThreadId},
+    mail::Message,
+    sync::{ObjectKind, SyncScope, SyncUpdate},
+};
 use engine_store::{ApplyBatch, LeaseRequest, Store, StoreRead, WorkerId};
 
 use crate::{SyncError, derive_messages};
@@ -250,9 +252,12 @@ impl UnionFind {
 
 #[cfg(test)]
 mod tests {
+    use engine_core::{
+        ids::{MailboxId, MessageId},
+        membership::Memberships,
+    };
+
     use super::*;
-    use engine_core::ids::{MailboxId, MessageId};
-    use engine_core::membership::Memberships;
 
     /// Builds a message with the given owned id and referenced ids, in a mailbox.
     fn message(id: &str, mailbox: &str, owned: &[&str], references: &[&str]) -> Message {

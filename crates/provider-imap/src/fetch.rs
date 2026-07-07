@@ -8,23 +8,24 @@
 //! ([`Access::ReadOnly`] → `EXAMINE`), since peeking a body must not take a
 //! write-intent open or disturb `\Recent`.
 
-use engine_core::ids::ProviderKey;
-use engine_core::raw::RawMime;
+use engine_core::{ids::ProviderKey, raw::RawMime};
 use engine_provider::{ProviderError, ProviderResult};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::target::{Access, select_target};
-use crate::transport::Connection;
+use crate::{
+    target::{Access, select_target},
+    transport::Connection,
+};
 
 /// Fetches the raw source of the message named by `key` over `connection`.
 ///
 /// # Errors
 ///
-/// - [`ProviderError::invalid_state`] if `key` is not a parseable IMAP key, or its
-///   mailbox name carries a control character.
-/// - [`ProviderError::conflict`] if the target mailbox's `UIDVALIDITY` has changed
-///   since the key was synthesized, **or** the UID no longer exists (expunged since
-///   the last sync) — either way the caller re-syncs before retrying.
+/// - [`ProviderError::invalid_state`] if `key` is not a parseable IMAP key, or its mailbox name
+///   carries a control character.
+/// - [`ProviderError::conflict`] if the target mailbox's `UIDVALIDITY` has changed since the key
+///   was synthesized, **or** the UID no longer exists (expunged since the last sync) — either way
+///   the caller re-syncs before retrying.
 /// - A classified [`ProviderError`] from the underlying IMAP command on failure.
 pub(crate) async fn fetch_message_source<S>(
     connection: &mut Connection<S>,

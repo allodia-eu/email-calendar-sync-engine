@@ -7,19 +7,17 @@
 //!
 //! Design (see `docs/agent-guidance/store-and-sync.md`):
 //!
-//! - **Mechanical.** The store writes the precomputed [`DerivedWrite`] and the
-//!   opaque serialized objects keyed by provider key; it performs no
-//!   normalization, text extraction, or recurrence expansion.
-//! - **Fenced.** Each scope and op carries a monotonic generation; a write is
-//!   admitted only if its lease token still equals the stored generation,
-//!   re-checked inside the write transaction.
-//! - **Encryption-agnostic.** At-rest protection is a *construction* detail (plain
-//!   SQLite over OS file encryption by default; SQLCipher is an opt-in build), so
-//!   the contract holds either way. Credentials never enter this store.
-//! - **Async over sync.** rusqlite is synchronous; every call runs on a blocking
-//!   thread via [`tokio::task::spawn_blocking`] against one mutex-guarded
-//!   connection (one connection per database — required for `:memory:`, where
-//!   each connection is its own database).
+//! - **Mechanical.** The store writes the precomputed [`DerivedWrite`] and the opaque serialized
+//!   objects keyed by provider key; it performs no normalization, text extraction, or recurrence
+//!   expansion.
+//! - **Fenced.** Each scope and op carries a monotonic generation; a write is admitted only if its
+//!   lease token still equals the stored generation, re-checked inside the write transaction.
+//! - **Encryption-agnostic.** At-rest protection is a *construction* detail (plain SQLite over OS
+//!   file encryption by default; SQLCipher is an opt-in build), so the contract holds either way.
+//!   Credentials never enter this store.
+//! - **Async over sync.** rusqlite is synchronous; every call runs on a blocking thread via
+//!   [`tokio::task::spawn_blocking`] against one mutex-guarded connection (one connection per
+//!   database — required for `:memory:`, where each connection is its own database).
 //!
 //! The FTS5 search index and the normalized structured-filter tables layer over
 //! this base in migration `V2` (`schema.rs`). On-demand message content (`V5`) splits
@@ -38,27 +36,32 @@ mod search_ops;
 mod source_ops;
 
 use core::fmt;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::sync::{SyncScope, SyncState};
-use engine_core::write::{PendingOp, PendingOpId, PendingOutcome};
-use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
-use serde_json::Value;
-
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    sync::{SyncScope, SyncState},
+    write::{PendingOp, PendingOpId, PendingOutcome},
+};
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{
     ApplyBatch, Clock, DerivedWrite, IndexRowCounts, LeaseRequest, LeasedPendingOp, MailIndexEntry,
     OpLease, PendingOpState, Result, StorableObject, Store, StoreRead, SyncApplied, SyncClaim,
     SyncLease,
 };
+use rusqlite::{Connection, OptionalExtension};
+use serde::Serialize;
+use serde_json::Value;
 
-use crate::blob::BlobArea;
-use crate::convert::{backend, expiry_after, scope_key};
-use crate::scope_ops::OwnedUpdate;
+use crate::{
+    blob::BlobArea,
+    convert::{backend, expiry_after, scope_key},
+    scope_ops::OwnedUpdate,
+};
 
 /// The default mmap window for file-backed databases (256 MiB): fewer read
 /// syscalls on the hot search path, so query cost tracks index size.
@@ -481,8 +484,9 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::SqliteStore;
     use engine_store::ManualClock;
+
+    use super::SqliteStore;
 
     #[test]
     fn debug_is_redacted() {

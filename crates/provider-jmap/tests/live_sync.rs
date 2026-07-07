@@ -12,13 +12,14 @@
 //! (e.g. `Sent`) are avoided.
 
 use core::time::Duration;
-use std::sync::Mutex;
-use std::time::Duration as StdDuration;
+use std::{sync::Mutex, time::Duration as StdDuration};
 
-use engine_core::ids::AccountId;
-use engine_core::mail::{Keyword, Mailbox, MailboxRole, Message};
-use engine_core::sync::SyncScope;
-use engine_core::time::TimeZoneId;
+use engine_core::{
+    ids::AccountId,
+    mail::{Keyword, Mailbox, MailboxRole, Message},
+    sync::SyncScope,
+    time::TimeZoneId,
+};
 use engine_provider::Provider;
 use engine_recurrence::Horizon;
 use engine_search::MailQuery;

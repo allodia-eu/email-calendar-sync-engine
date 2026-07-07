@@ -5,8 +5,8 @@
 //! contract every adapter implements so the sync orchestrator and stores never
 //! switch on provider kind (`providers.md`):
 //!
-//! - return a normalized [`SyncUpdate`] plus an opaque next cursor, bundled as
-//!   [`ScopeSync`] — or, for a responsive UI, one [`SyncPage`] at a time;
+//! - return a normalized [`SyncUpdate`] plus an opaque next cursor, bundled as [`ScopeSync`] — or,
+//!   for a responsive UI, one [`SyncPage`] at a time;
 //! - expose what it can do via [`Capabilities`];
 //! - classify failures through [`ProviderError`] (the engine-neutral
 //!   [`FailureClass`](engine_core::error::FailureClass) taxonomy);
@@ -29,8 +29,18 @@ mod submit;
 mod sync;
 mod watch;
 
+use std::collections::BTreeSet;
+
+use async_trait::async_trait;
 pub use calendar_write::{EventDeletion, EventWrite, EventWriteReceipt, WritePrecondition};
 pub use capability::Capabilities;
+use engine_core::{
+    calendar::{Calendar, Event},
+    ids::AccountId,
+    mail::{Mailbox, Message},
+    raw::RawMime,
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+};
 pub use error::{ProviderError, ProviderResult};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use page::{PageToken, SyncKind, SyncPage};
@@ -40,15 +50,6 @@ pub use submit::{
 };
 pub use sync::ScopeSync;
 pub use watch::{Watch, WatchEvent};
-
-use std::collections::BTreeSet;
-
-use async_trait::async_trait;
-use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::AccountId;
-use engine_core::mail::{Mailbox, Message};
-use engine_core::raw::RawMime;
-use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
 
 /// Default page size [`Provider::sync_email`] uses to drain
 /// [`Provider::sync_email_page`]. Streaming callers pass their own, smaller limit
@@ -100,8 +101,9 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a [`ProviderError`] classified per [`FailureClass`](engine_core::error::FailureClass):
-    /// transport/auth/rate-limit/conflict/invalid-state/needs-resync/permanent.
+    /// Returns a [`ProviderError`] classified per
+    /// [`FailureClass`](engine_core::error::FailureClass): transport/auth/rate-limit/conflict/
+    /// invalid-state/needs-resync/permanent.
     async fn sync_mailboxes(
         &self,
         account: &AccountId,
@@ -133,7 +135,8 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a [`ProviderError`] classified per [`FailureClass`](engine_core::error::FailureClass).
+    /// Returns a [`ProviderError`] classified per
+    /// [`FailureClass`](engine_core::error::FailureClass).
     async fn sync_email_page(
         &self,
         account: &AccountId,
@@ -159,7 +162,8 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a [`ProviderError`] classified per [`FailureClass`](engine_core::error::FailureClass).
+    /// Returns a [`ProviderError`] classified per
+    /// [`FailureClass`](engine_core::error::FailureClass).
     async fn sync_email(
         &self,
         account: &AccountId,
@@ -498,10 +502,13 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
 
 #[cfg(test)]
 mod tests {
+    use engine_core::{
+        ids::{MailboxId, MessageId},
+        membership::Memberships,
+        sync::{JmapDataType, SyncUpdate},
+    };
+
     use super::*;
-    use engine_core::ids::{MailboxId, MessageId};
-    use engine_core::membership::Memberships;
-    use engine_core::sync::{JmapDataType, SyncUpdate};
 
     /// A trivial in-memory provider, proving the trait is implementable and that
     /// the scope accessors + capabilities + ScopeSync compose as intended.
@@ -637,9 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_email_defaults_to_unsupported() {
-        use engine_core::error::FailureClass;
-        use engine_core::ids::MessageIdHeader;
-        use engine_core::mail::EmailAddress;
+        use engine_core::{error::FailureClass, ids::MessageIdHeader, mail::EmailAddress};
 
         let provider = FakeJmap {
             caps: Capabilities::none().with_mail(),
@@ -672,10 +677,12 @@ mod tests {
 
     #[tokio::test]
     async fn box_dyn_provider_delegates_overrides_and_defaults() {
-        use engine_core::error::FailureClass;
-        use engine_core::ids::{EventId, MessageIdHeader, Uid};
-        use engine_core::mail::EmailAddress;
-        use engine_core::raw::RawIcal;
+        use engine_core::{
+            error::FailureClass,
+            ids::{EventId, MessageIdHeader, Uid},
+            mail::EmailAddress,
+            raw::RawIcal,
+        };
 
         let email_scope = SyncScope::JmapType {
             account: account(),
@@ -783,8 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn mail_writes_default_to_unsupported() {
-        use engine_core::error::FailureClass;
-        use engine_core::ids::ProviderKey;
+        use engine_core::{error::FailureClass, ids::ProviderKey};
 
         let edit = crate::MailEdit::delete(ProviderKey::new("imap:v1:u7@INBOX").unwrap());
         // A mail adapter that did not override writes rejects, so a
@@ -837,9 +843,11 @@ mod tests {
 
     #[tokio::test]
     async fn calendar_writes_default_to_unsupported() {
-        use engine_core::error::FailureClass;
-        use engine_core::ids::{EventId, Uid};
-        use engine_core::raw::RawIcal;
+        use engine_core::{
+            error::FailureClass,
+            ids::{EventId, Uid},
+            raw::RawIcal,
+        };
 
         let provider = FakeJmap {
             caps: Capabilities::none().with_mail(),

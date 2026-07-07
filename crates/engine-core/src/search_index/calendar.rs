@@ -5,8 +5,10 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::{FtsField, FtsRow, MembershipKind, MembershipRow, normalize_addr};
-use crate::calendar::{Event, ParticipantRole, ParticipationStatus};
-use crate::ids::ProviderKey;
+use crate::{
+    calendar::{Event, ParticipantRole, ParticipationStatus},
+    ids::ProviderKey,
+};
 
 /// Which participant axis a participant-junction row indexes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -201,10 +203,12 @@ fn location_text(event: &Event) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::calendar::{Location, Participant, VirtualLocation};
-    use crate::ids::{CalendarId, EventId, Uid};
-    use crate::membership::Memberships;
-    use crate::time::{CalendarDateTime, LocalDateTime, TimeZoneId};
+    use crate::{
+        calendar::{Location, Participant, VirtualLocation},
+        ids::{CalendarId, EventId, Uid},
+        membership::Memberships,
+        time::{CalendarDateTime, LocalDateTime, TimeZoneId},
+    };
 
     fn event() -> Event {
         Event::new(

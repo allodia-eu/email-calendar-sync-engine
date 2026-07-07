@@ -1,10 +1,10 @@
 //! Offline tests for rich SMTP MIME assembly.
 
-use super::*;
-use engine_core::ids::MessageIdHeader;
-use engine_core::mail::EmailAddress;
+use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
 use engine_provider::{ContentIdHeader, Draft, DraftAttachment};
 use time::macros::datetime;
+
+use super::*;
 
 fn base_draft() -> Draft {
     Draft::new(

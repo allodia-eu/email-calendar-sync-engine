@@ -10,11 +10,15 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::ScheduleMethod;
-use super::key::{InstanceKey, Revision};
-use super::trust::{ImipTrust, evaluate_imip_trust};
-use crate::calendar::{Event, Participant, ParticipantRole, ParticipationStatus};
-use crate::time::UtcDateTime;
+use super::{
+    ScheduleMethod,
+    key::{InstanceKey, Revision},
+    trust::{ImipTrust, evaluate_imip_trust},
+};
+use crate::{
+    calendar::{Event, Participant, ParticipantRole, ParticipationStatus},
+    time::UtcDateTime,
+};
 
 /// A parsed inbound iTIP scheduling message.
 ///
@@ -119,10 +123,12 @@ impl SchedulingMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::calendar::ParticipationStatus;
-    use crate::ids::{CalendarId, EventId, Uid};
-    use crate::membership::Memberships;
-    use crate::time::{CalendarDateTime, LocalDateTime};
+    use crate::{
+        calendar::ParticipationStatus,
+        ids::{CalendarId, EventId, Uid},
+        membership::Memberships,
+        time::{CalendarDateTime, LocalDateTime},
+    };
 
     fn at(s: &str) -> CalendarDateTime {
         CalendarDateTime::Floating(s.parse().unwrap())

@@ -2,8 +2,9 @@
 //! derivation, URL rebasing, and the read-only / EventSource gates. Split out to
 //! keep `session.rs` under the 500-line limit (AGENTS.md).
 
-use super::*;
 use serde_json::json;
+
+use super::*;
 
 /// A representative session subset, mirroring the live Stalwart shape (account
 /// id `"c"`, an advertised foreign `apiUrl`, the core limits).

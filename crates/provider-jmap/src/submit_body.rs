@@ -93,10 +93,10 @@ fn attachment_part(attachment: &DraftAttachment, blob_id: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use engine_core::ids::MessageIdHeader;
-    use engine_core::mail::EmailAddress;
+    use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
     use engine_provider::{ContentIdHeader, DraftAttachment};
+
+    use super::*;
 
     fn draft() -> Draft {
         Draft::new(

@@ -7,8 +7,7 @@
 
 use std::time::Duration;
 
-use engine_core::error::FailureClass;
-use engine_core::ids::MailboxId;
+use engine_core::{error::FailureClass, ids::MailboxId};
 use engine_provider::{Watch, WatchEvent};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, duplex};
 

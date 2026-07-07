@@ -10,9 +10,7 @@
 //! a skip line) unless `STALWART_HTTP_ADDR` is set. With no Docker the whole
 //! suite no-ops, so `cargo test --workspace` stays green offline.
 
-use std::net::TcpStream;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{net::TcpStream, sync::Arc, time::Duration};
 
 use stalwart_harness::{GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, run_probe};
 
@@ -173,9 +171,11 @@ fn imap_probe_over_tls(h: &Harness) -> ImapProbe {
 /// A no-op certificate verifier for the harness's self-signed test cert. This is
 /// deliberately insecure and lives only in the test binary; never reuse it.
 mod no_verify {
-    use rustls::DigitallySignedStruct;
-    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use rustls::{
+        DigitallySignedStruct,
+        client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+        pki_types::{CertificateDer, ServerName, UnixTime},
+    };
 
     #[derive(Debug)]
     pub(crate) struct AcceptAny;

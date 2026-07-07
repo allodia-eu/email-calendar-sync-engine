@@ -4,23 +4,25 @@
 use core::time::Duration;
 use std::collections::BTreeSet;
 
-use engine_core::sync::{SyncState, SyncUpdate};
-use engine_core::write::{PendingOpId, PendingOutcome};
-
-use engine_core::calendar::ParticipationStatus;
-use engine_core::ids::ThreadId;
-use engine_core::search_index::{
-    AddressField, EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow, MembershipKind,
-    MembershipRow, ParticipantField,
+use engine_core::{
+    calendar::ParticipationStatus,
+    ids::ThreadId,
+    search_index::{
+        AddressField, EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow,
+        MembershipKind, MembershipRow, ParticipantField,
+    },
+    sync::{SyncState, SyncUpdate},
+    write::{PendingOpId, PendingOutcome},
 };
 
-use crate::apply::{ApplyBatch, DerivedWrite, FtsField, FtsRow, PendingReconciliation};
-use crate::error::StoreError;
-use crate::lease::ManualClock;
-use crate::outbox::PendingOpState;
-use crate::store::{IndexRowCounts, Store, StoreRead};
-
 use super::{TestObject, acct, email_scope, lease_request, mailbox_scope, pending_op, pk};
+use crate::{
+    apply::{ApplyBatch, DerivedWrite, FtsField, FtsRow, PendingReconciliation},
+    error::StoreError,
+    lease::ManualClock,
+    outbox::PendingOpState,
+    store::{IndexRowCounts, Store, StoreRead},
+};
 
 /// A write under a superseded lease is rejected; the winner's data is intact.
 pub(super) async fn stale_lease_is_rejected<S: Store + StoreRead>(store: &S, clock: &ManualClock) {
@@ -804,7 +806,7 @@ pub(super) async fn scope_mail_index_reports_dates_threads_and_excludes_tombston
         .await
         .unwrap()
         .into_iter()
-        .map(|(key, _, _)| key)
+        .map(|(key, ..)| key)
         .collect();
     assert_eq!(keys.len(), 2);
     assert!(!keys.contains(&pk("m2")));

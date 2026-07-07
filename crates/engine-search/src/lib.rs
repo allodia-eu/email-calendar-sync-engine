@@ -15,19 +15,19 @@
 //!
 //! # Shape
 //!
-//! - [`query`] — the AST. A [`Query`] is one domain (mail *or* calendar); the
-//!   vocabularies are disjoint and execute against different indexes, so they are
-//!   distinct variants rather than one bag of optional fields. Free text is a
-//!   shared [`TextQuery`] of unscoped terms plus field-scoped terms.
-//! - [`parse`] — the textual DSL (`from:a subject:"q report" before:2026-01-01`)
-//!   parsed into the AST. Only known keywords are operators; everything else is
-//!   free text, so URLs and ratios never become spurious filters.
-//! - [`rrf`] — reciprocal-rank fusion: merge ranked candidate lists (FTS, vector)
-//!   into one ranking, store-agnostic and generic over the candidate key.
+//! - [`query`] — the AST. A [`Query`] is one domain (mail *or* calendar); the vocabularies are
+//!   disjoint and execute against different indexes, so they are distinct variants rather than one
+//!   bag of optional fields. Free text is a shared [`TextQuery`] of unscoped terms plus
+//!   field-scoped terms.
+//! - [`parse`] — the textual DSL (`from:a subject:"q report" before:2026-01-01`) parsed into the
+//!   AST. Only known keywords are operators; everything else is free text, so URLs and ratios never
+//!   become spurious filters.
+//! - [`rrf`] — reciprocal-rank fusion: merge ranked candidate lists (FTS, vector) into one ranking,
+//!   store-agnostic and generic over the candidate key.
 //! - [`coverage`] — assemble per-scope coverage facts into one answer's
 //!   [`engine_core::coverage::SearchCoverage`].
-//! - [`result`] — the ranked [`SearchResults`] an executor returns: object keys
-//!   plus the coverage of the answer.
+//! - [`result`] — the ranked [`SearchResults`] an executor returns: object keys plus the coverage
+//!   of the answer.
 
 pub mod coverage;
 pub mod parse;
