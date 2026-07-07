@@ -6,12 +6,10 @@
 //! so it can rebase a foreign advertised origin onto the connection (see
 //! [`SessionUrlPolicy`](crate::SessionUrlPolicy)).
 
-use reqwest::redirect::Policy;
-use reqwest::{Client, RequestBuilder};
+use reqwest::{Client, RequestBuilder, redirect::Policy};
 use serde_json::Value;
 
-use crate::Credentials;
-use crate::error::JmapError;
+use crate::{Credentials, error::JmapError};
 
 /// An authenticated HTTP transport.
 pub(crate) struct Transport {

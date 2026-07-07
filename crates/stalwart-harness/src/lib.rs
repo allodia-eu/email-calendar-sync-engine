@@ -4,17 +4,15 @@
 //! `docs/agent-guidance/stalwart-harness.md`. It does three things and nothing
 //! more:
 //!
-//! 1. **Discovery + gating.** [`Harness::from_env`] returns `Some` only when
-//!    `STALWART_HTTP_ADDR` is set. Every Stalwart-touching test starts by
-//!    calling it and *skips* (returns early) when it is `None`, so the offline
-//!    `cargo test --workspace` stays green with no Docker. The harness server is
-//!    opt-in; absence is the skip signal.
-//! 2. **Readiness.** [`Harness::wait_until_ready`] polls the plaintext
-//!    `/healthz/live` endpoint — a real signal, not a sleep.
-//! 3. **Probes.** Minimal JMAP / IMAP / SMTP / CalDAV checks used by the
-//!    connectivity smoke suite (`tests/smoke.rs`). They assert on content the
-//!    harness controls (subjects, `Message-ID`s, iCalendar UIDs, counts), never
-//!    on server-assigned ids (JMAP id, IMAP UID, DAV ETag).
+//! 1. **Discovery + gating.** [`Harness::from_env`] returns `Some` only when `STALWART_HTTP_ADDR`
+//!    is set. Every Stalwart-touching test starts by calling it and *skips* (returns early) when it
+//!    is `None`, so the offline `cargo test --workspace` stays green with no Docker. The harness
+//!    server is opt-in; absence is the skip signal.
+//! 2. **Readiness.** [`Harness::wait_until_ready`] polls the plaintext `/healthz/live` endpoint — a
+//!    real signal, not a sleep.
+//! 3. **Probes.** Minimal JMAP / IMAP / SMTP / CalDAV checks used by the connectivity smoke suite
+//!    (`tests/smoke.rs`). They assert on content the harness controls (subjects, `Message-ID`s,
+//!    iCalendar UIDs, counts), never on server-assigned ids (JMAP id, IMAP UID, DAV ETag).
 //!
 //! The deep protocol suites (JMAP `Email/changes`, IMAP `UIDVALIDITY`, …) are
 //! the provider clients' job in build-order steps 4–5; this crate only proves

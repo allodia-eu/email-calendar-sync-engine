@@ -5,11 +5,13 @@
 //! Regenerate the committed sample with:
 //! `cargo run -p engine-cli --example dump_fixture > crates/engine-cli/fixtures/sample.json`
 
-use engine_core::calendar::{Event, Frequency, Recurrence, RecurrenceRule};
-use engine_core::ids::{CalendarId, EventId, MailboxId, MessageId, Uid};
-use engine_core::mail::{EmailAddress, Message};
-use engine_core::membership::Memberships;
-use engine_core::time::{CalendarDateTime, LocalDateTime};
+use engine_core::{
+    calendar::{Event, Frequency, Recurrence, RecurrenceRule},
+    ids::{CalendarId, EventId, MailboxId, MessageId, Uid},
+    mail::{EmailAddress, Message},
+    membership::Memberships,
+    time::{CalendarDateTime, LocalDateTime},
+};
 
 fn main() {
     let mut event = Event::new(

@@ -29,38 +29,34 @@
 //! - **Frequencies:** `DAILY`, `WEEKLY`, `MONTHLY`, `YEARLY`.
 //! - **`INTERVAL`** (every *n* periods).
 //! - **Termination:** `COUNT`, `UNTIL`, and unbounded (capped by the horizon).
-//! - **`BYDAY`** including an nth-of-period (e.g. last Friday) for `MONTHLY`, and
-//!   for `YEARLY` when scoped by `BYMONTH`.
+//! - **`BYDAY`** including an nth-of-period (e.g. last Friday) for `MONTHLY`, and for `YEARLY` when
+//!   scoped by `BYMONTH`.
 //! - **`BYMONTHDAY`** including negatives (e.g. `-1` = last day of month).
 //! - **`BYMONTH`**.
 //! - **`WKST`** (week start), affecting `WEEKLY` + `INTERVAL` + `BYDAY`.
-//! - **Per-instance overrides** ([`engine_core::calendar::RecurrenceOverride`]):
-//!   exclusion (EXDATE), cancellation (`status: cancelled`), and a moved instance
-//!   (a patched `start`/`duration`); an override on a non-rule instant adds it
-//!   (RDATE-like).
-//! - **Floating** times (resolved through the caller's `host_zone`) and **all-day**
-//!   (zoneless UTC-midnight, zone-invariant).
+//! - **Per-instance overrides** ([`engine_core::calendar::RecurrenceOverride`]): exclusion
+//!   (EXDATE), cancellation (`status: cancelled`), and a moved instance (a patched
+//!   `start`/`duration`); an override on a non-rule instant adds it (RDATE-like).
+//! - **Floating** times (resolved through the caller's `host_zone`) and **all-day** (zoneless
+//!   UTC-midnight, zone-invariant).
 //!
 //! Staged (return an error, not expanded this pass):
 //!
 //! - `BYYEARDAY`, `BYWEEKNO`, `BYSETPOS`, and year-relative nth `BYDAY`.
 //! - Sub-daily frequencies (`HOURLY`/`MINUTELY`/`SECONDLY`).
-//! - `RSCALE` / non-Gregorian recurrence (preserved raw, never expanded —
-//!   `calendar-semantics.md`).
-//! - Custom / embedded-`VTIMEZONE` zones ([`engine_core::time::TimeZoneId::Custom`]);
-//!   these need the iCalendar parser (a later provider step).
-//! - Cross-object master/override-instance reconciliation: [`expand`] is a pure
-//!   single-`Event` function. A recurring master expands its inline overrides; a
-//!   standalone override-instance `Event` (its `recurrence_id` set) expands to its
-//!   own single occurrence. Deduplicating a master against sibling override
-//!   objects is the sync layer's job.
+//! - `RSCALE` / non-Gregorian recurrence (preserved raw, never expanded — `calendar-semantics.md`).
+//! - Custom / embedded-`VTIMEZONE` zones ([`engine_core::time::TimeZoneId::Custom`]); these need
+//!   the iCalendar parser (a later provider step).
+//! - Cross-object master/override-instance reconciliation: [`expand`] is a pure single-`Event`
+//!   function. A recurring master expands its inline overrides; a standalone override-instance
+//!   `Event` (its `recurrence_id` set) expands to its own single occurrence. Deduplicating a master
+//!   against sibling override objects is the sync layer's job.
 
 mod expand;
 mod rule;
 mod zone;
 
 use engine_core::time::{CalendarDateTime, LocalDateTime, TimeError, TimeZoneId, UtcDateTime};
-
 pub use engine_store::{OccurrenceRow, TzdataVersion};
 pub use expand::expand;
 
@@ -248,8 +244,9 @@ impl From<TimeError> for ExpandError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use engine_core::time::{CalendarDate, LocalDateTime, TimeZoneId};
+
+    use super::*;
 
     fn local(year: i32, month: u8, day: u8, hour: u8, minute: u8) -> LocalDateTime {
         LocalDateTime::new(year, month, day, hour, minute, 0).unwrap()

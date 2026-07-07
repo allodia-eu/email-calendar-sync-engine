@@ -15,8 +15,10 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::ids::{MailboxId, ProviderKey};
-use engine_core::mail::{Keyword, SystemKeyword};
+use engine_core::{
+    ids::{MailboxId, ProviderKey},
+    mail::{Keyword, SystemKeyword},
+};
 use serde::{Deserialize, Serialize};
 
 /// A request to mutate one already-synced mail object.

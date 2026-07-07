@@ -11,25 +11,26 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
-use engine_core::ids::{AccountId, MailboxId, ProviderKey};
-use engine_core::mail::{Mailbox, Message};
-use engine_core::sync::{SyncScope, SyncState, SyncUpdate};
+use engine_core::{
+    ids::{AccountId, MailboxId, ProviderKey},
+    mail::{Mailbox, Message},
+    sync::{SyncScope, SyncState, SyncUpdate},
+};
 use engine_provider::{
     Capabilities, Draft, MailEdit, MailEditReceipt, PageToken, Provider, ProviderError,
     ProviderResult, ScopeSync, SubmissionReceipt, SyncPage,
 };
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
-use tokio_rustls::TlsConnector;
-use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::pki_types::ServerName;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+    sync::Mutex,
+};
+use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
-use crate::error::ImapError;
-use crate::mail::mailbox_from_list;
-use crate::preview::hydrate_previews;
-use crate::sync::sync_page;
-use crate::transport::Connection;
+use crate::{
+    error::ImapError, mail::mailbox_from_list, preview::hydrate_previews, sync::sync_page,
+    transport::Connection,
+};
 
 /// The IMAP folder list carries no sync token (a `LIST` re-snapshots it each pass),
 /// so its cursor is a fixed sentinel — the store round-trips it unread.

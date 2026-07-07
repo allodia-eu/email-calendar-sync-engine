@@ -12,12 +12,14 @@
 
 use core::time::Duration;
 
-use engine_core::calendar::Event;
-use engine_core::ids::AccountId;
-use engine_core::mail::Message;
-use engine_core::search_index::{OwnerAddresses, project_event, project_message};
-use engine_core::sync::{SyncState, SyncUpdate};
-use engine_core::time::TimeZoneId;
+use engine_core::{
+    calendar::Event,
+    ids::AccountId,
+    mail::Message,
+    search_index::{OwnerAddresses, project_event, project_message},
+    sync::{SyncState, SyncUpdate},
+    time::TimeZoneId,
+};
 use engine_recurrence::{Horizon, expand};
 use engine_store::{ApplyBatch, Clock, DerivedWrite, LeaseRequest, Store, StoreRead, WorkerId};
 use store_sqlite::SqliteStore;

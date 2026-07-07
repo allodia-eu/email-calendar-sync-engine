@@ -5,8 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::RecurrenceRule;
-use crate::patch::PatchObject;
-use crate::time::LocalDateTime;
+use crate::{patch::PatchObject, time::LocalDateTime};
 
 /// What a `recurrenceOverrides` entry does to one instance (RFC 8984 §4.3.5).
 ///

@@ -9,10 +9,11 @@
 //! at rest by the host's OS file encryption — the same posture as the database file
 //! (`north-star.md`).
 
-use std::fmt;
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::{
+    fmt, fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use engine_store::Result;
 use sha2::{Digest, Sha256};

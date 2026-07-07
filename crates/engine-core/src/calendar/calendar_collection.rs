@@ -3,10 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use super::Alert;
-use crate::extended::ExtendedProperties;
-use crate::ids::CalendarId;
-use crate::time::TimeZoneId;
-use crate::version::RevisionTokens;
+use crate::{
+    extended::ExtendedProperties, ids::CalendarId, time::TimeZoneId, version::RevisionTokens,
+};
 
 /// The caller's normalized access rights on a calendar.
 ///

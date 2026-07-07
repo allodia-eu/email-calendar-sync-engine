@@ -23,11 +23,11 @@
 //! # Shape
 //!
 //! - [`FtsField`]/[`FtsRow`] — the field-tagged full-text document for one object.
-//! - [`MembershipRow`]/[`MembershipKind`] — collection/keyword membership, shared
-//!   by mail and calendar.
+//! - [`MembershipRow`]/[`MembershipKind`] — collection/keyword membership, shared by mail and
+//!   calendar.
 //! - [`mail`] — [`project_message`] and the mail filter rows.
-//! - [`calendar`] — [`project_event`] (which needs the account's [`OwnerAddresses`]
-//!   to resolve "my" RSVP) and the calendar filter rows.
+//! - [`calendar`] — [`project_event`] (which needs the account's [`OwnerAddresses`] to resolve "my"
+//!   RSVP) and the calendar filter rows.
 
 pub mod calendar;
 pub mod mail;
@@ -37,7 +37,6 @@ pub use calendar::{
     project_event,
 };
 pub use mail::{AddressField, MailAddressRow, MailIndexRow, MailProjection, project_message};
-
 use serde::{Deserialize, Serialize};
 
 use crate::ids::ProviderKey;

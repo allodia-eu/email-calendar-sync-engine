@@ -149,8 +149,9 @@ fn parse_exists(body: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImapStream, parse_exists, run_probe};
     use std::io::{Cursor, Read, Write};
+
+    use super::{ImapStream, parse_exists, run_probe};
 
     #[test]
     fn parses_exists_count() {
@@ -173,6 +174,7 @@ mod tests {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             Ok(buf.len())
         }
+
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }

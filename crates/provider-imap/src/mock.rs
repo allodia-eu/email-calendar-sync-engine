@@ -5,10 +5,12 @@
 //! TLS — the same fidelity as `provider-jmap`'s fake executor, exercising the real
 //! parsers and command sequencing against captured transcripts.
 
-use std::io::{self, Read};
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
+use std::{
+    io::{self, Read},
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
+};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 

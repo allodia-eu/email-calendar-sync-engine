@@ -12,9 +12,11 @@
 //! (`NIL` / atom / quoted-string / `{n}` literal / parenthesized list), defined in
 //! [`crate::tokenize`]; each response is then read off the resulting [`Item`] tree.
 
-use crate::bodystructure::has_downloadable_part;
-use crate::error::{ImapError, ImapResult};
-use crate::tokenize::{Item, items_of};
+use crate::{
+    bodystructure::has_downloadable_part,
+    error::{ImapError, ImapResult},
+    tokenize::{Item, items_of},
+};
 
 /// What a `SELECT`/`EXAMINE` told us about the mailbox: its UID space and message
 /// count (RFC 9051 §6.3.2, §7.3.1, §7.4.1).

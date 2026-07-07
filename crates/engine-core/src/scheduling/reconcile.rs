@@ -7,14 +7,18 @@
 //! cancel), while a stale, duplicate, untrusted, or staged-method message is
 //! classified and surfaced, never silently applied (`calendar-semantics.md`).
 
-use super::ScheduleMethod;
-use super::key::{InstanceKey, Revision};
-use super::message::SchedulingMessage;
-use super::trust::{ImipTrust, ImipUntrusted, addresses_match};
-use crate::calendar::{
-    Event, EventStatus, Participant, ParticipationStatus, Recurrence, RecurrenceOverride,
+use super::{
+    ScheduleMethod,
+    key::{InstanceKey, Revision},
+    message::SchedulingMessage,
+    trust::{ImipTrust, ImipUntrusted, addresses_match},
 };
-use crate::time::{CalendarDateTime, LocalDateTime};
+use crate::{
+    calendar::{
+        Event, EventStatus, Participant, ParticipationStatus, Recurrence, RecurrenceOverride,
+    },
+    time::{CalendarDateTime, LocalDateTime},
+};
 
 /// What an inbound scheduling message resolves to once trust and supersession are
 /// decided.
@@ -183,10 +187,12 @@ fn exclusion_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::calendar::{Event, Frequency, Participant, ParticipantRole, RecurrenceRule};
-    use crate::ids::{CalendarId, EventId, Uid};
-    use crate::membership::Memberships;
-    use crate::time::{CalendarDateTime, UtcDateTime};
+    use crate::{
+        calendar::{Event, Frequency, Participant, ParticipantRole, RecurrenceRule},
+        ids::{CalendarId, EventId, Uid},
+        membership::Memberships,
+        time::{CalendarDateTime, UtcDateTime},
+    };
 
     fn floating(s: &str) -> CalendarDateTime {
         CalendarDateTime::Floating(s.parse().unwrap())

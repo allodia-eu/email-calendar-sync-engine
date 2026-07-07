@@ -9,8 +9,10 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::ids::ProviderKey;
-use engine_core::sync::{SyncState, SyncUpdate};
+use engine_core::{
+    ids::ProviderKey,
+    sync::{SyncState, SyncUpdate},
+};
 use serde_json::Value;
 
 use crate::error::JmapError;
@@ -158,9 +160,10 @@ pub(crate) fn snapshot_or_delta<T>(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::mail::message_from_json;
-    use serde_json::json;
 
     const EMAIL_GET: &str = include_str!("../tests/fixtures/email_get.json");
 

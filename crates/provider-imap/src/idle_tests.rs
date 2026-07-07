@@ -5,9 +5,11 @@
 //! in-memory duplex (`crate::watch`).
 
 use super::{IdleLine, classify, idle_done, idle_start, idle_wait_change};
-use crate::error::ImapError;
-use crate::mock::{MockStream, Recorded, script, written};
-use crate::transport::Connection;
+use crate::{
+    error::ImapError,
+    mock::{MockStream, Recorded, script, written},
+    transport::Connection,
+};
 
 const GREETING: &str = "* OK ready\r\n";
 

@@ -15,16 +15,20 @@
 //! the mail methods keep their unsupported defaults.
 
 use async_trait::async_trait;
-use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::{AccountId, CalendarId, DavCollectionId, EventId, Uid};
-use engine_core::sync::{SyncScope, SyncState, SyncUpdate};
+use engine_core::{
+    calendar::{Calendar, Event},
+    ids::{AccountId, CalendarId, DavCollectionId, EventId, Uid},
+    sync::{SyncScope, SyncState, SyncUpdate},
+};
 use engine_provider::{
     Capabilities, EventDeletion, EventWrite, EventWriteReceipt, Provider, ProviderResult, ScopeSync,
 };
 
-use crate::discovery;
-use crate::error::CalDavError;
-use crate::transport::{Credentials, DavClient, DavExecutor};
+use crate::{
+    discovery,
+    error::CalDavError,
+    transport::{Credentials, DavClient, DavExecutor},
+};
 
 /// Connection settings for a CalDAV account.
 #[derive(Debug, Clone)]

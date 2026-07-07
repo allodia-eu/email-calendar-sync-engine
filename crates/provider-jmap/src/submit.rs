@@ -12,17 +12,21 @@
 //! caller's outbox (`engine-sync`). The pre-generated `Message-ID` is echoed in the
 //! receipt so the sent copy reconciles when it syncs back (`store-and-sync.md`).
 
-use engine_core::ids::{MessageIdHeader, ProviderKey};
-use engine_core::mail::{EmailAddress, Mailbox, MailboxRole};
+use engine_core::{
+    ids::{MessageIdHeader, ProviderKey},
+    mail::{EmailAddress, Mailbox, MailboxRole},
+};
 use engine_provider::{Draft, SubmissionReceipt};
 use serde_json::{Map, Value, json};
 
-use crate::error::JmapError;
-use crate::mail::mailbox_from_json;
-use crate::provider::Executor;
-use crate::request::{Request, capability};
-use crate::submit_body::body;
-use crate::sync_ops::objects;
+use crate::{
+    error::JmapError,
+    mail::mailbox_from_json,
+    provider::Executor,
+    request::{Request, capability},
+    submit_body::body,
+    sync_ops::objects,
+};
 
 /// The server-assigned ids a submission needs as literals.
 struct SubmitContext {
@@ -231,8 +235,9 @@ fn set_error(result: &Value, creation_id: &str, method: &str) -> JmapError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use engine_core::error::FailureClass;
+
+    use super::*;
 
     fn send_response() -> Value {
         serde_json::from_str(include_str!("../tests/fixtures/submit_send_response.json")).unwrap()

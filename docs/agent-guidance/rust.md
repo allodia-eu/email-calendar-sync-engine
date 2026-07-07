@@ -38,7 +38,7 @@ Use the checklist during API review:
 Code should be clean under:
 
 ```sh
-cargo fmt --check
+cargo +nightly fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo doc --workspace --all-features --no-deps

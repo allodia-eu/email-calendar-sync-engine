@@ -6,8 +6,10 @@
 
 use core::time::Duration;
 
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+};
 use engine_store::{
     ApplyBatch, DerivedWrite, LeaseRequest, ManualClock, StorableObject, Store, WorkerId,
 };

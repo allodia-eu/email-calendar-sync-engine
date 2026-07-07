@@ -1,8 +1,10 @@
 //! On-demand message attachment reads over the cached raw MIME source.
 
-use engine_core::ids::AccountId;
-use engine_core::mail::{AttachmentPartId, Message, MessageAttachment, MessageAttachmentContent};
-use engine_core::raw::RawMime;
+use engine_core::{
+    ids::AccountId,
+    mail::{AttachmentPartId, Message, MessageAttachment, MessageAttachmentContent},
+    raw::RawMime,
+};
 use engine_provider::Provider;
 use engine_store::MessageSourceCache;
 
@@ -97,9 +99,11 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use engine_core::ids::{AccountId, MailboxId, MessageId};
-    use engine_core::membership::Memberships;
-    use engine_core::raw::RawMime;
+    use engine_core::{
+        ids::{AccountId, MailboxId, MessageId},
+        membership::Memberships,
+        raw::RawMime,
+    };
     use engine_provider::{Capabilities, Provider, ProviderResult};
     use engine_store::{ManualClock, MessageSourceCache};
     use store_sqlite::SqliteStore;

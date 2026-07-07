@@ -1,8 +1,9 @@
 //! Offline tests for IMAP → domain normalization.
 
+use engine_core::mail::SystemKeyword;
+
 use super::*;
 use crate::parse::parse_fetch;
-use engine_core::mail::SystemKeyword;
 
 #[test]
 fn synthesized_key_is_stable_and_distinguishes_copies() {

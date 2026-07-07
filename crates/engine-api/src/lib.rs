@@ -24,14 +24,14 @@
 //!
 //! # Shape
 //!
-//! - The store is concrete ([`SqliteStore`](store_sqlite::SqliteStore)): SQLite is
-//!   the engine's first store, and the search and other conveniences live on it,
-//!   not on the `engine_store::Store` trait.
-//! - Sync is **generic over [`Provider`]**, so the facade stays provider-agnostic —
-//!   a host passes a `provider-jmap`, `provider-imap`, or `provider-caldav`
-//!   adapter and the facade never switches on protocol.
-//! - The wall clock lives here, not in `engine-store`, so the store keeps a single
-//!   injected time seam and never reads the system clock itself (`north-star.md`).
+//! - The store is concrete ([`SqliteStore`](store_sqlite::SqliteStore)): SQLite is the engine's
+//!   first store, and the search and other conveniences live on it, not on the
+//!   `engine_store::Store` trait.
+//! - Sync is **generic over [`Provider`]**, so the facade stays provider-agnostic — a host passes a
+//!   `provider-jmap`, `provider-imap`, or `provider-caldav` adapter and the facade never switches
+//!   on protocol.
+//! - The wall clock lives here, not in `engine-store`, so the store keeps a single injected time
+//!   seam and never reads the system clock itself (`north-star.md`).
 //!
 //! The types that appear in the facade's own signatures are re-exported, so a host
 //! can depend on `engine-api` alone and still name everything it needs to call it.
@@ -40,22 +40,20 @@ mod body;
 mod clock;
 mod engine;
 
-use engine_store::StoreError;
-use engine_sync::SyncError;
-
 pub use engine::Engine;
-
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::calendar::{Calendar, Event};
-pub use engine_core::coverage::SearchCoverage;
-pub use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey};
-pub use engine_core::mail::{
-    AttachmentPartId, EmailAddress, InlinePart, Mailbox, MailboxRole, Message, MessageAttachment,
-    MessageAttachmentContent, MessageBody, SystemKeyword,
+pub use engine_core::{
+    coverage::SearchCoverage,
+    ids::{AccountId, MessageIdHeader, ProviderKey},
+    mail::{
+        AttachmentPartId, EmailAddress, InlinePart, Mailbox, MailboxRole, Message,
+        MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword,
+    },
+    time::{TimeZoneId, UtcDateTime},
+    write::PendingOpId,
 };
-pub use engine_core::time::{TimeZoneId, UtcDateTime};
-pub use engine_core::write::PendingOpId;
 pub use engine_provider::{
     ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition, EventDeletion, EventWrite,
     EventWriteReceipt, MailEdit, MailEditReceipt, Provider, SubmissionReceipt, WritePrecondition,
@@ -64,7 +62,9 @@ pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, is_supported_zone, resolve_instant, resolve_instant_in,
 };
 pub use engine_search::{ParseError, SearchHit, SearchResults};
+use engine_store::StoreError;
 pub use engine_store::{PendingOpState, SyncApplied};
+use engine_sync::SyncError;
 pub use engine_sync::{
     CalendarSyncReport, CalendarWriteOutcome, MailEditOutcome, MailSyncReport, ProgressSink,
     SubmitOutcome, SyncProgress, ThreadDeriveReport,

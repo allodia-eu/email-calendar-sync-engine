@@ -1,15 +1,17 @@
 //! Conformance tests for the calendar model.
 
-use engine_core::calendar::{
-    Alert, AlertAction, Calendar, CalendarAccess, Event, EventKind, EventStatus, Frequency,
-    Location, ParticipantRole, ParticipationStatus, Recurrence, RecurrenceOverride, RecurrenceRule,
-    RelativeTo, Trigger, VirtualLocation,
+use engine_core::{
+    calendar::{
+        Alert, AlertAction, Calendar, CalendarAccess, Event, EventKind, EventStatus, Frequency,
+        Location, ParticipantRole, ParticipationStatus, Recurrence, RecurrenceOverride,
+        RecurrenceRule, RelativeTo, Trigger, VirtualLocation,
+    },
+    extended::ExtendedProperties,
+    ids::{CalendarId, EventId, Uid},
+    membership::Memberships,
+    patch::PatchObject,
+    time::{CalendarDate, CalendarDateTime, Duration, LocalDateTime, TimeZoneId},
 };
-use engine_core::extended::ExtendedProperties;
-use engine_core::ids::{CalendarId, EventId, Uid};
-use engine_core::membership::Memberships;
-use engine_core::patch::PatchObject;
-use engine_core::time::{CalendarDate, CalendarDateTime, Duration, LocalDateTime, TimeZoneId};
 
 fn calendars(ids: &[&str]) -> Memberships<CalendarId> {
     Memberships::new(ids.iter().map(|id| CalendarId::try_from(*id).unwrap())).unwrap()

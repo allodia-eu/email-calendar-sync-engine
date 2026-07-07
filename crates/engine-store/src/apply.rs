@@ -16,22 +16,23 @@
 
 use core::fmt;
 
-use engine_core::ids::ProviderKey;
-use engine_core::search_index::{
-    EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailIndexRow,
-    MailProjection, MembershipRow,
-};
-use engine_core::sync::{SyncState, SyncUpdate};
-use engine_core::time::UtcDateTime;
-use engine_core::write::PendingOpId;
-use serde::{Deserialize, Serialize};
-
-use crate::outbox::PendingOpState;
-
 // The full-text row types are defined in engine-core, beside the projection that
 // produces them; they are re-exported here so the store's `DerivedWrite`
 // vocabulary stays discoverable in one place.
 pub use engine_core::search_index::{FtsField, FtsRow};
+use engine_core::{
+    ids::ProviderKey,
+    search_index::{
+        EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailIndexRow,
+        MailProjection, MembershipRow,
+    },
+    sync::{SyncState, SyncUpdate},
+    time::UtcDateTime,
+    write::PendingOpId,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::outbox::PendingOpState;
 
 /// An object the store can persist mechanically.
 ///
@@ -308,14 +309,15 @@ impl<'a, T> ApplyBatch<'a, T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use engine_core::ids::{EventId, MailboxId, MessageId, Uid};
-    use engine_core::mail::{EmailAddress, Message};
-    use engine_core::membership::Memberships;
-    use engine_core::search_index::{
-        MembershipKind, OwnerAddresses, project_event, project_message,
+    use engine_core::{
+        ids::{EventId, MailboxId, MessageId, Uid},
+        mail::{EmailAddress, Message},
+        membership::Memberships,
+        search_index::{MembershipKind, OwnerAddresses, project_event, project_message},
+        time::{CalendarDateTime, LocalDateTime, TimeZoneId},
     };
-    use engine_core::time::{CalendarDateTime, LocalDateTime, TimeZoneId};
+
+    use super::*;
 
     fn key(value: &str) -> ProviderKey {
         ProviderKey::new(value).unwrap()
@@ -371,9 +373,7 @@ mod tests {
 
     #[test]
     fn container_objects_are_storable_by_their_id() {
-        use engine_core::calendar::Calendar;
-        use engine_core::ids::CalendarId;
-        use engine_core::mail::Mailbox;
+        use engine_core::{calendar::Calendar, ids::CalendarId, mail::Mailbox};
 
         let mailbox = Mailbox::new(MailboxId::try_from("inbox").unwrap(), "Inbox");
         assert_eq!(mailbox.provider_key().as_str(), "inbox");

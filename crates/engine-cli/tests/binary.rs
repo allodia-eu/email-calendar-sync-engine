@@ -3,10 +3,12 @@
 
 use std::process::Command;
 
-use engine_core::calendar::{Event, Frequency, Recurrence, RecurrenceRule};
-use engine_core::ids::{CalendarId, EventId, Uid};
-use engine_core::membership::Memberships;
-use engine_core::time::{CalendarDateTime, LocalDateTime};
+use engine_core::{
+    calendar::{Event, Frequency, Recurrence, RecurrenceRule},
+    ids::{CalendarId, EventId, Uid},
+    membership::Memberships,
+    time::{CalendarDateTime, LocalDateTime},
+};
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_engine-cli"))

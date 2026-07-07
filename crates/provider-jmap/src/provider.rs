@@ -10,25 +10,29 @@
 //! production executor.
 
 use async_trait::async_trait;
-use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::AccountId;
-use engine_core::mail::{Mailbox, Message};
-use engine_core::raw::RawMime;
-use engine_core::sync::{JmapDataType, SyncScope, SyncState};
+use engine_core::{
+    calendar::{Calendar, Event},
+    ids::AccountId,
+    mail::{Mailbox, Message},
+    raw::RawMime,
+    sync::{JmapDataType, SyncScope, SyncState},
+};
 use engine_provider::{
     Capabilities, Draft, PageToken, Provider, ProviderResult, ScopeSync, SubmissionReceipt,
     SyncPage,
 };
 use serde_json::json;
 
-use crate::calendar::{calendar_from_json, event_from_json};
-use crate::error::JmapError;
-use crate::fetch;
-use crate::fetch::MemberFetch;
-use crate::mail::{EMAIL_PROPERTIES, mailbox_from_json, message_from_json};
-use crate::request::{Request, Response, capability};
-use crate::session::Session;
-use crate::{JmapClient, JmapConfig};
+use crate::{
+    JmapClient, JmapConfig,
+    calendar::{calendar_from_json, event_from_json},
+    error::JmapError,
+    fetch,
+    fetch::MemberFetch,
+    mail::{EMAIL_PROPERTIES, mailbox_from_json, message_from_json},
+    request::{Request, Response, capability},
+    session::Session,
+};
 
 /// Executes a batched JMAP request and exposes the session.
 ///

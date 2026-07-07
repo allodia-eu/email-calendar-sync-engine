@@ -4,10 +4,12 @@
 //! over-fit to one implementation — the CardDAV-style insurance the read tests
 //! already give discovery + sync-token, now extended to conditional `PUT`/`DELETE`.
 
-use engine_core::calendar::Event;
-use engine_core::ids::{AccountId, Uid};
-use engine_core::raw::RawIcal;
-use engine_core::sync::SyncUpdate;
+use engine_core::{
+    calendar::Event,
+    ids::{AccountId, Uid},
+    raw::RawIcal,
+    sync::SyncUpdate,
+};
 use engine_provider::{EventDeletion, EventWrite, Provider};
 use provider_caldav::CalDavProvider;
 use tokio::sync::{Mutex, MutexGuard};

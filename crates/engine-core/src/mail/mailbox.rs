@@ -3,9 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::MailboxRole;
-use crate::extended::ExtendedProperties;
-use crate::ids::MailboxId;
-use crate::version::RevisionTokens;
+use crate::{extended::ExtendedProperties, ids::MailboxId, version::RevisionTokens};
 
 /// A mail collection: a mailbox, folder, or label.
 ///

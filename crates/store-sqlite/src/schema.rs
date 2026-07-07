@@ -226,17 +226,15 @@ CREATE TABLE meta (
 /// The split is by **text vs bytes** (`north-star.md`): searchable text lives in
 /// SQLite, the heavy byte payload on the filesystem.
 ///
-/// - `message_source` is metadata for the raw RFC 5322 bytes, which live in a
-///   content-addressed filesystem blob area, **not** SQLite — a single message can
-///   carry 1–15 MB of inline attachments that would bloat the database. The SHA-256
-///   `content_hash` names the blob (two IMAP copies of one message dedupe to one
-///   file); `fetched_at` is kept for future quota/eviction.
-/// - `message_body` holds the extracted, displayable body text (the reading view and
-///   the search source). `message_body_fts` is an FTS5 index over the `plain` text,
-///   maintained by triggers (mirroring V2's `fts_doc`/`fts_index`), so a search
-///   matches body content. It is **lease-free** and never touched by sync, so an
-///   IMAP re-snapshot cannot wipe it; stale rows for deleted messages are filtered at
-///   query time by joining to the live `mail_index`.
+/// - `message_source` is metadata for the raw RFC 5322 bytes, which live in a content-addressed
+///   filesystem blob area, **not** SQLite — a single message can carry 1–15 MB of inline
+///   attachments that would bloat the database. The SHA-256 `content_hash` names the blob (two IMAP
+///   copies of one message dedupe to one file); `fetched_at` is kept for future quota/eviction.
+/// - `message_body` holds the extracted, displayable body text (the reading view and the search
+///   source). `message_body_fts` is an FTS5 index over the `plain` text, maintained by triggers
+///   (mirroring V2's `fts_doc`/`fts_index`), so a search matches body content. It is **lease-free**
+///   and never touched by sync, so an IMAP re-snapshot cannot wipe it; stale rows for deleted
+///   messages are filtered at query time by joining to the live `mail_index`.
 ///
 /// Both are keyed by `(account, provider_key)`.
 pub(crate) const V5: &str = "\

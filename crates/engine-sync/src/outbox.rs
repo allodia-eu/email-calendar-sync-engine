@@ -15,9 +15,11 @@
 
 use core::time::Duration;
 
-use engine_core::ids::{AccountId, MessageIdHeader, ProviderKey, Uid};
-use engine_core::version::ETag;
-use engine_core::write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey};
+use engine_core::{
+    ids::{AccountId, MessageIdHeader, ProviderKey, Uid},
+    version::ETag,
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
+};
 use engine_provider::{Draft, EventDeletion, EventWrite, MailEdit, Provider};
 use engine_store::{LeaseRequest, LeasedPendingOp, Store, WorkerId};
 

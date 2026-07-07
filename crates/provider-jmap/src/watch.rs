@@ -21,16 +21,14 @@
 //! for a type the watcher does not track is ignored (it keeps reading). Reconnection
 //! and the poll-vs-push policy live in the host, not here.
 
-use std::collections::VecDeque;
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use async_trait::async_trait;
 use engine_core::sync::JmapDataType;
 use engine_provider::{ProviderError, ProviderResult, Watch, WatchEvent};
 use serde_json::Value;
 
-use crate::error::JmapError;
-use crate::{JmapClient, JmapConfig};
+use crate::{JmapClient, JmapConfig, error::JmapError};
 
 /// A sensible default server-`ping` interval for the EventSource keep-alive. A host
 /// may pass a shorter one to detect a dead connection sooner (at the cost of more

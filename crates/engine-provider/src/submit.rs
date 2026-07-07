@@ -2,8 +2,10 @@
 
 use core::fmt;
 
-use engine_core::ids::{MessageIdHeader, ProviderKey};
-use engine_core::mail::EmailAddress;
+use engine_core::{
+    ids::{MessageIdHeader, ProviderKey},
+    mail::EmailAddress,
+};
 use serde::{Deserialize, Serialize};
 
 /// A mail message to send.

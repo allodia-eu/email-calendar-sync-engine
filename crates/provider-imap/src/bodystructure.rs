@@ -1,8 +1,9 @@
 //! IMAP BODYSTRUCTURE helpers used for list-level attachment metadata.
 //!
-//! The parser keeps this separate from the general FETCH reader because BODYSTRUCTURE is a recursive
-//! MIME shape with its own positional grammar. The goal here is intentionally narrow: determine
-//! whether the message has a user-visible downloadable part without materializing the body.
+//! The parser keeps this separate from the general FETCH reader because BODYSTRUCTURE is a
+//! recursive MIME shape with its own positional grammar. The goal here is intentionally narrow:
+//! determine whether the message has a user-visible downloadable part without materializing the
+//! body.
 
 use crate::tokenize::Item;
 

@@ -7,8 +7,10 @@
 //! else the cached raw bytes on disk, else one provider fetch — extracting the
 //! displayable text with `engine-mime` and caching both halves best-effort.
 
-use engine_core::ids::AccountId;
-use engine_core::mail::{InlinePart, Message, MessageBody};
+use engine_core::{
+    ids::AccountId,
+    mail::{InlinePart, Message, MessageBody},
+};
 use engine_provider::Provider;
 use engine_store::{MessageBodyStore, MessageSourceCache};
 
@@ -105,10 +107,12 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use engine_core::ids::{AccountId, MailboxId, MessageId};
-    use engine_core::mail::{Message, MessageBody};
-    use engine_core::membership::Memberships;
-    use engine_core::raw::RawMime;
+    use engine_core::{
+        ids::{AccountId, MailboxId, MessageId},
+        mail::{Message, MessageBody},
+        membership::Memberships,
+        raw::RawMime,
+    };
     use engine_provider::{Capabilities, Provider, ProviderResult};
     use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
     use store_sqlite::SqliteStore;

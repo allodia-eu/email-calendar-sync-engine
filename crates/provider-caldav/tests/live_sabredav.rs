@@ -13,10 +13,12 @@
 
 use core::time::Duration;
 
-use engine_core::calendar::Event;
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::sync::SyncScope;
-use engine_core::time::TimeZoneId;
+use engine_core::{
+    calendar::Event,
+    ids::{AccountId, ProviderKey},
+    sync::SyncScope,
+    time::TimeZoneId,
+};
 use engine_provider::Provider;
 use engine_recurrence::Horizon;
 use engine_store::{ManualClock, StoreRead, WorkerId};

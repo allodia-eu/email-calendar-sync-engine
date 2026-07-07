@@ -1,7 +1,9 @@
 //! Attachment extraction from cached raw MIME.
 
-use engine_core::mail::{AttachmentPartId, MessageAttachment, MessageAttachmentContent};
-use engine_core::raw::RawMime;
+use engine_core::{
+    mail::{AttachmentPartId, MessageAttachment, MessageAttachmentContent},
+    raw::RawMime,
+};
 use mail_parser::{ContentType, MessageParser, MessagePart, MimeHeaders, PartType};
 
 /// Extracts downloadable attachment metadata from a raw RFC 5322 message.

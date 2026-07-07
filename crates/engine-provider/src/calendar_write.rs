@@ -12,9 +12,11 @@
 //! `If-Match`/`If-None-Match` precondition, so a stale edit can never silently
 //! clobber a newer server copy (RFC 4791 §5.3.2, RFC 7232).
 
-use engine_core::ids::{EventId, ProviderKey, Uid};
-use engine_core::raw::RawIcal;
-use engine_core::version::ETag;
+use engine_core::{
+    ids::{EventId, ProviderKey, Uid},
+    raw::RawIcal,
+    version::ETag,
+};
 use serde::{Deserialize, Serialize};
 
 /// The optimistic-concurrency precondition for a calendar `PUT` (HTTP conditional

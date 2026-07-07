@@ -5,12 +5,14 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::{EmailBodyPart, Envelope, Keyword, SystemKeyword};
-use crate::attachment::Attachment;
-use crate::extended::ExtendedProperties;
-use crate::ids::{BlobId, MailboxId, MessageId, ThreadId};
-use crate::membership::Memberships;
-use crate::time::UtcDateTime;
-use crate::version::RevisionTokens;
+use crate::{
+    attachment::Attachment,
+    extended::ExtendedProperties,
+    ids::{BlobId, MailboxId, MessageId, ThreadId},
+    membership::Memberships,
+    time::UtcDateTime,
+    version::RevisionTokens,
+};
 
 /// A stored mail object — a *provider* object, not a deduplicated RFC 5322
 /// message.

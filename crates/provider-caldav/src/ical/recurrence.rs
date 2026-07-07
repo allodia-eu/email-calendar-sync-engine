@@ -8,16 +8,20 @@
 //! series' start time-of-day, so it matches the instants a timed series generates
 //! (the expander keys instances by `date + start-time`), not silently at midnight.
 
-use engine_core::calendar::{Event, Recurrence, RecurrenceOverride};
-use engine_core::patch::PatchObject;
-use engine_core::time::{CalendarDateTime, Duration, LocalDateTime};
+use engine_core::{
+    calendar::{Event, Recurrence, RecurrenceOverride},
+    patch::PatchObject,
+    time::{CalendarDateTime, Duration, LocalDateTime},
+};
 use serde_json::Value;
 
-use super::component::Component;
-use super::event::recurrence_id_of;
-use super::recur::parse_rrule;
-use super::unfold::unescape_text;
-use super::value::{parse_calendar_date_time, parse_date_time_list, parse_duration};
+use super::{
+    component::Component,
+    event::recurrence_id_of,
+    recur::parse_rrule,
+    unfold::unescape_text,
+    value::{parse_calendar_date_time, parse_date_time_list, parse_duration},
+};
 use crate::error::CalDavError;
 
 /// Builds the structural recurrence from a master's `RRULE`s and `EXDATE`
@@ -150,11 +154,15 @@ fn override_key(value: &CalendarDateTime, series_start: &CalendarDateTime) -> Lo
 
 #[cfg(test)]
 mod tests {
-    use super::super::component::parse_components;
-    use super::super::event::event_from_vevent;
-    use super::*;
-    use engine_core::ids::{CalendarId, EventId};
-    use engine_core::raw::RawIcal;
+    use engine_core::{
+        ids::{CalendarId, EventId},
+        raw::RawIcal,
+    };
+
+    use super::{
+        super::{component::parse_components, event::event_from_vevent},
+        *,
+    };
 
     fn vevents(text: &str) -> Vec<Component> {
         parse_components(text)

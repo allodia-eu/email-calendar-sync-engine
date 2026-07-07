@@ -11,11 +11,12 @@
 //! single-element membership; JMAP/Gmail objects carry a multi-element one. The
 //! same type models both.
 
-use std::collections::BTreeSet;
-use std::num::NonZeroUsize;
+use std::{collections::BTreeSet, num::NonZeroUsize};
 
-use serde::de::{self, Deserialize, Deserializer};
-use serde::{Serialize, Serializer};
+use serde::{
+    Serialize, Serializer,
+    de::{self, Deserialize, Deserializer},
+};
 
 /// Error returned when a membership set would be empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

@@ -15,12 +15,13 @@
 //! rule, targets are chosen by harness-controlled **subject**, never by server UID.
 
 use core::time::Duration;
-use std::sync::Arc;
-use std::time::Duration as StdDuration;
+use std::{sync::Arc, time::Duration as StdDuration};
 
-use engine_core::ids::{AccountId, MailboxId, ProviderKey};
-use engine_core::mail::{Message, SystemKeyword};
-use engine_core::sync::SyncScope;
+use engine_core::{
+    ids::{AccountId, MailboxId, ProviderKey},
+    mail::{Message, SystemKeyword},
+    sync::SyncScope,
+};
 use engine_provider::{MailEdit, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::sync_mail;
@@ -28,8 +29,7 @@ use provider_imap::{ImapConfig, ImapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
-use tokio_rustls::TlsConnector;
-use tokio_rustls::client::TlsStream;
+use tokio_rustls::{TlsConnector, client::TlsStream};
 
 type Store = SqliteStore<ManualClock>;
 
@@ -193,12 +193,12 @@ async fn live_qresync_delta_reconciles_flag_changes_and_expunges() {
 /// harness's self-signed cert. Compiled only into this gated test; never reaches the
 /// host store.
 mod no_verify {
-    use tokio_rustls::rustls::client::danger::{
-        HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+    use tokio_rustls::rustls::{
+        DigitallySignedStruct, Error, SignatureScheme,
+        client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+        crypto::ring::default_provider,
+        pki_types::{CertificateDer, ServerName, UnixTime},
     };
-    use tokio_rustls::rustls::crypto::ring::default_provider;
-    use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme};
 
     #[derive(Debug)]
     pub(super) struct AcceptAny;

@@ -11,17 +11,21 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::calendar::{Event, EventStatus, FreeBusyStatus, Privacy};
-use engine_core::ids::{CalendarId, EventId, Uid};
-use engine_core::membership::Memberships;
-use engine_core::raw::RawIcal;
-use engine_core::time::{CalendarDateTime, Duration, UtcDateTime};
+use engine_core::{
+    calendar::{Event, EventStatus, FreeBusyStatus, Privacy},
+    ids::{CalendarId, EventId, Uid},
+    membership::Memberships,
+    raw::RawIcal,
+    time::{CalendarDateTime, Duration, UtcDateTime},
+};
 
-use super::component::Component;
-use super::party::{parse_conferences, parse_locations, parse_participants};
-use super::recurrence::parse_recurrence;
-use super::unfold::unescape_text;
-use super::value::{parse_calendar_date_time, parse_duration, parse_utc};
+use super::{
+    component::Component,
+    party::{parse_conferences, parse_locations, parse_participants},
+    recurrence::parse_recurrence,
+    unfold::unescape_text,
+    value::{parse_calendar_date_time, parse_duration, parse_utc},
+};
 use crate::error::CalDavError;
 
 /// The cross-system `UID` of a `VEVENT`.
@@ -197,8 +201,7 @@ fn nonempty(value: Option<&str>) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::component::parse_components;
-    use super::*;
+    use super::{super::component::parse_components, *};
 
     fn vevents(text: &str) -> Vec<Component> {
         parse_components(text)

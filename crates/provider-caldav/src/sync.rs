@@ -12,18 +12,22 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::calendar::Event;
-use engine_core::error::FailureClass;
-use engine_core::ids::{CalendarId, EventId, ProviderKey};
-use engine_core::sync::{SyncState, SyncUpdate};
-use engine_core::version::{ETag, RevisionTokens};
+use engine_core::{
+    calendar::Event,
+    error::FailureClass,
+    ids::{CalendarId, EventId, ProviderKey},
+    sync::{SyncState, SyncUpdate},
+    version::{ETag, RevisionTokens},
+};
 use engine_provider::ScopeSync;
 
-use crate::dav::MultiStatus;
-use crate::error::CalDavError;
-use crate::ical::parse_calendar_object;
-use crate::request::sync_collection_report;
-use crate::transport::{DavExecutor, DavMethod};
+use crate::{
+    dav::MultiStatus,
+    error::CalDavError,
+    ical::parse_calendar_object,
+    request::sync_collection_report,
+    transport::{DavExecutor, DavMethod},
+};
 
 /// Syncs the events of one calendar collection since `cursor`.
 ///
@@ -130,8 +134,10 @@ fn href_key(href: &str) -> Option<ProviderKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{Replay, ok};
-    use crate::transport::HttpResponse;
+    use crate::{
+        test_support::{Replay, ok},
+        transport::HttpResponse,
+    };
 
     fn replay(responses: Vec<HttpResponse>) -> Replay {
         Replay::new(responses)

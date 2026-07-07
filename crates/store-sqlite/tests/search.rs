@@ -4,15 +4,17 @@
 
 use core::time::Duration;
 
-use engine_core::calendar::{
-    Event, Location, Participant, ParticipantRole, ParticipationStatus, VirtualLocation,
+use engine_core::{
+    calendar::{
+        Event, Location, Participant, ParticipantRole, ParticipationStatus, VirtualLocation,
+    },
+    ids::{CalendarId, EventId, MailboxId, MessageId, ProviderKey, Uid},
+    mail::{EmailAddress, Keyword, Message, MessageBody, SystemKeyword},
+    membership::Memberships,
+    search_index::{OwnerAddresses, project_event, project_message},
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+    time::{CalendarDateTime, LocalDateTime, TimeZoneId},
 };
-use engine_core::ids::{CalendarId, EventId, MailboxId, MessageId, ProviderKey, Uid};
-use engine_core::mail::{EmailAddress, Keyword, Message, MessageBody, SystemKeyword};
-use engine_core::membership::Memberships;
-use engine_core::search_index::{OwnerAddresses, project_event, project_message};
-use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
-use engine_core::time::{CalendarDateTime, LocalDateTime, TimeZoneId};
 use engine_search::{CalendarQuery, MailQuery};
 use engine_store::{
     ApplyBatch, DerivedWrite, LeaseRequest, ManualClock, MessageBodyStore, OccurrenceRow, Store,

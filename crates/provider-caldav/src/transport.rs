@@ -9,8 +9,7 @@
 //! so discovery can resolve the RFC 6764 well-known `307` itself.
 
 use async_trait::async_trait;
-use reqwest::redirect::Policy;
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, redirect::Policy};
 
 use crate::error::CalDavError;
 

@@ -31,12 +31,14 @@
 
 use core::time::Duration;
 
-use engine_core::calendar::{Calendar, Event};
-use engine_core::ids::AccountId;
-use engine_core::mail::{Mailbox, Message};
-use engine_core::search_index::{OwnerAddresses, project_event, project_message};
-use engine_core::sync::{SyncScope, SyncState, SyncUpdate};
-use engine_core::time::TimeZoneId;
+use engine_core::{
+    calendar::{Calendar, Event},
+    ids::AccountId,
+    mail::{Mailbox, Message},
+    search_index::{OwnerAddresses, project_event, project_message},
+    sync::{SyncScope, SyncState, SyncUpdate},
+    time::TimeZoneId,
+};
 use engine_provider::{Provider, ProviderError, ScopeSync};
 use engine_recurrence::{Horizon, expand};
 use engine_store::{

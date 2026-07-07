@@ -3,8 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::Uid;
-use crate::time::{CalendarDateTime, UtcDateTime};
+use crate::{
+    ids::Uid,
+    time::{CalendarDateTime, UtcDateTime},
+};
 
 /// Identifies a single scheduling target: a whole series, or one instance of it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

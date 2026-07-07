@@ -15,15 +15,19 @@
 
 use core::time::Duration;
 
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::sync::{JmapDataType, SyncScope};
-use engine_core::write::{IdempotencyKey, PendingOp, ResourceKey};
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    sync::{JmapDataType, SyncScope},
+    write::{IdempotencyKey, PendingOp, ResourceKey},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::apply::StorableObject;
-use crate::lease::{LeaseRequest, ManualClock, WorkerId};
-use crate::store::{Store, StoreRead};
+use crate::{
+    apply::StorableObject,
+    lease::{LeaseRequest, ManualClock, WorkerId},
+    store::{Store, StoreRead},
+};
 
 mod outbox_cases;
 mod scope_cases;

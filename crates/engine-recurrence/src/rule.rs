@@ -12,8 +12,10 @@ use core::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use engine_core::calendar::{Frequency, NDay, RecurrenceBound, RecurrenceRule, Weekday};
-use jiff::Span;
-use jiff::civil::{Date, Weekday as JWeekday};
+use jiff::{
+    Span,
+    civil::{Date, Weekday as JWeekday},
+};
 
 use crate::ExpandError;
 

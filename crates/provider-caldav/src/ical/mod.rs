@@ -19,22 +19,21 @@ mod recurrence;
 mod unfold;
 mod value;
 
-use engine_core::calendar::Event;
-use engine_core::ids::{CalendarId, EventId, Uid};
-use engine_core::raw::RawIcal;
-use engine_core::scheduling::{ScheduleMethod, SchedulingMessage};
-use engine_core::time::UtcDateTime;
-
 pub use build::build_event_ical;
-
 use component::{Component, parse_components};
+use engine_core::{
+    calendar::Event,
+    ids::{CalendarId, EventId, Uid},
+    raw::RawIcal,
+    scheduling::{ScheduleMethod, SchedulingMessage},
+    time::UtcDateTime,
+};
 use event::{event_from_vevent, vevent_uid};
 use recurrence::fold_override;
-use value::parse_utc;
-
 // The quote-aware splitters are the crate's canonical iCalendar tokenizing
 // primitives; the `imip` RSVP patcher reuses them rather than re-implementing.
 pub(crate) use unfold::{split_once_unquoted, split_unquoted};
+use value::parse_utc;
 
 use crate::error::CalDavError;
 
@@ -178,9 +177,12 @@ fn collect_vevents(roots: &[Component]) -> Vec<&Component> {
 
 #[cfg(test)]
 mod tests {
+    use engine_core::{
+        calendar::{FreeBusyStatus, RecurrenceOverride},
+        time::{CalendarDateTime, TimeZoneId},
+    };
+
     use super::*;
-    use engine_core::calendar::{FreeBusyStatus, RecurrenceOverride};
-    use engine_core::time::{CalendarDateTime, TimeZoneId};
 
     fn parse(text: &str) -> Event {
         parse_calendar_object(
@@ -342,8 +344,10 @@ mod tests {
 
     #[test]
     fn parses_an_imip_reply_with_partstat() {
-        use engine_core::calendar::ParticipationStatus;
-        use engine_core::scheduling::{ImipTrust, ScheduleMethod};
+        use engine_core::{
+            calendar::ParticipationStatus,
+            scheduling::{ImipTrust, ScheduleMethod},
+        };
 
         let text = "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\nUID:meeting-7@test.local\r\nDTSTAMP:20260501T090000Z\r\nDTSTART;TZID=Europe/Amsterdam:20260601T090000\r\nSEQUENCE:2\r\nORGANIZER:mailto:boss@test.local\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:me@test.local\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         let msg = parse_scheduling_message(text).unwrap();

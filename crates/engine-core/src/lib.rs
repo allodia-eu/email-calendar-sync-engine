@@ -11,18 +11,17 @@
 //!
 //! # Design rules
 //!
-//! - **Provider object identity and collection membership are separate axes.**
-//!   A stored mail object is a provider object, not a deduplicated RFC 5322
-//!   message; membership in a mailbox/label/calendar is a set, modeled
-//!   independently from identity. See [`ids`] and the mail/calendar modules.
+//! - **Provider object identity and collection membership are separate axes.** A stored mail object
+//!   is a provider object, not a deduplicated RFC 5322 message; membership in a
+//!   mailbox/label/calendar is a set, modeled independently from identity. See [`ids`] and the
+//!   mail/calendar modules.
 //! - **Keywords, membership, and collection role are three distinct axes.**
-//!   `$seen`/`\Flagged`/Gmail `STARRED` are keywords; folders/labels/calendars
-//!   are membership; inbox/sent/drafts/trash are normalized roles.
-//! - **Provider-native payloads are preserved** beside the normalized projection
-//!   for lossless re-derivation. See [`raw`].
-//! - **Time is one model** — an instant resolved through its zone, or wall-clock
-//!   for floating time. End is always `start + duration`, never a stored end
-//!   instant.
+//!   `$seen`/`\Flagged`/Gmail `STARRED` are keywords; folders/labels/calendars are membership;
+//!   inbox/sent/drafts/trash are normalized roles.
+//! - **Provider-native payloads are preserved** beside the normalized projection for lossless
+//!   re-derivation. See [`raw`].
+//! - **Time is one model** — an instant resolved through its zone, or wall-clock for floating time.
+//!   End is always `start + duration`, never a stored end instant.
 //!
 //! The module layout follows one responsibility per file, mirroring the primary
 //! specs (JMAP Core/Mail RFC 8620/8621, JSCalendar RFC 8984, iCalendar RFC 5545,

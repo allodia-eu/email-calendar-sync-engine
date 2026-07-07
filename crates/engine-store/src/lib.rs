@@ -46,6 +46,6 @@ pub use store::{IndexRowCounts, MailIndexEntry, Store, StoreRead};
 /// re-sync. A pure additive feature that does not change existing objects need not bump it.
 ///
 /// History:
-/// - `2`: the mail FTS `body` now folds in sender/recipient address text, and FTS
-///   terms are prefix-matched; existing stores re-project to populate the new text.
+/// - `2`: the mail FTS `body` now folds in sender/recipient address text, and FTS terms are
+///   prefix-matched; existing stores re-project to populate the new text.
 pub const NORMALIZER_VERSION: u32 = 2;

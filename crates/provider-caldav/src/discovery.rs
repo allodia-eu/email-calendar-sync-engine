@@ -12,11 +12,13 @@
 
 use engine_core::calendar::Calendar;
 
-use crate::calendar::calendar_from_response;
-use crate::dav::MultiStatus;
-use crate::error::CalDavError;
-use crate::request::{CALENDAR_LIST_PROPFIND, PRINCIPAL_PROPFIND};
-use crate::transport::{DavExecutor, DavMethod};
+use crate::{
+    calendar::calendar_from_response,
+    dav::MultiStatus,
+    error::CalDavError,
+    request::{CALENDAR_LIST_PROPFIND, PRINCIPAL_PROPFIND},
+    transport::{DavExecutor, DavMethod},
+};
 
 /// How many redirects discovery follows before giving up.
 const MAX_REDIRECTS: usize = 4;
@@ -126,8 +128,10 @@ fn current_user_principal(multistatus: &MultiStatus) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{Replay, ok};
-    use crate::transport::HttpResponse;
+    use crate::{
+        test_support::{Replay, ok},
+        transport::HttpResponse,
+    };
 
     #[tokio::test]
     async fn follows_a_redirect_then_reads_the_home() {

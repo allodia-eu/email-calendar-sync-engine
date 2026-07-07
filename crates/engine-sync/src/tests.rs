@@ -2,25 +2,23 @@
 //! and member persistence + indexing, empty-delta resync, and `StaleLease`
 //! re-claim-and-recompute.
 
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use core::num::NonZeroU32;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
-use engine_core::calendar::{
-    Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule,
+use engine_core::{
+    calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
+    ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
+    mail::{EmailAddress, Mailbox, MailboxRole, Message},
+    membership::Memberships,
+    raw::RawIcal,
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+    time::{CalendarDateTime, LocalDateTime, TimeZoneId},
+    version::ETag,
+    write::{IdempotencyKey, PendingOp, ResourceKey},
 };
-use engine_core::ids::{
-    CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid,
-};
-use engine_core::mail::{EmailAddress, Mailbox, MailboxRole, Message};
-use engine_core::membership::Memberships;
-use engine_core::raw::RawIcal;
-use engine_core::sync::{JmapDataType, SyncScope, SyncState, SyncUpdate};
-use engine_core::time::{CalendarDateTime, LocalDateTime, TimeZoneId};
-use engine_core::version::ETag;
-use engine_core::write::{IdempotencyKey, PendingOp, ResourceKey};
 use engine_provider::{
     Capabilities, Draft, EventDeletion, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
     PageToken, Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind,

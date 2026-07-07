@@ -4,33 +4,30 @@
 //! operator or free text. The vocabularies are per domain (`north-star.md` Search
 //! Contract):
 //!
-//! - **mail:** `from to cc subject has_attachment before after mailbox label
-//!   keyword`
-//! - **calendar:** `calendar attendee organizer rsvp location has_conference
-//!   before after`
+//! - **mail:** `from to cc subject has_attachment before after mailbox label keyword`
+//! - **calendar:** `calendar attendee organizer rsvp location has_conference before after`
 //!
 //! Design choices (deliberately simple; revisit only with a real need):
 //!
-//! - **Only a known keyword before a colon is an operator.** Any other token —
-//!   `http://example.com`, `3:1`, a misspelled `fromm:x` — is free text. There is
-//!   no "unknown operator" error, so a query box never breaks on a stray colon.
-//! - **Quoting** binds spaces: `subject:"q report"` is one scoped term;
-//!   `"q report"` is one free-text phrase. An unbalanced quote is an error.
-//! - **`before:`/`after:`** take a `YYYY-MM-DD` calendar date; the executor
-//!   resolves it to a time boundary.
-//! - **`has_attachment:`/`has_conference:`** take an explicit boolean
-//!   (`true/false`, `yes/no`, `1/0`). A bare `has_attachment` with no value is
-//!   free text — the host builds the explicit form.
-//! - **`rsvp:`** accepts any participation-status string; unknown values are
-//!   preserved (`ParticipationStatus::Other`), matching engine-core's open-enum
-//!   stance. The executor simply will not match an unknown status.
-//! - Operator keywords are matched case-insensitively; values are kept verbatim
-//!   (the executor decides case-folding for matching).
+//! - **Only a known keyword before a colon is an operator.** Any other token — `http://example.com`,
+//!   `3:1`, a misspelled `fromm:x` — is free text. There is no "unknown operator" error, so a query
+//!   box never breaks on a stray colon.
+//! - **Quoting** binds spaces: `subject:"q report"` is one scoped term; `"q report"` is one
+//!   free-text phrase. An unbalanced quote is an error.
+//! - **`before:`/`after:`** take a `YYYY-MM-DD` calendar date; the executor resolves it to a time
+//!   boundary.
+//! - **`has_attachment:`/`has_conference:`** take an explicit boolean (`true/false`, `yes/no`,
+//!   `1/0`). A bare `has_attachment` with no value is free text — the host builds the explicit
+//!   form.
+//! - **`rsvp:`** accepts any participation-status string; unknown values are preserved
+//!   (`ParticipationStatus::Other`), matching engine-core's open-enum stance. The executor simply
+//!   will not match an unknown status.
+//! - Operator keywords are matched case-insensitively; values are kept verbatim (the executor
+//!   decides case-folding for matching).
 
 use core::str::FromStr;
 
-use engine_core::calendar::ParticipationStatus;
-use engine_core::time::CalendarDate;
+use engine_core::{calendar::ParticipationStatus, time::CalendarDate};
 
 use crate::query::{CalendarQuery, MailQuery, ScopedTerm, TextField};
 

@@ -9,8 +9,10 @@
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
-use crate::error::{ImapError, ImapResult};
-use crate::parse::{self, FetchRow, ListRow, SelectData};
+use crate::{
+    error::{ImapError, ImapResult},
+    parse::{self, FetchRow, ListRow, SelectData},
+};
 
 /// The largest `{n}` literal we will read into memory. A hostile or buggy server
 /// could announce an enormous literal (`* {4000000000}`); the cap bounds the

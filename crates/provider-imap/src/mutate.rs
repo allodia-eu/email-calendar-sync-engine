@@ -17,21 +17,23 @@
 use engine_provider::{MailEdit, MailEditReceipt, ProviderResult};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::mail::keyword_to_flag;
-use crate::target::{Access, reject_control_chars, select_target};
-use crate::transport::Connection;
+use crate::{
+    mail::keyword_to_flag,
+    target::{Access, reject_control_chars, select_target},
+    transport::Connection,
+};
 
 /// Applies `edit` to its target message over `connection`, returning a receipt
 /// carrying the edited message's key.
 ///
 /// # Errors
 ///
-/// - [`ProviderError::invalid_state`] if the target key is not a parseable IMAP key,
-///   or a mailbox name (the key's source folder, or a move destination) contains a
-///   control character — IMAP mailbox names cannot, and admitting `CR`/`LF`/`NUL`
-///   would let it inject a second command into the protocol stream.
-/// - [`ProviderError::conflict`] if the target mailbox's `UIDVALIDITY` has changed
-///   since the key was synthesized (the key is stale; re-sync before editing).
+/// - [`ProviderError::invalid_state`] if the target key is not a parseable IMAP key, or a mailbox
+///   name (the key's source folder, or a move destination) contains a control character — IMAP
+///   mailbox names cannot, and admitting `CR`/`LF`/`NUL` would let it inject a second command into
+///   the protocol stream.
+/// - [`ProviderError::conflict`] if the target mailbox's `UIDVALIDITY` has changed since the key
+///   was synthesized (the key is stale; re-sync before editing).
 /// - A classified [`ProviderError`] from the underlying IMAP command on failure.
 pub(crate) async fn edit_mail<S>(
     connection: &mut Connection<S>,

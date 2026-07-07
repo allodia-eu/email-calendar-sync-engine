@@ -7,11 +7,9 @@
 //! fields (access rights, default reminders, timezone) are left at their defaults
 //! for this read slice.
 
-use engine_core::calendar::Calendar;
-use engine_core::ids::CalendarId;
+use engine_core::{calendar::Calendar, ids::CalendarId};
 
-use crate::dav::DavResponse;
-use crate::error::CalDavError;
+use crate::{dav::DavResponse, error::CalDavError};
 
 /// Maps one calendar-collection response into a [`Calendar`].
 ///

@@ -4,8 +4,10 @@
 //! the IMAP/HTTP probes. SMTP is server-speaks-first, so it reads the `220`
 //! banner before sending anything.
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::{
+    io::{Read, Write},
+    net::TcpStream,
+};
 
 use crate::HarnessError;
 

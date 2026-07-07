@@ -1,9 +1,12 @@
 //! Offline tests for the IMAP snapshot/delta UID-window paging, over a mock stream.
 
-use super::*;
-use crate::cursor::page_high;
-use crate::mock::{MockStream, script, written};
 use engine_provider::SyncKind;
+
+use super::*;
+use crate::{
+    cursor::page_high,
+    mock::{MockStream, script, written},
+};
 
 /// Opens a connection over `server` and logs in (consuming the greeting + `a1`).
 async fn logged_in(server: Vec<u8>) -> Connection<MockStream> {

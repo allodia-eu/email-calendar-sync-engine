@@ -3,14 +3,13 @@
 //! Attachments span four kinds (`modeling.md`), and the distinction is
 //! load-bearing because quota and host-open policy apply to byte content only:
 //!
-//! - **file** — bytes (a MIME part, a Graph `fileAttachment`, a Google Drive
-//!   file fetched as bytes);
+//! - **file** — bytes (a MIME part, a Graph `fileAttachment`, a Google Drive file fetched as
+//!   bytes);
 //! - **inline** — bytes referenced from the body by `Content-ID` (a `cid:` URL);
-//! - **item** — an embedded message, event, or contact (`message/rfc822`, a
-//!   Graph `itemAttachment`);
-//! - **reference** — an external/cloud link with no bytes (a Graph
-//!   `referenceAttachment`, a Google Calendar `attachment` `fileUrl`, an
-//!   iCalendar `ATTACH` URI).
+//! - **item** — an embedded message, event, or contact (`message/rfc822`, a Graph
+//!   `itemAttachment`);
+//! - **reference** — an external/cloud link with no bytes (a Graph `referenceAttachment`, a Google
+//!   Calendar `attachment` `fileUrl`, an iCalendar `ATTACH` URI).
 //!
 //! This one type serves both mail and calendar attachments.
 

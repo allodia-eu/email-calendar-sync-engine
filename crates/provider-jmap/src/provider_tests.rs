@@ -1,13 +1,12 @@
-use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::{collections::VecDeque, sync::Mutex};
 
+use engine_core::sync::SyncUpdate;
+use engine_provider::SyncKind;
 use reqwest::Url;
+use serde_json::{Value, json};
 
 use super::*;
 use crate::session::SessionUrlPolicy;
-use engine_core::sync::SyncUpdate;
-use engine_provider::SyncKind;
-use serde_json::{Value, json};
 
 /// An executor that replays canned response documents, FIFO — driving the
 /// orchestration with real captured Stalwart responses, offline. It also serves a
@@ -126,8 +125,10 @@ fn account() -> AccountId {
 
 /// A minimal synced message carrying `blob` as its raw-source blob handle.
 fn message_with_blob(id: &str, blob: &str) -> engine_core::mail::Message {
-    use engine_core::ids::{BlobId, MailboxId, MessageId};
-    use engine_core::membership::Memberships;
+    use engine_core::{
+        ids::{BlobId, MailboxId, MessageId},
+        membership::Memberships,
+    };
     let mut message = engine_core::mail::Message::new(
         MessageId::try_from(id).unwrap(),
         Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
@@ -167,8 +168,10 @@ async fn fetch_message_source_provider_method_returns_the_raw_mime() {
 
 #[tokio::test]
 async fn message_source_without_a_blob_id_is_a_protocol_error() {
-    use engine_core::ids::{MailboxId, MessageId};
-    use engine_core::membership::Memberships;
+    use engine_core::{
+        ids::{MailboxId, MessageId},
+        membership::Memberships,
+    };
     let exec = FakeExecutor::new(vec![]).with_download_body(b"x");
     let message = engine_core::mail::Message::new(
         MessageId::try_from("m1").unwrap(),
@@ -353,8 +356,7 @@ async fn cannot_calculate_changes_falls_back_to_snapshot() {
 
 #[tokio::test]
 async fn submit_email_resolves_context_then_sends() {
-    use engine_core::ids::MessageIdHeader;
-    use engine_core::mail::EmailAddress;
+    use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
     use engine_provider::Draft;
 
     // Two requests: resolve Drafts/Sent + identity, then create + submit.
@@ -379,8 +381,7 @@ async fn submit_email_resolves_context_then_sends() {
 
 #[tokio::test]
 async fn submit_email_uploads_attachment_bytes_before_sending() {
-    use engine_core::ids::MessageIdHeader;
-    use engine_core::mail::EmailAddress;
+    use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
     use engine_provider::{Draft, DraftAttachment};
 
     // The upload endpoint hands back a blobId, then the two-step send proceeds. Drive
@@ -416,9 +417,7 @@ async fn submit_email_uploads_attachment_bytes_before_sending() {
 
 #[tokio::test]
 async fn submit_with_attachment_but_no_upload_url_is_a_session_error() {
-    use engine_core::error::FailureClass;
-    use engine_core::ids::MessageIdHeader;
-    use engine_core::mail::EmailAddress;
+    use engine_core::{error::FailureClass, ids::MessageIdHeader, mail::EmailAddress};
     use engine_provider::{Draft, DraftAttachment, Provider};
 
     // A server without an uploadUrl cannot take attachments — a clear, permanent error.
@@ -593,8 +592,7 @@ async fn edit_mail_delete_destroys_via_set() {
 
 #[tokio::test]
 async fn edit_mail_set_error_surfaces_as_a_conflict() {
-    use engine_core::error::FailureClass;
-    use engine_core::ids::ProviderKey;
+    use engine_core::{error::FailureClass, ids::ProviderKey};
     use engine_provider::MailEdit;
 
     // The target was destroyed server-side since it synced: a `notFound` SetError.

@@ -8,17 +8,21 @@
 
 use std::collections::HashSet;
 
-use engine_core::ids::{MessageIdHeader, ProviderKey};
-use engine_core::mail::MailboxRole;
+use engine_core::{
+    ids::{MessageIdHeader, ProviderKey},
+    mail::MailboxRole,
+};
 use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
 use time::OffsetDateTime;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::error::ImapResult;
-use crate::mail::{mailbox_from_list, message_key};
-use crate::provider::ImapProvider;
-use crate::smtp::{self, Disposition};
-use crate::transport::Connection;
+use crate::{
+    error::ImapResult,
+    mail::{mailbox_from_list, message_key},
+    provider::ImapProvider,
+    smtp::{self, Disposition},
+    transport::Connection,
+};
 
 /// Where a placed copy is filed. One value ties together the SPECIAL-USE role used
 /// to resolve the server's real folder, the conventional folder name to fall back
@@ -66,10 +70,11 @@ impl Filing {
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     /// The submission core over an arbitrary SMTP stream — the seam the offline
-    /// tests drive with a mock while [`Provider::submit_email`](engine_provider::Provider::submit_email)
-    /// supplies a TCP (or TLS) socket. Runs the conversation (optionally
-    /// authenticating with `auth`), maps the disposition to a result/classified
-    /// error, then files the Sent copy via the IMAP connection.
+    /// tests drive with a mock while
+    /// [`Provider::submit_email`](engine_provider::Provider::submit_email) supplies a TCP (or
+    /// TLS) socket. Runs the conversation (optionally authenticating with `auth`), maps the
+    /// disposition to a result/classified error, then files the Sent copy via the IMAP
+    /// connection.
     ///
     /// # Errors
     ///

@@ -1,7 +1,6 @@
 //! Wall-clock and UTC date-times.
 
-use core::fmt;
-use core::str::FromStr;
+use core::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use time::{Date, Month, PrimitiveDateTime, Time};

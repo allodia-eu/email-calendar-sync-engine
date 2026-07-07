@@ -2,11 +2,11 @@
 //!
 //! Sibling of `smtp_tests.rs` (kept separate so that file stays at its line limit).
 
-use super::*;
-use engine_core::ids::MessageIdHeader;
-use engine_core::mail::EmailAddress;
+use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
 use engine_provider::Draft;
 use time::macros::datetime;
+
+use super::*;
 
 fn mid(value: &str) -> MessageIdHeader {
     MessageIdHeader::new(value).unwrap()

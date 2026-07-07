@@ -15,9 +15,11 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::ids::{AccountId, MailboxId};
-use engine_core::mail::MailboxRole;
-use engine_core::sync::SyncUpdate;
+use engine_core::{
+    ids::{AccountId, MailboxId},
+    mail::MailboxRole,
+    sync::SyncUpdate,
+};
 use engine_provider::Provider;
 use provider_graph::{GraphClient, GraphProvider};
 

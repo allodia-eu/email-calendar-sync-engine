@@ -16,14 +16,18 @@
 //! **partial** message objects, so [`message_from_json`] is only ever fed a *full*
 //! object (a snapshot entry or a re-fetched changed message), never a delta partial.
 
-use engine_core::ids::{MailboxId, MessageId, MessageIdHeader, ThreadId};
-use engine_core::mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword};
-use engine_core::membership::Memberships;
-use engine_core::version::{ChangeKey, ETag, RevisionTokens};
+use engine_core::{
+    ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
+    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword},
+    membership::Memberships,
+    version::{ChangeKey, ETag, RevisionTokens},
+};
 use serde_json::Value;
 
-use crate::error::GraphError;
-use crate::json::{bool_field, datetime, opt_str, req_str, wrap_id};
+use crate::{
+    error::GraphError,
+    json::{bool_field, datetime, opt_str, req_str, wrap_id},
+};
 
 /// The message properties the provider requests via `$select` — exactly the fields
 /// [`message_from_json`] reads. Tier-1 metadata: the body/MIME are fetched on

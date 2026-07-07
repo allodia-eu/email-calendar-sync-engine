@@ -14,11 +14,9 @@
 //! here is implicit TLS (the stream is already secured by the caller).
 
 use engine_core::mail::EmailAddress;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc2822;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-
 use engine_provider::Draft;
+use time::{OffsetDateTime, format_description::well_known::Rfc2822};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::error::{ImapError, ImapResult};
 

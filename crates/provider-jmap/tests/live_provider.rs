@@ -5,9 +5,11 @@
 
 use std::time::Duration;
 
-use engine_core::ids::{AccountId, MailboxId, MessageIdHeader};
-use engine_core::mail::{EmailAddress, Message, SystemKeyword};
-use engine_core::sync::{JmapDataType, SyncUpdate};
+use engine_core::{
+    ids::{AccountId, MailboxId, MessageIdHeader},
+    mail::{EmailAddress, Message, SystemKeyword},
+    sync::{JmapDataType, SyncUpdate},
+};
 use engine_provider::{Draft, MailEdit, Provider, WatchEvent};
 use provider_jmap::{Credentials, JmapClient, JmapConfig, JmapProvider, JmapWatcher};
 use stalwart_harness::Harness;

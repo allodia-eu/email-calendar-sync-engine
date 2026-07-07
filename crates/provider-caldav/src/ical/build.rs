@@ -12,9 +12,7 @@
 //! per RFC 5545 §3.3.11 — the exact inverse of the parser's
 //! [`unescape_text`](super::unfold::unescape_text), so a built document round-trips.
 
-use engine_core::ids::Uid;
-use engine_core::raw::RawIcal;
-use engine_core::time::UtcDateTime;
+use engine_core::{ids::Uid, raw::RawIcal, time::UtcDateTime};
 
 /// Builds a minimal RFC 5545 `VCALENDAR`/`VEVENT` document for a create `PUT`.
 ///
@@ -105,10 +103,12 @@ fn strip_control(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::parse_calendar_object;
-    use super::*;
-    use engine_core::ids::{CalendarId, EventId};
-    use engine_core::time::CalendarDateTime;
+    use engine_core::{
+        ids::{CalendarId, EventId},
+        time::CalendarDateTime,
+    };
+
+    use super::{super::parse_calendar_object, *};
 
     fn uid() -> Uid {
         Uid::new("evt-build-1@test.local").unwrap()

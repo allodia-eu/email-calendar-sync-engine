@@ -2,9 +2,11 @@
 
 use std::fs;
 
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::mail::MessageBody;
-use engine_core::raw::RawMime;
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    mail::MessageBody,
+    raw::RawMime,
+};
 use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
 use store_sqlite::SqliteStore;
 use tempfile::TempDir;

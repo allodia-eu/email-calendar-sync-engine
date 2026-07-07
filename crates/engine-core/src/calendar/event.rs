@@ -5,12 +5,14 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::{Alert, EventKind, Location, Participant, Recurrence, VirtualLocation};
-use crate::extended::ExtendedProperties;
-use crate::ids::{CalendarId, EventId, Uid};
-use crate::membership::Memberships;
-use crate::raw::{RawIcal, RawJsCalendar};
-use crate::time::{CalendarDateTime, Duration, UtcDateTime};
-use crate::version::RevisionTokens;
+use crate::{
+    extended::ExtendedProperties,
+    ids::{CalendarId, EventId, Uid},
+    membership::Memberships,
+    raw::{RawIcal, RawJsCalendar},
+    time::{CalendarDateTime, Duration, UtcDateTime},
+    version::RevisionTokens,
+};
 
 open_enum! {
     /// An event's status (JSCalendar `status`, RFC 8984 §5.1.3; iCalendar
@@ -199,8 +201,10 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::calendar::{Frequency, RecurrenceRule};
-    use crate::time::LocalDateTime;
+    use crate::{
+        calendar::{Frequency, RecurrenceRule},
+        time::LocalDateTime,
+    };
 
     fn event() -> Event {
         Event::new(

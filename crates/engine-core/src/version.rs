@@ -5,15 +5,13 @@
 //! are kept as distinct types, never unified into one "version string"
 //! (`modeling.md`):
 //!
-//! - [`ETag`] — CalDAV `getetag` / Microsoft Graph `ETag`; changes on any byte
-//!   change.
-//! - [`ScheduleTag`] — CalDAV scheduling `schedule-tag` (RFC 6638); changes only
-//!   on *consequential* changes, so an attendee's reply to your copy does not
-//!   bump it. A CalDAV scheduling resource carries **both** an `ETag` and a
-//!   `ScheduleTag` at once.
+//! - [`ETag`] — CalDAV `getetag` / Microsoft Graph `ETag`; changes on any byte change.
+//! - [`ScheduleTag`] — CalDAV scheduling `schedule-tag` (RFC 6638); changes only on *consequential*
+//!   changes, so an attendee's reply to your copy does not bump it. A CalDAV scheduling resource
+//!   carries **both** an `ETag` and a `ScheduleTag` at once.
 //! - [`ChangeKey`] — Microsoft Graph `changeKey`.
-//! - [`ModSeq`] — IMAP CONDSTORE per-message mod-sequence (RFC 7162), present
-//!   only when the optional capability is enabled.
+//! - [`ModSeq`] — IMAP CONDSTORE per-message mod-sequence (RFC 7162), present only when the
+//!   optional capability is enabled.
 //!
 //! JMAP objects carry **no** per-object token; their concurrency comes from the
 //! account-and-type `state` cursor instead, so a JMAP object has empty

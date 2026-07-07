@@ -1,30 +1,33 @@
 //! Folder-list and message snapshot/delta fetch + paging for the Graph provider.
 //!
 //! Two passes feed [`messages_page`]:
-//! - **snapshot** (`cursor` `None`): the initial `messages/delta` enumeration
-//!   returns *full* objects; each becomes a `changed` + `present` entry, and the
-//!   pass ends at the `@odata.deltaLink` (the cursor to persist).
-//! - **incremental delta** (`cursor` `Some`): a changed entry is normally a *full*
-//!   object (it carries `@odata.etag`) and is used directly; a *lightweight* change
-//!   (e.g. `isRead`) returns an etag-less *partial*, which is **re-fetched** as a
-//!   full message ([`message`]). `@removed` tombstones apply inline. Multi-page
-//!   passes follow `@odata.nextLink`.
+//! - **snapshot** (`cursor` `None`): the initial `messages/delta` enumeration returns *full*
+//!   objects; each becomes a `changed` + `present` entry, and the pass ends at the
+//!   `@odata.deltaLink` (the cursor to persist).
+//! - **incremental delta** (`cursor` `Some`): a changed entry is normally a *full* object (it
+//!   carries `@odata.etag`) and is used directly; a *lightweight* change (e.g. `isRead`) returns an
+//!   etag-less *partial*, which is **re-fetched** as a full message ([`message`]). `@removed`
+//!   tombstones apply inline. Multi-page passes follow `@odata.nextLink`.
 
-use engine_core::ids::{MailboxId, MessageId, ProviderKey};
-use engine_core::mail::{Mailbox, Message};
-use engine_core::raw::RawMime;
-use engine_core::sync::SyncState;
+use engine_core::{
+    ids::{MailboxId, MessageId, ProviderKey},
+    mail::{Mailbox, Message},
+    raw::RawMime,
+    sync::SyncState,
+};
 use engine_provider::{PageToken, SyncKind, SyncPage};
 use serde_json::Value;
 use time::Date;
 
-use crate::error::GraphError;
-use crate::json::{req_str, wrap_id};
-use crate::normalize::{
-    MESSAGE_SELECT, WELL_KNOWN_ROLES, apply_roles, folder_from_json, message_from_json,
-    well_known_folder_id,
+use crate::{
+    error::GraphError,
+    json::{req_str, wrap_id},
+    normalize::{
+        MESSAGE_SELECT, WELL_KNOWN_ROLES, apply_roles, folder_from_json, message_from_json,
+        well_known_folder_id,
+    },
+    transport::GraphClient,
 };
-use crate::transport::GraphClient;
 
 /// Cursor placeholder for an intermediate page (the orchestrator ignores
 /// `next_cursor` until the final page carries the `@odata.deltaLink`).
@@ -234,9 +237,10 @@ fn odata_link(doc: &Value, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use engine_core::mail::MailboxRole;
+
     use super::*;
     use crate::test_support::{fake_client, folder_routes, json, replay_server};
-    use engine_core::mail::MailboxRole;
 
     const SNAPSHOT: &str = include_str!("../tests/fixtures/mail/messages_delta_snapshot.json");
     const CHANGED: &str = include_str!("../tests/fixtures/mail/messages_delta_changed.json");

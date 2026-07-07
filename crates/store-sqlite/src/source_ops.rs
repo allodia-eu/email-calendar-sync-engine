@@ -9,15 +9,18 @@
 //! `message_body` table, whose `message_body_fts` index a trigger maintains.
 
 use async_trait::async_trait;
-use engine_core::ids::{AccountId, ProviderKey};
-use engine_core::mail::MessageBody;
-use engine_core::raw::RawMime;
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    mail::MessageBody,
+    raw::RawMime,
+};
 use engine_store::{Clock, MessageBodyStore, MessageSourceCache, Result};
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::SqliteStore;
-use crate::blob;
-use crate::convert::{backend, instant_to_text};
+use crate::{
+    SqliteStore, blob,
+    convert::{backend, instant_to_text},
+};
 
 #[async_trait]
 impl<C: Clock> MessageSourceCache for SqliteStore<C> {

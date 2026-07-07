@@ -1,14 +1,14 @@
 //! Conformance tests for the mail model and its core invariants.
 
-use engine_core::attachment::{Attachment, AttachmentMeta, ItemKind};
-use engine_core::ids::{
-    BlobId, IdError, MailboxId, MessageId, MessageIdHeader, PartId, ThreadId, Uid,
+use engine_core::{
+    attachment::{Attachment, AttachmentMeta, ItemKind},
+    ids::{BlobId, IdError, MailboxId, MessageId, MessageIdHeader, PartId, ThreadId, Uid},
+    mail::{
+        EmailAddress, EmailAddressGroup, EmailBodyPart, EmailHeader, Envelope, Keyword,
+        KeywordError, Mailbox, MailboxRole, Message, SystemKeyword, Thread, ThreadProvenance,
+    },
+    membership::Memberships,
 };
-use engine_core::mail::{
-    EmailAddress, EmailAddressGroup, EmailBodyPart, EmailHeader, Envelope, Keyword, KeywordError,
-    Mailbox, MailboxRole, Message, SystemKeyword, Thread, ThreadProvenance,
-};
-use engine_core::membership::Memberships;
 
 fn mailbox(id: &str) -> MailboxId {
     MailboxId::try_from(id).unwrap()

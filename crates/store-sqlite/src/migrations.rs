@@ -20,8 +20,7 @@
 use engine_store::{Result, StoreError};
 use rusqlite::Connection;
 
-use crate::convert::backend;
-use crate::schema;
+use crate::{convert::backend, schema};
 
 /// The ordered migration steps. Index `i` is schema version `i + 1`; the stored
 /// `user_version` is the count applied. **Append only** — never edit or reorder a

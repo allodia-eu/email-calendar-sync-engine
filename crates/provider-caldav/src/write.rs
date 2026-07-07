@@ -14,8 +14,10 @@
 use engine_core::version::ETag;
 use engine_provider::{EventDeletion, EventWrite, EventWriteReceipt, WritePrecondition};
 
-use crate::error::CalDavError;
-use crate::transport::{DavExecutor, DavMethod, Precondition, WriteRequest};
+use crate::{
+    error::CalDavError,
+    transport::{DavExecutor, DavMethod, Precondition, WriteRequest},
+};
 
 /// The iCalendar media type sent on a `PUT` (RFC 5545 §3.1; RFC 4791 §5.3.2).
 const ICALENDAR_CONTENT_TYPE: &str = "text/calendar; charset=utf-8";
@@ -97,11 +99,13 @@ fn precondition(precondition: &WritePrecondition) -> Precondition {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use engine_core::error::FailureClass;
-    use engine_core::ids::{EventId, Uid};
-    use engine_core::raw::RawIcal;
+    use engine_core::{
+        error::FailureClass,
+        ids::{EventId, Uid},
+        raw::RawIcal,
+    };
 
+    use super::*;
     use crate::test_support::{Replay, wrote};
 
     fn href() -> EventId {

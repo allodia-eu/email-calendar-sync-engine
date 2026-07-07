@@ -8,15 +8,14 @@
 //!
 //! Assembly has two steps, both fixed by `search-coverage.md`:
 //!
-//! 1. **Remote compensation, per scope.** When a provider search for a scope
-//!    reports an *exhaustive* result, that scope contributes no local or temporal
-//!    gap — the provider searched its own full corpus (and a CalDAV time-range
-//!    `REPORT` expands recurrence server-side). A non-exhaustive or absent remote
-//!    search leaves the scope's gaps untouched. Either way the `remote` provenance
-//!    is preserved, so compensation never hides that augmentation happened.
-//! 2. **Conservative roll-up.** The compensated scopes combine via
-//!    [`SearchCoverage::roll_up`]: gap flags OR together and bounded ranges
-//!    intersect, so one incomplete scope makes the whole answer incomplete.
+//! 1. **Remote compensation, per scope.** When a provider search for a scope reports an
+//!    *exhaustive* result, that scope contributes no local or temporal gap — the provider searched
+//!    its own full corpus (and a CalDAV time-range `REPORT` expands recurrence server-side). A
+//!    non-exhaustive or absent remote search leaves the scope's gaps untouched. Either way the
+//!    `remote` provenance is preserved, so compensation never hides that augmentation happened.
+//! 2. **Conservative roll-up.** The compensated scopes combine via [`SearchCoverage::roll_up`]: gap
+//!    flags OR together and bounded ranges intersect, so one incomplete scope makes the whole
+//!    answer incomplete.
 //!
 //! Doing compensation here — not inside [`SearchCoverage::is_complete`] — keeps
 //! `is_complete` a plain conjunction that composes correctly across scopes.
@@ -47,8 +46,9 @@ pub fn assemble(per_scope: impl IntoIterator<Item = SearchCoverage>) -> SearchCo
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use engine_core::coverage::TimeRange;
+
+    use super::*;
 
     fn unsynced() -> SearchCoverage {
         SearchCoverage {

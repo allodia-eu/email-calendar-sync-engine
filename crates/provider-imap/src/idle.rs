@@ -10,8 +10,7 @@
 //!
 //! - [`idle_start`] — send `IDLE`, consume the continuation, return the command tag.
 //! - [`idle_wait_change`] — read untagged responses until one signals a change.
-//! - [`idle_done`] — send `DONE`, drain to the tagged completion, report a boundary
-//!   change.
+//! - [`idle_done`] — send `DONE`, drain to the tagged completion, report a boundary change.
 //!
 //! A notification carries **no data** — it only classifies *that* the mailbox changed
 //! (see [`classify`]); the watcher turns that into a [`WatchEvent`](engine_provider::WatchEvent)
@@ -19,15 +18,18 @@
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::error::{ImapError, ImapResult};
-use crate::transport::{Connection, strip_ascii_prefix};
+use crate::{
+    error::{ImapError, ImapResult},
+    transport::{Connection, strip_ascii_prefix},
+};
 
 /// What an untagged response received while idling means to the watcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdleLine {
     /// A change notification — `* n EXISTS` (new mail), `* n EXPUNGE` (a delete),
     /// `* n FETCH (…)` (a flag change), or `* VANISHED …` (QRESYNC expunges). The
-    /// mailbox changed; the watcher reports [`WatchEvent::Changed`](engine_provider::WatchEvent::Changed).
+    /// mailbox changed; the watcher reports
+    /// [`WatchEvent::Changed`](engine_provider::WatchEvent::Changed).
     Changed,
     /// Informational — `* n RECENT`, `* OK …` (a server "still here" poke), or any
     /// other untagged status. No action.

@@ -26,12 +26,13 @@
 //! #           IMAP_SMTP_HOST / IMAP_SMTP_PORT (default 465).
 //! ```
 
-use std::env;
-use std::sync::Arc;
+use std::{env, sync::Arc};
 
-use engine_core::ids::{AccountId, MailboxId, MessageIdHeader};
-use engine_core::mail::EmailAddress;
-use engine_core::sync::SyncUpdate;
+use engine_core::{
+    ids::{AccountId, MailboxId, MessageIdHeader},
+    mail::EmailAddress,
+    sync::SyncUpdate,
+};
 use engine_provider::{Draft, Provider};
 use provider_imap::{ImapConfig, ImapProvider, ImapWatcher};
 use tokio_rustls::TlsConnector;

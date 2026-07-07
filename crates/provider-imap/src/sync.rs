@@ -6,30 +6,29 @@
 //! renders recent mail first. The window descends across pages; the next boundary
 //! travels in the opaque [`PageToken`]. The pass is:
 //!
-//! - a **snapshot** on the first sync (no cursor) or when `UIDVALIDITY` changed
-//!   since the cursor (a reset — the IMAP analogue of JMAP `cannotCalculateChanges`):
-//!   every existing UID is rediscovered and carried in `present`, so the store
-//!   tombstones whatever is now absent (expunged or renumbered);
-//! - a **delta** otherwise. On a QRESYNC session ([`crate::qresync`]) with a prior
-//!   `HIGHESTMODSEQ` baseline, the delta reconciles flag changes **and** expunges of
-//!   already-synced messages too (`CHANGEDSINCE`/`VANISHED`, RFC 7162). Without
-//!   QRESYNC the delta carries only UIDs at or above the cursor's `UIDNEXT` (new
-//!   arrivals) and no removals, so a periodic snapshot reconciles flag/expunge
-//!   changes — the honest non-QRESYNC baseline.
+//! - a **snapshot** on the first sync (no cursor) or when `UIDVALIDITY` changed since the cursor (a
+//!   reset — the IMAP analogue of JMAP `cannotCalculateChanges`): every existing UID is
+//!   rediscovered and carried in `present`, so the store tombstones whatever is now absent
+//!   (expunged or renumbered);
+//! - a **delta** otherwise. On a QRESYNC session ([`crate::qresync`]) with a prior `HIGHESTMODSEQ`
+//!   baseline, the delta reconciles flag changes **and** expunges of already-synced messages too
+//!   (`CHANGEDSINCE`/`VANISHED`, RFC 7162). Without QRESYNC the delta carries only UIDs at or above
+//!   the cursor's `UIDNEXT` (new arrivals) and no removals, so a periodic snapshot reconciles
+//!   flag/expunge changes — the honest non-QRESYNC baseline.
 
 use std::cmp::Reverse;
 
-use engine_core::ids::MailboxId;
-use engine_core::mail::Message;
-use engine_core::sync::SyncState;
+use engine_core::{ids::MailboxId, mail::Message, sync::SyncState};
 use engine_provider::{PageToken, SyncKind, SyncPage};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::cursor::{self, MailboxCursor};
-use crate::error::ImapResult;
-use crate::mail::message_from_fetch;
-use crate::parse::{FetchRow, SelectData};
-use crate::transport::Connection;
+use crate::{
+    cursor::{self, MailboxCursor},
+    error::ImapResult,
+    mail::message_from_fetch,
+    parse::{FetchRow, SelectData},
+    transport::Connection,
+};
 
 /// The metadata `FETCH` items — Tier-1, all peek-safe (none sets `\Seen`).
 ///

@@ -3,8 +3,9 @@
 //! network, so they run in the always-green suite. The live counterpart (a real change
 //! seen over a real stream) is `tests/live_provider.rs`.
 
-use super::*;
 use engine_core::error::FailureClass;
+
+use super::*;
 
 /// A [`ChunkSource`] that replays scripted results, FIFO, then reports end-of-stream.
 struct ScriptedSource {

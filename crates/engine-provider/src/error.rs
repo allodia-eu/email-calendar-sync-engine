@@ -12,8 +12,7 @@
 
 use core::fmt;
 
-use engine_core::error::FailureClass;
-use engine_core::time::Duration;
+use engine_core::{error::FailureClass, time::Duration};
 
 /// A boxed underlying error, kept so the original protocol/transport failure is
 /// still reachable through [`std::error::Error::source`].
@@ -113,7 +112,8 @@ impl ProviderError {
         }
     }
 
-    /// Attaches the underlying protocol/transport error as the [`source`](std::error::Error::source).
+    /// Attaches the underlying protocol/transport error as the
+    /// [`source`](std::error::Error::source).
     #[must_use]
     pub fn with_source(mut self, source: impl Into<BoxError>) -> Self {
         self.source = Some(source.into());

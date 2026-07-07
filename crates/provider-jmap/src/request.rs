@@ -126,7 +126,8 @@ impl Response {
     }
 
     /// Returns the result arguments for `call_id`, mapping a method `error`
-    /// response (RFC 8620 §3.6.2) to a typed [`JmapError::Method`](super::error::JmapError::Method).
+    /// response (RFC 8620 §3.6.2) to a typed
+    /// [`JmapError::Method`](super::error::JmapError::Method).
     pub(crate) fn result(&self, call_id: &str) -> Result<&Value, super::error::JmapError> {
         let invocation = self
             .responses
@@ -161,8 +162,9 @@ pub(crate) fn with_back_reference(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn builds_batched_request_with_sequential_call_ids() {

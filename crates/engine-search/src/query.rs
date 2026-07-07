@@ -15,8 +15,7 @@
 //! cross-field invariant to preserve (like [`engine_core::mail`]'s `Envelope`).
 //! An all-empty query is valid and matches everything in scope.
 
-use engine_core::calendar::ParticipationStatus;
-use engine_core::time::CalendarDate;
+use engine_core::{calendar::ParticipationStatus, time::CalendarDate};
 use serde::{Deserialize, Serialize};
 
 /// A parsed search query, scoped to one domain.

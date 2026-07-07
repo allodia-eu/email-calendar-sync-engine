@@ -7,10 +7,12 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::calendar::{Event, RecurrenceBound, RecurrenceOverride};
-use engine_core::ids::ProviderKey;
-use engine_core::patch::PatchObject;
-use engine_core::time::{CalendarDateTime, Duration, LocalDateTime, TimeZoneId, UtcDateTime};
+use engine_core::{
+    calendar::{Event, RecurrenceBound, RecurrenceOverride},
+    ids::ProviderKey,
+    patch::PatchObject,
+    time::{CalendarDateTime, Duration, LocalDateTime, TimeZoneId, UtcDateTime},
+};
 use engine_store::OccurrenceRow;
 use jiff::civil::{Date, Time};
 use serde_json::Value;
