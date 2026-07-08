@@ -30,6 +30,7 @@ mod convert;
 mod derived_ops;
 mod migrations;
 mod outbox_ops;
+mod prune;
 mod purge;
 mod schema;
 mod scope_ops;
@@ -406,6 +407,10 @@ impl<C: Clock> Store for SqliteStore<C> {
         let token = lease.token().get();
         self.call(move |conn| scope_ops::release(conn, &key, token))
             .await
+    }
+
+    async fn abandon_sync_leases(&self) -> Result<usize> {
+        self.call(scope_ops::abandon_leases).await
     }
 
     async fn enqueue_pending_op(&self, account: AccountId, op: PendingOp) -> Result<PendingOpId> {

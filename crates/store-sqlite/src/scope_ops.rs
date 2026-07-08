@@ -275,6 +275,22 @@ pub(crate) fn release(conn: &mut Connection, scope_key: &str, token: u64) -> Res
     Ok(())
 }
 
+/// Abandons every held scope lease, bumping each fencing token so an old worker
+/// cannot apply later. Cursors and objects are left untouched.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure.
+pub(crate) fn abandon_leases(conn: &mut Connection) -> Result<usize> {
+    conn.execute(
+        "UPDATE sync_scope
+         SET token = token + 1, lease_expiry = NULL
+         WHERE lease_expiry IS NOT NULL",
+        [],
+    )
+    .map_err(convert::backend)
+}
+
 /// The provider keys of live objects in a scope, ordered lexicographically (the
 /// reference store sorts the same way; SQLite's default `BINARY` collation
 /// matches `ProviderKey`'s `Ord`).
@@ -405,7 +421,10 @@ fn upsert_object(tx: &Transaction<'_>, scope_key: &str, key: &str, payload: &str
 
 /// Removes an object and the derived rows keyed by it. Returns whether the object
 /// existed (so snapshot/delta tombstone counts match the reference store).
-fn tombstone(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<bool> {
+///
+/// Shared with the local-prune path (`crate::prune`), which tombstones an account's
+/// out-of-window mail exactly as a snapshot reconciliation would.
+pub(crate) fn tombstone(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<bool> {
     let existed = tx
         .execute(
             "DELETE FROM object WHERE scope_key = ?1 AND provider_key = ?2",

@@ -5,7 +5,7 @@ use core::time::Duration;
 
 use engine_core::sync::{SyncState, SyncUpdate};
 
-use super::super::{TestObject, acct, email_scope, lease_request, pk};
+use super::super::{TestObject, acct, email_scope, lease_request, mailbox_scope, pk};
 use crate::{
     apply::{ApplyBatch, DerivedWrite, FtsField, FtsRow},
     error::StoreError,
@@ -90,6 +90,86 @@ pub(in crate::contract) async fn scope_lease_is_exclusive_until_released<S: Stor
         .claim_sync_scope(account.clone(), &scope, lease_request("worker-b", 300))
         .await
         .expect("claim after release");
+}
+
+/// Startup recovery can abandon leases left behind by a killed process without
+/// losing the last committed cursor, and the abandoned worker is fenced out.
+pub(in crate::contract) async fn abandon_sync_leases_preserves_cursor_and_fences_old_worker<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-abandon");
+    let scope = email_scope(&account);
+    let released_scope = mailbox_scope(&account);
+    let derived = DerivedWrite::empty();
+
+    let abandoned_worker = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker-old", 300))
+        .await
+        .expect("first claim");
+    let first_objects = SyncUpdate::delta(vec![TestObject::new("m1", "first")], vec![]);
+    let checkpoint = SyncState::new("cursor-checkpoint");
+    store
+        .apply_sync_update(
+            &abandoned_worker.lease,
+            ApplyBatch::new(&first_objects, &derived, &[], &checkpoint),
+        )
+        .await
+        .expect("checkpointed chunk");
+
+    let released_worker = store
+        .claim_sync_scope(
+            account.clone(),
+            &released_scope,
+            lease_request("worker-released", 300),
+        )
+        .await
+        .expect("claim second scope");
+    store
+        .release_sync_scope(released_worker.lease)
+        .await
+        .expect("release second scope");
+
+    assert_eq!(
+        store.abandon_sync_leases().await.expect("abandon leases"),
+        1
+    );
+    let resumed = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker-new", 300))
+        .await
+        .expect("claim abandoned scope without waiting for ttl");
+    assert_eq!(resumed.state, Some(checkpoint));
+    assert_ne!(resumed.lease.token(), abandoned_worker.lease.token());
+
+    let stale_objects = SyncUpdate::delta(vec![TestObject::new("m-old", "old")], vec![]);
+    let rejected = store
+        .apply_sync_update(
+            &abandoned_worker.lease,
+            ApplyBatch::new(&stale_objects, &derived, &[], &SyncState::new("cursor-old")),
+        )
+        .await
+        .expect_err("abandoned worker must be fenced out");
+    assert_eq!(rejected, StoreError::StaleLease);
+
+    let resumed_objects = SyncUpdate::delta(vec![TestObject::new("m2", "second")], vec![]);
+    store
+        .apply_sync_update(
+            &resumed.lease,
+            ApplyBatch::new(
+                &resumed_objects,
+                &derived,
+                &[],
+                &SyncState::new("cursor-resumed"),
+            ),
+        )
+        .await
+        .expect("resumed worker writes");
+    assert_eq!(
+        store.object_keys(&scope).await.unwrap(),
+        vec![pk("m1"), pk("m2")]
+    );
 }
 
 /// `apply_maintenance` is gated by the same scope lease as sync: it succeeds

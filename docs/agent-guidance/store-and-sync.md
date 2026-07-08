@@ -96,6 +96,12 @@ are one mechanism here, not alternatives.
   re-claiming and recomputing — never by retrying the stale write.
 - `release_sync_scope` frees a scope before its TTL so a finished worker does not
   block the next sync for the full lease window.
+- `abandon_sync_leases` is the explicit **process-startup recovery** primitive for
+  a host that knows prior workers for the store are gone after abrupt termination.
+  It clears held sync leases, preserves cursors and objects, and bumps each
+  affected fencing token so an abandoned worker cannot later commit under its old
+  lease. It is not an in-process contention workaround: a live `ScopeHeld` still
+  means "retry after the current worker finishes."
 
 ## The atomic apply
 
@@ -307,6 +313,37 @@ so the next sync is a full refetch. It is the manual counterpart of the automati
 version-driven clear — a "reset / clean state" action a host exposes, and the escape hatch
 if a store is ever suspected stale.
 
+## Local depth narrowing without a provider
+
+The per-sync `window` (`SyncWindow { since }`, above) lets a host **widen or narrow** sync
+depth on the next sync without reconnecting. Narrowing is enforced for a reachable account by
+clearing the mail cursors and re-syncing: the snapshot under the narrower window carries only
+in-window ids, so its reconciliation **tombstones the out-of-window rows**. That path needs the
+provider. When the account cannot reach it, the app can store the new depth but cannot force
+that re-snapshot — so the engine owns a local cleanup that reproduces the *same* end state
+offline: `SqliteStore::prune_account_mail_outside_window` (`Engine::prune_account_mail_outside_window`),
+returning a `PruneReport { messages_removed }` (`engine-store`).
+
+- It filters `mail_index.date_utc` — the message's `received_at` falling back to `sent_at`,
+  which is exactly the field a provider window maps to (IMAP `SINCE`, JMAP `after` on
+  `receivedAt`, Graph `receivedDateTime ge`) — so it tombstones precisely the mail a
+  narrower-window snapshot would. Comparison is on the UTC **date** prefix against the window's
+  **inclusive** floor date, so mail *on* the floor is kept and only strictly-earlier mail drops.
+- **Undated mail is kept.** A message with no `date_utc` is not provably out of window, and a
+  prune must never over-delete; a `NULL` date is left in place (an unbounded window is likewise
+  a no-op — nothing is outside it).
+- It reuses the scope **tombstone** (object + all derived search/thread/occurrence rows), so
+  the removed mail leaves nothing orphaned and search/reads reflect it immediately — the same
+  cleanup a snapshot reconciliation performs. It runs only over the account's **mail** scopes
+  (`SyncScope::search_domain() == Mail`); calendar/contact objects, account metadata, and other
+  accounts are untouched.
+- Like `forget_account` it is **not lease-gated** — the store's single connection serializes it
+  atomically against any in-flight sync — and it **advances no cursor**, so a later delta sync
+  resumes unaffected (a delta brings new arrivals only and never re-adds the pruned tail). The
+  lease-free body/source caches and the content-addressed raw blobs are left to size-based
+  eviction and `VACUUM`, exactly as a normal tombstone and `forget_account` leave them; run
+  `vacuum` afterwards to reclaim the freed pages.
+
 ## The outbox
 
 Pending ops are durable before any side effect and are claimed with the same
@@ -369,6 +406,7 @@ pub trait Store: Send + Sync {
     ) -> Result<()>;
 
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()>;
+    async fn abandon_sync_leases(&self) -> Result<usize>; // startup recovery only
 
     // Outbox.
     async fn enqueue_pending_op(
@@ -459,6 +497,8 @@ Lock these as failing tests before implementing the store:
   in its expected state resolves the op to `Succeeded` in the apply transaction.
 - A `release_sync_scope` under a superseded lease is a no-op and does not free a
   scope a newer lease holds.
+- `abandon_sync_leases` frees held leases without clearing cursors, and fences out
+  the abandoned worker by bumping the token.
 - Container-before-member apply ordering holds, including under snapshot
   tombstoning. (The store enforces per-scope snapshot tombstoning and keeps
   scopes independent; the cross-scope *apply order* itself is an orchestrator

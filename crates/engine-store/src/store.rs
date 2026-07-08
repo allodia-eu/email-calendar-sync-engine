@@ -100,6 +100,19 @@ pub trait Store: Send + Sync {
     /// Returns `StoreError::Backend` on a backend failure.
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()>;
 
+    /// Abandons every held sync lease after a host has established that any prior
+    /// workers for this store are gone, preserving cursors and objects while
+    /// bumping fencing tokens so abandoned workers cannot commit later.
+    ///
+    /// Intended for process-startup recovery after abrupt termination. Do not use
+    /// this as an in-process contention mechanism; `StoreError::ScopeHeld` still
+    /// means a live worker should finish or the caller should retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn abandon_sync_leases(&self) -> Result<usize>;
+
     /// Durably enqueues a pending op for `account`, idempotent by the op's
     /// idempotency key: re-enqueuing the same key returns the existing
     /// [`PendingOpId`] and creates no duplicate.

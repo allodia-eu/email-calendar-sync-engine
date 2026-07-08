@@ -84,6 +84,12 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   queue or auto-retry; a host serializes per account or retries on `Busy`. If a
   future slice wants transparent serialization, add a per-account async lock in the
   facade — do not widen `run_scope` to swallow `ScopeHeld`.
+- **Abrupt process recovery is explicit.** A host that knows prior workers for the
+  store are gone after process death can call `Engine::abandon_sync_leases` once at
+  startup. It clears held scope leases and bumps their fencing tokens while
+  preserving cursors, so a cold backfill resumes from its last committed checkpoint
+  immediately instead of waiting for the fixed `LEASE_TTL` or clearing state. This
+  is not a normal `Busy` recovery path for live in-process contention.
 - **Re-export signature types.** Types that appear in the facade's own signatures
   (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,

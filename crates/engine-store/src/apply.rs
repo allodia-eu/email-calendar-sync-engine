@@ -221,6 +221,19 @@ pub struct SyncApplied {
     pub reconciled: usize,
 }
 
+/// Counts from a local mail prune, for diagnostics and tests.
+///
+/// A prune drops an account's locally-stored mail whose date falls outside a
+/// narrowed [`SyncWindow`](engine_core::sync::SyncWindow) without a live provider —
+/// the offline counterpart of the reachable "clear cursors + re-snapshot under the
+/// narrower window" path, which tombstones the same out-of-window rows
+/// (`store-and-sync.md`). `messages_removed` counts the mail objects tombstoned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PruneReport {
+    /// Mail objects removed (each with its derived search/thread/occurrence rows).
+    pub messages_removed: usize,
+}
+
 /// A planned match between an incoming synced object and an outstanding pending
 /// op (e.g. by generated `Message-ID`), resolved inside the apply transaction.
 ///

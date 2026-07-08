@@ -145,6 +145,19 @@ impl<C: Clock> Store for MemStore<C> {
         Ok(())
     }
 
+    async fn abandon_sync_leases(&self) -> Result<usize> {
+        let mut abandoned = 0;
+        let mut inner = self.lock();
+        for cell in inner.scopes.values_mut() {
+            if cell.lease_expiry.is_some() {
+                cell.token = cell.token.bump();
+                cell.lease_expiry = None;
+                abandoned += 1;
+            }
+        }
+        Ok(abandoned)
+    }
+
     async fn enqueue_pending_op(&self, account: AccountId, op: PendingOp) -> Result<PendingOpId> {
         let mut inner = self.lock();
         let idem = (account.clone(), op.idempotency_key.clone());
