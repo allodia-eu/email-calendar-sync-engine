@@ -135,10 +135,14 @@ async fn cold_backfill_streams_newest_group_first_and_checkpoints_each_group() {
         "all eight UIDs drive tombstoning"
     );
     assert_eq!(chunks[2].advance_to.as_ref().unwrap().as_str(), "v1000;n9");
-    // The newest window was fetched first.
+    // The newest window was fetched first, with the item list parenthesized (an
+    // unparenthesized list makes a lenient server return only the first att).
     let sent = written(&recorded);
-    assert!(sent.contains("UID FETCH 6:8"));
-    assert!(sent.contains("UID FETCH 1:2"));
+    assert!(
+        sent.contains("UID FETCH 6:8 (UID FLAGS"),
+        "parenthesized item list"
+    );
+    assert!(sent.contains("UID FETCH 1:2 (UID FLAGS"));
 }
 
 #[tokio::test]

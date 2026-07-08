@@ -48,7 +48,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     ) -> ImapResult<()> {
         self.drain_pending().await?;
         let tag = self.next_tag();
-        let request = format!("{tag} UID FETCH {set} {items}\r\n");
+        // The item list must be parenthesized (RFC 9051 `fetch`); an unparenthesized
+        // multi-item list makes a lenient server (Stalwart) parse only the first att.
+        let request = format!("{tag} UID FETCH {set} ({items})\r\n");
         self.inner.write_all(request.as_bytes()).await?;
         self.inner.flush().await?;
         self.pending_tag = Some(tag);
