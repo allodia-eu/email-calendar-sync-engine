@@ -113,6 +113,8 @@ where
     let (store, clock) = make();
     scope_cases::scope_lease_is_exclusive_until_released(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::abandon_sync_leases_preserves_cursor_and_fences_old_worker(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::maintenance_is_lease_gated(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::reconciliation_resolves_matching_op(&store, &clock).await;

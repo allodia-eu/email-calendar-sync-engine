@@ -12,8 +12,9 @@ pub(super) use self::{
         streaming_page_keeps_cursor,
     },
     lease::{
-        maintenance_is_lease_gated, release_with_stale_token_is_noop,
-        scope_lease_is_exclusive_until_released, stale_lease_is_rejected,
+        abandon_sync_leases_preserves_cursor_and_fences_old_worker, maintenance_is_lease_gated,
+        release_with_stale_token_is_noop, scope_lease_is_exclusive_until_released,
+        stale_lease_is_rejected,
     },
     read::{
         account_scopes_enumerates_an_accounts_scopes,

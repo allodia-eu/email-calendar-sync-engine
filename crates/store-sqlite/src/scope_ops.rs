@@ -275,6 +275,22 @@ pub(crate) fn release(conn: &mut Connection, scope_key: &str, token: u64) -> Res
     Ok(())
 }
 
+/// Abandons every held scope lease, bumping each fencing token so an old worker
+/// cannot apply later. Cursors and objects are left untouched.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure.
+pub(crate) fn abandon_leases(conn: &mut Connection) -> Result<usize> {
+    conn.execute(
+        "UPDATE sync_scope
+         SET token = token + 1, lease_expiry = NULL
+         WHERE lease_expiry IS NOT NULL",
+        [],
+    )
+    .map_err(convert::backend)
+}
+
 /// The provider keys of live objects in a scope, ordered lexicographically (the
 /// reference store sorts the same way; SQLite's default `BINARY` collation
 /// matches `ProviderKey`'s `Ord`).

@@ -96,6 +96,12 @@ are one mechanism here, not alternatives.
   re-claiming and recomputing — never by retrying the stale write.
 - `release_sync_scope` frees a scope before its TTL so a finished worker does not
   block the next sync for the full lease window.
+- `abandon_sync_leases` is the explicit **process-startup recovery** primitive for
+  a host that knows prior workers for the store are gone after abrupt termination.
+  It clears held sync leases, preserves cursors and objects, and bumps each
+  affected fencing token so an abandoned worker cannot later commit under its old
+  lease. It is not an in-process contention workaround: a live `ScopeHeld` still
+  means "retry after the current worker finishes."
 
 ## The atomic apply
 
@@ -400,6 +406,7 @@ pub trait Store: Send + Sync {
     ) -> Result<()>;
 
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()>;
+    async fn abandon_sync_leases(&self) -> Result<usize>; // startup recovery only
 
     // Outbox.
     async fn enqueue_pending_op(
@@ -490,6 +497,8 @@ Lock these as failing tests before implementing the store:
   in its expected state resolves the op to `Succeeded` in the apply transaction.
 - A `release_sync_scope` under a superseded lease is a no-op and does not free a
   scope a newer lease holds.
+- `abandon_sync_leases` frees held leases without clearing cursors, and fences out
+  the abandoned worker by bumping the token.
 - Container-before-member apply ordering holds, including under snapshot
   tombstoning. (The store enforces per-scope snapshot tombstoning and keeps
   scopes independent; the cross-scope *apply order* itself is an orchestrator

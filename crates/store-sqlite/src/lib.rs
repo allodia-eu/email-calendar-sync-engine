@@ -409,6 +409,10 @@ impl<C: Clock> Store for SqliteStore<C> {
             .await
     }
 
+    async fn abandon_sync_leases(&self) -> Result<usize> {
+        self.call(scope_ops::abandon_leases).await
+    }
+
     async fn enqueue_pending_op(&self, account: AccountId, op: PendingOp) -> Result<PendingOpId> {
         self.call(move |conn| outbox_ops::enqueue(conn, &account, &op))
             .await

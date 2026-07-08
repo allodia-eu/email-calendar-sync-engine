@@ -156,6 +156,38 @@ async fn concurrent_same_scope_sync_reports_busy() {
 }
 
 #[tokio::test]
+async fn abandon_sync_leases_recovers_an_aborted_sync_without_losing_cursor() {
+    use std::sync::Arc;
+
+    let engine = Arc::new(Engine::open_in_memory().unwrap());
+    let acct = account();
+    let initial = engine.sync_mail(&FakeProvider::new(), &acct).await.unwrap();
+    assert_eq!(initial.email.upserted, 2);
+
+    let (claim_tx, claim_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let gate = Arc::new(GateProvider {
+        inner: FakeProvider::new(),
+        on_claim: std::sync::Mutex::new(Some(claim_tx)),
+        until_release: std::sync::Mutex::new(Some(release_rx)),
+    });
+
+    let held_engine = Arc::clone(&engine);
+    let held_gate = Arc::clone(&gate);
+    let held_acct = acct.clone();
+    let held = tokio::spawn(async move { held_engine.sync_mail(&*held_gate, &held_acct).await });
+    claim_rx.await.expect("sync should claim a scope");
+    held.abort();
+    assert!(held.await.unwrap_err().is_cancelled());
+    drop(release_tx);
+
+    assert_eq!(engine.abandon_sync_leases().await.unwrap(), 1);
+    let resumed = engine.sync_mail(&FakeProvider::new(), &acct).await.unwrap();
+    assert_eq!(resumed.mailboxes.upserted, 0);
+    assert_eq!(resumed.email.upserted, 0);
+}
+
+#[tokio::test]
 async fn open_rejects_an_unusable_path() {
     let dir = tempfile::tempdir().unwrap();
     // A database file under a directory that does not exist cannot be created.
