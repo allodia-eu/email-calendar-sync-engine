@@ -30,6 +30,7 @@ mod convert;
 mod derived_ops;
 mod migrations;
 mod outbox_ops;
+mod prune;
 mod purge;
 mod schema;
 mod scope_ops;

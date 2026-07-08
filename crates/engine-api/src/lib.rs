@@ -64,7 +64,7 @@ pub use engine_recurrence::{
 };
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
-pub use engine_store::{PendingOpState, SyncApplied};
+pub use engine_store::{PendingOpState, PruneReport, SyncApplied};
 use engine_sync::SyncError;
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, IgnoreCommits, MailEditOutcome,

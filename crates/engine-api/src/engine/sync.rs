@@ -1,10 +1,14 @@
 //! Provider-driven sync, cache-reset/vacuum maintenance, and the streaming and
 //! per-folder sync methods on `Engine`.
 
-use engine_core::{ids::AccountId, sync::SearchDomain, time::TimeZoneId};
+use engine_core::{
+    ids::AccountId,
+    sync::{SearchDomain, SyncWindow},
+    time::TimeZoneId,
+};
 use engine_provider::Provider;
 use engine_recurrence::Horizon;
-use engine_store::SyncApplied;
+use engine_store::{PruneReport, SyncApplied};
 use engine_sync::{
     CalendarSyncReport, MailSyncReport, StreamTuning, SyncObserver, ThreadDeriveReport,
     derive_mail_threads, sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed,
@@ -126,6 +130,36 @@ impl Engine {
     pub async fn forget_account(&self, account: &AccountId) -> Result<(), ApiError> {
         self.store.forget_account(account).await?;
         Ok(())
+    }
+
+    /// Prunes `account`'s locally-stored mail dated **before** `window`'s floor, so a
+    /// reduced sync depth holds even **offline** — with no provider round trip. When the
+    /// account is reachable, a host narrows depth by clearing the mail cursors and
+    /// re-syncing: the provider snapshot under the narrower `window` tombstones the
+    /// out-of-window rows. This is the counterpart for a disconnected account: it drops
+    /// the same mail locally, producing the state that re-snapshot would, so the app can
+    /// enforce the new depth immediately and wait to reconcile until the next sync.
+    ///
+    /// It keeps in-window and undated mail (an undated message is not provably out of
+    /// window), non-mail data, account metadata, and every other account; each removed
+    /// message takes its derived search/thread/occurrence rows with it (the same
+    /// tombstone a sync applies). An unbounded `window` is a no-op. It advances no
+    /// cursor, so a later network sync resumes normally; run [`vacuum`](Self::vacuum)
+    /// afterwards to reclaim the freed pages. Returns a
+    /// [`PruneReport`](engine_store::PruneReport) with the count removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn prune_account_mail_outside_window(
+        &self,
+        account: &AccountId,
+        window: SyncWindow,
+    ) -> Result<PruneReport, ApiError> {
+        Ok(self
+            .store
+            .prune_account_mail_outside_window(account, window)
+            .await?)
     }
 
     /// Syncs one account's calendars from `provider`: calendar containers first,

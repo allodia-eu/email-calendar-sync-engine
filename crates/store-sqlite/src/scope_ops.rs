@@ -405,7 +405,10 @@ fn upsert_object(tx: &Transaction<'_>, scope_key: &str, key: &str, payload: &str
 
 /// Removes an object and the derived rows keyed by it. Returns whether the object
 /// existed (so snapshot/delta tombstone counts match the reference store).
-fn tombstone(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<bool> {
+///
+/// Shared with the local-prune path (`crate::prune`), which tombstones an account's
+/// out-of-window mail exactly as a snapshot reconciliation would.
+pub(crate) fn tombstone(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<bool> {
     let existed = tx
         .execute(
             "DELETE FROM object WHERE scope_key = ?1 AND provider_key = ?2",

@@ -390,6 +390,43 @@ async fn forget_account_purges_the_account_and_a_re_add_starts_clean() {
 }
 
 #[tokio::test]
+async fn prune_drops_out_of_window_mail_offline() {
+    let engine = Engine::open_in_memory().unwrap();
+    // Mail synced under a wide window: one old message and one recent one land locally.
+    let provider = FakeProvider {
+        messages: vec![
+            dated_message("old", "old@h", &[], "2026-01-15T09:00:00Z"),
+            dated_message("recent", "recent@h", &[], "2026-06-20T09:00:00Z"),
+        ],
+        ..FakeProvider::new()
+    };
+    engine.sync_mail(&provider, &account()).await.unwrap();
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+
+    // Narrowing to an unbounded window removes nothing — nothing is "outside" it.
+    let full = engine
+        .prune_account_mail_outside_window(&account(), SyncWindow::full())
+        .await
+        .unwrap();
+    assert_eq!(full.messages_removed, 0);
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+
+    // Narrowing depth to a 2026-04-01 floor prunes the January message locally, with no
+    // provider round trip — the offline equivalent of a narrower re-snapshot.
+    let floor = engine_core::time::CalendarDate::new(2026, 4, 1).unwrap();
+    let report = engine
+        .prune_account_mail_outside_window(&account(), SyncWindow::since(floor))
+        .await
+        .unwrap();
+    assert_eq!(report.messages_removed, 1);
+
+    // Only the in-window message remains, and it reads back intact.
+    let remaining = engine.messages(&account()).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id.key().as_str(), "recent");
+}
+
+#[tokio::test]
 async fn vacuum_compacts_the_store_without_losing_data() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("engine.sqlite");

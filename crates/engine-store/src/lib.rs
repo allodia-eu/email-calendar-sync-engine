@@ -22,7 +22,7 @@ mod source;
 mod store;
 
 pub use apply::{
-    ApplyBatch, DerivedWrite, FtsField, FtsRow, OccurrenceRow, PendingReconciliation,
+    ApplyBatch, DerivedWrite, FtsField, FtsRow, OccurrenceRow, PendingReconciliation, PruneReport,
     StorableObject, SyncApplied, TzdataVersion,
 };
 pub use error::{Result, StoreError};
