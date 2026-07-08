@@ -52,6 +52,12 @@ Read before relevant work:
 - Aim for 100% meaningful coverage on Rust engine/model/search/sync logic. If a line is not worth testing, question whether it belongs.
 - Every bug fix needs a failing test first.
 - Every provider behavior needs a fixture or integration test tied to primary docs or an observed provider transcript.
+- The offline provider fakes (`MockStream`, the JMAP fake executor, the Graph fixture-replay
+  server) reply with canned bytes **regardless of the request they receive**, so an offline-green
+  suite cannot catch a wrong *command/request shape* (a malformed `UID FETCH` item list, a bad JMAP
+  method, a wrong CalDAV `REPORT` body). Any change to the bytes a provider sends must be validated
+  against a real server (the `stalwart-live` skill / `scripts/ci/stalwart-live.sh`) or a captured
+  transcript — and where practical, tighten the offline fake to assert the shape it was sent.
 
 ## Required Verification
 
@@ -60,7 +66,10 @@ mirrors the CI **"Format, lint, build, test, docs"** job *exactly* — same comm
 warnings-as-errors (`RUSTFLAGS`/`RUSTDOCFLAGS = -D warnings`) — so green here means green there.
 Skipping `cargo fmt` (or running `--check` without fixing) has failed this job on many PRs; a
 freshly hand-written line that overflows the width is the usual culprit, and CI catches it even
-though the code compiles. So: **`cargo +nightly fmt --all` first, then verify.**
+though the code compiles. So: **`cargo +nightly fmt --all` first, then verify.** Note that
+`rustfmt` does **not** reformat inside macro bodies, so a long line inside `try_stream!` /
+`async_stream!` (used across the providers) trips `error_on_line_overflow` and `fmt` will not fix
+it — hand-wrap those lines yourself.
 
 Format on **nightly**: the workspace [`rustfmt.toml`](rustfmt.toml) uses nightly-only options
 (crate-granular grouped imports, `wrap_comments`, `style_edition = "2024"`,
