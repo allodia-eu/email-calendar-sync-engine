@@ -105,7 +105,7 @@ pub trait Store: Send + Sync {
     /// bumping fencing tokens so abandoned workers cannot commit later.
     ///
     /// Intended for process-startup recovery after abrupt termination. Do not use
-    /// this as an in-process contention mechanism; [`StoreError::ScopeHeld`] still
+    /// this as an in-process contention mechanism; `StoreError::ScopeHeld` still
     /// means a live worker should finish or the caller should retry.
     ///
     /// # Errors
