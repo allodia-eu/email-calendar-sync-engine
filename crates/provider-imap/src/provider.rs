@@ -3,7 +3,7 @@
 //! [`SyncScope::ImapMailboxList`].
 //!
 //! The connection is stateful (one TLS socket, sequential commands), so it is held
-//! behind an async [`Mutex`] — concurrent `sync_email_page` calls serialize onto
+//! behind an async [`Mutex`] — concurrent `stream_email` calls serialize onto
 //! the one IMAP session, which is exactly IMAP's model. Method execution is generic
 //! over the stream, so the offline tests drive the full `Provider` surface over a
 //! mock while [`ImapProvider::connect`] uses a `tokio-rustls` TLS stream.
@@ -14,11 +14,12 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
     mail::{Mailbox, Message},
-    sync::{SyncScope, SyncState, SyncUpdate},
+    sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
+    time::CalendarDate,
 };
 use engine_provider::{
-    Capabilities, Draft, MailEdit, MailEditReceipt, PageToken, Provider, ProviderError,
-    ProviderResult, ScopeSync, SubmissionReceipt, SyncPage,
+    Capabilities, Draft, EmailStream, MailEdit, MailEditReceipt, Provider, ProviderError,
+    ProviderResult, ScopeSync, SubmissionReceipt,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -27,10 +28,7 @@ use tokio::{
 };
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
-use crate::{
-    error::ImapError, mail::mailbox_from_list, preview::hydrate_previews, sync::sync_page,
-    transport::Connection,
-};
+use crate::{error::ImapError, mail::mailbox_from_list, transport::Connection};
 
 /// The IMAP folder list carries no sync token (a `LIST` re-snapshots it each pass),
 /// so its cursor is a fixed sentinel — the store round-trips it unread.
@@ -249,7 +247,7 @@ fn resolve_smtp(
 /// Formats a calendar date as the IMAP `d-Mon-yyyy` form `UID SEARCH SINCE` expects
 /// (RFC 9051 §6.4.4), e.g. 2026-03-18 → `18-Mar-2026`. The month is a fixed English
 /// abbreviation and the rest is digits, so the result is a safe, unquoted search atom.
-fn format_imap_date(date: time::Date) -> String {
+pub(crate) fn format_imap_date(date: time::Date) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -341,29 +339,46 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         ))
     }
 
-    async fn sync_email_page(
-        &self,
-        _account: &AccountId,
-        cursor: Option<&SyncState>,
-        page: Option<&PageToken>,
-        limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        let mut connection = self.connection.lock().await;
-        let since = self.since.map(format_imap_date);
-        let mut page = sync_page(
-            &mut connection,
+    /// The whole-scope drain windows under the construction cutoff (`with_since`);
+    /// the streaming path takes its window explicitly, so a host changes depth per
+    /// sync without reconnecting.
+    fn default_sync_window(&self) -> SyncWindow {
+        self.since.map_or_else(SyncWindow::full, |date| {
+            // A construction cutoff is always a real date, so this conversion holds.
+            CalendarDate::new(date.year(), u8::from(date.month()), date.day())
+                .map_or_else(|_| SyncWindow::full(), SyncWindow::since)
+        })
+    }
+
+    /// Streams the bound mailbox's email incrementally and resumably (see the
+    /// `stream` module): rows parse off the wire so a chunk commits sub-batch, and a
+    /// cold backfill checkpoints its low-UID watermark so a kill resumes where it
+    /// stopped. `fetch_batch` bounds each `UID FETCH` group; `chunk_size` the commit
+    /// granularity.
+    fn stream_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        window: SyncWindow,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        // An unbounded caller window falls back to the construction cutoff
+        // (`with_since`), so a provider built with a depth still windows its streamed
+        // backfill; an explicit per-sync window overrides it.
+        let window = if window.is_bounded() {
+            window
+        } else {
+            self.default_sync_window()
+        };
+        Box::pin(crate::stream::stream_email(
+            &self.connection,
             &self.mailbox,
             cursor,
-            page,
-            limit,
-            since.as_deref(),
-        )
-        .await?;
-        // IMAP hands us no server-side snippet (unlike Graph/JMAP), so fill a bounded number
-        // of the page's newest preview-less rows by reading their bodies. One chokepoint for
-        // every path `sync_page` dispatches to (snapshot, sync-depth window, QRESYNC delta).
-        hydrate_previews(&mut connection, &mut page.changed).await;
-        Ok(page)
+            window,
+            fetch_batch,
+            chunk_size,
+        ))
     }
 
     /// Submits `draft` over SMTP and files the sent copy in Sent.

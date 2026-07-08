@@ -14,10 +14,10 @@ use engine_core::{
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::SyncState,
+    time::CalendarDate,
 };
 use engine_provider::{PageToken, SyncKind, SyncPage};
 use serde_json::Value;
-use time::Date;
 
 use crate::{
     error::GraphError,
@@ -108,15 +108,16 @@ pub(crate) async fn message_source(
     Ok(RawMime::new(bytes))
 }
 
-/// Fetches one page of the bound folder's messages (see the module docs). `since`
-/// windows the **initial** snapshot to messages received on or after that date (the
-/// sync-depth cutoff); later pages follow the server's links, which carry the window.
+/// Fetches one page of the bound folder's messages (see the module docs). `floor`
+/// (the per-sync window's date floor) windows the **initial** snapshot to messages
+/// received on or after that date; later pages follow the server's links, which
+/// carry the window.
 pub(crate) async fn messages_page(
     client: &GraphClient,
     folder: &MailboxId,
     cursor: Option<&SyncState>,
     page: Option<&PageToken>,
-    since: Option<Date>,
+    floor: Option<CalendarDate>,
 ) -> Result<SyncPage<Message>, GraphError> {
     let kind = if cursor.is_none() {
         SyncKind::Snapshot
@@ -124,7 +125,7 @@ pub(crate) async fn messages_page(
         SyncKind::Delta
     };
     let doc = client
-        .get(&page_url(client, folder, cursor, page, since))
+        .get(&page_url(client, folder, cursor, page, floor))
         .await?;
 
     let mut changed = Vec::new();
@@ -178,13 +179,13 @@ pub(crate) async fn messages_page(
 
 /// The URL for the next page: a continuation `@odata.nextLink`, else the delta
 /// `cursor` (an `@odata.deltaLink`), else the folder's first `messages/delta` call —
-/// which, when `since` is set, carries a `receivedDateTime` window.
+/// which, when `floor` is set, carries a `receivedDateTime` window.
 fn page_url(
     client: &GraphClient,
     folder: &MailboxId,
     cursor: Option<&SyncState>,
     page: Option<&PageToken>,
-    since: Option<Date>,
+    floor: Option<CalendarDate>,
 ) -> String {
     if let Some(page) = page {
         page.as_str().to_owned()
@@ -196,7 +197,7 @@ fn page_url(
             "/mailFolders/{}/messages/delta?$select={select}",
             folder.as_str()
         );
-        if let Some(date) = since {
+        if let Some(date) = floor {
             // Message delta accepts a `$filter` on `receivedDateTime` on the **initial**
             // request; the returned deltaLink carries the window, so later pages must not
             // re-specify it. The space around `ge` is percent-encoded for a valid query.
@@ -209,13 +210,8 @@ fn page_url(
 /// The `receivedDateTime` lower-bound filter clause for the initial delta, windowing the
 /// sync to `date` 00:00:00 UTC (`&$filter=receivedDateTime ge YYYY-MM-DDT00:00:00Z`, with
 /// the operator spaces percent-encoded).
-fn since_filter(date: Date) -> String {
-    format!(
-        "&$filter=receivedDateTime%20ge%20{:04}-{:02}-{:02}T00:00:00Z",
-        date.year(),
-        u8::from(date.month()),
-        date.day(),
-    )
+fn since_filter(date: CalendarDate) -> String {
+    format!("&$filter=receivedDateTime%20ge%20{date}T00:00:00Z")
 }
 
 /// The `value` array of a Graph collection response, or a protocol error.
@@ -258,7 +254,7 @@ mod tests {
     #[test]
     fn initial_delta_url_windows_by_received_datetime_only_when_since_is_set() {
         let client = fake_client(vec![]);
-        let since = Date::from_calendar_date(2026, time::Month::April, 1).unwrap();
+        let since = CalendarDate::new(2026, 4, 1).unwrap();
 
         // The initial request carries the `receivedDateTime` window (spaces encoded).
         let windowed = page_url(&client, &inbox(), None, None, Some(since));

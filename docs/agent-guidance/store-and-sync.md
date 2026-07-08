@@ -129,19 +129,14 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObje
 - **Cursor disposition.** `next_state` is `Some(state)` to advance the scope
   cursor on commit (the normal case; `ApplyBatch::new`), or `None` to apply the
   objects/derived rows but **leave the cursor unchanged** (`ApplyBatch::with_cursor`).
-  `None` is for **incremental/streaming** applies: a paged fetch commits each page
-  additively (objects become visible immediately) without yet marking the scope
-  synced, then one final apply carries the real `Some(cursor)`. Crucially, a
-  *snapshot* pass must not tombstone against one page's partial id set, so the
-  orchestrator applies intermediate snapshot pages as **additive deltas** (upsert,
-  no removals) while accumulating `present` across pages, and only the final page
-  applies the real `Snapshot` with the complete `present` set — so it tombstones
-  exactly the genuinely-absent rows, never an earlier page's. A crash mid-stream
-  therefore leaves the prior cursor intact, so the next sync re-runs the pass from
-  scratch idempotently rather than skipping the un-applied pages. This orchestration
-  lives in `engine-sync::sync_mail_streamed` (which also reports per-page
-  `SyncProgress` to a `ProgressSink`); the contract suite's
-  `streaming_page_keeps_cursor` locks the store primitive for every backend.
+  The non-streaming whole-scope apply always advances. A **streaming** apply picks
+  its disposition per chunk from the chunk's `PassMode` (see **Streaming sync**
+  below): an *additive* chunk passes `Some(checkpoint)` so the cursor advances with
+  every commit (resumable), while a *reconcile* chunk passes `None` until its final
+  chunk, which carries the real `Some(cursor)` and tombstones. So the store
+  primitive is unchanged; only which disposition the orchestrator picks per chunk is
+  new. The contract suite's `streaming_page_keeps_cursor` locks the `with_cursor`
+  primitive for every backend.
 
 - **Delta vs snapshot.** `SyncUpdate` is either a delta or a bounded/full
   snapshot. A snapshot carries the complete current provider-id set for its
@@ -161,6 +156,62 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObje
   object writes are upserts keyed by provider key, the cursor advance is
   conditional on the prior state, and a resurrected stale-token worker is
   rejected before it can write.
+
+## Streaming sync: additive checkpointing vs reconcile
+
+The responsive mail path (`engine-sync::sync_mail_streamed` / `sync_email_streamed`,
+driven from `Engine::sync_mail_streamed` / `sync_folder_email_streamed`) commits mail
+**chunk by chunk** under one lease, so a host renders recent mail and live progress
+before a pass finishes. The provider primitive is `Provider::stream_email`
+(`providers.md`): a pull `EmailStream` of `EmailChunk`s. Each chunk carries a
+`PassMode` (constant across the pass), its `changed` upserts, explicit `removed` keys,
+a `present` id set (reconcile only), an optional `total`, and an `advance_to` cursor
+disposition. The two modes differ in **resumability**:
+
+- **Additive** — a first cold backfill, and every steady-state delta. Nothing local
+  needs tombstoning (a first sync stored nothing; a delta reports its own removals),
+  so each chunk applies as a `Delta { changed, removed }` and **advances the cursor to
+  its own `advance_to` checkpoint** (`Some(cursor)` on every chunk). A crash therefore
+  resumes from the last committed checkpoint instead of re-downloading from the start:
+  the IMAP cold backfill checkpoints its lowest-committed UID per fetch group
+  (`imap-smtp.md`), so a killed backfill of a large mailbox continues below the
+  watermark. (A JMAP/Graph backfill is fast HTTP paging that is not cheaply resumable
+  mid-pass, so its intermediate chunks are *held* — visible but no checkpoint — and a
+  final marker chunk carries the cursor; a crash there re-runs the pass.)
+- **Reconcile** — a re-snapshot: an IMAP `UIDVALIDITY` reset, a JMAP
+  `cannotCalculateChanges`. Local rows exist and must be reconciled against the
+  server's current set, so intermediate chunks apply **additively** (upsert, no
+  removals) while the orchestrator accumulates `present` across chunks and **holds the
+  cursor** (`None`); only the final chunk applies the real `Snapshot` with the complete
+  accumulated `present` set — tombstoning exactly the genuinely-absent rows, never an
+  earlier chunk's — and advances the cursor in one commit. It is **not**
+  checkpoint-resumable (a crash re-runs the pass), acceptable because a re-snapshot is
+  the rare path. A crash mid-reconcile leaves the prior cursor intact, so the next sync
+  re-runs it idempotently.
+
+**Two decoupled knobs (`StreamTuning { window, fetch_batch, chunk_size }`).** A single
+page size used to conflate network batching with commit granularity. `fetch_batch`
+bounds each provider round trip (an IMAP `UID FETCH` window, a JMAP `Email/get` page, a
+Graph `$top`); `chunk_size` bounds how many messages accumulate before a chunk is
+committed and reported. A large `fetch_batch` with a small `chunk_size` gives *both*
+few round trips *and* row-as-it-arrives commits (`StreamTuning::responsive` is the
+interactive default, `bulk` the throughput one). `window` is the per-sync **depth**
+(`SyncWindow { since }`, `engine-core`) — a provider-neutral date floor bounding a
+snapshot/backfill (a delta is new-arrivals-only and never narrowed), passed per sync so
+a host changes depth without reconnecting providers.
+
+**Change events (`SyncObserver` / `SyncCommit`).** After every committed chunk the
+orchestrator calls the caller's `SyncObserver::committed` with a `SyncCommit { scope,
+fetched, total, upserted, removed }` — the running progress *and* the exact rows that
+just landed (borrowed, zero-copy on the engine side). A host splices its view from
+`upserted`/`removed` **without re-querying** the mailbox. (Reconcile tombstones are
+computed by present-set diff inside the store, so they are not enumerated in `removed`;
+the pass's `SyncApplied::tombstoned` count signals a host may re-read to reconcile.)
+`IgnoreCommits` is the no-op sink, and a closure is a `SyncObserver` via the blanket
+impl. `AccountProgress` is a ready-made observer that folds per-scope commits into one
+account-level "downloaded Y of X" over a concurrent per-folder fan-out — keeping the
+total indeterminate until every expected scope has reported one (so the bar never
+rebases upward as later folders start) and tracking in-flight passes via `begin`/`finish`.
 
 ## Derived-data maintenance (writes not driven by sync)
 

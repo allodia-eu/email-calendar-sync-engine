@@ -22,7 +22,7 @@
 //! listed keys. The loop only projects the *changed* objects.
 //!
 //! [`sync_mail_streamed`] is the responsive variant: it commits each email page as
-//! it lands and reports [`SyncProgress`] to a [`ProgressSink`] for live "downloaded
+//! it lands and reports [`SyncCommit`] to a [`SyncObserver`] for live "downloaded
 //! Y of X" UI, advancing the cursor only on the final page.
 //!
 //! The full cross-scope orchestrator (dependency-ordered fan-out across many
@@ -219,7 +219,15 @@ where
         let claim = store
             .claim_sync_scope(account.clone(), &scope, req.clone())
             .await?;
-        let fetched = syncer.fetch(account, claim.state.as_ref()).await?;
+        // Release the lease if the provider fetch fails (e.g. the account is offline),
+        // so a leaked lease does not block the next sync with a spurious `ScopeHeld`.
+        let fetched = match syncer.fetch(account, claim.state.as_ref()).await {
+            Ok(fetched) => fetched,
+            Err(err) => {
+                let _ = store.release_sync_scope(claim.lease).await;
+                return Err(err.into());
+            }
+        };
         let derived = syncer.derive(&fetched.update);
         let batch = ApplyBatch::new(&fetched.update, &derived, &[], &fetched.next_cursor);
         match store.apply_sync_update(&claim.lease, batch).await {
@@ -375,16 +383,20 @@ fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
 
 mod attachment;
 mod body;
+mod observer;
 mod outbox;
+mod progress;
 mod stream;
 mod threading;
 pub use attachment::{fetch_message_attachment, fetch_message_attachments};
 pub use body::{fetch_inline_parts, fetch_message_body};
+pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
     CalendarWriteOutcome, MailEditOutcome, SubmitOutcome, delete_calendar_event, edit_mail,
     submit_mail, write_calendar_event,
 };
-pub use stream::{ProgressSink, SyncProgress, sync_email_streamed, sync_mail_streamed};
+pub use progress::{AccountProgress, ProgressSnapshot};
+pub use stream::{StreamTuning, sync_email_streamed, sync_mail_streamed};
 pub use threading::{ThreadDeriveReport, derive_mail_threads};
 
 #[cfg(test)]

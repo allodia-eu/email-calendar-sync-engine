@@ -81,7 +81,7 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   account cannot write, or a future calendar-read-only adapter — advertises
   `calendars` without `calendar_writes`; callers route a write by capability, never
   by provider kind. To support a calendar-only provider cleanly, the `Provider`
-  trait's mail methods (`sync_mailboxes`/`sync_email_page` and the
+  trait's mail methods (`sync_mailboxes`/`stream_email` and the
   `mailbox_scope`/`email_scope` accessors) are **default-able** (unsupported /
   JMAP-default), symmetric with how the calendar methods already defaulted for a
   mail-only provider; the JMAP and IMAP adapters still override them.

@@ -188,53 +188,31 @@ jobs:
       # The single service self-bootstraps and seeds inside its entrypoint, then
       # reports healthy once the post-seed marker exists, so `--wait` returns
       # only when the shared dataset is ready (real readiness, not a sleep).
+      # The steps below share `scripts/ci/stalwart-live.sh` with local dev, so the
+      # harness lifecycle, the endpoints/credentials, and the exact `cargo test`
+      # invocations live in one file (run `scripts/ci/stalwart-live.sh all` locally).
       - name: Start Stalwart and seed the shared dataset
-        working-directory: docker/stalwart
-        run: docker compose up -d --wait
+        run: scripts/ci/stalwart-live.sh up
 
       - name: Run the gated connectivity smoke suite
-        env:
-          STALWART_HTTP_ADDR: 127.0.0.1:18080
-          STALWART_IMAP_ADDR: 127.0.0.1:11993 # IMAP is implicit-TLS
-          STALWART_SMTP_ADDR: 127.0.0.1:11025
-          STALWART_ACCOUNT: alice@test.local
-          STALWART_PASSWORD: harness-alice-pw
-        run: cargo test -p stalwart-harness --test smoke -- --nocapture
+        run: scripts/ci/stalwart-live.sh smoke
 
       - name: Run the gated JMAP provider + sync integration tests (live)
-        env:
-          STALWART_HTTP_ADDR: 127.0.0.1:18080
-          STALWART_ACCOUNT: alice@test.local
-          STALWART_PASSWORD: harness-alice-pw
-        run: cargo test -p provider-jmap --all-features -- --nocapture
+        run: scripts/ci/stalwart-live.sh test provider-jmap
 
       - name: Run the gated IMAP/SMTP provider integration tests (live)
-        env:
-          STALWART_HTTP_ADDR: 127.0.0.1:18080
-          STALWART_IMAP_ADDR: 127.0.0.1:11993 # IMAP is implicit-TLS
-          STALWART_SMTP_ADDR: 127.0.0.1:11025
-          STALWART_ACCOUNT: alice@test.local
-          STALWART_PASSWORD: harness-alice-pw
-        run: cargo test -p provider-imap --all-features -- --nocapture
+        run: scripts/ci/stalwart-live.sh test provider-imap
 
       - name: Run the gated CalDAV provider integration tests (live)
-        env:
-          STALWART_HTTP_ADDR: 127.0.0.1:18080
-          STALWART_ACCOUNT: alice@test.local
-          STALWART_PASSWORD: harness-alice-pw
-        run: cargo test -p provider-caldav --all-features -- --nocapture
+        run: scripts/ci/stalwart-live.sh test provider-caldav
 
       - name: Dump Stalwart logs on failure
         if: failure()
-        working-directory: docker/stalwart
-        run: |
-          docker compose logs --no-color
-          docker compose exec -T stalwart sh -c 'cat /var/log/stalwart/* 2>/dev/null' || true
+        run: scripts/ci/stalwart-live.sh logs
 
       - name: Tear down
         if: always()
-        working-directory: docker/stalwart
-        run: docker compose down -v
+        run: scripts/ci/stalwart-live.sh down
 
   # The second CalDAV protocol fixture: a SabreDAV server (the stack Soverin/
   # Fastmail-style providers run). It validates `provider-caldav` against a

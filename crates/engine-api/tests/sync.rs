@@ -17,12 +17,12 @@ use engine_core::{
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
     mail::{EmailAddress, Mailbox, MailboxRole, Message},
     membership::Memberships,
-    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::{CalendarDateTime, LocalDateTime},
 };
 use engine_provider::{
-    Capabilities, Draft, MailEdit, MailEditReceipt, PageToken, Provider, ProviderError,
-    ProviderResult, ScopeSync, SubmissionReceipt, SyncKind, SyncPage,
+    Capabilities, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt, Provider,
+    ProviderError, ProviderResult, ScopeSync, SubmissionReceipt,
 };
 use tokio::sync::oneshot;
 
@@ -133,35 +133,35 @@ impl Provider for FakeProvider {
         ))
     }
 
-    async fn sync_email_page(
-        &self,
-        _account: &AccountId,
-        cursor: Option<&SyncState>,
-        _page: Option<&PageToken>,
-        _limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        if cursor.is_some() {
-            // A cursored resync: a delta that adds nothing and drops any configured keys.
-            return Ok(SyncPage {
-                kind: SyncKind::Delta,
-                changed: Vec::new(),
-                removed: self.removed_on_resync.clone(),
-                present: Vec::new(),
-                next_page: None,
-                next_cursor: SyncState::new("email-2"),
-                total: None,
-            });
-        }
-        let present = self.messages.iter().map(|m| m.id.key().clone()).collect();
-        Ok(SyncPage {
-            kind: SyncKind::Snapshot,
-            changed: self.messages.clone(),
-            removed: Vec::new(),
-            present,
-            next_page: None,
-            next_cursor: SyncState::new("email-1"),
-            total: Some(self.messages.len()),
-        })
+    fn stream_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        _window: SyncWindow,
+        _fetch_batch: usize,
+        _chunk_size: usize,
+    ) -> EmailStream<'a> {
+        // A cursored resync is an additive delta that adds nothing and drops any
+        // configured keys; a first sync (no cursor) is a reconciling snapshot carrying
+        // `present`, so the drain tombstones anything the server dropped.
+        let chunk = if cursor.is_some() {
+            EmailChunk::additive(
+                Vec::new(),
+                self.removed_on_resync.clone(),
+                None,
+                SyncState::new("email-2"),
+            )
+        } else {
+            let present: Vec<ProviderKey> =
+                self.messages.iter().map(|m| m.id.key().clone()).collect();
+            EmailChunk::reconcile_last(
+                self.messages.clone(),
+                present,
+                Some(self.messages.len()),
+                SyncState::new("email-1"),
+            )
+        };
+        Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
 
     async fn sync_calendars(
@@ -245,16 +245,16 @@ impl Provider for GateProvider {
         self.inner.sync_mailboxes(account, cursor).await
     }
 
-    async fn sync_email_page(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-        page: Option<&PageToken>,
-        limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
+    fn stream_email<'a>(
+        &'a self,
+        account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        window: SyncWindow,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
         self.inner
-            .sync_email_page(account, cursor, page, limit)
-            .await
+            .stream_email(account, cursor, window, fetch_batch, chunk_size)
     }
 }
 
@@ -288,16 +288,16 @@ impl Provider for SubmittingProvider {
         self.inner.sync_mailboxes(account, cursor).await
     }
 
-    async fn sync_email_page(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-        page: Option<&PageToken>,
-        limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
+    fn stream_email<'a>(
+        &'a self,
+        account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        window: SyncWindow,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
         self.inner
-            .sync_email_page(account, cursor, page, limit)
-            .await
+            .stream_email(account, cursor, window, fetch_batch, chunk_size)
     }
 
     async fn submit_email(
@@ -367,40 +367,29 @@ impl Provider for ReconcilingProvider {
         ))
     }
 
-    async fn sync_email_page(
-        &self,
-        _account: &AccountId,
-        cursor: Option<&SyncState>,
-        _page: Option<&PageToken>,
-        _limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        // A cursor present → delta with no removals (the IMAP-no-CONDSTORE baseline).
-        if cursor.is_some() {
-            return Ok(SyncPage {
-                kind: SyncKind::Delta,
-                changed: Vec::new(),
-                removed: Vec::new(),
-                present: Vec::new(),
-                next_page: None,
-                next_cursor: SyncState::new("email-2"),
-                total: None,
-            });
-        }
-        // A snapshot: m2 is gone once the server "removed" it.
-        let mut messages = vec![message("m1", "a", "First")];
-        if !self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
-            messages.push(message("m2", "a", "Second"));
-        }
-        let present = messages.iter().map(|m| m.id.key().clone()).collect();
-        Ok(SyncPage {
-            kind: SyncKind::Snapshot,
-            changed: messages.clone(),
-            removed: Vec::new(),
-            present,
-            next_page: None,
-            next_cursor: SyncState::new("email-1"),
-            total: Some(messages.len()),
-        })
+    fn stream_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        _window: SyncWindow,
+        _fetch_batch: usize,
+        _chunk_size: usize,
+    ) -> EmailStream<'a> {
+        // A cursor present → additive delta with no removals (the IMAP-no-CONDSTORE
+        // baseline), so a plain resync never reconciles — only a re-snapshot does.
+        let chunk = if cursor.is_some() {
+            EmailChunk::additive(Vec::new(), Vec::new(), None, SyncState::new("email-2"))
+        } else {
+            // A snapshot: m2 is gone once the server "removed" it.
+            let mut messages = vec![message("m1", "a", "First")];
+            if !self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
+                messages.push(message("m2", "a", "Second"));
+            }
+            let present: Vec<ProviderKey> = messages.iter().map(|m| m.id.key().clone()).collect();
+            let total = Some(messages.len());
+            EmailChunk::reconcile_last(messages, present, total, SyncState::new("email-1"))
+        };
+        Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
 }
 

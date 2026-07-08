@@ -19,10 +19,11 @@
 //! every changed message in one response, so this does **not** honor the `limit`/paging
 //! the snapshot path uses (a documented limitation; paging the delta is a later
 //! refinement). It also fetches `1:*` regardless of any sync-depth window, so a flag
-//! change to an out-of-window message can re-enter the store — `with_since` (currently
-//! provider-only, not host-wired) and the QRESYNC delta are not yet reconciled
-//! (`imap-smtp.md`). The new baseline is the SELECT-time `HIGHESTMODSEQ`, already
-//! encoded into `next_cursor` by [`crate::sync::sync_page`] before this is called.
+//! change to an out-of-window message can re-enter the store — the per-sync
+//! [`SyncWindow`](engine_core::sync::SyncWindow) and the QRESYNC delta are not yet
+//! reconciled (`imap-smtp.md`). The new baseline is the SELECT-time `HIGHESTMODSEQ`,
+//! already encoded into `next_cursor` by [`crate::sync::sync_page_selected`] before
+//! this is called.
 
 use std::cmp::Reverse;
 

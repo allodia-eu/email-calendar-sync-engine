@@ -13,11 +13,15 @@ use engine_core::{
     ids::{AccountId, MailboxId, MessageId, ProviderKey},
     mail::{Message, SystemKeyword},
     membership::Memberships,
+    sync::SyncScope,
 };
 use engine_provider::Provider;
 use engine_search::MailQuery;
 use engine_store::{ManualClock, StoreRead, WorkerId};
-use engine_sync::{SyncProgress, fetch_message_body, sync_email_streamed, sync_mail_streamed};
+use engine_sync::{
+    IgnoreCommits, StreamTuning, SyncCommit, fetch_message_body, sync_email_streamed,
+    sync_mail_streamed,
+};
 use store_sqlite::SqliteStore;
 
 use crate::{
@@ -87,36 +91,22 @@ fn select_condstore_frag(
 
 #[tokio::test]
 async fn streamed_imap_sync_lands_in_the_store_with_progress() {
-    // INBOX with 5 messages (UIDs 1..=5, UIDNEXT 6). Page size 2 → windows
-    // 4:5, 2:3, 1:1 — newest first, three committed pages.
-    // Each committed page is a SELECT + metadata FETCH, then preview hydration reads each
-    // of that page's bodies (newest UID first) over the still-selected mailbox.
+    // INBOX with 5 messages (UIDs 1..=5, UIDNEXT 6). Fetch batch 2 → the backfill
+    // descends in newest-first groups 4:5, 2:3, 1:1 — three streamed FETCH commands
+    // over ONE SELECT (the mailbox stays selected), each a committed chunk. The
+    // backfill streams metadata only (no preview-body hydration).
     let s3 = select_frag("a3", 100, 6, 5);
     let f4 = fetch_frag("a4", &[4, 5]);
-    let b5 = body_frag("a5", 5);
-    let b6 = body_frag("a6", 4);
-    let s7 = select_frag("a7", 100, 6, 5);
-    let f8 = fetch_frag("a8", &[2, 3]);
-    let b9 = body_frag("a9", 3);
-    let b10 = body_frag("a10", 2);
-    let s11 = select_frag("a11", 100, 6, 5);
-    let f12 = fetch_frag("a12", &[1]);
-    let b13 = body_frag("a13", 1);
+    let f5 = fetch_frag("a5", &[2, 3]);
+    let f6 = fetch_frag("a6", &[1]);
     let server = script(&[
         "* OK ready\r\n",
         "a1 OK LOGIN ok\r\n",
         LIST_FRAG,
         &s3,
         &f4,
-        &b5,
-        &b6,
-        &s7,
-        &f8,
-        &b9,
-        &b10,
-        &s11,
-        &f12,
-        &b13,
+        &f5,
+        &f6,
     ]);
 
     let (stream, _) = MockStream::new(server);
@@ -129,15 +119,20 @@ async fn streamed_imap_sync_lands_in_the_store_with_progress() {
             .expect("store");
     let account = AccountId::try_from("imap-acct").unwrap();
 
-    let recorded: Mutex<Vec<SyncProgress>> = Mutex::new(Vec::new());
+    let recorded: Mutex<Vec<(usize, Option<usize>, SyncScope)>> = Mutex::new(Vec::new());
     let report = sync_mail_streamed(
         &provider,
         &store,
         &account,
         WorkerId::new("imap"),
         Duration::from_mins(5),
-        2,
-        &|progress: SyncProgress| recorded.lock().unwrap().push(progress),
+        StreamTuning::new(2, 0),
+        &|commit: &SyncCommit<'_>| {
+            recorded
+                .lock()
+                .unwrap()
+                .push((commit.fetched, commit.total, commit.scope.clone()));
+        },
     )
     .await
     .expect("sync_mail_streamed");
@@ -169,12 +164,77 @@ async fn streamed_imap_sync_lands_in_the_store_with_progress() {
     // Progress: three committed pages, monotonic, ending at the full set against a
     // known denominator — a host could render mail before the sync finished.
     let seq = recorded.lock().unwrap();
-    assert_eq!(seq.len(), 3, "one report per committed page");
-    assert!(seq.iter().any(|p| p.fetched < 5), "an intermediate report");
-    assert!(seq.windows(2).all(|w| w[0].fetched <= w[1].fetched));
-    assert!(seq.iter().all(|p| p.scope == email_scope));
-    assert_eq!(seq.last().unwrap().total, Some(5));
-    assert_eq!(seq.last().unwrap().fetched, 5);
+    assert_eq!(seq.len(), 3, "one report per committed chunk");
+    assert!(
+        seq.iter().any(|(fetched, ..)| *fetched < 5),
+        "an intermediate report"
+    );
+    assert!(seq.windows(2).all(|w| w[0].0 <= w[1].0));
+    assert!(seq.iter().all(|(_, _, scope)| *scope == email_scope));
+    assert_eq!(seq.last().unwrap().1, Some(5));
+    assert_eq!(seq.last().unwrap().0, 5);
+}
+
+#[tokio::test]
+async fn a_cleared_cursor_resync_reconciles_expunged_mail() {
+    // The `reset`/`clear_mail_cursors` contract on a non-QRESYNC server: a no-cursor
+    // re-sync over an EXISTING store must tombstone rows the server no longer has. A
+    // fresh backfill's completing chunk reconciles against the full present set, so the
+    // expunged UID 3 is dropped even though the pass streams additively.
+    let s2 = select_frag("a2", 100, 4, 3);
+    let f3 = fetch_frag("a3", &[1, 2, 3]);
+    // The re-sync: UID 3 was expunged server-side; only 1,2 come back.
+    let s4 = select_frag("a4", 100, 4, 2);
+    let f5 = fetch_frag("a5", &[1, 2]);
+    let server = script(&["* OK ready\r\n", "a1 OK LOGIN ok\r\n", &s2, &f3, &s4, &f5]);
+    let (stream, _) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+
+    let store =
+        SqliteStore::open_in_memory(ManualClock::new("2026-06-08T00:00:00Z".parse().unwrap()))
+            .expect("store");
+    let account = AccountId::try_from("imap-acct").unwrap();
+    let email_scope = provider.email_scope(&account);
+
+    // First sync: three messages land.
+    sync_email_streamed(
+        &provider,
+        &store,
+        &account,
+        WorkerId::new("imap"),
+        Duration::from_mins(5),
+        StreamTuning::new(50, 0),
+        &IgnoreCommits,
+    )
+    .await
+    .expect("first sync");
+    assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 3);
+
+    // Simulate a reset: clear the cursor so the next sync is a no-cursor re-sync.
+    store.clear_scope_cursor(&email_scope).await.unwrap();
+
+    let applied = sync_email_streamed(
+        &provider,
+        &store,
+        &account,
+        WorkerId::new("imap"),
+        Duration::from_mins(5),
+        StreamTuning::new(50, 0),
+        &IgnoreCommits,
+    )
+    .await
+    .expect("resync");
+
+    // The expunged UID 3 was tombstoned; only 1 and 2 remain.
+    assert_eq!(
+        applied.tombstoned, 1,
+        "the expunged message was reconciled away"
+    );
+    let keys = store.object_keys(&email_scope).await.unwrap();
+    assert_eq!(keys.len(), 2);
+    assert!(!keys.iter().any(|k| k.as_str() == "imap:v100:u3@INBOX"));
 }
 
 #[tokio::test]
@@ -232,35 +292,31 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
     // `CHANGEDSINCE … VANISHED` delta that re-flags UID 1 and expunges UID 2. The
     // store must reflect both — the flag update *and* the tombstone — with no
     // re-snapshot, proving the incremental path end to end.
+    // First sync (a QRESYNC backfill): one SELECT (condstore) + one streamed FETCH
+    // group over UIDs 1..=3, metadata only (no preview hydration on the backfill).
     let snap_select = select_condstore_frag("a3", 100, 4, 3, 10);
     let snap_fetch = fetch_frag("a4", &[1, 2, 3]);
-    // The snapshot's three messages each get their preview hydrated (newest UID first).
-    let snap_b5 = body_frag("a5", 3);
-    let snap_b6 = body_frag("a6", 2);
-    let snap_b7 = body_frag("a7", 1);
-    let delta_select = select_condstore_frag("a8", 100, 4, 2, 15);
+    // The delta: a SELECT (condstore, fresh modseq), then the CHANGEDSINCE fetch.
+    let delta_select = select_condstore_frag("a5", 100, 4, 2, 15);
     // The CHANGEDSINCE delta: UID 2 vanished, UID 1 came back \Flagged.
     let delta_changes = "* VANISHED (EARLIER) 2\r\n\
          * 1 FETCH (UID 1 FLAGS (\\Seen \\Flagged) \
          INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
          ENVELOPE (NIL \"report 1\" ((\"A\" NIL \"alice\" \"test.local\")) NIL NIL \
          ((\"B\" NIL \"bob\" \"test.local\")) NIL NIL NIL \"<m1@test.local>\"))\r\n\
-         a9 OK UID FETCH completed\r\n";
-    // The re-upserted UID 1 arrives preview-less (a fresh metadata build), so hydration
-    // re-reads its body once.
-    let delta_b10 = body_frag("a10", 1);
+         a6 OK UID FETCH completed\r\n";
+    // The re-upserted UID 1 arrives preview-less (a fresh metadata build), so the
+    // delta path's hydration re-reads its body once.
+    let delta_body = body_frag("a7", 1);
     let server = script(&[
         "* OK ready\r\n",
         "a1 OK LOGIN ok\r\n",
         LIST_FRAG,
         &snap_select,
         &snap_fetch,
-        &snap_b5,
-        &snap_b6,
-        &snap_b7,
         &delta_select,
         delta_changes,
-        &delta_b10,
+        &delta_body,
     ]);
 
     let (stream, _) = MockStream::new(server);
@@ -273,17 +329,16 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
         SqliteStore::open_in_memory(ManualClock::new("2026-06-08T00:00:00Z".parse().unwrap()))
             .expect("store");
     let account = AccountId::try_from("imap-acct").unwrap();
-    let drop_progress = |_: SyncProgress| {};
 
-    // Snapshot sync: three messages land, the cursor records the modseq baseline.
+    // First sync: three messages land, the cursor records the modseq baseline.
     sync_mail_streamed(
         &provider,
         &store,
         &account,
         WorkerId::new("imap"),
         Duration::from_mins(5),
-        50,
-        &drop_progress,
+        StreamTuning::new(50, 0),
+        &IgnoreCommits,
     )
     .await
     .expect("snapshot sync");
@@ -298,8 +353,8 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
         &account,
         WorkerId::new("imap"),
         Duration::from_mins(5),
-        50,
-        &drop_progress,
+        StreamTuning::new(50, 0),
+        &IgnoreCommits,
     )
     .await
     .expect("qresync delta sync");

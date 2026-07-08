@@ -16,6 +16,14 @@ serde_json = "1.0.150"
 thiserror = "2.0.18"
 time = { version = "0.3.51", features = ["macros", "parsing", "formatting"] }
 async-trait = "0.1.89"
+# Async streaming for the paged email sync primitive: `futures-core` for the
+# runtime-neutral `Stream` trait in the provider's return type, `futures-util` for
+# the orchestrator/drain combinators (`StreamExt`), and `async-stream` for the
+# ergonomic `try_stream!` generators the adapters build their chunk streams with.
+# All pure-Rust and runtime-neutral, so `engine-sync` keeps no hard runtime dep.
+futures-core = "0.3.32"
+futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
+async-stream = "0.3.6"
 tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread"] }
 # SQLite backend: `bundled` compiles a pinned SQLite amalgamation (FTS5 enabled),
 # so the build needs no system libsqlite3 and every platform agrees on one engine.

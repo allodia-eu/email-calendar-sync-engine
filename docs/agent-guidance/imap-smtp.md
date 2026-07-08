@@ -38,8 +38,9 @@ is authoritative for the `provider-caldav` calendar client.
 - **Email scope is per mailbox.** JMAP has one account-global `Email` scope; IMAP
   state is per folder (`UIDVALIDITY`/`UIDNEXT`). So an `ImapProvider` is **bound to
   a single mailbox** for email: `email_scope` names that mailbox
-  (`SyncScope::ImapMailbox{account, mailbox}`), and `sync_email_page` is a
-  UID-window `FETCH` over it. The folder list syncs under the new per-account
+  (`SyncScope::ImapMailbox{account, mailbox}`), and `stream_email` streams a
+  resumable UID `FETCH` over it (a cold backfill row by row, a delta/reset via the
+  page path — below). The folder list syncs under the new per-account
   `SyncScope::ImapMailboxList{account}` (a container scope, applied before the
   email it parents — `store-and-sync.md` referential apply order). The cross-folder
   fan-out (enumerate folders, drive each) is the later orchestrator's job.
@@ -56,10 +57,14 @@ is authoritative for the `provider-caldav` calendar client.
 
 - **Cursor + paging.** The cursor is `(UIDVALIDITY, UIDNEXT)` encoded
   `v{validity};n{next}`, with an optional QRESYNC `HIGHESTMODSEQ` appended as
-  `;m{modseq}` when the session negotiated QRESYNC (a non-QRESYNC cursor is
-  byte-identical to the old format, and a pre-QRESYNC cursor with no `;m` decodes with
-  `highest_modseq: None`); a foreign/garbage cursor decodes to "no cursor" → snapshot.
-  Paging is **newest UIDs first, up to `limit` *messages* per page**: a page fetches
+  `;m{modseq}` when the session negotiated QRESYNC, and an optional `;b{low}`
+  **backfill watermark** (the lowest UID a still-descending cold backfill has
+  committed — see the next bullet) while one is in flight (a completed non-QRESYNC
+  cursor is byte-identical to the old format, and cursors lacking `;m`/`;b` decode
+  with those fields `None`); a foreign/garbage cursor decodes to "no cursor" →
+  snapshot. The **page path** below (used by a delta or a `UIDVALIDITY`-reset
+  re-snapshot) pages **newest UIDs first, up to `limit` *messages* per page**: a page
+  fetches
   a UID window and, if a gap (expunged UID) leaves it under-filled, **widens the
   window downward** until it has `limit` messages (or reaches the floor) — so
   `limit` is a count of messages, not a span of UID slots. Any older overshoot is
@@ -69,16 +74,41 @@ is authoritative for the `provider-caldav` calendar client.
   simply absent (a gap), and a snapshot's accumulated `present` set is exactly the
   existing UIDs (tombstoning the rest). `limit` `0` means the whole remaining window
   in one page (the drain default).
-- **Sync-depth window (optional).** A provider built with `ImapConfig::with_since(date)`
-  bounds a **snapshot** to mail delivered on or after `date`: before paging, a single
-  `UID SEARCH SINCE <dd-Mon-yyyy>` (`transport::uid_search_since`, parsed by
-  `parse_search`, tolerating both classic `* SEARCH` and extended `* ESEARCH … ALL`)
-  yields the in-window UIDs, and the snapshot starts at the **lowest** of them (older
-  mail is never fetched), reporting their count as the `total` progress denominator. No
-  matches yields an empty snapshot that still tombstones stale rows below the window. A
-  **delta** is already bounded to new arrivals, so the window never narrows it (no
-  `SEARCH` is issued). With no cutoff (the default) the whole mailbox syncs, exactly as
-  before. This is how a host implements "configurable sync depth" without an
+- **Streaming cold backfill (resumable).** `stream_email` (`stream.rs`) `SELECT`s the
+  mailbox once and splits into two paths. A **cold backfill** — a first sync (no
+  cursor), or one resuming below a prior `;b` watermark under the same UID space — is
+  streamed here rather than through the page path: it descends **newest-UID-first** in
+  `fetch_batch`-wide UID groups (`UID SEARCH SINCE` UIDs when windowed, else the
+  `1..=UIDNEXT-1` range chunked), and pulls each group's `UID FETCH` **one row at a
+  time** (`uid_fetch_stream_start`/`next_fetch_row` in `fetch_stream.rs`), so it yields
+  an additive chunk every `chunk_size` messages *within* one batched fetch and a host
+  surfaces mail before the whole batch downloads. Each group **checkpoints
+  `backfill_low`** = the group's lowest UID into the cursor (`;b{low}`), so a kill
+  resumes below the watermark instead of restarting; the last group clears the
+  watermark to the steady-state `frontier` cursor (the `UIDNEXT`/`HIGHESTMODSEQ`
+  captured when the backfill first started, so mail arriving during it is caught by the
+  first delta afterwards). Previews are **not** hydrated on this path (reading bodies
+  would defeat fast metadata streaming); a host fetches bodies on demand. The
+  connection **self-heals** a dropped mid-command streamed fetch: an abandoned tag is
+  recorded in `pending_tag` and drained by the next command (`drain_pending`). A
+  **delta** (new arrivals, or a QRESYNC flag/expunge reconcile) or a `UIDVALIDITY`-reset
+  **re-snapshot** instead delegates to the tested `sync_page_selected` (reusing the one
+  `SELECT`) and re-chunks each page with `split_page` — small (a delta) or rare (a
+  reset), so fetching a page whole before re-chunking is fine, and previews *are*
+  hydrated there.
+- **Sync-depth window (per sync).** The sync-depth floor is now a **per-sync
+  argument** — `stream_email(…, window, …)` takes a `SyncWindow { since }` — so a host
+  changes depth without reconnecting the provider; `ImapConfig::with_since(date)`
+  survives only as the `default_sync_window` the whole-scope `sync_email` drain fetches
+  under. Either way it bounds a **snapshot/backfill** to mail delivered on or after
+  `date`: a single `UID SEARCH SINCE <dd-Mon-yyyy>` (`transport::uid_search_since`,
+  parsed by `parse_search`, tolerating both classic `* SEARCH` and extended
+  `* ESEARCH … ALL`) yields the in-window UIDs, and the sync starts at the **lowest** of
+  them (older mail is never fetched), reporting their count as the `total` progress
+  denominator. No matches yields an empty snapshot that still tombstones stale rows
+  below the window. A **delta** is already bounded to new arrivals, so the window never
+  narrows it (no `SEARCH` is issued). With no cutoff (the default) the whole mailbox
+  syncs. This is how a host implements "configurable sync depth" without an
   account-wide message delta — the cutoff is a host-supplied calendar date, so this
   crate stays free of any depth/duration policy.
 - **Snapshot vs delta.** First sync (no cursor) or a UIDVALIDITY mismatch →
@@ -309,12 +339,13 @@ is authoritative for the `provider-caldav` calendar client.
   issues one `UID FETCH 1:* (CHANGEDSINCE … VANISHED)`: it does **not** honor the
   `limit`/paging the snapshot path uses (a bulk server-side change — "mark all read" —
   returns every changed message in one response and one transaction; per-page streaming
-  of the delta is a later refinement), and it does **not** re-apply the optional
-  sync-depth window (`ImapConfig::with_since`, currently provider-only and not
-  host-wired), so a flag change to an *out-of-window* message can re-enter the store.
-  Bounding the delta — correctly, since `VANISHED` needs `1:*` to report already-expunged
-  UIDs while a window must restrict only `changed` — is deferred until `with_since` is
-  host-wired. An *unsolicited* flag-only `FETCH` (no `ENVELOPE`) that the server
+  of the delta is a later refinement), and it does **not** re-apply the sync-depth
+  window — the window bounds only a snapshot/backfill, and the QRESYNC delta fetches
+  `1:*` regardless (so now that the window is a per-sync `stream_email` argument, this
+  is the one path still ignoring it), so a flag change to an *out-of-window* message can
+  re-enter the store. Bounding the delta — correctly, since `VANISHED` needs `1:*` to
+  report already-expunged UIDs while a window must restrict only `changed` — is a later
+  refinement. An *unsolicited* flag-only `FETCH` (no `ENVELOPE`) that the server
   interleaves mid-response is dropped, so it can never overwrite a stored message's
   metadata; the change it signals rides a later `CHANGEDSINCE`. A `* VANISHED` set larger
   than the `MAX_VANISHED` cap (2²⁰, the adversarial-allocation guard) is truncated — an
@@ -371,8 +402,8 @@ is authoritative for the `provider-caldav` calendar client.
   the real transport, command sequencing, literal handling, snapshot/delta paging,
   UIDVALIDITY reset, per-recipient rejection, and post-`DATA` ambiguity. An
   **engine-sync integration** drives `ImapProvider` over the mock through
-  `sync_mail_streamed` into a real `SqliteStore` (container-before-member, per-page
-  progress, FTS search). The `needs_confirmation` → `NeedsConfirmation` bridge is
+  `sync_mail_streamed` into a real `SqliteStore` (container-before-member, per-chunk
+  commit/progress, FTS search). The `needs_confirmation` → `NeedsConfirmation` bridge is
   locked in `engine-sync`. The **QRESYNC** path is covered offline by replaying the
   **exact bytes captured from live Stalwart** (`CAPABILITY`/`ENABLE`,
   `SELECT (CONDSTORE)`, and `UID FETCH … (CHANGEDSINCE … VANISHED)` with its

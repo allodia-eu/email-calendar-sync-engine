@@ -10,36 +10,44 @@ specifics they implement against the Stalwart fixture. Read it before touching
 ## The three crates
 
 - **`engine-provider`** — the minimal, provider-neutral trait surface. Adapters
-  return a normalized [`ScopeSync`] (a `SyncUpdate` + opaque next cursor) or one
-  [`SyncPage`] at a time, expose [`Capabilities`], and classify failures with
-  [`ProviderError`] over the engine-neutral `FailureClass`. The `Provider` trait is
-  **shaped by JMAP** and kept small: only `capabilities` is required. Every
+  return a normalized [`ScopeSync`] (a `SyncUpdate` + opaque next cursor) or stream
+  one email pass as [`EmailChunk`]s, expose [`Capabilities`], and classify failures
+  with [`ProviderError`] over the engine-neutral `FailureClass`. The `Provider` trait
+  is **shaped by JMAP** and kept small: only `capabilities` is required. Every
   data-domain method is **default-able** and gated by capability, so an adapter
   implements just the domains it serves — mail providers override `sync_mailboxes`
-  + the **paged** `sync_email_page` (plus `mailbox_scope`/`email_scope`); a
-  calendar-only provider (`provider-caldav`) overrides `sync_calendars`/
-  `sync_events` and leaves the mail methods at their unsupported defaults.
-  `sync_email` is a drain over `sync_email_page` (one paged method gets both
-  streaming and whole-fetch); `submit_email` defaults to unsupported. `SyncPage` +
-  the opaque `PageToken` are the paging vocabulary. Depends only on `engine-core`;
-  no network or runtime. Callers never switch on provider kind.
+  + the **streaming** `stream_email` (plus `default_sync_window`,
+  `mailbox_scope`/`email_scope`); a calendar-only provider (`provider-caldav`)
+  overrides `sync_calendars`/`sync_events` and leaves the mail methods at their
+  unsupported defaults. `sync_email` is a drain over `stream_email` (one streaming
+  method gets both incremental streaming and whole-fetch); `submit_email` defaults to
+  unsupported. `SyncPage`/`PageToken`/`SyncKind` survive as provider-**internal**
+  paging helpers (each adapter re-chunks its own page fetch with `split_page`), not
+  trait surface. Depends only on `engine-core`; no network or runtime. Callers never
+  switch on provider kind.
 - **`provider-jmap`** — the JMAP/HTTP adapter implementing `Provider`. reqwest +
   rustls (pure-Rust TLS, mobile cross-compile) on tokio. Layers: `transport`
   (auth + HTTP), `request` (the `{using, methodCalls}` envelope, `#id`
   back-references, typed responses), `session` (discovery + URL policy),
   `fetch` (the generic container/member sync **and** the paged `member_page`
-  primitive behind `sync_email_page`), `mail`/`calendar`/`json` (normalizers),
+  primitive `stream_email` re-chunks), `mail`/`calendar`/`json` (normalizers),
   `submit` (sending), `provider` (the trait impl) behind an `Executor` seam.
 - **`engine-sync`** — the per-scope loop: `claim → fetch → project/derive →
   apply → release`, with `StaleLease` re-claim-and-recompute and container-
   before-member ordering. `sync_mail`, `sync_calendar` (project + `expand`
-  occurrences), and the outbox-mediated `submit_mail`. `sync_mail_streamed` is the
-  responsive variant: it commits each email page as it lands (cursor held until the
-  last) and notifies a `ProgressSink` (`SyncProgress { scope, fetched, total }`) so
-  a host UI can render recent mail and "downloaded Y of X" while a fresh sync fills
-  in. The full cross-scope orchestrator (dependency-ordered fan-out, outbox
-  workers, tzdata fan-out) is a later step; this is deliberately the minimal driver
-  that proves the cycle.
+  occurrences), and the outbox-mediated `submit_mail`. `sync_mail_streamed` /
+  `sync_email_streamed` are the responsive variant: they commit each email chunk as
+  it lands — an **additive** pass (cold backfill or delta) checkpoints the cursor
+  per chunk (resumable), a **reconcile** re-snapshot holds it until the tombstoning
+  final chunk — and notify a `SyncObserver` with a `SyncCommit { scope, fetched,
+  total, upserted, removed }` (progress *and* the exact rows that changed) so a host
+  renders recent mail, a live "downloaded Y of X", and splices its view **without
+  re-querying**. `StreamTuning` decouples the fetch batch (round trips) from the
+  commit chunk (granularity) and carries the per-sync depth `window`;
+  `AccountProgress` folds per-folder commits into one account-level figure. The full
+  cross-scope orchestrator (dependency-ordered fan-out, outbox workers, tzdata
+  fan-out) is a later step; this is deliberately the minimal driver that proves the
+  cycle.
 
 ## JMAP specifics implemented
 
@@ -57,25 +65,37 @@ specifics they implement against the Stalwart fixture. Read it before touching
   `Foo/get` (delta). Changed objects are fetched in one round trip via an `#ids`
   result back-reference. The only per-type difference is the method-name prefix,
   the capability set, and the normalizer.
-- **Paged member fetch (`member_page` → `sync_email_page`).** Email is fetched one
-  page at a time so a streaming host stays responsive. A **snapshot** page is
-  `Email/query` sorted `receivedAt` descending (newest first) at a `position` with
-  a `limit` and `calculateTotal:true`, then `Email/get` over the page's `#ids`; the
-  query ids are the page's `present` set and `next_position` (driven by `total`, or
-  a short page when the server omits it) decides whether another page follows. A
-  **delta** page is `Email/changes` bounded by `maxChanges`, paging on
-  `hasMoreChanges` and resuming from each page's `newState`. `limit` is clamped to
-  `maxObjectsInGet` (`0` means "the server's max"). The page's mode + offset/state
-  travel in the opaque `PageToken` (`s:<position>` / `d:<state>`), so a recovered or
-  continuation page resumes correctly and the engine never parses the token.
+- **Streaming member fetch (`stream_email` re-chunks `member_page`).** Email streams
+  as `EmailChunk`s so a host stays responsive. The JMAP round trip is atomic (a page
+  arrives whole), so `stream_email` loops `member_page` and re-chunks each page with
+  `split_page` — a **snapshot** page becomes `Reconcile` chunks, a **delta** page
+  `Additive` chunks — then yields a final marker chunk carrying the cursor. JMAP is
+  not cheaply resumable mid-pass, so intermediate chunks **hold** the cursor
+  (`additive_held`) and a crash re-runs the pass. A **snapshot** page is `Email/query`
+  sorted `receivedAt` descending (newest first) at a `position` with a `limit` and
+  `calculateTotal:true`, then `Email/get` over the page's `#ids`; the query ids are the
+  page's `present` set and `next_position` (driven by `total`, or a short page when the
+  server omits it) decides whether another page follows. A **delta** page is
+  `Email/changes` bounded by `maxChanges`, paging on `hasMoreChanges` and resuming from
+  each page's `newState`. The streaming knobs map on: `fetch_batch` is the per-page
+  `limit` (clamped to `maxObjectsInGet`; `0` = the server's max), `chunk_size` is how
+  many messages `split_page` emits per commit. The page's mode + offset/state travel in
+  the opaque `PageToken` (`s:<position>` / `d:<state>`) — a provider-**internal** helper
+  now, not trait surface — so a continuation page resumes and the engine never parses it.
+- **Sync-depth window (JMAP now windows).** `stream_email` takes a `SyncWindow { since }`
+  **per sync** and threads it into the snapshot `Email/query` as an `after` filter on
+  `receivedAt` (RFC 8621 §4.4.1), so a large mailbox syncs only recent mail — JMAP is no
+  longer the "can't window" provider (the depth is no longer baked in at construction). A
+  delta ignores the window (new arrivals are recent by definition). `default_sync_window`
+  (the full history) backs the whole-scope `sync_email` drain.
 - **Delta vs snapshot.** First sync (no cursor) is a snapshot; thereafter a delta,
   recovering to a snapshot on a `cannotCalculateChanges` method error (mapped to
   `FailureClass::NeedsResync`) — recovery happens on the first page, so a recovered
   pass stays a snapshot to its end. Because paging fetches **every** id across all
   pages, a snapshot's accumulated `present` set is complete and tombstones
   correctly; there is no longer a single-page degradation. The orchestrator commits
-  intermediate pages additively (cursor held) and applies the tombstoning snapshot
-  only on the final page (`store-and-sync.md`).
+  intermediate chunks additively (cursor held) and applies the tombstoning snapshot
+  only on the final chunk (`store-and-sync.md`).
 - **Identity + membership.** JMAP identity is the account-global object id. The
   IMAP COPY surfaces in JMAP as **one** object with two `mailboxIds` (multi-
   membership), while the duplicate-`Message-ID` pair stays **two distinct**
@@ -169,10 +189,10 @@ specifics they implement against the Stalwart fixture. Read it before touching
   `north-star.md` treats JMAP Calendars as the less-deployed transport and CalDAV
   (step 5) is the deployed calendar-write path (`provider-caldav`). JMAP calendar
   sync stays **read-only**.
-- **Calendar events are still fetched whole**, not paged: only email has a paged
-  primitive (`sync_email_page`) so far. Events have no natural recency sort and the
-  seed fits one page; when streaming is wanted there, generalize `member_page` with
-  a per-type sort and add `sync_events_page`. Snapshot-during-mutation across pages
+- **Calendar events are still fetched whole**, not streamed: only email has a
+  streaming primitive (`stream_email`) so far. Events have no natural recency sort and
+  the seed fits one page; when streaming is wanted there, generalize `member_page` with
+  a per-type sort and add an event stream. Snapshot-during-mutation across pages
   remains inherently racy (JMAP gives no cross-query consistency token); the final
   page's cursor is the resume point.
 - **JSCalendar verbatim order.** The preserved payload is re-serialized from the
@@ -193,10 +213,11 @@ specifics they implement against the Stalwart fixture. Read it before touching
   multi-`data`), `StateChange` classification, watched-type filtering, and the
   `Changed`/`KeepAlive`/closed-stream event loop — all offline. A **blocking mock HTTP
   server** exercises the real transport, session discovery, and `execute`. In
-  `engine-sync`, a store-probing fake proves each streamed page is committed and
-  host-visible before the next is fetched, a recording `ProgressSink` checks the
-  `fetched`/`total` sequence, and a lease-stealer proves a mid-stream `StaleLease`
-  restarts safely (the held cursor makes it idempotent). A panic-resistance test
+  `engine-sync`, a store-probing fake proves each streamed chunk is committed and
+  host-visible before the next is fetched, a recording `SyncObserver` checks the
+  `fetched`/`total` sequence and the upserted rows, and a lease-stealer proves a
+  mid-stream `StaleLease` restarts safely (the checkpointed/held cursor makes it
+  idempotent). A panic-resistance test
   feeds adversarial JSON through every parser (the `fuzz/` cargo-fuzz counterpart).
 - **Live (gated on `STALWART_HTTP_ADDR`, skips otherwise):** `provider-jmap`'s
   `tests/live_provider.rs` (session/mail/calendar/submit, **`edit_mail` flag→move→

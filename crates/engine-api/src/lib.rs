@@ -51,7 +51,8 @@ pub use engine_core::{
         AttachmentPartId, EmailAddress, InlinePart, Mailbox, MailboxRole, Message,
         MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword,
     },
-    time::{TimeZoneId, UtcDateTime},
+    sync::{SyncScope, SyncWindow},
+    time::{CalendarDate, TimeZoneId, UtcDateTime},
     write::PendingOpId,
 };
 pub use engine_provider::{
@@ -66,8 +67,9 @@ use engine_store::StoreError;
 pub use engine_store::{PendingOpState, SyncApplied};
 use engine_sync::SyncError;
 pub use engine_sync::{
-    CalendarSyncReport, CalendarWriteOutcome, MailEditOutcome, MailSyncReport, ProgressSink,
-    SubmitOutcome, SyncProgress, ThreadDeriveReport,
+    AccountProgress, CalendarSyncReport, CalendarWriteOutcome, IgnoreCommits, MailEditOutcome,
+    MailSyncReport, ProgressSnapshot, StreamTuning, SubmitOutcome, SyncCommit, SyncObserver,
+    ThreadDeriveReport,
 };
 
 /// An error from an [`Engine`] operation.

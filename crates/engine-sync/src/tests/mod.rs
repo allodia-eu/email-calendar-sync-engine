@@ -15,24 +15,24 @@ use engine_core::{
     mail::{EmailAddress, Mailbox, MailboxRole, Message},
     membership::Memberships,
     raw::RawIcal,
-    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::{CalendarDateTime, LocalDateTime, TimeZoneId},
     version::ETag,
     write::{IdempotencyKey, PendingOp, ResourceKey},
 };
 use engine_provider::{
-    Capabilities, Draft, EventDeletion, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
-    PageToken, Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind,
-    SyncPage,
+    Capabilities, Draft, EmailChunk, EmailStream, EventDeletion, EventWrite, EventWriteReceipt,
+    MailEdit, MailEditReceipt, Provider, ProviderError, ProviderResult, ScopeSync,
+    SubmissionReceipt,
 };
 use engine_recurrence::Horizon;
 use engine_store::{LeaseRequest, ManualClock, PendingOpState, Store, StoreRead, WorkerId};
 use store_sqlite::SqliteStore;
 
 use super::{
-    AccountId, Duration, SyncProgress, delete_calendar_event, edit_mail, submit_mail,
-    sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed, sync_mailbox_list,
-    write_calendar_event,
+    AccountId, AccountProgress, Duration, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
+    delete_calendar_event, edit_mail, submit_mail, sync_calendar, sync_email_streamed, sync_mail,
+    sync_mail_streamed, sync_mailbox_list, write_calendar_event,
 };
 
 mod calendar_sync;
@@ -40,6 +40,7 @@ mod calendar_write;
 mod mail_edit;
 mod mail_sync;
 mod streaming;
+mod streaming_resume;
 mod submit;
 
 /// A configurable in-memory mail provider: a snapshot on first sync, an empty
@@ -129,35 +130,29 @@ impl Provider for FakeMail {
         ))
     }
 
-    async fn sync_email_page(
-        &self,
-        _account: &AccountId,
-        cursor: Option<&SyncState>,
-        _page: Option<&PageToken>,
-        _limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        // One page: a snapshot on first sync, an empty delta once a cursor exists.
-        let (kind, changed, present, total) = if cursor.is_none() {
+    fn stream_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        _window: SyncWindow,
+        _fetch_batch: usize,
+        _chunk_size: usize,
+    ) -> EmailStream<'a> {
+        // One chunk: a reconciling snapshot on first sync (so the drain tombstones),
+        // an additive empty delta once a cursor exists.
+        let chunk = if cursor.is_none() {
             let present: Vec<ProviderKey> =
                 self.messages.iter().map(|m| m.id.key().clone()).collect();
-            (
-                SyncKind::Snapshot,
+            EmailChunk::reconcile_last(
                 self.messages.clone(),
                 present,
                 Some(self.messages.len()),
+                self.cursor.clone(),
             )
         } else {
-            (SyncKind::Delta, Vec::new(), Vec::new(), None)
+            EmailChunk::additive(Vec::new(), Vec::new(), None, self.cursor.clone())
         };
-        Ok(SyncPage {
-            kind,
-            changed,
-            removed: Vec::new(),
-            present,
-            next_page: None,
-            next_cursor: self.cursor.clone(),
-            total,
-        })
+        Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
 
     async fn submit_email(

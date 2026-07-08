@@ -3,6 +3,8 @@
 //! re-claim-and-recompute. Uses the shared fakes and helpers from the parent
 //! module via `use super::*`.
 
+use futures_util::StreamExt;
+
 use super::*;
 
 #[tokio::test]
@@ -118,32 +120,38 @@ impl Provider for LeaseStealer {
         self.inner.sync_mailboxes(account, cursor).await
     }
 
-    async fn sync_email_page(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-        page: Option<&PageToken>,
-        limit: usize,
-    ) -> ProviderResult<SyncPage<Message>> {
-        if !self.stolen.swap(true, Ordering::SeqCst) {
-            // Advance past the loop's lease TTL so its lease has expired, then
-            // claim + release as another worker to bump the fencing generation.
-            self.clock.advance(Duration::from_mins(2));
-            let scope = self.inner.email_scope(account);
-            let claim = self
-                .store
-                .claim_sync_scope(
-                    account.clone(),
-                    &scope,
-                    LeaseRequest::new(WorkerId::new("intruder"), Duration::from_mins(1)),
-                )
-                .await
-                .unwrap();
-            self.store.release_sync_scope(claim.lease).await.unwrap();
-        }
-        self.inner
-            .sync_email_page(account, cursor, page, limit)
-            .await
+    fn stream_email<'a>(
+        &'a self,
+        account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        window: SyncWindow,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        Box::pin(async_stream::try_stream! {
+            if !self.stolen.swap(true, Ordering::SeqCst) {
+                // Advance past the loop's lease TTL so its lease has expired, then
+                // claim + release as another worker to bump the fencing generation —
+                // before the first chunk applies, forcing a mid-stream `StaleLease`.
+                self.clock.advance(Duration::from_mins(2));
+                let scope = self.inner.email_scope(account);
+                let claim = self
+                    .store
+                    .claim_sync_scope(
+                        account.clone(),
+                        &scope,
+                        LeaseRequest::new(WorkerId::new("intruder"), Duration::from_mins(1)),
+                    )
+                    .await
+                    .unwrap();
+                self.store.release_sync_scope(claim.lease).await.unwrap();
+            }
+            let mut inner =
+                self.inner.stream_email(account, cursor, window, fetch_batch, chunk_size);
+            while let Some(item) = inner.next().await {
+                yield item?;
+            }
+        })
     }
 }
 

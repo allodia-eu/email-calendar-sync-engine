@@ -14,6 +14,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+# `try_stream!` builds the email chunk stream from the member-page loop.
+async-stream = { workspace = true }
 
 [features]
 # Exposes `fuzz_parse` for the `fuzz/` cargo-fuzz target; off in normal builds.
@@ -22,6 +24,8 @@ fuzzing = []
 [dev-dependencies]
 # `time` (workspace default omits it) powers the live watch test's bounded wait.
 tokio = { workspace = true, features = ["time"] }
+# `StreamExt` to drain the email chunk stream in the offline sync tests.
+futures-util = { workspace = true }
 stalwart-harness = { path = "../stalwart-harness" }
 # The gated live integration test drives the full loop through the real store.
 engine-store = { workspace = true }

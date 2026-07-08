@@ -2,7 +2,7 @@
 //! persistence across reopen, delta tombstoning, provider-failure surfacing, the
 //! same-scope busy race, streaming sync, thread derivation, and reset/vacuum.
 
-use engine_api::{ApiError, Engine, SyncProgress, TimeZoneId};
+use engine_api::{ApiError, Engine, StreamTuning, SyncCommit, TimeZoneId};
 use engine_core::ids::ThreadId;
 
 use super::*;
@@ -199,26 +199,34 @@ async fn clear_mail_cursors_forces_a_reconciling_resnapshot() {
 #[tokio::test]
 async fn sync_mail_streamed_reports_progress() {
     use std::sync::{Arc, Mutex};
+    // The (fetched, total) each commit reported, factored out so the shared handle's
+    // type stays simple (clippy::type_complexity).
+    type Reported = (usize, Option<usize>);
     let engine = Engine::open_in_memory().unwrap();
-    let seen: Arc<Mutex<Vec<SyncProgress>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = {
+    let seen: Arc<Mutex<Vec<Reported>>> = Arc::new(Mutex::new(Vec::new()));
+    let observer = {
         let seen = Arc::clone(&seen);
-        // The blanket `ProgressSink for Fn(SyncProgress)` impl lets a closure be the sink.
-        move |p: SyncProgress| seen.lock().unwrap().push(p)
+        // The blanket `SyncObserver for Fn(&SyncCommit)` impl lets a closure be the observer.
+        move |c: &SyncCommit<'_>| seen.lock().unwrap().push((c.fetched, c.total))
     };
 
     let report = engine
-        .sync_mail_streamed(&FakeProvider::new(), &account(), 0, &sink)
+        .sync_mail_streamed(
+            &FakeProvider::new(),
+            &account(),
+            StreamTuning::new(0, 0),
+            &observer,
+        )
         .await
         .unwrap();
     assert_eq!(report.email.upserted, 2);
 
-    // The fake returns both messages in one snapshot page whose total is known up
-    // front, so exactly one progress event lands with fetched == total == 2.
+    // The fake returns both messages in one snapshot chunk whose total is known up
+    // front, so exactly one commit lands with fetched == total == 2.
     let progress = seen.lock().unwrap();
     assert_eq!(progress.len(), 1);
-    assert_eq!(progress[0].fetched, 2);
-    assert_eq!(progress[0].total, Some(2));
+    assert_eq!(progress[0].0, 2);
+    assert_eq!(progress[0].1, Some(2));
 }
 
 #[tokio::test]
@@ -239,13 +247,13 @@ async fn folder_split_sync_lists_then_streams_email() {
 
     // The per-folder email stream then commits the messages and reports progress,
     // without re-touching the folder list.
-    let seen: Arc<Mutex<Vec<SyncProgress>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = {
+    let seen: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+    let observer = {
         let seen = Arc::clone(&seen);
-        move |p: SyncProgress| seen.lock().unwrap().push(p)
+        move |c: &SyncCommit<'_>| seen.lock().unwrap().push(c.fetched)
     };
     let email = engine
-        .sync_folder_email_streamed(&provider, &account(), 0, &sink)
+        .sync_folder_email_streamed(&provider, &account(), StreamTuning::new(0, 0), &observer)
         .await
         .unwrap();
     assert_eq!(email.upserted, 2);

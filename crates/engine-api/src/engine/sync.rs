@@ -6,8 +6,9 @@ use engine_provider::Provider;
 use engine_recurrence::Horizon;
 use engine_store::SyncApplied;
 use engine_sync::{
-    CalendarSyncReport, MailSyncReport, ProgressSink, ThreadDeriveReport, derive_mail_threads,
-    sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed, sync_mailbox_list,
+    CalendarSyncReport, MailSyncReport, StreamTuning, SyncObserver, ThreadDeriveReport,
+    derive_mail_threads, sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed,
+    sync_mailbox_list,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -183,21 +184,24 @@ impl Engine {
     /// the mailbox-list step — the per-folder counterpart of
     /// [`Engine::sync_mail_streamed`]. A host runs [`Engine::sync_mailbox_list`] once,
     /// then calls this for each folder provider **concurrently** (distinct mailbox
-    /// scopes never contend), each reporting [`SyncProgress`](engine_sync::SyncProgress)
-    /// to `progress` after every committed page. Only the final page advances the
-    /// folder's cursor, so a mid-stream crash re-runs the pass idempotently.
+    /// scopes never contend), each reporting [`SyncCommit`](engine_sync::SyncCommit)s to
+    /// `observer` after every committed chunk — the exact rows that changed, so a host
+    /// splices its view without re-querying. `tuning` sets the depth window and
+    /// decouples fetch batching from commit granularity
+    /// ([`StreamTuning`](engine_sync::StreamTuning)); a cold backfill checkpoints per
+    /// chunk, so a kill resumes where it stopped.
     ///
     /// # Errors
     ///
     /// Returns [`ApiError::Busy`] if another sync already holds this folder's mail
     /// scope, or [`ApiError::Sync`] if the provider fetch fails or the store rejects an
     /// apply.
-    pub async fn sync_folder_email_streamed<P: Provider, K: ProgressSink>(
+    pub async fn sync_folder_email_streamed<P: Provider, O: SyncObserver>(
         &self,
         provider: &P,
         account: &AccountId,
-        page_limit: usize,
-        progress: &K,
+        tuning: StreamTuning,
+        observer: &O,
     ) -> Result<SyncApplied, ApiError> {
         sync_email_streamed(
             provider,
@@ -205,32 +209,35 @@ impl Engine {
             account,
             worker(),
             LEASE_TTL,
-            page_limit,
-            progress,
+            tuning,
+            observer,
         )
         .await
         .map_err(map_sync_error)
     }
 
     /// Syncs one account's mail like [`Engine::sync_mail`], but **streams** the email
-    /// scope: each page of messages commits as it arrives — so a host can render
+    /// scope: each chunk of messages commits as it arrives — so a host can render
     /// recent mail and live "downloaded Y of X" feedback before the whole sync
-    /// finishes — reporting [`SyncProgress`](engine_sync::SyncProgress) to `progress`
-    /// after every committed page. Only the final page advances the cursor, so a
-    /// mid-stream crash re-runs the pass idempotently. `page_limit` bounds each page
-    /// (`0` is the provider's maximum). `progress` must be cheap and non-blocking
-    /// (push onto a channel); a closure works via the blanket `ProgressSink` impl.
+    /// finishes — reporting a [`SyncCommit`](engine_sync::SyncCommit) (progress **and**
+    /// the exact upserted/removed rows) to `observer` after every committed chunk. A
+    /// cold backfill checkpoints its cursor per chunk, so a mid-stream crash resumes
+    /// from where it stopped rather than restarting. `tuning`
+    /// ([`StreamTuning`](engine_sync::StreamTuning)) sets the depth window and decouples
+    /// the fetch batch (round trips) from the chunk size (commit granularity).
+    /// `observer` must be cheap and non-blocking (record into a snapshot, push onto a
+    /// channel); a closure works via the blanket `SyncObserver` impl.
     ///
     /// # Errors
     ///
     /// Returns [`ApiError::Busy`] if another sync already holds the mail scope, or
     /// [`ApiError::Sync`] if the provider fetch fails or the store rejects an apply.
-    pub async fn sync_mail_streamed<P: Provider, K: ProgressSink>(
+    pub async fn sync_mail_streamed<P: Provider, O: SyncObserver>(
         &self,
         provider: &P,
         account: &AccountId,
-        page_limit: usize,
-        progress: &K,
+        tuning: StreamTuning,
+        observer: &O,
     ) -> Result<MailSyncReport, ApiError> {
         sync_mail_streamed(
             provider,
@@ -238,8 +245,8 @@ impl Engine {
             account,
             worker(),
             LEASE_TTL,
-            page_limit,
-            progress,
+            tuning,
+            observer,
         )
         .await
         .map_err(map_sync_error)

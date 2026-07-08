@@ -1,148 +1,190 @@
-//! Streaming mail sync: commit each email page as it lands, report progress.
+//! Streaming mail sync: commit each email chunk as it lands, report the exact rows
+//! that changed, and **checkpoint the cursor mid-pass** so a killed sync resumes.
 //!
 //! The responsive counterpart to [`crate::sync_mail`]. The whole-scope loop in
 //! `lib.rs` claims, fetches, and applies one scope atomically; here the email scope
-//! is driven page by page under a single lease so a host UI can render recent mail
-//! and live "downloaded Y of X" feedback before the sync finishes. Only the final
-//! page advances the cursor (`store-and-sync.md`), so a mid-stream crash re-runs the
-//! pass from scratch idempotently.
+//! is driven chunk by chunk under a single lease (from [`Provider::stream_email`])
+//! so a host UI renders recent mail and live "downloaded Y of X" feedback before the
+//! sync finishes.
+//!
+//! Two knobs, decoupled (`store-and-sync.md`): the [`StreamTuning::fetch_batch`]
+//! bounds each network round trip; the [`StreamTuning::chunk_size`] bounds how often
+//! the loop commits and reports. A large batch with a small chunk gives few round
+//! trips *and* row-as-it-arrives commits.
+//!
+//! Resumability follows each chunk's [`advance_to`](engine_provider::EmailChunk):
+//! an additive pass (cold backfill or delta) advances the cursor on every chunk, so
+//! a crash resumes from the last checkpoint instead of re-downloading from the
+//! start; a reconciling pass holds the cursor until its final chunk tombstones
+//! (rare, restarts on crash).
 
 use core::time::Duration;
 use std::collections::BTreeSet;
 
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    sync::{SyncScope, SyncUpdate},
+    mail::Message,
+    sync::{SyncState, SyncUpdate, SyncWindow},
 };
-use engine_provider::{PageToken, Provider, SyncKind, SyncPage};
+use engine_provider::{EmailChunk, PassMode, Provider};
 use engine_store::{ApplyBatch, LeaseRequest, Store, StoreError, SyncApplied, WorkerId};
+use futures_util::StreamExt;
 
 use crate::{
-    MAX_STALE_RECLAIMS, MailSyncReport, MailboxScope, SyncError, derive_messages, run_scope,
+    MAX_STALE_RECLAIMS, MailSyncReport, MailboxScope, SyncCommit, SyncError, SyncObserver,
+    derive_messages, run_scope,
 };
 
-/// Progress for one streaming scope, reported after each page commits.
+/// How a streaming sync runs: the depth window, plus how it separates network
+/// batching from commit granularity.
 ///
-/// `fetched` is the number of objects committed so far this pass — already visible
-/// to the host (a UI can render them) — and `total` is the provider's reported
-/// denominator when it knows it (the `X` in "downloaded Y of X"). For a first
-/// snapshot sync the very first page already carries `total`, so a host can show a
-/// determinate bar immediately; an incremental delta typically reports `None`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncProgress {
-    /// The scope being streamed.
-    pub scope: SyncScope,
-    /// Objects committed (and so host-visible) so far this pass.
-    pub fetched: usize,
-    /// The provider's total for the pass, if known.
-    pub total: Option<usize>,
+/// - [`window`](Self::window): the sync-depth bound (a snapshot/backfill fetches only mail on or
+///   after it); the full history by default.
+/// - [`fetch_batch`](Self::fetch_batch): objects per provider round trip (`0` = the provider's
+///   protocol maximum). Larger = fewer round trips.
+/// - [`chunk_size`](Self::chunk_size): objects committed and reported per chunk (`0` = one chunk
+///   per batch). Smaller = rows appear sooner.
+///
+/// A large `fetch_batch` with a small `chunk_size` is the sweet spot: few round
+/// trips *and* immediate row-by-row rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamTuning {
+    /// The sync-depth window (full history by default).
+    pub window: SyncWindow,
+    /// Objects per network round trip (`0` = provider maximum).
+    pub fetch_batch: usize,
+    /// Objects committed and reported per chunk (`0` = one chunk per batch).
+    pub chunk_size: usize,
 }
 
-/// A sink the streaming sync notifies after each committed page, so a host can
-/// surface live "downloading Y of X" feedback while a fresh sync fills in.
-///
-/// Implementations must be cheap and non-blocking (e.g. push onto a channel); the
-/// sync awaits nothing on them. The blanket impl over `Fn(SyncProgress)` lets a
-/// caller pass a closure directly.
-pub trait ProgressSink: Send + Sync {
-    /// Receives the running progress for a scope after a page commits.
-    fn report(&self, progress: SyncProgress);
+impl StreamTuning {
+    /// A tuning with an explicit batch and chunk size, over the full history.
+    #[must_use]
+    pub fn new(fetch_batch: usize, chunk_size: usize) -> Self {
+        Self {
+            window: SyncWindow::full(),
+            fetch_batch,
+            chunk_size,
+        }
+    }
+
+    /// The responsive default: a large batch (few round trips) with a small chunk
+    /// (rows surface almost immediately) — what an interactive mail client wants.
+    #[must_use]
+    pub fn responsive() -> Self {
+        Self {
+            window: SyncWindow::full(),
+            fetch_batch: 200,
+            chunk_size: 3,
+        }
+    }
+
+    /// A throughput-biased tuning: a large batch committed in larger chunks — for a
+    /// background backfill where per-row latency does not matter.
+    #[must_use]
+    pub fn bulk() -> Self {
+        Self {
+            window: SyncWindow::full(),
+            fetch_batch: 500,
+            chunk_size: 100,
+        }
+    }
+
+    /// Bounds this tuning to a sync-depth `window` (builder-style).
+    #[must_use]
+    pub fn within(mut self, window: SyncWindow) -> Self {
+        self.window = window;
+        self
+    }
 }
 
-impl<F: Fn(SyncProgress) + Send + Sync> ProgressSink for F {
-    fn report(&self, progress: SyncProgress) {
-        self(progress);
+impl Default for StreamTuning {
+    fn default() -> Self {
+        Self::responsive()
     }
 }
 
 /// Syncs one account's mail like [`crate::sync_mail`], but **streams** the email
-/// scope: each page of messages is committed as it arrives — so a host UI can show
-/// recent mail and live progress before the whole sync finishes — and only the
-/// final page advances the scope cursor. Mailboxes are still fetched whole (they
-/// are small and must precede email). `progress` is notified after every committed
-/// email page.
+/// scope: mailbox containers are fetched whole (small, and they must precede email),
+/// then each chunk of messages commits as it arrives — so a host renders recent mail
+/// and live progress before the sync finishes. `observer` is notified after every
+/// committed chunk with the exact rows that changed (`store-and-sync.md`).
 ///
-/// Email is paged newest-first by the provider, so the first visible rows are the
-/// most recent. Intermediate pages commit additively without advancing the cursor;
-/// a crash mid-stream therefore leaves the prior cursor intact and the next sync
-/// re-runs the pass from scratch (idempotently) rather than skipping un-applied
-/// pages (`store-and-sync.md`). `page_limit` bounds each page (`0` means the
-/// provider's maximum).
+/// `window` bounds the depth (a first snapshot/backfill fetches only mail on or after
+/// [`SyncWindow::since`]); `tuning` separates batching from commit granularity.
 ///
 /// # Errors
 ///
 /// Returns [`SyncError`] if the provider fetch fails or the store rejects an apply
 /// for a reason other than a recoverable `StaleLease`.
-pub async fn sync_mail_streamed<P, S, K>(
+pub async fn sync_mail_streamed<P, S, O>(
     provider: &P,
     store: &S,
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
-    page_limit: usize,
-    progress: &K,
+    tuning: StreamTuning,
+    observer: &O,
 ) -> Result<MailSyncReport, SyncError>
 where
     P: Provider,
     S: Store,
-    K: ProgressSink,
+    O: SyncObserver,
 {
     let req = LeaseRequest::new(worker, ttl);
     let mailboxes = run_scope(store, account, &MailboxScope(provider), &req).await?;
-    let email = stream_email(provider, store, account, &req, page_limit, progress).await?;
+    let email = stream_email(provider, store, account, &req, tuning, observer).await?;
     Ok(MailSyncReport { mailboxes, email })
 }
 
 /// Streams **only** one account's email for the mailbox `provider` is bound to — the
-/// per-folder counterpart of [`sync_mail_streamed`] that skips the mailbox-list
-/// container step.
+/// per-folder counterpart of [`sync_mail_streamed`] that skips the mailbox-list step.
 ///
-/// The cross-folder orchestrator runs [`sync_mailbox_list`](crate::sync_mailbox_list)
-/// once per account, then calls this for each folder provider **concurrently**: each
-/// folder is a distinct member scope (e.g. `ImapMailbox`), so their per-folder leases
-/// never contend, and the independent IMAP sessions sync in parallel. Each committed
-/// page reports through `progress` and only the final page advances the cursor, so a
-/// mid-stream crash re-runs the pass idempotently (as in [`sync_mail_streamed`]).
+/// A host runs [`sync_mailbox_list`](crate::sync_mailbox_list) once per account, then
+/// calls this for each folder provider **concurrently**: each folder is a distinct
+/// member scope (e.g. `ImapMailbox`), so their per-folder leases never contend and
+/// the independent sessions sync in parallel, each reporting through `observer`.
 ///
 /// # Errors
 ///
-/// Returns [`SyncError`] if the provider fetch fails or the store rejects an apply for
-/// a reason other than a recoverable `StaleLease`.
-pub async fn sync_email_streamed<P, S, K>(
+/// Returns [`SyncError`] if the provider fetch fails or the store rejects an apply
+/// for a reason other than a recoverable `StaleLease`.
+pub async fn sync_email_streamed<P, S, O>(
     provider: &P,
     store: &S,
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
-    page_limit: usize,
-    progress: &K,
+    tuning: StreamTuning,
+    observer: &O,
 ) -> Result<SyncApplied, SyncError>
 where
     P: Provider,
     S: Store,
-    K: ProgressSink,
+    O: SyncObserver,
 {
     let req = LeaseRequest::new(worker, ttl);
-    stream_email(provider, store, account, &req, page_limit, progress).await
+    stream_email(provider, store, account, &req, tuning, observer).await
 }
 
-/// Streams the email scope page by page under one lease: each page commits
-/// additively (cursor held) and only the last advances the cursor and — for a
-/// snapshot pass — tombstones against the **accumulated** present set. A
-/// `StaleLease` abandons the partial stream and restarts from a fresh claim; the
-/// held cursor makes that safe.
-async fn stream_email<P, S, K>(
+/// Streams the email scope chunk by chunk under one lease. Each additive chunk
+/// commits and advances the cursor to its checkpoint (resumable); a reconciling pass
+/// holds the cursor and tombstones against the accumulated present set on its final
+/// chunk. A `StaleLease` abandons the partial stream and restarts from a fresh claim;
+/// the checkpointed (additive) or held (reconcile) cursor makes that safe, and the
+/// adapter reconciles its own transport on the next fetch.
+async fn stream_email<P, S, O>(
     provider: &P,
     store: &S,
     account: &AccountId,
     req: &LeaseRequest,
-    page_limit: usize,
-    progress: &K,
+    tuning: StreamTuning,
+    observer: &O,
 ) -> Result<SyncApplied, SyncError>
 where
     P: Provider,
     S: Store,
-    K: ProgressSink,
+    O: SyncObserver,
 {
     let scope = provider.email_scope(account);
     let mut reclaims = 0u32;
@@ -151,75 +193,64 @@ where
             .claim_sync_scope(account.clone(), &scope, req.clone())
             .await?;
         let lease = claim.lease;
-        // The cursor every page of this pass resumes the *provider* fetch from; it
-        // only advances in the store once the final page commits.
+        // The cursor each pass resumes the *provider* fetch from; the store advances
+        // it per additive checkpoint, or only on the final reconcile chunk.
         let pass_cursor = claim.state;
         let mut present: BTreeSet<ProviderKey> = BTreeSet::new();
-        let mut page_token: Option<PageToken> = None;
-        let mut upserted = 0usize;
+        let mut totals = RunningApplied::default();
         let mut fetched = 0usize;
+        let mut stream = provider.stream_email(
+            account,
+            pass_cursor.as_ref(),
+            tuning.window,
+            tuning.fetch_batch,
+            tuning.chunk_size,
+        );
         loop {
-            let page = provider
-                .sync_email_page(
-                    account,
-                    pass_cursor.as_ref(),
-                    page_token.as_ref(),
-                    page_limit,
-                )
-                .await?;
-            let SyncPage {
-                kind,
-                changed,
-                removed,
-                present: page_present,
-                next_page,
-                next_cursor,
-                total,
-            } = page;
-            let is_last = next_page.is_none();
-            let page_count = changed.len();
-            let derived = derive_messages(&changed);
-            // Intermediate pages apply additively (no tombstoning, cursor held); the
-            // final page applies the real shape and advances the cursor.
-            let update = match kind {
-                SyncKind::Snapshot => {
-                    present.extend(page_present);
-                    if is_last {
-                        // The final page tombstones against the whole accumulated
-                        // set; `present` is not read after this, so move it.
-                        SyncUpdate::snapshot(changed, core::mem::take(&mut present))
-                    } else {
-                        SyncUpdate::delta(changed, Vec::new())
-                    }
-                }
-                SyncKind::Delta => SyncUpdate::delta(changed, removed),
+            let Some(item) = stream.next().await else {
+                // The stream ended cleanly: an additive pass has committed and
+                // checkpointed its final chunk, so the cursor is already current.
+                store.release_sync_scope(lease).await?;
+                return Ok(totals.into_applied());
             };
-            let next_state = is_last.then_some(&next_cursor);
-            let batch = ApplyBatch::with_cursor(&update, &derived, &[], next_state);
+            let chunk = match item {
+                Ok(chunk) => chunk,
+                Err(other) => {
+                    let _ = store.release_sync_scope(lease).await;
+                    return Err(other.into());
+                }
+            };
+            let count = chunk.changed.len();
+            let total = chunk.total;
+            let is_reconcile_final = chunk.is_reconcile_final();
+            let (update, advance_to) = build_update(chunk, &mut present);
+            let derived = derive_messages(changed_of(&update));
+            let batch = ApplyBatch::with_cursor(&update, &derived, &[], advance_to.as_ref());
             match store.apply_sync_update(&lease, batch).await {
                 Ok(applied) => {
-                    upserted += applied.upserted;
-                    fetched += page_count;
-                    progress.report(SyncProgress {
-                        scope: scope.clone(),
+                    totals.add(applied);
+                    fetched += count;
+                    observer.committed(&SyncCommit {
+                        scope: &scope,
                         fetched,
                         total,
+                        upserted: changed_of(&update),
+                        removed: removed_of(&update),
+                        tombstoned: applied.tombstoned,
                     });
-                    if is_last {
+                    if is_reconcile_final {
+                        // A reconcile pass ends on its final (tombstoning) chunk.
                         store.release_sync_scope(lease).await?;
-                        // `applied` already carries this page's tombstone/reconcile
-                        // counts; only `upserted` accumulates across pages.
-                        return Ok(SyncApplied {
-                            upserted,
-                            ..applied
-                        });
+                        return Ok(totals.into_applied());
                     }
-                    page_token = next_page;
                 }
                 Err(StoreError::StaleLease) if reclaims < MAX_STALE_RECLAIMS => {
-                    // The lease was superseded mid-stream. The cursor was never
-                    // advanced, so abandon the partial pass and re-claim afresh.
+                    // The lease was superseded mid-stream. The cursor is either
+                    // checkpointed (additive) or never advanced (reconcile), so drop
+                    // the partial stream and re-claim; the adapter re-syncs its
+                    // transport on the next fetch.
                     reclaims += 1;
+                    drop(stream);
                     continue 'restart;
                 }
                 Err(other) => {
@@ -228,5 +259,82 @@ where
                 }
             }
         }
+    }
+}
+
+/// Accumulates per-chunk apply results into one pass total. Every field sums across
+/// chunks: a delta's `removed` tombstones and pending-op reconciliations can land on
+/// any chunk, and a reconcile pass tombstones only on its final chunk, so summing is
+/// correct in both cases.
+#[derive(Default)]
+struct RunningApplied {
+    upserted: usize,
+    tombstoned: usize,
+    reconciled: usize,
+}
+
+impl RunningApplied {
+    fn add(&mut self, applied: SyncApplied) {
+        self.upserted += applied.upserted;
+        self.tombstoned += applied.tombstoned;
+        self.reconciled += applied.reconciled;
+    }
+
+    fn into_applied(self) -> SyncApplied {
+        SyncApplied {
+            upserted: self.upserted,
+            tombstoned: self.tombstoned,
+            reconciled: self.reconciled,
+        }
+    }
+}
+
+/// Turns one chunk into the [`SyncUpdate`] to apply and the cursor to advance to.
+///
+/// - [`PassMode::Additive`]: a delta (upserts + explicit removals); advance to the chunk's
+///   checkpoint.
+/// - [`PassMode::Reconcile`]: intermediate chunks apply additively and hold the cursor while
+///   `present` accumulates; the final chunk applies a snapshot against the whole accumulated
+///   present set (tombstoning) and advances the cursor.
+fn build_update(
+    chunk: EmailChunk,
+    present: &mut BTreeSet<ProviderKey>,
+) -> (SyncUpdate<Message>, Option<SyncState>) {
+    let EmailChunk {
+        mode,
+        changed,
+        removed,
+        present: page_present,
+        advance_to,
+        ..
+    } = chunk;
+    let update = match mode {
+        PassMode::Additive => SyncUpdate::delta(changed, removed),
+        PassMode::Reconcile => {
+            present.extend(page_present);
+            if advance_to.is_some() {
+                SyncUpdate::snapshot(changed, core::mem::take(present))
+            } else {
+                SyncUpdate::delta(changed, removed)
+            }
+        }
+    };
+    (update, advance_to)
+}
+
+/// The upserted objects of an update (a delta's `changed` or a snapshot's `objects`).
+fn changed_of(update: &SyncUpdate<Message>) -> &[Message] {
+    match update {
+        SyncUpdate::Delta { changed, .. } => changed,
+        SyncUpdate::Snapshot { objects, .. } => objects,
+    }
+}
+
+/// The explicitly-removed keys of an update (empty for a snapshot, whose removals
+/// are computed by present-set diff inside the store).
+fn removed_of(update: &SyncUpdate<Message>) -> &[ProviderKey] {
+    match update {
+        SyncUpdate::Delta { removed, .. } => removed,
+        SyncUpdate::Snapshot { .. } => &[],
     }
 }

@@ -30,10 +30,11 @@ use std::{env, sync::Arc};
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader},
-    mail::EmailAddress,
-    sync::SyncUpdate,
+    mail::{EmailAddress, Message},
+    sync::{SyncState, SyncUpdate, SyncWindow},
 };
-use engine_provider::{Draft, Provider};
+use engine_provider::{Draft, PassMode, Provider};
+use futures_util::StreamExt as _;
 use provider_imap::{ImapConfig, ImapProvider, ImapWatcher};
 use tokio_rustls::TlsConnector;
 
@@ -154,12 +155,23 @@ async fn print_recent<P: Provider>(
     account: &AccountId,
     mailbox: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let page = provider.sync_email_page(account, None, None, 20).await?;
+    // Pull just the newest group (the first streamed chunk), then stop — the stream
+    // fetches newest-UID-first, so this needs only one round trip.
+    let mut stream = Box::pin(provider.stream_email(account, None, SyncWindow::full(), 20, 0));
+    let mut recent: Vec<Message> = Vec::new();
+    while let Some(item) = stream.next().await {
+        let chunk = item?;
+        if !chunk.changed.is_empty() {
+            recent = chunk.changed;
+            break;
+        }
+    }
+    drop(stream);
     println!(
         "\n{mailbox}: {} most recent messages (newest first):",
-        page.changed.len()
+        recent.len()
     );
-    for msg in &page.changed {
+    for msg in &recent {
         let unread = if msg.is_unread() { "●" } else { " " };
         let date = msg
             .received_at
@@ -181,24 +193,46 @@ async fn print_recent<P: Provider>(
 /// near-empty `Delta` and — crucially — must NOT re-list or tombstone the whole mailbox
 /// the way a snapshot would. Metadata only: no message content is printed, and nothing
 /// is mutated (no flags set, nothing expunged).
+/// Drains an email stream, returning the final cursor it advanced to.
+async fn drain_to_cursor<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    cursor: Option<&SyncState>,
+) -> Result<SyncState, Box<dyn std::error::Error>> {
+    let mut stream = Box::pin(provider.stream_email(account, cursor, SyncWindow::full(), 5, 0));
+    let mut last = None;
+    while let Some(item) = stream.next().await {
+        if let Some(state) = item?.advance_to {
+            last = Some(state);
+        }
+    }
+    last.ok_or_else(|| "empty stream carried no cursor".into())
+}
+
 async fn qresync_check<P: Provider>(
     provider: &P,
     account: &AccountId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let snap = provider.sync_email_page(account, None, None, 5).await?;
-    let has_modseq = snap.next_cursor.as_str().contains(";m");
+    // A first sync backfills the mailbox; drain it to reach the completing cursor.
+    let cursor = drain_to_cursor(provider, account, None).await?;
+    let has_modseq = cursor.as_str().contains(";m");
     println!("\n[QRESYNC] snapshot SELECT recorded a HIGHESTMODSEQ in the cursor: {has_modseq}");
-    let delta = provider
-        .sync_email_page(account, Some(&snap.next_cursor), None, 5)
-        .await?;
-    let pass = has_modseq
-        && matches!(delta.kind, engine_provider::SyncKind::Delta)
-        && delta.removed.is_empty();
+    // Re-sync from that cursor: nothing changed, so it must be an additive delta with
+    // no removals — not a whole-mailbox re-snapshot.
+    let mut changed = 0usize;
+    let mut removed = 0usize;
+    let mut additive = true;
+    let mut stream =
+        Box::pin(provider.stream_email(account, Some(&cursor), SyncWindow::full(), 5, 0));
+    while let Some(item) = stream.next().await {
+        let chunk = item?;
+        additive &= chunk.mode == PassMode::Additive;
+        changed += chunk.changed.len();
+        removed += chunk.removed.len();
+    }
+    let pass = has_modseq && additive && removed == 0;
     println!(
-        "[QRESYNC] immediate re-sync → kind={:?}, changed={}, removed={} (expected Delta, ~0/0)",
-        delta.kind,
-        delta.changed.len(),
-        delta.removed.len()
+        "[QRESYNC] immediate re-sync → additive={additive}, changed={changed}, removed={removed} (expected additive, ~0/0)"
     );
     println!(
         "[QRESYNC] {}",

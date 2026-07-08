@@ -25,7 +25,7 @@ use engine_core::{
 };
 use engine_provider::{Draft, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
-use engine_sync::{SyncProgress, submit_mail, sync_mail, sync_mail_streamed};
+use engine_sync::{StreamTuning, SyncCommit, submit_mail, sync_mail, sync_mail_streamed};
 use provider_imap::{ImapConfig, ImapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
@@ -267,16 +267,21 @@ async fn live_imap_streams_the_inbox_with_progress() {
             .expect("store");
     let account = AccountId::try_from("imap-live-stream").unwrap();
 
-    // Page size 2 over the eight-message INBOX forces several committed pages.
-    let recorded: Mutex<Vec<SyncProgress>> = Mutex::new(Vec::new());
+    // Fetch batch 2 over the eight-message INBOX forces several committed chunks.
+    let recorded: Mutex<Vec<(usize, Option<usize>, SyncScope)>> = Mutex::new(Vec::new());
     let report = sync_mail_streamed(
         &provider,
         &store,
         &account,
         WorkerId::new("imap-live-stream"),
         Duration::from_mins(5),
-        2,
-        &|progress: SyncProgress| recorded.lock().unwrap().push(progress),
+        StreamTuning::new(2, 0),
+        &|commit: &SyncCommit<'_>| {
+            recorded
+                .lock()
+                .unwrap()
+                .push((commit.fetched, commit.total, commit.scope.clone()));
+        },
     )
     .await
     .expect("sync_mail_streamed");
@@ -287,15 +292,15 @@ async fn live_imap_streams_the_inbox_with_progress() {
     assert_eq!(report.email.upserted, 8);
 
     let seq = recorded.lock().unwrap();
-    assert!(seq.len() >= 2, "several committed pages");
+    assert!(seq.len() >= 2, "several committed chunks");
     assert!(
-        seq.iter().any(|p| p.fetched < stored),
+        seq.iter().any(|(fetched, ..)| *fetched < stored),
         "an intermediate report"
     );
-    assert!(seq.windows(2).all(|w| w[0].fetched <= w[1].fetched));
-    assert!(seq.iter().all(|p| p.scope == scope));
-    assert_eq!(seq.last().unwrap().total, Some(stored));
-    assert_eq!(seq.last().unwrap().fetched, stored);
+    assert!(seq.windows(2).all(|w| w[0].0 <= w[1].0));
+    assert!(seq.iter().all(|(_, _, s)| *s == scope));
+    assert_eq!(seq.last().unwrap().1, Some(stored));
+    assert_eq!(seq.last().unwrap().0, stored);
 }
 
 #[tokio::test]

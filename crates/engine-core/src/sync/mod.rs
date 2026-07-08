@@ -10,7 +10,9 @@
 mod scope;
 mod state;
 mod update;
+mod window;
 
 pub use scope::{JmapDataType, ObjectKind, SearchDomain, SyncScope};
 pub use state::SyncState;
 pub use update::SyncUpdate;
+pub use window::SyncWindow;

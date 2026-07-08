@@ -28,6 +28,9 @@ time = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
 tempfile = { workspace = true }
+# The streaming `Provider::stream_email` test fakes yield a single-chunk stream via
+# `futures_util::stream::iter`.
+futures-util = { workspace = true }
 
 [lints]
 workspace = true

@@ -22,7 +22,7 @@ const MAX_LITERAL: usize = 64 * 1024 * 1024;
 
 /// A connected IMAP session over a generic async byte stream.
 pub(crate) struct Connection<S> {
-    inner: BufReader<S>,
+    pub(crate) inner: BufReader<S>,
     tag: u32,
     /// Whether QRESYNC (RFC 7162) was negotiated for this session — set by
     /// [`Connection::negotiate_qresync`]. When `true`, the sync layer opens mailboxes
@@ -33,6 +33,13 @@ pub(crate) struct Connection<S> {
     /// `true`, a [`crate::watch::ImapWatcher`] can keep a standing connection idling to
     /// push change notifications; when `false`, the host must fall back to polling.
     idle_advertised: bool,
+    /// The tag of a streamed `UID FETCH` ([`Connection::uid_fetch_stream_start`]) whose
+    /// tagged completion has not yet been read — set while its rows are being pulled
+    /// one at a time. If a streaming fetch is **abandoned** mid-response (the caller
+    /// drops its stream on a `StaleLease` restart), this stays set; the next
+    /// [`Connection::command`] drains the leftover response to this tag before issuing
+    /// its own, so the connection self-heals rather than desyncing.
+    pub(crate) pending_tag: Option<String>,
 }
 
 impl<S> core::fmt::Debug for Connection<S> {
@@ -70,6 +77,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             tag: 0,
             qresync: false,
             idle_advertised: false,
+            pending_tag: None,
         };
         connection.read_greeting().await?;
         Ok(connection)
@@ -158,6 +166,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// Sends a tagged command and collects its untagged responses and completion
     /// detail. A `NO`/`BAD` completion is an error.
     async fn command(&mut self, command: &str) -> ImapResult<Response> {
+        // If a streamed `UID FETCH` was abandoned mid-response, finish reading it to
+        // its tag first so this command's reply is not corrupted by leftover lines.
+        self.drain_pending().await?;
         let tag = self.next_tag();
         let request = format!("{tag} {command}\r\n");
         self.inner.write_all(request.as_bytes()).await?;
