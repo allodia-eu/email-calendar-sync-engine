@@ -48,6 +48,7 @@ mod watch;
 
 use core::fmt;
 
+use engine_tls::TlsClientConfig;
 pub use error::JmapError;
 pub use provider::JmapProvider;
 use reqwest::Url;
@@ -117,6 +118,7 @@ pub struct JmapConfig {
     credentials: Credentials,
     session_path: String,
     session_urls: SessionUrlPolicy,
+    tls: TlsClientConfig,
 }
 
 impl JmapConfig {
@@ -130,6 +132,7 @@ impl JmapConfig {
             credentials,
             session_path: "/.well-known/jmap".to_owned(),
             session_urls: SessionUrlPolicy::RebaseToConnection,
+            tls: TlsClientConfig::default(),
         }
     }
 
@@ -144,6 +147,15 @@ impl JmapConfig {
     #[must_use]
     pub fn with_session_urls(mut self, policy: SessionUrlPolicy) -> Self {
         self.session_urls = policy;
+        self
+    }
+
+    /// Sets the TLS trust policy (the host builds one and shares it across the
+    /// account's providers). Defaults to the hermetic bundled roots
+    /// (`docs/agent-guidance/tls.md`).
+    #[must_use]
+    pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
+        self.tls = tls;
         self
     }
 }
@@ -180,7 +192,7 @@ impl JmapClient {
     pub async fn connect(config: JmapConfig) -> Result<Self, JmapError> {
         let base = Url::parse(&config.base_url)
             .map_err(|e| JmapError::session(format!("bad base_url {:?}: {e}", config.base_url)))?;
-        let transport = Transport::new(config.credentials)?;
+        let transport = Transport::new(config.credentials, &config.tls)?;
         let document =
             fetch_session(&transport, &base, &config.session_path, config.session_urls).await?;
         let session = Session::parse(&document, &base, config.session_urls)?;

@@ -9,6 +9,7 @@
 //! so discovery can resolve the RFC 6764 well-known `307` itself.
 
 use async_trait::async_trait;
+use engine_tls::TlsClientConfig;
 use reqwest::{Client, Method, redirect::Policy};
 
 use crate::error::CalDavError;
@@ -184,10 +185,18 @@ impl DavClient {
     ///
     /// Returns [`CalDavError`] if `base_url` is not a valid URL or the HTTP client
     /// cannot be built.
-    pub(crate) fn new(base_url: &str, credentials: Credentials) -> Result<Self, CalDavError> {
+    ///
+    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`); the
+    /// library builds no trust store of its own.
+    pub(crate) fn new(
+        base_url: &str,
+        credentials: Credentials,
+        tls: &TlsClientConfig,
+    ) -> Result<Self, CalDavError> {
         let base = reqwest::Url::parse(base_url)
             .map_err(|e| CalDavError::protocol(format!("bad base URL {base_url:?}: {e}")))?;
-        let client = Client::builder()
+        let client = tls
+            .reqwest_builder()
             .redirect(Policy::none())
             .build()
             .map_err(CalDavError::Transport)?;

@@ -30,6 +30,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   the facade never hard-codes which scopes a provider uses. The return values (e.g.
   `MailSyncReport`, `Vec<Message>`, `Vec<Event>`, `SearchResults`, `SubmitOutcome`) are
   the host's feedback.
+- Providers are **host-constructed**, not owned by `Engine`: the host builds each
+  provider — passing one shared `engine_tls::TlsClientConfig` for the account
+  (`tls.md`) — and hands it to `sync_*`. Exposing the `TlsPolicy` over the bindings
+  is a later slice.
 
 ## What it is not
 

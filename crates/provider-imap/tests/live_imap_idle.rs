@@ -13,7 +13,7 @@
 //! watcher and the mutator are deliberately distinct connections — push needs the
 //! watch socket to keep idling while another session makes the change.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use engine_core::ids::{AccountId, MailboxId};
 use engine_provider::{MailEdit, Provider, WatchEvent};
@@ -22,16 +22,9 @@ use stalwart_harness::Harness;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
 /// A TLS connector that accepts the harness's self-signed cert. Test-only; it never
-/// touches a host trust store. Mirrors the verifier in `live_imap_qresync.rs`.
+/// touches a host trust store.
 fn no_verify_connector() -> TlsConnector {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .expect("protocol versions")
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(no_verify::AcceptAny))
-        .with_no_client_auth();
-    TlsConnector::from(Arc::new(config))
+    engine_tls::TlsClientConfig::dangerous_accept_any().connector()
 }
 
 fn config_for(harness: &Harness) -> ImapConfig {
@@ -132,54 +125,5 @@ async fn live_idle_pushes_a_change_notification() {
     );
 }
 
-/// A test-only certificate verifier that accepts any server certificate, for the
-/// harness's self-signed cert. Compiled only into this gated test; never reaches the
-/// host store. Mirrors `live_imap_qresync.rs`.
-mod no_verify {
-    use tokio_rustls::rustls::{
-        DigitallySignedStruct, Error, SignatureScheme,
-        client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-        crypto::ring::default_provider,
-        pki_types::{CertificateDer, ServerName, UnixTime},
-    };
-
-    #[derive(Debug)]
-    pub(super) struct AcceptAny;
-
-    impl ServerCertVerifier for AcceptAny {
-        fn verify_server_cert(
-            &self,
-            _end_entity: &CertificateDer<'_>,
-            _intermediates: &[CertificateDer<'_>],
-            _server_name: &ServerName<'_>,
-            _ocsp_response: &[u8],
-            _now: UnixTime,
-        ) -> Result<ServerCertVerified, Error> {
-            Ok(ServerCertVerified::assertion())
-        }
-
-        fn verify_tls12_signature(
-            &self,
-            _message: &[u8],
-            _cert: &CertificateDer<'_>,
-            _dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, Error> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
-
-        fn verify_tls13_signature(
-            &self,
-            _message: &[u8],
-            _cert: &CertificateDer<'_>,
-            _dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, Error> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
-
-        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-            default_provider()
-                .signature_verification_algorithms
-                .supported_schemes()
-        }
-    }
-}
+// The self-signed harness cert is trusted via `engine_tls`'s test-only
+// accept-any config (see `no_verify_connector`), so no local verifier lives here.

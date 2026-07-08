@@ -2,13 +2,24 @@
 //! and provider orchestration run against the captured real responses without
 //! network. Shared by the `fetch` and `provider` test modules.
 
+use std::sync::OnceLock;
+
 use async_trait::async_trait;
+use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
 use crate::{
     error::GraphError,
     transport::{GraphClient, GraphTransport},
 };
+
+/// A shared bundled TLS config for tests that build a real transport. The offline
+/// tests drive it over the plaintext replay server, so trust is never actually
+/// exercised — this just satisfies the constructor.
+pub(crate) fn tls() -> &'static TlsClientConfig {
+    static TLS: OnceLock<TlsClientConfig> = OnceLock::new();
+    TLS.get_or_init(TlsClientConfig::bundled)
+}
 
 /// Returns the first routed fixture whose key is a substring of the requested URL.
 struct Fake {

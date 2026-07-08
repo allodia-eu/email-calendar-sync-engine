@@ -37,12 +37,11 @@ fuzzing = []
 # Tests add the blocking/macro pieces and `test-util` for `start_paused` — so the
 # watcher's keep-alive timeout fires deterministically with no real waiting.
 tokio = { workspace = true, features = ["io-util", "net", "time", "sync", "macros", "rt-multi-thread", "test-util"] }
-# The no-verify verifier for Stalwart's self-signed test cert (live tests only).
-rustls = { workspace = true }
-# Mozilla root certificates for the `imap_explore` example's *verifying* TLS
-# connector against a real IMAP provider. Dev-only: the library itself stays
-# root-store-agnostic — the host injects trust policy.
-webpki-roots = "1.0.8"
+# The connectors tests/example inject come from the shared TLS factory
+# (`docs/agent-guidance/tls.md`): `dangerous-testing` for the harness's self-signed
+# cert (live tests), and the bundled default for the example's verifying connector.
+# The library itself stays root-store-agnostic — the host injects the connector.
+engine-tls = { workspace = true, features = ["dangerous-testing"] }
 # The gated live test deserializes stored objects to assert the seed invariants.
 serde = { workspace = true }
 serde_json = { workspace = true }

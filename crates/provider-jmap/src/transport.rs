@@ -6,6 +6,7 @@
 //! so it can rebase a foreign advertised origin onto the connection (see
 //! [`SessionUrlPolicy`](crate::SessionUrlPolicy)).
 
+use engine_tls::TlsClientConfig;
 use reqwest::{Client, RequestBuilder, redirect::Policy};
 use serde_json::Value;
 
@@ -18,9 +19,10 @@ pub(crate) struct Transport {
 }
 
 impl Transport {
-    /// Builds a transport with redirect-following disabled.
-    pub(crate) fn new(credentials: Credentials) -> Result<Self, JmapError> {
-        let client = Client::builder().redirect(Policy::none()).build()?;
+    /// Builds a transport with redirect-following disabled, trusting per `tls`
+    /// (`docs/agent-guidance/tls.md`).
+    pub(crate) fn new(credentials: Credentials, tls: &TlsClientConfig) -> Result<Self, JmapError> {
+        let client = tls.reqwest_builder().redirect(Policy::none()).build()?;
         Ok(Self {
             client,
             credentials,

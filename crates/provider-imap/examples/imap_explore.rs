@@ -26,7 +26,7 @@
 //! #           IMAP_SMTP_HOST / IMAP_SMTP_PORT (default 465).
 //! ```
 
-use std::{env, sync::Arc};
+use std::env;
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader},
@@ -290,20 +290,10 @@ async fn idle_watch(config: &ImapConfig, mailbox: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// A TLS connector that verifies the server certificate against the Mozilla root
-/// store (`webpki-roots`) — what a real provider needs, vs. the fixture's
-/// no-verify verifier. The library stays root-store-agnostic; the host supplies
-/// this.
+/// A TLS connector that verifies the server certificate against the bundled
+/// Mozilla root store — what a real provider needs, vs. the fixture's no-verify
+/// verifier. Built from the shared TLS factory (`docs/agent-guidance/tls.md`); the
+/// library stays root-store-agnostic and the host supplies the connector.
 fn verifying_connector() -> TlsConnector {
-    use tokio_rustls::rustls;
-    let roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .expect("ring supports the default protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    TlsConnector::from(Arc::new(config))
+    engine_tls::TlsClientConfig::bundled().connector()
 }

@@ -14,6 +14,7 @@
 //! implementation.
 
 use async_trait::async_trait;
+use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
 use crate::{error::GraphError, principal::MailboxPrincipal};
@@ -47,9 +48,11 @@ impl HttpTransport {
     /// # Errors
     ///
     /// Returns [`GraphError::Transport`] if the HTTP client cannot be built.
-    pub(crate) fn new(token: String) -> Result<Self, GraphError> {
+    ///
+    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`).
+    pub(crate) fn new(token: String, tls: &TlsClientConfig) -> Result<Self, GraphError> {
         Ok(Self {
-            client: reqwest::Client::builder().build()?,
+            client: tls.reqwest_builder().build()?,
             token,
         })
     }
@@ -119,8 +122,11 @@ impl GraphClient {
     /// # Errors
     ///
     /// Returns [`GraphError::Transport`] if the HTTP client cannot be built.
-    pub fn connect(token: impl Into<String>) -> Result<Self, GraphError> {
-        let transport = Box::new(HttpTransport::new(token.into())?);
+    ///
+    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`), shared
+    /// with the account's other providers.
+    pub fn connect(token: impl Into<String>, tls: &TlsClientConfig) -> Result<Self, GraphError> {
+        let transport = Box::new(HttpTransport::new(token.into(), tls)?);
         Ok(Self::with_transport(transport, GRAPH_BASE.to_owned()))
     }
 
@@ -137,8 +143,9 @@ impl GraphClient {
     pub fn for_mailbox(
         token: impl Into<String>,
         principal: MailboxPrincipal,
+        tls: &TlsClientConfig,
     ) -> Result<Self, GraphError> {
-        Ok(Self::connect(token)?.with_principal(principal))
+        Ok(Self::connect(token, tls)?.with_principal(principal))
     }
 
     /// Connects a real client to a custom base origin instead of the Graph root —
@@ -153,9 +160,10 @@ impl GraphClient {
     pub fn with_base(
         token: impl Into<String>,
         base: impl Into<String>,
+        tls: &TlsClientConfig,
     ) -> Result<Self, GraphError> {
         Ok(Self::with_transport(
-            Box::new(HttpTransport::new(token.into())?),
+            Box::new(HttpTransport::new(token.into(), tls)?),
             base.into(),
         ))
     }
@@ -249,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn get_parses_a_success_body() {
         let base = mock_server(http("200 OK", r#"{"value":[]}"#));
-        let transport = HttpTransport::new("tok".to_owned()).unwrap();
+        let transport = HttpTransport::new("tok".to_owned(), crate::test_support::tls()).unwrap();
         let doc = transport.get(&base).await.unwrap();
         assert!(doc.get("value").is_some());
     }
@@ -259,7 +267,7 @@ mod tests {
         // `$value` is not JSON — it is the raw RFC 822 MIME; get_bytes returns it as-is.
         let mime = "From: a@example.com\r\nSubject: Hi\r\n\r\nBody\r\n";
         let base = mock_server(http("200 OK", mime));
-        let bytes = HttpTransport::new("tok".to_owned())
+        let bytes = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
             .unwrap()
             .get_bytes(&base)
             .await
@@ -272,7 +280,7 @@ mod tests {
         // A gone/moved message → the same status classification as any Graph error.
         let body = r#"{"error":{"code":"ErrorItemNotFound","message":"gone"}}"#;
         let base = mock_server(http("404 Not Found", body));
-        let err = HttpTransport::new("tok".to_owned())
+        let err = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
             .unwrap()
             .get_bytes(&base)
             .await
@@ -286,7 +294,7 @@ mod tests {
     async fn non_success_status_becomes_a_classified_status_error() {
         let body = r#"{"error":{"code":"InvalidAuthenticationToken","message":"nope"}}"#;
         let base = mock_server(http("401 Unauthorized", body));
-        let err = HttpTransport::new("tok".to_owned())
+        let err = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
             .unwrap()
             .get(&base)
             .await
@@ -300,7 +308,7 @@ mod tests {
     #[tokio::test]
     async fn a_non_json_success_body_is_a_permanent_decode_error() {
         let base = mock_server(http("200 OK", "this is not json"));
-        let err = HttpTransport::new("tok".to_owned())
+        let err = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
             .unwrap()
             .get(&base)
             .await
@@ -313,7 +321,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_connection_is_a_retryable_transport_error() {
         // Nothing is listening on this port → reqwest connect error → retryable.
-        let err = HttpTransport::new("tok".to_owned())
+        let err = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
             .unwrap()
             .get("http://127.0.0.1:1/me")
             .await
@@ -325,12 +333,16 @@ mod tests {
     #[test]
     fn client_roots_urls_at_the_principal_and_redacts_debug() {
         // Default — the signed-in user's own mailbox roots at /me.
-        let me = GraphClient::connect("super-secret-token").unwrap();
+        let me = GraphClient::connect("super-secret-token", crate::test_support::tls()).unwrap();
         assert_eq!(me.url("/messages"), format!("{GRAPH_BASE}/me/messages"));
         // A shared mailbox roots requests at /users/{address} — the documented shape
         // `…/users/info@company.org/mailFolders('Inbox')/messages`.
-        let shared =
-            GraphClient::for_mailbox("t", MailboxPrincipal::user("info@company.org")).unwrap();
+        let shared = GraphClient::for_mailbox(
+            "t",
+            MailboxPrincipal::user("info@company.org"),
+            crate::test_support::tls(),
+        )
+        .unwrap();
         assert_eq!(
             shared.url("/mailFolders('Inbox')/messages"),
             format!("{GRAPH_BASE}/users/info@company.org/mailFolders('Inbox')/messages")
@@ -342,11 +354,12 @@ mod tests {
     #[test]
     fn rebase_targets_a_custom_base_but_is_a_noop_at_the_default() {
         // At the default base, an absolute Graph link is left untouched.
-        let prod = GraphClient::connect("t").unwrap();
+        let prod = GraphClient::connect("t", crate::test_support::tls()).unwrap();
         let link = format!("{GRAPH_BASE}/me/messages/delta?$deltatoken=x");
         assert_eq!(prod.rebase(&link), link);
         // A custom base catches the absolute link (a replay server / proxy) …
-        let custom = GraphClient::with_base("t", "http://127.0.0.1:9").unwrap();
+        let custom =
+            GraphClient::with_base("t", "http://127.0.0.1:9", crate::test_support::tls()).unwrap();
         assert_eq!(
             custom.rebase(&link),
             "http://127.0.0.1:9/me/messages/delta?$deltatoken=x"

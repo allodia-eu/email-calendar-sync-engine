@@ -9,6 +9,9 @@ publish.workspace = true
 [dependencies]
 engine-core = { workspace = true }
 engine-provider = { workspace = true }
+# One shared TLS trust policy across every provider (`docs/agent-guidance/tls.md`);
+# `reqwest` enables the preconfigured-client builder this HTTP transport uses.
+engine-tls = { workspace = true, features = ["reqwest"] }
 # reqwest + rustls (pure-Rust TLS, mobile cross-compile) on the engine's standard
 # HTTP stack, mirroring provider-jmap.
 reqwest = { workspace = true }
@@ -22,6 +25,8 @@ async-stream = { workspace = true }
 tokio = { workspace = true }
 # `StreamExt` drains `stream_email` into its chunks in the offline tests.
 futures-util = { workspace = true }
+# The gated live test builds a (bundled) TlsClientConfig to pass into `connect`.
+engine-tls = { workspace = true }
 
 [lints]
 workspace = true

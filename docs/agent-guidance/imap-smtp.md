@@ -21,7 +21,8 @@ is authoritative for the `provider-caldav` calendar client.
   transcripts through an in-memory stream (mirroring `provider-jmap`'s `Executor`
   seam and the harness probe). TLS is pure-Rust `tokio-rustls`, with the host
   injecting trust policy — the library bakes in no root store, so mobile hosts and
-  the self-signed fixture each supply their own.
+  the self-signed fixture each supply their own. The injected `TlsConnector` is
+  built from the shared `engine_tls::TlsClientConfig::connector()` (`tls.md`).
 - Layers: `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
   `ENABLE`/`SELECT [(CONDSTORE)]`/`UID FETCH [(CHANGEDSINCE … VANISHED)]`/`LIST`/
   `CREATE`/`APPEND`, literal handling), `parse` (pure response parsers,

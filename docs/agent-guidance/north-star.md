@@ -139,6 +139,7 @@ Mail and calendar data are hostile input and sensitive data:
 - Attachments are quota-managed and opened through host policy.
 - Logs, crash reports, snippets, and telemetry are redacted by default.
 - Provider credentials never enter the SQL store.
+- TLS trust is unified across every provider and host-selected: one `TlsPolicy` — bundled Mozilla roots by default, with OS/enterprise or explicitly pinned roots as opt-ins — realized by `engine-tls` into one `ring`-backed config (`tls.md`). The engine bakes in no per-provider trust store.
 - At-rest protection is host-selected: bulk data relies on OS file encryption by default, with SQLCipher as an opt-in whole-database layer whose key is wrapped by the host platform keystore. High-value secrets (tokens, passwords, key material) are always field-encrypted with a keystore-wrapped key and never stored in cleartext. FTS content and snippets are protected only by whichever at-rest layer is in force.
 - Remote embedding is disabled unless an explicit host policy allows content to leave the device/process.
 - Export, schema migration, account deletion, credential wipe, and local database compaction are first-class flows.

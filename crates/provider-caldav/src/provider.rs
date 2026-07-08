@@ -23,6 +23,7 @@ use engine_core::{
 use engine_provider::{
     Capabilities, EventDeletion, EventWrite, EventWriteReceipt, Provider, ProviderResult, ScopeSync,
 };
+use engine_tls::TlsClientConfig;
 
 use crate::{
     discovery,
@@ -42,6 +43,10 @@ pub struct CalDavConfig {
     /// The calendar collection to bind events to — a name under the calendar home
     /// (e.g. `default`) or an absolute collection path.
     pub calendar: String,
+    /// The TLS trust policy for this account, shared with every other provider
+    /// (`docs/agent-guidance/tls.md`). Defaults to the hermetic bundled roots;
+    /// override with [`CalDavConfig::with_tls`].
+    pub tls: TlsClientConfig,
 }
 
 impl CalDavConfig {
@@ -54,6 +59,7 @@ impl CalDavConfig {
             credentials,
             discovery_path: "/.well-known/caldav".to_owned(),
             calendar: "default".to_owned(),
+            tls: TlsClientConfig::default(),
         }
     }
 
@@ -69,6 +75,14 @@ impl CalDavConfig {
     #[must_use]
     pub fn with_discovery_path(mut self, path: impl Into<String>) -> Self {
         self.discovery_path = path.into();
+        self
+    }
+
+    /// Sets the TLS trust policy (the host builds one and shares it across the
+    /// account's providers).
+    #[must_use]
+    pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
+        self.tls = tls;
         self
     }
 }
@@ -109,8 +123,10 @@ impl CalDavProvider {
     ///
     /// Returns [`CalDavError`] on a bad URL, a transport/HTTP failure, or a
     /// discovery response with no calendar home.
+    ///
+    /// Trust comes from [`CalDavConfig::tls`] (`docs/agent-guidance/tls.md`).
     pub async fn connect(config: CalDavConfig) -> Result<Self, CalDavError> {
-        let client = DavClient::new(&config.base_url, config.credentials)?;
+        let client = DavClient::new(&config.base_url, config.credentials, &config.tls)?;
         Self::with_executor(Box::new(client), &config.discovery_path, &config.calendar).await
     }
 

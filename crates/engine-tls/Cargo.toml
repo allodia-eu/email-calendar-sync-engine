@@ -1,0 +1,46 @@
+[package]
+name = "engine-tls"
+description = "One TLS trust policy for every provider in the PIM sync engine (docs/agent-guidance/tls.md). A host declares a provider-neutral TlsPolicy (bundled Mozilla roots, OS/system trust, or explicit roots); this crate realizes it into one ring-backed rustls ClientConfig and hands out a tokio-rustls TlsConnector (IMAP/SMTP) and a preconfigured reqwest client (CalDAV/JMAP/Graph), so trust is identical across protocols."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The one crypto/TLS stack shared by every provider. `ring` (not aws-lc-rs) keeps the
+# engine on a single, explicit crypto provider (`docs/agent-guidance/tls.md`).
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+# The bundled Mozilla root program — the hermetic default trust anchor set.
+webpki-roots = { workspace = true }
+thiserror = { workspace = true }
+# HTTP providers finish building their own reqwest client from the shared config, so the
+# reqwest seam is optional: `provider-imap` (connector only) does not pull reqwest.
+reqwest = { workspace = true, optional = true }
+# OS-trust backends, host-selected and therefore feature-gated out of the default build.
+rustls-native-certs = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enable `TlsClientConfig::reqwest_builder` (CalDAV/JMAP/Graph enable this).
+reqwest = ["dep:reqwest"]
+# `TlsPolicy::system_only` / the `system: true` root source (OS roots via rustls's own verifier).
+tls-native-certs = ["dep:rustls-native-certs"]
+# `TlsPolicy::platform_verifier` (full OS-verifier delegation; Android needs the host Context).
+tls-platform-verifier = ["dep:rustls-platform-verifier"]
+# TEST BUILDS ONLY: `TlsClientConfig::dangerous_accept_any` (self-signed harness cert).
+dangerous-testing = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util"] }
+# Generates the self-signed cert the in-process TLS tests trust; pure Rust.
+rcgen = "0.13"
+# The round-trip test stands up a tokio-rustls TLS server and names rustls types
+# (ServerConfig, ServerName); both are runtime deps but must be dev-deps to be
+# nameable from the integration test crate.
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+
+[lints]
+workspace = true
