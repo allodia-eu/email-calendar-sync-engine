@@ -40,7 +40,7 @@ async fn windowed_read_returns_the_newest_and_thread_read_is_age_independent() {
         .unwrap()
         .into_iter()
         .find(|m| m.id.key().as_str() == "new")
-        .and_then(|m| m.thread_id)
+        .and_then(|m| m.thread_id().cloned())
         .expect("the reply is threaded");
     let mut members: Vec<String> = engine
         .thread_messages(&account(), thread.as_str())

@@ -1,9 +1,9 @@
 //! Sync mechanics and store lifecycle: mail/calendar snapshot-then-delta, cursor
 //! persistence across reopen, delta tombstoning, provider-failure surfacing, the
-//! same-scope busy race, streaming sync, thread derivation, and reset/vacuum.
+//! same-scope busy race, streaming sync, and reset/vacuum. Thread derivation lives in
+//! its own `threading` module.
 
 use engine_api::{ApiError, Engine, StreamTuning, SyncCommit, TimeZoneId};
-use engine_core::ids::ThreadId;
 
 use super::*;
 
@@ -291,58 +291,6 @@ async fn folder_split_sync_lists_then_streams_email() {
     assert_eq!(email.upserted, 2);
     assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
     assert_eq!(seen.lock().unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn derives_and_persists_thread_ids_for_unthreaded_mail() {
-    let engine = Engine::open_in_memory().unwrap();
-    engine
-        .sync_mail(&FakeProvider::threaded(), &account())
-        .await
-        .unwrap();
-
-    // IMAP-shaped mail arrives without thread ids.
-    let before = engine.messages(&account()).await.unwrap();
-    assert!(before.iter().all(|m| m.thread_id.is_none()));
-
-    // Derivation groups the reply (t2) with its original (t1); t3 stands alone.
-    let report = engine.derive_mail_threads(&account()).await.unwrap();
-    assert_eq!(report.messages_assigned, 3);
-    assert_eq!(report.threads, 2);
-
-    // The grouping is persisted: messages() now carries the derived thread_id.
-    let after = engine.messages(&account()).await.unwrap();
-    let thread_of = |key: &str| {
-        after
-            .iter()
-            .find(|m| m.id.key().as_str() == key)
-            .unwrap()
-            .thread_id
-            .clone()
-    };
-    assert!(thread_of("t1").is_some());
-    assert_eq!(thread_of("t1"), thread_of("t2"));
-    assert_ne!(thread_of("t1"), thread_of("t3"));
-}
-
-#[tokio::test]
-async fn derive_mail_threads_is_a_noop_for_provider_threaded_mail() {
-    // A provider that assigns its own thread ids (JMAP/Gmail/Graph): derivation must
-    // not touch them.
-    let mut provider = FakeProvider::threaded();
-    for (index, message) in provider.messages.iter_mut().enumerate() {
-        message.thread_id = Some(ThreadId::try_from(format!("T{index}").as_str()).unwrap());
-    }
-    let engine = Engine::open_in_memory().unwrap();
-    engine.sync_mail(&provider, &account()).await.unwrap();
-
-    let report = engine.derive_mail_threads(&account()).await.unwrap();
-    assert_eq!(report.messages_assigned, 0);
-
-    // Every message keeps its provider-assigned thread id.
-    let after = engine.messages(&account()).await.unwrap();
-    assert_eq!(after.len(), 3);
-    assert!(after.iter().all(|m| m.thread_id.is_some()));
 }
 
 #[tokio::test]

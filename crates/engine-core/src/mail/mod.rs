@@ -4,8 +4,8 @@
 //! belonging to a non-empty set of [`Mailbox`] collections via
 //! [`crate::membership::Memberships`], carrying [`Keyword`]s as its state axis,
 //! and projecting the RFC 5322 headers into a typed [`Envelope`]. Collections
-//! carry a normalized [`MailboxRole`] distinct from their id and name. Threads
-//! carry [`ThreadProvenance`].
+//! carry a normalized [`MailboxRole`] distinct from their id and name. A message's
+//! [`ThreadRef`] — and a whole [`Thread`] — carry [`ThreadProvenance`].
 //!
 //! The three axes are kept separate throughout: object identity, collection
 //! membership, and keyword state. See `modeling.md`.
@@ -30,4 +30,4 @@ pub use keyword::{Keyword, KeywordError, SystemKeyword};
 pub use mailbox::Mailbox;
 pub use message::Message;
 pub use role::MailboxRole;
-pub use thread::{Thread, ThreadProvenance};
+pub use thread::{Thread, ThreadProvenance, ThreadRef};

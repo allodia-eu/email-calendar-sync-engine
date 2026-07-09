@@ -46,10 +46,11 @@ pub use engine::Engine;
 pub use engine_core::calendar::{Calendar, Event};
 pub use engine_core::{
     coverage::SearchCoverage,
-    ids::{AccountId, MessageIdHeader, ProviderKey},
+    ids::{AccountId, MessageIdHeader, ProviderKey, ThreadId},
     mail::{
         AttachmentPartId, EmailAddress, InlinePart, Mailbox, MailboxRole, Message,
-        MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword,
+        MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword, ThreadProvenance,
+        ThreadRef,
     },
     sync::{SyncScope, SyncWindow},
     time::{CalendarDate, TimeZoneId, UtcDateTime},

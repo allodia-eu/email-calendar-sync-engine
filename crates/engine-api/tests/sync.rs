@@ -30,6 +30,8 @@ use tokio::sync::oneshot;
 mod reads;
 #[path = "sync/sync_lifecycle.rs"]
 mod sync_lifecycle;
+#[path = "sync/threading.rs"]
+mod threading;
 #[path = "sync/writes.rs"]
 mod writes;
 
@@ -44,6 +46,7 @@ struct FakeProvider {
     events: Vec<Event>,
     fail: bool,
     removed_on_resync: Vec<ProviderKey>,
+    added_on_resync: Vec<Message>,
 }
 
 impl FakeProvider {
@@ -62,6 +65,7 @@ impl FakeProvider {
             events: vec![event("evt-1", "uid-1@h", "work")],
             fail: false,
             removed_on_resync: Vec::new(),
+            added_on_resync: Vec::new(),
         }
     }
 
@@ -75,6 +79,13 @@ impl FakeProvider {
     /// On the next cursored resync, the email scope's delta drops `keys`.
     fn removing_on_resync(mut self, keys: Vec<ProviderKey>) -> Self {
         self.removed_on_resync = keys;
+        self
+    }
+
+    /// On the next cursored resync, the email scope's delta adds `messages` — new mail
+    /// arriving after the first sync already stored (and threaded) the rest.
+    fn adding_on_resync(mut self, messages: Vec<Message>) -> Self {
+        self.added_on_resync = messages;
         self
     }
 
@@ -141,12 +152,12 @@ impl Provider for FakeProvider {
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
-        // A cursored resync is an additive delta that adds nothing and drops any
-        // configured keys; a first sync (no cursor) is a reconciling snapshot carrying
+        // A cursored resync is an additive delta that adds and drops the configured
+        // messages/keys; a first sync (no cursor) is a reconciling snapshot carrying
         // `present`, so the drain tombstones anything the server dropped.
         let chunk = if cursor.is_some() {
             EmailChunk::additive(
-                Vec::new(),
+                self.added_on_resync.clone(),
                 self.removed_on_resync.clone(),
                 None,
                 SyncState::new("email-2"),

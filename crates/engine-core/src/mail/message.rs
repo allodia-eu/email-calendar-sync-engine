@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{EmailBodyPart, Envelope, Keyword, SystemKeyword};
+use super::{EmailBodyPart, Envelope, Keyword, SystemKeyword, ThreadRef};
 use crate::{
     attachment::Attachment,
     extended::ExtendedProperties,
@@ -35,8 +35,9 @@ pub struct Message {
     /// The blob holding the raw RFC 5322 bytes; `None` until known. Not stable
     /// across writes (RFC 8620 §6).
     pub blob_id: Option<BlobId>,
-    /// The thread this message belongs to, if threading is resolved.
-    pub thread_id: Option<ThreadId>,
+    /// The thread this message belongs to, if threading is resolved, and whether
+    /// the provider assigned that id or the engine derived it.
+    pub thread: Option<ThreadRef>,
     /// The mailboxes/labels this message belongs to (always at least one).
     pub mailboxes: Memberships<MailboxId>,
     /// The keywords applied to this message.
@@ -77,7 +78,7 @@ impl Message {
         Self {
             id,
             blob_id: None,
-            thread_id: None,
+            thread: None,
             mailboxes,
             keywords: BTreeSet::new(),
             size: None,
@@ -93,6 +94,12 @@ impl Message {
             revisions: RevisionTokens::none(),
             extended: ExtendedProperties::new(),
         }
+    }
+
+    /// The id of the thread this message belongs to, whatever its provenance.
+    #[must_use]
+    pub fn thread_id(&self) -> Option<&ThreadId> {
+        self.thread.as_ref().map(|thread| &thread.id)
     }
 
     /// Returns `true` if the given keyword is set.

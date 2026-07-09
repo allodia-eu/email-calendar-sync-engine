@@ -15,7 +15,7 @@
 
 use engine_core::{
     ids::{BlobId, MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message},
+    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, ThreadRef},
     membership::Memberships,
 };
 use serde_json::Value;
@@ -98,8 +98,11 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, JmapError> {
         Some(blob) => Some(wrap_id(BlobId::try_from(blob), "blob id")?),
         None => None,
     };
-    message.thread_id = match opt_str(value, "threadId") {
-        Some(thread) => Some(wrap_id(ThreadId::try_from(thread), "thread id")?),
+    message.thread = match opt_str(value, "threadId") {
+        Some(thread) => Some(ThreadRef::provider_assigned(wrap_id(
+            ThreadId::try_from(thread),
+            "thread id",
+        )?)),
         None => None,
     };
     for keyword in true_keys(value, "keywords") {
