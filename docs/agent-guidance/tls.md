@@ -64,8 +64,11 @@ shares it (cloning is a cheap `Arc` bump):
   `tls.connector()`); the library bakes in no root store.
 
 `TlsClientConfig::reqwest_builder()` returns a preconfigured `reqwest::ClientBuilder`
-(each HTTP provider adds its own non-TLS settings, e.g. redirect policy); it sets
-ALPN to HTTP/1.1 because reqwest's preconfigured-TLS path does not.
+(each HTTP provider adds its own non-TLS settings, e.g. redirect policy). It
+advertises ALPN `h2` then `http/1.1`, so the HTTP providers negotiate HTTP/2 where
+the server supports it (JMAP and Microsoft Graph do) and fall back to HTTP/1.1 —
+reqwest's preconfigured-TLS path keeps the config's ALPN rather than deriving its
+own, so it is set here. The shared connector (IMAP/SMTP) carries no ALPN.
 
 ## Crypto backend and the reqwest wiring
 
@@ -74,6 +77,8 @@ ALPN to HTTP/1.1 because reqwest's preconfigured-TLS path does not.
 - reqwest uses the **`rustls-no-provider`** feature (not `rustls`), which gives the
   rustls integration without `aws-lc-rs` and without reqwest's own platform-verifier
   path. We always hand reqwest a preconfigured config via `tls_backend_preconfigured`.
+  We also enable reqwest's **`http2`** feature so the preconfigured client can speak
+  HTTP/2 when ALPN negotiates it (see "How each provider consumes it").
 - **Footgun:** under `rustls-no-provider`, a reqwest client built *without*
   preconfigured TLS panics on its first HTTPS request. All clients must go through
   `TlsClientConfig::reqwest_builder()`. As insurance, `client_config` installs a

@@ -18,8 +18,17 @@ use tokio::{
 use tokio_rustls::TlsAcceptor;
 
 /// Starts a TLS server (valid for `127.0.0.1`) that answers one minimal HTTP/1.1
-/// `200` per connection. Returns the server's certificate and bound port.
+/// `200` per connection, negotiating the default protocol versions. Returns the
+/// server's certificate and bound port.
 async fn tls_server() -> (CertificateDer<'static>, u16) {
+    tls_server_with_versions(rustls::DEFAULT_VERSIONS).await
+}
+
+/// Like [`tls_server`], but pinned to specific protocol versions so a test can
+/// force a TLS 1.2 handshake.
+async fn tls_server_with_versions(
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> (CertificateDer<'static>, u16) {
     let generated =
         rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("self-signed cert");
     let cert = generated.cert.der().clone();
@@ -28,7 +37,7 @@ async fn tls_server() -> (CertificateDer<'static>, u16) {
     let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
-    .with_safe_default_protocol_versions()
+    .with_protocol_versions(versions)
     .expect("protocol versions")
     .with_no_client_auth()
     .with_single_cert(vec![cert.clone()], key.into())
@@ -53,6 +62,54 @@ async fn tls_server() -> (CertificateDer<'static>, u16) {
                         .await;
                     let _ = tls.shutdown().await;
                 }
+            });
+        }
+    });
+    (cert, port)
+}
+
+/// Starts an **HTTP/2** TLS server (valid for `127.0.0.1`) that advertises the
+/// `h2` ALPN protocol and answers each request with a minimal `200`. Returns the
+/// server's certificate and bound port. Used to prove reqwest negotiates HTTP/2.
+async fn h2_tls_server() -> (CertificateDer<'static>, u16) {
+    use http_body_util::Full;
+    use hyper::{Response, body::Bytes, service::service_fn};
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+
+    let generated =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("self-signed cert");
+    let cert = generated.cert.der().clone();
+    let key = PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der());
+
+    let mut server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("protocol versions")
+    .with_no_client_auth()
+    .with_single_cert(vec![cert.clone()], key.into())
+    .expect("server cert/key");
+    // Offer only h2, so a client that did not advertise it could not handshake.
+    server_config.alpn_protocols = vec![b"h2".to_vec()];
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("local addr").port();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let service = service_fn(|_req| async {
+                    Ok::<_, std::convert::Infallible>(Response::new(Full::new(Bytes::from_static(
+                        b"ok",
+                    ))))
+                });
+                let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(tls), service)
+                    .await;
             });
         }
     });
@@ -101,6 +158,28 @@ async fn reqwest_client_trusts_pinned_and_rejects_untrusted() {
     assert!(ok.is_ok(), "bundled+custom union should trust: {ok:?}");
 }
 
+/// A reqwest client built from the shared config negotiates **HTTP/2** against an
+/// h2-capable server — `reqwest_builder` advertises `h2` first in ALPN, so the
+/// HTTP providers are not capped at HTTP/1.1. The server offers only `h2`, so a
+/// client that failed to advertise it would not even handshake.
+#[tokio::test]
+async fn reqwest_negotiates_http2_when_offered() {
+    let (cert, port) = h2_tls_server().await;
+    let url = format!("https://127.0.0.1:{port}/");
+
+    let response = client_config(&TlsPolicy::pinned(vec![cert]))
+        .unwrap()
+        .reqwest_builder()
+        .build()
+        .unwrap()
+        .get(&url)
+        .send()
+        .await
+        .expect("h2 GET should succeed");
+    assert_eq!(response.version(), reqwest::Version::HTTP_2);
+    assert_eq!(response.status().as_u16(), 200);
+}
+
 #[tokio::test]
 async fn connector_trusts_pinned_and_rejects_untrusted() {
     let (cert, port) = tls_server().await;
@@ -141,5 +220,24 @@ async fn dangerous_accept_any_trusts_untrusted() {
             .await
             .is_ok(),
         "accept-any connector should handshake with a self-signed cert"
+    );
+}
+
+/// Accept-any must also handshake over **TLS 1.2**, which exercises the TLS 1.2
+/// signature-verification arm of the dangerous verifier — the tests above
+/// negotiate TLS 1.3 and hit only the 1.3 arm.
+#[cfg(feature = "dangerous-testing")]
+#[tokio::test]
+async fn dangerous_accept_any_trusts_untrusted_over_tls12() {
+    let (_cert, port) = tls_server_with_versions(&[&rustls::version::TLS12]).await;
+    let name = ServerName::try_from("127.0.0.1").unwrap();
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    assert!(
+        TlsClientConfig::dangerous_accept_any()
+            .connector()
+            .connect(name, tcp)
+            .await
+            .is_ok(),
+        "accept-any connector should handshake over TLS 1.2"
     );
 }

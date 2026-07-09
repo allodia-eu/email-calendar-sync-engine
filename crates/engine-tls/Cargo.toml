@@ -41,6 +41,11 @@ rcgen = "0.13"
 # nameable from the integration test crate.
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
+# In-process HTTP/2 server for the ALPN negotiation test (proves reqwest speaks
+# HTTP/2, not just HTTP/1.1). All already resolved transitively via reqwest.
+hyper = { version = "1", features = ["server", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 
 [lints]
 workspace = true

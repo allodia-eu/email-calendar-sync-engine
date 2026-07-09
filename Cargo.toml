@@ -40,8 +40,10 @@ jiff-tzdb = "0.1.6"
 # rustls integration WITHOUT aws-lc-rs and without reqwest's own platform-verifier
 # path: every provider hands reqwest a preconfigured, ring-backed `rustls::ClientConfig`
 # from `engine-tls` (one trust policy for all providers; `docs/agent-guidance/tls.md`).
-# Default features stay off so we do not pull native TLS.
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider", "charset"] }
+# `http2` lets those providers negotiate HTTP/2 via ALPN where the server supports it
+# (JMAP and Graph do), falling back to HTTP/1.1. Default features stay off otherwise
+# so we do not pull native TLS.
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider", "charset", "http2"] }
 # Pure-Rust TLS for the hand-rolled IMAP transport (implicit-TLS on 993). `ring`
 # (not rustls' default `aws-lc-rs`) keeps the hand-rolled transport's crypto
 # provider explicit. The transport is generic over any async stream; this only

@@ -115,3 +115,9 @@ with a mock HTTP server / fake executor rather than leaving it to the live tests
 uncovered lines: `cargo llvm-cov -p <crate> --all-features --show-missing-lines`.
 
 If a command cannot run, say exactly why and what remains unverified.
+
+## Breaking changes
+Don't be afraid to make breaking changes. We're in early product development and prefer
+a breaking change over workarounds/patchwork if that's cleaner for the future.
+Just make sure to ask the developer if it's OK for you to make that breaking change
+before actually implementing it.

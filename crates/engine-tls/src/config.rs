@@ -89,12 +89,15 @@ impl TlsClientConfig {
     /// CalDAV/JMAP/Graph providers, which finish it with their own (non-TLS)
     /// settings such as the redirect policy.
     ///
-    /// ALPN is set to HTTP/1.1 here: the shared config carries no ALPN (correct for
-    /// IMAP/SMTP), and reqwest's preconfigured-TLS path does not set it.
+    /// Advertises ALPN `h2` then `http/1.1`, so the connection negotiates HTTP/2
+    /// where the server offers it (JMAP and Microsoft Graph do) and falls back to
+    /// HTTP/1.1 otherwise. ALPN is set here rather than inherited: the shared
+    /// config carries none (correct for the IMAP/SMTP connector), and reqwest's
+    /// preconfigured-TLS path keeps the config's ALPN instead of deriving its own.
     #[cfg(feature = "reqwest")]
     pub fn reqwest_builder(&self) -> reqwest::ClientBuilder {
         let mut config = (*self.0).clone();
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         reqwest::Client::builder().tls_backend_preconfigured(config)
     }
 
@@ -149,17 +152,43 @@ fn platform_verifier(
     provider: &Arc<CryptoProvider>,
     extra_roots: &[CertificateDer<'static>],
 ) -> Result<Arc<dyn ServerCertVerifier>, TlsError> {
+    // The empty case is the pure OS-delegation path and exists on every target,
+    // including Android. Extra in-process roots layered onto the OS verifier are
+    // handled by `verifier_with_extra_roots`, which is Android-aware.
     let verifier = if extra_roots.is_empty() {
         rustls_platform_verifier::Verifier::new(provider.clone())
             .map_err(|e| TlsError::PlatformVerifier(e.to_string()))?
     } else {
-        rustls_platform_verifier::Verifier::new_with_extra_roots(
-            extra_roots.to_vec(),
-            provider.clone(),
-        )
-        .map_err(|e| TlsError::PlatformVerifier(e.to_string()))?
+        verifier_with_extra_roots(provider, extra_roots)?
     };
     Ok(Arc::new(verifier))
+}
+
+/// Builds an OS verifier augmented with explicit `extra_roots`.
+///
+/// `rustls-platform-verifier` exposes `new_with_extra_roots` on every target
+/// except Android (see its `verification` module gating).
+#[cfg(all(feature = "tls-platform-verifier", not(target_os = "android")))]
+fn verifier_with_extra_roots(
+    provider: &Arc<CryptoProvider>,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<rustls_platform_verifier::Verifier, TlsError> {
+    rustls_platform_verifier::Verifier::new_with_extra_roots(extra_roots.to_vec(), provider.clone())
+        .map_err(|e| TlsError::PlatformVerifier(e.to_string()))
+}
+
+/// Android's platform verifier cannot be augmented with in-process roots: they
+/// must be installed into the OS / network-security-config trust store, or the
+/// host should use [`TlsPolicy::Roots`] with `system: true` and `custom` roots.
+/// Reject rather than silently ignore roots the caller asked to trust.
+#[cfg(all(feature = "tls-platform-verifier", target_os = "android"))]
+fn verifier_with_extra_roots(
+    _provider: &Arc<CryptoProvider>,
+    _extra_roots: &[CertificateDer<'static>],
+) -> Result<rustls_platform_verifier::Verifier, TlsError> {
+    Err(TlsError::Unsupported(
+        "extra_roots with PlatformVerifier on Android",
+    ))
 }
 
 #[cfg(not(feature = "tls-platform-verifier"))]
@@ -278,5 +307,18 @@ mod tests {
     #[test]
     fn platform_verifier_builds() {
         assert!(client_config(&TlsPolicy::platform_verifier()).is_ok());
+    }
+
+    // Extra in-process roots layer onto the OS verifier on every non-Android
+    // target (the coverage/test hosts), exercising `verifier_with_extra_roots`.
+    // On Android that path returns `Unsupported`, so this asserts only where the
+    // crate supports it.
+    #[cfg(all(feature = "tls-platform-verifier", not(target_os = "android")))]
+    #[test]
+    fn platform_verifier_with_extra_roots_builds() {
+        let policy = TlsPolicy::PlatformVerifier {
+            extra_roots: vec![self_signed_der()],
+        };
+        assert!(client_config(&policy).is_ok());
     }
 }
