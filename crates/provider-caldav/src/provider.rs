@@ -14,6 +14,8 @@
 //! reads/syncs and writes (`PUT`/`DELETE`) over the same HTTP transport (`write`);
 //! the mail methods keep their unsupported defaults.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use engine_core::{
     calendar::{Calendar, Event},
@@ -21,8 +23,8 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EventDeletion, EventWrite, EventWriteReceipt, Provider,
-    ProviderResult, ScopeSync,
+    Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion, EventWrite,
+    EventWriteReceipt, IgnoreConnectSteps, Provider, ProviderResult, ScopeSync,
 };
 use engine_tls::TlsClientConfig;
 
@@ -33,7 +35,7 @@ use crate::{
 };
 
 /// Connection settings for a CalDAV account.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CalDavConfig {
     /// The server origin, e.g. `https://dav.example.com`.
     pub base_url: String,
@@ -48,6 +50,26 @@ pub struct CalDavConfig {
     /// (`docs/agent-guidance/tls.md`). Defaults to the hermetic bundled roots;
     /// override with [`CalDavConfig::with_tls`].
     pub tls: TlsClientConfig,
+    /// Private, unlike its siblings: a `dyn` observer is neither `Debug` nor
+    /// meaningfully inspectable, so it is set through
+    /// [`CalDavConfig::with_connect_observer`] and read only by
+    /// [`CalDavProvider::connect`].
+    connect_observer: Option<Arc<dyn ConnectObserver>>,
+}
+
+impl core::fmt::Debug for CalDavConfig {
+    /// Hand-written because the observer is a `dyn` trait object; the credentials
+    /// redact themselves (`Credentials`).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CalDavConfig")
+            .field("base_url", &self.base_url)
+            .field("credentials", &self.credentials)
+            .field("discovery_path", &self.discovery_path)
+            .field("calendar", &self.calendar)
+            .field("tls", &self.tls)
+            .field("connect_observer", &self.connect_observer.is_some())
+            .finish()
+    }
 }
 
 impl CalDavConfig {
@@ -61,6 +83,7 @@ impl CalDavConfig {
             discovery_path: "/.well-known/caldav".to_owned(),
             calendar: "default".to_owned(),
             tls: TlsClientConfig::default(),
+            connect_observer: None,
         }
     }
 
@@ -84,6 +107,22 @@ impl CalDavConfig {
     #[must_use]
     pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
         self.tls = tls;
+        self
+    }
+
+    /// Observes the connect phase: one [`ConnectStep::Redirected`] per hop discovery
+    /// follows itself, then [`ConnectStep::Discovered`] naming the calendar home.
+    ///
+    /// No TLS step (reqwest never exposes the negotiated version,
+    /// `docs/agent-guidance/tls.md`) and no auth step — CalDAV has no discrete
+    /// authentication exchange; credentials ride on each `PROPFIND`.
+    ///
+    /// The observer rides on the config, so a host that rebuilds this provider after a
+    /// dropped session observes the redial too. `Arc` so one host observer can be
+    /// shared across the account's providers.
+    #[must_use]
+    pub fn with_connect_observer(mut self, observer: Arc<dyn ConnectObserver>) -> Self {
+        self.connect_observer = Some(observer);
         self
     }
 }
@@ -126,19 +165,36 @@ impl CalDavProvider {
     /// discovery response with no calendar home.
     ///
     /// Trust comes from [`CalDavConfig::tls`] (`docs/agent-guidance/tls.md`).
+    /// Discovery reports its progress to [`CalDavConfig::with_connect_observer`]'s
+    /// observer, if one is configured.
     pub async fn connect(config: CalDavConfig) -> Result<Self, CalDavError> {
+        let observer: &dyn ConnectObserver = config
+            .connect_observer
+            .as_deref()
+            .unwrap_or(&IgnoreConnectSteps);
         let client = DavClient::new(&config.base_url, config.credentials, &config.tls)?;
-        Self::with_executor(Box::new(client), &config.discovery_path, &config.calendar).await
+        Self::with_executor(
+            Box::new(client),
+            &config.discovery_path,
+            &config.calendar,
+            observer,
+        )
+        .await
     }
 
     /// Builds a provider over an arbitrary executor (the live client, or a fake in
-    /// tests), running discovery through it.
+    /// tests), running discovery through it and reporting each step to `observer`.
     pub(crate) async fn with_executor(
         executor: Box<dyn DavExecutor>,
         discovery_path: &str,
         calendar: &str,
+        observer: &dyn ConnectObserver,
     ) -> Result<Self, CalDavError> {
-        let home_href = discovery::discover_home(executor.as_ref(), discovery_path).await?;
+        let home_href =
+            discovery::discover_home(executor.as_ref(), discovery_path, observer).await?;
+        // The calendar home is where every collection — including the bound one — is
+        // resolved from: the endpoint this connect settled on.
+        observer.step(&ConnectStep::discovered(&home_href));
         let collection = bind_collection(&home_href, calendar)?;
         Ok(Self {
             executor,

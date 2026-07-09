@@ -8,6 +8,49 @@ Each provider crate implements the `engine_provider::Provider` trait. The host c
 
 All providers share one TLS trust policy via `engine_tls::TlsClientConfig`. See [`docs/agent-guidance/tls.md`](docs/agent-guidance/tls.md) for the trust model and platform guidance.
 
+## Observing the connect phase
+
+`ConnectionInfo` describes a connection that already exists. To watch one being
+established — the well-known redirects a provider follows itself, the TLS handshake,
+authentication, the endpoint discovery settles on — attach a `ConnectObserver` to the
+adapter's config. Any `Fn(&ConnectStep<'_>)` will do:
+
+```rust
+use std::sync::Arc;
+use engine_provider::ConnectStep;
+
+let observer = Arc::new(|step: &ConnectStep<'_>| match step {
+    ConnectStep::Redirected { from, to, .. } => tracing::info!("resolved {from} -> {to}"),
+    ConnectStep::TlsEstablished(version) => tracing::info!("TLS {version:?}"),
+    ConnectStep::Authenticated => tracing::info!("authenticated"),
+    ConnectStep::Discovered { endpoint, .. } => tracing::info!("endpoint {endpoint}"),
+    _ => {}
+});
+
+let provider = JmapProvider::connect(config.with_connect_observer(observer)).await?;
+```
+
+The observer lives on the config, so rebuilding a provider from it after a dropped
+session observes the redial too. What each adapter reports differs, for the same
+reasons `ConnectionInfo`'s version fields do:
+
+| Provider | Steps |
+| --- | --- |
+| **JMAP** | `Redirected` per well-known hop, `Authenticated`, `Discovered` (the `apiUrl`) |
+| **IMAP** | `TlsEstablished`, `Authenticated` |
+| **CalDAV** | `Redirected` per hop, `Discovered` (the calendar home) |
+| **Microsoft Graph** | none — `GraphClient::connect` performs no I/O |
+
+Only IMAP can report a TLS version (it drives rustls directly); only JMAP and CalDAV
+follow redirects themselves. URLs reaching an observer have any `user:pw@` credentials
+stripped, so a step is always safe to log.
+
+The engine reports *steps*, not a connection *state*. A `Disconnected`/`Connecting`/
+`Connected` machine belongs to the host: it is the layer that knows a call just failed
+with `FailureClass::Retryable` and that a reconnect is in flight. The engine supplies
+the inputs — the `connect()` future, its result, the `FailureClass`, the
+`ConnectionInfo`, and these steps.
+
 ## Provider overview
 
 | Provider | Crate | Data domains | Push | Standards |

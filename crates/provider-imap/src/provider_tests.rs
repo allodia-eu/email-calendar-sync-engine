@@ -5,7 +5,7 @@ use engine_core::{
     mail::{EmailAddress, MailboxRole},
     sync::{SyncScope, SyncWindow},
 };
-use engine_provider::{Draft, EmailChunk, Provider};
+use engine_provider::{Draft, EmailChunk, Provider, TlsVersion};
 use futures_util::StreamExt;
 
 use super::{ImapConfig, ImapProvider};
@@ -366,4 +366,73 @@ fn config_debug_redacts_the_password() {
         !shown.contains("super-secret"),
         "password must not leak: {shown}"
     );
+}
+
+/// Records connect steps as the log lines a host would emit.
+#[derive(Default)]
+struct Recorder(std::sync::Mutex<Vec<String>>);
+
+impl engine_provider::ConnectObserver for Recorder {
+    fn step(&self, step: &engine_provider::ConnectStep<'_>) {
+        use engine_provider::ConnectStep;
+        let line = match step {
+            ConnectStep::TlsEstablished(version) => format!("tls {version:?}"),
+            ConnectStep::Authenticated => "authenticated".to_owned(),
+            other => format!("unexpected {other:?}"),
+        };
+        self.0.lock().unwrap().push(line);
+    }
+}
+
+/// Drives the shared dial over a mock stream, returning the steps it reported.
+async fn observed_open_session(server_script: Vec<u8>, tls: Option<TlsVersion>) -> Vec<String> {
+    let recorder = std::sync::Arc::new(Recorder::default());
+    let config = ImapConfig::new("h:993", "h", "alice@test.local", "pw")
+        .with_connect_observer(recorder.clone());
+    let (stream, _recorded) = MockStream::new(server_script);
+    super::open_session(stream, tls, &config)
+        .await
+        .expect("session");
+    let steps = recorder.0.lock().unwrap();
+    steps.clone()
+}
+
+#[tokio::test]
+async fn connect_reports_the_tls_handshake_then_the_login() {
+    // The exact sequence, in order: the handshake precedes the greeting, and `LOGIN`
+    // precedes the post-auth CAPABILITY (which is extension negotiation, not a step).
+    let steps = observed_open_session(
+        script(&[
+            GREETING,
+            LOGIN_OK,
+            "* CAPABILITY IMAP4rev2 IDLE\r\na2 OK done\r\n",
+        ]),
+        Some(TlsVersion::Tls1_3),
+    )
+    .await;
+    assert_eq!(steps, ["tls Tls1_3", "authenticated"]);
+}
+
+#[tokio::test]
+async fn a_stream_that_is_not_tls_reports_only_the_login() {
+    // `tls_version` is `None` when the stream is not TLS — the fact is not applicable,
+    // not merely unobserved, so no step is invented for it.
+    let steps = observed_open_session(script(&[GREETING, LOGIN_OK, "a2 OK done\r\n"]), None).await;
+    assert_eq!(steps, ["authenticated"]);
+}
+
+#[tokio::test]
+async fn a_failed_login_reports_the_handshake_but_never_authentication() {
+    // `Authenticated` means the server accepted the credentials. A `NO` must not emit
+    // it — a host driving a state machine off these steps would otherwise believe a
+    // rejected connection came up.
+    let recorder = std::sync::Arc::new(Recorder::default());
+    let config = ImapConfig::new("h:993", "h", "alice@test.local", "wrong")
+        .with_connect_observer(recorder.clone());
+    let (stream, _recorded) = MockStream::new(script(&[GREETING, "a1 NO bad credentials\r\n"]));
+    let err = super::open_session(stream, Some(TlsVersion::Tls1_2), &config)
+        .await
+        .expect_err("login must fail");
+    assert!(matches!(err, crate::error::ImapError::Auth(_)));
+    assert_eq!(*recorder.0.lock().unwrap(), ["tls Tls1_2"]);
 }

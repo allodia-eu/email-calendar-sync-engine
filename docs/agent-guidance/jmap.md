@@ -56,7 +56,15 @@ specifics they implement against the Stalwart fixture. Read it before touching
 
 - **Session discovery + URL policy.** The session is fetched (well-known →
   redirect handled), then capabilities, account ids (per `primaryAccounts`, *not*
-  assumed), and the core limits are read. Stalwart advertises absolute URLs to its
+  assumed), and the core limits are read. `JmapClient::connect` reports the phase to
+  the config's `ConnectObserver` (`providers.md`): one `ConnectStep::Redirected` per
+  hop it resolves itself (both sides already rebased, so a host sees the hop it could
+  replay), `ConnectStep::Authenticated` when the session responds `2xx` with the
+  account's credentials attached, and `ConnectStep::Discovered` naming the resolved
+  `apiUrl` that will serve every method call. No `TlsEstablished` — reqwest never
+  exposes the negotiated version (`tls.md`). Under `RebaseToConnection` every one of
+  those URLs derives from the connection base, so userinfo on the base would propagate
+  into each step; `ConnectStep`'s constructors scrub it. Stalwart advertises absolute URLs to its
   configured public host (`https://mail.test.local/`) while a client connects to
   a different origin (the loopback fixture, a reverse proxy); `SessionUrlPolicy`
   resolves this — `RebaseToConnection` (default) keeps the advertised path but

@@ -11,6 +11,7 @@
 //! `Depth: 1`, keeping those whose `resourcetype` marks them a calendar.
 
 use engine_core::calendar::Calendar;
+use engine_provider::{ConnectObserver, ConnectStep};
 
 use crate::{
     calendar::calendar_from_response,
@@ -28,7 +29,11 @@ const MAX_REDIRECTS: usize = 4;
 /// `PROPFIND`s the start URL; if it returns the `calendar-home-set` directly
 /// (lenient servers), uses it, otherwise follows the RFC 6764 §6 second step and
 /// `PROPFIND`s the returned `current-user-principal` for its home-set. Each
-/// `PROPFIND` follows up to [`MAX_REDIRECTS`] redirects.
+/// `PROPFIND` follows up to [`MAX_REDIRECTS`] redirects, reporting one
+/// [`ConnectStep::Redirected`] per hop to `observer`.
+///
+/// The principal → home-set step is **not** a redirect and emits nothing: it is a
+/// second `PROPFIND` of a different resource, not the same resource moving.
 ///
 /// # Errors
 ///
@@ -37,8 +42,9 @@ const MAX_REDIRECTS: usize = 4;
 pub(crate) async fn discover_home(
     exec: &dyn DavExecutor,
     start_href: &str,
+    observer: &dyn ConnectObserver,
 ) -> Result<String, CalDavError> {
-    let bootstrap = propfind_principal(exec, start_href).await?;
+    let bootstrap = propfind_principal(exec, start_href, observer).await?;
     if let Some(home) = home_set(&bootstrap) {
         return Ok(home);
     }
@@ -49,16 +55,17 @@ pub(crate) async fn discover_home(
             "PROPFIND returned neither calendar-home-set nor current-user-principal",
         )
     })?;
-    let from_principal = propfind_principal(exec, &principal).await?;
+    let from_principal = propfind_principal(exec, &principal, observer).await?;
     home_set(&from_principal)
         .ok_or_else(|| CalDavError::protocol("principal PROPFIND returned no calendar-home-set"))
 }
 
 /// `PROPFIND`s `href` for the principal/home properties, following up to
-/// [`MAX_REDIRECTS`] redirects.
+/// [`MAX_REDIRECTS`] redirects and reporting each to `observer`.
 async fn propfind_principal(
     exec: &dyn DavExecutor,
     href: &str,
+    observer: &dyn ConnectObserver,
 ) -> Result<MultiStatus, CalDavError> {
     let mut href = href.to_owned();
     for _ in 0..MAX_REDIRECTS {
@@ -71,7 +78,13 @@ async fn propfind_principal(
             )
             .await?;
         if response.is_redirect() {
-            href = response.location.clone().unwrap_or(href);
+            // `is_redirect()` is true only with a `Location`, so this always binds;
+            // without one the loop re-requests `href` and exhausts `MAX_REDIRECTS`,
+            // exactly as before.
+            if let Some(location) = &response.location {
+                observer.step(&ConnectStep::redirected(&href, location));
+                href.clone_from(location);
+            }
             continue;
         }
         return response.into_multistatus();
@@ -127,11 +140,91 @@ fn current_user_principal(multistatus: &MultiStatus) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use engine_provider::IgnoreConnectSteps;
+
     use super::*;
     use crate::{
         test_support::{Replay, ok},
         transport::HttpResponse,
     };
+
+    /// A `307` to `location`.
+    fn redirect_to(location: &str) -> HttpResponse {
+        HttpResponse {
+            status: 307,
+            body: String::new(),
+            location: Some(location.to_owned()),
+            etag: None,
+        }
+    }
+
+    /// Records the hops an observer sees, as `from -> to` pairs.
+    #[derive(Default)]
+    struct Hops(Mutex<Vec<String>>);
+
+    impl ConnectObserver for Hops {
+        fn step(&self, step: &ConnectStep<'_>) {
+            if let ConnectStep::Redirected { from, to, .. } = step {
+                self.0.lock().unwrap().push(format!("{from} -> {to}"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn every_hop_of_a_redirect_chain_is_reported_in_order() {
+        // Two hops before the principal answers, so the steps are a *sequence*.
+        let exec = Replay::new(vec![
+            redirect_to("/dav"),
+            redirect_to("/dav/cal"),
+            ok(include_str!("../tests/fixtures/principal.xml")),
+        ]);
+        let hops = Hops::default();
+        discover_home(&exec, "/.well-known/caldav", &hops)
+            .await
+            .unwrap();
+        assert_eq!(
+            *hops.0.lock().unwrap(),
+            ["/.well-known/caldav -> /dav", "/dav -> /dav/cal"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_redirect_target_carrying_credentials_is_scrubbed() {
+        // A `Location` is server-controlled and may carry userinfo; these steps are
+        // built to be logged (`north-star.md`).
+        let exec = Replay::new(vec![
+            redirect_to("https://alice:hunter2@dav.example.com/cal"),
+            ok(include_str!("../tests/fixtures/principal.xml")),
+        ]);
+        let hops = Hops::default();
+        discover_home(&exec, "/.well-known/caldav", &hops)
+            .await
+            .unwrap();
+        assert_eq!(
+            *hops.0.lock().unwrap(),
+            ["/.well-known/caldav -> https://dav.example.com/cal"]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_principal_second_step_is_not_a_redirect() {
+        // The RFC 6764 §6 two-step flow is two PROPFINDs of *different* resources, not
+        // one resource moving — so it emits no hop.
+        let root = ok(
+            "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:response><D:href>/</D:href><D:propstat><D:prop><D:current-user-principal><D:href>/principals/users/dennis/</D:href></D:current-user-principal></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>",
+        );
+        let principal = ok(
+            "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:response><D:href>/principals/users/dennis/</D:href><D:propstat><D:prop><C:calendar-home-set><D:href>/calendars/dennis/</D:href></C:calendar-home-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>",
+        );
+        let hops = Hops::default();
+        let exec = Replay::new(vec![root, principal]);
+        discover_home(&exec, "/.well-known/caldav", &hops)
+            .await
+            .unwrap();
+        assert!(hops.0.lock().unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn follows_a_redirect_then_reads_the_home() {
@@ -145,7 +238,9 @@ mod tests {
             redirect,
             ok(include_str!("../tests/fixtures/principal.xml")),
         ]);
-        let home = discover_home(&exec, "/.well-known/caldav").await.unwrap();
+        let home = discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
+            .await
+            .unwrap();
         assert_eq!(home, "/dav/cal/alice%40test.local/");
         // Two requests: the well-known, then the redirect target.
         let seen = exec.seen();
@@ -166,7 +261,9 @@ mod tests {
         );
         let exec = Replay::new(vec![root, principal]);
 
-        let home = discover_home(&exec, "/.well-known/caldav").await.unwrap();
+        let home = discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
+            .await
+            .unwrap();
         assert_eq!(home, "/calendars/dennis/");
         let seen = exec.seen();
         assert_eq!(seen[0].1, "/.well-known/caldav"); // step 1: the well-known
@@ -194,6 +291,10 @@ mod tests {
         let exec = Replay::new(vec![ok(
             "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/x</D:href><D:propstat><D:prop/><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>",
         )]);
-        assert!(discover_home(&exec, "/x").await.is_err());
+        assert!(
+            discover_home(&exec, "/x", &IgnoreConnectSteps)
+                .await
+                .is_err()
+        );
     }
 }

@@ -12,6 +12,11 @@
 //!   [`FailureClass`](engine_core::error::FailureClass) taxonomy);
 //! - signal delta-vs-snapshot (carried inside the [`SyncUpdate`] itself).
 //!
+//! [`ConnectionInfo`] reports the *outcome* of a connect. The phase itself — the
+//! well-known redirects, the TLS handshake, authentication, endpoint discovery — is
+//! observable through [`ConnectStep`] and [`ConnectObserver`], which an adapter's
+//! config carries.
+//!
 //! The trait is deliberately **shaped by JMAP** and kept minimal: it covers the
 //! step-4 mail spine (mailboxes + email) and grows a method at a time as slices
 //! land (submission, calendar). It depends only on `engine-core`; network access
@@ -23,6 +28,7 @@
 mod boxed;
 mod calendar_write;
 mod capability;
+mod connect_observer;
 mod connection;
 mod error;
 mod mail_edit;
@@ -37,6 +43,7 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 pub use calendar_write::{EventDeletion, EventWrite, EventWriteReceipt, WritePrecondition};
 pub use capability::Capabilities;
+pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 #[cfg(feature = "http")]
 pub use connection::ObservedHttpVersion;
 pub use connection::{ConnectionInfo, HttpVersion, TlsVersion};

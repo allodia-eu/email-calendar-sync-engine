@@ -18,8 +18,9 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt, Provider,
-    ProviderError, ProviderResult, ScopeSync, SubmissionReceipt, TlsVersion,
+    Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, Draft, EmailStream, MailEdit,
+    MailEditReceipt, Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt,
+    TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -28,108 +29,17 @@ use tokio::{
 };
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
-use crate::{error::ImapError, mail::mailbox_from_list, tls_info, transport::Connection};
+use crate::{
+    config::{ImapConfig, SmtpSettings},
+    error::ImapError,
+    mail::mailbox_from_list,
+    tls_info,
+    transport::Connection,
+};
 
 /// The IMAP folder list carries no sync token (a `LIST` re-snapshots it each pass),
 /// so its cursor is a fixed sentinel — the store round-trips it unread.
 const FOLDER_LIST_CURSOR: &str = "imap-folders";
-
-/// SMTP submission settings captured at config time: the address, and — for a
-/// real provider — the TLS server name that switches on implicit TLS + `AUTH
-/// PLAIN`. `tls_server_name` is `None` for the Stalwart fixture's plaintext MX
-/// (port 25, no auth) and `Some` for implicit TLS (port 465).
-#[derive(Clone)]
-struct SmtpSettings {
-    addr: String,
-    tls_server_name: Option<String>,
-}
-
-/// How to connect an [`ImapProvider`]: the address, the TLS server name, and
-/// credentials. `Debug` redacts the password (`north-star.md` security).
-#[derive(Clone)]
-pub struct ImapConfig {
-    addr: String,
-    server_name: String,
-    username: String,
-    password: String,
-    smtp: Option<SmtpSettings>,
-    since: Option<time::Date>,
-}
-
-impl ImapConfig {
-    /// Configures an implicit-TLS IMAP connection to `addr` (`host:port`),
-    /// presenting `server_name` for TLS (SNI/cert name; may differ from a loopback
-    /// `addr`) and authenticating as `username`/`password`.
-    #[must_use]
-    pub fn new(
-        addr: impl Into<String>,
-        server_name: impl Into<String>,
-        username: impl Into<String>,
-        password: impl Into<String>,
-    ) -> Self {
-        Self {
-            addr: addr.into(),
-            server_name: server_name.into(),
-            username: username.into(),
-            password: password.into(),
-            smtp: None,
-            since: None,
-        }
-    }
-
-    /// Bounds mail sync to messages delivered on or after `since` (the sync-depth
-    /// window). A snapshot then fetches only mail within the window — so a large
-    /// mailbox syncs just recent messages — via `UID SEARCH SINCE` to find the window
-    /// floor. With no cutoff (the default) the whole mailbox syncs. A delta is already
-    /// bounded to new arrivals, so the window never narrows it.
-    #[must_use]
-    pub fn with_since(mut self, since: time::Date) -> Self {
-        self.since = Some(since);
-        self
-    }
-
-    /// Enables **plaintext** SMTP submission via `smtp_addr` (`host:port`), with no
-    /// authentication — for an MX that accepts local mail (the Stalwart fixture's
-    /// port 25). Without any SMTP config the provider advertises no submission
-    /// capability and [`submit_email`](Provider::submit_email) is rejected.
-    #[must_use]
-    pub fn with_smtp(mut self, smtp_addr: impl Into<String>) -> Self {
-        self.smtp = Some(SmtpSettings {
-            addr: smtp_addr.into(),
-            tls_server_name: None,
-        });
-        self
-    }
-
-    /// Enables **implicit-TLS** SMTP submission via `smtp_addr` (`host:port`,
-    /// typically `:465`), authenticating with `AUTH PLAIN` using the account
-    /// credentials. The injected TLS connector (from [`ImapProvider::connect`])
-    /// secures the connection, presenting `server_name`. STARTTLS (port 587) is a
-    /// later refinement.
-    #[must_use]
-    pub fn with_smtp_tls(
-        mut self,
-        smtp_addr: impl Into<String>,
-        server_name: impl Into<String>,
-    ) -> Self {
-        self.smtp = Some(SmtpSettings {
-            addr: smtp_addr.into(),
-            tls_server_name: Some(server_name.into()),
-        });
-        self
-    }
-}
-
-impl core::fmt::Debug for ImapConfig {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ImapConfig")
-            .field("addr", &self.addr)
-            .field("server_name", &self.server_name)
-            .field("username", &self.username)
-            .field("since", &self.since)
-            .finish_non_exhaustive()
-    }
-}
 
 /// The resolved SMTP transport a provider holds after `connect`: plaintext, or
 /// implicit TLS carrying the connector + credentials each fresh send re-dials with.
@@ -228,13 +138,39 @@ pub(crate) async fn connect_session(
         .map_err(|e| ImapError::bad(format!("invalid TLS server name: {e}")))?;
     let tls = connector.connect(server_name, tcp).await?;
     let tls_version = tls_info::tls_version(&tls);
-    let mut connection = Connection::open(tls).await?;
+    let connection = open_session(tls, tls_version, config).await?;
+    Ok((connection, tls_version))
+}
+
+/// Greets, logs in, and negotiates capabilities over an already-established `stream`,
+/// reporting [`ConnectStep::TlsEstablished`] (when the handshake agreed a version) and
+/// [`ConnectStep::Authenticated`] to the config's observer.
+///
+/// Generic over the stream, so the offline suite asserts the exact step sequence over
+/// a `MockStream` — the handshake has already happened by the time this is called, so
+/// passing `tls_version` in keeps the emitted order identical to the live dial's.
+///
+/// # Errors
+///
+/// [`ImapError`] on a greeting, login, or capability-negotiation failure.
+pub(crate) async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
+    stream: S,
+    tls_version: Option<TlsVersion>,
+    config: &ImapConfig,
+) -> Result<Connection<S>, ImapError> {
+    let observer: &dyn ConnectObserver = config.connect_observer();
+    if let Some(version) = tls_version {
+        observer.step(&ConnectStep::TlsEstablished(version));
+    }
+    let mut connection = Connection::open(stream).await?;
     connection.login(&config.username, &config.password).await?;
+    observer.step(&ConnectStep::Authenticated);
     // Detect + ENABLE QRESYNC (RFC 7162) so deltas reconcile flag/expunge changes
     // incrementally, and record IDLE (RFC 2177) support; a server without either stays
-    // on the corresponding baseline.
+    // on the corresponding baseline. Not a connect step: it negotiates extensions, it
+    // does not establish the connection.
     connection.negotiate_qresync().await?;
-    Ok((connection, tls_version))
+    Ok(connection)
 }
 
 /// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,

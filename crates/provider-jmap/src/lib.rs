@@ -47,7 +47,9 @@ mod transport;
 mod watch;
 
 use core::fmt;
+use std::sync::Arc;
 
+use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 use engine_tls::TlsClientConfig;
 pub use error::JmapError;
 pub use provider::JmapProvider;
@@ -119,6 +121,7 @@ pub struct JmapConfig {
     session_path: String,
     session_urls: SessionUrlPolicy,
     tls: TlsClientConfig,
+    connect_observer: Option<Arc<dyn ConnectObserver>>,
 }
 
 impl JmapConfig {
@@ -133,6 +136,7 @@ impl JmapConfig {
             session_path: "/.well-known/jmap".to_owned(),
             session_urls: SessionUrlPolicy::RebaseToConnection,
             tls: TlsClientConfig::default(),
+            connect_observer: None,
         }
     }
 
@@ -156,6 +160,21 @@ impl JmapConfig {
     #[must_use]
     pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
         self.tls = tls;
+        self
+    }
+
+    /// Observes the connect phase: one [`ConnectStep::Redirected`] per well-known hop,
+    /// [`ConnectStep::Authenticated`] when the server serves the session, and
+    /// [`ConnectStep::Discovered`] naming the `apiUrl` that will serve every method
+    /// call. No TLS step — reqwest never exposes the negotiated version
+    /// (`docs/agent-guidance/tls.md`).
+    ///
+    /// The observer rides on the config, so a host that rebuilds this client after a
+    /// dropped session observes the redial too. `Arc` so one host observer can be
+    /// shared across the account's providers.
+    #[must_use]
+    pub fn with_connect_observer(mut self, observer: Arc<dyn ConnectObserver>) -> Self {
+        self.connect_observer = Some(observer);
         self
     }
 }
@@ -185,6 +204,9 @@ impl JmapClient {
     /// (following the well-known redirect, rebasing per the policy), and resolves
     /// capabilities, account ids, and limits.
     ///
+    /// Reports each step to [`JmapConfig::with_connect_observer`]'s observer, if one
+    /// is configured.
+    ///
     /// # Errors
     ///
     /// Returns [`JmapError`] on a bad base URL, a transport/HTTP failure, or a
@@ -192,10 +214,23 @@ impl JmapClient {
     pub async fn connect(config: JmapConfig) -> Result<Self, JmapError> {
         let base = Url::parse(&config.base_url)
             .map_err(|e| JmapError::session(format!("bad base_url {:?}: {e}", config.base_url)))?;
+        let observer: &dyn ConnectObserver = config
+            .connect_observer
+            .as_deref()
+            .unwrap_or(&IgnoreConnectSteps);
         let transport = Transport::new(config.credentials, &config.tls)?;
-        let document =
-            fetch_session(&transport, &base, &config.session_path, config.session_urls).await?;
+        let document = fetch_session(
+            &transport,
+            &base,
+            &config.session_path,
+            config.session_urls,
+            observer,
+        )
+        .await?;
         let session = Session::parse(&document, &base, config.session_urls)?;
+        // The endpoint every method call will go to — the last thing connect resolves,
+        // and (under `RebaseToConnection`) the one derived from the connection origin.
+        observer.step(&ConnectStep::discovered(session.api_url()));
         Ok(Self { transport, session })
     }
 
@@ -316,12 +351,15 @@ impl fmt::Debug for JmapClient {
 }
 
 /// Fetches the session document, resolving the well-known redirect chain itself so
-/// a foreign advertised origin can be rebased onto the connection.
+/// a foreign advertised origin can be rebased onto the connection. Reports one
+/// [`ConnectStep::Redirected`] per hop and, once the server serves a success,
+/// [`ConnectStep::Authenticated`].
 async fn fetch_session(
     transport: &Transport,
     base: &Url,
     session_path: &str,
     policy: SessionUrlPolicy,
+    observer: &dyn ConnectObserver,
 ) -> Result<serde_json::Value, JmapError> {
     let mut url = resolve_against(base, session_path, policy)?;
     for _ in 0..MAX_SESSION_REDIRECTS {
@@ -333,8 +371,17 @@ async fn fetch_session(
                 .get(reqwest::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| JmapError::session("redirect without Location"))?;
-            url = resolve_against(base, location, policy)?;
+            let next = resolve_against(base, location, policy)?;
+            // Both sides resolved, so a host sees the hop it can actually replay —
+            // not a bare `Location` path whose origin it would have to reconstruct.
+            observer.step(&ConnectStep::redirected(&url, &next));
+            url = next;
             continue;
+        }
+        // The request carried the account's credentials, so a non-redirect success is
+        // the server accepting them. A 401/403 becomes a `JmapError` below instead.
+        if status.is_success() {
+            observer.step(&ConnectStep::Authenticated);
         }
         return transport::read_json(resp).await;
     }

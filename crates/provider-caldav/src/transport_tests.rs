@@ -105,3 +105,110 @@ async fn a_replaying_fake_reports_no_http_version() {
     let fake = crate::test_support::Replay::new(Vec::new());
     assert_eq!(DavExecutor::http_version(&fake), None);
 }
+
+/// A `307` pointing at `location`.
+fn redirect(location: &str) -> String {
+    format!(
+        "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+}
+
+#[tokio::test]
+async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
+    // The config carries the observer, so `connect` — not some observed variant of it
+    // — is what a host drives, and a redial from the same config observes for free.
+    let base = mock_server(vec![
+        redirect("/dav/cal"),
+        multistatus(include_str!("../tests/fixtures/principal.xml")),
+    ]);
+    let steps: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+    let recorded = std::sync::Arc::clone(&steps);
+    let provider = crate::CalDavProvider::connect(
+        crate::CalDavConfig::new(
+            base,
+            Credentials::Basic {
+                username: "alice".to_owned(),
+                password: "pw".to_owned(),
+            },
+        )
+        // The blanket `Fn` impl: a host hands over a closure, not a named type.
+        .with_connect_observer(std::sync::Arc::new(
+            move |step: &engine_provider::ConnectStep<'_>| {
+                recorded.lock().unwrap().push(match step {
+                    engine_provider::ConnectStep::Redirected { from, to, .. } => {
+                        format!("redirected {from} -> {to}")
+                    }
+                    engine_provider::ConnectStep::Discovered { endpoint, .. } => {
+                        format!("discovered {endpoint}")
+                    }
+                    other => format!("unexpected {other:?}"),
+                });
+            },
+        )),
+    )
+    .await
+    .expect("connect");
+
+    assert_eq!(
+        *steps.lock().unwrap(),
+        [
+            "redirected /.well-known/caldav -> /dav/cal",
+            // CalDAV emits no `Authenticated` (no discrete auth exchange) and no
+            // `TlsEstablished` (reqwest never exposes the negotiated version).
+            "discovered /dav/cal/alice%40test.local/",
+        ]
+    );
+    assert_eq!(
+        provider.collection_href(),
+        "/dav/cal/alice%40test.local/default/"
+    );
+}
+
+#[tokio::test]
+async fn a_connect_without_an_observer_still_discovers() {
+    // Additive: the pre-existing config path is untouched.
+    let base = mock_server(vec![multistatus(include_str!(
+        "../tests/fixtures/principal.xml"
+    ))]);
+    let provider = crate::CalDavProvider::connect(crate::CalDavConfig::new(
+        base,
+        Credentials::Basic {
+            username: "alice".to_owned(),
+            password: "pw".to_owned(),
+        },
+    ))
+    .await
+    .expect("connect");
+    assert_eq!(
+        provider.collection_href(),
+        "/dav/cal/alice%40test.local/default/"
+    );
+}
+
+#[tokio::test]
+async fn config_debug_shows_the_observer_without_leaking_the_password() {
+    // `CalDavConfig`'s `Debug` is hand-written (a `dyn` observer is not `Debug`), so
+    // the redaction the derive used to inherit from `Credentials` is asserted here.
+    let config = crate::CalDavConfig::new(
+        "https://dav.example.com",
+        Credentials::Basic {
+            username: "alice".to_owned(),
+            password: "hunter2".to_owned(),
+        },
+    );
+    let shown = format!("{config:?}");
+    assert!(shown.contains("alice") && shown.contains("dav.example.com"));
+    assert!(
+        !shown.contains("hunter2"),
+        "password must not leak: {shown}"
+    );
+    assert!(shown.contains("connect_observer: false"), "{shown}");
+
+    let observed = config.with_connect_observer(std::sync::Arc::new(
+        |_: &engine_provider::ConnectStep<'_>| {},
+    ));
+    assert!(
+        format!("{observed:?}").contains("connect_observer: true"),
+        "an attached observer should be visible"
+    );
+}
