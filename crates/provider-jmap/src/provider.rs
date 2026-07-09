@@ -18,8 +18,8 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{
-    Capabilities, Draft, EmailChunk, EmailStream, PageToken, PassMode, Provider, ProviderResult,
-    ScopeSync, SubmissionReceipt, SyncKind, split_page,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HttpVersion, PageToken, PassMode,
+    Provider, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
@@ -47,6 +47,12 @@ pub(crate) trait Executor: Send + Sync {
     /// server-assigned `blobId` (RFC 8620 §6.1) — used to attach a draft's parts.
     async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError>;
     fn session(&self) -> &Session;
+    /// The HTTP version the transport negotiated. Defaults to `None`: only the live
+    /// [`JmapClient`] speaks HTTP, so a fake fed canned documents has no version to
+    /// report.
+    fn http_version(&self) -> Option<HttpVersion> {
+        None
+    }
 }
 
 #[async_trait]
@@ -65,6 +71,10 @@ impl Executor for JmapClient {
 
     fn session(&self) -> &Session {
         JmapClient::session(self)
+    }
+
+    fn http_version(&self) -> Option<HttpVersion> {
+        JmapClient::http_version(self)
     }
 }
 
@@ -119,8 +129,14 @@ impl JmapProvider {
 
 #[async_trait]
 impl Provider for JmapProvider {
-    fn capabilities(&self) -> &Capabilities {
-        &self.capabilities
+    /// The session's advertised capabilities plus the transport's negotiated HTTP
+    /// version. The TLS version is always `None` — reqwest exposes only the peer
+    /// certificate, never the negotiated protocol version (`docs/agent-guidance/tls.md`).
+    fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo {
+            http_version: self.executor.http_version(),
+            ..ConnectionInfo::new(self.capabilities)
+        }
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {

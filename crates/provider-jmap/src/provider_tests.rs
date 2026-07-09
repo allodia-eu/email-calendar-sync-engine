@@ -45,7 +45,7 @@ async fn fetch_message_source_provider_method_returns_the_raw_mime() {
     let exec = FakeExecutor::new(vec![]).with_download_body(b"raw-bytes");
     let provider = JmapProvider::with_executor(Box::new(exec));
     // Advertises the capability now that a download template is present.
-    assert!(provider.capabilities().message_source());
+    assert!(provider.connection_info().capabilities.message_source());
     let raw = provider
         .fetch_message_source(&account(), &message_with_blob("m1", "b1"))
         .await
@@ -329,9 +329,9 @@ async fn missing_account_ids_surface_as_errors() {
 #[tokio::test]
 async fn capabilities_and_scopes_come_from_the_session() {
     let p = provider(vec![]);
-    assert!(p.capabilities().mail());
-    assert!(p.capabilities().submission());
-    assert!(p.capabilities().calendars());
+    assert!(p.connection_info().capabilities.mail());
+    assert!(p.connection_info().capabilities.submission());
+    assert!(p.connection_info().capabilities.calendars());
     assert_eq!(
         p.email_scope(&account()),
         SyncScope::JmapType {

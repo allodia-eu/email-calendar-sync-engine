@@ -14,6 +14,7 @@
 //! implementation.
 
 use async_trait::async_trait;
+use engine_provider::{HttpVersion, ObservedHttpVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -34,12 +35,23 @@ pub(crate) trait GraphTransport: Send + Sync {
     /// Fetches `url`, returning the raw response bytes — for the `$value` endpoint
     /// that streams a message's RFC 822 MIME rather than JSON.
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError>;
+
+    /// The HTTP version the transport negotiated, or `None` before its first response.
+    /// Defaults to `None`: only [`HttpTransport`] speaks HTTP, so a fake fed canned
+    /// fixtures has no version to report.
+    fn http_version(&self) -> Option<HttpVersion> {
+        None
+    }
 }
 
 /// The production reqwest transport: bearer auth + immutable-id preference.
 pub(crate) struct HttpTransport {
     client: reqwest::Client,
     token: String,
+    /// The HTTP version most recently observed. Unlike JMAP/CalDAV,
+    /// [`GraphClient::connect`] performs no request (Graph has no session-discovery
+    /// step), so this stays `None` until the adapter's first fetch.
+    http_version: ObservedHttpVersion,
 }
 
 impl HttpTransport {
@@ -54,20 +66,30 @@ impl HttpTransport {
         Ok(Self {
             client: tls.reqwest_builder().build()?,
             token,
+            http_version: ObservedHttpVersion::default(),
         })
     }
-}
 
-#[async_trait]
-impl GraphTransport for HttpTransport {
-    async fn get(&self, url: &str) -> Result<Value, GraphError> {
-        let resp = self
+    /// Issues the authenticated, immutable-id-preferring `GET` both fetch shapes share,
+    /// recording the negotiated HTTP version on the way through — the one funnel, so no
+    /// path can forget to observe it.
+    async fn send(&self, url: &str) -> Result<reqwest::Response, GraphError> {
+        let response = self
             .client
             .get(url)
             .bearer_auth(&self.token)
             .header("Prefer", "IdType=\"ImmutableId\"")
             .send()
             .await?;
+        self.http_version.record(response.version());
+        Ok(response)
+    }
+}
+
+#[async_trait]
+impl GraphTransport for HttpTransport {
+    async fn get(&self, url: &str) -> Result<Value, GraphError> {
+        let resp = self.send(url).await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -77,13 +99,7 @@ impl GraphTransport for HttpTransport {
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {
-        let resp = self
-            .client
-            .get(url)
-            .bearer_auth(&self.token)
-            .header("Prefer", "IdType=\"ImmutableId\"")
-            .send()
-            .await?;
+        let resp = self.send(url).await?;
         let status = resp.status();
         if !status.is_success() {
             // The `$value` error body is JSON like any other Graph error, so classify it
@@ -92,6 +108,10 @@ impl GraphTransport for HttpTransport {
             return Err(GraphError::status(status.as_u16(), body));
         }
         Ok(resp.bytes().await?.to_vec())
+    }
+
+    fn http_version(&self) -> Option<HttpVersion> {
+        self.http_version.get()
     }
 }
 
@@ -213,6 +233,15 @@ impl GraphClient {
         self.transport.get_bytes(&self.rebase(url)).await
     }
 
+    /// The HTTP version this client's transport negotiated, or `None` before its first
+    /// request — [`connect`](Self::connect) performs no I/O, so a freshly connected
+    /// Graph client has not yet observed one. The matching TLS version is never
+    /// available: reqwest exposes only the peer certificate
+    /// (`docs/agent-guidance/tls.md`).
+    pub(crate) fn http_version(&self) -> Option<HttpVersion> {
+        self.transport.http_version()
+    }
+
     /// Rebases an absolute `graph.microsoft.com` URL onto a non-default base — a
     /// no-op in production (where `base` *is* the Graph root), so a proxy or a test
     /// replay server can catch the absolute `@odata` links Graph returns.
@@ -260,6 +289,22 @@ mod tests {
         let transport = HttpTransport::new("tok".to_owned(), crate::test_support::tls()).unwrap();
         let doc = transport.get(&base).await.unwrap();
         assert!(doc.get("value").is_some());
+    }
+
+    #[tokio::test]
+    async fn the_http_version_is_unknown_until_the_first_response() {
+        // Graph's connect performs no I/O (no session discovery), so a fresh transport
+        // has observed nothing; the first response fills the fact in. This is the one
+        // provider where `ConnectionInfo::http_version` is `None` on a live connection.
+        let base = mock_server(http("200 OK", r#"{"value":[]}"#));
+        let transport = HttpTransport::new("tok".to_owned(), crate::test_support::tls()).unwrap();
+        assert_eq!(GraphTransport::http_version(&transport), None);
+
+        transport.get(&base).await.unwrap();
+        assert_eq!(
+            GraphTransport::http_version(&transport),
+            Some(HttpVersion::Http1_1)
+        );
     }
 
     #[tokio::test]

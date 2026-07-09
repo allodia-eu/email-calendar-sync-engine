@@ -14,6 +14,16 @@ serde = { workspace = true }
 # `futures-util` for the drain default that collects the stream into one update.
 futures-core = { workspace = true }
 futures-util = { workspace = true }
+# Only for `HttpVersion::from_http`, which maps what `reqwest::Response::version`
+# returns onto the engine's `HttpVersion`. Optional so this crate stays dependency-light
+# for the pure-logic consumers (`engine-sync`, `engine-api`); the three HTTP provider
+# adapters turn it on. `http` is a leaf crate reqwest already resolves.
+http = { workspace = true, optional = true }
+
+[features]
+# The `HttpVersion::from_http` conversion (and its `http` dependency). Enabled by the
+# reqwest-backed adapters: `provider-jmap`, `provider-caldav`, `provider-graph`.
+http = ["dep:http"]
 
 [dev-dependencies]
 tokio = { workspace = true }

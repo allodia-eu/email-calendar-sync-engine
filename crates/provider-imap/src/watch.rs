@@ -101,7 +101,9 @@ impl ImapWatcher<TlsStream<TcpStream>> {
         mailbox: MailboxId,
         keepalive: Duration,
     ) -> ProviderResult<Self> {
-        let conn = connect_session(config, &connector).await?;
+        // A watcher only signals "something changed"; the negotiated TLS version is a
+        // fact of the *provider's* session (`ConnectionInfo`), not of this one.
+        let (conn, _tls_version) = connect_session(config, &connector).await?;
         Self::start(conn, mailbox, keepalive).await
     }
 }

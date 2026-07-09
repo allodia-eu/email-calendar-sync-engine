@@ -205,6 +205,14 @@ impl JmapClient {
         &self.session
     }
 
+    /// The HTTP version this client's connection negotiated — always populated once
+    /// [`connect`](Self::connect) has fetched the session. The matching TLS version is
+    /// not available: reqwest exposes only the peer certificate, never the negotiated
+    /// protocol version (`docs/agent-guidance/tls.md`).
+    pub(crate) fn http_version(&self) -> Option<engine_provider::HttpVersion> {
+        self.transport.http_version()
+    }
+
     /// Ships a batched request to the API endpoint and parses the response
     /// envelope. Method-level errors surface when a result is read
     /// ([`Response::result`]).

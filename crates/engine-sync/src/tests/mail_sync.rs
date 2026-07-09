@@ -100,8 +100,8 @@ struct LeaseStealer {
 
 #[async_trait::async_trait]
 impl Provider for LeaseStealer {
-    fn capabilities(&self) -> &Capabilities {
-        self.inner.capabilities()
+    fn connection_info(&self) -> ConnectionInfo {
+        self.inner.connection_info()
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {

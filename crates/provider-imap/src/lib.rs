@@ -73,6 +73,7 @@ mod smtp;
 mod stream;
 mod sync;
 mod target;
+mod tls_info;
 mod tokenize;
 mod transport;
 mod watch;

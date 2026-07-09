@@ -14,7 +14,7 @@ use engine_core::{
 };
 
 use crate::{
-    Capabilities, Draft, EmailStream, EventDeletion, EventWrite, EventWriteReceipt, MailEdit,
+    ConnectionInfo, Draft, EmailStream, EventDeletion, EventWrite, EventWriteReceipt, MailEdit,
     MailEditReceipt, Provider, ProviderResult, ScopeSync, SubmissionReceipt,
 };
 
@@ -33,8 +33,8 @@ use crate::{
 /// not the trait defaults.
 #[async_trait]
 impl<P: Provider + ?Sized> Provider for Box<P> {
-    fn capabilities(&self) -> &Capabilities {
-        (**self).capabilities()
+    fn connection_info(&self) -> ConnectionInfo {
+        (**self).connection_info()
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {

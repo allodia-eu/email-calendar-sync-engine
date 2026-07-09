@@ -21,7 +21,8 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, EventDeletion, EventWrite, EventWriteReceipt, Provider, ProviderResult, ScopeSync,
+    Capabilities, ConnectionInfo, EventDeletion, EventWrite, EventWriteReceipt, Provider,
+    ProviderResult, ScopeSync,
 };
 use engine_tls::TlsClientConfig;
 
@@ -199,8 +200,14 @@ impl CalDavProvider {
 
 #[async_trait]
 impl Provider for CalDavProvider {
-    fn capabilities(&self) -> &Capabilities {
-        &self.capabilities
+    /// The fixed calendar read/write capabilities plus the transport's negotiated HTTP
+    /// version. The TLS version is always `None` — reqwest exposes only the peer
+    /// certificate, never the negotiated protocol version (`docs/agent-guidance/tls.md`).
+    fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo {
+            http_version: self.executor.http_version(),
+            ..ConnectionInfo::new(self.capabilities)
+        }
     }
 
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {

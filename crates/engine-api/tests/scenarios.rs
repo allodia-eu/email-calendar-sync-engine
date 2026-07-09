@@ -35,7 +35,8 @@ use engine_core::{
     sync::{JmapDataType, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, EmailChunk, EmailStream, Provider, ProviderError, ProviderResult, ScopeSync,
+    Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider, ProviderError, ProviderResult,
+    ScopeSync,
 };
 
 fn account() -> AccountId {
@@ -169,8 +170,8 @@ impl SimProvider {
 
 #[async_trait::async_trait]
 impl Provider for SimProvider {
-    fn capabilities(&self) -> &Capabilities {
-        &self.caps
+    fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo::new(self.caps)
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {

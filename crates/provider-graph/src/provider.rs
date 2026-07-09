@@ -20,8 +20,8 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    Capabilities, EmailChunk, EmailStream, PageToken, PassMode, Provider, ProviderResult,
-    ScopeSync, SyncKind, split_page,
+    Capabilities, ConnectionInfo, EmailChunk, EmailStream, PageToken, PassMode, Provider,
+    ProviderResult, ScopeSync, SyncKind, split_page,
 };
 
 use crate::{fetch, transport::GraphClient};
@@ -81,8 +81,18 @@ impl GraphProvider {
 
 #[async_trait]
 impl Provider for GraphProvider {
-    fn capabilities(&self) -> &Capabilities {
-        &self.capabilities
+    /// The fixed mail capabilities plus the transport's negotiated HTTP version.
+    ///
+    /// Graph has no session-discovery step, so [`GraphClient::connect`] issues no
+    /// request and the HTTP version is `None` until this provider's first fetch —
+    /// unlike JMAP/CalDAV, which learn it while connecting. The TLS version is always
+    /// `None`: reqwest exposes only the peer certificate, never the negotiated
+    /// protocol version (`docs/agent-guidance/tls.md`).
+    fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo {
+            http_version: self.client.http_version(),
+            ..ConnectionInfo::new(self.capabilities)
+        }
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
@@ -243,7 +253,11 @@ mod tests {
     async fn advertises_per_folder_scopes_and_mail_capability() {
         let folder = MailboxId::try_from("folder-inbox").unwrap();
         let provider = GraphProvider::new(fake_client(vec![]), folder.clone());
-        assert!(provider.capabilities().mail());
+        let info = provider.connection_info();
+        assert!(info.capabilities.mail());
+        // A fixture-fed fake transport speaks no HTTP and reqwest never reports TLS.
+        assert_eq!(info.http_version, None);
+        assert_eq!(info.tls_version, None);
         assert_eq!(
             provider.mailbox_scope(&account()),
             SyncScope::GraphFolderList { account: account() }

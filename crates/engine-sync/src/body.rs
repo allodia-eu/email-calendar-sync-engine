@@ -113,7 +113,7 @@ mod tests {
         membership::Memberships,
         raw::RawMime,
     };
-    use engine_provider::{Capabilities, Provider, ProviderResult};
+    use engine_provider::{Capabilities, ConnectionInfo, Provider, ProviderResult};
     use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
     use store_sqlite::SqliteStore;
 
@@ -139,8 +139,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for CountingProvider {
-        fn capabilities(&self) -> &Capabilities {
-            &self.caps
+        fn connection_info(&self) -> ConnectionInfo {
+            ConnectionInfo::new(self.caps)
         }
 
         async fn fetch_message_source(
@@ -178,7 +178,7 @@ mod tests {
         let provider = CountingProvider::new(RAW);
         let store = store();
 
-        assert!(provider.capabilities().message_source());
+        assert!(provider.connection_info().capabilities.message_source());
         let body = fetch_message_body(&provider, &store, &account(), &message())
             .await
             .expect("fetch body");
@@ -256,14 +256,14 @@ mod tests {
         }
         #[async_trait]
         impl Provider for Unsupported {
-            fn capabilities(&self) -> &Capabilities {
-                &self.caps
+            fn connection_info(&self) -> ConnectionInfo {
+                ConnectionInfo::new(self.caps)
             }
         }
         let provider = Unsupported {
             caps: Capabilities::none().with_mail(),
         };
-        assert!(!provider.capabilities().message_source());
+        assert!(!provider.connection_info().capabilities.message_source());
         let err = fetch_message_body(&provider, &store(), &account(), &message())
             .await
             .unwrap_err();
@@ -336,8 +336,8 @@ mod tests {
         }
         #[async_trait]
         impl Provider for Unsupported {
-            fn capabilities(&self) -> &Capabilities {
-                &self.caps
+            fn connection_info(&self) -> ConnectionInfo {
+                ConnectionInfo::new(self.caps)
             }
         }
         let provider = Unsupported {

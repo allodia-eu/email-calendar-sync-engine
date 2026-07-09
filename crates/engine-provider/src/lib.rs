@@ -7,7 +7,7 @@
 //!
 //! - return a normalized [`SyncUpdate`] plus an opaque next cursor, bundled as [`ScopeSync`] — or,
 //!   for a responsive UI, one [`SyncPage`] at a time;
-//! - expose what it can do via [`Capabilities`];
+//! - expose what it can do, and what its transport negotiated, via one [`ConnectionInfo`];
 //! - classify failures through [`ProviderError`] (the engine-neutral
 //!   [`FailureClass`](engine_core::error::FailureClass) taxonomy);
 //! - signal delta-vs-snapshot (carried inside the [`SyncUpdate`] itself).
@@ -23,6 +23,7 @@
 mod boxed;
 mod calendar_write;
 mod capability;
+mod connection;
 mod error;
 mod mail_edit;
 mod page;
@@ -36,6 +37,9 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 pub use calendar_write::{EventDeletion, EventWrite, EventWriteReceipt, WritePrecondition};
 pub use capability::Capabilities;
+#[cfg(feature = "http")]
+pub use connection::ObservedHttpVersion;
+pub use connection::{ConnectionInfo, HttpVersion, TlsVersion};
 use engine_core::{
     calendar::{Calendar, Event},
     ids::AccountId,
@@ -70,8 +74,14 @@ const DEFAULT_DRAIN_PAGE: usize = 500;
 /// quirks; the store owns atomic application.
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// The data domains this adapter supports.
-    fn capabilities(&self) -> &Capabilities;
+    /// Everything this adapter learned about its connection once it was established:
+    /// the data domains it can serve ([`ConnectionInfo::capabilities`]) and the
+    /// transport versions the server negotiated.
+    ///
+    /// The one post-connect seam — callers read facts from it and never switch on
+    /// provider kind (`providers.md`). The returned value is a cheap `Copy`, so an
+    /// adapter may either store it or compose it per call.
+    fn connection_info(&self) -> ConnectionInfo;
 
     /// The scope the account's mail collections (mailboxes/folders/labels) sync
     /// under. Defaults to the JMAP `(account, Mailbox)` scope; mail providers with
