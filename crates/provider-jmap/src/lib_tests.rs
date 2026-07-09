@@ -165,6 +165,15 @@ async fn connect_follows_the_well_known_redirect() {
         .await
         .unwrap();
     assert!(client.session().capabilities().mail());
+    // The redirect was the *first* response this transport saw. The reported version
+    // must describe the endpoint that actually served the session, not the redirector
+    // — which on a real provider can be a different origin negotiating a different
+    // version. Both hops are HTTP/1.1 here; the ordering invariant is locked in
+    // `engine_provider::ObservedHttpVersion`'s own tests.
+    assert_eq!(
+        client.http_version(),
+        Some(engine_provider::HttpVersion::Http1_1)
+    );
 }
 
 #[tokio::test]
@@ -194,6 +203,17 @@ async fn jmap_provider_connects_and_syncs_through_the_real_client() {
     .await
     .unwrap();
     assert!(format!("{provider:?}").contains("JmapProvider"));
+
+    // Connecting fetched the session over the mock server's HTTP/1.1, so the
+    // post-connect object already reports the negotiated version. TLS is `None`: this
+    // is plaintext here, and reqwest could not report a version even over TLS.
+    let info = provider.connection_info();
+    assert_eq!(
+        info.http_version,
+        Some(engine_provider::HttpVersion::Http1_1)
+    );
+    assert_eq!(info.tls_version, None);
+    assert!(info.capabilities.mail());
     let account = engine_core::ids::AccountId::try_from("acct").unwrap();
     assert!(
         provider

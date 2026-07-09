@@ -104,7 +104,7 @@ mod tests {
         membership::Memberships,
         raw::RawMime,
     };
-    use engine_provider::{Capabilities, Provider, ProviderResult};
+    use engine_provider::{Capabilities, ConnectionInfo, Provider, ProviderResult};
     use engine_store::{ManualClock, MessageSourceCache};
     use store_sqlite::SqliteStore;
 
@@ -118,8 +118,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for AttachmentProvider {
-        fn capabilities(&self) -> &Capabilities {
-            &self.caps
+        fn connection_info(&self) -> ConnectionInfo {
+            ConnectionInfo::new(self.caps)
         }
 
         async fn fetch_message_source(
@@ -164,7 +164,7 @@ mod tests {
             hits: AtomicUsize::new(0),
         };
         let store = store();
-        assert!(provider.capabilities().message_source());
+        assert!(provider.connection_info().capabilities.message_source());
 
         let attachments = fetch_message_attachments(&provider, &store, &account(), &message())
             .await

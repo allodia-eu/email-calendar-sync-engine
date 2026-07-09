@@ -123,7 +123,7 @@ mod tests {
         membership::Memberships,
         raw::RawMime,
     };
-    use engine_provider::{Capabilities, Provider, ProviderResult};
+    use engine_provider::{Capabilities, ConnectionInfo, Provider, ProviderResult};
 
     use crate::Engine;
 
@@ -133,8 +133,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for BodyProvider {
-        fn capabilities(&self) -> &Capabilities {
-            &self.caps
+        fn connection_info(&self) -> ConnectionInfo {
+            ConnectionInfo::new(self.caps)
         }
 
         async fn fetch_message_source(
@@ -154,7 +154,7 @@ mod tests {
         let provider = BodyProvider {
             caps: Capabilities::none().with_mail().with_message_source(),
         };
-        assert!(provider.capabilities().message_source());
+        assert!(provider.connection_info().capabilities.message_source());
         let account = AccountId::try_from("acct").expect("account");
         let message = engine_core::mail::Message::new(
             MessageId::try_from("imap:v1:u1@INBOX").expect("id"),
@@ -176,8 +176,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for RelatedProvider {
-        fn capabilities(&self) -> &Capabilities {
-            &self.caps
+        fn connection_info(&self) -> ConnectionInfo {
+            ConnectionInfo::new(self.caps)
         }
 
         async fn fetch_message_source(

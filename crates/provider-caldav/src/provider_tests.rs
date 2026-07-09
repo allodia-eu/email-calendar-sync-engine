@@ -76,10 +76,10 @@ async fn exposes_dav_scopes_and_the_calendar_capabilities() {
 
     // CalDAV does calendar read/sync **and** writes over the same HTTP transport;
     // it does no mail.
-    assert!(provider.capabilities().calendars());
-    assert!(provider.capabilities().calendar_writes());
-    assert!(!provider.capabilities().mail());
-    assert!(!provider.capabilities().submission());
+    assert!(provider.connection_info().capabilities.calendars());
+    assert!(provider.connection_info().capabilities.calendar_writes());
+    assert!(!provider.connection_info().capabilities.mail());
+    assert!(!provider.connection_info().capabilities.submission());
 
     assert_eq!(
         provider.calendar_scope(&account),

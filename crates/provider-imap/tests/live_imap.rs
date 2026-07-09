@@ -140,6 +140,14 @@ async fn live_imap_sync_loads_the_inbox_seed() {
 
     // ---- Sync the INBOX (folder list + its email). ----
     let inbox_provider = connect(&harness, "INBOX").await;
+
+    // Against a *real* server, the post-connect object reports the version the
+    // handshake actually agreed. Both sides are rustls, so it is TLS 1.3; IMAP is not
+    // HTTP, so that fact is absent rather than unobserved (`docs/agent-guidance/tls.md`).
+    let info = inbox_provider.connection_info();
+    assert_eq!(info.tls_version, Some(engine_provider::TlsVersion::Tls1_3));
+    assert_eq!(info.http_version, None);
+
     sync_mail(
         &inbox_provider,
         &store,

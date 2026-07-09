@@ -18,8 +18,8 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    Capabilities, Draft, EmailStream, MailEdit, MailEditReceipt, Provider, ProviderError,
-    ProviderResult, ScopeSync, SubmissionReceipt,
+    Capabilities, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt, Provider,
+    ProviderError, ProviderResult, ScopeSync, SubmissionReceipt, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -28,7 +28,7 @@ use tokio::{
 };
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
-use crate::{error::ImapError, mail::mailbox_from_list, transport::Connection};
+use crate::{error::ImapError, mail::mailbox_from_list, tls_info, transport::Connection};
 
 /// The IMAP folder list carries no sync token (a `LIST` re-snapshots it each pass),
 /// so its cursor is a fixed sentinel — the store round-trips it unread.
@@ -157,7 +157,10 @@ pub struct ImapProvider<S> {
     /// The sync-depth window floor: when set, a snapshot fetches only mail delivered
     /// on or after this date (`ImapConfig::with_since`). `None` syncs the whole mailbox.
     since: Option<time::Date>,
-    capabilities: Capabilities,
+    /// The post-connect facts: the capabilities negotiated post-auth, and the TLS
+    /// version of the **IMAP** session. SMTP submission re-dials per send
+    /// (`SmtpSender::ImplicitTls`), so its handshake is not a fact of this provider.
+    connection_info: ConnectionInfo,
 }
 
 impl<S> core::fmt::Debug for ImapProvider<S> {
@@ -165,7 +168,7 @@ impl<S> core::fmt::Debug for ImapProvider<S> {
         f.debug_struct("ImapProvider")
             .field("mailbox", &self.mailbox)
             .field("since", &self.since)
-            .field("capabilities", &self.capabilities)
+            .field("connection_info", &self.connection_info)
             .finish_non_exhaustive()
     }
 }
@@ -191,8 +194,14 @@ impl ImapProvider<TlsStream<TcpStream>> {
             .smtp
             .as_ref()
             .map(|settings| resolve_smtp(settings, &connector, config));
-        let connection = connect_session(config, &connector).await?;
-        Ok(Self::build(connection, mailbox, smtp, config.since))
+        let (connection, tls_version) = connect_session(config, &connector).await?;
+        Ok(Self::build(
+            connection,
+            mailbox,
+            smtp,
+            config.since,
+            tls_version,
+        ))
     }
 }
 
@@ -203,24 +212,29 @@ impl ImapProvider<TlsStream<TcpStream>> {
 /// standing IDLE socket separate from the sync socket) without duplicating the
 /// connect/login/negotiate sequence or exposing the config's private fields.
 ///
+/// Returns the session together with the TLS version its handshake agreed — the one
+/// point where the concrete stream type is still visible, before it is erased behind
+/// the generic [`Connection<S>`] (`tls_info`).
+///
 /// # Errors
 ///
 /// [`ImapError`] on a TCP/TLS/login failure or a bad server name.
 pub(crate) async fn connect_session(
     config: &ImapConfig,
     connector: &TlsConnector,
-) -> Result<Connection<TlsStream<TcpStream>>, ImapError> {
+) -> Result<(Connection<TlsStream<TcpStream>>, Option<TlsVersion>), ImapError> {
     let tcp = TcpStream::connect(&config.addr).await?;
     let server_name = ServerName::try_from(config.server_name.clone())
         .map_err(|e| ImapError::bad(format!("invalid TLS server name: {e}")))?;
     let tls = connector.connect(server_name, tcp).await?;
+    let tls_version = tls_info::tls_version(&tls);
     let mut connection = Connection::open(tls).await?;
     connection.login(&config.username, &config.password).await?;
     // Detect + ENABLE QRESYNC (RFC 7162) so deltas reconcile flag/expunge changes
     // incrementally, and record IDLE (RFC 2177) support; a server without either stays
     // on the corresponding baseline.
     connection.negotiate_qresync().await?;
-    Ok(connection)
+    Ok((connection, tls_version))
 }
 
 /// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,
@@ -256,12 +270,15 @@ pub(crate) fn format_imap_date(date: time::Date) -> String {
 }
 
 impl<S> ImapProvider<S> {
-    /// Builds a provider, advertising submission iff SMTP is configured.
+    /// Builds a provider, advertising submission iff SMTP is configured, and recording
+    /// the `tls_version` its dial negotiated (`None` when the stream is not TLS — the
+    /// offline mock).
     fn build(
         connection: Connection<S>,
         mailbox: MailboxId,
         smtp: Option<SmtpSender>,
         since: Option<time::Date>,
+        tls_version: Option<TlsVersion>,
     ) -> Self {
         // Mail writes (`UID STORE`/`MOVE`/`EXPUNGE`) and body fetch (`UID FETCH
         // BODY.PEEK[]`) need no extra config — every IMAP session can issue them — so
@@ -285,7 +302,10 @@ impl<S> ImapProvider<S> {
             mailbox,
             smtp,
             since,
-            capabilities,
+            connection_info: ConnectionInfo {
+                tls_version,
+                ..ConnectionInfo::new(capabilities)
+            },
         }
     }
 
@@ -294,14 +314,14 @@ impl<S> ImapProvider<S> {
     /// [`ImapProvider::connect`].
     #[cfg(test)]
     pub(crate) fn with_connection(connection: Connection<S>, mailbox: MailboxId) -> Self {
-        Self::build(connection, mailbox, None, None)
+        Self::build(connection, mailbox, None, None, None)
     }
 }
 
 #[async_trait]
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
-    fn capabilities(&self) -> &Capabilities {
-        &self.capabilities
+    fn connection_info(&self) -> ConnectionInfo {
+        self.connection_info
     }
 
     /// IMAP folder-list state is per account, so the mailbox container syncs under

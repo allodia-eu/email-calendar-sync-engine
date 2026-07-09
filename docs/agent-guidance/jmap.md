@@ -11,9 +11,11 @@ specifics they implement against the Stalwart fixture. Read it before touching
 
 - **`engine-provider`** — the minimal, provider-neutral trait surface. Adapters
   return a normalized [`ScopeSync`] (a `SyncUpdate` + opaque next cursor) or stream
-  one email pass as [`EmailChunk`]s, expose [`Capabilities`], and classify failures
+  one email pass as [`EmailChunk`]s, expose their post-connect facts as one
+  [`ConnectionInfo`] (capabilities + negotiated transport versions — `providers.md`),
+  and classify failures
   with [`ProviderError`] over the engine-neutral `FailureClass`. The `Provider` trait
-  is **shaped by JMAP** and kept small: only `capabilities` is required. Every
+  is **shaped by JMAP** and kept small: only `connection_info` is required. Every
   data-domain method is **default-able** and gated by capability, so an adapter
   implements just the domains it serves — mail providers override `sync_mailboxes`
   + the **streaming** `stream_email` (plus `default_sync_window`,

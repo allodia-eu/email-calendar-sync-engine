@@ -76,7 +76,7 @@ async fn fetch(provider: &CalDavProvider, account: &AccountId) -> Option<Event> 
 /// presence), never on the server-assigned ETag/href values.
 pub(crate) async fn write_round_trip(provider: &CalDavProvider, account: &AccountId) {
     assert!(
-        provider.capabilities().calendar_writes(),
+        provider.connection_info().capabilities.calendar_writes(),
         "the CalDAV provider advertises calendar writes"
     );
     let create_href = provider

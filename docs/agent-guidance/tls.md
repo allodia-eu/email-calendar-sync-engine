@@ -99,6 +99,35 @@ providers enable it), `tls-native-certs` (the `system` root source),
 A `System`/`PlatformVerifier` policy returns `TlsError::Unsupported` when its
 feature is off (the enum stays stable across builds for FFI).
 
+## What the engine reports back (`ConnectionInfo`)
+
+Each adapter surfaces what its transport negotiated through the one post-connect
+seam, `Provider::connection_info()` (`providers.md`). The trust *policy* is
+deliberately **not** in it: the host selected it and already knows it, so the host
+logs it. The object carries only what the **server** decided — and what it can carry
+is asymmetric:
+
+- **IMAP/SMTP** (`tokio-rustls`): `tls_version` comes from rustls'
+  `ClientConnection::protocol_version()`, read off the finished handshake in
+  `provider-imap`'s `tls_info` (the last place the concrete `TlsStream` is visible
+  before `Connection<S>` erases it). No `http_version`. It describes the **IMAP**
+  session; SMTP submission re-dials per send, so its handshake is not a durable fact
+  of the provider.
+- **JMAP / CalDAV / Graph** (`reqwest`): `http_version` comes from
+  `reqwest::Response::version()`, recorded at each transport's single response funnel
+  into a shared `engine_provider::ObservedHttpVersion`. It is the **latest** observation,
+  not the first: both JMAP and CalDAV disable reqwest's redirect following and resolve
+  the well-known `30x` themselves, so the first response belongs to the redirector —
+  possibly a different origin, and a different negotiated version, from the `apiUrl` /
+  calendar home that serves every real request. Latching the first would permanently
+  misreport those providers.
+  `tls_version` is **always `None`**: reqwest 0.13's `TlsInfo` exposes only the peer
+  certificate, never the negotiated protocol version (its internal
+  `Version::from_rustls` serves min/max config only). Extracting it would need a
+  custom connector layer that downcasts to the rustls stream — brittle across
+  reqwest/hyper bumps, for a fact these providers negotiate at TLS 1.3 in practice.
+  **Do not add one.**
+
 ## Testing
 
 - Offline provider fakes bypass TLS entirely, so unit/offline tests are unaffected.
@@ -109,6 +138,11 @@ feature is off (the enum stays stable across builds for FFI).
   in-process `tokio-rustls` server proves one policy makes **both** the reqwest
   client and the connector accept a trusted (pinned/union) cert and reject an
   untrusted (bundled) one.
+- `provider-imap`'s `tls_info` tests stand up an in-process TLS server speaking just
+  enough IMAP to complete `connect_session`, pinned once to the default versions and
+  once to TLS 1.2 — so the reported version is proven to be *read from the handshake*,
+  not assumed. The reqwest adapters' `http_version` is covered the same way, against
+  their in-process mock HTTP/1.1 servers.
 
 ## Host / FFI wiring
 

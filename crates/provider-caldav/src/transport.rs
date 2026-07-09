@@ -9,6 +9,7 @@
 //! so discovery can resolve the RFC 6764 well-known `307` itself.
 
 use async_trait::async_trait;
+use engine_provider::{HttpVersion, ObservedHttpVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{Client, Method, redirect::Policy};
 
@@ -159,6 +160,13 @@ pub(crate) trait DavExecutor: Send + Sync {
     /// precondition instead of a `Depth` + XML body — returning the raw response
     /// (whose `ETag` header is the resource's new entity tag on a successful PUT).
     async fn send_write(&self, request: WriteRequest) -> Result<HttpResponse, CalDavError>;
+
+    /// The HTTP version the transport negotiated. Defaults to `None`: only the live
+    /// [`DavClient`] speaks HTTP, so a fake replaying canned documents has no version
+    /// to report.
+    fn http_version(&self) -> Option<HttpVersion> {
+        None
+    }
 }
 
 /// The live `reqwest`-backed CalDAV transport.
@@ -166,6 +174,15 @@ pub(crate) struct DavClient {
     client: Client,
     base: reqwest::Url,
     credentials: Credentials,
+    /// The HTTP version most recently observed — the post-connect fact
+    /// `ConnectionInfo::http_version` reports. Every response funnels through
+    /// [`DavClient::collect`], and the discovery `PROPFIND` that
+    /// [`CalDavProvider::connect`](crate::CalDavProvider::connect) performs populates it
+    /// before a provider exists. It then keeps tracking: the RFC 6764 well-known `30x`
+    /// this client follows *itself* may be a different origin from the calendar home
+    /// that serves every real request, so the latest observation — not the first — is
+    /// the one that describes the working connection.
+    http_version: ObservedHttpVersion,
 }
 
 impl core::fmt::Debug for DavClient {
@@ -204,11 +221,37 @@ impl DavClient {
             client,
             base,
             credentials,
+            http_version: ObservedHttpVersion::default(),
         })
     }
 }
 
 impl DavClient {
+    /// Reduces a finished reqwest response to an [`HttpResponse`], reading its body and
+    /// the `Location`/`ETag` headers — and recording the negotiated HTTP version on the
+    /// way through. The one funnel every read and write response passes, so no path can
+    /// forget to observe it.
+    async fn collect(&self, response: reqwest::Response) -> Result<HttpResponse, CalDavError> {
+        self.http_version.record(response.version());
+        let status = response.status().as_u16();
+        let header = |name: reqwest::header::HeaderName| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        let location = header(reqwest::header::LOCATION);
+        let etag = header(reqwest::header::ETAG);
+        let body = response.text().await?;
+        Ok(HttpResponse {
+            status,
+            body,
+            location,
+            etag,
+        })
+    }
+
     /// Resolves `href` against the connection origin and builds an authenticated
     /// request for `method` — the shared head of every read and write.
     fn request(
@@ -232,30 +275,12 @@ impl DavClient {
     }
 }
 
-/// Reduces a finished reqwest response to an [`HttpResponse`], reading its body and
-/// the `Location`/`ETag` headers.
-async fn collect(response: reqwest::Response) -> Result<HttpResponse, CalDavError> {
-    let status = response.status().as_u16();
-    let header = |name: reqwest::header::HeaderName| {
-        response
-            .headers()
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned)
-    };
-    let location = header(reqwest::header::LOCATION);
-    let etag = header(reqwest::header::ETAG);
-    let body = response.text().await?;
-    Ok(HttpResponse {
-        status,
-        body,
-        location,
-        etag,
-    })
-}
-
 #[async_trait]
 impl DavExecutor for DavClient {
+    fn http_version(&self) -> Option<HttpVersion> {
+        self.http_version.get()
+    }
+
     async fn send(
         &self,
         method: DavMethod,
@@ -273,7 +298,7 @@ impl DavExecutor for DavClient {
             .body(body)
             .send()
             .await?;
-        collect(response).await
+        self.collect(response).await
     }
 
     async fn send_write(&self, request: WriteRequest) -> Result<HttpResponse, CalDavError> {
@@ -289,7 +314,7 @@ impl DavExecutor for DavClient {
             Precondition::None => builder,
         };
         let response = builder.body(request.body).send().await?;
-        collect(response).await
+        self.collect(response).await
     }
 }
 
@@ -376,3 +401,9 @@ mod tests {
         );
     }
 }
+
+// The live `DavClient` tests need a mock HTTP server; they live in a sibling file so
+// this one stays under the line limit.
+#[cfg(test)]
+#[path = "transport_tests.rs"]
+mod http_transport_tests;

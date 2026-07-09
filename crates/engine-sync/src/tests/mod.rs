@@ -21,9 +21,9 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, ResourceKey},
 };
 use engine_provider::{
-    Capabilities, Draft, EmailChunk, EmailStream, EventDeletion, EventWrite, EventWriteReceipt,
-    MailEdit, MailEditReceipt, Provider, ProviderError, ProviderResult, ScopeSync,
-    SubmissionReceipt,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion, EventWrite,
+    EventWriteReceipt, MailEdit, MailEditReceipt, Provider, ProviderError, ProviderResult,
+    ScopeSync, SubmissionReceipt,
 };
 use engine_recurrence::Horizon;
 use engine_store::{LeaseRequest, ManualClock, PendingOpState, Store, StoreRead, WorkerId};
@@ -100,8 +100,8 @@ impl FakeMail {
 
 #[async_trait::async_trait]
 impl Provider for FakeMail {
-    fn capabilities(&self) -> &Capabilities {
-        &self.caps
+    fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo::new(self.caps)
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {

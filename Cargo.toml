@@ -44,6 +44,11 @@ jiff-tzdb = "0.1.6"
 # (JMAP and Graph do), falling back to HTTP/1.1. Default features stay off otherwise
 # so we do not pull native TLS.
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider", "charset", "http2"] }
+# The HTTP primitives reqwest is built on. Used only for `http::Version`, so
+# `engine-provider` can map what `reqwest::Response::version` returns onto its neutral
+# `HttpVersion` in one place (`engine-provider`'s `http` feature). Must stay on the same
+# major as the copy reqwest resolves, or the versions would be distinct types.
+http = "1.4.1"
 # Pure-Rust TLS for the hand-rolled IMAP transport (implicit-TLS on 993). `ring`
 # (not rustls' default `aws-lc-rs`) keeps the hand-rolled transport's crypto
 # provider explicit. The transport is generic over any async stream; this only

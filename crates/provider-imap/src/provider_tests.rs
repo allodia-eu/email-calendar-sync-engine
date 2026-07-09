@@ -54,15 +54,19 @@ async fn scopes_are_imap_shaped() {
             mailbox: MailboxId::try_from("INBOX").unwrap(),
         }
     );
-    assert!(provider.capabilities().mail());
+    assert!(provider.connection_info().capabilities.mail());
     // Mail writes (STORE/MOVE/EXPUNGE) need no extra config, so every IMAP provider
     // advertises them — unlike submission, which is gated on a configured SMTP.
-    assert!(provider.capabilities().mail_writes());
-    assert!(!provider.capabilities().submission());
-    assert!(!provider.capabilities().calendars());
+    assert!(provider.connection_info().capabilities.mail_writes());
+    assert!(!provider.connection_info().capabilities.submission());
+    assert!(!provider.connection_info().capabilities.calendars());
     // This provider's connection never ran CAPABILITY negotiation, so push (IDLE) is
     // not advertised — it is gated on the server, like submission is on SMTP.
-    assert!(!provider.capabilities().idle());
+    assert!(!provider.connection_info().capabilities.idle());
+    // A mock stream ran no handshake, so there is no TLS version to report; a real
+    // dial captures one (`tls_info`). IMAP is not HTTP, so that version is never set.
+    assert_eq!(provider.connection_info().tls_version, None);
+    assert_eq!(provider.connection_info().http_version, None);
 }
 
 #[tokio::test]
@@ -82,7 +86,7 @@ async fn idle_capability_reflects_a_post_auth_advertisement() {
     conn.negotiate_qresync().await.unwrap();
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
     assert!(
-        provider.capabilities().idle(),
+        provider.connection_info().capabilities.idle(),
         "an advertised IDLE becomes the provider's push capability"
     );
 }
@@ -325,8 +329,9 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
             addr: loopback_smtp(),
         }),
         None,
+        None,
     );
-    assert!(provider.capabilities().submission());
+    assert!(provider.connection_info().capabilities.submission());
 
     let receipt = provider
         .submit_email(&account(), &submit_draft())
@@ -343,7 +348,7 @@ async fn submit_email_without_a_transport_is_rejected() {
         .submit_email(&account(), &submit_draft())
         .await
         .unwrap_err();
-    assert!(!provider.capabilities().submission());
+    assert!(!provider.connection_info().capabilities.submission());
     assert!(!err.is_retryable());
 }
 

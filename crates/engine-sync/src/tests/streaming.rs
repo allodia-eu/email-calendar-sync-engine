@@ -56,8 +56,8 @@ impl ChunkedMail {
 
 #[async_trait::async_trait]
 impl Provider for ChunkedMail {
-    fn capabilities(&self) -> &Capabilities {
-        &self.caps
+    fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo::new(self.caps)
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {

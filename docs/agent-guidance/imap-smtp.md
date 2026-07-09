@@ -23,6 +23,9 @@ is authoritative for the `provider-caldav` calendar client.
   injecting trust policy — the library bakes in no root store, so mobile hosts and
   the self-signed fixture each supply their own. The injected `TlsConnector` is
   built from the shared `engine_tls::TlsClientConfig::connector()` (`tls.md`).
+  Because it drives rustls directly, this is the **only** adapter that can report a
+  negotiated `ConnectionInfo::tls_version` (`tls_info.rs`, captured in
+  `connect_session`); it describes the IMAP session, not the per-send SMTP dial.
 - Layers: `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
   `ENABLE`/`SELECT [(CONDSTORE)]`/`UID FETCH [(CHANGEDSINCE … VANISHED)]`/`LIST`/
   `CREATE`/`APPEND`, literal handling), `parse` (pure response parsers,

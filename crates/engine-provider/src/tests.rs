@@ -11,15 +11,15 @@ use engine_core::{
 use super::*;
 
 /// A trivial in-memory provider, proving the trait is implementable and that
-/// the scope accessors + capabilities + ScopeSync compose as intended.
+/// the scope accessors + connection info + ScopeSync compose as intended.
 struct FakeJmap {
-    caps: Capabilities,
+    info: ConnectionInfo,
 }
 
 #[async_trait]
 impl Provider for FakeJmap {
-    fn capabilities(&self) -> &Capabilities {
-        &self.caps
+    fn connection_info(&self) -> ConnectionInfo {
+        self.info
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
@@ -79,9 +79,9 @@ fn account() -> AccountId {
 #[tokio::test]
 async fn provider_returns_scoped_updates_and_cursors() {
     let provider = FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     };
-    assert!(provider.capabilities().mail());
+    assert!(provider.connection_info().capabilities.mail());
     assert_eq!(
         provider.email_scope(&account()),
         SyncScope::JmapType {
@@ -114,7 +114,7 @@ async fn email_stream_primitive_drives_the_drain_default() {
     use futures_util::StreamExt;
 
     let provider = FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     };
 
     // The streaming primitive: a first pass (no cursor) is a one-chunk reconciling
@@ -143,7 +143,7 @@ async fn submit_email_defaults_to_unsupported() {
     use engine_core::{error::FailureClass, ids::MessageIdHeader, mail::EmailAddress};
 
     let provider = FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     };
     // A mail-only provider that did not override submission rejects the call,
     // so a capability-checking caller never depends on the default.
@@ -158,16 +158,16 @@ async fn submit_email_defaults_to_unsupported() {
     assert_eq!(err.class(), FailureClass::InvalidState);
 }
 
-/// A provider implementing only the required `capabilities`, leaving every other
+/// A provider implementing only the required `connection_info`, leaving every other
 /// method to its trait default — so boxing it exercises the blanket impl's
 /// delegation to the *defaults*, not just to an adapter's overrides.
 struct BareProvider {
-    caps: Capabilities,
+    info: ConnectionInfo,
 }
 
 impl Provider for BareProvider {
-    fn capabilities(&self) -> &Capabilities {
-        &self.caps
+    fn connection_info(&self) -> ConnectionInfo {
+        self.info
     }
 }
 
@@ -194,9 +194,9 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
     // data (delegation honors overrides), and the working paged primitive drives
     // the inherited drain default.
     let over: Box<dyn Provider> = Box::new(FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     });
-    assert!(over.capabilities().mail());
+    assert!(over.connection_info().capabilities.mail());
     assert_eq!(over.email_scope(&account()), email_scope);
     assert_eq!(over.mailbox_scope(&account()), mailbox_scope);
     assert!(over.sync_mailboxes(&account(), None).await.is_ok());
@@ -217,9 +217,9 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
     // non-required method — the scope defaults compute, the unsupported async
     // operations reject with `InvalidState`.
     let bare: Box<dyn Provider> = Box::new(BareProvider {
-        caps: Capabilities::none(),
+        info: ConnectionInfo::new(Capabilities::none()),
     });
-    assert!(!bare.capabilities().mail());
+    assert!(!bare.connection_info().capabilities.mail());
     assert_eq!(bare.mailbox_scope(&account()), mailbox_scope);
     assert_eq!(bare.email_scope(&account()), email_scope);
     assert_eq!(
@@ -301,10 +301,10 @@ async fn mail_writes_default_to_unsupported() {
     // capability-checking caller never depends on the default — and a boxed
     // adapter delegates `edit_mail` to that same default (the blanket impl).
     let direct = FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     };
     let boxed: Box<dyn Provider> = Box::new(FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     });
     for err in [
         direct.edit_mail(&account(), &edit).await.unwrap_err(),
@@ -326,10 +326,10 @@ async fn message_source_default_to_unsupported() {
     // capability-checking caller never depends on the default — and a boxed
     // adapter delegates `fetch_message_source` to that same default.
     let direct = FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     };
     let boxed: Box<dyn Provider> = Box::new(FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     });
     for err in [
         direct
@@ -354,7 +354,7 @@ async fn calendar_writes_default_to_unsupported() {
     };
 
     let provider = FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     };
     let href = EventId::try_from("/cal/evt-1.ics").unwrap();
     let write = crate::EventWrite::create(
@@ -377,7 +377,7 @@ async fn calendar_writes_default_to_unsupported() {
 #[tokio::test]
 async fn calendar_methods_default_to_unsupported_with_jmap_scopes() {
     let provider = FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     };
     assert_eq!(
         provider.calendar_scope(&account()),
@@ -401,6 +401,31 @@ async fn calendar_methods_default_to_unsupported_with_jmap_scopes() {
 fn provider_is_object_safe() {
     // Hosts may hold `Box<dyn Provider>`; ensure the trait stays object-safe.
     let _provider: Box<dyn Provider> = Box::new(FakeJmap {
-        caps: Capabilities::none().with_mail(),
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
     });
+}
+
+#[tokio::test]
+async fn box_dyn_provider_delegates_the_transport_facts_not_just_capabilities() {
+    // A host behind dynamic dispatch must still see the *whole* post-connect object:
+    // if the blanket impl ever rebuilt a `ConnectionInfo` from capabilities alone,
+    // the negotiated versions would silently become `None`.
+    let inner = FakeJmap {
+        info: ConnectionInfo {
+            tls_version: Some(TlsVersion::Tls1_3),
+            http_version: Some(HttpVersion::Http2),
+            ..ConnectionInfo::new(Capabilities::none().with_mail())
+        },
+    };
+    let expected = inner.connection_info();
+    let boxed: Box<dyn Provider> = Box::new(inner);
+    assert_eq!(boxed.connection_info(), expected);
+    assert_eq!(
+        boxed.connection_info().tls_version,
+        Some(TlsVersion::Tls1_3)
+    );
+    assert_eq!(
+        boxed.connection_info().http_version,
+        Some(HttpVersion::Http2)
+    );
 }

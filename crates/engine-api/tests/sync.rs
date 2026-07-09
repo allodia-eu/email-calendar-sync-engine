@@ -21,8 +21,8 @@ use engine_core::{
     time::{CalendarDateTime, LocalDateTime},
 };
 use engine_provider::{
-    Capabilities, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt, Provider,
-    ProviderError, ProviderResult, ScopeSync, SubmissionReceipt,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
+    Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt,
 };
 use tokio::sync::oneshot;
 
@@ -94,8 +94,8 @@ impl FakeProvider {
 
 #[async_trait::async_trait]
 impl Provider for FakeProvider {
-    fn capabilities(&self) -> &Capabilities {
-        &self.caps
+    fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo::new(self.caps)
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
@@ -215,8 +215,8 @@ struct GateProvider {
 
 #[async_trait::async_trait]
 impl Provider for GateProvider {
-    fn capabilities(&self) -> &Capabilities {
-        self.inner.capabilities()
+    fn connection_info(&self) -> ConnectionInfo {
+        self.inner.connection_info()
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
@@ -268,8 +268,8 @@ struct SubmittingProvider {
 
 #[async_trait::async_trait]
 impl Provider for SubmittingProvider {
-    fn capabilities(&self) -> &Capabilities {
-        self.inner.capabilities()
+    fn connection_info(&self) -> ConnectionInfo {
+        self.inner.connection_info()
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
@@ -336,8 +336,8 @@ struct ReconcilingProvider {
 
 #[async_trait::async_trait]
 impl Provider for ReconcilingProvider {
-    fn capabilities(&self) -> &Capabilities {
-        &self.caps
+    fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo::new(self.caps)
     }
 
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {

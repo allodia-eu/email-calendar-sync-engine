@@ -42,6 +42,10 @@ tokio = { workspace = true, features = ["io-util", "net", "time", "sync", "macro
 # cert (live tests), and the bundled default for the example's verifying connector.
 # The library itself stays root-store-agnostic — the host injects the connector.
 engine-tls = { workspace = true, features = ["dangerous-testing"] }
+# Generates the self-signed cert the in-process TLS+IMAP server in `tls_info` presents,
+# so the real handshake — and the TLS version read off it — is covered offline. Pure
+# Rust; mirrors `engine-tls`'s own round-trip test.
+rcgen = "0.13"
 # The gated live test deserializes stored objects to assert the seed invariants.
 serde = { workspace = true }
 serde_json = { workspace = true }

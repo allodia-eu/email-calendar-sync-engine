@@ -113,7 +113,7 @@ async fn edit_mail_marks_seen_through_the_real_set_flow() {
     let p = provider(vec![json!({
         "methodResponses": [["Email/set", { "updated": { "eaaaaab": null } }, "0"]]
     })]);
-    assert!(p.capabilities().mail_writes());
+    assert!(p.connection_info().capabilities.mail_writes());
 
     let key = ProviderKey::new("eaaaaab").unwrap();
     let receipt = p

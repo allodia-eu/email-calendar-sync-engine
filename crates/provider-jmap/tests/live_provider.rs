@@ -133,7 +133,16 @@ async fn live_message_source() {
     let provider = connect(&harness).await;
 
     // Advertised because the session exposes mail + a download template.
-    assert!(provider.capabilities().message_source());
+    let info = provider.connection_info();
+    assert!(info.capabilities.message_source());
+    // Connecting fetched the session, so the negotiated HTTP version is already known.
+    // The harness serves plaintext HTTP, so ALPN never offers `h2` and it is 1.1. TLS
+    // is `None` even over TLS: reqwest cannot report it (`docs/agent-guidance/tls.md`).
+    assert_eq!(
+        info.http_version,
+        Some(engine_provider::HttpVersion::Http1_1)
+    );
+    assert_eq!(info.tls_version, None);
 
     let emails = provider.sync_email(&account(), None).await.unwrap();
     let SyncUpdate::Snapshot { objects, .. } = &emails.update else {
@@ -288,7 +297,7 @@ async fn live_edit_mail_keyword_move_and_delete() {
         .wait_until_ready(std::time::Duration::from_secs(30))
         .expect("ready");
     let provider = connect(&harness).await;
-    assert!(provider.capabilities().mail_writes());
+    assert!(provider.connection_info().capabilities.mail_writes());
 
     // Operate on a throwaway message we own (the Sent copy of a fresh submission),
     // so the shared seed dataset the other live tests assert on stays untouched.
@@ -363,7 +372,7 @@ async fn live_watch_sees_a_change_over_event_source() {
 
     // The provider advertises push (an EventSource endpoint).
     let provider = connect(&harness).await;
-    assert!(provider.capabilities().idle());
+    assert!(provider.connection_info().capabilities.idle());
 
     // Open a dedicated watch stream BEFORE causing the change, so the notification
     // cannot fall into the gap. A short ping keeps the stream lively.
