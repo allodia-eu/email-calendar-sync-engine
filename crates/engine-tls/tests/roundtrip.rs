@@ -180,6 +180,32 @@ async fn reqwest_negotiates_http2_when_offered() {
     assert_eq!(response.status().as_u16(), 200);
 }
 
+/// Security invariant: the shared config enforces a **TLS 1.2 floor** uniformly.
+/// The real `client_config` negotiates exactly TLS 1.2 with a 1.2-only server and
+/// TLS 1.3 with a default server; rustls implements no version below 1.2, so 1.2
+/// is the hard floor for every provider sharing this config (the reqwest HTTP
+/// three and the IMAP/SMTP connector alike).
+#[tokio::test]
+async fn shared_config_enforces_tls12_floor_and_prefers_tls13() {
+    use rustls::ProtocolVersion;
+
+    for (versions, expected) in [
+        (&[&rustls::version::TLS12][..], ProtocolVersion::TLSv1_2),
+        (rustls::DEFAULT_VERSIONS, ProtocolVersion::TLSv1_3),
+    ] {
+        let (cert, port) = tls_server_with_versions(versions).await;
+        let name = ServerName::try_from("127.0.0.1").unwrap();
+        let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let stream = client_config(&TlsPolicy::pinned(vec![cert]))
+            .unwrap()
+            .connector()
+            .connect(name, tcp)
+            .await
+            .expect("handshake with a supported TLS version");
+        assert_eq!(stream.get_ref().1.protocol_version(), Some(expected));
+    }
+}
+
 #[tokio::test]
 async fn connector_trusts_pinned_and_rejects_untrusted() {
     let (cert, port) = tls_server().await;

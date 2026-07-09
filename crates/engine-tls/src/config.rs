@@ -48,6 +48,13 @@ impl Default for TlsClientConfig {
 pub fn client_config(policy: &TlsPolicy) -> Result<TlsClientConfig, TlsError> {
     ensure_process_provider();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
+    // TLS 1.2 floor, newest ceiling. rustls's safe defaults are TLS 1.2 + 1.3 (it
+    // implements nothing older), and this one config backs every provider — the
+    // reqwest HTTP three and the IMAP/SMTP connector alike — so the 1.2 minimum is
+    // uniform by construction. Preferred over hardcoding the version list, which
+    // would freeze the ceiling against a future TLS version. (reqwest's own
+    // `min_tls_version` does not apply on the preconfigured-TLS path, so the floor
+    // must live here regardless.)
     let builder = ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
         .map_err(|_| TlsError::Provider)?;

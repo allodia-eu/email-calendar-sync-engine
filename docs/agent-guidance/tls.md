@@ -74,6 +74,12 @@ own, so it is set here. The shared connector (IMAP/SMTP) carries no ALPN.
 
 - **One backend: `ring`.** Every config is built with an explicit
   `rustls::crypto::ring::default_provider()`; `aws-lc-rs` is out of the tree.
+- **TLS 1.2 floor, uniform across providers.** The shared config uses
+  `with_safe_default_protocol_versions()` (rustls's safe defaults, TLS 1.2 + 1.3;
+  rustls implements nothing older), so every provider — the reqwest HTTP three and
+  the IMAP/SMTP connector — has the same 1.2 minimum by construction. Do **not**
+  reach for reqwest's `min_tls_version`: it has no effect on the preconfigured-TLS
+  path, so the floor must live in the shared config (which is why it is uniform).
 - reqwest uses the **`rustls-no-provider`** feature (not `rustls`), which gives the
   rustls integration without `aws-lc-rs` and without reqwest's own platform-verifier
   path. We always hand reqwest a preconfigured config via `tls_backend_preconfigured`.
