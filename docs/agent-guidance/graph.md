@@ -29,7 +29,10 @@ account-wide message delta, so sync is per folder.
   (the v1.0 root is fixed); requests carry `Prefer: IdType="ImmutableId"`.
   Having no connect-time request, Graph is the one adapter whose
   `ConnectionInfo::http_version` is `None` until its first fetch — the transport
-  records it at its single `send` funnel (`providers.md`, `tls.md`).
+  records it at its single `send` funnel (`providers.md`, `tls.md`). For the same
+  reason it takes **no** `ConnectObserver` and emits **no** `ConnectStep`: there is no
+  connect exchange to observe, and `GraphClient::connect` performs no I/O at all. That
+  absence is documented, never faked with a synthetic step.
   `GraphClient::with_base` overrides the API origin (a forward proxy, a regional/
   sovereign endpoint, or the test replay server), **rebasing** the absolute
   `@odata.nextLink`/`deltaLink` URLs Graph returns onto that origin so

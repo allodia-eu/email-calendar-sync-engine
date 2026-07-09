@@ -44,6 +44,8 @@
 //! - `mutate` — applying a [`MailEdit`](engine_provider::MailEdit) (`UID STORE`/`MOVE`/`EXPUNGE`)
 //!   to the bound mailbox.
 //! - `filing` — SMTP submission + `APPEND` filing of sent copies and drafts.
+//! - `config` — [`ImapConfig`]: the dial settings (address, TLS server name, credentials, SMTP
+//!   submission, sync depth, connect observer).
 //! - `provider` — [`ImapProvider`], the [`Provider`](engine_provider::Provider) impl.
 //! - `idle` / `watch` — push via `IDLE` (RFC 2177): [`ImapWatcher`] holds a dedicated standing
 //!   connection and turns the `IDLE`/`DONE` keep-alive loop into a
@@ -55,6 +57,7 @@
 
 mod base64;
 mod bodystructure;
+mod config;
 mod cursor;
 mod encoded_word;
 mod error;
@@ -83,6 +86,7 @@ mod integration;
 #[cfg(test)]
 mod mock;
 
+pub use config::ImapConfig;
 pub use error::ImapError;
-pub use provider::{ImapConfig, ImapProvider};
+pub use provider::ImapProvider;
 pub use watch::{DEFAULT_IDLE_KEEPALIVE, ImapWatcher};

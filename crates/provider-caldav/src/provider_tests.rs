@@ -13,7 +13,7 @@ use engine_core::{
     sync::SyncScope,
     time::TimeZoneId,
 };
-use engine_provider::Provider;
+use engine_provider::{IgnoreConnectSteps, Provider};
 use engine_recurrence::Horizon;
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::sync_calendar;
@@ -32,9 +32,14 @@ const HOME: &str = include_str!("../tests/fixtures/calendar-home.xml");
 const SYNC_INITIAL: &str = include_str!("../tests/fixtures/sync-initial.xml");
 
 async fn connect(exec: Replay) -> CalDavProvider {
-    CalDavProvider::with_executor(Box::new(exec), "/.well-known/caldav", "default")
-        .await
-        .expect("discovery")
+    CalDavProvider::with_executor(
+        Box::new(exec),
+        "/.well-known/caldav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .expect("discovery")
 }
 
 async fn load<T: DeserializeOwned>(
@@ -209,6 +214,7 @@ async fn calendar_list_includes_a_bound_collection_outside_the_home() {
         Box::new(replay(vec![PRINCIPAL, HOME])),
         "/.well-known/caldav",
         "/shared/team-calendar/",
+        &IgnoreConnectSteps,
     )
     .await
     .expect("discovery");
@@ -309,10 +315,14 @@ async fn an_update_round_trips_raw_ical_preserving_non_jscalendar_properties() {
         crate::test_support::ok(PRINCIPAL),
         wrote(201, Some("\"rt-v2\"")),
     ]));
-    let provider =
-        CalDavProvider::with_executor(Box::new(exec.clone()), "/.well-known/caldav", "default")
-            .await
-            .expect("discovery");
+    let provider = CalDavProvider::with_executor(
+        Box::new(exec.clone()),
+        "/.well-known/caldav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .expect("discovery");
     let account = AccountId::try_from("acct").unwrap();
     let write = EventWrite::update(
         href.clone(),
@@ -394,10 +404,14 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
         ok(PRINCIPAL),
         wrote(204, Some("\"rt-v2\"")),
     ]));
-    let provider =
-        CalDavProvider::with_executor(Box::new(exec.clone()), "/.well-known/caldav", "default")
-            .await
-            .expect("discovery");
+    let provider = CalDavProvider::with_executor(
+        Box::new(exec.clone()),
+        "/.well-known/caldav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .expect("discovery");
     let store =
         SqliteStore::open_in_memory(ManualClock::new("2026-06-20T00:00:00Z".parse().unwrap()))
             .expect("store");

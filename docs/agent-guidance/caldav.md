@@ -97,7 +97,14 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   (SabreDAV/Soverin) returns only the principal there, so the second `PROPFIND` is
   required — skipping it fails with "no calendar-home-set". Each `PROPFIND` follows
   the server's redirect itself (the transport does **not** auto-follow, mirroring
-  the JMAP session flow). Then `PROPFIND Depth:1` the home and keep the responses
+  the JMAP session flow), emitting one `ConnectStep::Redirected` per hop to the
+  config's `ConnectObserver` (`providers.md`), and `ConnectStep::Discovered` with the
+  resolved calendar home once discovery settles. The principal → home-set second step
+  is **not** a redirect and emits nothing: it is a second `PROPFIND` of a *different*
+  resource, not the same resource moving. CalDAV emits no `Authenticated` step —
+  credentials ride on every `PROPFIND`, so there is no discrete authentication
+  exchange to observe — and no `TlsEstablished`, because reqwest never exposes the
+  negotiated version (`tls.md`). Then `PROPFIND Depth:1` the home and keep the responses
   whose `resourcetype` marks them a `calendar`. Hrefs may be absolute paths or full
   URLs; the executor resolves them against the connection origin (the JMAP
   `RebaseToConnection` posture), and a bound-collection value that is itself an

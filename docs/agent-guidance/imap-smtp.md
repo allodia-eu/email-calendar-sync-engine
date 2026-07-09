@@ -25,7 +25,15 @@ is authoritative for the `provider-caldav` calendar client.
   built from the shared `engine_tls::TlsClientConfig::connector()` (`tls.md`).
   Because it drives rustls directly, this is the **only** adapter that can report a
   negotiated `ConnectionInfo::tls_version` (`tls_info.rs`, captured in
-  `connect_session`); it describes the IMAP session, not the per-send SMTP dial.
+  `connect_session`); it describes the IMAP session, not the per-send SMTP dial. For
+  the same reason it is the only one to emit `ConnectStep::TlsEstablished` on the
+  connect-observer seam (`providers.md`), followed by `ConnectStep::Authenticated` once
+  `LOGIN` succeeds — and nothing else: IMAP dials a known address and runs no
+  discovery, so it has no `Redirected`/`Discovered` step. Both are emitted from
+  `open_session`, the stream-generic half of the dial, so the offline suite asserts the
+  exact sequence over a `MockStream`. A rejected `LOGIN` emits no `Authenticated`. The
+  observer rides on `ImapConfig` (`config.rs`), so an `ImapWatcher`'s dedicated
+  connection — which shares `connect_session` — is observed too.
 - Layers: `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
   `ENABLE`/`SELECT [(CONDSTORE)]`/`UID FETCH [(CHANGEDSINCE … VANISHED)]`/`LIST`/
   `CREATE`/`APPEND`, literal handling), `parse` (pure response parsers,

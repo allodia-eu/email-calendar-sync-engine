@@ -99,7 +99,7 @@ providers enable it), `tls-native-certs` (the `system` root source),
 A `System`/`PlatformVerifier` policy returns `TlsError::Unsupported` when its
 feature is off (the enum stays stable across builds for FFI).
 
-## What the engine reports back (`ConnectionInfo`)
+## What the engine reports back (`ConnectionInfo`, `ConnectStep`)
 
 Each adapter surfaces what its transport negotiated through the one post-connect
 seam, `Provider::connection_info()` (`providers.md`). The trust *policy* is
@@ -113,6 +113,11 @@ is asymmetric:
   before `Connection<S>` erases it). No `http_version`. It describes the **IMAP**
   session; SMTP submission re-dials per send, so its handshake is not a durable fact
   of the provider.
+The same asymmetry decides who can emit `ConnectStep::TlsEstablished` on the
+connect-phase observer seam (`providers.md`): only `provider-imap`, for exactly the
+reason below — it owns the finished `TlsStream`. A `reqwest` adapter has no version
+to report and invents none.
+
 - **JMAP / CalDAV / Graph** (`reqwest`): `http_version` comes from
   `reqwest::Response::version()`, recorded at each transport's single response funnel
   into a shared `engine_provider::ObservedHttpVersion`. It is the **latest** observation,
