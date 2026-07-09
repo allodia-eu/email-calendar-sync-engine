@@ -48,4 +48,7 @@ pub use store::{IndexRowCounts, MailIndexEntry, Store, StoreRead};
 /// History:
 /// - `2`: the mail FTS `body` now folds in sender/recipient address text, and FTS terms are
 ///   prefix-matched; existing stores re-project to populate the new text.
-pub const NORMALIZER_VERSION: u32 = 2;
+/// - `3`: a message's thread id moved from `thread_id` to `thread`, which records whether the
+///   provider assigned the id or the engine derived it (`threading.md`); a stored message
+///   deserializes with no thread until the re-snapshot restores the provider's id.
+pub const NORMALIZER_VERSION: u32 = 3;

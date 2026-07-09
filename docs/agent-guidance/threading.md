@@ -6,10 +6,16 @@ derivation pass (`engine-sync` `threading.rs`), or `Engine::derive_mail_threads`
 
 ## Model
 
-- `Message.thread_id: Option<ThreadId>` — the conversation a message belongs to.
-- `Thread` (engine-core) carries `ThreadProvenance { Provider, Derived }`:
-  provider-assigned (JMAP `Thread.id`, Gmail `threadId`, Graph `conversationId`) vs
-  locally derived.
+- `Message.thread: Option<ThreadRef>` — the conversation a message belongs to, as
+  `{ id: ThreadId, provenance: ThreadProvenance }`. `Message::thread_id()` reads just
+  the id. `Thread` (engine-core) carries the same `ThreadProvenance`.
+- `ThreadProvenance { ProviderAssigned, LocallyDerived }` — provider-assigned (JMAP
+  `Thread.id`, Gmail `threadId`, Graph `conversationId`) vs derived by this engine.
+  **The provenance is load-bearing, not decoration**: derivation re-runs after every
+  sync and re-groups its *own* ids, so it must be able to tell them from the
+  provider's, which it never touches. An id alone cannot say where it came from — that
+  is what let a reply synced after its thread was derived become a singleton thread
+  (issue #53).
 - The RFC 5322 `Message-ID` / `In-Reply-To` / `References` headers (`Envelope`) are
   threading hints, never identity (`modeling.md`).
 
@@ -31,22 +37,37 @@ derivation pass (`engine-sync` `threading.rs`), or `Engine::derive_mail_threads`
 - **Union-find over the Message-ID graph.** Two messages unite if they share any id they
   own or reference. A reply (whose `References`/`In-Reply-To` carry the parent's
   `Message-ID`) joins its parent; the same message copied into two folders (same
-  `Message-ID`) is one conversation. Each component gets a **stable** `ThreadId`: the
+  `Message-ID`) is one conversation.
+- **Which messages enter the graph.** Those with no thread id **and those the engine
+  derived one for**. Re-grouping already-derived mail is the whole point: a reply that
+  arrives in a later sync unites with the thread it belongs to, which is only possible
+  if that thread's members are still in the graph. Provider-threaded messages stay out
+  entirely and are never rewritten — a `References` header must not merge two threads
+  the provider kept apart — so the pass is a no-op for JMAP/Graph.
+- **The thread id is a function of the component**, not of arrival order: the
   lexicographically smallest owned `Message-ID`, falling back to the smallest provider
-  key when a component owns none.
+  key when a component owns none. A full resync therefore reproduces the same ids. The
+  price is that a merge can **re-key** a thread (a late message owning a smaller id, or
+  two components joining): every member is then re-applied with the new id, and a host
+  keying list rows on `thread_id` sees those rows change identity. This was chosen over
+  letting the incumbent thread keep its id, which would make ids depend on sync order
+  and diverge from what a resync produces.
 - **No subject linking.** JWZ-style subject merging over-merges unrelated mail; the
   header graph is the safe baseline. A guarded subject fallback is a possible future
   refinement.
-- **Persistence.** `derive_mail_threads` re-applies the changed messages per scope (the
-  object payload **and** the re-projected `mail_index.thread_id`) **without advancing
-  the scope cursor** — it is a derivation, not a sync, so the next sync still resumes
-  correctly. Messages already carrying a provider-assigned id are left untouched, so the
-  pass is a no-op for JMAP.
+- **Persistence.** `derive_mail_threads` re-applies only the messages whose id changed,
+  per scope (the object payload **and** the re-projected `mail_index.thread_id`)
+  **without advancing the scope cursor** — it is a derivation, not a sync, so the next
+  sync still resumes correctly. A pass over unchanged mail writes nothing.
 - IMAP must fetch the `References` header for this to work — it is **not** in the IMAP
   `ENVELOPE`, so `provider-imap` fetches `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` alongside
   `ENVELOPE` (`imap-smtp.md`).
 
 ## Host responsibility
+
+Run `Engine::derive_mail_threads` after **every** mail sync of a derived-threading
+account, not only the first: a pass groups the mail that is in the store when it runs,
+so mail synced since the last pass is unthreaded until the next one.
 
 The engine derives and **persists** the grouping; it exposes the flat list
 (`Engine::messages`, each row carrying `thread_id`) and a host groups by `thread_id`.

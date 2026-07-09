@@ -125,7 +125,7 @@ pub fn project_message(message: &Message) -> MailProjection {
             key: key.clone(),
             date_utc: message.received_at.or(message.sent_at),
             has_attachment: message.has_attachment,
-            thread_id: message.thread_id.clone(),
+            thread_id: message.thread_id().cloned(),
         },
         addresses,
         memberships,

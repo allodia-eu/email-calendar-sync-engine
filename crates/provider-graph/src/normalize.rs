@@ -18,7 +18,7 @@
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword},
+    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword, ThreadRef},
     membership::Memberships,
     version::{ChangeKey, ETag, RevisionTokens},
 };
@@ -132,7 +132,10 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GraphError> {
     let mut message = Message::new(id, Memberships::of_one(folder));
 
     if let Some(thread) = opt_str(value, "conversationId") {
-        message.thread_id = Some(wrap_id(ThreadId::try_from(thread), "conversation id")?);
+        message.thread = Some(ThreadRef::provider_assigned(wrap_id(
+            ThreadId::try_from(thread),
+            "conversation id",
+        )?));
     }
     // Graph models read/draft/flag as their own booleans, not a keyword set.
     if bool_field(value, "isRead") {
@@ -375,7 +378,8 @@ mod tests {
             "bracket-stripped Message-ID, got {message_id:?}"
         );
         // conversationId → thread provenance; etag → revision token.
-        assert!(msg.thread_id.is_some());
+        // The conversation id is the provider's, never re-grouped by local derivation.
+        assert!(msg.thread.as_ref().is_some_and(|t| !t.is_derived()));
         assert!(msg.revisions.etag.is_some());
         // Captured unread, not a draft, not flagged.
         assert!(msg.is_unread());

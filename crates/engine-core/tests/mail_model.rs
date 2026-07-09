@@ -6,6 +6,7 @@ use engine_core::{
     mail::{
         EmailAddress, EmailAddressGroup, EmailBodyPart, EmailHeader, Envelope, Keyword,
         KeywordError, Mailbox, MailboxRole, Message, SystemKeyword, Thread, ThreadProvenance,
+        ThreadRef,
     },
     membership::Memberships,
 };
@@ -25,7 +26,10 @@ fn jmap_email_has_multiple_mailbox_memberships() {
         "email-1",
         Memberships::new([mailbox("inbox"), mailbox("important")]).unwrap(),
     );
-    msg.thread_id = Some(ThreadId::try_from("t-1").unwrap());
+    msg.thread = Some(ThreadRef::provider_assigned(
+        ThreadId::try_from("t-1").unwrap(),
+    ));
+    assert_eq!(msg.thread_id().unwrap().as_str(), "t-1");
     assert_eq!(msg.mailboxes.len().get(), 2);
     assert!(msg.mailboxes.contains(&mailbox("inbox")));
     assert!(msg.mailboxes.contains(&mailbox("important")));

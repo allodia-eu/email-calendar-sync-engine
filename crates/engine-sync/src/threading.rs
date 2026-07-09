@@ -1,9 +1,9 @@
 //! Local thread derivation.
 //!
 //! Providers that assign their own thread ids (JMAP `Thread.id`, Gmail `threadId`,
-//! Graph `conversationId`) set [`Message::thread_id`] during sync. Providers that do
-//! not — notably IMAP — leave it `None`, so the engine **derives** it from the RFC
-//! 5322 `Message-ID` / `In-Reply-To` / `References` headers (`modeling.md`: those are
+//! Graph `conversationId`) set [`Message::thread`] during sync. Providers that do not —
+//! notably IMAP — leave it `None`, so the engine **derives** it from the RFC 5322
+//! `Message-ID` / `In-Reply-To` / `References` headers (`modeling.md`: those are
 //! threading hints, not identity).
 //!
 //! Derivation is **account-wide and cross-folder**: a reply filed in Sent and its
@@ -15,19 +15,30 @@
 //! The grouping is a union-find over the message-id graph: two messages are united if
 //! they share any id they own or reference (so a duplicate of one message in two
 //! folders, and a reply that references its parent, both unite). Each component gets a
-//! stable [`ThreadId`] (the lexicographically smallest owned `Message-ID`, falling
-//! back to the smallest provider key). Subject-based linking is deliberately omitted
-//! for now — it over-merges unrelated mail; the header graph is the safe baseline.
+//! [`ThreadId`] that is a pure function of the component (the lexicographically
+//! smallest owned `Message-ID`, falling back to the smallest provider key), so it does
+//! not depend on the order mail arrived in and a full resync reproduces it exactly.
+//! Subject-based linking is deliberately omitted for now — it over-merges unrelated
+//! mail; the header graph is the safe baseline.
 //!
-//! Only messages without a provider-assigned thread id are touched, so running this
-//! against a JMAP account is a no-op.
+//! The pass runs over the messages that carry **no** thread id and the ones whose id it
+//! [derived](engine_core::mail::ThreadProvenance::LocallyDerived) itself — a reply
+//! synced long after its thread was first derived must still join it, which means
+//! re-grouping mail that was already grouped. Messages the *provider* threaded are
+//! excluded from the graph entirely and never rewritten (a stray `References` header
+//! must not merge two threads the provider kept apart), so the pass is a no-op against
+//! a JMAP account.
+//!
+//! A merge can therefore **re-key** an existing thread: when a message owning a smaller
+//! `Message-ID` joins, the component's id changes and every member is re-applied. Hosts
+//! that key list rows on `thread_id` must tolerate that (`threading.md`).
 
 use core::time::Duration;
 use std::collections::{BTreeSet, HashMap};
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey, ThreadId},
-    mail::Message,
+    mail::{Message, ThreadRef},
     sync::{ObjectKind, SyncScope, SyncUpdate},
 };
 use engine_store::{ApplyBatch, LeaseRequest, Store, StoreRead, WorkerId};
@@ -37,9 +48,10 @@ use crate::{SyncError, derive_messages};
 /// What one [`derive_mail_threads`] pass changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThreadDeriveReport {
-    /// Messages that gained a derived thread id.
+    /// Messages written with a derived thread id they did not already carry — the
+    /// newly grouped ones, plus any whose thread a merge re-keyed.
     pub messages_assigned: usize,
-    /// Distinct derived threads spanning those messages.
+    /// Distinct derived threads spanning the account's derivable mail.
     pub threads: usize,
 }
 
@@ -52,8 +64,10 @@ pub struct ThreadDeriveReport {
 /// **without advancing the scope cursor** (it is a derivation, not a sync), so the
 /// next real sync still resumes from where it left off. Lease-gated like sync.
 ///
-/// Idempotent: a message that already carries the derived id is re-applied to the same
-/// value. Run it after [`sync_mail`](crate::sync_mail) completes.
+/// Run it after [`sync_mail`](crate::sync_mail) completes: it re-groups the mail it
+/// grouped on earlier passes, so mail synced since then joins the threads it belongs
+/// to. A message that already carries its derived id is left alone, so a pass over
+/// unchanged mail writes nothing.
 ///
 /// # Errors
 ///
@@ -95,16 +109,18 @@ where
         .collect::<BTreeSet<ThreadId>>()
         .len();
 
-    // Persist per scope: re-apply only the messages that gained an id, re-projecting
+    // Persist per scope: re-apply only the messages whose id changed, re-projecting
     // their derived rows, leaving the cursor untouched.
     let mut messages_assigned = 0usize;
     for (scope, messages) in per_scope {
         let updated: Vec<Message> = messages
             .into_iter()
-            .filter(|message| message.thread_id.is_none())
             .filter_map(|mut message| {
-                let thread_id = assignments.get(message.id.key())?.clone();
-                message.thread_id = Some(thread_id);
+                let thread_id = assignments.get(message.id.key())?;
+                if message.thread_id() == Some(thread_id) {
+                    return None;
+                }
+                message.thread = Some(ThreadRef::derived(thread_id.clone()));
                 Some(message)
             })
             .collect();
@@ -142,11 +158,17 @@ where
 /// grouping by the shared `Message-ID`/`In-Reply-To`/`References` graph. Returns the
 /// derivable messages' provider keys mapped to their thread id; provider-threaded
 /// messages are left out (their id stands). Pure — the unit of test for the grouping.
+///
+/// A message the engine already threaded is derivable *again*: the assignment is a
+/// function of the whole input, not of what each message happens to carry, so a reply
+/// synced after its thread was derived still lands in it. Feeding provider-threaded
+/// messages in instead would let a `References` header merge threads the provider
+/// separated.
 #[must_use]
 pub(crate) fn derive_thread_assignments(messages: &[Message]) -> HashMap<ProviderKey, ThreadId> {
     let derivable: Vec<&Message> = messages
         .iter()
-        .filter(|message| message.thread_id.is_none())
+        .filter(|message| message.thread.as_ref().is_none_or(ThreadRef::is_derived))
         .collect();
     let mut groups = UnionFind::new(derivable.len());
 
@@ -313,11 +335,70 @@ mod tests {
     #[test]
     fn provider_threaded_messages_are_left_untouched() {
         let mut native = message("jmap-1", "inbox", &["a@h"], &[]);
-        native.thread_id = Some(ThreadId::try_from("T-provider").unwrap());
+        native.thread = Some(ThreadRef::provider_assigned(
+            ThreadId::try_from("T-provider").unwrap(),
+        ));
 
         let assignments = derive_thread_assignments(&[native]);
         // It already has a thread id, so derivation does not reassign it.
         assert!(assignments.is_empty());
+    }
+
+    #[test]
+    fn a_reply_synced_after_its_thread_was_derived_still_joins_it() {
+        // The bug this pass regressed on: pass one derives a thread over the mail then
+        // in the store; the reply arrives in a later sync, alone. It must unite with the
+        // thread it references, not become a singleton — so an already-derived message
+        // has to re-enter the graph.
+        let mut original = message("k1", "inbox", &["a@h"], &[]);
+        let first = derive_thread_assignments(std::slice::from_ref(&original));
+        let derived = first[&ProviderKey::new("k1").unwrap()].clone();
+        assert_eq!(derived.as_str(), "a@h");
+        original.thread = Some(ThreadRef::derived(derived.clone()));
+
+        let reply = message("k2", "inbox", &["b@h"], &["a@h"]);
+        let second = derive_thread_assignments(&[original, reply]);
+        assert_eq!(second[&ProviderKey::new("k1").unwrap()], derived);
+        assert_eq!(second[&ProviderKey::new("k2").unwrap()], derived);
+    }
+
+    #[test]
+    fn a_late_message_owning_a_smaller_id_rekeys_the_thread() {
+        // The component id is a function of the component, so a joining message that owns
+        // a smaller Message-ID re-keys the whole thread — including the incumbent, which
+        // must be re-derived (and re-applied) to the new id.
+        let mut incumbent = message("k1", "inbox", &["z@h"], &[]);
+        incumbent.thread = Some(ThreadRef::derived(ThreadId::try_from("z@h").unwrap()));
+        let joining = message("k2", "inbox", &["a@h"], &["z@h"]);
+
+        let assignments = derive_thread_assignments(&[incumbent, joining]);
+        assert_eq!(
+            assignments[&ProviderKey::new("k1").unwrap()].as_str(),
+            "a@h"
+        );
+        assert_eq!(
+            assignments[&ProviderKey::new("k2").unwrap()].as_str(),
+            "a@h"
+        );
+    }
+
+    #[test]
+    fn a_derivable_message_never_merges_into_a_provider_threaded_one() {
+        // A reply referencing a provider-threaded message must not pull that thread into
+        // the derived graph: the provider's grouping is authoritative, and a forged
+        // References header could otherwise merge two threads it kept apart.
+        let mut native = message("jmap-1", "inbox", &["a@h"], &[]);
+        native.thread = Some(ThreadRef::provider_assigned(
+            ThreadId::try_from("T-provider").unwrap(),
+        ));
+        let reply = message("imap-1", "inbox", &["b@h"], &["a@h"]);
+
+        let assignments = derive_thread_assignments(&[native, reply]);
+        assert_eq!(assignments.len(), 1);
+        assert_eq!(
+            assignments[&ProviderKey::new("imap-1").unwrap()].as_str(),
+            "b@h"
+        );
     }
 
     #[test]
