@@ -26,7 +26,8 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   `DavExecutor` trait, so the whole discovery/sync/write orchestration is
   offline-tested by replaying captured Stalwart response documents. The live
   transport is `reqwest` + rustls (pure-Rust TLS, mobile cross-compile), like
-  `provider-jmap`. The headline difference from JMAP is that the calendar payload
+  `provider-jmap`, built from the shared per-account `TlsClientConfig` in
+  `CalDavConfig::tls` (`tls.md`). The headline difference from JMAP is that the calendar payload
   arrives as **iCalendar (RFC 5545)**, which this crate parses, where JMAP supplied
   JSCalendar directly — so the bulk of the crate is an iCalendar parser producing
   the **same** normalized [`Event`]/[`Calendar`] projection the JMAP adapter does.

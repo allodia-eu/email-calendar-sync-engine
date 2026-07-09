@@ -423,7 +423,8 @@ mod tests {
             .into_iter()
             .filter(|(key, _)| *key != "/mailFolders/archive")
             .collect();
-        let client = GraphClient::with_base("t", replay_server(routes)).unwrap();
+        let client =
+            GraphClient::with_base("t", replay_server(routes), crate::test_support::tls()).unwrap();
         let mailboxes = folders(&client).await.unwrap();
         // The Archive folder is present but roleless (its alias 404'd); a
         // provisioned alias still resolved.
@@ -467,9 +468,12 @@ mod tests {
     async fn delta_refetch_skips_a_message_that_404s() {
         // The partial change re-fetch is unrouted on the replay server → 404 → the
         // change is skipped (a later delta reports the removal), not propagated.
-        let client =
-            GraphClient::with_base("t", replay_server(vec![("$deltatoken=", json(CHANGED))]))
-                .unwrap();
+        let client = GraphClient::with_base(
+            "t",
+            replay_server(vec![("$deltatoken=", json(CHANGED))]),
+            crate::test_support::tls(),
+        )
+        .unwrap();
         let cursor = SyncState::new(
             "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=x",
         );

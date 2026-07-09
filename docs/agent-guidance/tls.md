@@ -1,0 +1,120 @@
+# TLS trust policy
+
+Authoritative for how the engine trusts server certificates. Read before touching
+`engine-tls`, a provider's transport construction, or a client's trust wiring.
+
+## The one rule
+
+**Every provider derives its trust from one host-selected [`TlsPolicy`], realized
+into one ring-backed `rustls::ClientConfig` by `engine-tls`.** There is no per-
+provider trust store. Before this, IMAP/SMTP verified against bundled `webpki-roots`
+while the reqwest providers (CalDAV/JMAP/Graph) silently used reqwest 0.13's default
+`rustls-platform-verifier` — two trust sources and two crypto backends
+(`ring` + `aws-lc-rs`) in one app, and the platform verifier's Android OCSP behavior
+broke CalDAV against Let's Encrypt certs. `engine-tls` removes that split.
+
+## The policy (`engine_tls::TlsPolicy`)
+
+```
+Roots { bundled: bool, system: bool, custom: Vec<CertificateDer> }  // rustls's own verifier
+PlatformVerifier { extra_roots: Vec<CertificateDer> }               // OS verifier delegation
+```
+
+- **`Roots`** verifies with rustls's own webpki verifier over the **union** of the
+  enabled sources — bundled Mozilla roots (`webpki-roots`), the OS store
+  (`rustls-native-certs`), and/or explicit `custom` roots. No OS-verifier
+  delegation, so **no Android `Context`** and **no platform revocation/OCSP
+  behavior**.
+- **`PlatformVerifier`** delegates the whole chain decision to the OS
+  (`rustls-platform-verifier`): faithful to platform policy — including Android
+  network-security-config / MDM CAs — but on Android the host **must** initialize
+  the JVM `Context` first, and it carries the platform's revocation behavior.
+
+Presets: `bundled()`, `bundled_and_system()`, `system_only()`, `pinned(roots)`,
+`platform_verifier()`.
+
+## Defaults: the Firefox model, split by layer
+
+We mirror Firefox: bundled Mozilla roots as the base, **augmented** by the OS store
+(Firefox's `security.enterprise_roots`), so an enterprise CA injected into the OS
+store "just works" while public CAs always resolve.
+
+- **Engine library default = `bundled()`** (pure Mozilla roots). Hermetic and
+  reproducible — server/CLI hosts and tests never depend on the build machine's OS
+  store. `TlsClientConfig::default()` is bundled, and each provider config defaults
+  to it, so a host that selects nothing gets bundled trust.
+- **Native clients ship `bundled_and_system()`** (bundled ∪ OS, the Firefox
+  preset) so enterprise/MDM CAs are honored with zero configuration.
+
+> Trusting the OS store means trusting whatever an admin/MDM — or a corporate MITM
+> proxy / local AV interceptor — installed there. Firefox accepts this; a
+> sovereignty-strict tenant can stay on pure `bundled()`, or `pinned(roots)` to
+> trust *only* an explicit CA.
+
+## How each provider consumes it
+
+The host builds **one** `TlsClientConfig` (`engine_tls::client_config(&policy)?`) and
+shares it (cloning is a cheap `Arc` bump):
+
+- **CalDAV / JMAP** carry it in their config (`CalDavConfig::tls` /
+  `JmapConfig::with_tls`), defaulting to bundled. `connect` reads `config.tls`.
+- **Graph** (token-based, no config struct) takes it as a parameter:
+  `GraphClient::connect(token, &tls)` / `for_mailbox` / `with_base`.
+- **IMAP/SMTP** keep taking a `tokio_rustls::TlsConnector` (the host builds it via
+  `tls.connector()`); the library bakes in no root store.
+
+`TlsClientConfig::reqwest_builder()` returns a preconfigured `reqwest::ClientBuilder`
+(each HTTP provider adds its own non-TLS settings, e.g. redirect policy). It
+advertises ALPN `h2` then `http/1.1`, so the HTTP providers negotiate HTTP/2 where
+the server supports it (JMAP and Microsoft Graph do) and fall back to HTTP/1.1 —
+reqwest's preconfigured-TLS path keeps the config's ALPN rather than deriving its
+own, so it is set here. The shared connector (IMAP/SMTP) carries no ALPN.
+
+## Crypto backend and the reqwest wiring
+
+- **One backend: `ring`.** Every config is built with an explicit
+  `rustls::crypto::ring::default_provider()`; `aws-lc-rs` is out of the tree.
+- **TLS 1.2 floor, uniform across providers.** The shared config uses
+  `with_safe_default_protocol_versions()` (rustls's safe defaults, TLS 1.2 + 1.3;
+  rustls implements nothing older), so every provider — the reqwest HTTP three and
+  the IMAP/SMTP connector — has the same 1.2 minimum by construction. Do **not**
+  reach for reqwest's `min_tls_version`: it has no effect on the preconfigured-TLS
+  path, so the floor must live in the shared config (which is why it is uniform).
+- reqwest uses the **`rustls-no-provider`** feature (not `rustls`), which gives the
+  rustls integration without `aws-lc-rs` and without reqwest's own platform-verifier
+  path. We always hand reqwest a preconfigured config via `tls_backend_preconfigured`.
+  We also enable reqwest's **`http2`** feature so the preconfigured client can speak
+  HTTP/2 when ALPN negotiates it (see "How each provider consumes it").
+- **Footgun:** under `rustls-no-provider`, a reqwest client built *without*
+  preconfigured TLS panics on its first HTTPS request. All clients must go through
+  `TlsClientConfig::reqwest_builder()`. As insurance, `client_config` installs a
+  `ring` process-default `CryptoProvider` once.
+
+## Cargo features (`engine-tls`)
+
+`default = []` (bundled only). Opt-ins: `reqwest` (the HTTP builder; the HTTP
+providers enable it), `tls-native-certs` (the `system` root source),
+`tls-platform-verifier` (the `PlatformVerifier` policy), `dangerous-testing`
+(`TlsClientConfig::dangerous_accept_any`, for the self-signed harness cert only).
+A `System`/`PlatformVerifier` policy returns `TlsError::Unsupported` when its
+feature is off (the enum stays stable across builds for FFI).
+
+## Testing
+
+- Offline provider fakes bypass TLS entirely, so unit/offline tests are unaffected.
+- The Stalwart harness serves CalDAV/JMAP over **plaintext HTTP** and its IMAP
+  self-signed cert is runtime-generated, so the live suite validates *function*, not
+  reqwest certificate verification.
+- `engine-tls`'s `tests/roundtrip.rs` is the authoritative verification proof: an
+  in-process `tokio-rustls` server proves one policy makes **both** the reqwest
+  client and the connector accept a trusted (pinned/union) cert and reject an
+  untrusted (bundled) one.
+
+## Host / FFI wiring
+
+The `TlsPolicy` enum + DER bytes is the FFI-facing surface; `TlsClientConfig` is an
+opaque handle. A host builds a policy per platform, realizes one `TlsClientConfig`,
+and threads it into every provider. With `bundled_and_system()`, Android needs no
+JVM `Context` (native-certs reads the store directly); a `PlatformVerifier` build is
+the only one that requires the host to initialize the platform verifier first.
+Exposing `TlsPolicy` over the UniFFI/C-ABI bindings is a later slice.

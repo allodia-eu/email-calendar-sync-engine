@@ -26,7 +26,8 @@ specifics they implement against the Stalwart fixture. Read it before touching
   trait surface. Depends only on `engine-core`; no network or runtime. Callers never
   switch on provider kind.
 - **`provider-jmap`** — the JMAP/HTTP adapter implementing `Provider`. reqwest +
-  rustls (pure-Rust TLS, mobile cross-compile) on tokio. Layers: `transport`
+  rustls (pure-Rust TLS, mobile cross-compile) on tokio, built from the shared
+  per-account `TlsClientConfig` in `JmapConfig` (`tls.md`). Layers: `transport`
   (auth + HTTP), `request` (the `{using, methodCalls}` envelope, `#id`
   back-references, typed responses), `session` (discovery + URL policy),
   `fetch` (the generic container/member sync **and** the paged `member_page`

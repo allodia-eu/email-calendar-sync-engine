@@ -441,7 +441,8 @@ mod tests {
         // Role/field assertions live in the in-process fake tests; this proves the
         // real-HTTP path end to end (every call succeeding is the assertion).
         let base = crate::test_support::replay_server(replay_routes());
-        let client = GraphClient::with_base("fake-token", base).unwrap();
+        let client =
+            GraphClient::with_base("fake-token", base, crate::test_support::tls()).unwrap();
         let provider = GraphProvider::new(client, MailboxId::try_from("folder-inbox").unwrap());
 
         // Folder list (7 well-known GETs + the list) over HTTP.
@@ -467,8 +468,12 @@ mod tests {
     #[tokio::test]
     async fn replay_server_404s_an_unrouted_path() {
         // An unrouted request → the server's 404 → a classified Status error.
-        let client =
-            GraphClient::with_base("t", crate::test_support::replay_server(vec![])).unwrap();
+        let client = GraphClient::with_base(
+            "t",
+            crate::test_support::replay_server(vec![]),
+            crate::test_support::tls(),
+        )
+        .unwrap();
         assert!(client.get(&client.url("/me/nope")).await.is_err());
     }
 }

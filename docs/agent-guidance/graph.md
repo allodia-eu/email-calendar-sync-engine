@@ -23,8 +23,9 @@ account-wide message delta, so sync is per folder.
 - **`json`/`normalize`** — pure `serde_json::Value` → `Mailbox`/`Message`,
   unit-tested against captured fixtures.
 - **`transport`** — a `GraphTransport` seam over bearer HTTP. `HttpTransport`
-  (reqwest + rustls) is production; the seam lets the fetch/provider
-  orchestration run offline against fixtures. There is **no session discovery**
+  (reqwest + rustls, built from the caller-supplied `TlsClientConfig` passed to
+  `GraphClient::connect`/`for_mailbox`/`with_base` — `tls.md`) is production; the
+  seam lets the fetch/provider orchestration run offline against fixtures. There is **no session discovery**
   (the v1.0 root is fixed); requests carry `Prefer: IdType="ImmutableId"`.
   `GraphClient::with_base` overrides the API origin (a forward proxy, a regional/
   sovereign endpoint, or the test replay server), **rebasing** the absolute

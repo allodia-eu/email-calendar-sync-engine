@@ -1,0 +1,269 @@
+//! In-process TLS round-trip: proves one [`TlsPolicy`] governs **both** transports
+//! — the `reqwest` client (CalDAV/JMAP/Graph) and the `tokio-rustls` connector
+//! (IMAP/SMTP) — accepting a trusted certificate and rejecting an untrusted one.
+//!
+//! The Stalwart harness serves plaintext HTTP, so the live suite cannot exercise
+//! the reqwest TLS verification path; this in-process server is the authoritative
+//! check. Runs only with the `reqwest` feature (CI's `--all-features`).
+#![cfg(feature = "reqwest")]
+
+use std::sync::Arc;
+
+use engine_tls::{CertificateDer, TlsClientConfig, TlsPolicy, client_config};
+use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
+use tokio_rustls::TlsAcceptor;
+
+/// Starts a TLS server (valid for `127.0.0.1`) that answers one minimal HTTP/1.1
+/// `200` per connection, negotiating the default protocol versions. Returns the
+/// server's certificate and bound port.
+async fn tls_server() -> (CertificateDer<'static>, u16) {
+    tls_server_with_versions(rustls::DEFAULT_VERSIONS).await
+}
+
+/// Like [`tls_server`], but pinned to specific protocol versions so a test can
+/// force a TLS 1.2 handshake.
+async fn tls_server_with_versions(
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> (CertificateDer<'static>, u16) {
+    let generated =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("self-signed cert");
+    let cert = generated.cert.der().clone();
+    let key = PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der());
+
+    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(versions)
+    .expect("protocol versions")
+    .with_no_client_auth()
+    .with_single_cert(vec![cert.clone()], key.into())
+    .expect("server cert/key");
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("local addr").port();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                // A failed client handshake (untrusted cert) surfaces here as an
+                // error; just drop that connection.
+                if let Ok(mut tls) = acceptor.accept(tcp).await {
+                    let mut buf = [0u8; 1024];
+                    let _ = tls.read(&mut buf).await;
+                    let _ = tls
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                    let _ = tls.shutdown().await;
+                }
+            });
+        }
+    });
+    (cert, port)
+}
+
+/// Starts an **HTTP/2** TLS server (valid for `127.0.0.1`) that advertises the
+/// `h2` ALPN protocol and answers each request with a minimal `200`. Returns the
+/// server's certificate and bound port. Used to prove reqwest negotiates HTTP/2.
+async fn h2_tls_server() -> (CertificateDer<'static>, u16) {
+    use http_body_util::Full;
+    use hyper::{Response, body::Bytes, service::service_fn};
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+
+    let generated =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("self-signed cert");
+    let cert = generated.cert.der().clone();
+    let key = PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der());
+
+    let mut server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("protocol versions")
+    .with_no_client_auth()
+    .with_single_cert(vec![cert.clone()], key.into())
+    .expect("server cert/key");
+    // Offer only h2, so a client that did not advertise it could not handshake.
+    server_config.alpn_protocols = vec![b"h2".to_vec()];
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("local addr").port();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let service = service_fn(|_req| async {
+                    Ok::<_, std::convert::Infallible>(Response::new(Full::new(Bytes::from_static(
+                        b"ok",
+                    ))))
+                });
+                let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(tls), service)
+                    .await;
+            });
+        }
+    });
+    (cert, port)
+}
+
+#[tokio::test]
+async fn reqwest_client_trusts_pinned_and_rejects_untrusted() {
+    let (cert, port) = tls_server().await;
+    let url = format!("https://127.0.0.1:{port}/");
+
+    // Pinned to the server's own cert → handshake + GET succeed.
+    let trusted = client_config(&TlsPolicy::pinned(vec![cert.clone()])).unwrap();
+    let ok = trusted
+        .reqwest_builder()
+        .build()
+        .unwrap()
+        .get(&url)
+        .send()
+        .await;
+    assert!(ok.is_ok(), "pinned roots should trust the server: {ok:?}");
+    assert_eq!(ok.unwrap().status().as_u16(), 200);
+
+    // Bundled Mozilla roots do not include the self-signed cert → rejected.
+    let rejected = TlsClientConfig::bundled()
+        .reqwest_builder()
+        .build()
+        .unwrap()
+        .get(&url)
+        .send()
+        .await;
+    assert!(
+        rejected.is_err(),
+        "bundled roots must reject an untrusted cert"
+    );
+
+    // Firefox-style union (bundled ∪ custom) trusts it again.
+    let union = client_config(&TlsPolicy::roots(true, false, vec![cert])).unwrap();
+    let ok = union
+        .reqwest_builder()
+        .build()
+        .unwrap()
+        .get(&url)
+        .send()
+        .await;
+    assert!(ok.is_ok(), "bundled+custom union should trust: {ok:?}");
+}
+
+/// A reqwest client built from the shared config negotiates **HTTP/2** against an
+/// h2-capable server — `reqwest_builder` advertises `h2` first in ALPN, so the
+/// HTTP providers are not capped at HTTP/1.1. The server offers only `h2`, so a
+/// client that failed to advertise it would not even handshake.
+#[tokio::test]
+async fn reqwest_negotiates_http2_when_offered() {
+    let (cert, port) = h2_tls_server().await;
+    let url = format!("https://127.0.0.1:{port}/");
+
+    let response = client_config(&TlsPolicy::pinned(vec![cert]))
+        .unwrap()
+        .reqwest_builder()
+        .build()
+        .unwrap()
+        .get(&url)
+        .send()
+        .await
+        .expect("h2 GET should succeed");
+    assert_eq!(response.version(), reqwest::Version::HTTP_2);
+    assert_eq!(response.status().as_u16(), 200);
+}
+
+/// Security invariant: the shared config enforces a **TLS 1.2 floor** uniformly.
+/// The real `client_config` negotiates exactly TLS 1.2 with a 1.2-only server and
+/// TLS 1.3 with a default server; rustls implements no version below 1.2, so 1.2
+/// is the hard floor for every provider sharing this config (the reqwest HTTP
+/// three and the IMAP/SMTP connector alike).
+#[tokio::test]
+async fn shared_config_enforces_tls12_floor_and_prefers_tls13() {
+    use rustls::ProtocolVersion;
+
+    for (versions, expected) in [
+        (&[&rustls::version::TLS12][..], ProtocolVersion::TLSv1_2),
+        (rustls::DEFAULT_VERSIONS, ProtocolVersion::TLSv1_3),
+    ] {
+        let (cert, port) = tls_server_with_versions(versions).await;
+        let name = ServerName::try_from("127.0.0.1").unwrap();
+        let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let stream = client_config(&TlsPolicy::pinned(vec![cert]))
+            .unwrap()
+            .connector()
+            .connect(name, tcp)
+            .await
+            .expect("handshake with a supported TLS version");
+        assert_eq!(stream.get_ref().1.protocol_version(), Some(expected));
+    }
+}
+
+#[tokio::test]
+async fn connector_trusts_pinned_and_rejects_untrusted() {
+    let (cert, port) = tls_server().await;
+    let name = ServerName::try_from("127.0.0.1").unwrap();
+
+    // The IMAP/SMTP connector handshakes when pinned to the server's cert.
+    let trusted = client_config(&TlsPolicy::pinned(vec![cert])).unwrap();
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    assert!(
+        trusted.connector().connect(name.clone(), tcp).await.is_ok(),
+        "pinned connector should handshake"
+    );
+
+    // Bundled roots reject the self-signed cert.
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    assert!(
+        TlsClientConfig::bundled()
+            .connector()
+            .connect(name, tcp)
+            .await
+            .is_err(),
+        "bundled connector must reject an untrusted cert"
+    );
+}
+
+/// The test-only accept-any config handshakes with the self-signed cert that
+/// bundled roots reject — the path the gated IMAP live tests rely on.
+#[cfg(feature = "dangerous-testing")]
+#[tokio::test]
+async fn dangerous_accept_any_trusts_untrusted() {
+    let (_cert, port) = tls_server().await;
+    let name = ServerName::try_from("127.0.0.1").unwrap();
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    assert!(
+        TlsClientConfig::dangerous_accept_any()
+            .connector()
+            .connect(name, tcp)
+            .await
+            .is_ok(),
+        "accept-any connector should handshake with a self-signed cert"
+    );
+}
+
+/// Accept-any must also handshake over **TLS 1.2**, which exercises the TLS 1.2
+/// signature-verification arm of the dangerous verifier — the tests above
+/// negotiate TLS 1.3 and hit only the 1.3 arm.
+#[cfg(feature = "dangerous-testing")]
+#[tokio::test]
+async fn dangerous_accept_any_trusts_untrusted_over_tls12() {
+    let (_cert, port) = tls_server_with_versions(&[&rustls::version::TLS12]).await;
+    let name = ServerName::try_from("127.0.0.1").unwrap();
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    assert!(
+        TlsClientConfig::dangerous_accept_any()
+            .connector()
+            .connect(name, tcp)
+            .await
+            .is_ok(),
+        "accept-any connector should handshake over TLS 1.2"
+    );
+}

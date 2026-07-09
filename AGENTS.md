@@ -15,6 +15,7 @@ Read before relevant work:
 - `docs/agent-guidance/imap-smtp.md` before touching the IMAP/SMTP client (`provider-imap`, and the submission paths in `engine-provider`/`engine-sync`).
 - `docs/agent-guidance/caldav.md` before touching the CalDAV calendar client (`provider-caldav`, the calendar sync path in `engine-provider`/`engine-sync`, or the SabreDAV fixture under `docker/sabredav/`).
 - `docs/agent-guidance/graph.md` before touching the Microsoft Graph mail client (`provider-graph`, the Graph mail sync path, or the OAuth/capture tool under `tools/graph-oauth/`).
+- `docs/agent-guidance/tls.md` before touching TLS trust (`engine-tls`, a provider's transport/`connect` construction, or a host's certificate-trust wiring).
 - `docs/agent-guidance/store-and-sync.md` before touching the store trait, sync orchestration, or the outbox.
 - `docs/agent-guidance/search.md` before touching the query AST/DSL, the search executor, or projection→index rows.
 - `docs/agent-guidance/search-coverage.md` before touching search result completeness or provider-search fallback.
@@ -114,3 +115,9 @@ with a mock HTTP server / fake executor rather than leaving it to the live tests
 uncovered lines: `cargo llvm-cov -p <crate> --all-features --show-missing-lines`.
 
 If a command cannot run, say exactly why and what remains unverified.
+
+## Breaking changes
+Don't be afraid to make breaking changes. We're in early product development and prefer
+a breaking change over workarounds/patchwork if that's cleaner for the future.
+Just make sure to ask the developer if it's OK for you to make that breaking change
+before actually implementing it.

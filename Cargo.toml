@@ -36,11 +36,14 @@ tempfile = "3.27.0"
 # pinned release recorded on each occurrence.
 jiff = { version = "0.2.29", default-features = false, features = ["std", "tzdb-bundle-always"] }
 jiff-tzdb = "0.1.6"
-# Product HTTP stack for JMAP, CalDAV, and Graph. reqwest 0.13 renamed
-# `rustls-tls` to `rustls`; default features stay off so we do not pull native TLS.
-# The harness speaks plaintext HTTP, but real providers are HTTPS, so TLS stays in
-# the transport (`docs/agent-guidance/jmap.md`, `caldav.md`, `graph.md`).
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset"] }
+# Product HTTP stack for JMAP, CalDAV, and Graph. `rustls-no-provider` gives the
+# rustls integration WITHOUT aws-lc-rs and without reqwest's own platform-verifier
+# path: every provider hands reqwest a preconfigured, ring-backed `rustls::ClientConfig`
+# from `engine-tls` (one trust policy for all providers; `docs/agent-guidance/tls.md`).
+# `http2` lets those providers negotiate HTTP/2 via ALPN where the server supports it
+# (JMAP and Graph do), falling back to HTTP/1.1. Default features stay off otherwise
+# so we do not pull native TLS.
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider", "charset", "http2"] }
 # Pure-Rust TLS for the hand-rolled IMAP transport (implicit-TLS on 993). `ring`
 # (not rustls' default `aws-lc-rs`) keeps the hand-rolled transport's crypto
 # provider explicit. The transport is generic over any async stream; this only
@@ -50,6 +53,15 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring
 # The no-verify verifier for Stalwart's self-signed test cert lives in test code
 # only (a dev-dependency), never the host store — same posture as stalwart-harness.
 rustls = { version = "0.23.41", default-features = false, features = ["ring", "std", "tls12"] }
+# Root trust material for the unified TLS stack (`engine-tls`, `docs/agent-guidance/tls.md`).
+# `webpki-roots` is the bundled Mozilla program — the hermetic engine default. The two
+# OS-trust crates back host-selected system trust and are pulled only through `engine-tls`'s
+# `tls-native-certs` / `tls-platform-verifier` features, so they stay out of the default build.
+# `rustls-platform-verifier` is pinned to match the copy reqwest resolves (one crate, one
+# Android `Context` init).
+webpki-roots = "1.0.8"
+rustls-native-certs = "0.8.4"
+rustls-platform-verifier = "0.7.0"
 # Pure-Rust streaming XML reader for the CalDAV/WebDAV multistatus parser
 # (`provider-caldav`). WebDAV responses are namespaced XML with CDATA-wrapped
 # calendar data and per-property status; a hardened, battle-tested reader is the
@@ -73,6 +85,7 @@ sha2 = { version = "0.11.0", default-features = false }
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
+engine-tls = { path = "crates/engine-tls" }
 engine-mime = { path = "crates/engine-mime" }
 engine-store = { path = "crates/engine-store" }
 engine-search = { path = "crates/engine-search" }

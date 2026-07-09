@@ -9,6 +9,9 @@ publish.workspace = true
 [dependencies]
 engine-core = { workspace = true }
 engine-provider = { workspace = true }
+# One shared TLS trust policy across every provider (`docs/agent-guidance/tls.md`);
+# `reqwest` enables the preconfigured-client builder this HTTP transport uses.
+engine-tls = { workspace = true, features = ["reqwest"] }
 reqwest = { workspace = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }
