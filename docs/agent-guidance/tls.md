@@ -128,6 +128,16 @@ is asymmetric:
   reqwest/hyper bumps, for a fact these providers negotiate at TLS 1.3 in practice.
   **Do not add one.**
 
+  Tracked upstream as [seanmonstar/reqwest#3066][reqwest-tls-version], which proposes
+  a `TlsInfo::negotiated_version() -> Option<reqwest::tls::Version>` populated from
+  `rustls`'s `CommonState::protocol_version()`. If that lands, the fix here is to read
+  it off the response (behind `ClientBuilder::tls_info(true)`) and fill `tls_version`
+  in for the three HTTP adapters — **not** to write a connector. Until then the `None`
+  is correct and deliberate, and the asymmetry it creates is the reason
+  [`ConnectionInfo`]'s two version fields are independently optional.
+
+[reqwest-tls-version]: https://github.com/seanmonstar/reqwest/issues/3066
+
 ## Testing
 
 - Offline provider fakes bypass TLS entirely, so unit/offline tests are unaffected.
