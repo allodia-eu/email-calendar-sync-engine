@@ -56,6 +56,10 @@ mod expand;
 mod rule;
 mod zone;
 
+// The window the expander materializes within lives in the tzdata-free value layer, so the
+// store can bound its occurrence range reads by the same type (it cannot depend on this crate,
+// which depends on it). Re-exported so a caller still names it alongside `expand`.
+pub use engine_core::time::Horizon;
 use engine_core::time::{CalendarDateTime, LocalDateTime, TimeError, TimeZoneId, UtcDateTime};
 pub use engine_store::{OccurrenceRow, TzdataVersion};
 pub use expand::expand;
@@ -160,47 +164,6 @@ pub fn tzdata_version() -> TzdataVersion {
     TzdataVersion::new(jiff_tzdb::VERSION.unwrap_or("unknown"))
 }
 
-/// The half-open UTC window `[start, end)` within which occurrences are
-/// materialized.
-///
-/// Occurrences are emitted only when their start instant falls in this window.
-/// The host configures the rolling horizon; advancing it materializes further out
-/// through the maintenance path (`store-and-sync.md`). A recurrence that would
-/// continue past `end` is simply not materialized past it (no silent infinite
-/// expansion).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Horizon {
-    start: UtcDateTime,
-    end: UtcDateTime,
-}
-
-impl Horizon {
-    /// Creates a horizon spanning `[start, end)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExpandError::EmptyHorizon`] if `start` is not strictly before
-    /// `end`.
-    pub fn new(start: UtcDateTime, end: UtcDateTime) -> Result<Self, ExpandError> {
-        if start >= end {
-            return Err(ExpandError::EmptyHorizon);
-        }
-        Ok(Self { start, end })
-    }
-
-    /// The inclusive lower bound.
-    #[must_use]
-    pub fn start(self) -> UtcDateTime {
-        self.start
-    }
-
-    /// The exclusive upper bound.
-    #[must_use]
-    pub fn end(self) -> UtcDateTime {
-        self.end
-    }
-}
-
 /// Why [`expand`] could not materialize an event's occurrences.
 ///
 /// Unsupported rules and zones are surfaced (not silently skipped) so the caller
@@ -208,9 +171,6 @@ impl Horizon {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ExpandError {
-    /// The horizon's `start` was not strictly before its `end`.
-    #[error("horizon start must be strictly before end")]
-    EmptyHorizon,
     /// A recurrence-rule part outside the supported subset (see the crate docs).
     #[error("unsupported recurrence rule: {0}")]
     UnsupportedRule(&'static str),

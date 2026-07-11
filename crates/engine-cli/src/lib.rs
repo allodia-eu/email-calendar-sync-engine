@@ -54,6 +54,9 @@ pub enum CliError {
     /// Recurrence expansion failed for an event.
     #[error("recurrence expansion error: {0}")]
     Expand(#[from] engine_recurrence::ExpandError),
+    /// A time value was malformed or bounded an empty range.
+    #[error("time error: {0}")]
+    Time(#[from] engine_core::time::TimeError),
     /// A query string did not parse.
     #[error("query parse error: {0}")]
     Parse(#[from] ParseError),
