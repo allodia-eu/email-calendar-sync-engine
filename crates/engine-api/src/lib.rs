@@ -53,7 +53,7 @@ pub use engine_core::{
         ThreadRef,
     },
     sync::{SyncScope, SyncWindow},
-    time::{CalendarDate, TimeZoneId, UtcDateTime},
+    time::{CalendarDate, LocalDateTime, TimeZoneId, UtcDateTime},
     write::PendingOpId,
 };
 pub use engine_provider::{
