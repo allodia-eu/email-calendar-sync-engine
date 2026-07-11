@@ -240,11 +240,26 @@ clears **every** derived kind for a key — not just occurrences — the batch r
 each event in full: `removed: [event keys]` plus a fresh projection
 (`push_event`/`push_mail`) **and** the fresh occurrences, so a horizon advance does
 not strip an event's FTS/structured rows. `removed`-before-upserts makes the replace
-atomic, and unchanged occurrence instants stay byte-stable. `engine-cli`'s
-`reexpand_calendar` is the worked example. The cross-scope fan-out driven from sync
-state — plus a `tzdata-version` index to find *only* stale scopes, and an
-occurrence-only clear so a pure horizon advance need not re-project unchanged text —
-is the sync orchestrator's job, a later step.
+atomic, and unchanged occurrence instants stay byte-stable.
+
+`engine_sync::expand_calendar_horizon` implements this, fanning out across the
+account's event scopes (enumerated by `SyncScope::object_kind`, so a CalDAV account's
+one-scope-per-collection and a JMAP account's single event type are both handled), and
+is exposed on the facade as `Engine::expand_horizon`.
+
+**A sync will not do this, and that is the trap.** `ScopeSyncer::derive` expands only
+the objects the delta *changed*, so once an account is synced, a provider reporting "no
+changes" (the steady state) derives no occurrences at all. A host that widens its
+horizon and re-syncs to fill the new range gets **nothing, permanently** — the range
+read over it returns empty, and syncing again never fixes it. Only a maintenance
+re-expansion (or a full reset) materializes it. The same applies to a **host-zone
+change**: a floating event's stored `start_utc` is only correct for the zone it was
+expanded under.
+
+Still deferred: a `tzdata-version` index to find *only* stale scopes, and an
+occurrence-only clear so a pure horizon advance need not re-project unchanged text.
+Today `expand_calendar_horizon` re-expands every event in the scope on every call, so a
+host widens in coarse chunks against its own watermark rather than calling it per page.
 
 On-demand fetched bodies **are** searchable (resolving the "does opening old mail
 make it searchable?" question: yes), via a separate lease-free body index — **not**

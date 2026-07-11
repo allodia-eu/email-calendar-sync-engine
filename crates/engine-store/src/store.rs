@@ -16,14 +16,14 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey, ThreadId},
     sync::{SyncScope, SyncState},
-    time::UtcDateTime,
+    time::{Horizon, UtcDateTime},
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
-    apply::{ApplyBatch, DerivedWrite, StorableObject, SyncApplied},
+    apply::{ApplyBatch, DerivedWrite, OccurrenceRow, StorableObject, SyncApplied},
     error::Result,
     lease::{LeaseRequest, OpLease, SyncClaim, SyncLease},
     outbox::{LeasedPendingOp, PendingOpState},
@@ -245,6 +245,34 @@ pub trait StoreRead: Send + Sync {
     ///
     /// Returns `StoreError::Backend` on a backend failure.
     async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>>;
+
+    /// The materialized occurrences in a scope that overlap `window`, ascending by
+    /// `(start, end, event)`.
+    ///
+    /// This is the range read a calendar grid pages over: recurrence lives in the
+    /// occurrence rows, not the master event (`store-and-sync.md`), so a host that
+    /// reads the events alone sees a weekly meeting once, at the series start. The
+    /// window is half-open at **both** ends ([`Horizon::overlaps`]), so an event
+    /// ending exactly when a week opens belongs to the previous page only, and a
+    /// multi-day event that merely *covers* the window is still returned — it has to
+    /// render on every day it spans.
+    ///
+    /// Order is **specified**, unlike [`scope_mail_index`](StoreRead::scope_mail_index),
+    /// because a host lays these rows out geometrically: two hosts given the same window
+    /// must place an overlapping event in the same column, and an unstable order would
+    /// silently make them disagree. Empty for a non-calendar scope (only events expand)
+    /// and for a scope the store has never seen. Occurrences are cleared when their
+    /// event is tombstoned, so the rows are exactly the live events' — no liveness
+    /// join is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn scope_occurrences(
+        &self,
+        scope: &SyncScope,
+        window: Horizon,
+    ) -> Result<Vec<OccurrenceRow>>;
 
     /// The current lifecycle state of a pending op, or `None` if unknown.
     ///

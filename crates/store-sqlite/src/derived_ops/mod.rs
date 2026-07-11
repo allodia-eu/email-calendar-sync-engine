@@ -13,8 +13,11 @@ use engine_core::{
     calendar::ParticipationStatus,
     ids::{ProviderKey, ThreadId},
     search_index::{EventParticipantRow, FtsField, MailAddressRow, MembershipRow},
+    time::Horizon,
 };
-use engine_store::{DerivedWrite, IndexRowCounts, MailIndexEntry, Result};
+use engine_store::{
+    DerivedWrite, IndexRowCounts, MailIndexEntry, OccurrenceRow, Result, TzdataVersion,
+};
 use rusqlite::{Connection, Transaction};
 
 use crate::convert;
@@ -192,6 +195,78 @@ pub(crate) fn scope_mail_index(conn: &Connection, scope_key: &str) -> Result<Vec
         entries.push((key, date, thread));
     }
     Ok(entries)
+}
+
+/// The occurrences in a scope that overlap `window`, ascending by `(start, end, event)`.
+/// Backs `StoreRead::scope_occurrences` — the range read a calendar grid pages over.
+///
+/// The predicate is the half-open overlap `start < window.end AND end > window.start`,
+/// which the `event_occurrence_range` index on `(scope_key, start_utc, end_utc)` serves as
+/// a range scan on its leading columns. A **zero-length** occurrence (`start == end`) is
+/// the one case that rule gets wrong — `end > window.start` excludes one sitting exactly
+/// on the lower bound — so it is admitted as the point `start`, matching
+/// [`Horizon::overlaps`](engine_core::time::Horizon::overlaps). Instants are stored as
+/// canonical `Z`-suffixed RFC 3339 text, which is fixed-width and lexicographically
+/// ordered, so SQLite's text comparison *is* chronological comparison.
+///
+/// `event_occurrence` is cleared on tombstone by [`delete_derived_rows`], so its rows are
+/// exactly the live events' — no join with `object` is needed.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`](engine_store::StoreError::Backend) on a backend failure
+/// or a corrupt stored key/instant.
+pub(crate) fn scope_occurrences(
+    conn: &Connection,
+    scope_key: &str,
+    window: Horizon,
+) -> Result<Vec<OccurrenceRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT event, start_utc, end_utc, recurrence_id, tzdata_version
+             FROM event_occurrence
+             WHERE scope_key = ?1
+               AND start_utc < ?3
+               AND (end_utc > ?2 OR (end_utc = start_utc AND start_utc >= ?2))
+             ORDER BY start_utc, end_utc, event, recurrence_id",
+        )
+        .map_err(convert::backend)?;
+    let rows = stmt
+        .query_map(
+            (
+                scope_key,
+                convert::instant_to_text(window.start()),
+                convert::instant_to_text(window.end()),
+            ),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .map_err(convert::backend)?;
+    let mut occurrences = Vec::new();
+    for row in rows {
+        let (event, start, end, recurrence_id, tzdata) = row.map_err(convert::backend)?;
+        occurrences.push(OccurrenceRow {
+            event: ProviderKey::new(event).map_err(convert::backend)?,
+            start: convert::parse_instant(&start)?,
+            end: convert::parse_instant(&end)?,
+            // An unoverridden instance stores the empty string, not NULL (the column is
+            // part of the primary key, which cannot be nullable).
+            recurrence_id: if recurrence_id.is_empty() {
+                None
+            } else {
+                Some(convert::parse_instant(&recurrence_id)?)
+            },
+            tzdata_version: TzdataVersion::new(tzdata),
+        });
+    }
+    Ok(occurrences)
 }
 
 /// Splits the field-tagged FTS text across the three `fts_doc` columns. `subject`

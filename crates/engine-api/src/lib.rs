@@ -60,16 +60,17 @@ pub use engine_provider::{
     EventWriteReceipt, MailEdit, MailEditReceipt, Provider, SubmissionReceipt, WritePrecondition,
 };
 pub use engine_recurrence::{
-    ExpandError, Horizon, available_zones, is_supported_zone, resolve_instant, resolve_instant_in,
+    ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,
+    resolve_instant_in, to_local,
 };
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
-pub use engine_store::{PendingOpState, PruneReport, SyncApplied};
+pub use engine_store::{OccurrenceRow, PendingOpState, PruneReport, SyncApplied, TzdataVersion};
 use engine_sync::SyncError;
 pub use engine_sync::{
-    AccountProgress, CalendarSyncReport, CalendarWriteOutcome, IgnoreCommits, MailEditOutcome,
-    MailSyncReport, ProgressSnapshot, StreamTuning, SubmitOutcome, SyncCommit, SyncObserver,
-    ThreadDeriveReport,
+    AccountProgress, CalendarSyncReport, CalendarWriteOutcome, HorizonExpansion, IgnoreCommits,
+    MailEditOutcome, MailSyncReport, ProgressSnapshot, StreamTuning, SubmitOutcome, SyncCommit,
+    SyncObserver, ThreadDeriveReport, UnexpandableEvent,
 };
 
 /// An error from an [`Engine`] operation.

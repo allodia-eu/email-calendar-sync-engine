@@ -10,9 +10,9 @@ use engine_provider::Provider;
 use engine_recurrence::Horizon;
 use engine_store::{PruneReport, Store, SyncApplied};
 use engine_sync::{
-    CalendarSyncReport, MailSyncReport, StreamTuning, SyncObserver, ThreadDeriveReport,
-    derive_mail_threads, sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed,
-    sync_mailbox_list,
+    CalendarSyncReport, HorizonExpansion, MailSyncReport, StreamTuning, SyncObserver,
+    ThreadDeriveReport, derive_mail_threads, expand_calendar_horizon, sync_calendar,
+    sync_email_streamed, sync_mail, sync_mail_streamed, sync_mailbox_list,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -200,6 +200,50 @@ impl Engine {
     ) -> Result<CalendarSyncReport, ApiError> {
         sync_calendar(
             provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            horizon,
+            host_zone,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
+
+    /// Re-expands one account's **already-synced** events over `horizon`, resolving
+    /// floating times through `host_zone`, and commits the fresh occurrences. No
+    /// network.
+    ///
+    /// A host must call this before reading a window that no
+    /// [`sync_calendar`](Engine::sync_calendar) has materialized — **re-syncing will
+    /// not do it.** A sync expands only the objects its delta *changed*, so a provider
+    /// that reports "nothing changed" (the normal case) derives no occurrences at all,
+    /// and [`Engine::occurrences_in`] over the newly-visible range returns nothing,
+    /// forever. A calendar grid paging into next year would render a confidently empty
+    /// week.
+    ///
+    /// Also the path for a **display-zone or tzdata change**: a floating event's stored
+    /// instant is only correct for the zone it was expanded under, so a zone change
+    /// without a re-expansion silently shifts every floating event by the zone offset.
+    ///
+    /// It re-expands every stored event on every call, so widen in coarse chunks
+    /// against a persisted watermark rather than calling it per page.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Busy`] if another sync holds a calendar scope, or
+    /// [`ApiError::Sync`] if the store rejects the apply. An event whose recurrence the
+    /// expander cannot handle is **not** an error — it is reported in
+    /// [`HorizonExpansion::unexpandable`], so one unsupported rule never stops the rest
+    /// of the calendar from materializing.
+    pub async fn expand_horizon(
+        &self,
+        account: &AccountId,
+        horizon: Horizon,
+        host_zone: &TimeZoneId,
+    ) -> Result<HorizonExpansion, ApiError> {
+        expand_calendar_horizon(
             &self.store,
             account,
             worker(),
