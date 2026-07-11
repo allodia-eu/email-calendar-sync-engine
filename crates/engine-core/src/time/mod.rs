@@ -21,6 +21,8 @@
 //!   as zoned `Etc/UTC`).
 //! - [`Duration`] / [`SignedDuration`] — nominal-days-plus-absolute-time lengths; signed only for
 //!   alert offsets.
+//! - [`Horizon`] — the half-open UTC window `[start, end)` occurrences are materialized within and
+//!   range-read over.
 //!
 //! All string types round-trip their canonical RFC form through `Display`,
 //! `FromStr`, and `serde` (as a string).
@@ -30,12 +32,14 @@ use time::{Date, Month, PrimitiveDateTime, Time};
 mod date;
 mod datetime;
 mod duration;
+mod horizon;
 mod value;
 mod zone;
 
 pub use date::CalendarDate;
 pub use datetime::{LocalDateTime, UtcDateTime};
 pub use duration::{Duration, SignedDuration};
+pub use horizon::Horizon;
 pub use value::CalendarDateTime;
 pub use zone::TimeZoneId;
 
@@ -61,6 +65,9 @@ pub enum TimeError {
     /// A zone or duration value was empty.
     #[error("value must not be empty")]
     Empty,
+    /// A half-open range's start was not strictly before its end.
+    #[error("range start must be strictly before end")]
+    EmptyRange,
 }
 
 /// Parses exactly `len` ASCII digits into a `u32`, rejecting signs, whitespace,

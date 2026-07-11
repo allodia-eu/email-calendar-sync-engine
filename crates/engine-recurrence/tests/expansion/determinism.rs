@@ -1,8 +1,10 @@
 //! Determinism (the byte-stability precondition for a tzdata bump), empty-window
 //! rejection, and nominal-day durations across a DST transition.
 
-use engine_core::{calendar::Recurrence, time::Duration};
-use engine_recurrence::ExpandError;
+use engine_core::{
+    calendar::Recurrence,
+    time::{Duration, TimeError},
+};
 
 use super::*;
 
@@ -22,7 +24,7 @@ fn horizon_rejects_empty_window() {
             instant("2026-01-01T00:00:00Z"),
             instant("2026-01-01T00:00:00Z"),
         ),
-        Err(ExpandError::EmptyHorizon)
+        Err(TimeError::EmptyRange)
     ));
 }
 
