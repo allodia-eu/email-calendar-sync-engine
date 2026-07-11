@@ -1,6 +1,7 @@
 //! `store-sqlite` — the durable SQLite backend for the PIM sync engine.
 //!
-//! [`SqliteStore`] implements the `engine-store` [`Store`] and [`StoreRead`]
+//! [`SqliteStore`] implements the `engine-store` [`Store`] and
+//! [`StoreRead`](engine_store::StoreRead)
 //! contracts over SQLite, so it passes the shared `engine_store::contract` suite
 //! the in-memory reference store passes. It is the first persistent store; other
 //! backends are host adapters.
@@ -32,6 +33,7 @@ mod migrations;
 mod outbox_ops;
 mod prune;
 mod purge;
+mod read;
 mod schema;
 mod scope_ops;
 mod search_ops;
@@ -45,19 +47,17 @@ use std::{
 
 use async_trait::async_trait;
 use engine_core::{
-    ids::{AccountId, ProviderKey},
+    ids::AccountId,
     sync::{SyncScope, SyncState},
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{
-    ApplyBatch, Clock, DerivedWrite, IndexRowCounts, LeaseRequest, LeasedPendingOp, MailIndexEntry,
-    OpLease, PendingOpState, Result, StorableObject, Store, StoreRead, SyncApplied, SyncClaim,
-    SyncLease,
+    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, Result,
+    StorableObject, Store, SyncApplied, SyncClaim, SyncLease,
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::{
     blob::BlobArea,
@@ -69,7 +69,7 @@ use crate::{
 /// syscalls on the hot search path, so query cost tracks index size.
 const MMAP_BYTES: i64 = 256 * 1024 * 1024;
 
-/// A SQLite-backed [`Store`] + [`StoreRead`], parameterized by an injected
+/// A SQLite-backed [`Store`] + [`StoreRead`](engine_store::StoreRead), parameterized by an injected
 /// [`Clock`] for lease-expiry control (a [`engine_store::ManualClock`] in tests,
 /// a host clock in production).
 ///
@@ -435,55 +435,6 @@ impl<C: Clock> Store for SqliteStore<C> {
         let op_id = lease.op();
         let token = lease.token().get();
         self.call(move |conn| outbox_ops::mark(conn, op_id, token, &outcome))
-            .await
-    }
-}
-
-#[async_trait]
-impl<C: Clock> StoreRead for SqliteStore<C> {
-    async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>> {
-        self.call(move |conn| scope_ops::account_scopes(conn, &account))
-            .await
-    }
-
-    async fn object_keys(&self, scope: &SyncScope) -> Result<Vec<ProviderKey>> {
-        let key = scope_key(scope);
-        self.call(move |conn| scope_ops::object_keys(conn, &key))
-            .await
-    }
-
-    async fn object_payload(&self, scope: &SyncScope, key: &ProviderKey) -> Result<Option<Value>> {
-        let scope = scope_key(scope);
-        let provider_key = key.as_str().to_owned();
-        self.call(move |conn| scope_ops::object_payload(conn, &scope, &provider_key))
-            .await
-    }
-
-    async fn scope_objects(&self, scope: &SyncScope) -> Result<Vec<(ProviderKey, Value)>> {
-        let key = scope_key(scope);
-        self.call(move |conn| scope_ops::scope_objects(conn, &key))
-            .await
-    }
-
-    async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>> {
-        let key = scope_key(scope);
-        self.call(move |conn| derived_ops::scope_mail_index(conn, &key))
-            .await
-    }
-
-    async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {
-        self.call(move |conn| outbox_ops::pending_op_state(conn, id))
-            .await
-    }
-
-    async fn index_row_counts(
-        &self,
-        scope: &SyncScope,
-        key: &ProviderKey,
-    ) -> Result<IndexRowCounts> {
-        let scope = scope_key(scope);
-        let provider_key = key.as_str().to_owned();
-        self.call(move |conn| derived_ops::index_row_counts(conn, &scope, &provider_key))
             .await
     }
 }

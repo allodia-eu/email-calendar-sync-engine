@@ -48,6 +48,30 @@ expansion, or scheduling.
   shows wall-clock/date text; a custom/embedded zone returns `UnsupportedZone`.
   Hosts must localize off the resolved instant — never the bare wall-clock — or a
   non-UTC event displays in the wrong zone.
+- **The UTC→local direction, for hosts that lay out geometry.** Expansion and
+  `resolve_instant` both go local→UTC. A host that *renders a grid* needs the inverse:
+  which local day column an occurrence falls in, and which row. `engine_recurrence::to_local`
+  (re-exported from `engine-api`) gives the wall clock an instant shows as in a zone, and
+  `day_bounds_utc` gives the UTC window a local calendar day occupies — the window to
+  range-read occurrences for.
+
+  Both exist so a host never bundles a **second** tz database to do this itself. Two
+  tzdbs mean two answers; `event_occurrence` already records the release it was expanded
+  under (`tzdata_version`) precisely because that divergence matters.
+
+  Position events by the returned **wall clock**, not by elapsed minutes from local
+  midnight, and take a day's length from `day_bounds_utc` rather than adding 24h. A day
+  is not always 24 hours: on the spring-forward day it is 23 and on the fall-back day it
+  is 25. Adding an absolute 24h to local midnight clips an hour of events off one and
+  pulls the next day's first hour into the other.
+- **Range reads go through the occurrence rows, never the events.** `StoreRead::scope_occurrences`
+  (facade: `Engine::occurrences_in`) is the read a calendar grid pages over. `Engine::events`
+  returns the projected *envelope* — a recurring series is **one** object, at its series
+  start — so a host that lays out `events()` renders a weekly meeting in exactly one week
+  and no other. The window is half-open at both ends, so an event ending exactly when a
+  week opens belongs to the previous page only and paging forward never double-renders it;
+  an event that merely *spans* the window is still returned, because it has to render on
+  every day it covers.
 - **Total-order key for sorting + the display zone.** Sorting an agenda that mixes
   zoned, floating, and all-day values needs an instant for *every* value, so
   `resolve_instant_in(value, host_zone)` resolves a floating value through the
@@ -169,6 +193,15 @@ typed error so a caller can preserve the master event without silently dropping
 instances (the crate docs are the authoritative list). Consumers must treat an
 expansion error as "store the event, materialize no occurrences for it (yet)",
 not as a hard failure.
+
+**But they must not treat it as nothing, either — report it.** An event that expands to
+zero occurrences is stored and readable through `Engine::events`, yet it is invisible to
+every *range* read, so a host laying out a grid renders it **nowhere**. It does not look
+wrong; it is simply absent, with nothing anywhere saying why. So both paths that expand
+carry the refusals out by key and reason — `CalendarSyncReport::unexpandable` and
+`HorizonExpansion::unexpandable` — and a host is expected to surface them ("this event
+can't be shown") rather than drop them. Discarding the error at the call site (an
+`if let Ok(..)`) is the bug this exists to prevent.
 
 Implemented: `FREQ` ∈ {`DAILY`, `WEEKLY`, `MONTHLY`, `YEARLY`}; `INTERVAL`;
 `COUNT`/`UNTIL`/unbounded (the unbounded case capped by the horizon); `BYDAY`

@@ -77,6 +77,13 @@ fn mailbox_scope(account: &AccountId) -> SyncScope {
     }
 }
 
+fn event_scope(account: &AccountId) -> SyncScope {
+    SyncScope::JmapType {
+        account: account.clone(),
+        data_type: JmapDataType::CalendarEvent,
+    }
+}
+
 fn lease_request(owner: &str, ttl_secs: u64) -> LeaseRequest {
     LeaseRequest::new(WorkerId::new(owner), Duration::from_secs(ttl_secs))
 }
@@ -129,6 +136,10 @@ where
     let (store, clock) = make();
     scope_cases::scope_mail_index_reports_dates_threads_and_excludes_tombstones(&store, &clock)
         .await;
+    let (store, clock) = make();
+    scope_cases::scope_occurrences_reads_the_overlapping_window(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::scope_occurrences_keep_overrides_and_drop_with_the_event(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::expired_op_lease_is_rejected(&store, &clock).await;
     let (store, clock) = make();

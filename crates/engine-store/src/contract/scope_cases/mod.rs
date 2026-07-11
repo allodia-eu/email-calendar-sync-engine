@@ -3,6 +3,7 @@
 
 mod apply;
 mod lease;
+mod occurrences;
 mod read;
 
 pub(super) use self::{
@@ -15,6 +16,10 @@ pub(super) use self::{
         abandon_sync_leases_preserves_cursor_and_fences_old_worker, maintenance_is_lease_gated,
         release_with_stale_token_is_noop, scope_lease_is_exclusive_until_released,
         stale_lease_is_rejected,
+    },
+    occurrences::{
+        scope_occurrences_keep_overrides_and_drop_with_the_event,
+        scope_occurrences_reads_the_overlapping_window,
     },
     read::{
         account_scopes_enumerates_an_accounts_scopes,

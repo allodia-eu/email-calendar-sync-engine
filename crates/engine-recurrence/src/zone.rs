@@ -152,6 +152,43 @@ pub(crate) fn at(date: Date, time: Time) -> DateTime {
     DateTime::from_parts(date, time)
 }
 
+/// The wall clock `instant` shows as in `zone` — the read-side inverse of
+/// [`resolve`].
+///
+/// Truncates to whole seconds: a grid places an occurrence by its local date and
+/// minute, and [`LocalDateTime`] carries no sub-second component here.
+///
+/// # Errors
+///
+/// Returns [`ExpandError::OutOfRange`] if the instant falls outside representable
+/// time.
+pub(crate) fn to_local(
+    zone: &TimeZone,
+    instant: UtcDateTime,
+) -> Result<LocalDateTime, ExpandError> {
+    let civil = utc_to_timestamp(instant)?.to_zoned(zone.clone()).datetime();
+    let component = |value: i8| u8::try_from(value).map_err(|_| ExpandError::OutOfRange);
+    LocalDateTime::new(
+        civil.year().into(),
+        component(civil.month())?,
+        component(civil.day())?,
+        component(civil.hour())?,
+        component(civil.minute())?,
+        component(civil.second())?,
+    )
+    .map_err(|_| ExpandError::OutOfRange)
+}
+
+/// Parses an engine [`UtcDateTime`] into a jiff [`Timestamp`] through its canonical
+/// `…Z` text form — the inverse of [`timestamp_to_utc`], and the only bridge into
+/// jiff's instant type, so the round-trip stays lossless in one place.
+fn utc_to_timestamp(instant: UtcDateTime) -> Result<Timestamp, ExpandError> {
+    instant
+        .to_string()
+        .parse()
+        .map_err(|_| ExpandError::OutOfRange)
+}
+
 /// Renders a jiff [`Timestamp`] as an engine [`UtcDateTime`], preserving
 /// sub-second precision via the canonical `…Z` text form.
 fn timestamp_to_utc(ts: Timestamp) -> Result<UtcDateTime, ExpandError> {

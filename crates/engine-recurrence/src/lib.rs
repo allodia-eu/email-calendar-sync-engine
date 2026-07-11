@@ -60,7 +60,9 @@ mod zone;
 // store can bound its occurrence range reads by the same type (it cannot depend on this crate,
 // which depends on it). Re-exported so a caller still names it alongside `expand`.
 pub use engine_core::time::Horizon;
-use engine_core::time::{CalendarDateTime, LocalDateTime, TimeError, TimeZoneId, UtcDateTime};
+use engine_core::time::{
+    CalendarDate, CalendarDateTime, Duration, LocalDateTime, TimeError, TimeZoneId, UtcDateTime,
+};
 pub use engine_store::{OccurrenceRow, TzdataVersion};
 pub use expand::expand;
 
@@ -151,6 +153,53 @@ pub fn is_supported_zone(zone: &TimeZoneId) -> bool {
 #[must_use]
 pub fn available_zones() -> Vec<String> {
     zone::available()
+}
+
+/// The wall clock a UTC `instant` shows as in `zone` — the read-side inverse of
+/// [`resolve_instant_in`].
+///
+/// A calendar grid needs this and nothing else to place an occurrence: the local
+/// **date** picks its day column, and the local **time** its row. Working from the
+/// wall clock (rather than counting elapsed minutes from local midnight) is what makes
+/// a DST day render correctly — on a spring-forward day 09:00 local is only 480 real
+/// minutes after midnight, but it belongs on the 09:00 row regardless.
+///
+/// This is the only UTC→local direction the engine offers, and it exists so a host
+/// never bundles a **second** tz database to do it. Two tzdbs mean two answers, and the
+/// occurrence rows already record which release they were expanded under
+/// ([`tzdata_version`]) precisely because that divergence matters.
+///
+/// # Errors
+///
+/// Returns [`ExpandError::UnsupportedZone`] if `zone` is a custom or embedded
+/// `VTIMEZONE` the bundled tzdb cannot resolve, or [`ExpandError::OutOfRange`] if the
+/// instant falls outside representable time.
+pub fn to_local(instant: UtcDateTime, zone: &TimeZoneId) -> Result<LocalDateTime, ExpandError> {
+    zone::to_local(&zone::resolve_zone_id(zone)?, instant)
+}
+
+/// The UTC window a local calendar `date` occupies in `zone`: `[local midnight, next
+/// local midnight)`.
+///
+/// The window a host queries [`OccurrenceRow`]s for when it renders a day — and the
+/// building block of a week (the first day's start to the last day's end). It is **not**
+/// always 24 hours: a spring-forward day is 23 and a fall-back day is 25, which is
+/// exactly why a grid must ask the tz database rather than add `24h` to a midnight.
+///
+/// # Errors
+///
+/// Returns [`ExpandError::UnsupportedZone`] if `zone` is a custom or embedded
+/// `VTIMEZONE` the bundled tzdb cannot resolve, or [`ExpandError::OutOfRange`] if the
+/// day falls outside representable time.
+pub fn day_bounds_utc(date: CalendarDate, zone: &TimeZoneId) -> Result<Horizon, ExpandError> {
+    let tz = zone::resolve_zone_id(zone)?;
+    let midnight = zone::at(zone::calendar_date(date)?, zone::midnight());
+    // One *nominal* day in calendar time, so the tzdb applies any transition: adding an
+    // absolute 24h would land at 23:00 or 01:00 on a DST boundary, silently clipping an
+    // hour of events off the day or double-counting one.
+    let one_day = Duration::from_parts(0, 1, 0, 0, 0, 0).map_err(|_| ExpandError::OutOfRange)?;
+    let (start, end) = zone::resolve_range(&tz, midnight, one_day)?;
+    Horizon::new(start, end).map_err(|_| ExpandError::OutOfRange)
 }
 
 /// The bundled IANA tzdata release this build expands under.

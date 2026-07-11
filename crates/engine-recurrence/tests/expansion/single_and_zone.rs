@@ -106,3 +106,72 @@ fn unknown_iana_zone_is_unsupported() {
         Err(ExpandError::UnsupportedZone(_))
     ));
 }
+
+/// `to_local` is the read-side inverse of expansion: it gives the wall clock an
+/// instant shows as in a zone, which is how a grid picks an occurrence's day column
+/// and its row.
+///
+/// Working from the wall clock is what makes a DST day render right. On the
+/// spring-forward Sunday, 12:00 local is only 600 *real* minutes after local midnight
+/// (the 02:00 hour never happened) — but it belongs on the 12:00 row, not the 10:00 one.
+#[test]
+fn to_local_gives_the_wall_clock_an_instant_shows_as() {
+    let ams = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+
+    // Winter (UTC+1) and summer (UTC+2): the same UTC hour reads differently.
+    assert_eq!(
+        to_local(instant("2026-01-15T09:00:00Z"), &ams).unwrap(),
+        ldt("2026-01-15T10:00:00")
+    );
+    assert_eq!(
+        to_local(instant("2026-07-15T09:00:00Z"), &ams).unwrap(),
+        ldt("2026-07-15T11:00:00")
+    );
+
+    // Noon on the spring-forward day (2026-03-29): 10:00Z is 12:00 local. A grid that
+    // counted elapsed minutes from local midnight would put this at 11:00.
+    assert_eq!(
+        to_local(instant("2026-03-29T10:00:00Z"), &ams).unwrap(),
+        ldt("2026-03-29T12:00:00")
+    );
+    // Both sides of the fall-back repeated hour map to the same wall clock, an hour apart.
+    assert_eq!(
+        to_local(instant("2026-10-25T00:30:00Z"), &ams).unwrap(),
+        ldt("2026-10-25T02:30:00")
+    );
+    assert_eq!(
+        to_local(instant("2026-10-25T01:30:00Z"), &ams).unwrap(),
+        ldt("2026-10-25T02:30:00")
+    );
+
+    // A custom/embedded VTIMEZONE the bundled tzdb cannot resolve is an error, not a guess.
+    let custom = TimeZoneId::custom("X-CUSTOM").unwrap();
+    assert!(to_local(instant("2026-01-15T09:00:00Z"), &custom).is_err());
+}
+
+/// `day_bounds_utc` gives the UTC window a local day occupies — the window a grid
+/// queries occurrences for.
+///
+/// A day is **not** always 24 hours. Adding an absolute 24h to local midnight would
+/// clip an hour off the spring-forward day (hiding that day's last hour of events) and
+/// overrun the fall-back one (pulling the next day's first hour in).
+#[test]
+fn day_bounds_track_dst_so_a_day_is_not_always_24_hours() {
+    let ams = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+    let day = |y, m, d| CalendarDate::new(y, m, d).unwrap();
+
+    // An ordinary summer day: 24 hours, opening at 22:00Z the evening before (UTC+2).
+    let ordinary = day_bounds_utc(day(2026, 7, 15), &ams).unwrap();
+    assert_eq!(ordinary.start(), instant("2026-07-14T22:00:00Z"));
+    assert_eq!(ordinary.end(), instant("2026-07-15T22:00:00Z"));
+
+    // Spring forward (2026-03-29): the clocks jump 02:00 → 03:00, so the day is 23 hours.
+    let short = day_bounds_utc(day(2026, 3, 29), &ams).unwrap();
+    assert_eq!(short.start(), instant("2026-03-28T23:00:00Z"));
+    assert_eq!(short.end(), instant("2026-03-29T22:00:00Z"));
+
+    // Fall back (2026-10-25): 03:00 → 02:00 repeats an hour, so the day is 25 hours.
+    let long = day_bounds_utc(day(2026, 10, 25), &ams).unwrap();
+    assert_eq!(long.start(), instant("2026-10-24T22:00:00Z"));
+    assert_eq!(long.end(), instant("2026-10-25T23:00:00Z"));
+}

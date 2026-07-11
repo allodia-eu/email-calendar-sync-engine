@@ -25,6 +25,20 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `message_attachments`, fetch a selected attachment with `message_attachment`; and
   write with `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
   `write_calendar_event` / `delete_calendar_event` / `pending_op_state`.
+- **A calendar grid reads `occurrences_in`, not `events`.** `events` returns the
+  projected envelope — a recurring series is one object, at its series start — so a host
+  that lays *that* out shows a weekly meeting in exactly one week. `occurrences_in(account,
+  window)` returns the materialized instances overlapping a half-open UTC window, each
+  pointing back at its master for the title/participants. Pair it with `to_local` /
+  `day_bounds_utc` (the only UTC→local direction the engine offers, so a host never
+  bundles a second tzdb) to build the window and place a row in a day column.
+- **Widen the horizon with `expand_horizon`; a re-sync will not.** Sync expands only what
+  its delta *changed*, so reading a window no sync ever materialized returns empty —
+  permanently, no matter how often the host re-syncs. `expand_horizon` re-derives the
+  stored events over a new window with no network, and is also the path for a display-zone
+  or tzdata change. Both it and `sync_calendar` report the events they could **not**
+  expand (`unexpandable`): those materialize zero occurrences and so render nowhere, and
+  the host is expected to surface that rather than lose them silently.
   The read
   surface enumerates the account's scopes and filters by `SyncScope::object_kind`, so
   the facade never hard-codes which scopes a provider uses. The return values (e.g.

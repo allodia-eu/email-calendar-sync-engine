@@ -11,9 +11,11 @@
 //! The cases live in the `sync/` submodules declared below; this binary holds the
 //! shared providers, fixtures, and helpers they reach via `super::`.
 
+use core::num::NonZeroU32;
+
 use engine_api::{AccountId, Horizon};
 use engine_core::{
-    calendar::{Calendar, Event},
+    calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
     mail::{EmailAddress, Mailbox, MailboxRole, Message},
     membership::Memberships,
@@ -452,6 +454,21 @@ fn event(id: &str, uid: &str, calendar: &str) -> Event {
         Memberships::of_one(CalendarId::try_from(calendar).unwrap()),
         CalendarDateTime::utc(LocalDateTime::new(2026, 6, 1, 9, 0, 0).unwrap()),
     )
+}
+
+/// A weekly standup recurring `count` times from `start` (a UTC wall clock) — the
+/// event whose instances only exist in the occurrence rows, never in `events()`.
+fn weekly_event(id: &str, uid: &str, start: LocalDateTime, count: u32) -> Event {
+    let mut event = Event::new(
+        EventId::try_from(id).unwrap(),
+        Uid::new(uid).unwrap(),
+        Memberships::of_one(CalendarId::try_from("work").unwrap()),
+        CalendarDateTime::utc(start),
+    );
+    let mut rule = RecurrenceRule::new(Frequency::Weekly);
+    rule.bound = RecurrenceBound::Count(NonZeroU32::new(count).unwrap());
+    event.recurrence = Some(Recurrence::from_rule(rule));
+    event
 }
 
 fn horizon() -> Horizon {

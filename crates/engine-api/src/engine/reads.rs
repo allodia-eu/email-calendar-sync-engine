@@ -8,10 +8,10 @@ use engine_core::{
     ids::{AccountId, ProviderKey, ThreadId},
     mail::{Mailbox, Message},
     sync::{ObjectKind, SearchDomain, SyncScope},
-    time::UtcDateTime,
+    time::{Horizon, UtcDateTime},
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
-use engine_store::StoreRead;
+use engine_store::{OccurrenceRow, StoreRead};
 use serde_json::Value;
 
 use super::decode_error;
@@ -246,10 +246,51 @@ impl Engine {
         Ok(calendars)
     }
 
+    /// One account's materialized occurrences overlapping `window`, ascending by
+    /// `(start, end, event)` across every calendar the account syncs.
+    ///
+    /// **This is the read a calendar grid pages over, and [`Engine::events`] is not.**
+    /// Recurrence materializes into occurrence rows, not the master event
+    /// (`store-and-sync.md`), so a host that lays out `events()` renders a weekly
+    /// meeting exactly once — at the series start. Each row points back at its master
+    /// via [`OccurrenceRow::event`]; join it against `events()` for the title, calendar
+    /// membership, and participants.
+    ///
+    /// Only what a [`sync_calendar`](Engine::sync_calendar) already expanded is here.
+    /// Reading past the horizon it materialized returns *nothing*, and re-syncing does
+    /// not backfill it (a delta with no changes derives no occurrences) — advance it
+    /// with [`Engine::expand_horizon`] first, or the grid will confidently render an
+    /// empty week.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn occurrences_in(
+        &self,
+        account: &AccountId,
+        window: Horizon,
+    ) -> Result<Vec<OccurrenceRow>, ApiError> {
+        let mut occurrences = Vec::new();
+        for scope in self.scopes_of(account, ObjectKind::Event).await? {
+            occurrences.extend(self.store.scope_occurrences(&scope, window).await?);
+        }
+        // Each scope is sorted; the merge across an account's calendars is not.
+        occurrences.sort_by(|a, b| {
+            (a.start, a.end, &a.event, a.recurrence_id).cmp(&(
+                b.start,
+                b.end,
+                &b.event,
+                b.recurrence_id,
+            ))
+        });
+        Ok(occurrences)
+    }
+
     /// Lists one account's events — the synced calendar event objects (the projected
     /// envelope; recurrence materializes into occurrences in the store) across the
     /// account's calendar scopes. For the agenda/event list; pair with
-    /// [`Engine::search_calendar`] for filtered or ranked views.
+    /// [`Engine::search_calendar`] for filtered or ranked views, or with
+    /// [`Engine::occurrences_in`] to lay a recurring series out on a grid.
     ///
     /// # Errors
     ///
@@ -271,12 +312,8 @@ impl Engine {
         account: &AccountId,
         kind: ObjectKind,
     ) -> Result<Vec<Value>, ApiError> {
-        let scopes = self.store.account_scopes(account.clone()).await?;
         let mut payloads = Vec::new();
-        for scope in scopes
-            .into_iter()
-            .filter(|scope| scope.object_kind() == Some(kind))
-        {
+        for scope in self.scopes_of(account, kind).await? {
             payloads.extend(
                 self.store
                     .scope_objects(&scope)
@@ -286,5 +323,23 @@ impl Engine {
             );
         }
         Ok(payloads)
+    }
+
+    /// The account's scopes holding objects of `kind`, enumerated and filtered by
+    /// [`SyncScope::object_kind`] — so the facade never hard-codes or branches on which
+    /// scopes a provider uses (a calendar is one `DavCollection` per CalDAV collection,
+    /// but a single JMAP `CalendarEvent` type).
+    async fn scopes_of(
+        &self,
+        account: &AccountId,
+        kind: ObjectKind,
+    ) -> Result<Vec<SyncScope>, ApiError> {
+        Ok(self
+            .store
+            .account_scopes(account.clone())
+            .await?
+            .into_iter()
+            .filter(|scope| scope.object_kind() == Some(kind))
+            .collect())
     }
 }

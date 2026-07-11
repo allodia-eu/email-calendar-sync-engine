@@ -5,12 +5,14 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
     sync::SyncScope,
+    time::Horizon,
     write::PendingOpId,
 };
 use serde_json::Value;
 
 use super::MemStore;
 use crate::{
+    apply::OccurrenceRow,
     error::Result,
     lease::Clock,
     outbox::PendingOpState,
@@ -80,6 +82,35 @@ impl<C: Clock> StoreRead for MemStore<C> {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    async fn scope_occurrences(
+        &self,
+        scope: &SyncScope,
+        window: Horizon,
+    ) -> Result<Vec<OccurrenceRow>> {
+        let inner = self.lock();
+        // Occurrences are cleared on tombstone (`remove_derived`), so the stored rows are
+        // exactly the live events' — no liveness join needed, as for the mail index.
+        let Some(cell) = inner.scopes.get(scope) else {
+            return Ok(Vec::new());
+        };
+        let mut rows: Vec<OccurrenceRow> = cell
+            .occurrences
+            .values()
+            .flatten()
+            .filter(|row| window.overlaps(row.start, row.end))
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| {
+            (a.start, a.end, &a.event, a.recurrence_id).cmp(&(
+                b.start,
+                b.end,
+                &b.event,
+                b.recurrence_id,
+            ))
+        });
+        Ok(rows)
     }
 
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {

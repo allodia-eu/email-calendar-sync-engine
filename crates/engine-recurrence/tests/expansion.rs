@@ -16,7 +16,7 @@ use engine_core::{
     membership::Memberships,
     time::{CalendarDateTime, LocalDateTime, TimeZoneId},
 };
-use engine_recurrence::{Horizon, OccurrenceRow, expand};
+use engine_recurrence::{Horizon, OccurrenceRow, day_bounds_utc, expand, to_local};
 
 #[path = "expansion/determinism.rs"]
 mod determinism;
