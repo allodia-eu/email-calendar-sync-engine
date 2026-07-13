@@ -185,6 +185,54 @@ offline-tested end to end.
   the round-tripped `RawIcal`, locked by a test that an updated event's `X-`
   property and `VALARM` survive on the wire (`caldav.md`).
 
+## Editing an event: the structural patcher
+
+The targeted patch the rule above demands is **implemented**:
+`provider_caldav::patch_event_ical` (`ical::patch`). Take the stored `RawIcal`, change
+only the properties the user changed, leave every other byte alone. Read `caldav.md` →
+"CalDAV writes" for the API and the two writers; this section fixes the *semantics*.
+
+- **Never rebuild a document to update it.** `build_event_ical` emits six properties. An
+  update that goes through it deletes the recurrence rule, the attendees, the location,
+  the alarms and the timezone from the user's calendar, and reports success while doing
+  it. This is the single most destructive thing the calendar layer can do, which is why
+  the create and update paths are different functions with different inputs.
+- **Which `VEVENT` an edit lands on is the user's decision, not a default.** A drag on
+  Tuesday's standup is either a move of *that occurrence* or of *every Monday from now
+  to eternity*. `PatchTarget` therefore has no default:
+  - `Series` patches the master `VEVENT` — every occurrence moves.
+  - `Instance(recurrence_id)` patches the `RECURRENCE-ID` override for one occurrence,
+    **splitting a fresh one out of the master** if the series has never been overridden
+    there: the master's `VEVENT` is copied (attendees, alarms, `X-` props and all), its
+    series-level `RRULE`/`RDATE`/`EXDATE` are dropped (RFC 5545 §3.8.5 — an override
+    describes one instance), a `RECURRENCE-ID` naming the occurrence's *original* start
+    is added, and the patch lands on the copy. The master is untouched.
+
+  A host that does not ask the user which one it meant will eventually rewrite someone's
+  weekly standup for all time.
+- **Splitting a new override requires the occurrence's own start *and* end.** The copy
+  inherits the master's `DTSTART`/`DTEND`, which are the **first** occurrence's times,
+  not the one being edited. Deriving this occurrence's times means expanding the
+  recurrence rule, which `provider-caldav` does not do (that is `engine-recurrence`), so
+  the caller — which is looking at the occurrence, and holds its start and end from
+  `scope_occurrences` — must state them; pass them unchanged when the edit is not a
+  move. Left to guess, the override claims the series' opening slot: it once produced an
+  override running from 26 Jan 14:00 to 5 Jan 10:00, a negative duration that the reader
+  then silently discarded as malformed — so the user's move simply vanished.
+- **A move must not silently convert the value's form.** The new `DTSTART`/`DTEND` must
+  be zoned in the same zone / floating / all-day as the value it replaces, or the patch
+  is an `Err`. Resolving a zoned event to an instant and writing back UTC moves it for
+  every reader in another zone; writing an all-day event as timed turns a day into an
+  instant. Shift the **wall clock** of the event's current start (the projection
+  preserves the zone and the all-day flag — that is what it is for), never a resolved
+  instant. An all-day `DTEND` is **exclusive**: a one-day event on the 1st ends on the
+  2nd.
+- **Staged: `THISANDFUTURE`.** Splitting a series at a point (this occurrence and all
+  later ones) needs the master's `RRULE` rewritten with an `UNTIL` and a second master
+  minted — a different operation from overriding one instance, and not implemented. A
+  host offering the usual three-way "this / this and following / all events" prompt has
+  the first and third today.
+
 ## Supported recurrence subset
 
 The model stores recurrence structurally (all of RFC 5545 `RRULE`), but the
@@ -237,3 +285,13 @@ objects is the sync layer's job).
   not auto-applied.
 - A CalDAV event carrying properties absent from JSCalendar round-trips via
   raw-plus-patch without dropping them.
+- **Patching one property of a real resource changes only that property's bytes.** The
+  fixture is a recurring, multi-attendee, alarmed, zoned event with folded lines, `X-`
+  properties, an embedded `VTIMEZONE` and non-ASCII text; the assertion is structural
+  (strike the patched properties from both documents; the remainder must be
+  byte-equal), because "the new value is in the document" also passes for a patcher that
+  deleted the `RRULE` on its way.
+- Moving one occurrence of a series leaves the master `VEVENT` byte-for-byte intact, and
+  the patched resource re-reads as the same series carrying one overridden instance.
+- A `DTSTART` supplied in the wrong form (UTC for a zoned event, timed for an all-day
+  one) is refused, not converted.

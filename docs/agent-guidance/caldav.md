@@ -175,15 +175,43 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   (`calendar-semantics.md`, `modeling.md`): an update PUTs the stored `raw_ical`
   with targeted patches applied, so properties the lossy JSCalendar projection
   cannot express (`X-` props, `VALARM`, …) survive the round trip (locked by an
-  offline test). A **create** carries a freshly built iCalendar document — the
-  body is constructed by the host/caller, since this slice is the transport +
-  outbox primitive, not a JSCalendar→iCalendar serializer (that, and a structural
-  iCal patcher for updates, are separate concerns). The crate ships a **minimal
-  RFC 5545 builder** for that create body, `provider_caldav::build_event_ical`
-  (`UID`, `DTSTAMP`, UTC `DTSTART`/`DTEND`, `SUMMARY`, optional `DESCRIPTION`;
-  TEXT escaped per §3.3.11, UTC "basic" times, `DTSTAMP` derived from `start`),
-  re-exported from the crate root and locked by a round-trip test through the
-  parser — deliberately not the full serializer or the update patcher.
+  offline test). There are therefore **two writers, and they are not
+  interchangeable**:
+  - **Create** → `provider_caldav::build_event_ical`, a **minimal** RFC 5545 builder
+    (`UID`, `DTSTAMP`, UTC `DTSTART`/`DTEND`, `SUMMARY`, optional `DESCRIPTION`;
+    TEXT escaped per §3.3.11, UTC "basic" times, `DTSTAMP` derived from `start`),
+    locked by a round-trip test through the parser. It emits **six properties**.
+    Using it to *update* an existing event is data loss: every property it does not
+    emit — the `RRULE`, the attendees, the alarms, the `TZID` — is deleted from the
+    user's calendar by a `PUT` that reports success.
+  - **Update** → `provider_caldav::patch_event_ical`, the **structural patcher**
+    (`ical::patch`). It takes the stored `RawIcal` and an `EventPatch`
+    (`SUMMARY`/`DESCRIPTION`/`LOCATION`/`DTSTART`/`DTEND`) and rewrites **only** the
+    content lines that changed, plus the `DTSTAMP`/`LAST-MODIFIED`/`SEQUENCE`
+    bookkeeping RFC 5545 requires of a revision. Every other byte — including the
+    original line folding, the document's line terminators, and properties this crate
+    has never heard of — is preserved verbatim, which is asserted structurally rather
+    than by eyeball (`patch_tests.rs`: strike the patched properties from both
+    documents and the remainder must be byte-equal).
+  - The shared fold-aware line surgery is `ical::lines::Document`, and the shared TEXT
+    escaping / date-time rendering is `ical::format`. Both writers and the `imip`
+    RSVP primitive go through them, so there is one implementation of "rewrite this
+    content line, leave every other byte alone", not three.
+
+  Three rules the patcher enforces, each of which is a silent-corruption bug if left
+  to the caller:
+  - **A move may not change a value's *form*.** A new `DTSTART`/`DTEND` must be zoned
+    in the same zone / floating / all-day as the one it replaces, or it is an
+    `Err` — never a conversion. Rendering an `Europe/Amsterdam` event as UTC moves it
+    for every other reader; rendering an all-day event as timed turns a day into an
+    instant.
+  - **`RECURRENCE-ID` targeting is explicit** (`PatchTarget::Series` vs
+    `PatchTarget::Instance`), with no default — see `calendar-semantics.md`.
+  - **An event may not end before it begins.** The check is against the end the event
+    *will have*, so moving the start past an unchanged end is caught too; the reader
+    would otherwise reject the event as malformed and drop it, making the edit look
+    saved while the event vanished.
+
   `CalDavProvider::event_href`
   mints the conventional `<collection>/<uid>.ics` resource href for a create
   (percent-encoding the `UID` as one path segment); an update/delete reuses the

@@ -17,7 +17,10 @@
 //! Layers (mirroring `provider-jmap`'s `Executor` seam so the whole protocol is
 //! offline-testable by replaying captured transcripts):
 //! - [`ical`] — the iCalendar parser: text → normalized [`Event`](engine_core::calendar::Event)s,
-//!   folding a resource's master + `RECURRENCE-ID` override `VEVENT`s into one event.
+//!   folding a resource's master + `RECURRENCE-ID` override `VEVENT`s into one event; plus the two
+//!   writers — [`build_event_ical`] (create) and [`patch_event_ical`] (update), the structural
+//!   patcher that edits a stored resource *in place* so an edit cannot delete the properties the
+//!   projection does not model.
 //! - `dav` — the WebDAV `multistatus` XML parser.
 //! - `transport` — the HTTP `DavExecutor` seam (read reports + writes) + its `reqwest`
 //!   implementation.
@@ -45,7 +48,7 @@ mod transport;
 mod write;
 
 pub use error::CalDavError;
-pub use ical::build_event_ical;
+pub use ical::{EventPatch, PatchTarget, build_event_ical, patch_event_ical};
 pub use provider::{CalDavConfig, CalDavProvider};
 pub use transport::Credentials;
 

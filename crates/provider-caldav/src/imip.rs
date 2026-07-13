@@ -17,13 +17,11 @@
 //! `text/plain`-only today — `imap-smtp.md`); the documented and wired RSVP path is
 //! the conditional `PUT` above.
 
-use core::ops::Range;
-
 use engine_core::{calendar::ParticipationStatus, raw::RawIcal, scheduling::SchedulingMessage};
 
 use crate::{
     error::CalDavError,
-    ical::{split_once_unquoted, split_unquoted},
+    ical::{Document, Edit, Edits, split_once_unquoted, split_unquoted},
 };
 
 /// Parses a `text/calendar` iMIP body (a `METHOD` + a `VEVENT`) into a normalized
@@ -67,82 +65,19 @@ pub fn set_my_partstat(
 
 /// Rewrites the first `ATTENDEE` line for `me`, returning the patched document or
 /// `None` if no such attendee is present.
+///
+/// The fold-aware line surgery — and the guarantee that every other line survives
+/// byte-for-byte — is [`Document`](crate::ical::Document), shared with the structural
+/// patcher (`ical::patch`). This function is just "find my line, rewrite one parameter".
 fn rewrite_my_partstat(raw: &str, me: &str, status: &str) -> Option<String> {
-    let physical = physical_lines(raw);
-    let groups = logical_groups(&physical);
-    let mut out = String::with_capacity(raw.len() + 16);
-    let mut patched = false;
-    for group in groups {
-        let logical = unfold_group(&physical, &group);
-        if !patched && is_attendee_for(&logical, me) {
-            let term = physical[group.end - 1].1;
-            let term = if term.is_empty() { "\r\n" } else { term };
-            out.push_str(&fold(&rewrite_partstat_line(&logical, status), term));
-            out.push_str(term);
-            patched = true;
-        } else {
-            for &(content, term) in &physical[group] {
-                out.push_str(content);
-                out.push_str(term);
-            }
-        }
-    }
-    patched.then_some(out)
-}
-
-/// Splits `raw` into physical lines as `(content_without_terminator, terminator)`,
-/// preserving each original `\r\n`/`\n` (or `""` for an unterminated final line) so
-/// untouched lines re-emit byte-for-byte.
-fn physical_lines(raw: &str) -> Vec<(&str, &str)> {
-    let mut out = Vec::new();
-    let bytes = raw.as_bytes();
-    let mut start = 0;
-    for i in 0..bytes.len() {
-        if bytes[i] == b'\n' {
-            let content_end = if i > start && bytes[i - 1] == b'\r' {
-                i - 1
-            } else {
-                i
-            };
-            out.push((&raw[start..content_end], &raw[content_end..=i]));
-            start = i + 1;
-        }
-    }
-    if start < raw.len() {
-        out.push((&raw[start..], ""));
-    }
-    out
-}
-
-/// Groups physical lines into logical content lines, attaching each folded
-/// continuation (a line beginning with a space or tab, RFC 5545 §3.1) to its
-/// predecessor.
-fn logical_groups(physical: &[(&str, &str)]) -> Vec<Range<usize>> {
-    let mut groups = Vec::new();
-    let mut i = 0;
-    while i < physical.len() {
-        let start = i;
-        i += 1;
-        while i < physical.len() && physical[i].0.starts_with([' ', '\t']) {
-            i += 1;
-        }
-        groups.push(start..i);
-    }
-    groups
-}
-
-/// Unfolds the physical lines of one group into a single logical content line,
-/// stripping each continuation's one leading space/tab.
-fn unfold_group(physical: &[(&str, &str)], group: &Range<usize>) -> String {
-    let mut logical = String::new();
-    for (offset, &(content, _)) in physical[group.clone()].iter().enumerate() {
-        if offset == 0 {
-            logical.push_str(content);
-        } else {
-            logical.push_str(&content[1..]);
-        }
-    }
-    logical
+    let doc = Document::parse(raw);
+    let group = (0..doc.len()).find(|&index| is_attendee_for(&doc.logical(index), me))?;
+    let mut edits = Edits::new();
+    edits.insert(
+        group,
+        Edit::replace(rewrite_partstat_line(&doc.logical(group), status)),
+    );
+    Some(doc.render(&edits))
 }
 
 /// Returns `true` if `logical` is an `ATTENDEE` property whose calendar address
@@ -189,25 +124,6 @@ fn rewrite_partstat_line(logical: &str, status: &str) -> String {
 /// no `=`).
 fn param_key(segment: &str) -> &str {
     segment.split('=').next().unwrap_or(segment).trim()
-}
-
-/// Folds `line` to ≤75-octet physical lines with `term` + a space (RFC 5545 §3.1),
-/// never splitting a multi-byte character. Does not emit a trailing terminator.
-fn fold(line: &str, term: &str) -> String {
-    const MAX: usize = 75;
-    let mut out = String::with_capacity(line.len());
-    let mut octets = 0;
-    for ch in line.chars() {
-        let width = ch.len_utf8();
-        if octets + width > MAX {
-            out.push_str(term);
-            out.push(' ');
-            octets = 1; // the continuation's leading space
-        }
-        out.push(ch);
-        octets += width;
-    }
-    out
 }
 
 /// Compares two calendar addresses after lowercasing and stripping a leading
