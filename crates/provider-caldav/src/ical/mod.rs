@@ -13,7 +13,10 @@
 mod build;
 mod component;
 mod event;
+mod format;
+mod lines;
 mod party;
+mod patch;
 mod recur;
 mod recurrence;
 mod unfold;
@@ -29,6 +32,11 @@ use engine_core::{
     time::UtcDateTime,
 };
 use event::{event_from_vevent, vevent_uid};
+// The fold-aware line-surgery engine: the one implementation of "rewrite this content
+// line, leave every other byte alone", shared by the structural patcher and the `imip`
+// RSVP primitive.
+pub(crate) use lines::{Document, Edit, Edits};
+pub use patch::{EventPatch, PatchTarget, patch_event_ical};
 use recurrence::fold_override;
 // The quote-aware splitters are the crate's canonical iCalendar tokenizing
 // primitives; the `imip` RSVP patcher reuses them rather than re-implementing.

@@ -5,14 +5,21 @@
 //! body, and [`EventWrite::create`](engine_provider::EventWrite) carries it verbatim
 //! in the conditional `PUT` (`caldav.md`). It is deliberately small — enough for a
 //! valid create (`UID`, `DTSTAMP`, UTC `DTSTART`/`DTEND`, `SUMMARY`, optional
-//! `DESCRIPTION`) — **not** the full JSCalendar→iCalendar serializer, which, with a
-//! structural patcher for updates, is a separate concern (`calendar-semantics.md`).
+//! `DESCRIPTION`).
+//!
+//! It is **only** for a create. Rebuilding a document to *update* an event would
+//! delete every property this function does not emit — the `RRULE`, the attendees,
+//! the alarms, the zone — so an edit goes through [`patch_event_ical`](super::patch_event_ical),
+//! which changes the stored bytes in place (`calendar-semantics.md`).
 //!
 //! Times use the iCalendar UTC "basic" form `YYYYMMDDTHHMMSSZ`, and text is escaped
 //! per RFC 5545 §3.3.11 — the exact inverse of the parser's
 //! [`unescape_text`](super::unfold::unescape_text), so a built document round-trips.
+//! Both are [`format`](super::format), shared with the patcher.
 
 use engine_core::{ids::Uid, raw::RawIcal, time::UtcDateTime};
+
+use super::format::{escape_text, format_utc, strip_control};
 
 /// Builds a minimal RFC 5545 `VCALENDAR`/`VEVENT` document for a create `PUT`.
 ///
@@ -59,46 +66,6 @@ fn push_property(out: &mut String, name: &str, value: &str) {
     out.push(':');
     out.push_str(value);
     out.push_str("\r\n");
-}
-
-/// Formats a UTC instant as the iCalendar UTC "basic" form `YYYYMMDDTHHMMSSZ`
-/// (RFC 5545 §3.3.5 form #2).
-fn format_utc(instant: UtcDateTime) -> String {
-    format!(
-        "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
-        instant.year(),
-        instant.month(),
-        instant.day(),
-        instant.hour(),
-        instant.minute(),
-        instant.second(),
-    )
-}
-
-/// Escapes an iCalendar TEXT value (RFC 5545 §3.3.11): `\` → `\\`, `;` → `\;`,
-/// `,` → `\,`, and a newline → `\n`. The exact inverse of
-/// [`unescape_text`](super::unfold::unescape_text). Any line break — `\r\n`, a lone
-/// `\n`, or a lone `\r` — is normalized to a single escaped `\n`, so a break is never
-/// silently dropped.
-fn escape_text(value: &str) -> String {
-    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
-    let mut out = String::with_capacity(normalized.len());
-    for ch in normalized.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            ';' => out.push_str("\\;"),
-            ',' => out.push_str("\\,"),
-            '\n' => out.push_str("\\n"),
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// Removes control characters (CR/LF/NUL and the like) from an opaque identifier so it
-/// cannot inject extra iCalendar content lines. A valid UID contains none.
-fn strip_control(value: &str) -> String {
-    value.chars().filter(|c| !c.is_control()).collect()
 }
 
 #[cfg(test)]
@@ -151,21 +118,11 @@ mod tests {
     }
 
     #[test]
-    fn formats_utc_in_basic_form() {
-        assert_eq!(format_utc(instant(9, 5)), "20260625T090500Z");
-    }
-
-    #[test]
-    fn escapes_text_special_characters() {
-        // RFC 5545 §3.3.11: backslash, semicolon, comma, and newline are escaped;
-        // ordinary characters pass through.
-        assert_eq!(escape_text("a\\b;c,d\ne"), "a\\\\b\\;c\\,d\\ne".to_owned());
-        // Every line-break form normalizes to one escaped newline — never dropped.
-        assert_eq!(escape_text("x\r\ny"), "x\\ny".to_owned());
-        assert_eq!(escape_text("x\ry"), "x\\ny".to_owned());
-        // The built SUMMARY line carries the escaped form verbatim.
+    fn the_built_summary_line_carries_the_escaped_form() {
+        // Escaping itself is `format`'s (and is tested there); this is the wiring.
         let ical = build_event_ical(&uid(), "x;y,z", instant(0, 0), instant(0, 0), None);
         assert!(ical.as_str().contains("SUMMARY:x\\;y\\,z\r\n"));
+        assert!(ical.as_str().contains("DTSTAMP:20260625T000000Z\r\n"));
     }
 
     #[test]
