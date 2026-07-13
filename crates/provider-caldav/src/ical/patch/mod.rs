@@ -39,7 +39,11 @@ mod plan;
 mod vevent;
 
 #[cfg(test)]
+mod guard_tests;
+#[cfg(test)]
 mod patch_tests;
+#[cfg(test)]
+mod test_support;
 
 use engine_core::{
     raw::RawIcal,
