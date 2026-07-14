@@ -228,6 +228,18 @@ specifics they implement against the Stalwart fixture. Read it before touching
     the client owns, so `Provider::put_event` stays unimplemented here even though the
     adapter advertises `calendar_writes` — that capability covers the neutral spine, not the
     document escape hatch that exists for CalDAV's iMIP RSVP primitive.
+  - **A `/set` returns no object, so the write reconciles through the delta** (issue #65).
+    `created` carries an id and `updated` an acknowledgement — never the stored event — so
+    the store would otherwise keep the pre-write copy. The facade follows every calendar
+    write with `engine_sync::reconcile_calendar_events`, which here is one
+    `CalendarEvent/changes` + back-referenced `/get`: exactly the read primitive, one round
+    trip. That a server re-delivers **our own** write on that delta (and reports our own
+    destroy in `destroyed`, and advances `state` so it is not re-delivered forever) is the
+    fix's load-bearing assumption and cannot be tested offline — the fake executor would
+    "confirm" any delta at all — so `tests/live_calendar_reconcile.rs` pins it against
+    Stalwart. There is no `ETag` chain to refresh here (a `CalendarEvent` has no per-object
+    revision), so what the reconcile buys on this transport is simply that the store's copy
+    still comes from the **server**.
 - **There is no lost-update guard on JMAP calendar writes, and the engine says so.**
   `Capabilities::calendar_write_guard()` returns `WriteGuard::Absent` (CalDAV returns
   `Enforced`), so a host reads the truth **before** it writes rather than inferring optimistic

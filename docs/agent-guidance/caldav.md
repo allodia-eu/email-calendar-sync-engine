@@ -266,9 +266,9 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   automatic follow-up `GET` is issued. Both harness servers **do** supply it, and the live
   suite drives the create → patch → delete chain with the delete guarded by the **receipt's**
   `ETag`, never a refetched one — so "write, keep the receipt, write again" is a proven path,
-  not an assumption. That matters more than it looks: until the next sync the **store still
-  holds the pre-write revision** (issue #65), so a host that re-read the guard from there
-  would `412` on a write that should have succeeded.
+  not an assumption. The *store's* copy is refreshed separately, by the post-write reconcile
+  below (issue #65); the receipt chain is what a caller of the **low-level drivers** uses,
+  since those do not reconcile.
 - **Writes are outbox-mediated** (`store-and-sync.md` Write Contract). The thin drivers
   `engine_sync::create_calendar_event`/`patch_calendar_event`/`delete_calendar_event` (plus
   `put_calendar_document` for the RSVP path) mirror `submit_mail`: a durable `PendingOp` is
@@ -282,13 +282,30 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   caller-supplied argument**, not derived from the event: the store dedups enqueue by
   `(account, idempotency_key)` across *every* op state (including terminal), so an
   event-only key would wrongly collapse two distinct edits of one resource into one op.
-- **Exposed on the host facade.** `Engine::create_calendar_event` /
-  `Engine::patch_calendar_event` / `Engine::delete_calendar_event` (`engine-api.md`) wrap
+- **Exposed on the host facade, and the facade reconciles.** `Engine::create_calendar_event`
+  / `Engine::patch_calendar_event` / `Engine::delete_calendar_event` (`engine-api.md`) wrap
   these drivers, mirroring `Engine::submit_mail`/`Engine::edit_mail`. A host states the event
   or the edit and drives the write through the facade alone (the neutral write types are
   re-exported from `engine-api`); nothing CalDAV-shaped reaches it. A `412` precondition
-  failure surfaces as a `Conflict`; the next `Engine::sync_calendar` reconciles the new
-  revision.
+  failure surfaces as a `Conflict`.
+- **A write refreshes the store through the delta, not through its own bytes** (issue #65).
+  The drivers leave the store holding the pre-write document and `ETag` — a `PUT` returns no
+  body — so each **facade** write follows it with `engine_sync::reconcile_calendar_events`: a
+  `sync-collection` REPORT from the held token, which re-delivers the resource *we* just
+  wrote with the server's `calendar-data` inline and its new `ETag`, reports a deleted
+  resource as removed (404 → tombstone), and advances the sync-token so the change is not
+  re-delivered. One round trip, the read primitive, no new verb.
+  - Storing our own bytes optimistically would be wrong twice over: Stalwart **reserializes**
+    (see above), so the store's `RawIcal` would not be the server's — and it would **mask a
+    server that silently dropped a property**, exactly what
+    `patched_update_preserves_the_document` exists to catch. Nor can the `ETag` move without
+    the body: the row would then claim a revision whose bytes we do not hold, letting a host
+    patch a *stale* body under a *valid* guard and silently revert its own edit.
+  - `common::reconcile::read_your_writes` pins the whole chain live — sync → write →
+    reconcile → **re-read from the store** → write again — on **both** servers, so the claim
+    holds for a reserializing server and a byte-verbatim one alike. Its last leg is the
+    point: the second edit's `If-Match` comes from the store, and without the reconcile the
+    server refuses it with the `412` this issue is named for.
 
 ## iMIP scheduling
 
