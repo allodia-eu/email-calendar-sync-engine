@@ -3,29 +3,37 @@
 //! fake replays canned bytes without ever reading the request:
 //!
 //! - [`round_trip`] — does the `PUT` hand back the new `ETag`, and is it the resource's real one
-//!   (i.e. usable as the next `If-Match` with no refetch)?
-//! - [`patched_update_preserves_the_document`] — does an edit made with the structural patcher
+//!   (i.e. usable as the next precondition with no refetch)?
+//! - [`patched_update_preserves_the_document`] — does an edit made through the neutral patch verb
 //!   survive the **server**? Our byte-equality tests prove the *patcher* keeps the `RRULE`, the
 //!   `VALARM`, the `VTIMEZONE` and the `X-` properties; they say nothing about whether the server
 //!   stores them or quietly normalizes them away.
-//! - [`stale_if_match_is_a_conflict`] — does a superseded `If-Match` really come back `412`, and
-//!   does the adapter class it `Conflict` (refetch-and-merge) rather than a blind-retryable
-//!   `Retryable`?
+//! - [`stale_if_match_is_a_conflict`] — does a superseded guard really come back `412`, and does
+//!   the adapter class it `Conflict` (refetch-and-merge) rather than a blind-retryable `Retryable`?
 //! - [`instance_override_split_is_accepted`] — does a `RECURRENCE-ID` override the patcher splits
 //!   out of a master get accepted as part of the same resource, and come back folded into one
 //!   event?
 //!
+//! They are written the way a **host** writes: state the intent through the neutral verbs
+//! (`engine_provider::EventDraft`/`EventEdit`) and never assemble iCalendar. The one
+//! exception is seeding a fixture too rich for a draft to express (a `VTIMEZONE`, a
+//! `VALARM`, an `RRULE`), which goes in through the whole-document verb — that is the
+//! server-side fixture, not the thing under test.
+//!
 //! Every scenario leaves the seeded collection exactly as it found it.
 
 use engine_core::{
-    calendar::RecurrenceOverride,
+    calendar::{Event, RecurrenceOverride},
     error::FailureClass,
     ids::{AccountId, Uid},
     raw::RawIcal,
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
+    version::RevisionTokens,
 };
-use engine_provider::{EventDeletion, EventWrite, Provider};
-use provider_caldav::{CalDavProvider, EventPatch, PatchTarget, patch_event_ical};
+use engine_provider::{
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, PatchTarget, Provider, WriteGuard,
+};
+use provider_caldav::CalDavProvider;
 
 use super::{fetch, lines_without, pre_clean, require, server_etag, server_ical};
 
@@ -43,6 +51,19 @@ fn amsterdam(local: &str) -> CalendarDateTime {
     }
 }
 
+/// Seeds a document too rich for an [`EventDraft`] to express, through the whole-document
+/// verb. This is fixture setup, not the thing under test.
+async fn seed(provider: &CalDavProvider, account: &AccountId, uid: &Uid, body: String) {
+    let href = provider.event_href(uid).expect("mint event href");
+    provider
+        .put_event(
+            account,
+            &EventWrite::unconditional(href, uid.clone(), RawIcal::new(body)),
+        )
+        .await
+        .expect("seed the event");
+}
+
 /// The properties a patch is *allowed* to rewrite. Everything else must survive both the
 /// patcher and the server byte for byte (RFC 5545 requires the `DTSTAMP`/`LAST-MODIFIED`
 /// bookkeeping of a revision; `SEQUENCE` moves only on a significant change).
@@ -54,81 +75,85 @@ const PATCHABLE: &[&str] = &["SUMMARY", "DTSTAMP", "LAST-MODIFIED", "SEQUENCE"];
 
 const ROUND_TRIP_UID: &str = "caldav-write-roundtrip@test.local";
 
-/// One iCalendar body, with `title` as the `SUMMARY` and `sequence` as the `SEQUENCE`.
-fn simple_body(title: &str, sequence: u32) -> String {
-    format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//engine//caldav-write-test//EN\r\n\
-         BEGIN:VEVENT\r\nUID:{ROUND_TRIP_UID}\r\nDTSTAMP:20260601T000000Z\r\n\
-         DTSTART;TZID=Europe/Amsterdam:20260601T100000\r\n\
-         DTEND;TZID=Europe/Amsterdam:20260601T110000\r\n\
-         SEQUENCE:{sequence}\r\nSUMMARY:{title}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-    )
-}
-
-/// The full write lifecycle — create → update → delete — driven **entirely off the
-/// `ETag`s the `PUT`s hand back**, never a refetched one.
+/// The full write lifecycle — create → patch → delete — with the **delete guarded by the
+/// `ETag` the patch `PUT` handed back**, never a refetched one.
 ///
 /// That is the point, and it is what makes this more than a smoke test: `caldav.md`
-/// promises a host can write, take the receipt's `ETag`, and write again without a
-/// round trip to re-read it (RFC 4791 §5.3.4 *recommends* the response `ETag`, and
-/// plenty of servers omit it — the receipt's field is an `Option` precisely because we
-/// could not previously prove any server supplied it). If the receipt's `ETag` were
-/// absent, stale, or not the resource's, the next `If-Match` would `412` and this fails.
-///
-/// The **href** still comes from a fresh sync, not from the minted create href: a server
-/// is entitled to canonicalize the resource name, and a real host writes back to the
-/// href it read.
+/// promises a host can write, keep the receipt's revision, and write again without a round
+/// trip to re-read it (RFC 4791 §5.3.4 only *recommends* the response `ETag`, and plenty of
+/// servers omit it — the receipt's field is optional precisely because we could not
+/// previously prove any server supplied it). It matters more than it looks: until the next
+/// sync the **store still holds the pre-write revision**, so a host that re-read it there
+/// would guard on a superseded one and get a `412` on a write that should have succeeded.
+/// If the receipt's `ETag` were absent, stale, or not the resource's, this fails.
 pub(crate) async fn round_trip(provider: &CalDavProvider, account: &AccountId) {
+    let caps = provider.connection_info().capabilities;
     assert!(
-        provider.connection_info().capabilities.calendar_writes(),
+        caps.calendar_writes(),
         "the CalDAV provider advertises calendar writes"
     );
+    assert_eq!(
+        caps.calendar_write_guard(),
+        Some(WriteGuard::Enforced),
+        "CalDAV is the transport that can actually promise a lost-update guard — and the \
+         rest of this scenario is what earns that claim"
+    );
+
     let uid = Uid::new(ROUND_TRIP_UID).unwrap();
     pre_clean(provider, account, &uid).await;
 
-    // ---- Create (If-None-Match: *). ----
+    // ---- Create: the host states an event, the adapter serializes it. ----
     let created = provider
-        .put_event(
+        .create_event(
             account,
-            &EventWrite::create(
-                provider.event_href(&uid).expect("mint event href"),
+            &EventDraft::new(
+                provider.calendar_id(),
                 uid.clone(),
-                RawIcal::new(simple_body("Live write test", 0)),
+                "Live write test",
+                amsterdam("2026-06-01T10:00:00"),
+                amsterdam("2026-06-01T11:00:00"),
+                stamp(),
             ),
         )
         .await
         .expect("create event");
     assert_eq!(created.uid.as_str(), ROUND_TRIP_UID);
     let etag_v1 = created
+        .revisions
         .etag
         .clone()
         .expect("the server returns the new ETag on the create PUT (RFC 4791 §5.3.4)");
 
     let made = require(provider, account, ROUND_TRIP_UID).await;
     assert_eq!(made.title, "Live write test");
-    // The ETag the PUT reported *is* the resource's ETag — so it can be used as the
-    // next precondition without re-reading the collection first.
+    assert_eq!(
+        made.start,
+        amsterdam("2026-06-01T10:00:00"),
+        "the create was born zoned — never flattened to the UTC instant it denotes today"
+    );
+    // The ETag the PUT reported *is* the resource's ETag — so it can be used as the next
+    // precondition without re-reading the collection first.
     assert_eq!(
         server_etag(&made),
         etag_v1,
         "the PUT's ETag is the one the collection reports"
     );
-    let href = made.id.clone();
 
-    // ---- Update, guarded by the ETag the create PUT returned. ----
+    // ---- Patch, guarded by the revision we read. ----
     let updated = provider
-        .put_event(
+        .patch_event(
             account,
-            &EventWrite::update(
-                href.clone(),
-                uid.clone(),
-                RawIcal::new(simple_body("Live write test (edited)", 1)),
-                etag_v1.clone(),
+            &made,
+            &EventEdit::new(
+                &made,
+                PatchTarget::Series,
+                EventPatch::new(stamp()).summary("Live write test (edited)"),
             ),
         )
         .await
-        .expect("update event with the create's ETag");
+        .expect("patch the event");
     let etag_v2 = updated
+        .revisions
         .etag
         .clone()
         .expect("the server returns the new ETag on the update PUT");
@@ -137,11 +162,14 @@ pub(crate) async fn round_trip(provider: &CalDavProvider, account: &AccountId) {
     let edited = require(provider, account, ROUND_TRIP_UID).await;
     assert_eq!(edited.title, "Live write test (edited)");
 
-    // ---- Delete, guarded by the ETag the update PUT returned. ----
+    // ---- Delete, guarded by the ETag the *patch's receipt* carried — not one we went
+    // back to the server for. This is the chain the host contract depends on.
+    let mut as_written = made.clone();
+    as_written.revisions = RevisionTokens::from_etag(etag_v2);
     provider
-        .delete_event(account, &EventDeletion::if_match(href, etag_v2))
+        .delete_event(account, &EventDeletion::of(&as_written))
         .await
-        .expect("delete event with the update's ETag");
+        .expect("delete the event using the receipt's ETag, with no refetch");
     assert!(
         fetch(provider, account, ROUND_TRIP_UID).await.is_none(),
         "the event is gone from the collection after the delete"
@@ -185,8 +213,8 @@ fn rich_body() -> String {
     )
 }
 
-/// Edits one property of a rich event with the structural patcher and proves the
-/// **server** kept everything else — the claim #58 makes and could not, until now, back.
+/// Retitles a rich event through the neutral patch verb and proves the **server** kept
+/// everything else — the claim the patcher makes and could not, until now, back.
 ///
 /// The comparison is between the server's copy *before* the patch and the server's copy
 /// *after* it, with only the properties the patch may touch struck out. That isolates
@@ -201,18 +229,7 @@ pub(crate) async fn patched_update_preserves_the_document(
 ) {
     let uid = Uid::new(RICH_UID).unwrap();
     pre_clean(provider, account, &uid).await;
-
-    provider
-        .put_event(
-            account,
-            &EventWrite::create(
-                provider.event_href(&uid).expect("mint event href"),
-                uid.clone(),
-                RawIcal::new(rich_body()),
-            ),
-        )
-        .await
-        .expect("create the rich event");
+    seed(provider, account, &uid, rich_body()).await;
 
     // What the server stored — the only copy that matters. The patch is applied to
     // *this*, exactly as a host would apply it to what it synced.
@@ -231,26 +248,20 @@ pub(crate) async fn patched_update_preserves_the_document(
         "the server kept the X- property on the create"
     );
 
-    // ---- Retitle it, and nothing else. ----
-    let patched = patch_event_ical(
-        &stored,
-        &PatchTarget::Series,
-        &EventPatch::new(stamp()).summary("Weekly standup (renamed)"),
-    )
-    .expect("patch the server's stored document");
-
+    // ---- Retitle it, and nothing else. The host says only that; the adapter does the
+    // surgery over the stored raw and PUTs the result under the revision it read.
     provider
-        .put_event(
+        .patch_event(
             account,
-            &EventWrite::update(
-                before.id.clone(),
-                uid.clone(),
-                patched,
-                server_etag(&before),
+            &before,
+            &EventEdit::new(
+                &before,
+                PatchTarget::Series,
+                EventPatch::new(stamp()).summary("Weekly standup (renamed)"),
             ),
         )
         .await
-        .expect("PUT the patched document");
+        .expect("patch the server's stored document");
 
     let after = require(provider, account, RICH_UID).await;
     assert_eq!(after.title, "Weekly standup (renamed)", "the edit landed");
@@ -265,10 +276,7 @@ pub(crate) async fn patched_update_preserves_the_document(
     );
 
     provider
-        .delete_event(
-            account,
-            &EventDeletion::if_match(after.id.clone(), server_etag(&after)),
-        )
+        .delete_event(account, &EventDeletion::of(&after))
         .await
         .expect("delete the rich event");
 }
@@ -279,59 +287,68 @@ pub(crate) async fn patched_update_preserves_the_document(
 
 const CONFLICT_UID: &str = "caldav-stale-etag@test.local";
 
-/// A superseded `If-Match` must come back `412` and class as
-/// [`FailureClass::Conflict`] — *not* `Retryable`.
+/// A superseded guard must come back `412` and class as [`FailureClass::Conflict`] —
+/// *not* `Retryable`.
 ///
 /// The distinction is the whole recovery strategy: a `Conflict` means the server copy
 /// moved on, so the stored `RawIcal` the patch was built from is stale and the edit must
-/// be refetched, re-patched and resubmitted. A blind retry would either fail forever or,
+/// be refetched, re-applied and resubmitted. A blind retry would either fail forever or,
 /// worse, succeed by clobbering someone else's change.
+///
+/// This is also the assertion that earns CalDAV its [`WriteGuard::Enforced`]. The JMAP
+/// adapter cannot pass it — which is why it advertises [`WriteGuard::Absent`] instead of
+/// pretending (`jmap.md`).
 pub(crate) async fn stale_if_match_is_a_conflict(provider: &CalDavProvider, account: &AccountId) {
     let uid = Uid::new(CONFLICT_UID).unwrap();
     pre_clean(provider, account, &uid).await;
 
-    let body = |summary: &str| {
-        RawIcal::new(format!(
-            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//engine//caldav-conflict-test//EN\r\n\
-             BEGIN:VEVENT\r\nUID:{CONFLICT_UID}\r\nDTSTAMP:20260601T000000Z\r\n\
-             DTSTART;TZID=Europe/Amsterdam:20260603T100000\r\n\
-             DTEND;TZID=Europe/Amsterdam:20260603T110000\r\n\
-             SUMMARY:{summary}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-        ))
-    };
-
-    let created = provider
-        .put_event(
+    provider
+        .create_event(
             account,
-            &EventWrite::create(
-                provider.event_href(&uid).expect("mint event href"),
+            &EventDraft::new(
+                provider.calendar_id(),
                 uid.clone(),
-                body("Original"),
+                "Original",
+                amsterdam("2026-06-03T10:00:00"),
+                amsterdam("2026-06-03T11:00:00"),
+                stamp(),
             ),
         )
         .await
         .expect("create event");
-    let stale = created.etag.clone().expect("the create returns an ETag");
-    let href = require(provider, account, CONFLICT_UID).await.id;
 
-    // Someone (here: us) moves the server copy on. `stale` now names a revision that no
-    // longer exists.
+    // The copy a host read — and the revision it holds. Everything below patches from
+    // *this* base, so `stale` is stale in exactly the way a real host's would be.
+    let stale: Event = require(provider, account, CONFLICT_UID).await;
+
+    // Someone (here: us) moves the server copy on. The revision `stale` carries no longer
+    // exists.
     provider
-        .put_event(
+        .patch_event(
             account,
-            &EventWrite::update(href.clone(), uid.clone(), body("Moved on"), stale.clone()),
+            &stale,
+            &EventEdit::new(
+                &stale,
+                PatchTarget::Series,
+                EventPatch::new(stamp()).summary("Moved on"),
+            ),
         )
         .await
-        .expect("the first update, with a current ETag, succeeds");
+        .expect("the first update, from a current base, succeeds");
 
-    // ---- The stale update. ----
+    // ---- The stale update: same base, whose revision the server has now superseded. ----
     let error = provider
-        .put_event(
+        .patch_event(
             account,
-            &EventWrite::update(href.clone(), uid.clone(), body("Clobber"), stale.clone()),
+            &stale,
+            &EventEdit::new(
+                &stale,
+                PatchTarget::Series,
+                EventPatch::new(stamp()).summary("Clobber"),
+            ),
         )
         .await
-        .expect_err("a superseded If-Match must not overwrite the server copy");
+        .expect_err("a superseded guard must not overwrite the server copy");
     assert_eq!(
         error.class(),
         FailureClass::Conflict,
@@ -341,9 +358,9 @@ pub(crate) async fn stale_if_match_is_a_conflict(provider: &CalDavProvider, acco
 
     // ---- The stale delete: same precondition, same verdict. ----
     let error = provider
-        .delete_event(account, &EventDeletion::if_match(href.clone(), stale))
+        .delete_event(account, &EventDeletion::of(&stale))
         .await
-        .expect_err("a superseded If-Match must not delete the server copy");
+        .expect_err("a superseded guard must not delete the server copy");
     assert_eq!(error.class(), FailureClass::Conflict);
 
     // The event is untouched by both rejected writes: the edit that landed still stands.
@@ -351,7 +368,10 @@ pub(crate) async fn stale_if_match_is_a_conflict(provider: &CalDavProvider, acco
     assert_eq!(survivor.title, "Moved on");
 
     provider
-        .delete_event(account, &EventDeletion::unconditional(href))
+        .delete_event(
+            account,
+            &EventDeletion::unconditional(survivor.id, survivor.uid),
+        )
         .await
         .expect("clean up");
 }
@@ -362,10 +382,14 @@ pub(crate) async fn stale_if_match_is_a_conflict(provider: &CalDavProvider, acco
 
 const SERIES_UID: &str = "caldav-override-split@test.local";
 
-/// Moving **one occurrence** of a series makes the patcher split a fresh `RECURRENCE-ID`
-/// override out of the master — a second `VEVENT` in the same resource. This proves the
-/// server accepts that resource and hands it back folded into one event with the
-/// override in place, leaving the rest of the series where it was.
+/// Moving **one occurrence** of a series makes the CalDAV adapter split a fresh
+/// `RECURRENCE-ID` override out of the master — a second `VEVENT` in the same resource.
+/// This proves the server accepts that resource and hands it back folded into one event
+/// with the override in place, leaving the rest of the series where it was.
+///
+/// The splitting is CalDAV's chore alone: a JMAP server materializes the override itself
+/// from a `recurrenceOverrides/<start>/…` patch. Same neutral intent, entirely different
+/// work underneath — which is the argument for `PatchTarget` living where it does.
 pub(crate) async fn instance_override_split_is_accepted(
     provider: &CalDavProvider,
     account: &AccountId,
@@ -373,27 +397,23 @@ pub(crate) async fn instance_override_split_is_accepted(
     let uid = Uid::new(SERIES_UID).unwrap();
     pre_clean(provider, account, &uid).await;
 
-    // Tuesdays at 10:00 Amsterdam: 2, 9, 16 and 23 June 2026.
-    let series = format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//engine//caldav-override-test//EN\r\n\
-         BEGIN:VEVENT\r\nUID:{SERIES_UID}\r\nDTSTAMP:20260601T000000Z\r\n\
-         DTSTART;TZID=Europe/Amsterdam:20260602T100000\r\n\
-         DTEND;TZID=Europe/Amsterdam:20260602T110000\r\n\
-         RRULE:FREQ=WEEKLY;COUNT=4;BYDAY=TU\r\n\
-         SUMMARY:Standup\r\nX-CUSTOM-FLAG:keep-me\r\nSEQUENCE:0\r\nEND:VEVENT\r\n\
-         END:VCALENDAR\r\n"
-    );
-    provider
-        .put_event(
-            account,
-            &EventWrite::create(
-                provider.event_href(&uid).expect("mint event href"),
-                uid.clone(),
-                RawIcal::new(series),
-            ),
-        )
-        .await
-        .expect("create the series");
+    // Tuesdays at 10:00 Amsterdam: 2, 9, 16 and 23 June 2026. An `RRULE` is beyond what a
+    // draft can state, so the series is seeded as a document.
+    seed(
+        provider,
+        account,
+        &uid,
+        format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//engine//caldav-override-test//EN\r\n\
+             BEGIN:VEVENT\r\nUID:{SERIES_UID}\r\nDTSTAMP:20260601T000000Z\r\n\
+             DTSTART;TZID=Europe/Amsterdam:20260602T100000\r\n\
+             DTEND;TZID=Europe/Amsterdam:20260602T110000\r\n\
+             RRULE:FREQ=WEEKLY;COUNT=4;BYDAY=TU\r\n\
+             SUMMARY:Standup\r\nX-CUSTOM-FLAG:keep-me\r\nSEQUENCE:0\r\nEND:VEVENT\r\n\
+             END:VCALENDAR\r\n"
+        ),
+    )
+    .await;
 
     let before = require(provider, account, SERIES_UID).await;
 
@@ -401,20 +421,18 @@ pub(crate) async fn instance_override_split_is_accepted(
     // names it by the start it has **now** — its identity in the series, not its
     // destination — and a fresh split needs this occurrence's own start and end, because
     // the master's are the *first* occurrence's.
-    let moved = patch_event_ical(
-        &server_ical(&before),
-        &PatchTarget::Instance(amsterdam("2026-06-09T10:00:00")),
-        &EventPatch::new(stamp())
-            .summary("Standup (moved)")
-            .start(amsterdam("2026-06-09T14:00:00"))
-            .end(amsterdam("2026-06-09T15:00:00")),
-    )
-    .expect("split a RECURRENCE-ID override out of the master");
-
     provider
-        .put_event(
+        .patch_event(
             account,
-            &EventWrite::update(before.id.clone(), uid.clone(), moved, server_etag(&before)),
+            &before,
+            &EventEdit::new(
+                &before,
+                PatchTarget::Instance(amsterdam("2026-06-09T10:00:00")),
+                EventPatch::new(stamp())
+                    .summary("Standup (moved)")
+                    .start(amsterdam("2026-06-09T14:00:00"))
+                    .end(amsterdam("2026-06-09T15:00:00")),
+            ),
         )
         .await
         .expect("the server accepts a master + RECURRENCE-ID override in one resource");
@@ -447,10 +465,7 @@ pub(crate) async fn instance_override_split_is_accepted(
     );
 
     provider
-        .delete_event(
-            account,
-            &EventDeletion::if_match(after.id.clone(), server_etag(&after)),
-        )
+        .delete_event(account, &EventDeletion::of(&after))
         .await
         .expect("delete the series");
 }

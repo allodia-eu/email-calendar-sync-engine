@@ -17,13 +17,13 @@ use engine_core::{
     raw::RawIcal,
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::{CalendarDateTime, LocalDateTime, TimeZoneId},
-    version::ETag,
+    version::{ETag, RevisionTokens},
     write::{IdempotencyKey, PendingOp, ResourceKey},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion, EventWrite,
-    EventWriteReceipt, MailEdit, MailEditReceipt, Provider, ProviderError, ProviderResult,
-    ScopeSync, SubmissionReceipt,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion, EventDraft,
+    EventEdit, EventPatch, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, PatchTarget,
+    Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{LeaseRequest, ManualClock, PendingOpState, Store, StoreRead, WorkerId};
@@ -31,8 +31,9 @@ use store_sqlite::SqliteStore;
 
 use super::{
     AccountId, AccountProgress, Duration, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
-    delete_calendar_event, edit_mail, submit_mail, sync_calendar, sync_email_streamed, sync_mail,
-    sync_mail_streamed, sync_mailbox_list, write_calendar_event,
+    create_calendar_event, delete_calendar_event, edit_mail, patch_calendar_event,
+    put_calendar_document, submit_mail, sync_calendar, sync_email_streamed, sync_mail,
+    sync_mail_streamed, sync_mailbox_list,
 };
 
 mod calendar_sync;
@@ -64,7 +65,7 @@ impl FakeMail {
                 .with_mail()
                 .with_submission()
                 .with_calendars()
-                .with_calendar_writes(),
+                .with_calendar_writes(WriteGuard::Enforced),
             mailboxes,
             messages,
             calendars: Vec::new(),
@@ -198,19 +199,53 @@ impl Provider for FakeMail {
         ))
     }
 
+    async fn create_event(
+        &self,
+        _account: &AccountId,
+        draft: &EventDraft,
+    ) -> ProviderResult<EventWriteReceipt> {
+        if self.write_conflicts {
+            return Err(ProviderError::conflict("an event already exists there"));
+        }
+        // Mints the id the way a CalDAV adapter does — from the caller's UID. (A JMAP
+        // adapter would return a server-assigned one; the driver cannot tell, which is
+        // the point.)
+        Ok(EventWriteReceipt::new(
+            EventId::try_from(format!("/cal/{}.ics", draft.uid.as_str()).as_str()).unwrap(),
+            draft.uid.clone(),
+            RevisionTokens::from_etag(ETag::new("\"put-v1\"")),
+        ))
+    }
+
+    async fn patch_event(
+        &self,
+        _account: &AccountId,
+        _base: &Event,
+        edit: &EventEdit,
+    ) -> ProviderResult<EventWriteReceipt> {
+        if self.write_conflicts {
+            // A failed revision guard: a CalDAV `412`, or a JMAP `stateMismatch`.
+            return Err(ProviderError::conflict("etag precondition failed"));
+        }
+        Ok(EventWriteReceipt::new(
+            edit.event.clone(),
+            edit.uid.clone(),
+            RevisionTokens::from_etag(ETag::new("\"put-v1\"")),
+        ))
+    }
+
     async fn put_event(
         &self,
         _account: &AccountId,
         write: &EventWrite,
     ) -> ProviderResult<EventWriteReceipt> {
         if self.write_conflicts {
-            // A failed If-Match/If-None-Match precondition (RFC 4791 §5.3.2).
             return Err(ProviderError::conflict("etag precondition failed"));
         }
         Ok(EventWriteReceipt::new(
-            write.href.key().clone(),
+            write.event.clone(),
             write.uid.clone(),
-            Some(ETag::new("\"put-v1\"")),
+            RevisionTokens::from_etag(ETag::new("\"put-v1\"")),
         ))
     }
 

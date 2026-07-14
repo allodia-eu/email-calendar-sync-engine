@@ -24,7 +24,8 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `message_inline_parts`, list ordinary downloadable attachments with
   `message_attachments`, fetch a selected attachment with `message_attachment`; and
   write with `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
-  `write_calendar_event` / `delete_calendar_event` / `pending_op_state`.
+  `create_calendar_event` / `patch_calendar_event` / `delete_calendar_event`
+  (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`.
 - **A calendar grid reads `occurrences_in`, not `events`.** `events` returns the
   projected envelope — a recurring series is one object, at its series start — so a host
   that lays *that* out shows a weekly meeting in exactly one week. `occurrences_in(account,
@@ -147,12 +148,24 @@ Step 6 lands in small, tested slices. Order and status:
    it takes a caller-minted idempotency key and a `MailEdit` (mark-read/flag, move,
    or permanent delete) and returns a `MailEditOutcome` (resolved key + op id); a
    failure (e.g. a stale-target `Conflict`) is recorded `Failed` before surfacing as
-   `ApiError::Sync`. `Engine::write_calendar_event` / `Engine::delete_calendar_event`
-   ride the same outbox for calendar mutations — a caller-minted idempotency key plus an
-   `EventWrite` (conditional `PUT`) or `EventDeletion` (`DELETE`), returning a
-   `CalendarWriteOutcome` / op id; a host builds the create body with
-   `provider_caldav::build_event_ical` (the write types are re-exported from
-   `engine-api`). A `412` precondition failure surfaces as a `Conflict` (`caldav.md`).
+   `ApiError::Sync`. `Engine::create_calendar_event` / `patch_calendar_event` /
+   `delete_calendar_event` ride the same outbox for calendar mutations — a caller-minted
+   idempotency key plus an `EventDraft` (the event you want), or the event **as you read
+   it** plus a `PatchTarget` + `EventPatch` (what changed, and on which occurrence), or an
+   `EventDeletion` — returning a `CalendarWriteOutcome` / op id. These carry **intent**: the
+   host never assembles iCalendar, mints an href, or touches an `ETag`, and the same call
+   drives CalDAV and JMAP (`providers.md`). The write types are re-exported from
+   `engine-api`.
+   - **Read `Capabilities::calendar_write_guard()` before writing.** `WriteGuard::Enforced`
+     (CalDAV) means a stale edit is refused — a `412` surfaces as a `Conflict`, to be
+     recovered by re-syncing and re-applying, never a blind retry. `WriteGuard::Absent`
+     (JMAP) means the transport **cannot** refuse one: a stale edit silently wins, so a
+     successful write does not imply no concurrent edit was lost, and a host that cares must
+     detect it itself (`jmap.md`).
+   - **A write does not update the store** (issue #65): the row still holds the pre-write
+     projection and revision until the next `Engine::sync_calendar` reconciles it. So a host
+     that writes twice must carry the **receipt's** revision forward rather than re-reading
+     it from the store, or the second write guards on a superseded one.
 4. **Streaming sync — _done_.** `Engine::sync_mail_streamed(provider, account, tuning,
    observer)` drives `engine-sync`'s `sync_mail_streamed`: the email scope commits
    **chunk by chunk** under one lease, reporting a `SyncCommit { scope, fetched, total,

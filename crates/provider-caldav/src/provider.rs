@@ -23,8 +23,9 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion, EventWrite,
-    EventWriteReceipt, IgnoreConnectSteps, Provider, ProviderResult, ScopeSync,
+    Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion, EventDraft,
+    EventEdit, EventWrite, EventWriteReceipt, IgnoreConnectSteps, Provider, ProviderError,
+    ProviderResult, ScopeSync, WriteGuard,
 };
 use engine_tls::TlsClientConfig;
 
@@ -198,7 +199,12 @@ impl CalDavProvider {
         let collection = bind_collection(&home_href, calendar)?;
         Ok(Self {
             executor,
-            capabilities: Capabilities::none().with_calendars().with_calendar_writes(),
+            // CalDAV *enforces* the lost-update guard: a stale `If-Match` is a `412` on
+            // every server we have driven (proven live against both harness servers). It is
+            // the transport that can actually promise it — contrast JMAP, which cannot.
+            capabilities: Capabilities::none()
+                .with_calendars()
+                .with_calendar_writes(WriteGuard::Enforced),
             home_href,
             collection,
         })
@@ -224,11 +230,15 @@ impl CalDavProvider {
     }
 
     /// Mints the resource href for a **new** event in the bound collection:
-    /// `<collection>/<uid>.ics`, the universal CalDAV convention (RFC 4791 §5.3.2
-    /// lets the client choose the resource name). The `uid` is percent-encoded as a
-    /// single path segment, so an unusual `UID` still yields a valid href. Use it as
-    /// the [`EventWrite::create`](engine_provider::EventWrite::create) target; an
-    /// update/delete reuses the stored
+    /// `<collection>/<uid>.ics`, the universal CalDAV convention (RFC 4791 §5.3.2 lets the
+    /// client choose the resource name). The `uid` is percent-encoded as a single path
+    /// segment, so an unusual `UID` still yields a valid href.
+    ///
+    /// [`create_event`](Provider::create_event) mints this itself, so a host does not need
+    /// it — a create states an [`EventDraft`] and learns the resulting id from the receipt.
+    /// It stays public for the operations that address a resource *before* it has been
+    /// synced: pre-cleaning a throwaway event, or the iMIP RSVP path
+    /// ([`imip`](crate::imip)). A patch or delete of a synced event reuses its stored
     /// [`Event::id`](engine_core::calendar::Event::id).
     ///
     /// # Errors
@@ -246,9 +256,13 @@ impl CalDavProvider {
             .map_err(|e| CalDavError::protocol(format!("bad event href {href:?}: {e}")))
     }
 
-    /// The membership [`CalendarId`] for the bound collection (same href as
+    /// The [`CalendarId`] of the bound collection (same href as
     /// [`collection_href`](Self::collection_href), a distinct id type).
-    fn calendar_id(&self) -> CalendarId {
+    ///
+    /// This is the calendar an [`EventDraft`] must name to be created here — a draft
+    /// targeting any other is refused rather than silently written to this one.
+    #[must_use]
+    pub fn calendar_id(&self) -> CalendarId {
         // The collection href already validated as a provider key when bound.
         CalendarId::new(self.collection.key().clone())
     }
@@ -311,6 +325,37 @@ impl Provider for CalDavProvider {
             cursor,
         )
         .await?)
+    }
+
+    /// Mints the href from the draft's `UID` inside the **bound** collection, then `PUT`s
+    /// the built document there.
+    ///
+    /// A draft naming a different calendar is refused rather than silently written to the
+    /// bound one: this provider is collection-bound (`rebind` moves it), so honouring the
+    /// draft's calendar would mean writing the event where the host did not ask.
+    async fn create_event(
+        &self,
+        _account: &AccountId,
+        draft: &EventDraft,
+    ) -> ProviderResult<EventWriteReceipt> {
+        if draft.calendar != self.calendar_id() {
+            return Err(ProviderError::invalid_state(format!(
+                "draft targets calendar {:?}, but this provider is bound to {:?}; rebind first",
+                draft.calendar.as_str(),
+                self.collection.as_str()
+            )));
+        }
+        let href = self.event_href(&draft.uid)?;
+        Ok(crate::write::create_event(self.executor.as_ref(), href, draft).await?)
+    }
+
+    async fn patch_event(
+        &self,
+        _account: &AccountId,
+        base: &Event,
+        edit: &EventEdit,
+    ) -> ProviderResult<EventWriteReceipt> {
+        Ok(crate::write::patch_event(self.executor.as_ref(), base, edit).await?)
     }
 
     async fn put_event(
@@ -417,3 +462,7 @@ fn hex_upper(nibble: u8) -> char {
 #[cfg(test)]
 #[path = "provider_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "imip_flow_tests.rs"]
+mod imip_flow_tests;

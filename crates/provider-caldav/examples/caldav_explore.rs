@@ -129,46 +129,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Creates a throwaway event in the bound calendar via `PUT`, then deletes it via
-/// `DELETE` — a round trip that leaves the calendar as it was.
+/// Creates a throwaway event in the bound calendar, then deletes it — a round trip that
+/// leaves the calendar as it was.
+///
+/// Written the way a host writes: state the event, let the adapter serialize it. No
+/// iCalendar is assembled here, and nothing in this function is CalDAV-specific except the
+/// provider it is handed.
 async fn write_demo(
     provider: &CalDavProvider,
     account: &AccountId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use engine_core::{ids::Uid, raw::RawIcal};
-    use engine_provider::{EventDeletion, EventWrite};
+    use engine_core::{
+        ids::Uid,
+        time::{CalendarDateTime, TimeZoneId},
+    };
+    use engine_provider::{EventDeletion, EventDraft};
+
+    let amsterdam = |local: &str| -> Result<CalendarDateTime, Box<dyn std::error::Error>> {
+        Ok(CalendarDateTime::Zoned {
+            local: local.parse()?,
+            zone: TimeZoneId::iana("Europe/Amsterdam")?,
+        })
+    };
 
     let uid = Uid::new("caldav-explore-demo@example.invalid")?;
-    let href = provider.event_href(&uid)?;
     println!("\nCALDAV_WRITE set — write demo:");
     // Clean up any leftover from a prior interrupted run, so the create is a true
     // create (If-None-Match: *).
     let _ = provider
-        .delete_event(account, &EventDeletion::unconditional(href.clone()))
+        .delete_event(
+            account,
+            &EventDeletion::unconditional(provider.event_href(&uid)?, uid.clone()),
+        )
         .await;
 
-    let ical = format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//engine//caldav_explore//EN\r\n\
-         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260101T000000Z\r\n\
-         DTSTART;TZID=Europe/Amsterdam:20260601T100000\r\n\
-         DTEND;TZID=Europe/Amsterdam:20260601T103000\r\n\
-         SUMMARY:caldav_explore demo (safe to delete)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
-        uid = uid.as_str()
-    );
     let receipt = provider
-        .put_event(
+        .create_event(
             account,
-            &EventWrite::create(href.clone(), uid.clone(), RawIcal::new(ical)),
+            &EventDraft::new(
+                provider.calendar_id(),
+                uid.clone(),
+                "caldav_explore demo (safe to delete)",
+                amsterdam("2026-06-01T10:00:00")?,
+                amsterdam("2026-06-01T10:30:00")?,
+                "2026-01-01T00:00:00Z".parse()?,
+            ),
         )
         .await?;
     println!(
         "  • created {}  (etag {})",
-        href.as_str(),
-        receipt.etag.as_ref().map_or("—", |e| e.as_str())
+        receipt.event.as_str(),
+        receipt.revisions.etag.as_ref().map_or("—", |e| e.as_str())
     );
 
     provider
-        .delete_event(account, &EventDeletion::unconditional(href))
+        .delete_event(
+            account,
+            &EventDeletion::unconditional(receipt.event, receipt.uid),
+        )
         .await?;
     println!("  • deleted — the calendar is left as it was.");
     Ok(())

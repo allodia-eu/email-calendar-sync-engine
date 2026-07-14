@@ -13,6 +13,7 @@
 //!   it onto the connection base — the safe default for proxied / self-hosted /
 //!   test setups.
 
+use engine_provider::WriteGuard;
 use reqwest::Url;
 use serde_json::Value;
 
@@ -108,6 +109,7 @@ impl Session {
                 .map(str::to_owned)
         };
         let mail_account_id = account_for(capability::MAIL);
+        let calendar_account_id = account_for(capability::CALENDARS);
 
         let caps = value.get("capabilities");
         let has = |urn: &str| caps.is_some_and(|c| c.get(urn).is_some());
@@ -124,6 +126,20 @@ impl Session {
         // a `forbidden` `SetError` (→ `Permanent`), so a mis-advertisement is safe.
         if capabilities.mail() && !account_is_read_only(value, mail_account_id.as_deref()) {
             capabilities = capabilities.with_mail_writes();
+        }
+        // Calendar writes (`CalendarEvent/set`) work on the same terms — RFC 8621/8984 make
+        // `set` part of the calendars capability, and `isReadOnly` on the *calendar* account
+        // is the only gate. The guard is `Absent`, and that is the honest answer, not a
+        // shortcut: a `CalendarEvent` carries no per-object revision to guard with, and the
+        // only precondition RFC 8620 §5.3 offers (`ifInState`) is scoped to the account's
+        // whole event state rather than the object — so it would reject a write because an
+        // *unrelated* event changed. Stalwart does not enforce it either
+        // (`crate::calendar_write`). A host that must detect a concurrent edit on this
+        // transport has to do it above the engine, and `calendar_write_guard` is what tells
+        // it so before it writes.
+        if capabilities.calendars() && !account_is_read_only(value, calendar_account_id.as_deref())
+        {
+            capabilities = capabilities.with_calendar_writes(WriteGuard::Absent);
         }
         // Push (change notification) works whenever the server advertises an
         // EventSource endpoint (RFC 8620 §7.3) *and* the account exposes a domain the
@@ -146,7 +162,7 @@ impl Session {
             event_source_url,
             mail_account_id,
             submission_account_id: account_for(capability::SUBMISSION),
-            calendar_account_id: account_for(capability::CALENDARS),
+            calendar_account_id,
             limits,
             capabilities,
             state: value

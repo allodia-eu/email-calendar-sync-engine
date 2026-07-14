@@ -19,8 +19,10 @@
 //! ([`Engine::sync_mail_streamed`], plus the per-folder split
 //! [`Engine::sync_mailbox_list`] + [`Engine::sync_folder_email_streamed`] for
 //! concurrent cross-folder sync), and **outbox-mediated calendar writes**
-//! ([`Engine::write_calendar_event`], [`Engine::delete_calendar_event`]). The
-//! language bindings themselves are a deliberate follow-up slice.
+//! ([`Engine::create_calendar_event`], [`Engine::patch_calendar_event`],
+//! [`Engine::delete_calendar_event`]) — which carry *intent*, so the same call drives
+//! CalDAV and JMAP and the host never assembles a protocol payload. The language bindings
+//! themselves are a deliberate follow-up slice.
 //!
 //! # Shape
 //!
@@ -57,8 +59,9 @@ pub use engine_core::{
     write::PendingOpId,
 };
 pub use engine_provider::{
-    ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition, EventDeletion, EventWrite,
-    EventWriteReceipt, MailEdit, MailEditReceipt, Provider, SubmissionReceipt, WritePrecondition,
+    Capabilities, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, EventWriteReceipt, MailEdit,
+    MailEditReceipt, PatchTarget, Provider, SubmissionReceipt, TextEdit, WriteGuard,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,
