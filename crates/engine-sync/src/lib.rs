@@ -30,18 +30,14 @@
 //! is deliberately the minimal driver that proves the cycle end to end.
 
 use core::time::Duration;
-use std::sync::Mutex;
 
 use engine_core::{
-    calendar::{Calendar, Event},
     ids::AccountId,
     mail::{Mailbox, Message},
-    search_index::{OwnerAddresses, project_event, project_message},
+    search_index::project_message,
     sync::{SyncScope, SyncState, SyncUpdate},
-    time::TimeZoneId,
 };
 use engine_provider::{Provider, ProviderError, ScopeSync};
-use engine_recurrence::{Horizon, expand};
 use engine_store::{
     ApplyBatch, DerivedWrite, LeaseRequest, Store, StoreError, SyncApplied, WorkerId,
 };
@@ -139,68 +135,6 @@ where
 {
     let req = LeaseRequest::new(worker, ttl);
     run_scope(store, account, &MailboxScope(provider), &req).await
-}
-
-/// What one `sync_calendar` run applied, per scope.
-// Not `Copy`: `unexpandable` carries the events the expander refused, and losing that
-// list to an implicit copy is exactly the silence this field exists to end.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CalendarSyncReport {
-    /// The calendar-container apply result.
-    pub calendars: SyncApplied,
-    /// The event-member apply result.
-    pub events: SyncApplied,
-    /// The synced events the expander could not materialize into occurrences.
-    ///
-    /// These are stored and appear in [`Engine::events`](crate) — but they expand to
-    /// **zero** occurrence rows, so they are invisible to every range read and render
-    /// nowhere on a grid. Reported so a host can say "this event can't be shown"
-    /// rather than lose it without a trace.
-    pub unexpandable: Vec<UnexpandableEvent>,
-}
-
-/// Syncs one account's calendars: calendar containers first, then events.
-///
-/// Events are projected for search and **expanded into occurrences** over
-/// `horizon` (resolving floating times through `host_zone`) before the store
-/// commit. An event whose recurrence is outside the expander's supported subset is
-/// still stored — it just materializes no occurrences yet (`calendar-semantics.md`),
-/// never failing the sync.
-///
-/// # Errors
-///
-/// Returns [`SyncError`] if the provider fetch fails or the store rejects the
-/// apply for a reason other than a recoverable `StaleLease`.
-pub async fn sync_calendar<P, S>(
-    provider: &P,
-    store: &S,
-    account: &AccountId,
-    worker: WorkerId,
-    ttl: Duration,
-    horizon: Horizon,
-    host_zone: &TimeZoneId,
-) -> Result<CalendarSyncReport, SyncError>
-where
-    P: Provider,
-    S: Store,
-{
-    let req = LeaseRequest::new(worker, ttl);
-    let calendars = run_scope(store, account, &CalendarScope(provider), &req).await?;
-    let scope = EventScope {
-        provider,
-        horizon,
-        host_zone: host_zone.clone(),
-        unexpandable: Mutex::default(),
-    };
-    let events = run_scope(store, account, &scope, &req).await?;
-    Ok(CalendarSyncReport {
-        calendars,
-        events,
-        unexpandable: scope
-            .unexpandable
-            .into_inner()
-            .expect("unexpandable mutex poisoned"),
-    })
 }
 
 /// A scope-typed fetch + projection, so [`run_scope`] holds the lease/retry logic
@@ -333,91 +267,10 @@ pub(crate) fn derive_messages(messages: &[Message]) -> DerivedWrite {
     derived
 }
 
-/// The calendar-container scope syncer.
-struct CalendarScope<'p, P>(&'p P);
-
-#[async_trait::async_trait]
-impl<P: Provider> ScopeSyncer for CalendarScope<'_, P> {
-    type Object = Calendar;
-
-    fn scope(&self, account: &AccountId) -> SyncScope {
-        self.0.calendar_scope(account)
-    }
-
-    async fn fetch(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> Result<ScopeSync<Calendar>, ProviderError> {
-        self.0.sync_calendars(account, cursor).await
-    }
-
-    fn derive(&self, _update: &SyncUpdate<Calendar>) -> DerivedWrite {
-        DerivedWrite::empty()
-    }
-}
-
-/// The event-member scope syncer: projects each event and expands its occurrences
-/// over the horizon.
-///
-/// `derive` cannot fail (its signature returns the rows, not a `Result`), but an event
-/// the expander refuses materializes **no occurrences** — it is stored, yet renders
-/// nowhere on a grid. Collecting those here rather than discarding them lets
-/// [`sync_calendar`] report them, so the absence is visible instead of silent.
-struct EventScope<'p, P> {
-    provider: &'p P,
-    horizon: Horizon,
-    host_zone: TimeZoneId,
-    unexpandable: Mutex<Vec<UnexpandableEvent>>,
-}
-
-#[async_trait::async_trait]
-impl<P: Provider> ScopeSyncer for EventScope<'_, P> {
-    type Object = Event;
-
-    fn scope(&self, account: &AccountId) -> SyncScope {
-        self.provider.event_scope(account)
-    }
-
-    async fn fetch(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> Result<ScopeSync<Event>, ProviderError> {
-        self.provider.sync_events(account, cursor).await
-    }
-
-    fn derive(&self, update: &SyncUpdate<Event>) -> DerivedWrite {
-        let mut derived = DerivedWrite::empty();
-        let mut unexpandable = Vec::new();
-        for event in changed_objects(update) {
-            derived.push_event(project_event(event, &OwnerAddresses::default()));
-            // An unsupported recurrence stores the event with no occurrences, never
-            // failing the sync (`calendar-semantics.md`) — but it is then invisible to
-            // every range read, so the reason travels out on the report rather than
-            // being dropped here.
-            match expand(event, &self.horizon, &self.host_zone) {
-                Ok(occurrences) => derived.occurrences.extend(occurrences),
-                Err(reason) => unexpandable.push(UnexpandableEvent {
-                    event: event.id.key().clone(),
-                    reason: reason.to_string(),
-                }),
-            }
-        }
-        // `run_scope` re-derives on a stale-lease reclaim, so replace rather than append:
-        // a retry must not report the same event twice.
-        *self
-            .unexpandable
-            .lock()
-            .expect("unexpandable mutex poisoned") = unexpandable;
-        derived
-    }
-}
-
 /// The created-or-updated objects an update carries (a delta's `changed` or a
 /// snapshot's `objects`) — what gets projected. Tombstoned/removed keys are the
 /// store's job, not the projection's.
-fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
+pub(crate) fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
     match update {
         SyncUpdate::Delta { changed, .. } => changed,
         SyncUpdate::Snapshot { objects, .. } => objects,
@@ -426,6 +279,7 @@ fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
 
 mod attachment;
 mod body;
+mod calendar;
 mod horizon;
 mod observer;
 mod outbox;
@@ -434,6 +288,7 @@ mod stream;
 mod threading;
 pub use attachment::{fetch_message_attachment, fetch_message_attachments};
 pub use body::{fetch_inline_parts, fetch_message_body};
+pub use calendar::{CalendarSyncReport, EventSyncReport, reconcile_calendar_events, sync_calendar};
 pub use horizon::{HorizonExpansion, UnexpandableEvent, expand_calendar_horizon};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{

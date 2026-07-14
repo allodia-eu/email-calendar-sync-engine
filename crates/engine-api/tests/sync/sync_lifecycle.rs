@@ -29,7 +29,7 @@ async fn syncs_calendar_from_a_provider() {
         .await
         .unwrap();
     assert_eq!(report.calendars.upserted, 1);
-    assert_eq!(report.events.upserted, 1);
+    assert_eq!(report.events.applied.upserted, 1);
 }
 
 #[tokio::test]
@@ -69,7 +69,7 @@ async fn reopen_resumes_calendar_from_the_persisted_cursor() {
         .sync_calendar(&FakeProvider::new(), &account(), horizon(), &zone)
         .await
         .unwrap();
-    assert_eq!(initial.events.upserted, 1);
+    assert_eq!(initial.events.applied.upserted, 1);
     drop(first);
 
     // Same persistence check for the on-disk calendar/event/occurrence path: the
@@ -79,7 +79,7 @@ async fn reopen_resumes_calendar_from_the_persisted_cursor() {
         .sync_calendar(&FakeProvider::new(), &account(), horizon(), &zone)
         .await
         .unwrap();
-    assert_eq!(resumed.events.upserted, 0);
+    assert_eq!(resumed.events.applied.upserted, 0);
 }
 
 #[tokio::test]

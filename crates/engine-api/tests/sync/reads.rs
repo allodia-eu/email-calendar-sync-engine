@@ -457,12 +457,12 @@ async fn an_unexpandable_recurrence_is_reported_rather_than_silently_dropped() {
             .is_empty()
     );
     // ...and THAT is reported, by key and reason, rather than silently swallowed.
-    assert_eq!(report.unexpandable.len(), 1);
-    assert_eq!(report.unexpandable[0].event.as_str(), "evt-payday");
+    assert_eq!(report.events.unexpandable.len(), 1);
+    assert_eq!(report.events.unexpandable[0].event.as_str(), "evt-payday");
     assert!(
-        report.unexpandable[0].reason.contains("unsupported"),
+        report.events.unexpandable[0].reason.contains("unsupported"),
         "got {:?}",
-        report.unexpandable[0].reason
+        report.events.unexpandable[0].reason
     );
 
     // The expansion path reports it too, so a host that only ever advances the horizon

@@ -32,8 +32,8 @@ use store_sqlite::SqliteStore;
 use super::{
     AccountId, AccountProgress, Duration, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
     create_calendar_event, delete_calendar_event, edit_mail, patch_calendar_event,
-    put_calendar_document, submit_mail, sync_calendar, sync_email_streamed, sync_mail,
-    sync_mail_streamed, sync_mailbox_list,
+    put_calendar_document, reconcile_calendar_events, submit_mail, sync_calendar,
+    sync_email_streamed, sync_mail, sync_mail_streamed, sync_mailbox_list,
 };
 
 mod calendar_sync;
@@ -44,6 +44,21 @@ mod streaming;
 mod streaming_resume;
 mod submit;
 
+/// A way the fake provider can fail, so a test can drive one failure path without the
+/// provider carrying a flag per path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fault {
+    /// The send fails outright.
+    Submit,
+    /// The send is lost *after* `DATA` — the ambiguous, unretryable case.
+    AmbiguousSubmit,
+    /// Every write's revision guard is refused (a CalDAV `412`, a JMAP `stateMismatch`).
+    WriteGuard,
+    /// The calendar-container fetch fails — so a pass that touches the container scope
+    /// cannot succeed, and one that is events-only cannot notice.
+    CalendarFetch,
+}
+
 /// A configurable in-memory mail provider: a snapshot on first sync, an empty
 /// delta once a cursor exists.
 struct FakeMail {
@@ -53,9 +68,7 @@ struct FakeMail {
     calendars: Vec<Calendar>,
     events: Vec<Event>,
     cursor: SyncState,
-    submit_fails: bool,
-    submit_ambiguous: bool,
-    write_conflicts: bool,
+    faults: Vec<Fault>,
 }
 
 impl FakeMail {
@@ -71,25 +84,17 @@ impl FakeMail {
             calendars: Vec::new(),
             events: Vec::new(),
             cursor: SyncState::new("cursor-1"),
-            submit_fails: false,
-            submit_ambiguous: false,
-            write_conflicts: false,
+            faults: Vec::new(),
         }
     }
 
-    fn failing_submit(mut self) -> Self {
-        self.submit_fails = true;
+    fn failing(mut self, fault: Fault) -> Self {
+        self.faults.push(fault);
         self
     }
 
-    fn ambiguous_submit(mut self) -> Self {
-        self.submit_ambiguous = true;
-        self
-    }
-
-    fn conflicting_writes(mut self) -> Self {
-        self.write_conflicts = true;
-        self
+    fn fails(&self, fault: Fault) -> bool {
+        self.faults.contains(&fault)
     }
 
     fn with_calendar(mut self, calendars: Vec<Calendar>, events: Vec<Event>) -> Self {
@@ -161,11 +166,11 @@ impl Provider for FakeMail {
         _account: &AccountId,
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
-        if self.submit_ambiguous {
+        if self.fails(Fault::AmbiguousSubmit) {
             Err(ProviderError::needs_confirmation(
                 "post-DATA acknowledgement lost",
             ))
-        } else if self.submit_fails {
+        } else if self.fails(Fault::Submit) {
             Err(ProviderError::rate_limited("slow down", None))
         } else {
             Ok(SubmissionReceipt::new(
@@ -180,6 +185,9 @@ impl Provider for FakeMail {
         _account: &AccountId,
         _cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Calendar>> {
+        if self.fails(Fault::CalendarFetch) {
+            return Err(ProviderError::retryable("calendar list unreachable"));
+        }
         let present = self.calendars.iter().map(|c| c.id.key().clone()).collect();
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(self.calendars.clone(), present),
@@ -204,7 +212,7 @@ impl Provider for FakeMail {
         _account: &AccountId,
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
-        if self.write_conflicts {
+        if self.fails(Fault::WriteGuard) {
             return Err(ProviderError::conflict("an event already exists there"));
         }
         // Mints the id the way a CalDAV adapter does — from the caller's UID. (A JMAP
@@ -223,7 +231,7 @@ impl Provider for FakeMail {
         _base: &Event,
         edit: &EventEdit,
     ) -> ProviderResult<EventWriteReceipt> {
-        if self.write_conflicts {
+        if self.fails(Fault::WriteGuard) {
             // A failed revision guard: a CalDAV `412`, or a JMAP `stateMismatch`.
             return Err(ProviderError::conflict("etag precondition failed"));
         }
@@ -239,7 +247,7 @@ impl Provider for FakeMail {
         _account: &AccountId,
         write: &EventWrite,
     ) -> ProviderResult<EventWriteReceipt> {
-        if self.write_conflicts {
+        if self.fails(Fault::WriteGuard) {
             return Err(ProviderError::conflict("etag precondition failed"));
         }
         Ok(EventWriteReceipt::new(
@@ -254,7 +262,7 @@ impl Provider for FakeMail {
         _account: &AccountId,
         _deletion: &EventDeletion,
     ) -> ProviderResult<()> {
-        if self.write_conflicts {
+        if self.fails(Fault::WriteGuard) {
             return Err(ProviderError::conflict("etag precondition failed"));
         }
         Ok(())
@@ -265,7 +273,7 @@ impl Provider for FakeMail {
         _account: &AccountId,
         edit: &MailEdit,
     ) -> ProviderResult<MailEditReceipt> {
-        if self.write_conflicts {
+        if self.fails(Fault::WriteGuard) {
             // The IMAP analogue of a CalDAV 412: a stale UID under a changed
             // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
             return Err(ProviderError::conflict("UIDVALIDITY changed"));

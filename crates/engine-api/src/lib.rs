@@ -21,8 +21,10 @@
 //! concurrent cross-folder sync), and **outbox-mediated calendar writes**
 //! ([`Engine::create_calendar_event`], [`Engine::patch_calendar_event`],
 //! [`Engine::delete_calendar_event`]) — which carry *intent*, so the same call drives
-//! CalDAV and JMAP and the host never assembles a protocol payload. The language bindings
-//! themselves are a deliberate follow-up slice.
+//! CalDAV and JMAP and the host never assembles a protocol payload, and which
+//! **reconcile the store to the server's copy before they return**, so a host can
+//! re-read what it just wrote (and guard its next edit on the revision the server
+//! actually reported). The language bindings themselves are a deliberate follow-up slice.
 //!
 //! # Shape
 //!
@@ -42,7 +44,7 @@ mod body;
 mod clock;
 mod engine;
 
-pub use engine::Engine;
+pub use engine::{CalendarDelete, CalendarWrite, Engine, Reconciled};
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::calendar::{Calendar, Event};
@@ -72,9 +74,9 @@ use engine_store::StoreError;
 pub use engine_store::{OccurrenceRow, PendingOpState, PruneReport, SyncApplied, TzdataVersion};
 use engine_sync::SyncError;
 pub use engine_sync::{
-    AccountProgress, CalendarSyncReport, CalendarWriteOutcome, HorizonExpansion, IgnoreCommits,
-    MailEditOutcome, MailSyncReport, ProgressSnapshot, StreamTuning, SubmitOutcome, SyncCommit,
-    SyncObserver, ThreadDeriveReport, UnexpandableEvent,
+    AccountProgress, CalendarSyncReport, CalendarWriteOutcome, EventSyncReport, HorizonExpansion,
+    IgnoreCommits, MailEditOutcome, MailSyncReport, ProgressSnapshot, StreamTuning, SubmitOutcome,
+    SyncCommit, SyncObserver, ThreadDeriveReport, UnexpandableEvent,
 };
 
 /// An error from an [`Engine`] operation.
