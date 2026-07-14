@@ -116,17 +116,9 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
         )
         .await
         .expect("create the event");
-    reconcile_calendar_events(
-        provider,
-        &store,
-        account,
-        worker(),
-        ttl(),
-        horizon(),
-        &host_zone,
-    )
-    .await
-    .expect("reconcile the create");
+    reconcile_calendar_events(provider, &store, account, worker(), ttl())
+        .await
+        .expect("reconcile the create");
 
     let created = stored(&store, provider, account)
         .await
@@ -152,17 +144,9 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
     )
     .await
     .expect("the first edit lands");
-    reconcile_calendar_events(
-        provider,
-        &store,
-        account,
-        worker(),
-        ttl(),
-        horizon(),
-        &host_zone,
-    )
-    .await
-    .expect("reconcile the first edit");
+    reconcile_calendar_events(provider, &store, account, worker(), ttl())
+        .await
+        .expect("reconcile the first edit");
 
     let reread = stored(&store, provider, account)
         .await
@@ -192,17 +176,9 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
     )
     .await
     .expect("a second edit built from the STORE must not be refused on a stale If-Match");
-    reconcile_calendar_events(
-        provider,
-        &store,
-        account,
-        worker(),
-        ttl(),
-        horizon(),
-        &host_zone,
-    )
-    .await
-    .expect("reconcile the second edit");
+    reconcile_calendar_events(provider, &store, account, worker(), ttl())
+        .await
+        .expect("reconcile the second edit");
     let twice = stored(&store, provider, account)
         .await
         .expect("still stored");
@@ -220,17 +196,9 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
     )
     .await
     .expect("the delete lands");
-    reconcile_calendar_events(
-        provider,
-        &store,
-        account,
-        worker(),
-        ttl(),
-        horizon(),
-        &host_zone,
-    )
-    .await
-    .expect("reconcile the delete");
+    reconcile_calendar_events(provider, &store, account, worker(), ttl())
+        .await
+        .expect("reconcile the delete");
     assert!(
         stored(&store, provider, account).await.is_none(),
         "the sync-collection delta reported the resource as removed (404), so the store \

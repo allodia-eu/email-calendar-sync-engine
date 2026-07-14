@@ -301,6 +301,9 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
     `patched_update_preserves_the_document` exists to catch. Nor can the `ETag` move without
     the body: the row would then claim a revision whose bytes we do not hold, letting a host
     patch a *stale* body under a *valid* guard and silently revert its own edit.
+  - The reconcile re-expands over the window the **store** holds (`store-and-sync.md`), so
+    the facade's write methods take no horizon or zone — a write never has to be told what
+    the UI is showing, and cannot narrow what the host has expanded.
   - `common::reconcile::read_your_writes` pins the whole chain live — sync → write →
     reconcile → **re-read from the store** → write again — on **both** servers, so the claim
     holds for a reserializing server and a byte-verbatim one alike. Its last leg is the

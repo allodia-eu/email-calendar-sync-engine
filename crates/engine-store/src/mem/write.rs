@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
     sync::{SyncScope, SyncState, SyncUpdate},
+    time::ExpansionWindow,
     write::{PendingOp, PendingOpId, PendingOutcome, ResourceKey},
 };
 use serde::Serialize;
@@ -117,6 +118,23 @@ impl<C: Clock> Store for MemStore<C> {
             cell.state = Some(next_state.clone());
         }
         Ok(applied)
+    }
+
+    async fn set_expansion_window(
+        &self,
+        lease: &SyncLease,
+        window: &ExpansionWindow,
+    ) -> Result<()> {
+        let mut inner = self.lock();
+        let cell = inner
+            .scopes
+            .get_mut(lease.scope())
+            .ok_or(StoreError::StaleLease)?;
+        if lease.token() != cell.token {
+            return Err(StoreError::StaleLease);
+        }
+        cell.window = Some(window.clone());
+        Ok(())
     }
 
     async fn apply_maintenance(&self, lease: &SyncLease, derived: &DerivedWrite) -> Result<()> {

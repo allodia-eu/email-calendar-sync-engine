@@ -215,41 +215,34 @@ impl Engine {
     /// Re-reads one account's **events** through the provider's delta and commits the
     /// result: the calendar containers are neither fetched nor claimed.
     ///
-    /// Every calendar write already runs this for itself
-    /// ([`create_calendar_event`](Engine::create_calendar_event) and friends), so a host
-    /// rarely calls it directly. It is here for the two cases where a write cannot:
+    /// It re-expands whatever it changed over the window the store already holds, so — like
+    /// a write — it can neither widen nor narrow what the host has expanded.
     ///
-    /// - **Batching.** A host writing many events can skip the per-write reconcile's cost by... not
-    ///   skipping it — the writes reconcile regardless — but a host driving the *low-level*
-    ///   `engine_sync` drivers itself runs one of these after the last write instead of one per
-    ///   write.
+    /// Every facade calendar write already runs this for itself
+    /// ([`create_calendar_event`](Engine::create_calendar_event) and friends), so a host
+    /// rarely calls it directly. Two cases still want it:
+    ///
     /// - **Recovery.** A write whose reconcile came back [`Reconciled::Busy`](crate::Reconciled) or
     ///   [`Failed`](crate::Reconciled::Failed) left the store holding the pre-write copy. This
-    ///   brings it up without a full [`sync_calendar`](Engine::sync_calendar).
+    ///   brings it up to date without a full [`sync_calendar`](Engine::sync_calendar).
+    /// - **Batching.** A caller driving the *low-level* `engine_sync` drivers (which do not
+    ///   reconcile) runs one of these after its last write rather than one per write. The facade
+    ///   writes here always reconcile, so N of them cost N deltas.
     ///
     /// # Errors
     ///
     /// Returns [`ApiError::Busy`] if another sync already holds this account's event
-    /// scope, or [`ApiError::Sync`] if the provider fetch fails or the store rejects the
-    /// apply.
+    /// scope, or [`ApiError::Sync`] if the provider fetch fails, the store rejects the
+    /// apply, or the account's calendars have never been synced (there is then no window to
+    /// expand over — [`sync_calendar`](Engine::sync_calendar) first).
     pub async fn reconcile_calendar_events<P: Provider>(
         &self,
         provider: &P,
         account: &AccountId,
-        horizon: Horizon,
-        host_zone: &TimeZoneId,
     ) -> Result<EventSyncReport, ApiError> {
-        reconcile_calendar_events(
-            provider,
-            &self.store,
-            account,
-            worker(),
-            LEASE_TTL,
-            horizon,
-            host_zone,
-        )
-        .await
-        .map_err(map_sync_error)
+        reconcile_calendar_events(provider, &self.store, account, worker(), LEASE_TTL)
+            .await
+            .map_err(map_sync_error)
     }
 
     /// Re-expands one account's **already-synced** events over `horizon`, resolving

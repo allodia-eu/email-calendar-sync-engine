@@ -39,7 +39,7 @@ mod zone;
 pub use date::CalendarDate;
 pub use datetime::{LocalDateTime, UtcDateTime};
 pub use duration::{Duration, SignedDuration};
-pub use horizon::Horizon;
+pub use horizon::{ExpansionWindow, Horizon};
 pub use value::CalendarDateTime;
 pub use zone::TimeZoneId;
 

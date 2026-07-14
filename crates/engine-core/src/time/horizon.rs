@@ -1,7 +1,7 @@
 //! The half-open UTC window `[start, end)` that bounds occurrence materialization
-//! and the range reads over it.
+//! and the range reads over it, plus the window a store has actually materialized.
 
-use super::{TimeError, UtcDateTime};
+use super::{TimeError, TimeZoneId, UtcDateTime};
 
 /// The half-open UTC window `[start, end)` within which occurrences are
 /// materialized, and which a range read over them is bounded by.
@@ -60,6 +60,37 @@ impl Horizon {
             return start >= self.start && start < self.end;
         }
         start < self.end && end > self.start
+    }
+}
+
+/// The window a scope's occurrence rows have actually been **materialized over**, and the
+/// zone they were resolved through.
+///
+/// The store owns this, because the occurrence rows are only meaningful *relative to it*:
+/// an event has rows in `[start, end)` and provably none outside, and a floating event's
+/// stored instant is only correct for the zone it was expanded under. Leaving it implicit
+/// was a bug — a pass that re-derived one event over its *own* horizon deleted that event's
+/// rows outside it and re-materialized only its own window, so a single changed event
+/// silently lost every occurrence the host had already expanded (a moved event vanishing
+/// from next month's grid while every unchanged event still rendered there).
+///
+/// So a sync or a post-write reconcile re-expands a changed event over the window the
+/// **store** holds, never over a window the caller happened to pass. Only the explicit
+/// maintenance path (`engine_sync::expand_calendar_horizon`) moves the window, which is
+/// exactly the host call that re-expands *every* event to match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpansionWindow {
+    /// The horizon the rows span.
+    pub horizon: Horizon,
+    /// The zone a floating time was resolved through.
+    pub zone: TimeZoneId,
+}
+
+impl ExpansionWindow {
+    /// The window `horizon` resolved through `zone`.
+    #[must_use]
+    pub fn new(horizon: Horizon, zone: TimeZoneId) -> Self {
+        Self { horizon, zone }
     }
 }
 

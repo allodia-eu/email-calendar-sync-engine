@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
     sync::SyncScope,
-    time::Horizon,
+    time::{ExpansionWindow, Horizon},
     write::PendingOpId,
 };
 use serde_json::Value;
@@ -31,6 +31,14 @@ impl<C: Clock> StoreRead for MemStore<C> {
             .collect();
         scopes.sort();
         Ok(scopes)
+    }
+
+    async fn expansion_window(&self, scope: &SyncScope) -> Result<Option<ExpansionWindow>> {
+        Ok(self
+            .lock()
+            .scopes
+            .get(scope)
+            .and_then(|cell| cell.window.clone()))
     }
 
     async fn object_keys(&self, scope: &SyncScope) -> Result<Vec<ProviderKey>> {

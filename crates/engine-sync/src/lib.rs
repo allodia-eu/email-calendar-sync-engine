@@ -64,6 +64,15 @@ pub enum SyncError {
     /// (a corrupt row, or a payload written by an incompatible schema).
     #[error("decode error: {0}")]
     Decode(String),
+    /// A calendar reconcile was asked for on an event scope that has never been expanded,
+    /// so there is no window to re-expand a changed event over.
+    ///
+    /// Only reachable by reconciling before the account's calendars have ever synced. It is
+    /// an error rather than a silent no-op because expanding nothing would store the events
+    /// with **zero** occurrence rows *and* advance the cursor — so the next sync would see
+    /// no changes and the grid would stay empty forever. Sync the calendar first.
+    #[error("no expansion window for this event scope: sync_calendar first")]
+    NoExpansionWindow,
 }
 
 impl SyncError {

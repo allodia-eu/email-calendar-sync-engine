@@ -31,9 +31,9 @@ use store_sqlite::SqliteStore;
 
 use super::{
     AccountId, AccountProgress, Duration, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
-    create_calendar_event, delete_calendar_event, edit_mail, patch_calendar_event,
-    put_calendar_document, reconcile_calendar_events, submit_mail, sync_calendar,
-    sync_email_streamed, sync_mail, sync_mail_streamed, sync_mailbox_list,
+    create_calendar_event, delete_calendar_event, edit_mail, expand_calendar_horizon,
+    patch_calendar_event, put_calendar_document, reconcile_calendar_events, submit_mail,
+    sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed, sync_mailbox_list,
 };
 
 mod calendar_sync;

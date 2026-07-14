@@ -25,7 +25,7 @@ use engine_core::{
         EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow, MembershipRow,
     },
     sync::{SyncScope, SyncState},
-    time::UtcDateTime,
+    time::{ExpansionWindow, UtcDateTime},
     write::{IdempotencyKey, PendingOp, PendingOpId},
 };
 use serde::Serialize;
@@ -72,6 +72,8 @@ struct ScopeCell {
     token: FenceToken,
     lease_expiry: Option<UtcDateTime>,
     state: Option<SyncState>,
+    /// The window this scope's occurrence rows are materialized over (event scopes only).
+    window: Option<ExpansionWindow>,
     objects: HashMap<ProviderKey, Value>,
     fts: HashMap<ProviderKey, Vec<FtsField>>,
     occurrences: HashMap<ProviderKey, Vec<OccurrenceRow>>,
@@ -88,6 +90,7 @@ impl ScopeCell {
             token: FenceToken::initial(),
             lease_expiry: None,
             state: None,
+            window: None,
             objects: HashMap::new(),
             fts: HashMap::new(),
             occurrences: HashMap::new(),
@@ -139,6 +142,9 @@ impl ScopeCell {
     fn apply_derived(&mut self, derived: &DerivedWrite) {
         for key in &derived.removed {
             self.remove_derived(key);
+        }
+        for key in &derived.reset_occurrences {
+            self.occurrences.remove(key);
         }
         for row in &derived.fts {
             self.fts.insert(row.key.clone(), row.fields.clone());
