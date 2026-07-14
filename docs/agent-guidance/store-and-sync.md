@@ -247,6 +247,15 @@ account's event scopes (enumerated by `SyncScope::object_kind`, so a CalDAV acco
 one-scope-per-collection and a JMAP account's single event type are both handled), and
 is exposed on the facade as `Engine::expand_horizon`.
 
+**The event *sync* projection owes the same `removed`-before-upserts.** `event_occurrence`
+rows are keyed by `(scope, event, start, recurrence-id)` and **upserted**, so a changed
+event whose key set moved — a start that shifted, an `RRULE` that shrank — would *add* rows
+beside its stale ones rather than replace them, and the event would render at both instants
+on a grid forever. So `EventScope::derive` pushes each changed event's key into
+`DerivedWrite::removed` before re-deriving it, exactly as the maintenance batch above does.
+This is not a calendar-write concern (a remote move mis-synced the same way); it is what
+makes any event change — reconciled or synced — actually *move* the rows a grid reads.
+
 **A sync will not do this, and that is the trap.** `ScopeSyncer::derive` expands only
 the objects the delta *changed*, so once an account is synced, a provider reporting "no
 changes" (the steady state) derives no occurrences at all. A host that widens its
@@ -379,6 +388,19 @@ one event never race on either provider.
   base. Re-sending bytes built from the copy the server has moved past would silently revert
   somebody else's edit with a write the server happily accepts. (The drainer that will do
   that recovery is issue #60; today a `Conflict` is recorded and surfaced to the caller.)
+
+- **A write does not update the store; a *reconcile* does** (issue #65). The drivers are
+  deliberately pure: they record the op, call the provider, record the outcome. They never
+  touch the stored object — a write's response is a receipt, not a document, and the store's
+  copy must keep coming from the **server** (`caldav.md`). So the read-your-writes step is a
+  separate primitive, `engine_sync::reconcile_calendar_events`: the **event-scope delta**,
+  which re-delivers the object the server now holds, tombstones a delete, and advances the
+  cursor — one round trip, no new provider verb. The `Engine` facade runs it after every
+  calendar write (`engine-api.md`), so a host gets read-your-writes by construction while the
+  drivers stay usable by a **headless** caller — the #60 drainer has no host `horizon`/zone
+  and cannot expand occurrences, which is exactly why the reconcile is not folded into them.
+  It can never fail the write: a write that landed but did not reconcile is still a write,
+  reported as `Reconciled::{Busy, Failed}` rather than as an error.
 
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the

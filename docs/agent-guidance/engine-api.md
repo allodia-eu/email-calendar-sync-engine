@@ -152,20 +152,38 @@ Step 6 lands in small, tested slices. Order and status:
    `delete_calendar_event` ride the same outbox for calendar mutations — a caller-minted
    idempotency key plus an `EventDraft` (the event you want), or the event **as you read
    it** plus a `PatchTarget` + `EventPatch` (what changed, and on which occurrence), or an
-   `EventDeletion` — returning a `CalendarWriteOutcome` / op id. These carry **intent**: the
-   host never assembles iCalendar, mints an href, or touches an `ETag`, and the same call
-   drives CalDAV and JMAP (`providers.md`). The write types are re-exported from
-   `engine-api`.
+   `EventDeletion` — plus the reconcile's `horizon` + `host_zone`, returning a
+   `CalendarWrite` / `CalendarDelete`. These carry **intent**: the host never assembles
+   iCalendar, mints an href, or touches an `ETag`, and the same call drives CalDAV and JMAP
+   (`providers.md`). The write types are re-exported from `engine-api`.
    - **Read `Capabilities::calendar_write_guard()` before writing.** `WriteGuard::Enforced`
      (CalDAV) means a stale edit is refused — a `412` surfaces as a `Conflict`, to be
      recovered by re-syncing and re-applying, never a blind retry. `WriteGuard::Absent`
      (JMAP) means the transport **cannot** refuse one: a stale edit silently wins, so a
      successful write does not imply no concurrent edit was lost, and a host that cares must
      detect it itself (`jmap.md`).
-   - **A write does not update the store** (issue #65): the row still holds the pre-write
-     projection and revision until the next `Engine::sync_calendar` reconciles it. So a host
-     that writes twice must carry the **receipt's** revision forward rather than re-reading
-     it from the store, or the second write guards on a superseded one.
+   - **A calendar write reconciles the store before it returns** (issue #65). A write's
+     response is a *receipt*, not a document (a CalDAV `PUT` answers with an `ETag` and no
+     body; a JMAP `/set` with an id and no object), so the driver alone would leave the row
+     holding the **pre-write** projection, `raw_ical` and revision. Each facade write
+     therefore runs `engine_sync::reconcile_calendar_events` — an **event-scope delta**, one
+     round trip, the same primitive a sync reads through — the moment the write lands. The
+     store then holds what the **server** holds, a delete is tombstoned locally, and an edit
+     that moved the event moves its occurrence rows. That is what makes "edit, re-read, edit
+     again" work: the second edit's guard is the revision the *server* reported, not the
+     superseded one it wrote over. Proven live against Stalwart (CalDAV + JMAP) and SabreDAV.
+     - **Never store our own bytes instead.** The reconcile must re-read from the server:
+       Stalwart *reserializes* what it stores, so an optimistic local copy would put a
+       `RawIcal` in the store the server does not have — and would **mask a server that
+       silently dropped a property** (`caldav.md`). Body and revision also cannot move
+       independently: a row claiming a revision whose bytes it does not hold lets a host
+       patch a stale body under a valid guard and silently revert its own edit.
+     - **A write that did not reconcile is still a write.** The reconcile is a *local* step
+       after a write the server already accepted, so it can never fail the write: it is
+       reported as `Reconciled::{Applied, Busy, Failed}` on the outcome, never as an error.
+       `Busy` means a concurrent sync holds the event scope. Recover by re-reading
+       (`Engine::reconcile_calendar_events`, also the batch path for a host driving the
+       low-level `engine_sync` drivers itself) — **never** by re-issuing the write.
 4. **Streaming sync — _done_.** `Engine::sync_mail_streamed(provider, account, tuning,
    observer)` drives `engine-sync`'s `sync_mail_streamed`: the email scope commits
    **chunk by chunk** under one lease, reporting a `SyncCommit { scope, fetched, total,
