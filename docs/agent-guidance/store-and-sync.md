@@ -247,14 +247,39 @@ account's event scopes (enumerated by `SyncScope::object_kind`, so a CalDAV acco
 one-scope-per-collection and a JMAP account's single event type are both handled), and
 is exposed on the facade as `Engine::expand_horizon`.
 
-**The event *sync* projection owes the same `removed`-before-upserts.** `event_occurrence`
-rows are keyed by `(scope, event, start, recurrence-id)` and **upserted**, so a changed
-event whose key set moved — a start that shifted, an `RRULE` that shrank — would *add* rows
-beside its stale ones rather than replace them, and the event would render at both instants
-on a grid forever. So `EventScope::derive` pushes each changed event's key into
-`DerivedWrite::removed` before re-deriving it, exactly as the maintenance batch above does.
-This is not a calendar-write concern (a remote move mis-synced the same way); it is what
-makes any event change — reconciled or synced — actually *move* the rows a grid reads.
+## The expansion window is the store's, not the caller's
+
+`event_occurrence` rows are keyed by `(scope, event, start, recurrence-id)` and **upserted**,
+so a changed event whose key set moved — a start that shifted, an `RRULE` that shrank — would
+*add* rows beside its stale ones rather than replace them, and render at both instants on a
+grid forever. So `EventScope::derive` clears each changed event's occurrence rows before
+re-deriving them (`DerivedWrite::reset_occurrences` — the narrow counterpart of `removed`:
+every other derived kind is a single upserted row or a per-object junction replace, so
+clearing those too would be churn). This is not a calendar-write concern; a *remote* move
+mis-synced the same way.
+
+But that clear is **unwindowed**, and that is what forces the rest of this design. The rows
+were always *relative to* a horizon, and the horizon was implicit — so re-expanding a cleared
+event over whatever horizon the **caller** happened to hold silently destroyed everything
+outside it: a routine one-month delta that touched one event deleted that event's whole
+already-expanded year, while every *unchanged* event kept theirs. A weekly meeting vanished
+from next month's grid because somebody renamed it, and no host signal said to re-expand.
+
+So the store owns the window. `sync_scope` records the `ExpansionWindow` — the horizon its
+occurrence rows span and the zone they were resolved through (schema v6) —
+`Store::set_expansion_window` writes it under the scope lease, and
+`StoreRead::expansion_window` reads it back:
+
+- **`expand_calendar_horizon` is the only call that moves it**, and it has just re-expanded
+  *every* event in the scope to match, so recording it there is honest by construction.
+- **A sync re-expands a changed event over the stored window**, never over its own `horizon`
+  argument — which now only *seeds* the window on the very first sync of a scope, so a host
+  that has not called `expand_horizon` yet still materializes something.
+- **A post-write reconcile takes the same window**, so `Engine`'s calendar writes need no
+  `horizon`/`host_zone` at all: a write is not the place to state what the UI is showing.
+  Reconciling a scope that has never been expanded is `SyncError::NoExpansionWindow` rather
+  than a silent no-op — expanding nothing would store the events with zero occurrences *and*
+  advance the cursor, leaving the grid confidently empty forever.
 
 **A sync will not do this, and that is the trap.** `ScopeSyncer::derive` expands only
 the objects the delta *changed*, so once an account is synced, a provider reporting "no

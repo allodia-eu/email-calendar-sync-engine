@@ -27,7 +27,7 @@ use engine_core::{
     ids::{AccountId, ProviderKey},
     search_index::{OwnerAddresses, project_event},
     sync::ObjectKind,
-    time::{Horizon, TimeZoneId},
+    time::{ExpansionWindow, Horizon, TimeZoneId},
 };
 use engine_recurrence::expand;
 use engine_store::{DerivedWrite, LeaseRequest, Store, StoreRead, WorkerId};
@@ -68,6 +68,11 @@ pub struct UnexpandableEvent {
 /// It re-expands *every* event in the scope on every call, so a host should widen in
 /// coarse chunks against a persisted watermark rather than call it per page.
 ///
+/// **This is the only call that moves a scope's [`ExpansionWindow`]**, and it records the
+/// one it expanded over. A sync or a post-write reconcile re-expands the events it *changed*
+/// over that stored window — never over a horizon its own caller passed — so a routine delta
+/// on a narrow horizon cannot silently drop the occurrences this call materialized.
+///
 /// # Errors
 ///
 /// Returns [`SyncError`] if the store rejects a claim/apply, or a stored event payload
@@ -88,6 +93,7 @@ where
     let req = LeaseRequest::new(worker, ttl);
     let scopes = store.account_scopes(account.clone()).await?;
     let mut report = HorizonExpansion::default();
+    let window = ExpansionWindow::new(horizon, host_zone.clone());
 
     // One CalDAV account has one scope per calendar collection; a JMAP one has a single
     // event type. Enumerate rather than hard-code which (`SyncScope::object_kind`).
@@ -120,6 +126,14 @@ where
         report.occurrences += derived.occurrences.len();
         // Best-effort release on failure, so a held lease cannot block the next sync.
         if let Err(err) = store.apply_maintenance(&claim.lease, &derived).await {
+            let _ = store.release_sync_scope(claim.lease).await;
+            return Err(err.into());
+        }
+        // This is the ONE path that moves the window, and it has just re-expanded every
+        // event in the scope to match — so record it. A sync (or a post-write reconcile)
+        // then re-expands whatever it changed over this window, instead of over whatever
+        // horizon its caller happened to hold.
+        if let Err(err) = store.set_expansion_window(&claim.lease, &window).await {
             let _ = store.release_sync_scope(claim.lease).await;
             return Err(err.into());
         }

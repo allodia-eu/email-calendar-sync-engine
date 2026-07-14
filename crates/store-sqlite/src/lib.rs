@@ -38,6 +38,7 @@ mod schema;
 mod scope_ops;
 mod search_ops;
 mod source_ops;
+mod window_ops;
 
 use core::fmt;
 use std::{
@@ -49,6 +50,7 @@ use async_trait::async_trait;
 use engine_core::{
     ids::AccountId,
     sync::{SyncScope, SyncState},
+    time::ExpansionWindow,
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
@@ -399,6 +401,18 @@ impl<C: Clock> Store for SqliteStore<C> {
         let token = lease.token().get();
         let derived = derived.clone();
         self.call(move |conn| scope_ops::maintenance(conn, &key, token, &derived))
+            .await
+    }
+
+    async fn set_expansion_window(
+        &self,
+        lease: &SyncLease,
+        window: &ExpansionWindow,
+    ) -> Result<()> {
+        let key = scope_key(lease.scope());
+        let token = lease.token().get();
+        let window = window.clone();
+        self.call(move |conn| window_ops::set_expansion_window(conn, &key, token, &window))
             .await
     }
 

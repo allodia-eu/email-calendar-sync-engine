@@ -19,11 +19,12 @@ use std::{
 };
 
 use engine_api::{
-    AccountId, Engine, EventDeletion, EventDraft, EventPatch, Horizon, PatchTarget, Reconciled,
-    TimeZoneId,
+    AccountId, ApiError, Engine, EventDeletion, EventDraft, EventPatch, Horizon, PatchTarget,
+    Reconciled, TimeZoneId,
 };
 use engine_core::{
     calendar::{Calendar, Event},
+    error::FailureClass,
     ids::{CalendarId, EventId, ProviderKey, Uid},
     membership::Memberships,
     raw::RawIcal,

@@ -152,8 +152,7 @@ Step 6 lands in small, tested slices. Order and status:
    `delete_calendar_event` ride the same outbox for calendar mutations — a caller-minted
    idempotency key plus an `EventDraft` (the event you want), or the event **as you read
    it** plus a `PatchTarget` + `EventPatch` (what changed, and on which occurrence), or an
-   `EventDeletion` — plus the reconcile's `horizon` + `host_zone`, returning a
-   `CalendarWrite` / `CalendarDelete`. These carry **intent**: the host never assembles
+   `EventDeletion` — returning a `CalendarWrite` / `CalendarDelete`. These carry **intent**: the host never assembles
    iCalendar, mints an href, or touches an `ETag`, and the same call drives CalDAV and JMAP
    (`providers.md`). The write types are re-exported from `engine-api`.
    - **Read `Capabilities::calendar_write_guard()` before writing.** `WriteGuard::Enforced`
@@ -172,6 +171,10 @@ Step 6 lands in small, tested slices. Order and status:
      that moved the event moves its occurrence rows. That is what makes "edit, re-read, edit
      again" work: the second edit's guard is the revision the *server* reported, not the
      superseded one it wrote over. Proven live against Stalwart (CalDAV + JMAP) and SabreDAV.
+     - **A write is never told what the UI is showing.** The reconcile re-expands over the
+       window the *store* holds (`ExpansionWindow`), so the write methods take no `horizon`
+       or `host_zone`, and a write can neither widen nor narrow what the host has expanded.
+       `Engine::expand_horizon` owns the window; see `store-and-sync.md`.
      - **Never store our own bytes instead.** The reconcile must re-read from the server:
        Stalwart *reserializes* what it stores, so an optimistic local copy would put a
        `RawIcal` in the store the server does not have — and would **mask a server that

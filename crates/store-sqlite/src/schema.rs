@@ -278,3 +278,18 @@ CREATE TRIGGER message_body_au AFTER UPDATE ON message_body BEGIN
     INSERT INTO message_body_fts (rowid, plain) VALUES (new.rowid, new.plain);
 END;
 ";
+
+/// Migration v6: the per-scope **expansion window** — the horizon an event scope's
+/// occurrence rows are materialized over, and the zone they were resolved through.
+///
+/// Nullable, and only ever set for event scopes: the rows were always *relative to* a
+/// window, but the window itself was implicit, so a pass that re-derived one changed event
+/// over whatever horizon its caller happened to hold deleted that event's rows outside it
+/// and re-materialized only its own — silently dropping occurrences the host had already
+/// expanded. Recording it lets a sync (and a post-write reconcile) re-expand a changed
+/// event over the window the store actually holds.
+pub(crate) const V6: &str = "\
+ALTER TABLE sync_scope ADD COLUMN horizon_start TEXT;
+ALTER TABLE sync_scope ADD COLUMN horizon_end   TEXT;
+ALTER TABLE sync_scope ADD COLUMN expansion_zone TEXT;
+";

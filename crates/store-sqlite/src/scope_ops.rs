@@ -393,7 +393,7 @@ pub(crate) fn scope_objects(
 
 /// Fails with [`StoreError::StaleLease`] unless the scope's stored generation
 /// equals `token` (the fencing check, inside the write transaction).
-fn check_token(tx: &Transaction<'_>, scope_key: &str, token: u64) -> Result<()> {
+pub(crate) fn check_token(tx: &Transaction<'_>, scope_key: &str, token: u64) -> Result<()> {
     let current: Option<i64> = tx
         .query_row(
             "SELECT token FROM sync_scope WHERE scope_key = ?1",

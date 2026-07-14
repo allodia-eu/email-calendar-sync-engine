@@ -24,17 +24,16 @@
 
 use engine_core::{calendar::Event, ids::AccountId, write::PendingOpId};
 use engine_provider::{EventDeletion, EventDraft, EventPatch, EventWrite, PatchTarget, Provider};
-use engine_recurrence::Horizon;
 use engine_sync::{
     CalendarWriteOutcome, EventSyncReport, create_calendar_event, delete_calendar_event,
     patch_calendar_event, put_calendar_document,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
-use crate::{ApiError, Engine, TimeZoneId};
+use crate::{ApiError, Engine};
 
 /// A calendar write that **landed on the server**, and what the store now holds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct CalendarWrite {
     /// The write itself: the durable op, the event it resolved to, its `UID`, and the
     /// revision the receipt carried.
@@ -44,7 +43,7 @@ pub struct CalendarWrite {
 }
 
 /// A calendar delete that **landed on the server**, and what the store now holds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct CalendarDelete {
     /// The durable op that recorded the delete (pollable via
     /// [`Engine::pending_op_state`]).
@@ -60,7 +59,8 @@ pub struct CalendarDelete {
 /// the change. Never re-issue the write to "fix" it: that would write twice. Re-read it
 /// instead, with [`Engine::reconcile_calendar_events`] or the next
 /// [`Engine::sync_calendar`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum Reconciled {
     /// The post-write delta ran: the store holds the server's canonical event — or, for a
     /// delete, no event at all.
@@ -68,9 +68,14 @@ pub enum Reconciled {
     /// Another sync holds the account's event scope, so the delta could not run. The store
     /// still holds the pre-write copy; that sync, or the next one, picks the change up.
     Busy,
-    /// The delta itself failed (the provider or the store), with the reason. The store
-    /// still holds the pre-write copy until something re-reads it.
-    Failed(String),
+    /// The delta itself failed — the provider fetch or the store apply. The store still
+    /// holds the pre-write copy until something re-reads it.
+    ///
+    /// The error is carried whole, not flattened to a message, so a host can still classify
+    /// it (an expired token is not a network blip) through the same
+    /// [`FailureClass`](engine_core::error::FailureClass) chain every other engine error
+    /// exposes. It is **not** a failed write.
+    Failed(Box<ApiError>),
 }
 
 impl Engine {
@@ -92,9 +97,9 @@ impl Engine {
     /// reported one, the op id (pollable via [`Engine::pending_op_state`]), and whether the
     /// store now holds the event ([`Reconciled`]).
     ///
-    /// `horizon`/`host_zone` are the reconcile's, and mean what they do on
-    /// [`sync_calendar`](Engine::sync_calendar): the window the new event's occurrences are
-    /// materialized over, and the zone a floating time resolves through.
+    /// The new event's occurrences are materialized over the window the **store** already
+    /// holds, so a write never has to be told what the UI is showing, and can never narrow
+    /// what the host has expanded ([`Engine::expand_horizon`] owns the window).
     ///
     /// # Errors
     ///
@@ -109,8 +114,6 @@ impl Engine {
         account: &AccountId,
         idempotency: &str,
         draft: &EventDraft,
-        horizon: Horizon,
-        host_zone: &TimeZoneId,
     ) -> Result<CalendarWrite, ApiError> {
         let write = create_calendar_event(
             provider,
@@ -123,9 +126,7 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)?;
-        Ok(self
-            .reconciling(provider, account, write, horizon, host_zone)
-            .await)
+        Ok(self.reconciling(provider, account, write).await)
     }
 
     /// Edits a stored calendar event through the durable outbox, then reconciles the store
@@ -158,12 +159,6 @@ impl Engine {
     /// zoned event to a UTC instant, an all-day event to a timed one) is rejected outright.
     /// A store failure also surfaces as [`ApiError::Sync`]. A failure to *reconcile* is
     /// **not** an error (the patch landed): it is reported in [`CalendarWrite::reconciled`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the write's base and intent, the outbox's key, and the reconcile's window \
-                  are three distinct concerns; folding them into one struct would rename the \
-                  problem, not solve it"
-    )]
     pub async fn patch_calendar_event<P: Provider>(
         &self,
         provider: &P,
@@ -172,8 +167,6 @@ impl Engine {
         base: &Event,
         target: PatchTarget,
         patch: EventPatch,
-        horizon: Horizon,
-        host_zone: &TimeZoneId,
     ) -> Result<CalendarWrite, ApiError> {
         let write = patch_calendar_event(
             provider,
@@ -188,9 +181,7 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)?;
-        Ok(self
-            .reconciling(provider, account, write, horizon, host_zone)
-            .await)
+        Ok(self.reconciling(provider, account, write).await)
     }
 
     /// Replaces a calendar event's whole stored document through the durable outbox, then
@@ -212,8 +203,6 @@ impl Engine {
         account: &AccountId,
         idempotency: &str,
         write: &EventWrite,
-        horizon: Horizon,
-        host_zone: &TimeZoneId,
     ) -> Result<CalendarWrite, ApiError> {
         let outcome = put_calendar_document(
             provider,
@@ -226,9 +215,7 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)?;
-        Ok(self
-            .reconciling(provider, account, outcome, horizon, host_zone)
-            .await)
+        Ok(self.reconciling(provider, account, outcome).await)
     }
 
     /// Deletes a calendar event through the durable outbox, guarded by the revision the
@@ -254,8 +241,6 @@ impl Engine {
         account: &AccountId,
         idempotency: &str,
         deletion: &EventDeletion,
-        horizon: Horizon,
-        host_zone: &TimeZoneId,
     ) -> Result<CalendarDelete, ApiError> {
         let op = delete_calendar_event(
             provider,
@@ -270,9 +255,7 @@ impl Engine {
         .map_err(map_sync_error)?;
         Ok(CalendarDelete {
             op,
-            reconciled: self
-                .reconcile_after_write(provider, account, horizon, host_zone)
-                .await,
+            reconciled: self.reconcile_after_write(provider, account).await,
         })
     }
 
@@ -282,13 +265,9 @@ impl Engine {
         provider: &P,
         account: &AccountId,
         write: CalendarWriteOutcome,
-        horizon: Horizon,
-        host_zone: &TimeZoneId,
     ) -> CalendarWrite {
         CalendarWrite {
-            reconciled: self
-                .reconcile_after_write(provider, account, horizon, host_zone)
-                .await,
+            reconciled: self.reconcile_after_write(provider, account).await,
             write,
         }
     }
@@ -303,16 +282,11 @@ impl Engine {
         &self,
         provider: &P,
         account: &AccountId,
-        horizon: Horizon,
-        host_zone: &TimeZoneId,
     ) -> Reconciled {
-        match self
-            .reconcile_calendar_events(provider, account, horizon, host_zone)
-            .await
-        {
+        match self.reconcile_calendar_events(provider, account).await {
             Ok(report) => Reconciled::Applied(report),
             Err(ApiError::Busy) => Reconciled::Busy,
-            Err(err) => Reconciled::Failed(err.to_string()),
+            Err(err) => Reconciled::Failed(Box::new(err)),
         }
     }
 }

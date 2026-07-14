@@ -37,11 +37,11 @@ use engine_core::{
     ids::AccountId,
     search_index::{OwnerAddresses, project_event},
     sync::{SyncScope, SyncState, SyncUpdate},
-    time::TimeZoneId,
+    time::{ExpansionWindow, TimeZoneId},
 };
 use engine_provider::{Provider, ProviderError, ScopeSync};
 use engine_recurrence::{Horizon, expand};
-use engine_store::{DerivedWrite, LeaseRequest, Store, SyncApplied, WorkerId};
+use engine_store::{DerivedWrite, LeaseRequest, Store, StoreRead, SyncApplied, WorkerId};
 
 use crate::{ScopeSyncer, SyncError, UnexpandableEvent, changed_objects, run_scope};
 
@@ -73,10 +73,19 @@ pub struct EventSyncReport {
 
 /// Syncs one account's calendars: calendar containers first, then events.
 ///
-/// Events are projected for search and **expanded into occurrences** over `horizon`
-/// (resolving floating times through `host_zone`) before the store commit. An event whose
-/// recurrence is outside the expander's supported subset is still stored — it just
-/// materializes no occurrences yet (`calendar-semantics.md`), never failing the sync.
+/// A changed event is projected for search and **expanded into occurrences** before the
+/// store commit. It expands over the window the **store** already holds
+/// ([`ExpansionWindow`]) — not over `horizon`/`host_zone`, which only *seed* that window on
+/// the very first sync of the scope, when there is nothing materialized yet. That is what
+/// keeps a sync from silently narrowing what the host has expanded: a routine delta on a
+/// one-week horizon must not delete a changed event's occurrences for the rest of the year
+/// and leave every unchanged event's in place. Moving the window is
+/// [`expand_calendar_horizon`](crate::expand_calendar_horizon)'s job, and it re-expands
+/// *every* event to match.
+///
+/// An event whose recurrence is outside the expander's supported subset is still stored —
+/// it just materializes no occurrences yet (`calendar-semantics.md`), never failing the
+/// sync.
 ///
 /// # Errors
 ///
@@ -93,19 +102,60 @@ pub async fn sync_calendar<P, S>(
 ) -> Result<CalendarSyncReport, SyncError>
 where
     P: Provider,
-    S: Store,
+    S: Store + StoreRead,
 {
     let req = LeaseRequest::new(worker, ttl);
     let calendars = run_scope(store, account, &CalendarScope(provider), &req).await?;
-    let events = sync_event_scope(provider, store, account, &req, horizon, host_zone).await?;
+
+    // The store's window wins. `horizon`/`host_zone` seed it only when the scope has never
+    // been expanded, so a first sync still materializes something without the host having
+    // to call `expand_calendar_horizon` first.
+    let scope = provider.event_scope(account);
+    let window = if let Some(window) = store.expansion_window(&scope).await? {
+        window
+    } else {
+        let seeded = ExpansionWindow::new(horizon, host_zone.clone());
+        seed_window(store, account, &scope, &req, &seeded).await?;
+        seeded
+    };
+    let events = sync_event_scope(provider, store, account, &req, &window).await?;
     Ok(CalendarSyncReport { calendars, events })
+}
+
+/// Records the window a first sync will expand over, before it expands.
+///
+/// A short claim of its own: the scope row must exist (and be lease-gated) for the window
+/// to be written, and `run_scope` takes and releases its own lease afterwards.
+async fn seed_window<S>(
+    store: &S,
+    account: &AccountId,
+    scope: &SyncScope,
+    req: &LeaseRequest,
+    window: &ExpansionWindow,
+) -> Result<(), SyncError>
+where
+    S: Store,
+{
+    let claim = store
+        .claim_sync_scope(account.clone(), scope, req.clone())
+        .await?;
+    let result = store.set_expansion_window(&claim.lease, window).await;
+    store.release_sync_scope(claim.lease).await?;
+    Ok(result?)
 }
 
 /// Re-reads one account's events through the provider's **delta** and commits the result:
 /// the read-your-writes step a completed calendar write runs (see the module docs).
 ///
 /// The event scope only — an event write cannot change the calendar *list*, so the
-/// container scope is not fetched and not claimed. One round trip on both transports.
+/// container scope is not fetched and not claimed.
+///
+/// One round trip on both transports **once the scope has a cursor**, which it does from its
+/// first sync onward. With no cursor it is a full snapshot instead (CalDAV re-`REPORT`s every
+/// resource with its `calendar-data` inline; JMAP queries and `/get`s every id) — correct,
+/// but not cheap. In practice a host has synced the calendar before it can name one to write
+/// to, and reconciling before *any* sync is refused outright
+/// ([`SyncError::NoExpansionWindow`]).
 ///
 /// It is also the batch path: a host that writes many events runs one reconcile after the
 /// last of them rather than one per write.
@@ -126,15 +176,18 @@ pub async fn reconcile_calendar_events<P, S>(
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
-    horizon: Horizon,
-    host_zone: &TimeZoneId,
 ) -> Result<EventSyncReport, SyncError>
 where
     P: Provider,
-    S: Store,
+    S: Store + StoreRead,
 {
+    let scope = provider.event_scope(account);
+    let window = store
+        .expansion_window(&scope)
+        .await?
+        .ok_or(SyncError::NoExpansionWindow)?;
     let req = LeaseRequest::new(worker, ttl);
-    sync_event_scope(provider, store, account, &req, horizon, host_zone).await
+    sync_event_scope(provider, store, account, &req, &window).await
 }
 
 /// Runs the event scope once, collecting what the expander refused.
@@ -143,8 +196,7 @@ async fn sync_event_scope<P, S>(
     store: &S,
     account: &AccountId,
     req: &LeaseRequest,
-    horizon: Horizon,
-    host_zone: &TimeZoneId,
+    window: &ExpansionWindow,
 ) -> Result<EventSyncReport, SyncError>
 where
     P: Provider,
@@ -152,8 +204,7 @@ where
 {
     let scope = EventScope {
         provider,
-        horizon,
-        host_zone: host_zone.clone(),
+        window: window.clone(),
         unexpandable: Mutex::default(),
     };
     let applied = run_scope(store, account, &scope, req).await?;
@@ -199,8 +250,8 @@ impl<P: Provider> ScopeSyncer for CalendarScope<'_, P> {
 /// so the absence is visible instead of silent.
 struct EventScope<'p, P> {
     provider: &'p P,
-    horizon: Horizon,
-    host_zone: TimeZoneId,
+    /// The window the store holds — never one a caller passed. See [`sync_calendar`].
+    window: ExpansionWindow,
     unexpandable: Mutex<Vec<UnexpandableEvent>>,
 }
 
@@ -224,20 +275,23 @@ impl<P: Provider> ScopeSyncer for EventScope<'_, P> {
         let mut derived = DerivedWrite::empty();
         let mut unexpandable = Vec::new();
         for event in changed_objects(update) {
-            // Clear the event's derived rows before rewriting them. Occurrences are keyed
-            // by `(scope, event, start, recurrence-id)` and *upserted*, so an event whose
-            // start moved — or whose recurrence shrank — would otherwise keep its old
-            // occurrence rows beside the new ones and render at both times. Every other
-            // derived row is re-inserted from this same projection, and the store applies
-            // `removed` before the upserts in one transaction (`horizon.rs` does the same
-            // for a re-expansion).
-            derived.removed.push(event.id.key().clone());
+            // Clear this event's occurrence rows before rewriting them. They are keyed by
+            // `(scope, event, start, recurrence-id)` and *upserted*, so an event whose start
+            // moved — or whose recurrence shrank — would otherwise keep its old rows beside
+            // the new ones and render at both times. The store applies the reset before the
+            // upserts in one transaction.
+            //
+            // The clear is unwindowed (every row for the event), which is only safe because
+            // the re-expansion below covers the **store's** whole window rather than some
+            // caller's horizon — otherwise it would delete occurrences outside that horizon
+            // and never put them back.
+            derived.reset_occurrences.push(event.id.key().clone());
             derived.push_event(project_event(event, &OwnerAddresses::default()));
             // An unsupported recurrence stores the event with no occurrences, never
             // failing the sync (`calendar-semantics.md`) — but it is then invisible to
             // every range read, so the reason travels out on the report rather than being
             // dropped here.
-            match expand(event, &self.horizon, &self.host_zone) {
+            match expand(event, &self.window.horizon, &self.window.zone) {
                 Ok(occurrences) => derived.occurrences.extend(occurrences),
                 Err(reason) => unexpandable.push(UnexpandableEvent {
                     event: event.id.key().clone(),

@@ -25,7 +25,14 @@ use crate::{convert::backend, schema};
 /// The ordered migration steps. Index `i` is schema version `i + 1`; the stored
 /// `user_version` is the count applied. **Append only** — never edit or reorder a
 /// shipped step.
-const MIGRATIONS: &[&str] = &[schema::V1, schema::V2, schema::V3, schema::V4, schema::V5];
+const MIGRATIONS: &[&str] = &[
+    schema::V1,
+    schema::V2,
+    schema::V3,
+    schema::V4,
+    schema::V5,
+    schema::V6,
+];
 
 /// Brings `conn` up to the latest schema version.
 ///

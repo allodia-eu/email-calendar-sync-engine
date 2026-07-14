@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey, ThreadId},
     sync::{SyncScope, SyncState},
-    time::{Horizon, UtcDateTime},
+    time::{ExpansionWindow, Horizon, UtcDateTime},
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use serde::Serialize;
@@ -90,6 +90,23 @@ pub trait Store: Send + Sync {
     /// Returns `StoreError::StaleLease` if `lease`'s token is no longer current,
     /// or `StoreError::Backend` on a backend failure.
     async fn apply_maintenance(&self, lease: &SyncLease, derived: &DerivedWrite) -> Result<()>;
+
+    /// Records the window a scope's occurrence rows are now materialized over, under the
+    /// **same** scope lease that wrote them.
+    ///
+    /// The store owns this fact because only it knows what the rows actually span
+    /// (`ExpansionWindow`). A sync or a post-write reconcile re-expands a *changed* event
+    /// over the window read back from here — never over a horizon its caller passed — so
+    /// re-deriving one event cannot silently drop the occurrences the host already
+    /// expanded. Only [`expand_calendar_horizon`](https://docs.rs/engine-sync), the call
+    /// that re-expands *every* event, moves the window.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::StaleLease` if `lease`'s token is no longer current, or
+    /// `StoreError::Backend` on a backend failure.
+    async fn set_expansion_window(&self, lease: &SyncLease, window: &ExpansionWindow)
+    -> Result<()>;
 
     /// Releases a scope lease before its TTL so a finished worker does not block
     /// the next sync for the full lease window. Consumes the lease: it must not be
@@ -209,6 +226,18 @@ pub trait StoreRead: Send + Sync {
     ///
     /// Returns `StoreError::Backend` on a backend failure.
     async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>>;
+
+    /// The window a scope's occurrence rows are materialized over, or `None` if nothing has
+    /// expanded them yet.
+    ///
+    /// A lease-free read: the sync and reconcile paths resolve the window they must
+    /// re-expand a changed event over *before* claiming the scope
+    /// ([`Store::set_expansion_window`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn expansion_window(&self, scope: &SyncScope) -> Result<Option<ExpansionWindow>>;
 
     /// The provider keys of live (non-tombstoned) objects in a scope.
     ///

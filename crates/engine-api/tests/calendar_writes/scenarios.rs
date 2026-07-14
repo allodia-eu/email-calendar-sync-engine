@@ -4,6 +4,8 @@
 //! row, a create lands under the id the server assigned, the RSVP document write reconciles
 //! like any other, and a write whose reconcile could not run is still a write.
 
+use engine_sync::SyncError;
+
 use super::*;
 
 #[tokio::test]
@@ -22,8 +24,6 @@ async fn a_patch_leaves_the_store_holding_the_servers_copy_not_ours() {
             EventPatch::new("2026-07-14T10:00:00Z".parse().unwrap())
                 .summary("Standup (moved)")
                 .start(at(11)),
-            horizon(),
-            &host_zone(),
         )
         .await
         .unwrap();
@@ -79,8 +79,6 @@ async fn a_host_can_edit_the_same_event_twice_reading_it_back_in_between() {
             &base,
             PatchTarget::Series,
             EventPatch::new("2026-07-14T10:00:00Z".parse().unwrap()).summary("First edit"),
-            horizon(),
-            &host_zone(),
         )
         .await
         .unwrap();
@@ -94,8 +92,6 @@ async fn a_host_can_edit_the_same_event_twice_reading_it_back_in_between() {
             &reread,
             PatchTarget::Series,
             EventPatch::new("2026-07-14T10:05:00Z".parse().unwrap()).summary("Second edit"),
-            horizon(),
-            &host_zone(),
         )
         .await
         .expect("the second edit must not be refused on a stale guard");
@@ -118,8 +114,6 @@ async fn a_delete_tombstones_the_local_row_instead_of_waiting_for_the_next_sync(
             &account(),
             "delete:evt-1",
             &EventDeletion::of(&base),
-            horizon(),
-            &host_zone(),
         )
         .await
         .unwrap();
@@ -157,8 +151,6 @@ async fn a_create_stores_the_event_the_server_assigned() {
                 at(15),
                 "2026-07-14T10:00:00Z".parse().unwrap(),
             ),
-            horizon(),
-            &host_zone(),
         )
         .await
         .unwrap();
@@ -194,11 +186,7 @@ async fn a_write_whose_reconcile_cannot_run_is_still_a_write() {
     let engine = Arc::new(engine);
     let holder = {
         let engine = Arc::clone(&engine);
-        tokio::spawn(async move {
-            engine
-                .reconcile_calendar_events(&blocker, &account(), horizon(), &host_zone())
-                .await
-        })
+        tokio::spawn(async move { engine.reconcile_calendar_events(&blocker, &account()).await })
     };
     wait.await.unwrap();
 
@@ -210,12 +198,14 @@ async fn a_write_whose_reconcile_cannot_run_is_still_a_write() {
             &base,
             PatchTarget::Series,
             EventPatch::new("2026-07-14T10:00:00Z".parse().unwrap()).summary("Renamed"),
-            horizon(),
-            &host_zone(),
         )
         .await
         .expect("the write landed; only the local re-read could not run");
-    assert_eq!(write.reconciled, Reconciled::Busy);
+    assert!(
+        matches!(write.reconciled, Reconciled::Busy),
+        "got {:?}",
+        write.reconciled
+    );
     assert_eq!(
         write.write.revisions.etag,
         Some(ETag::new("\"srv-2\"")),
@@ -244,8 +234,6 @@ async fn the_rsvp_document_write_reconciles_like_any_other() {
                 &base,
                 RawIcal::new("BEGIN:VCALENDAR\r\nX-CLIENT-WROTE-THIS:1\r\nEND:VCALENDAR"),
             ),
-            horizon(),
-            &host_zone(),
         )
         .await
         .unwrap();
@@ -282,16 +270,19 @@ async fn a_reconcile_that_fails_reports_why_and_still_keeps_the_write() {
             &base,
             PatchTarget::Series,
             EventPatch::new("2026-07-14T10:00:00Z".parse().unwrap()).summary("Renamed"),
-            horizon(),
-            &host_zone(),
         )
         .await
         .expect("the write landed; only the re-read failed");
 
-    let Reconciled::Failed(reason) = &write.reconciled else {
+    let Reconciled::Failed(err) = &write.reconciled else {
         panic!("expected Failed, got {:?}", write.reconciled);
     };
-    assert!(reason.contains("event fetch is down"), "got {reason}");
+    // The error is carried whole, so a host can still classify it rather than grep a string.
+    let ApiError::Sync(SyncError::Provider(provider_err)) = err.as_ref() else {
+        panic!("expected a provider error, got {err:?}");
+    };
+    assert_eq!(provider_err.class(), FailureClass::Retryable);
+    assert!(provider_err.detail().contains("event fetch is down"));
     assert_eq!(
         engine.events(&account()).await.unwrap()[0].title,
         "Standup",

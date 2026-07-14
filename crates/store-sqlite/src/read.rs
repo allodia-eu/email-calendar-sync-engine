@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
     sync::SyncScope,
-    time::Horizon,
+    time::{ExpansionWindow, Horizon},
     write::PendingOpId,
 };
 use engine_store::{
@@ -22,6 +22,12 @@ use crate::{SqliteStore, convert::scope_key, derived_ops, outbox_ops, scope_ops}
 impl<C: Clock> StoreRead for SqliteStore<C> {
     async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>> {
         self.call(move |conn| scope_ops::account_scopes(conn, &account))
+            .await
+    }
+
+    async fn expansion_window(&self, scope: &SyncScope) -> Result<Option<ExpansionWindow>> {
+        let key = scope_key(scope);
+        self.call(move |conn| crate::window_ops::expansion_window(conn, &key))
             .await
     }
 

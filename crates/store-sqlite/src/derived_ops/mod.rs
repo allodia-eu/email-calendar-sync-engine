@@ -36,6 +36,9 @@ pub(crate) fn apply_derived(
     for key in &derived.removed {
         delete_derived_rows(tx, scope_key, key.as_str())?;
     }
+    for key in &derived.reset_occurrences {
+        delete_occurrences(tx, scope_key, key.as_str())?;
+    }
     for row in &derived.fts {
         let (subject, body, location) = fts_columns(&row.fields);
         tx.execute(
@@ -106,6 +109,17 @@ pub(crate) fn apply_derived(
     replace_addresses(tx, scope_key, &derived.addresses)?;
     replace_memberships(tx, scope_key, &derived.memberships)?;
     replace_participants(tx, scope_key, &derived.participants)?;
+    Ok(())
+}
+
+/// Clears one event's occurrence rows, leaving its other derived rows alone — the targeted
+/// reset a re-derived event needs (`DerivedWrite::reset_occurrences`).
+pub(crate) fn delete_occurrences(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM event_occurrence WHERE scope_key = ?1 AND event = ?2",
+        (scope_key, key),
+    )
+    .map_err(convert::backend)?;
     Ok(())
 }
 

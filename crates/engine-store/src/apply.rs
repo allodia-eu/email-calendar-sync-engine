@@ -153,6 +153,18 @@ pub struct DerivedWrite {
     /// Object keys whose derived rows (every kind above) must be removed — e.g. on
     /// tombstone, recurrence-rule change, or timezone-data change.
     pub removed: Vec<ProviderKey>,
+    /// Event keys whose **occurrence rows alone** must be cleared before the fresh ones are
+    /// written.
+    ///
+    /// The narrow counterpart of [`removed`](DerivedWrite::removed), and what a re-derived
+    /// event actually needs. Occurrences are the only derived kind with *many* rows per
+    /// object under a compound key, so an event whose start moved — or whose recurrence
+    /// shrank — would otherwise keep its old rows beside the new ones and render at both
+    /// times. Every other kind is either a single row keyed by the object (upserted, so it
+    /// cannot go stale) or a junction already replaced per object, so clearing them too
+    /// would be pure churn: a cold snapshot of 5,000 events would issue tens of thousands of
+    /// DELETEs against rows that are about to be rewritten anyway.
+    pub reset_occurrences: Vec<ProviderKey>,
 }
 
 impl DerivedWrite {

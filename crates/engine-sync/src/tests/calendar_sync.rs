@@ -172,17 +172,10 @@ async fn reconcile_calendar_events_applies_the_event_delta_without_the_container
         .with_calendar(vec![calendar("work", "Work")], vec![moved])
         .failing(Fault::CalendarFetch);
 
-    let report = reconcile_calendar_events(
-        &after,
-        &store,
-        &account(),
-        worker(),
-        Duration::from_mins(1),
-        year_horizon(),
-        &host_zone,
-    )
-    .await
-    .unwrap();
+    let report =
+        reconcile_calendar_events(&after, &store, &account(), worker(), Duration::from_mins(1))
+            .await
+            .unwrap();
     assert_eq!(report.applied.upserted, 1);
     assert!(report.unexpandable.is_empty());
 
@@ -240,4 +233,120 @@ async fn unsupported_recurrence_stores_event_without_occurrences() {
         .unwrap();
     assert_eq!(counts.occurrences, 0);
     assert!(counts.event_index >= 1);
+}
+
+#[tokio::test]
+async fn a_sync_re_expands_a_changed_event_over_the_stores_window_not_the_callers() {
+    // The trap the store-owned `ExpansionWindow` exists to close. Clearing a changed event's
+    // occurrence rows is unwindowed (it must be, or a moved event ghosts), so if the
+    // re-expansion used the *caller's* horizon the event would keep only the rows inside it
+    // — silently losing every occurrence the host had already expanded, while every
+    // UNCHANGED event kept theirs. A weekly meeting would vanish from next month's grid
+    // because somebody renamed it.
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+    let mut weekly = event("evt-w", "uid-w@h", "work", zoned(2026, 1, 5, 9));
+    weekly.duration = "PT30M".parse().unwrap();
+    weekly.recurrence = Some(Recurrence::from_rule(RecurrenceRule::new(
+        Frequency::Weekly,
+    )));
+
+    // The app syncs on a narrow (one-month) horizon, as a calendar app showing one month does.
+    let january = Horizon::new(
+        "2026-01-01T00:00:00Z".parse().unwrap(),
+        "2026-02-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap();
+    let before = FakeMail::new(vec![], vec![])
+        .with_calendar(vec![calendar("work", "Work")], vec![weekly.clone()]);
+    sync_calendar(
+        &before,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        january,
+        &zone,
+    )
+    .await
+    .unwrap();
+
+    // The user scrolls out to the whole year, so the host widens the horizon — the one call
+    // that moves the window, and it re-expands every event to match.
+    expand_calendar_horizon(
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        year_horizon(),
+        &zone,
+    )
+    .await
+    .unwrap();
+    let scope = before.event_scope(&account());
+    let expanded = store
+        .index_row_counts(&scope, &key("evt-w"))
+        .await
+        .unwrap()
+        .occurrences;
+    assert!(
+        expanded > 40,
+        "the year is materialized: {expanded} occurrences"
+    );
+
+    // Now the event changes remotely and a ROUTINE sync runs on the app's usual narrow
+    // horizon. The changed event must keep the year the host expanded.
+    let mut renamed = weekly;
+    renamed.title = "Renamed".to_owned();
+    let after =
+        FakeMail::new(vec![], vec![]).with_calendar(vec![calendar("work", "Work")], vec![renamed]);
+    sync_calendar(
+        &after,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        january,
+        &zone,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        store
+            .index_row_counts(&scope, &key("evt-w"))
+            .await
+            .unwrap()
+            .occurrences,
+        expanded,
+        "a changed event must not lose the occurrences the host already expanded just \
+         because the sync that touched it was handed a narrower horizon"
+    );
+}
+
+#[tokio::test]
+async fn a_reconcile_before_any_sync_is_an_error_not_an_empty_calendar() {
+    // Reconciling an event scope that has never been expanded has no window to expand over.
+    // Expanding nothing would store the events with ZERO occurrence rows *and* advance the
+    // cursor, so the next sync would report no changes and the grid would stay empty
+    // forever. Refuse instead.
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let provider = FakeMail::new(vec![], vec![]).with_calendar(
+        vec![calendar("work", "Work")],
+        vec![event("evt-1", "uid-1@h", "work", zoned(2026, 3, 1, 9))],
+    );
+
+    let err = reconcile_calendar_events(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, crate::SyncError::NoExpansionWindow),
+        "got {err:?}"
+    );
 }
