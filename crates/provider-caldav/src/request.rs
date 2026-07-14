@@ -12,11 +12,18 @@ pub(crate) const PRINCIPAL_PROPFIND: &str = concat!(
 );
 
 /// `PROPFIND` (Depth 1) listing a calendar home's collections and their metadata.
+///
+/// `current-user-privilege-set` (RFC 3744 §5.4) is what the *authenticated* principal
+/// may do **here** — the only honest source for
+/// [`CalendarAccess`][engine_core::calendar::CalendarAccess], since a privilege is granted per
+/// principal, not per collection. It rides this PROPFIND rather than a second round trip per
+/// collection.
 pub(crate) const CALENDAR_LIST_PROPFIND: &str = concat!(
     r#"<?xml version="1.0" encoding="utf-8"?>"#,
     r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" "#,
     r#"xmlns:cs="http://calendarserver.org/ns/" xmlns:ic="http://apple.com/ns/ical/">"#,
     r#"<d:prop><d:resourcetype/><d:displayname/><d:sync-token/><cs:getctag/>"#,
+    r#"<d:current-user-privilege-set/>"#,
     r#"<ic:calendar-color/><c:calendar-description/></d:prop></d:propfind>"#,
 );
 

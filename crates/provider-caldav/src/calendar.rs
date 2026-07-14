@@ -3,11 +3,16 @@
 //!
 //! The collection href is the calendar's stable id (and the membership key its
 //! events reference), mirroring how the JMAP adapter uses the JMAP object id. The
-//! display name, description, and color come from the PROPFIND props; richer
-//! fields (access rights, default reminders, timezone) are left at their defaults
-//! for this read slice.
+//! display name, description, color, and **access rights** come from the PROPFIND
+//! props; the remaining richer fields (default reminders, timezone) are left at
+//! their defaults for this read slice.
 
-use engine_core::{calendar::Calendar, ids::CalendarId};
+use std::collections::BTreeSet;
+
+use engine_core::{
+    calendar::{Calendar, CalendarAccess},
+    ids::CalendarId,
+};
 
 use crate::{dav::DavResponse, error::CalDavError};
 
@@ -30,7 +35,44 @@ pub(crate) fn calendar_from_response(response: &DavResponse) -> Result<Calendar,
         .get("calendar-description")
         .map(str::to_owned);
     calendar.color = response.props.get("calendar-color").map(str::to_owned);
+    calendar.access = access_from_privileges(response.props.privileges());
     Ok(calendar)
+}
+
+/// Maps the server's `DAV:current-user-privilege-set` (RFC 3744 §5.4) onto the
+/// engine's [`CalendarAccess`].
+///
+/// The privilege set answers "what may **I** do here", per authenticated principal —
+/// which is why it has to be asked, not inferred: a subscribed holiday feed and a
+/// colleague's read-only share are ordinary calendar collections whose only
+/// distinguishing mark is the privileges they grant *this* user.
+///
+/// Writing an event means replacing or creating a resource in the collection, so a
+/// write is `DAV:write` (the aggregate) or its `DAV:write-content` part, or `DAV:all`.
+/// `DAV:write-properties` is **not** enough — SabreDAV grants exactly that on a
+/// read-only share, so treating it as a write would reintroduce the very lie this
+/// mapping exists to remove.
+///
+/// **A server that reports no privilege set at all is taken as writable.** RFC 4791 §2
+/// requires a CalDAV server to support WebDAV ACL, so silence is non-conformance rather
+/// than a considered "no", and the failure modes are asymmetric: guessing "writable"
+/// costs a `403` on a write the user attempted, while guessing "read-only" hides the
+/// edit affordance entirely on a server that works fine. The `403` is the backstop.
+///
+/// Only `may_write` is derived. The other flags stay at the two presets: the privilege
+/// set says nothing standard about whether the *collection itself* may be deleted (that
+/// is `DAV:unbind` on the parent home, not on the calendar) or shared, so inventing an
+/// answer from one server's spelling would be exactly the over-fit this mapping avoids.
+fn access_from_privileges(privileges: Option<&BTreeSet<String>>) -> CalendarAccess {
+    let Some(privileges) = privileges else {
+        return CalendarAccess::owner();
+    };
+    let granted = |privilege: &str| privileges.contains(privilege);
+    if granted("all") || granted("write") || granted("write-content") {
+        CalendarAccess::owner()
+    } else {
+        CalendarAccess::reader()
+    }
 }
 
 /// Derives a display name from the last path segment of a href, when the server
@@ -48,18 +90,64 @@ mod tests {
     use super::*;
     use crate::dav::parse_multistatus;
 
-    #[test]
-    fn maps_the_seed_default_calendar() {
-        let xml = include_str!("../tests/fixtures/calendar-home.xml");
+    /// The first calendar collection in a captured `multistatus`, mapped.
+    fn mapped(xml: &str, href_suffix: &str) -> Calendar {
         let response = parse_multistatus(xml)
             .unwrap()
             .responses
             .into_iter()
-            .find(|r| r.props.is_calendar())
-            .unwrap();
-        let calendar = calendar_from_response(&response).unwrap();
+            .find(|r| r.props.is_calendar() && r.href().ends_with(href_suffix))
+            .expect("the collection is listed as a calendar");
+        calendar_from_response(&response).unwrap()
+    }
+
+    #[test]
+    fn maps_the_seed_default_calendar() {
+        let calendar = mapped(
+            include_str!("../tests/fixtures/calendar-home.xml"),
+            "/default/",
+        );
         assert_eq!(calendar.id.as_str(), "/dav/cal/alice%40test.local/default/");
         assert_eq!(calendar.name, "Stalwart Calendar (alice@test.local)");
+        // Stalwart grants the owner set on Alice's own calendar.
+        assert!(calendar.access.may_write);
+    }
+
+    #[test]
+    fn a_share_granting_no_write_privilege_is_a_reader() {
+        // Bob's calendar, shared with Alice read-only: SabreDAV grants her `read` and
+        // `write-properties` (she may rename her copy) but neither `write` nor
+        // `write-content`, so no event may be written into it. The old default — every
+        // collection an owner — claimed she could.
+        let shared = mapped(
+            include_str!("../tests/fixtures/calendar-home-sabredav.xml"),
+            "/bob-readonly/",
+        );
+        assert_eq!(shared.name, "Bob (read-only)");
+        assert!(!shared.access.may_write);
+        assert!(shared.access.may_read, "a reader may still read it");
+        assert_eq!(shared.access, CalendarAccess::reader());
+    }
+
+    #[test]
+    fn the_same_server_reports_the_users_own_calendar_as_writable() {
+        // The other half of the pair: one server, one PROPFIND, two honest answers.
+        let own = mapped(
+            include_str!("../tests/fixtures/calendar-home-sabredav.xml"),
+            "/default/",
+        );
+        assert!(own.access.may_write);
+    }
+
+    #[test]
+    fn a_server_that_reports_no_privileges_is_taken_as_writable() {
+        // Silence is not a "no": RFC 4791 §2 requires ACL support, so a server that
+        // says nothing is non-conformant rather than restrictive. Hiding the edit
+        // affordance there would be the worse failure; the write's `403` is the
+        // backstop.
+        let xml = "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:response><D:href>/dav/cal/u/work/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>";
+        let calendar = mapped(xml, "/work/");
+        assert_eq!(calendar.access, CalendarAccess::owner());
     }
 
     #[test]

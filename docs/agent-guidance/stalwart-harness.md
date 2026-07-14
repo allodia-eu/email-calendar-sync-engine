@@ -18,6 +18,15 @@ part of it.
 > calendar seed** (`seed/calendar/`), so one dataset validates both servers. The
 > determinism, gating-by-env-var, and excluded-from-offline-coverage conventions
 > below apply to it too.
+>
+> The two are **not interchangeable as evidence**, and `caldav.md` ("Which server
+> proves what") is authoritative for the split. Two facts about *this* harness drive
+> it: Stalwart **reserializes** the iCalendar it stores (it keeps every property but
+> re-folds lines and reorders `RRULE` parts), so a write test may never assert that the
+> server hands back the bytes it was sent; and Alice **owns every calendar she can
+> see**, so this fixture cannot produce a collection she may not write — the read-only
+> `DAV:current-user-privilege-set` case is SabreDAV's to prove, and it seeds a shared
+> calendar for exactly that.
 
 ## What it is
 

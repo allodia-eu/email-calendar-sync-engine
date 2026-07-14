@@ -109,6 +109,29 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   URLs; the executor resolves them against the connection origin (the JMAP
   `RebaseToConnection` posture), and a bound-collection value that is itself an
   absolute path or full URL (a discovered calendar href) is used verbatim.
+- **Access rights are asked for, never assumed.** The calendar-list `PROPFIND` requests
+  **`DAV:current-user-privilege-set`** (RFC 3744 §5.4) alongside the display metadata —
+  one round trip, not a second per collection — and `calendar.rs` maps it onto
+  `CalendarAccess`. It has to be *asked*: the privilege set is what the **authenticated
+  principal** may do **here**, so a subscribed holiday feed and a colleague's read-only
+  share are ordinary calendar collections distinguished only by the privileges they
+  grant *this* user. `DAV:all`, `DAV:write` or `DAV:write-content` → `may_write`;
+  otherwise `CalendarAccess::reader()`. **`DAV:write-properties` is not enough** —
+  SabreDAV grants exactly that on a read-only share (you may rename your copy of it), so
+  counting it as a write would reinstate the lie. Only `may_write` is derived: the
+  privilege set says nothing standard about whether the *collection* may be deleted
+  (that is `DAV:unbind` on the parent home, not on the calendar) or shared, so the other
+  flags stay at the `owner()`/`reader()` presets rather than being invented from one
+  server's spelling.
+  - **A server that reports no privilege set at all is taken as writable** — today's
+    optimistic behaviour, now a recorded decision rather than a silent default. RFC 4791
+    §2 requires a CalDAV server to support WebDAV ACL, so silence is non-conformance, not
+    a considered "no"; and the failure modes are asymmetric — guessing "writable" costs a
+    `403` on a write the user chose to attempt, while guessing "read-only" hides the edit
+    affordance entirely on a server that works fine. The `403` is the backstop.
+    A privilege set that is *present but empty* is a different thing ("you may do nothing
+    here") and yields a reader; the parser keeps `None` and `Some(∅)` distinct for
+    exactly this reason.
 - **Event sync is one `sync-collection` REPORT (RFC 6578).** It is the whole
   primitive: an **empty** prior token returns every resource — a **snapshot**
   whose accumulated `present` set tombstones anything absent — while a **held**
@@ -220,7 +243,11 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   returns the resource's new entity tag in the `ETag` response header (RFC 4791
   §5.3.4), surfaced on the receipt; when the server omits it the receipt carries
   `None` and the next `sync-collection` delta refreshes `event.revisions`. No
-  automatic follow-up `GET` is issued.
+  automatic follow-up `GET` is issued. Both harness servers **do** supply it, and the
+  live suites now drive the whole create → update → delete chain **off the receipt's
+  `ETag` alone**, never a refetched one — so "write, keep the receipt, write again" is a
+  proven path, not an assumption. The receipt field stays an `Option` because a
+  conformant server may still omit it.
 - **Writes are outbox-mediated** (`store-and-sync.md` Write Contract). The thin
   drivers `engine_sync::write_calendar_event`/`delete_calendar_event` mirror
   `submit_mail`: a durable `PendingOp` (serialized on the resource href so writes
@@ -318,8 +345,11 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
   multistatus parser, the normalizers, and the cursor/snapshot/delta logic are
   unit-tested, including an adversarial panic-resistance pass over hostile
   iCalendar (the `fuzz/` `caldav_parse` cargo-fuzz counterpart). Captured,
-  secret-free Stalwart transcripts (`tests/fixtures/`) drive the `dav`/`discovery`/
-  `calendar`/`sync` layers through a **fake `DavExecutor`**. A **full offline sync
+  secret-free transcripts (`tests/fixtures/`) — Stalwart's, plus SabreDAV's calendar
+  home for the read-only privilege case — drive the `dav`/`discovery`/
+  `calendar`/`sync` layers through a **fake `DavExecutor`**, including the
+  `current-user-privilege-set` → `CalendarAccess` mapping and its
+  reported-nothing / reported-empty / `404`-propstat edge cases. A **full offline sync
   loop** (`provider_tests.rs`) drives the real `CalDavProvider` over the fake
   executor through `engine_sync::sync_calendar` into a real `SqliteStore`,
   asserting the six seed fixtures normalize, the master+override folds with its
@@ -344,28 +374,60 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
   accepted `PARTSTAT` and no transit-only `METHOD`), plus the security case that a
   parsed `REQUEST` whose `ORGANIZER` mismatches the authenticated sender is rejected,
   not written.
-- **Live against Stalwart (gated on `STALWART_HTTP_ADDR`, skips otherwise):**
-  `tests/live_caldav.rs` connects to the real Stalwart over HTTP, runs discovery +
-  `sync-collection`, and asserts the same seed invariants in the store, plus an
-  idempotent **empty delta** on a second sync (the held sync-token). A second test,
-  `caldav_write_round_trip`, drives the full **write lifecycle** against the real
-  server — create → update (`If-Match`) → delete (`If-Match`), verified by
-  re-reading the collection — and leaves the seed untouched. The two tests
-  **serialize** on a shared guard (the write test transiently adds an event, which
-  must not race the exact-count assertion). It reuses `crates/stalwart-harness`. The
-  `stalwart` CI job runs it; the file is excluded from the offline coverage metric,
-  like the JMAP/IMAP live tests.
-- **Live against SabreDAV (gated on `SABREDAV_HTTP_ADDR`, skips otherwise):**
-  `tests/live_sabredav.rs` runs the **same** seed assertions **and the same write
-  round-trip** (`tests/common/`, shared by both live files) against a second,
-  independent CalDAV implementation — the SabreDAV fixture (`docker/sabredav/`,
-  the stack Soverin/Fastmail-style providers run). Passing here proves the client
-  is not over-fit to Stalwart: SabreDAV exercises the **two-step RFC 6764
-  discovery**, the `http://sabre.io/ns/sync/N` sync-token form, and its own
-  `ETag`/`If-Match` write semantics. The separate `sabredav` CI job runs it; the
-  file is likewise excluded from the offline coverage metric. The fixture reuses the
-  shared `docker/stalwart/seed/calendar` dataset, so one set of fixtures validates
-  both servers.
+- **Live, against two real servers.** `tests/live_caldav.rs` (gated on
+  `STALWART_HTTP_ADDR`, run by the `stalwart` CI job) and `tests/live_sabredav.rs`
+  (gated on `SABREDAV_HTTP_ADDR`, run by the `sabredav` job) both connect over HTTP, run
+  discovery + `sync-collection`, and assert the seed invariants in the store plus an
+  idempotent **empty delta** on a second sync (the held sync-token). Both then run the
+  **same four write scenarios** from `tests/common/write.rs`. Every test in a binary
+  **serializes** on a shared guard — each scenario transiently adds an event, which must
+  not race the exact-count assertion or another scenario — and each pre-cleans its own
+  residue, so an interrupted run never wedges the next one. Both files are excluded from
+  the offline coverage metric, like the JMAP/IMAP live tests.
+
+  Writes are where a live server is not optional: the offline `Replay` executor serves
+  canned bytes **without reading the request**, so it can confirm how we handle a
+  response and *nothing* about whether the server accepted what we sent. The four
+  scenarios are exactly the questions it cannot answer:
+
+  | Scenario | What only a real server can tell you |
+  | --- | --- |
+  | `round_trip` | The `PUT` returns the new `ETag`, and it is the resource's real one — the whole create → update → delete chain runs off the receipts, never a refetch. |
+  | `patched_update_preserves_the_document` | An edit made with the **structural patcher** survives the *server*. Our byte-equality tests prove the patcher keeps the `RRULE`, `VALARM`, `VTIMEZONE` and `X-` properties; they say nothing about whether the server stores them. |
+  | `stale_if_match_is_a_conflict` | A superseded `If-Match` really returns `412` (on `PUT` **and** `DELETE`), and the adapter classes it `Conflict` — refetch-and-merge — not blind-retryable. |
+  | `instance_override_split_is_accepted` | A `RECURRENCE-ID` override the patcher splits out of a master is accepted as part of the same resource, and comes back folded into one event. |
+
+### Which server proves what
+
+The two fixtures are **not interchangeable as evidence**, and the difference decides how
+the preservation assertion is written. Observed against both:
+
+| | **Stalwart** | **SabreDAV** |
+| --- | --- | --- |
+| Stored iCalendar | **Reserializes** — keeps every property, but re-folds content lines and reorders `RRULE` parts | **Verbatim** — the bytes you `PUT` are the bytes you `GET` |
+| `ETag` on `PUT` | Yes (create + update) | Yes (create + update) |
+| Stale `If-Match` | `412` | `412` |
+| Master + `RECURRENCE-ID` in one resource | Accepted | Accepted |
+| Read-only collection | **Cannot produce one** — the harness account owns everything it can see | **The privilege fixture**: Bob's calendar, shared to Alice read-only |
+
+Two consequences to keep in mind before touching these tests:
+
+- **A preservation assertion may never compare our bytes with the server's** — Stalwart's
+  reserialization would fail it for a formatting difference that lost nothing. It
+  compares the **server's own copy before the patch** with the **server's own copy after
+  it**, on unfolded logical lines, with the properties the patch may touch
+  (`SUMMARY`/`DTSTAMP`/`LAST-MODIFIED`/`SEQUENCE`) struck out. Whatever the server does
+  to formatting it does to both copies; anything it *drops* shows up as a missing line.
+  The check is verified to bite: replacing `patch_event_ical` with the projection-
+  rebuilding `build_event_ical` fails it.
+- **`DAV:current-user-privilege-set` is locked by SabreDAV, not Stalwart.** Its seed
+  (`docker/sabredav/entrypoint.sh`) gives Alice a second collection — one Bob owns and
+  shares with her **read-only** — so one `PROPFIND` of one calendar home returns two
+  collections with two different answers, and `sabredav_reports_a_read_only_share_as_unwritable`
+  asserts both. Stalwart's account owns every calendar it can see, so it can only prove
+  the writable half (`caldav_reports_the_bound_calendar_as_writable`). The offline locks
+  are captured transcripts of both servers' real responses
+  (`tests/fixtures/calendar-home.xml`, `calendar-home-sabredav.xml`).
 - **Fuzzing:** `fuzz/` (a separate cargo-fuzz workspace) gained
   `cargo +nightly fuzz run caldav_parse`, driving `provider_caldav::fuzz_parse`
   (behind the `fuzzing` feature) over the unfold → component → normalize pipeline.
