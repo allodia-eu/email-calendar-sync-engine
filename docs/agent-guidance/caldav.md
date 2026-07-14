@@ -10,9 +10,10 @@ specifics it implements against the Stalwart fixture. Read it before touching
 recurrence subset, iTIP/iMIP), and `stalwart-harness.md` (the fixture).
 
 The **IMAP/SMTP mail half** of step 5 is the other slice (`imap-smtp.md`).
-**CalDAV writes** (conditional `PUT`/`DELETE` with `If-Match`/`If-None-Match`) are
-**implemented** (see "CalDAV writes") and outbox-driven by
-`engine_sync::write_calendar_event`/`delete_calendar_event`. **iTIP/iMIP**
+**CalDAV writes** (the neutral create/patch/delete verbs, rendered as a conditional
+`PUT`/`DELETE` with `If-Match`/`If-None-Match`) are **implemented** (see "CalDAV writes")
+and outbox-driven by `engine_sync::create_calendar_event`/`patch_calendar_event`/
+`delete_calendar_event`. **iTIP/iMIP**
 inbound parsing + the RSVP write primitive are **implemented** (see "iMIP
 scheduling"); the remaining scheduling deferrals (the Scheduling-Inbox `REPORT`,
 client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
@@ -75,8 +76,9 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   for a future `If-Match` write). The `DavCollectionId` (the scope's collection
   key) and the `CalendarId` (event membership) both wrap the collection href.
 - **Calendar capabilities only (read + write), no mail.** A `CalDavProvider`
-  advertises `Capabilities::calendars` **and** `Capabilities::calendar_writes` —
-  it reads/syncs and writes over the same HTTP transport — and does no mail. The
+  advertises `Capabilities::calendars` **and** `calendar_writes(WriteGuard::Enforced)` —
+  it reads/syncs and writes over the same HTTP transport, and it is the transport that can
+  actually promise a lost-update guard (`providers.md`) — and does no mail. The
   write capability is **separate** from the read one (mirroring `submission` being
   separate from `mail`), so a read-only calendar — a shared CalDAV collection the
   account cannot write, or a future calendar-read-only adapter — advertises
@@ -168,102 +170,125 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
 
 ## CalDAV writes
 
-- **Create/update is one conditional `PUT`; delete is one `DELETE`** (RFC 4791
-  §5.3.2). The `write` layer builds the request and maps the response to a receipt
-  or a classified error; the live `DavClient::send_write` carries a typed body and
-  the conditional header, distinct from the read `send` (Depth + XML) — so the
-  proven read path is untouched. The verbs live on the `Provider` trait as
-  `put_event`/`delete_event`, default-rejecting (unsupported) so a
-  capability-checking caller never relies on them; `CalDavProvider` overrides both
-  and advertises `Capabilities::calendar_writes`.
-- **Optimistic concurrency rides on the `ETag`.** A create sends `If-None-Match: *`
-  (never overwrite an existing resource at the href); an update or guarded delete
-  sends `If-Match: "<etag>"` (apply only while the server copy is unchanged). A
-  failed precondition is `412` → `FailureClass::Conflict`, recovered by refetch and
-  merge, **never a blind retry** (`error.rs`). `PUT` and `DELETE` are **idempotent
-  HTTP methods** (RFC 7231 §4.2.2), and the precondition makes a retry
-  self-correcting: a retried create `412`s if the first landed, a retried update
-  `412`s once the ETag moved, and a retried delete sees the resource already gone.
-  So a lost-response retry is **safe** — there is no ambiguous `NeedsConfirmation`
-  case as there is for SMTP. The read slice already preserves each event's `ETag` in
-  `event.revisions`, so a write `If-Match`es without a refetch (the deferred read
-  promise, now fulfilled).
+- **The write verbs are neutral; the iCalendar is CalDAV's business.** A host states
+  *intent* through `engine-provider`'s three verbs — `create_event(&EventDraft)`,
+  `patch_event(base: &Event, &EventEdit)`, `delete_event(&EventDeletion)` — and this crate
+  renders it. `build_event_ical` (create) and `patch_event_ical` (update) are therefore
+  **internal**: a host no longer assembles iCalendar, does not mint an href, and never sees
+  an `ETag`. That is what makes the same host code drive JMAP (`jmap.md`), and it is the
+  resolution of the "designing a neutral API from one implementer" problem — there are two
+  now, and they disagree about everything below the intent.
+- **Create/patch is one conditional `PUT`; delete is one `DELETE`** (RFC 4791 §5.3.2).
+  CalDAV has **no partial write**, so a patch is *still* a whole-document `PUT` — of the
+  stored bytes with the edit applied. The `write` layer builds the request and maps the
+  response to a receipt or a classified error; the live `DavClient::send_write` carries a
+  typed body and the conditional header, distinct from the read `send` (Depth + XML) — so
+  the proven read path is untouched. `CalDavProvider` also implements the whole-document
+  escape hatch `put_event`, which exists for the iMIP RSVP primitive alone (below); JMAP has
+  no such verb.
+- **Optimistic concurrency rides on the `ETag`, and CalDAV can actually promise it.** It
+  advertises `Capabilities::calendar_writes(WriteGuard::Enforced)` — the *other* calendar
+  transport cannot (`jmap.md`), which is why the guard is a capability a host reads rather
+  than an assumption it makes. A create sends `If-None-Match: *` (never overwrite an
+  existing resource at the href); a patch, a document replace, or a guarded delete sends
+  `If-Match: "<etag>"` (apply only while the server copy is unchanged), taken from
+  `base.revisions` — **the event as the caller read it**, so a guard cannot be
+  hand-assembled stale. A failed precondition is `412` → `FailureClass::Conflict`, recovered
+  by refetch and re-apply, **never a blind retry** (`error.rs`). `PUT` and `DELETE` are
+  **idempotent HTTP methods** (RFC 7231 §4.2.2), and the precondition makes a retry
+  self-correcting: a retried create `412`s if the first landed, a retried patch `412`s once
+  the ETag moved, and a retried delete sees the resource already gone. So a lost-response
+  retry is **safe** — there is no ambiguous `NeedsConfirmation` case as there is for SMTP.
 - **`DELETE` is idempotent: already-gone is success.** A `DELETE` whose resource is
-  **already absent** (`404`/`410`) resolves as `Ok` (RFC 7231 §4.3.5), not a
-  `Permanent` error — so re-running a delete whose response was lost (the first one
-  landed) succeeds rather than reporting a spurious failure. A `412` (the resource
-  still exists but its ETag moved) remains a genuine `If-Match` conflict, surfaced
-  for refetch.
-- **The body is the round-tripped `RawIcal`, never a re-serialized projection**
-  (`calendar-semantics.md`, `modeling.md`): an update PUTs the stored `raw_ical`
-  with targeted patches applied, so properties the lossy JSCalendar projection
-  cannot express (`X-` props, `VALARM`, …) survive the round trip (locked by an
-  offline test). There are therefore **two writers, and they are not
-  interchangeable**:
-  - **Create** → `provider_caldav::build_event_ical`, a **minimal** RFC 5545 builder
-    (`UID`, `DTSTAMP`, UTC `DTSTART`/`DTEND`, `SUMMARY`, optional `DESCRIPTION`;
-    TEXT escaped per §3.3.11, UTC "basic" times, `DTSTAMP` derived from `start`),
-    locked by a round-trip test through the parser. It emits **six properties**.
-    Using it to *update* an existing event is data loss: every property it does not
-    emit — the `RRULE`, the attendees, the alarms, the `TZID` — is deleted from the
-    user's calendar by a `PUT` that reports success.
-  - **Update** → `provider_caldav::patch_event_ical`, the **structural patcher**
-    (`ical::patch`). It takes the stored `RawIcal` and an `EventPatch`
-    (`SUMMARY`/`DESCRIPTION`/`LOCATION`/`DTSTART`/`DTEND`) and rewrites **only** the
-    content lines that changed, plus the `DTSTAMP`/`LAST-MODIFIED`/`SEQUENCE`
-    bookkeeping RFC 5545 requires of a revision. Every other byte — including the
-    original line folding, the document's line terminators, and properties this crate
-    has never heard of — is preserved verbatim, which is asserted structurally rather
-    than by eyeball (`patch_tests.rs`: strike the patched properties from both
-    documents and the remainder must be byte-equal).
+  **already absent** (`404`/`410`) resolves as `Ok` (RFC 7231 §4.3.5), not a `Permanent`
+  error — so re-running a delete whose response was lost (the first one landed) succeeds
+  rather than reporting a spurious failure. A `412` (the resource still exists but its ETag
+  moved) remains a genuine `If-Match` conflict, surfaced for refetch.
+- **A patch rewrites the stored `RawIcal`, never a re-serialized projection**
+  (`calendar-semantics.md`, `modeling.md`): so properties the lossy JSCalendar projection
+  cannot express (`X-` props, `VALARM`, the embedded `VTIMEZONE`, …) survive the round trip,
+  locked offline *and* proven against both servers. There are therefore **two serializers,
+  and they are not interchangeable**:
+  - **Create** → `build_event_ical`, a **minimal** RFC 5545 builder (`UID`, `DTSTAMP`,
+    `DTSTART`/`DTEND` **in the draft's own form** — zoned, floating or all-day, never
+    flattened to UTC — `SUMMARY`, optional `DESCRIPTION`; TEXT escaped per §3.3.11), locked
+    by a round-trip test through the parser. It emits **six properties**. Using it to
+    *update* an existing event would be data loss: every property it does not emit — the
+    `RRULE`, the attendees, the alarms — would be deleted from the user's calendar by a
+    `PUT` that reports success. Nothing can: `patch_event` is the only update path, and it
+    refuses outright if the base carries no stored `raw_ical` to patch.
+  - **Patch** → `patch_event_ical`, the **structural patcher** (`ical::patch`). It takes the
+    stored `RawIcal` and the neutral `EventPatch`
+    (`SUMMARY`/`DESCRIPTION`/`LOCATION`/`DTSTART`/`DTEND`) and rewrites **only** the content
+    lines that changed, plus the `DTSTAMP`/`LAST-MODIFIED`/`SEQUENCE` bookkeeping RFC 5545
+    requires of a revision. Every other byte — the original line folding, the document's line
+    terminators, properties this crate has never heard of — is preserved verbatim, asserted
+    structurally rather than by eyeball (`patch_tests.rs`: strike the patched properties from
+    both documents and the remainder must be byte-equal).
+  - This machinery is **CalDAV's alone**, and that is the point: a JMAP `update` is already a
+    JSON-pointer patch the *server* merges, so it has no use for line folding,
+    `DTEND`-vs-`DURATION` exclusion or `SEQUENCE` bookkeeping. Hoisting the patcher would
+    have dragged all of it into a crate whose other implementer needs none of it. Only the
+    **intent** is neutral.
   - The shared fold-aware line surgery is `ical::lines::Document`, and the shared TEXT
-    escaping / date-time rendering is `ical::format`. Both writers and the `imip`
-    RSVP primitive go through them, so there is one implementation of "rewrite this
-    content line, leave every other byte alone", not three.
+    escaping / date-time rendering is `ical::format`. Both serializers and the `imip` RSVP
+    primitive go through them, so there is one implementation of "rewrite this content line,
+    leave every other byte alone", not three.
 
-  Three rules the patcher enforces, each of which is a silent-corruption bug if left
-  to the caller:
-  - **A move may not change a value's *form*.** A new `DTSTART`/`DTEND` must be zoned
-    in the same zone / floating / all-day as the one it replaces, or it is an
-    `Err` — never a conversion. Rendering an `Europe/Amsterdam` event as UTC moves it
-    for every other reader; rendering an all-day event as timed turns a day into an
-    instant.
+  Three rules the patcher enforces, each of which is a silent-corruption bug if left to the
+  caller:
+  - **A move may not change a value's *form*.** A new `DTSTART`/`DTEND` must be zoned in the
+    same zone / floating / all-day as the one it replaces, or it is an `Err` — never a
+    conversion. Rendering an `Europe/Amsterdam` event as UTC moves it for every other reader;
+    rendering an all-day event as timed turns a day into an instant. The predicate itself
+    (`CalendarDateTime::has_same_form`) lives in `engine-core`, because JMAP needs the
+    identical rule and two copies would drift.
   - **`RECURRENCE-ID` targeting is explicit** (`PatchTarget::Series` vs
-    `PatchTarget::Instance`), with no default — see `calendar-semantics.md`.
-  - **An event may not end before it begins.** The check is against the end the event
-    *will have*, so moving the start past an unchanged end is caught too; the reader
-    would otherwise reject the event as malformed and drop it, making the edit look
-    saved while the event vanished.
+    `PatchTarget::Instance`), with no default — see `calendar-semantics.md`. Splitting a
+    *new* override out of the master is **CalDAV's chore** (copy the master's bytes, drop its
+    series rules, splice a `RECURRENCE-ID`), which is why it needs the occurrence's own start
+    and end: the master's are the *first* occurrence's. A JMAP server materializes the
+    override itself and needs neither — so the neutral `PatchTarget::Instance` must not
+    promise them.
+  - **An event may not end before it begins.** The check is against the end the event *will
+    have*, so moving the start past an unchanged end is caught too; the reader would
+    otherwise reject the event as malformed and drop it, making the edit look saved while
+    the event vanished.
 
-  `CalDavProvider::event_href`
-  mints the conventional `<collection>/<uid>.ics` resource href for a create
-  (percent-encoding the `UID` as one path segment); an update/delete reuses the
-  stored `EventId`.
-- **The new `ETag` is read back where the server supplies it.** A successful PUT
-  returns the resource's new entity tag in the `ETag` response header (RFC 4791
-  §5.3.4), surfaced on the receipt; when the server omits it the receipt carries
-  `None` and the next `sync-collection` delta refreshes `event.revisions`. No
-  automatic follow-up `GET` is issued. Both harness servers **do** supply it, and the
-  live suites now drive the whole create → update → delete chain **off the receipt's
-  `ETag` alone**, never a refetched one — so "write, keep the receipt, write again" is a
-  proven path, not an assumption. The receipt field stays an `Option` because a
-  conformant server may still omit it.
-- **Writes are outbox-mediated** (`store-and-sync.md` Write Contract). The thin
-  drivers `engine_sync::write_calendar_event`/`delete_calendar_event` mirror
-  `submit_mail`: a durable `PendingOp` (serialized on the resource href so writes
-  to one event never race) is recorded **before** the side effect, claimed under a
-  fenced `OpLease`, and resolved `Succeeded`/`Failed` under that lease. The
-  **idempotency key is a caller-supplied argument**, not derived from the href: the
-  store dedups enqueue by `(account, idempotency_key)` across *every* op state
-  (including terminal), so a href-only key would wrongly collapse two distinct edits
-  of one resource into one op. The host mints a key per write intent.
-- **Exposed on the host facade.** `Engine::write_calendar_event` and
-  `Engine::delete_calendar_event` (`engine-api.md`) wrap these drivers, mirroring
-  `Engine::submit_mail`/`Engine::edit_mail`: a host builds the create body with
-  `provider_caldav::build_event_ical`, wraps it in an `EventWrite::create`, and
-  drives the conditional `PUT` through the facade alone (the write types are
-  re-exported from `engine-api`). A `412` precondition failure surfaces as a
-  `Conflict`; the next `Engine::sync_calendar` reconciles the new revision.
+  `CalDavProvider::event_href` mints the conventional `<collection>/<uid>.ics` resource href
+  for a create (percent-encoding the `UID` as one path segment) from the draft's `UID`; a
+  patch/delete reuses the stored `EventId`. A draft naming a calendar other than the bound
+  collection is **refused**, not silently written to the bound one — `rebind` first.
+- **The new `ETag` is read back where the server supplies it.** A successful PUT returns the
+  resource's new entity tag in the `ETag` response header (RFC 4791 §5.3.4), surfaced on the
+  receipt as `revisions`; when the server omits it the receipt carries an empty
+  `RevisionTokens` and the next `sync-collection` delta refreshes `event.revisions`. No
+  automatic follow-up `GET` is issued. Both harness servers **do** supply it, and the live
+  suite drives the create → patch → delete chain with the delete guarded by the **receipt's**
+  `ETag`, never a refetched one — so "write, keep the receipt, write again" is a proven path,
+  not an assumption. That matters more than it looks: until the next sync the **store still
+  holds the pre-write revision** (issue #65), so a host that re-read the guard from there
+  would `412` on a write that should have succeeded.
+- **Writes are outbox-mediated** (`store-and-sync.md` Write Contract). The thin drivers
+  `engine_sync::create_calendar_event`/`patch_calendar_event`/`delete_calendar_event` (plus
+  `put_calendar_document` for the RSVP path) mirror `submit_mail`: a durable `PendingOp` is
+  recorded **before** the side effect, claimed under a fenced `OpLease`, and resolved
+  `Succeeded`/`Failed` under that lease. The op is serialized on the event's **`UID`** — the
+  cross-system identity, which exists before a create has an id and survives a transport that
+  assigns its own — so writes to one event never race on either provider. The payload is the
+  **intent** (the `EventEdit`), not the document it produced: a conflict recovery re-applies
+  it to a *freshly fetched* base, where re-sending the rendered bytes would revert somebody
+  else's edit with a write the server happily accepts. The **idempotency key is a
+  caller-supplied argument**, not derived from the event: the store dedups enqueue by
+  `(account, idempotency_key)` across *every* op state (including terminal), so an
+  event-only key would wrongly collapse two distinct edits of one resource into one op.
+- **Exposed on the host facade.** `Engine::create_calendar_event` /
+  `Engine::patch_calendar_event` / `Engine::delete_calendar_event` (`engine-api.md`) wrap
+  these drivers, mirroring `Engine::submit_mail`/`Engine::edit_mail`. A host states the event
+  or the edit and drives the write through the facade alone (the neutral write types are
+  re-exported from `engine-api`); nothing CalDAV-shaped reaches it. A `412` precondition
+  failure surfaces as a `Conflict`; the next `Engine::sync_calendar` reconciles the new
+  revision.
 
 ## iMIP scheduling
 
@@ -289,10 +314,13 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
   byte-for-byte, only the matching `ATTENDEE` line's `PARTSTAT` changes (an absent
   one is appended), and the rewritten line is re-folded to ≤75 octets (RFC 5545
   §3.1). The engine `ParticipationStatus` (lowercase JSCalendar spelling) is mapped
-  back to the uppercase iCalendar `PARTSTAT` token. The result feeds
-  `EventWrite::update`/`If-Match` through the existing
-  `engine_sync::write_calendar_event` outbox driver — **no new write verb or outbox
-  op**. On a CalDAV auto-schedule server (RFC 6638) the changed `PARTSTAT` is what
+  back to the uppercase iCalendar `PARTSTAT` token. The result is a finished **document**,
+  not a property patch, so it feeds `EventWrite::replacing` (guarded by the revision the
+  event was read at) through the `engine_sync::put_calendar_document` outbox driver — **no
+  new write verb or outbox op**. This is the *only* caller of the whole-document verb, and
+  the reason it exists beside the neutral patch spine at all; a transport whose update verb
+  is already a patch (JMAP) has no such verb, which is why JMAP RSVP stays deferred until
+  the neutral patch can carry a participation status (`jmap.md`). On a CalDAV auto-schedule server (RFC 6638) the changed `PARTSTAT` is what
   the server turns into the iTIP `REPLY` to the organizer.
 
 ## Known limitations (documented, not bugs)
@@ -369,7 +397,7 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
   quoted params, bare-LF, an absent/added `PARTSTAT`, the round-trip preserving
   `X-`/`VALARM`, and the case-/scheme-insensitive match), and an **end-to-end RSVP
   flow** in `provider_tests.rs` drives parse → `reconcile` (trusted) → `set_my_partstat`
-  → `EventWrite::update` → `engine_sync::write_calendar_event` into a real
+  → `EventWrite::replacing` → `engine_sync::put_calendar_document` into a real
   `SqliteStore` over the fake executor (asserting the `If-Match` `PUT` carries my
   accepted `PARTSTAT` and no transit-only `METHOD`), plus the security case that a
   parsed `REQUEST` whose `ORGANIZER` mismatches the authenticated sender is rejected,

@@ -287,6 +287,51 @@ impl Provider for JmapProvider {
         .await?)
     }
 
+    /// One `CalendarEvent/set` `create`. The **server** assigns the id, so the receipt is
+    /// the only place the caller learns it (`crate::calendar_write`).
+    async fn create_event(
+        &self,
+        _account: &AccountId,
+        draft: &engine_provider::EventDraft,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        let account = self.calendar_account()?;
+        Ok(crate::calendar_write::create_event(self.executor.as_ref(), &account, draft).await?)
+    }
+
+    /// One `CalendarEvent/set` `update`, whose PatchObject the **server** merges — so there
+    /// is no document surgery on this transport, and no JSCalendar serializer to keep in
+    /// step with the parser (`crate::calendar_write`).
+    async fn patch_event(
+        &self,
+        _account: &AccountId,
+        base: &Event,
+        edit: &engine_provider::EventEdit,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        let account = self.calendar_account()?;
+        Ok(
+            crate::calendar_write::patch_event(self.executor.as_ref(), &account, base, edit)
+                .await?,
+        )
+    }
+
+    /// One `CalendarEvent/set` `destroy`. An already-gone event is a success, so a retried
+    /// delete resolves cleanly (`crate::calendar_write`).
+    async fn delete_event(
+        &self,
+        _account: &AccountId,
+        deletion: &engine_provider::EventDeletion,
+    ) -> ProviderResult<()> {
+        let account = self.calendar_account()?;
+        Ok(crate::calendar_write::delete_event(self.executor.as_ref(), &account, deletion).await?)
+    }
+
+    // `put_event` is deliberately **not** implemented: replacing a whole stored document is
+    // the verb of a document-oriented transport, and JMAP has none — a JSCalendar object is
+    // not a file the client owns the bytes of, and `/set` `update` is already a patch. It
+    // stays at the trait's rejecting default even though this adapter advertises
+    // `calendar_writes`, because that capability covers the neutral create/patch/delete
+    // spine, not the escape hatch (`engine_provider::EventWrite`).
+
     async fn edit_mail(
         &self,
         _account: &AccountId,
@@ -338,3 +383,7 @@ mod tests;
 #[cfg(test)]
 #[path = "provider_write_tests.rs"]
 mod write_tests;
+
+#[cfg(test)]
+#[path = "calendar_write_tests.rs"]
+mod calendar_write_tests;

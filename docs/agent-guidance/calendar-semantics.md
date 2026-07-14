@@ -137,9 +137,9 @@ implemented**; the precise deferrals are listed at the end of this section.
   consistent with the Write Contract. **Implemented:**
   `provider_caldav::imip::set_my_partstat` patches *my* `PARTSTAT` into a stored
   event's raw iCalendar (round-trip from raw plus a targeted edit — every other
-  property survives verbatim), producing the body for an
-  `EventWrite::update`/`If-Match` driven by the existing
-  `engine_sync::write_calendar_event` outbox driver. On a CalDAV auto-schedule
+  property survives verbatim), producing the body for an `EventWrite::replacing` driven by
+  the `engine_sync::put_calendar_document` outbox driver — the whole-document verb, which an
+  RSVP wants because it *is* a finished document rather than a property patch. On a CalDAV auto-schedule
   server (RFC 6638) this both stores my `PARTSTAT` and lets the server deliver the
   iTIP `REPLY` to the organizer, so no separate delivery step is needed. Building
   and **delivering** a standalone iTIP `REPLY` over **client** iMIP (SMTP) is
@@ -185,40 +185,63 @@ offline-tested end to end.
   the round-tripped `RawIcal`, locked by a test that an updated event's `X-`
   property and `VALARM` survive on the wire (`caldav.md`).
 
-## Editing an event: the structural patcher
+## Editing an event: the targeted patch
 
-The targeted patch the rule above demands is **implemented**:
-`provider_caldav::patch_event_ical` (`ical::patch`). Take the stored `RawIcal`, change
-only the properties the user changed, leave every other byte alone. Read `caldav.md` →
-"CalDAV writes" for the API and the two writers; this section fixes the *semantics*.
+The targeted patch the rule above demands is **implemented on both calendar transports**,
+and they implement it in opposite ways — which is exactly why the engine models the *intent*
+and not the surgery. A host states an `EventPatch` (what changed) and a `PatchTarget` (on
+which occurrence), both in `engine-provider`, and the adapter does the rest:
 
-- **Never rebuild a document to update it.** `build_event_ical` emits six properties. An
-  update that goes through it deletes the recurrence rule, the attendees, the location,
-  the alarms and the timezone from the user's calendar, and reports success while doing
-  it. This is the single most destructive thing the calendar layer can do, which is why
-  the create and update paths are different functions with different inputs.
-- **Which `VEVENT` an edit lands on is the user's decision, not a default.** A drag on
+- **CalDAV** has no partial write: `PUT` replaces the whole resource, so the **client** must
+  do the surgery. `provider_caldav`'s structural patcher takes the stored `RawIcal`, changes
+  only the properties the user changed, and leaves every other byte alone — the original
+  folding, the line terminators, the properties it has never heard of. All of RFC 5545 line
+  folding, `DTEND`-vs-`DURATION` exclusion and `SEQUENCE` bookkeeping lives there.
+- **JMAP** `CalendarEvent/set` `update` *is* a patch (a JSON-pointer PatchObject), so the
+  **server** does the surgery. There is no JSCalendar serializer in `provider-jmap`, and none
+  should be added. Verified live, not assumed: an `update` of `title` alone leaves the zone,
+  the duration and the recurrence untouched (`jmap.md`).
+
+Read `caldav.md` → "CalDAV writes" and `jmap.md` → "Calendar writes" for the two renderings;
+this section fixes the *semantics* they share.
+
+- **Never rebuild a document to update it.** A create-path serializer emits only the handful
+  of properties it knows about. An update that went through one would delete the recurrence
+  rule, the attendees, the location, the alarms and the timezone from the user's calendar,
+  and report success while doing it. This is the single most destructive thing the calendar
+  layer can do, which is why create and update are **different verbs with different inputs**
+  — and why the CalDAV patch path refuses outright if it has no stored raw to patch, rather
+  than falling back to rebuilding.
+- **Which occurrence an edit lands on is the user's decision, not a default.** A drag on
   Tuesday's standup is either a move of *that occurrence* or of *every Monday from now
   to eternity*. `PatchTarget` therefore has no default:
-  - `Series` patches the master `VEVENT` — every occurrence moves.
-  - `Instance(recurrence_id)` patches the `RECURRENCE-ID` override for one occurrence,
-    **splitting a fresh one out of the master** if the series has never been overridden
-    there: the master's `VEVENT` is copied (attendees, alarms, `X-` props and all), its
-    series-level `RRULE`/`RDATE`/`EXDATE` are dropped (RFC 5545 §3.8.5 — an override
-    describes one instance), a `RECURRENCE-ID` naming the occurrence's *original* start
-    is added, and the patch lands on the copy. The master is untouched.
+  - `Series` edits the series itself — every occurrence moves. (iCalendar: the master
+    `VEVENT`. JSCalendar: the top-level object, leaving `recurrenceOverrides` alone.)
+  - `Instance(recurrence_id)` edits one occurrence, named by its **original** start — its
+    identity within the series, not where it is being moved to. (iCalendar: the
+    `RECURRENCE-ID` override `VEVENT`. JSCalendar: the `recurrenceOverrides` entry keyed by
+    that start, RFC 8984 §4.3.3.) The recurrence id must be in the series' own time form: a
+    zoned series is not overridden by "the same moment" expressed in UTC — that keys an
+    override the series has no instance at, a silent no-op.
 
   A host that does not ask the user which one it meant will eventually rewrite someone's
   weekly standup for all time.
-- **Splitting a new override requires the occurrence's own start *and* end.** The copy
-  inherits the master's `DTSTART`/`DTEND`, which are the **first** occurrence's times,
-  not the one being edited. Deriving this occurrence's times means expanding the
-  recurrence rule, which `provider-caldav` does not do (that is `engine-recurrence`), so
-  the caller — which is looking at the occurrence, and holds its start and end from
-  `scope_occurrences` — must state them; pass them unchanged when the edit is not a
-  move. Left to guess, the override claims the series' opening slot: it once produced an
-  override running from 26 Jan 14:00 to 5 Jan 10:00, a negative duration that the reader
-  then silently discarded as malformed — so the user's move simply vanished.
+- **Materializing an override the series does not have yet is *not* uniform, and the neutral
+  type must not pretend it is.** CalDAV has to do it by hand: copy the master's `VEVENT`
+  (attendees, alarms, `X-` props and all), drop its series-level `RRULE`/`RDATE`/`EXDATE`
+  (RFC 5545 §3.8.5 — an override describes one instance), splice in a `RECURRENCE-ID`, and
+  land the patch on the copy. That copy inherits the master's `DTSTART`/`DTEND`, which are
+  the **first** occurrence's times, so a CalDAV split additionally **requires the
+  occurrence's own start *and* end** on the patch — deriving them would mean expanding the
+  recurrence rule, which `provider-caldav` does not do (that is `engine-recurrence`). Pass
+  them unchanged when the edit is not a move. Left to guess, the override claims the series'
+  opening slot: it once produced an override running from 26 Jan 14:00 to 5 Jan 10:00, a
+  negative duration the reader then silently discarded as malformed — so the user's move
+  simply vanished.
+
+  A **JMAP** server materializes the override itself from a `recurrenceOverrides/<start>/…`
+  pointer and needs neither. So this is a CalDAV *requirement*, documented on
+  `PatchTarget::Instance` as one — not a promise the neutral contract makes.
 - **A move must not silently convert the value's form.** The new `DTSTART`/`DTEND` must
   be zoned in the same zone / floating / all-day as the value it replaces, or the patch
   is an `Err`. Resolving a zoned event to an instant and writing back UTC moves it for

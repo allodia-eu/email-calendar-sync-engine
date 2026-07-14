@@ -41,8 +41,11 @@ mod watch;
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
-pub use calendar_write::{EventDeletion, EventWrite, EventWriteReceipt, WritePrecondition};
-pub use capability::Capabilities;
+pub use calendar_write::{
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, EventWriteReceipt, PatchTarget,
+    TextEdit,
+};
+pub use capability::{Capabilities, WriteGuard};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 #[cfg(feature = "http")]
 pub use connection::ObservedHttpVersion;
@@ -371,23 +374,88 @@ pub trait Provider: Send + Sync {
         ))
     }
 
-    /// Creates or replaces a calendar object resource (CalDAV `PUT`).
+    /// Creates a new event from an [`EventDraft`].
     ///
-    /// Providers advertising [`Capabilities::calendar_writes`] override this; the
-    /// default rejects, so a capability-checking caller never relies on it. The
-    /// write is outbox-mediated by the caller (a durable pending op precedes this
-    /// side effect); this method performs only the provider call. The body is the
-    /// round-tripped [`RawIcal`](engine_core::raw::RawIcal), never a re-serialized
-    /// projection (`calendar-semantics.md`); optimistic concurrency rides on the
-    /// [`WritePrecondition`].
+    /// The adapter serializes the draft in its own protocol — a document a CalDAV server
+    /// stores, a JSCalendar object a JMAP server assigns an id to. The receipt names the
+    /// [`EventId`](engine_core::ids::EventId) the create **resolved to**, which is the only
+    /// place a server-assigning transport reveals it.
+    ///
+    /// Providers advertising [`Capabilities::calendar_writes`] override this; the default
+    /// rejects, so a capability-checking caller never relies on it. Outbox-mediated by the
+    /// caller (a durable pending op precedes this side effect); this method performs only
+    /// the provider call.
     ///
     /// # Errors
     ///
-    /// Returns a classified [`ProviderError`]. A precondition failure
-    /// (`If-Match`/`If-None-Match`) is
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict) —
-    /// refetch and merge before retrying; the default returns
+    /// Returns a classified [`ProviderError`]. An event already existing at the target is a
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict); the default
+    /// returns
     /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn create_event(
+        &self,
+        account: &AccountId,
+        draft: &EventDraft,
+    ) -> ProviderResult<EventWriteReceipt> {
+        let _ = (account, draft);
+        Err(ProviderError::invalid_state(
+            "provider does not support calendar writes",
+        ))
+    }
+
+    /// Applies an [`EventEdit`] to an already-stored event.
+    ///
+    /// `base` is the event **as the caller read it**, and it is load-bearing twice over: it
+    /// carries the provider-native payload the patch is applied to (so an update never
+    /// re-serializes the lossy projection — `calendar-semantics.md`), and the revision the
+    /// write is guarded by, so a stale edit is refused rather than clobbering a newer one.
+    /// Where the surgery happens differs by transport and is the adapter's business: CalDAV
+    /// rewrites the stored `RawIcal` itself and `PUT`s it back, while JMAP hands the patch
+    /// to a server whose update verb is already a patch.
+    ///
+    /// Whether the guard is actually enforced is **not** universal — see
+    /// [`Capabilities::calendar_write_guard`].
+    ///
+    /// Providers advertising [`Capabilities::calendar_writes`] override this; the default
+    /// rejects. Outbox-mediated by the caller, like [`create_event`](Provider::create_event).
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]. A guard failure — the server copy moved on —
+    /// is [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict): refetch,
+    /// re-apply the edit to the fresh base, resubmit; **never** blind-retry. A patch that
+    /// would change the event's time *form* (silently converting a zoned event to a UTC
+    /// instant, or an all-day event to a timed one) is rejected, not converted. The default
+    /// returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn patch_event(
+        &self,
+        account: &AccountId,
+        base: &Event,
+        edit: &EventEdit,
+    ) -> ProviderResult<EventWriteReceipt> {
+        let _ = (account, base, edit);
+        Err(ProviderError::invalid_state(
+            "provider does not support calendar writes",
+        ))
+    }
+
+    /// Replaces an event's whole stored document (CalDAV `PUT`).
+    ///
+    /// **Not** the neutral edit verb — [`patch_event`](Provider::patch_event) is. Only a
+    /// document-oriented transport has this, and only an operation naturally expressed as a
+    /// finished document should use it (today: the iMIP RSVP primitive). An adapter whose
+    /// update verb is already a patch leaves this at the rejecting default *even though it
+    /// advertises [`Capabilities::calendar_writes`]* — the capability covers the neutral
+    /// spine, not this.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]. A guard failure is
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict); an adapter
+    /// with no document verb returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState), as
+    /// does the default.
     async fn put_event(
         &self,
         account: &AccountId,
@@ -395,21 +463,22 @@ pub trait Provider: Send + Sync {
     ) -> ProviderResult<EventWriteReceipt> {
         let _ = (account, write);
         Err(ProviderError::invalid_state(
-            "provider does not support calendar writes",
+            "provider does not support whole-document calendar writes",
         ))
     }
 
-    /// Deletes a calendar object resource (CalDAV `DELETE`), optionally guarded by
-    /// an `If-Match` ETag.
+    /// Deletes an event, guarded by the revision the caller read.
     ///
-    /// Providers advertising [`Capabilities::calendar_writes`] override this; the
-    /// default rejects. Outbox-mediated by the caller, like [`Provider::put_event`].
+    /// Providers advertising [`Capabilities::calendar_writes`] override this; the default
+    /// rejects. Outbox-mediated by the caller, like [`create_event`](Provider::create_event).
+    /// An event that is **already gone** is a success, not an error: the delete is
+    /// idempotent, so a retry of one that already landed resolves cleanly.
     ///
     /// # Errors
     ///
-    /// Returns a classified [`ProviderError`]; an `If-Match` failure is
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict), and
-    /// the default returns
+    /// Returns a classified [`ProviderError`]; a guard failure is
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict), and the
+    /// default returns
     /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
     async fn delete_event(
         &self,

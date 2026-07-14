@@ -185,8 +185,84 @@ specifics they implement against the Stalwart fixture. Read it before touching
   (Stalwart emits a **singular** `recurrenceRule`; the plural array is also
   accepted) with overrides, participants, locations, and virtual locations. The
   original JSCalendar payload is preserved as `RawJsCalendar` beside the lossy
-  projection. JMAP calendar **writes / RSVP are deferred** (`north-star.md` treats
-  JMAP Calendars as the less-deployed transport; CalDAV is step 5).
+  projection.
+- **Calendar writes (`CalendarEvent/set`).** The three neutral write verbs
+  (`providers.md`) fold onto one `CalendarEvent/set` (`crate::calendar_write`):
+  `create_event` → a `create` of a JSCalendar object under a fixed creation id, whose
+  **server-assigned** id comes back in `created` and is the only place the caller can learn
+  it; `patch_event` → an `update` PatchObject; `delete_event` → a `destroy`. The
+  `calendar_writes` capability is advertised whenever the account exposes calendars and is
+  not `isReadOnly`, exactly as `mail_writes` is.
+  - **The server does the surgery, so this adapter has no serializer.** JMAP's `update` *is*
+    a patch — a JSON-pointer PatchObject (RFC 8620 §5.3) the server merges into the stored
+    object. Verified live, not assumed (`tests/live_calendar_write.rs::partial_update_is_merged_by_the_server`):
+    an `update` of `title` alone leaves `uid`, `start`, `timeZone`, `duration` and the rest
+    untouched. So there is **no JSCalendar serializer and no document patcher here**, and
+    none should be added: the "round-trip from raw plus targeted patches" invariant
+    (`calendar-semantics.md`) is satisfied by the *server*. This is the mirror image of
+    CalDAV, whose `PUT` replaces the whole resource and therefore forces the client to do
+    fold-aware content-line surgery over the stored `RawIcal` — which is exactly why
+    `patch_event_ical` stays in `provider-caldav` while only the *intent*
+    (`EventPatch`/`PatchTarget`) is neutral.
+  - **Time model on the way out.** `start` is the wall clock (`LocalDateTime`, no offset)
+    and the zone is a separate `timeZone`, so a move rewrites `start` and **never**
+    `timeZone` — writing the UTC instant instead would move the event for every reader in
+    another zone and re-time the series at the next DST boundary. A form change is
+    *rejected*, not converted (`CalendarDateTime::has_same_form`). All-day is
+    `showWithoutTime: true` with a null zone; JSCalendar has no end, so an end edit is
+    re-derived as a `duration` from the start the event will have.
+  - **One occurrence** is `recurrenceOverrides/<original start>/…` (RFC 8984 §4.3.3) — the
+    server materializes the override from the series itself, so `PatchTarget::Instance`
+    needs none of the start/end CalDAV requires to split a `RECURRENCE-ID` `VEVENT` by hand.
+  - **Locations are a map, not a scalar.** JSCalendar `locations` is `Id[Location]`, so
+    renaming "the location" patches `locations/<its id>/name` — keeping that location's
+    coordinates and any others. The id lives *only* in the preserved `RawJsCalendar`, which
+    is what the read path's raw is for on the write side.
+  - **A destroy of an already-gone event is success**, not a `notFound` error: the desired
+    end state holds, which is what makes an outbox retry of a delete whose response was lost
+    safe (the same contract CalDAV gets from treating `404`/`410` as success).
+  - **`updated: {id: null}` is an acknowledgement**, and a target the server mentions in
+    *neither* the applied nor the failed map is a synthetic `notFound` conflict — never a
+    silent success. (Both hard-won on the `Email/set` path; see **Mail writes**.)
+  - There is **no whole-document write verb**: a JSCalendar object is not a file whose bytes
+    the client owns, so `Provider::put_event` stays unimplemented here even though the
+    adapter advertises `calendar_writes` — that capability covers the neutral spine, not the
+    document escape hatch that exists for CalDAV's iMIP RSVP primitive.
+- **There is no lost-update guard on JMAP calendar writes, and the engine says so.**
+  `Capabilities::calendar_write_guard()` returns `WriteGuard::Absent` (CalDAV returns
+  `Enforced`), so a host reads the truth **before** it writes rather than inferring optimistic
+  concurrency that is not there. Two independent reasons, both established rather than
+  assumed:
+  1. **A `CalendarEvent` carries no per-object revision.** No `ETag`, no `changeKey` —
+     `RevisionTokens` is empty for every JMAP object by construction. There is nothing to
+     name *this* event's version with.
+  2. **`ifInState` is the wrong instrument, not merely a broken one.** RFC 8620 §5.3 scopes
+     it to the account's whole `CalendarEvent` **type state**, not to the object. On a
+     *spec-compliant* server, guarding an edit of one event with it means the write is
+     rejected because somebody added an **unrelated** meeting since our last sync — a
+     spurious failure, not lost-update protection. And its value would have to be the sync
+     cursor, which is a property of the sync, not of the event being written.
+
+  On top of that, **Stalwart does not enforce it at all**: v0.16.11–v0.16.13 parse `ifInState`
+  and never compare it (a stale-state `/set` is applied and returns a fresh `newState`, where
+  RFC 8620 §5.3 requires a `stateMismatch`; a *malformed* state string still `400`s, so it is
+  parsed, just never checked). It is an omission at the call site, not a missing feature —
+  `calendar_event/copy.rs` calls the `assert_state` helper and `calendar_event/set.rs` does
+  not. An upstream bug, so we cannot rely on it being absent either.
+
+  **So we send no `ifInState`.** It would buy nothing on the server we run against and cause
+  spurious rejections on one that behaved. Instead the absence of the guard is *asserted live*
+  (`a_stale_edit_is_not_refused`): a write built on a superseded copy lands, and the concurrent
+  edit is silently lost. If Stalwart ever starts enforcing, **that test fails** and the
+  capability must change — the claim is pinned to observed behaviour, not to a reading of the
+  spec. A host that must not lose a concurrent edit has to detect it above the engine. The one
+  thing that must not happen is a neutral write API that *looks* like it gives optimistic
+  concurrency on every provider when here it gives none.
+- **RSVP is still deferred for JMAP.** `participants/<id>/participationStatus` is the obvious
+  mapping, but the neutral `EventPatch` carries no participation status yet (CalDAV's RSVP
+  goes through `imip::set_my_partstat` + the whole-document verb, which JMAP does not have),
+  and "which participant am I" is a neutral concept the model does not state. It needs
+  designing, not guessing.
 
 ## Known limitations (documented, not bugs)
 
@@ -195,11 +271,18 @@ specifics they implement against the Stalwart fixture. Read it before touching
   message (`fetch_message_source`, above) and cached by the store thereafter.
   Eager/durable raw-MIME storage *at sync time* is still a later store sub-step.
   Calendar raw (`RawJsCalendar`) *is* preserved (it is a serde field on the object).
-- **JMAP calendar writes / RSVP are deferred.** Event `edit_mail`-style writes
-  (`CalendarEvent/set` + participant RSVP) are not implemented for JMAP: the
-  `north-star.md` treats JMAP Calendars as the less-deployed transport and CalDAV
-  (step 5) is the deployed calendar-write path (`provider-caldav`). JMAP calendar
-  sync stays **read-only**.
+- **JMAP calendar writes have no lost-update guard.** See the calendar-writes section
+  above: the transport cannot refuse a stale edit, so last-writer-wins is the real
+  semantics. This is reported honestly (`WriteGuard::Absent`) rather than papered over,
+  and it is a *documented property of the transport*, not a defect in the adapter.
+- **Participant RSVP is not implemented for JMAP.** The write spine (create/patch/destroy)
+  is; setting *my* `participationStatus` is not — see above for why it needs design rather
+  than a guess.
+- **A neutral `EventDraft` cannot state a recurrence rule.** Both adapters share this gap
+  (CalDAV's `build_event_ical` cannot either), so a recurring event can only be *created*
+  through the CalDAV whole-document verb today. Editing one already exists on both. It is
+  the obvious next extension of the draft, and the live `recurrence_override_edit` test
+  works around it by editing the seeded series and restoring it.
 - **Calendar events are still fetched whole**, not streamed: only email has a
   streaming primitive (`stream_email`) so far. Events have no natural recency sort and
   the seed fits one page; when streaming is wanted there, generalize `member_page` with
@@ -218,7 +301,18 @@ specifics they implement against the Stalwart fixture. Read it before touching
   short-page termination when the server omits `total`), the **`Email/set` mail-write
   flow** (keyword patch / `mailboxIds` move / `destroy`, each with its `SetError`
   classification), and the **blob-upload attachment path** (the fake serves `blobId`s
-  and records the upload URL/type/bytes). The **multipart body-structure** assembly is
+  and records the upload URL/type/bytes).
+  - **The fake records the requests it was sent** (`FakeExecutor::requests`/`sole_call`).
+    It replies with canned bytes *whatever* it receives, so on its own it cannot catch a
+    wrong request **shape** — a `CalendarEvent/set` with a bad JSON pointer or a malformed
+    JSCalendar object would sail through (`AGENTS.md`). Recording the exact
+    `{using, methodCalls}` envelope closes that gap for shape, and the
+    `CalendarEvent/set` tests (`calendar_write_tests.rs`) assert the produced JSON
+    *literally* — the create's object, the update's pointers, the
+    `recurrenceOverrides/<start>/…` prefix, the `null`-removes-a-property patch. What
+    offline still cannot prove is that a real server **accepts** it; that is the live suite,
+    and it is not optional for a write.
+  The **multipart body-structure** assembly is
   unit-tested directly (`submit_body`), and the **EventSource watcher** is driven over
   a **scripted `ChunkSource`** — SSE frame parsing (split chunks, CRLF, comments,
   multi-`data`), `StateChange` classification, watched-type filtering, and the
@@ -240,7 +334,22 @@ specifics they implement against the Stalwart fixture. Read it before touching
   the seed three at a time and checks incremental progress). The write tests operate
   on throwaway messages they clean up, so the shared seed the read tests assert on
   stays pristine. Reuses `crates/stalwart-harness`. The `stalwart` CI job runs them;
-  both files are excluded from the offline coverage metric, like the harness probes.
+  all live files are excluded from the offline coverage metric, like the harness probes.
+- **Live calendar writes** (`tests/live_calendar_write.rs`) mirror the CalDAV write suite,
+  and two of the four carry the load:
+  - `partial_update_is_merged_by_the_server` — the **premise of the adapter**. If the server
+    replaced instead of merging, retitling an event would silently wipe its zone, duration
+    and recurrence, and *no offline test could see it*, because on this transport we hold no
+    document to compare against.
+  - `a_stale_edit_is_not_refused` — asserts the **absence** of the lost-update guard, so
+    `WriteGuard::Absent` is a measured fact rather than a claim. **If this test ever fails,
+    that is good news and a required change**: the server started refusing stale writes, and
+    `session.rs` must stop advertising `Absent`.
+  - `round_trip` (create → patch → destroy, plus the idempotent re-destroy) and
+    `recurrence_override_edit` (is a `recurrenceOverrides/<start>/…` pointer accepted?) cover
+    the wire shapes. The recurrence test edits the **seeded** series — the only recurring
+    event available, since a neutral draft cannot yet state a rule — and restores it before
+    returning, so the seed the read tests assert on is left exactly as found.
 - **Fuzzing:** `fuzz/` is a separate cargo-fuzz workspace (`cargo +nightly fuzz
   run jmap_parse`) driving `provider_jmap::fuzz_parse` (behind the `fuzzing`
   feature) over the JSON parse + normalize pipeline.

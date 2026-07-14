@@ -14,8 +14,9 @@ use engine_core::{
 };
 
 use crate::{
-    ConnectionInfo, Draft, EmailStream, EventDeletion, EventWrite, EventWriteReceipt, MailEdit,
-    MailEditReceipt, Provider, ProviderResult, ScopeSync, SubmissionReceipt,
+    ConnectionInfo, Draft, EmailStream, EventDeletion, EventDraft, EventEdit, EventWrite,
+    EventWriteReceipt, MailEdit, MailEditReceipt, Provider, ProviderResult, ScopeSync,
+    SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -122,6 +123,23 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         (**self).sync_events(account, cursor).await
+    }
+
+    async fn create_event(
+        &self,
+        account: &AccountId,
+        draft: &EventDraft,
+    ) -> ProviderResult<EventWriteReceipt> {
+        (**self).create_event(account, draft).await
+    }
+
+    async fn patch_event(
+        &self,
+        account: &AccountId,
+        base: &Event,
+        edit: &EventEdit,
+    ) -> ProviderResult<EventWriteReceipt> {
+        (**self).patch_event(account, base, edit).await
     }
 
     async fn put_event(

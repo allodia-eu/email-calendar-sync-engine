@@ -363,11 +363,22 @@ returning a `PruneReport { messages_removed }` (`engine-store`).
 
 Pending ops are durable before any side effect and are claimed with the same
 fencing discipline as scopes. The thin inline drivers built on this are
-`engine_sync::{submit_mail, write_calendar_event, delete_calendar_event, edit_mail}`
-— the last applies a `MailEdit` (mark-read/flag, move, or permanent delete) and
-serializes on the target message key (`mail:{key}`), recording a plain classified
-`Failed` on error (no `NeedsConfirmation`: a mail edit is not post-`DATA`-ambiguous
-like an SMTP send, and a stale-target `Conflict` self-corrects after a re-sync).
+`engine_sync::{submit_mail, edit_mail, create_calendar_event, patch_calendar_event,
+delete_calendar_event, put_calendar_document}`. `edit_mail` applies a `MailEdit`
+(mark-read/flag, move, or permanent delete) and serializes on the target message key
+(`mail:{key}`), recording a plain classified `Failed` on error (no `NeedsConfirmation`: a
+mail edit is not post-`DATA`-ambiguous like an SMTP send, and a stale-target `Conflict`
+self-corrects after a re-sync). The calendar drivers do the same, and serialize on the
+event's **`UID`** (`event:{uid}`) — the cross-system identity, which exists *before* a
+create has a provider id and survives a transport that assigns its own (JMAP), so writes to
+one event never race on either provider.
+
+- **The payload is the intent, not the rendered bytes.** A calendar patch stores the
+  `EventEdit` — which occurrence, and what changed — never the document it produced. That is
+  what makes a `Conflict` recoverable: the retry re-applies the edit to a **freshly fetched**
+  base. Re-sending bytes built from the copy the server has moved past would silently revert
+  somebody else's edit with a write the server happily accepts. (The drainer that will do
+  that recovery is issue #60; today a `Conflict` is recorded and surfaced to the caller.)
 
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the

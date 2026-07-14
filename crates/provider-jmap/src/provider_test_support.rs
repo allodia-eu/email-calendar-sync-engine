@@ -4,8 +4,18 @@
 //! server responses) with no socket, so the orchestration is exercised offline;
 //! the free functions build providers and load fixtures for the sibling test
 //! modules.
+//!
+//! It replies the same canned bytes **whatever it is sent**, so on its own it cannot catch
+//! a malformed request — a `CalendarEvent/set` with the wrong method name or a bad patch
+//! pointer would sail through (`AGENTS.md`). So it also **records every request** it was
+//! given ([`FakeExecutor::requests`]), letting a test assert the exact wire envelope it
+//! produced. That closes the gap for request *shape*; whether the server accepts it is what
+//! the live Stalwart suite proves.
 
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use reqwest::Url;
 use serde_json::{Value, json};
@@ -20,6 +30,10 @@ use crate::session::SessionUrlPolicy;
 pub(crate) struct FakeExecutor {
     session: Session,
     responses: Mutex<VecDeque<Response>>,
+    /// Every request the fake was handed, as the exact `{using, methodCalls}` JSON that
+    /// would have gone on the wire — the only way an offline test can check a request
+    /// *shape*, since the canned response is served regardless.
+    pub(crate) requests: Mutex<Vec<Value>>,
     download_body: Option<Vec<u8>>,
     pub(crate) download_urls: Mutex<Vec<String>>,
     /// Canned `blobId`s returned by successive `upload` calls (FIFO); records the
@@ -60,11 +74,34 @@ impl FakeExecutor {
         Self {
             session,
             responses: Mutex::new(parsed),
+            requests: Mutex::new(Vec::new()),
             download_body: None,
             download_urls: Mutex::new(Vec::new()),
             upload_blob_ids: Mutex::new(VecDeque::new()),
             uploads: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The single method call the fake was sent: `(using, method, arguments)`.
+    ///
+    /// Panics unless exactly one request carrying exactly one call was made — which is the
+    /// contract every `*/set` write in this crate holds to.
+    pub(crate) fn sole_call(&self) -> (Vec<String>, String, Value) {
+        let requests = self.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "expected exactly one request");
+        let using = requests[0]["using"]
+            .as_array()
+            .expect("using")
+            .iter()
+            .map(|u| u.as_str().expect("urn").to_owned())
+            .collect();
+        let calls = requests[0]["methodCalls"].as_array().expect("methodCalls");
+        assert_eq!(calls.len(), 1, "expected exactly one method call");
+        (
+            using,
+            calls[0][0].as_str().expect("method").to_owned(),
+            calls[0][1].clone(),
+        )
     }
 
     /// Serves `body` as the blob-download response for `fetch_message_source`.
@@ -85,7 +122,10 @@ impl FakeExecutor {
 
 #[async_trait]
 impl Executor for FakeExecutor {
-    async fn execute(&self, _request: &Request) -> Result<Response, JmapError> {
+    async fn execute(&self, request: &Request) -> Result<Response, JmapError> {
+        // Record the exact envelope before serving the canned reply: the reply does not
+        // depend on it, so this is the only offline evidence of what we actually sent.
+        self.requests.lock().unwrap().push(request.to_json());
         self.responses
             .lock()
             .unwrap()
@@ -119,6 +159,34 @@ impl Executor for FakeExecutor {
 
 pub(crate) fn provider(responses: Vec<Value>) -> JmapProvider {
     JmapProvider::with_executor(Box::new(FakeExecutor::new(responses)))
+}
+
+/// A provider over a fake the caller **keeps a handle to**, so a test can assert the
+/// requests it produced — the only way to check a request shape offline, since the canned
+/// response is served regardless of what was sent.
+pub(crate) fn recording(responses: Vec<Value>) -> (JmapProvider, Arc<FakeExecutor>) {
+    let exec = Arc::new(FakeExecutor::new(responses));
+    (JmapProvider::with_executor(Box::new(exec.clone())), exec)
+}
+
+/// Lets a test hold the fake (to read its recordings) while the provider owns it too.
+#[async_trait]
+impl Executor for Arc<FakeExecutor> {
+    async fn execute(&self, request: &Request) -> Result<Response, JmapError> {
+        (**self).execute(request).await
+    }
+
+    async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError> {
+        (**self).download(url).await
+    }
+
+    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError> {
+        (**self).upload(url, media_type, bytes).await
+    }
+
+    fn session(&self) -> &Session {
+        (**self).session()
+    }
 }
 
 pub(crate) fn fixture(name: &str) -> Value {

@@ -173,12 +173,7 @@ impl Provider for BareProvider {
 
 #[tokio::test]
 async fn box_dyn_provider_delegates_overrides_and_defaults() {
-    use engine_core::{
-        error::FailureClass,
-        ids::{EventId, MessageIdHeader, Uid},
-        mail::EmailAddress,
-        raw::RawIcal,
-    };
+    use engine_core::{error::FailureClass, ids::MessageIdHeader, mail::EmailAddress};
     use futures_util::StreamExt;
 
     let email_scope = SyncScope::JmapType {
@@ -269,27 +264,79 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
             .class(),
         FailureClass::InvalidState
     );
-    let href = EventId::try_from("/cal/e.ics").unwrap();
-    let write = crate::EventWrite::create(
-        href.clone(),
+    for class in calendar_write_rejections(&bare).await {
+        assert_eq!(class, FailureClass::InvalidState);
+    }
+}
+
+/// A stored event as a sync hands it back — the base every edit and delete is built from.
+fn stored_event() -> engine_core::calendar::Event {
+    use engine_core::{
+        ids::{CalendarId, EventId, ProviderKey, Uid},
+        time::{CalendarDateTime, LocalDateTime, TimeZoneId},
+    };
+
+    engine_core::calendar::Event::new(
+        EventId::try_from("/cal/e.ics").unwrap(),
         Uid::new("e@host").unwrap(),
-        RawIcal::new("BEGIN:VCALENDAR\r\nEND:VCALENDAR"),
+        Memberships::of_one(CalendarId::new(ProviderKey::new("/cal/").unwrap())),
+        CalendarDateTime::Zoned {
+            local: "2026-08-01T09:00:00".parse::<LocalDateTime>().unwrap(),
+            zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+        },
+    )
+}
+
+/// Drives every calendar write verb against `provider` and returns how each failed.
+async fn calendar_write_rejections<P: Provider>(
+    provider: &P,
+) -> Vec<engine_core::error::FailureClass> {
+    use engine_core::{
+        ids::{CalendarId, ProviderKey},
+        raw::RawIcal,
+    };
+
+    use crate::{EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, PatchTarget};
+
+    let base = stored_event();
+    let stamp = "2026-07-14T10:00:00Z".parse().unwrap();
+    let draft = EventDraft::new(
+        CalendarId::new(ProviderKey::new("/cal/").unwrap()),
+        base.uid.clone(),
+        "Standup",
+        base.start.clone(),
+        base.start.clone(),
+        stamp,
     );
-    assert_eq!(
-        bare.put_event(&account(), &write)
+    let edit = EventEdit::new(
+        &base,
+        PatchTarget::Series,
+        EventPatch::new(stamp).summary("Renamed"),
+    );
+    let write = EventWrite::replacing(&base, RawIcal::new("BEGIN:VCALENDAR\r\nEND:VCALENDAR"));
+
+    vec![
+        provider
+            .create_event(&account(), &draft)
             .await
             .unwrap_err()
             .class(),
-        FailureClass::InvalidState
-    );
-    let deletion = crate::EventDeletion::unconditional(href);
-    assert_eq!(
-        bare.delete_event(&account(), &deletion)
+        provider
+            .patch_event(&account(), &base, &edit)
             .await
             .unwrap_err()
             .class(),
-        FailureClass::InvalidState
-    );
+        provider
+            .put_event(&account(), &write)
+            .await
+            .unwrap_err()
+            .class(),
+        provider
+            .delete_event(&account(), &EventDeletion::of(&base))
+            .await
+            .unwrap_err()
+            .class(),
+    ]
 }
 
 #[tokio::test]
@@ -347,31 +394,25 @@ async fn message_source_default_to_unsupported() {
 
 #[tokio::test]
 async fn calendar_writes_default_to_unsupported() {
-    use engine_core::{
-        error::FailureClass,
-        ids::{EventId, Uid},
-        raw::RawIcal,
-    };
+    use engine_core::error::FailureClass;
 
-    let provider = FakeJmap {
+    // Every calendar write verb — the neutral create/patch/delete spine *and* the
+    // document-replace escape hatch — rejects on a provider that did not override it, so a
+    // capability-checking caller never depends on the default. A boxed adapter delegates to
+    // that same default through the blanket impl.
+    let direct = FakeJmap {
         info: ConnectionInfo::new(Capabilities::none().with_mail()),
     };
-    let href = EventId::try_from("/cal/evt-1.ics").unwrap();
-    let write = crate::EventWrite::create(
-        href.clone(),
-        Uid::new("evt-1@host").unwrap(),
-        RawIcal::new("BEGIN:VCALENDAR\r\nEND:VCALENDAR"),
-    );
-    // A provider that did not override calendar writes rejects, so a
-    // capability-checking caller never depends on the default.
-    let err = provider.put_event(&account(), &write).await.unwrap_err();
-    assert_eq!(err.class(), FailureClass::InvalidState);
-    let deletion = crate::EventDeletion::unconditional(href);
-    let err = provider
-        .delete_event(&account(), &deletion)
+    let boxed: Box<dyn Provider> = Box::new(FakeJmap {
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
+    });
+    for class in calendar_write_rejections(&direct)
         .await
-        .unwrap_err();
-    assert_eq!(err.class(), FailureClass::InvalidState);
+        .into_iter()
+        .chain(calendar_write_rejections(&boxed).await)
+    {
+        assert_eq!(class, FailureClass::InvalidState);
+    }
 }
 
 #[tokio::test]

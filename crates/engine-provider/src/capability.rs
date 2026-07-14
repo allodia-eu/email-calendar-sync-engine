@@ -7,6 +7,36 @@
 //! capability URNs (`urn:ietf:params:jmap:mail` → [`Capabilities::mail`], etc.)
 //! and grows as protocol features are added.
 
+/// What a transport can promise about the **lost-update guard** on a calendar write.
+///
+/// Every calendar write in this crate names the revision the caller read, so the
+/// server can refuse an edit built on a copy that has since moved on. Whether the
+/// server actually refuses is *not* universal, and a caller that assumes it is will
+/// silently clobber a concurrent edit. So the promise is a post-connect fact a host
+/// reads off [`Capabilities::calendar_write_guard`] **before** it writes, not a
+/// property the write API implies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteGuard {
+    /// A write whose guard names a superseded revision is **rejected**, so a stale
+    /// edit can never overwrite a newer one.
+    ///
+    /// CalDAV: the event's `ETag` rides an `If-Match` and a stale one is a `412`
+    /// (RFC 7232, RFC 4791 §5.3.2) — proven live against both harness servers.
+    Enforced,
+    /// The transport offers **no enforceable per-object precondition**: a stale edit
+    /// silently wins, and last-writer-wins is the real semantics. A host that needs
+    /// to detect a concurrent edit on such a transport must do so above the engine.
+    ///
+    /// JMAP: a `CalendarEvent` carries no revision token at all
+    /// ([`RevisionTokens::is_empty`](engine_core::version::RevisionTokens::is_empty)),
+    /// and the only precondition RFC 8620 §5.3 offers — `ifInState` — is scoped to
+    /// the account's whole `CalendarEvent` state rather than to the object, so it
+    /// rejects on *unrelated* concurrent changes instead of on a lost update. On top
+    /// of that, Stalwart v0.16 parses `ifInState` and never compares it, applying the
+    /// write regardless (`jmap.md`).
+    Absent,
+}
+
 /// The data domains a provider supports.
 ///
 /// Built with a `with_*` chain from [`Capabilities::none`] so each flag is set by
@@ -17,6 +47,11 @@
 /// let caps = Capabilities::none().with_mail().with_submission();
 /// assert!(caps.mail() && caps.submission() && !caps.calendars());
 /// ```
+///
+/// Calendar writes are the one capability that is not a plain flag: an adapter states
+/// *how strong* its lost-update guard is ([`WriteGuard`]), because "can write" and
+/// "can refuse a stale write" are different promises and only one of them is
+/// universal.
 // These are independent capability flags (a small fixed bitset), not the state of
 // a state machine, so the excessive-bools heuristic's "use a state machine"
 // suggestion does not apply; each flag is queried by name on its own.
@@ -32,7 +67,10 @@ pub struct Capabilities {
     submission: bool,
     idle: bool,
     calendars: bool,
-    calendar_writes: bool,
+    /// `None` when the adapter cannot write calendars at all; otherwise the strength
+    /// of the guard it can promise. One field rather than two, so "guarded but not
+    /// writable" is unrepresentable.
+    calendar_writes: Option<WriteGuard>,
 }
 
 impl Capabilities {
@@ -46,7 +84,7 @@ impl Capabilities {
             submission: false,
             idle: false,
             calendars: false,
-            calendar_writes: false,
+            calendar_writes: None,
         }
     }
 
@@ -110,15 +148,17 @@ impl Capabilities {
         self
     }
 
-    /// Marks calendar **writes** (create/update/delete event resources) as
-    /// supported. Distinct from [`with_calendars`](Self::with_calendars), the read
-    /// capability — a calendar the account can read but not write (a shared
-    /// read-only CalDAV collection, or a calendar-read-only adapter) advertises
-    /// [`calendars`](Self::calendars) without this, exactly as a mail adapter with
-    /// no SMTP advertises [`mail`](Self::mail) without [`submission`](Self::submission).
+    /// Marks calendar **writes** (create/patch/delete events) as supported, stating
+    /// how strong a lost-update [`WriteGuard`] the transport can promise.
+    ///
+    /// Distinct from [`with_calendars`](Self::with_calendars), the read capability — a
+    /// calendar the account can read but not write (a shared read-only CalDAV
+    /// collection, or a calendar-read-only adapter) advertises
+    /// [`calendars`](Self::calendars) without this, exactly as a mail adapter with no
+    /// SMTP advertises [`mail`](Self::mail) without [`submission`](Self::submission).
     #[must_use]
-    pub const fn with_calendar_writes(mut self) -> Self {
-        self.calendar_writes = true;
+    pub const fn with_calendar_writes(mut self, guard: WriteGuard) -> Self {
+        self.calendar_writes = Some(guard);
         self
     }
 
@@ -159,10 +199,20 @@ impl Capabilities {
         self.calendars
     }
 
-    /// Whether calendar writes (create/update/delete event resources) are
-    /// supported.
+    /// Whether calendar writes (create/patch/delete events) are supported at all.
     #[must_use]
     pub const fn calendar_writes(self) -> bool {
+        self.calendar_writes.is_some()
+    }
+
+    /// How strong a lost-update guard this transport can promise on a calendar write,
+    /// or `None` if it cannot write calendars.
+    ///
+    /// Read this **before** writing. [`WriteGuard::Absent`] means a stale edit silently
+    /// wins, so "the write succeeded" does not imply "nobody else's edit was lost" — a
+    /// host that must not lose a concurrent edit has to detect it itself.
+    #[must_use]
+    pub const fn calendar_write_guard(self) -> Option<WriteGuard> {
         self.calendar_writes
     }
 }
@@ -191,10 +241,33 @@ mod tests {
             .with_submission()
             .with_idle()
             .with_calendars()
-            .with_calendar_writes();
+            .with_calendar_writes(WriteGuard::Enforced);
         assert!(caps.mail() && caps.mail_writes() && caps.submission());
         assert!(caps.message_source() && caps.idle());
         assert!(caps.calendars() && caps.calendar_writes());
+        assert_eq!(caps.calendar_write_guard(), Some(WriteGuard::Enforced));
+    }
+
+    #[test]
+    fn a_writable_calendar_states_how_strong_its_guard_is() {
+        // "Can write" and "can refuse a stale write" are different promises, and a caller
+        // that conflates them silently clobbers concurrent edits on the transports where
+        // only the first holds. So the write capability *is* the guard strength — a
+        // writable-but-unguarded adapter (JMAP) is representable and says so.
+        let caldav = Capabilities::none()
+            .with_calendars()
+            .with_calendar_writes(WriteGuard::Enforced);
+        let jmap = Capabilities::none()
+            .with_calendars()
+            .with_calendar_writes(WriteGuard::Absent);
+
+        assert!(caldav.calendar_writes() && jmap.calendar_writes());
+        assert_eq!(caldav.calendar_write_guard(), Some(WriteGuard::Enforced));
+        assert_eq!(jmap.calendar_write_guard(), Some(WriteGuard::Absent));
+
+        // And a read-only calendar has no guard to report, because it has no write.
+        let read_only = Capabilities::none().with_calendars();
+        assert_eq!(read_only.calendar_write_guard(), None);
     }
 
     #[test]

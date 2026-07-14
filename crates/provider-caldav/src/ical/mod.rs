@@ -22,7 +22,8 @@ mod recurrence;
 mod unfold;
 mod value;
 
-pub use build::build_event_ical;
+// Likewise the create-path serializer: it is how CalDAV renders the neutral `EventDraft`.
+pub(crate) use build::build_event_ical;
 use component::{Component, parse_components};
 use engine_core::{
     calendar::Event,
@@ -36,7 +37,10 @@ use event::{event_from_vevent, vevent_uid};
 // line, leave every other byte alone", shared by the structural patcher and the `imip`
 // RSVP primitive.
 pub(crate) use lines::{Document, Edit, Edits};
-pub use patch::{EventPatch, PatchTarget, patch_event_ical};
+// The structural patcher is now an *implementation detail* of `Provider::patch_event`: a
+// host states the neutral `EventPatch`/`PatchTarget` intent (`engine-provider`) and never
+// reaches for the iCalendar surgery itself.
+pub(crate) use patch::patch_event_ical;
 use recurrence::fold_override;
 // The quote-aware splitters are the crate's canonical iCalendar tokenizing
 // primitives; the `imip` RSVP patcher reuses them rather than re-implementing.
@@ -57,7 +61,7 @@ use crate::error::CalDavError;
 ///
 /// Returns [`CalDavError::Ical`] if the resource has no `VEVENT`, or the master
 /// `VEVENT` is missing a `UID`/`DTSTART` or carries an unparseable value.
-pub fn parse_calendar_object(
+pub(crate) fn parse_calendar_object(
     text: &str,
     id: EventId,
     calendar: CalendarId,

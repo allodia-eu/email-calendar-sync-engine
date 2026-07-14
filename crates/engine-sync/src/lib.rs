@@ -437,8 +437,8 @@ pub use body::{fetch_inline_parts, fetch_message_body};
 pub use horizon::{HorizonExpansion, UnexpandableEvent, expand_calendar_horizon};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
-    CalendarWriteOutcome, MailEditOutcome, SubmitOutcome, delete_calendar_event, edit_mail,
-    submit_mail, write_calendar_event,
+    CalendarWriteOutcome, MailEditOutcome, SubmitOutcome, create_calendar_event,
+    delete_calendar_event, edit_mail, patch_calendar_event, put_calendar_document, submit_mail,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::{StreamTuning, sync_email_streamed, sync_mail_streamed};

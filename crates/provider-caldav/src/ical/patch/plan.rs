@@ -5,6 +5,7 @@
 //! requires of a revised event (`DTSTAMP`, `LAST-MODIFIED`, `SEQUENCE`).
 
 use engine_core::time::CalendarDateTime;
+use engine_provider::{EventPatch, TextEdit};
 
 use super::{
     super::{
@@ -12,7 +13,6 @@ use super::{
         lines::{Document, Edits, LineEdit},
         unfold::split_once_unquoted,
     },
-    EventPatch, TextEdit,
     vevent::{Vevent, property_name},
 };
 use crate::error::CalDavError;
@@ -37,15 +37,18 @@ pub(super) fn plan(
         .ok_or_else(|| CalDavError::ical("event has no DTSTART"))?;
     // Check the start's form before anything downstream reads it: an end validated
     // against a start that is itself illegal reports the wrong property.
-    if let Some(start) = &patch.start {
+    if let Some(start) = patch.start_edit() {
         ensure_same_form(&current_start, start, "DTSTART")?;
     }
-    let effective_start = patch.start.clone().unwrap_or(current_start.clone());
+    let effective_start = patch
+        .start_edit()
+        .cloned()
+        .unwrap_or_else(|| current_start.clone());
 
     // The end the event will have afterwards: the new one, else the one it already has.
     // Validating against *that* catches the caller who moves the start past the existing
     // end without resizing — an inversion neither line is individually wrong about.
-    let effective_end = match &patch.end {
+    let effective_end = match patch.end_edit() {
         Some(end) => Some(end.clone()),
         None => vevent.date_time(doc, "DTEND").transpose()?,
     };
@@ -62,39 +65,40 @@ pub(super) fn plan(
         })?;
     }
 
-    if let Some(start) = &patch.start {
+    if let Some(start) = patch.start_edit() {
         let group = vevent
             .property(doc, "DTSTART")
             .ok_or_else(|| CalDavError::ical("event has no DTSTART"))?;
         replace(edits, group, date_time_line("DTSTART", start));
     }
-    if let Some(end) = &patch.end {
+    if let Some(end) = patch.end_edit() {
         set_end(doc, vevent, edits, end);
     }
-    if let Some(summary) = &patch.summary {
+    if let Some(summary) = patch.summary_edit() {
         set_text(
             doc,
             vevent,
             edits,
             "SUMMARY",
-            &TextEdit::Set(summary.clone()),
+            &TextEdit::Set(summary.to_owned()),
         );
     }
-    if let Some(description) = &patch.description {
+    if let Some(description) = patch.description_edit() {
         set_text(doc, vevent, edits, "DESCRIPTION", description);
     }
-    if let Some(location) = &patch.location {
+    if let Some(location) = patch.location_edit() {
         set_text(doc, vevent, edits, "LOCATION", location);
     }
 
     // A revised instance carries a fresh DTSTAMP (RFC 5545 §3.8.7.2), and a
     // LAST-MODIFIED that would otherwise be a lie — but only if the event kept one.
-    set_or_insert(doc, vevent, edits, "DTSTAMP", &format_utc(patch.stamp));
+    // CalDAV is a client-stamped transport: the caller's stamp is what lands.
+    set_or_insert(doc, vevent, edits, "DTSTAMP", &format_utc(patch.stamp()));
     if let Some(group) = vevent.property(doc, "LAST-MODIFIED") {
         replace(
             edits,
             group,
-            format!("LAST-MODIFIED:{}", format_utc(patch.stamp)),
+            format!("LAST-MODIFIED:{}", format_utc(patch.stamp())),
         );
     }
     if patch.is_significant() {
@@ -170,45 +174,22 @@ fn bump_sequence(doc: &Document, vevent: &Vevent, edits: &mut Edits) {
     );
 }
 
-/// Rejects a new `DTSTART`/`DTEND` whose value *form* differs from the event's.
-///
-/// A drag on the grid moves an event; it must never also convert it. Rendering a
-/// `Europe/Amsterdam` event as UTC shifts it for every other reader, and rendering an
-/// all-day event as a timed one turns a day into an instant — both are silent data
-/// corruption that a "successful save" hides. So the caller must supply the new value in
-/// the event's own form (it has it: the projection preserves the zone and the all-day
-/// flag), and a mismatch is an error rather than a conversion.
+/// Rejects a new `DTSTART`/`DTEND` whose value *form* differs from the event's — the
+/// iCalendar half of [`CalendarDateTime::has_same_form`], which states the rule and why it
+/// is universal.
 pub(super) fn ensure_same_form(
     current: &CalendarDateTime,
     new: &CalendarDateTime,
     name: &str,
 ) -> Result<(), CalDavError> {
-    let same = match (current, new) {
-        (CalendarDateTime::Date(_), CalendarDateTime::Date(_))
-        | (CalendarDateTime::Floating(_), CalendarDateTime::Floating(_)) => true,
-        (
-            CalendarDateTime::Zoned { zone: current, .. },
-            CalendarDateTime::Zoned { zone: new, .. },
-        ) => current == new,
-        _ => false,
-    };
-    if same {
+    if current.has_same_form(new) {
         return Ok(());
     }
     Err(CalDavError::ical(format!(
         "{name} would change the event's time form ({}), which a move must never do \
          silently; supply the new value in the event's own form",
-        describe_form(current),
+        current.form_name(),
     )))
-}
-
-/// Names a value's form for an error message.
-fn describe_form(value: &CalendarDateTime) -> String {
-    match value {
-        CalendarDateTime::Date(_) => "all-day".to_owned(),
-        CalendarDateTime::Floating(_) => "floating".to_owned(),
-        CalendarDateTime::Zoned { zone, .. } => format!("zoned in {}", zone.as_str()),
-    }
 }
 
 /// Queues a replacement for one logical line, leaving anything already spliced in

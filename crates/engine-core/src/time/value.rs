@@ -93,6 +93,42 @@ impl CalendarDateTime {
         }
     }
 
+    /// Whether `other` is the same **form** as this value: the same all-day / floating /
+    /// zoned kind, and for a zoned value the same zone.
+    ///
+    /// This is the predicate behind a rule every calendar protocol needs and none of them
+    /// states: **a move must never silently convert an event.** Re-expressing a
+    /// `Europe/Amsterdam` event as the UTC instant it happens to denote today shifts it for
+    /// every reader in another zone, and re-times the whole series the next time the zone
+    /// crosses a DST boundary; re-expressing an all-day event as a timed one turns a day
+    /// into an instant. Both are silent corruption that a "successful save" hides. So an
+    /// adapter applying a caller's new start or end checks this first and **rejects** a
+    /// mismatch rather than converting — the caller has the event's own form (the
+    /// projection preserves the zone and the all-day flag) and must supply the new value in
+    /// it.
+    ///
+    /// It lives here, not in an adapter, because the two implementers of it (iCalendar's
+    /// `DTSTART;TZID=` and JSCalendar's `start` + `timeZone`) would otherwise drift.
+    #[must_use]
+    pub fn has_same_form(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Date(_), Self::Date(_)) | (Self::Floating(_), Self::Floating(_)) => true,
+            (Self::Zoned { zone: this, .. }, Self::Zoned { zone: other, .. }) => this == other,
+            _ => false,
+        }
+    }
+
+    /// Names this value's form, for the error message an adapter raises when
+    /// [`has_same_form`](Self::has_same_form) fails.
+    #[must_use]
+    pub fn form_name(&self) -> String {
+        match self {
+            Self::Date(_) => "all-day".to_owned(),
+            Self::Floating(_) => "floating".to_owned(),
+            Self::Zoned { zone, .. } => format!("zoned in {}", zone.as_str()),
+        }
+    }
+
     /// The [`Duration`] from this start to `end`, the way iCalendar derives an
     /// event length from `DTSTART`/`DTEND` (RFC 5545 §3.6.1).
     ///

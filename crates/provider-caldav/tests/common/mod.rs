@@ -95,7 +95,7 @@ fn server_etag(event: &Event) -> ETag {
 async fn pre_clean(provider: &CalDavProvider, account: &AccountId, uid: &Uid) {
     let href = provider.event_href(uid).expect("mint event href");
     let _ = provider
-        .delete_event(account, &EventDeletion::unconditional(href))
+        .delete_event(account, &EventDeletion::unconditional(href, uid.clone()))
         .await;
 }
 

@@ -16,11 +16,13 @@
 //!
 //! Layers (mirroring `provider-jmap`'s `Executor` seam so the whole protocol is
 //! offline-testable by replaying captured transcripts):
-//! - [`ical`] — the iCalendar parser: text → normalized [`Event`](engine_core::calendar::Event)s,
+//! - `ical` — the iCalendar parser: text → normalized [`Event`](engine_core::calendar::Event)s,
 //!   folding a resource's master + `RECURRENCE-ID` override `VEVENT`s into one event; plus the two
-//!   writers — [`build_event_ical`] (create) and [`patch_event_ical`] (update), the structural
-//!   patcher that edits a stored resource *in place* so an edit cannot delete the properties the
-//!   projection does not model.
+//!   writers — `build_event_ical` (how CalDAV serializes a neutral `EventDraft`) and
+//!   `patch_event_ical` (how it applies a neutral `EventPatch`), the structural patcher that edits
+//!   a stored resource *in place* so an edit cannot delete the properties the projection does not
+//!   model. Both are **internal**: a host states intent through the neutral write verbs
+//!   (`engine_provider::EventDraft`/`EventEdit`) and never assembles iCalendar itself.
 //! - `dav` — the WebDAV `multistatus` XML parser.
 //! - `transport` — the HTTP `DavExecutor` seam (read reports + writes) + its `reqwest`
 //!   implementation.
@@ -30,14 +32,16 @@
 //! - [`imip`] — iMIP (iTIP over email, RFC 6047): parsing an inbound `text/calendar` scheduling
 //!   message into an [`engine_core::scheduling::SchedulingMessage`], and the RSVP write primitive
 //!   that patches my `PARTSTAT` into a stored event's raw for a conditional `PUT` back
-//!   (`calendar-semantics.md`).
+//!   (`calendar-semantics.md`). This is the one caller of the whole-document write verb
+//!   ([`EventWrite`](engine_provider::EventWrite)), because an RSVP is naturally a finished
+//!   document rather than a property patch.
 //! - `provider` — the [`Provider`](engine_provider::Provider) implementation.
 
 mod calendar;
 mod dav;
 mod discovery;
 mod error;
-pub mod ical;
+mod ical;
 pub mod imip;
 mod provider;
 mod request;
@@ -48,7 +52,6 @@ mod transport;
 mod write;
 
 pub use error::CalDavError;
-pub use ical::{EventPatch, PatchTarget, build_event_ical, patch_event_ical};
 pub use provider::{CalDavConfig, CalDavProvider};
 pub use transport::Credentials;
 

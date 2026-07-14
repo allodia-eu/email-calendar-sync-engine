@@ -32,6 +32,7 @@
 //!   (`docs/agent-guidance/jmap.md`).
 
 mod calendar;
+mod calendar_write;
 mod error;
 mod fetch;
 mod json;
