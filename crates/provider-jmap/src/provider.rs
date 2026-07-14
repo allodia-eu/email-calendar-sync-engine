@@ -385,5 +385,13 @@ mod tests;
 mod write_tests;
 
 #[cfg(test)]
+#[path = "calendar_write_support.rs"]
+mod calendar_write_support;
+
+#[cfg(test)]
 #[path = "calendar_write_tests.rs"]
 mod calendar_write_tests;
+
+#[cfg(test)]
+#[path = "calendar_patch_tests.rs"]
+mod calendar_patch_tests;
