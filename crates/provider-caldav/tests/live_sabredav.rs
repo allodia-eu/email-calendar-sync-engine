@@ -16,7 +16,7 @@ use core::time::Duration;
 use engine_core::{
     calendar::Event,
     ids::{AccountId, ProviderKey},
-    sync::SyncScope,
+    sync::{SyncScope, SyncUpdate},
     time::TimeZoneId,
 };
 use engine_provider::Provider;
@@ -164,17 +164,112 @@ async fn sabredav_calendar_sync_loop() {
     );
 }
 
+/// Connects to the SabreDAV harness, or `None` to skip (offline gate).
+async fn write_provider(test: &str) -> Option<(CalDavProvider, AccountId)> {
+    let Some((addr, user, pass)) = harness() else {
+        eprintln!("skipping {test}: SABREDAV_HTTP_ADDR unset");
+        return None;
+    };
+    let provider = connect(&addr, &user, &pass).await;
+    Some((
+        provider,
+        AccountId::try_from("sabredav-write-live").unwrap(),
+    ))
+}
+
 /// The same write lifecycle as `live_caldav.rs`, against the independent SabreDAV
 /// server — proving conditional `PUT`/`DELETE` are not over-fit to Stalwart. Skips
 /// with no `SABREDAV_HTTP_ADDR`.
 #[tokio::test]
 async fn sabredav_write_round_trip() {
-    let Some((addr, user, pass)) = harness() else {
-        eprintln!("skipping sabredav_write_round_trip: SABREDAV_HTTP_ADDR unset");
+    let Some((provider, account)) = write_provider("sabredav_write_round_trip").await else {
         return;
     };
     let _serial = common::serial_guard().await;
-    let provider = connect(&addr, &user, &pass).await;
-    let account = AccountId::try_from("sabredav-write-live").unwrap();
-    common::write_round_trip(&provider, &account).await;
+    common::write::round_trip(&provider, &account).await;
+}
+
+/// The preservation claim, against the server that stores iCalendar **verbatim**.
+/// Stalwart reserializes, so it can only show that no *content* was lost; SabreDAV keeps
+/// the bytes, so here the patched document must come back exactly as the patcher wrote
+/// it — the strictest form of the claim, and the one a byte-preserving server is
+/// uniquely able to make.
+#[tokio::test]
+async fn sabredav_patched_update_preserves_the_document() {
+    let Some((provider, account)) =
+        write_provider("sabredav_patched_update_preserves_the_document").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::write::patched_update_preserves_the_document(&provider, &account).await;
+}
+
+/// SabreDAV's own `412`, and the same `Conflict` classification — the precondition is
+/// not a Stalwart quirk.
+#[tokio::test]
+async fn sabredav_stale_if_match_is_a_conflict() {
+    let Some((provider, account)) = write_provider("sabredav_stale_if_match_is_a_conflict").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::write::stale_if_match_is_a_conflict(&provider, &account).await;
+}
+
+/// SabreDAV likewise accepts a master + `RECURRENCE-ID` override in one resource.
+#[tokio::test]
+async fn sabredav_instance_override_split_is_accepted() {
+    let Some((provider, account)) =
+        write_provider("sabredav_instance_override_split_is_accepted").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::write::instance_override_split_is_accepted(&provider, &account).await;
+}
+
+/// The read-only half of the privilege pair (#61), which **only SabreDAV can prove**:
+/// its seed gives Alice a calendar Bob owns and shares with her read-only, so one
+/// `PROPFIND` of one calendar home returns two collections with two different answers to
+/// "what may I do here". Stalwart's harness account owns everything it can see.
+///
+/// Before `DAV:current-user-privilege-set` was requested, *both* came back `may_write`,
+/// and a host gating an edit button on that was told "yes, you may" about a collection
+/// whose `PUT` is a `403`.
+#[tokio::test]
+async fn sabredav_reports_a_read_only_share_as_unwritable() {
+    let Some((provider, account)) =
+        write_provider("sabredav_reports_a_read_only_share_as_unwritable").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+
+    let synced = provider
+        .sync_calendars(&account, None)
+        .await
+        .expect("sync_calendars");
+    let calendars = match synced.update {
+        SyncUpdate::Snapshot { objects, .. } => objects,
+        SyncUpdate::Delta { changed, .. } => changed,
+    };
+    let by_href = |suffix: &str| {
+        calendars
+            .iter()
+            .find(|calendar| calendar.id.as_str().ends_with(suffix))
+            .unwrap_or_else(|| panic!("a collection at {suffix} is listed"))
+    };
+
+    // Alice's own calendar: SabreDAV grants her DAV:write.
+    assert!(by_href("/default/").access.may_write);
+
+    // Bob's, shared read-only: she gets `read` and `write-properties` but no `write` —
+    // so no event may be written into it, and the engine must not claim otherwise.
+    let shared = by_href("/bob-readonly/");
+    assert!(
+        !shared.access.may_write,
+        "a read-only share must not report may_write"
+    );
+    assert!(shared.access.may_read, "she can still read it");
 }

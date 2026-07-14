@@ -63,6 +63,11 @@ pub(crate) struct Props {
     /// The local names of `<resourcetype>`'s child elements (e.g. `collection`,
     /// `calendar`).
     resourcetype: BTreeSet<String>,
+    /// The local names of the privileges inside `<current-user-privilege-set>` (e.g.
+    /// `read`, `write-content`), or `None` when the server did not report the property
+    /// at all. The distinction matters: an empty set means "you may do nothing here",
+    /// whereas `None` means "this server does not say".
+    privileges: Option<BTreeSet<String>>,
 }
 
 impl Props {
@@ -74,6 +79,12 @@ impl Props {
     /// Whether `<resourcetype>` marked this collection a CalDAV calendar.
     pub(crate) fn is_calendar(&self) -> bool {
         self.resourcetype.contains("calendar")
+    }
+
+    /// The reported `current-user-privilege-set` (RFC 3744 §5.4), or `None` when the
+    /// server did not report one.
+    pub(crate) fn privileges(&self) -> Option<&BTreeSet<String>> {
+        self.privileges.as_ref()
     }
 }
 
@@ -133,14 +144,18 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                     propstat = Some((None, Props::default()));
                 }
                 record_resourcetype_child(&path, &name, &mut propstat);
+                record_privilege(&path, &name, &mut propstat);
                 path.push(name);
                 text.clear();
             }
             Event::Empty(empty) => {
-                // Self-closing elements (e.g. `<D:collection/>`) never push state;
-                // only `<resourcetype>`'s children carry meaning here.
+                // Self-closing elements (e.g. `<D:collection/>`, `<D:write/>`) never
+                // push state; only `<resourcetype>`'s and `<privilege>`'s children
+                // carry meaning here — plus an empty `<current-user-privilege-set/>`,
+                // which is a server saying "no privileges", not "no answer".
                 let name = local_name(empty.name().as_ref());
                 record_resourcetype_child(&path, &name, &mut propstat);
+                record_privilege(&path, &name, &mut propstat);
             }
             Event::Text(bytes) => {
                 let decoded = bytes
@@ -258,6 +273,30 @@ fn record_resourcetype_child(
     }
 }
 
+/// Records the `current-user-privilege-set` (RFC 3744 §5.4) into the current propstat:
+/// the property's presence when the element itself opens, and each granted privilege
+/// when a `<privilege>`'s child element (`<D:write/>`, `<A:read-free-busy/>`, …) does.
+///
+/// Presence is tracked separately from content because "the server granted me nothing"
+/// and "the server did not answer" mean opposite things for a write affordance.
+fn record_privilege(path: &[String], name: &str, propstat: &mut Option<(Option<u16>, Props)>) {
+    let Some((_, props)) = propstat.as_mut() else {
+        return;
+    };
+    match path.last().map(String::as_str) {
+        Some("prop") if name == "current-user-privilege-set" => {
+            props.privileges.get_or_insert_with(BTreeSet::new);
+        }
+        Some("privilege") => {
+            props
+                .privileges
+                .get_or_insert_with(BTreeSet::new)
+                .insert(name.to_owned());
+        }
+        _ => {}
+    }
+}
+
 /// Merges a finished propstat's properties into the response, but only when its
 /// status was a success (RFC 4918 §14.22: a `404` propstat lists absent props).
 fn commit_propstat(
@@ -271,6 +310,13 @@ fn commit_propstat(
     if let (true, Some(response)) = (succeeded, response) {
         response.props.text.extend(props.text);
         response.props.resourcetype.extend(props.resourcetype);
+        if let Some(privileges) = props.privileges {
+            response
+                .props
+                .privileges
+                .get_or_insert_with(BTreeSet::new)
+                .extend(privileges);
+        }
     }
 }
 
@@ -291,136 +337,8 @@ fn parse_http_status(line: &str) -> Option<u16> {
         .filter(|code| (100..600).contains(code))
 }
 
+// The parser's tests outgrew this file once the privilege set joined it; they live in a
+// sibling so this one stays under the line limit.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_calendar_home_listing_skipping_404_props() {
-        let xml = include_str!("../tests/fixtures/calendar-home.xml");
-        let parsed = parse_multistatus(xml).unwrap();
-        // The home itself (a plain collection) plus the default calendar.
-        assert_eq!(parsed.responses.len(), 2);
-        let calendar = parsed
-            .responses
-            .iter()
-            .find(|r| r.props.is_calendar())
-            .expect("the default calendar is a CalDAV calendar");
-        assert_eq!(calendar.href(), "/dav/cal/alice%40test.local/default/");
-        assert_eq!(
-            calendar.props.get("displayname"),
-            Some("Stalwart Calendar (alice@test.local)")
-        );
-        // The CTag came back; the unsupported calendar-color was a 404 propstat
-        // and must not leak into the props.
-        assert_eq!(calendar.props.get("getctag"), Some("\"22\""));
-        assert_eq!(calendar.props.get("calendar-color"), None);
-        // The home href is a collection but not a calendar.
-        let home = parsed
-            .responses
-            .iter()
-            .find(|r| !r.props.is_calendar())
-            .unwrap();
-        assert!(!home.props.is_calendar());
-    }
-
-    #[test]
-    fn parses_principal_and_home_hrefs() {
-        let xml = include_str!("../tests/fixtures/principal.xml");
-        let parsed = parse_multistatus(xml).unwrap();
-        let response = &parsed.responses[0];
-        assert_eq!(
-            response.props.get("current-user-principal"),
-            Some("/dav/pal/alice%40test.local/")
-        );
-        assert_eq!(
-            response.props.get("calendar-home-set"),
-            Some("/dav/cal/alice%40test.local/")
-        );
-    }
-
-    #[test]
-    fn unescapes_entity_escaped_property_text() {
-        let xml = "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/cal/</D:href><D:propstat><D:prop><D:displayname>Alice &amp; Bob &lt;Team&gt;</D:displayname></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>";
-        let parsed = parse_multistatus(xml).unwrap();
-        assert_eq!(
-            parsed.responses[0].props.get("displayname"),
-            Some("Alice & Bob <Team>")
-        );
-    }
-
-    #[test]
-    fn parses_sync_collection_with_etags_and_cdata_calendar_data() {
-        let xml = include_str!("../tests/fixtures/sync-initial.xml");
-        let parsed = parse_multistatus(xml).unwrap();
-        assert_eq!(
-            parsed.sync_token.as_deref(),
-            Some("urn:stalwart:davsync:16")
-        );
-        // The collection self-response (no calendar-data) plus six resources.
-        let resources: Vec<_> = parsed
-            .responses
-            .iter()
-            .filter(|r| r.props.get("calendar-data").is_some())
-            .collect();
-        assert_eq!(resources.len(), 6);
-        let oneoff = resources
-            .iter()
-            .find(|r| r.href().ends_with("oneoff-2001.ics"))
-            .unwrap();
-        assert!(oneoff.props.get("getetag").is_some());
-        // The CDATA iCalendar survived intact.
-        let data = oneoff.props.get("calendar-data").unwrap();
-        assert!(data.contains("UID:oneoff-2001@test.local"));
-        assert!(data.contains("BEGIN:VEVENT"));
-    }
-
-    #[test]
-    fn parses_noop_delta_token_with_no_responses() {
-        let xml = include_str!("../tests/fixtures/sync-noop.xml");
-        let parsed = parse_multistatus(xml).unwrap();
-        assert!(parsed.responses.is_empty());
-        assert_eq!(
-            parsed.sync_token.as_deref(),
-            Some("urn:stalwart:davsync:16")
-        );
-    }
-
-    #[test]
-    fn recognizes_a_removal_response() {
-        // A sync-collection delta reports a deleted resource as a 404 response.
-        let xml = "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/cal/gone.ics</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response><D:sync-token>t2</D:sync-token></D:multistatus>";
-        let parsed = parse_multistatus(xml).unwrap();
-        assert_eq!(parsed.responses.len(), 1);
-        assert!(parsed.responses[0].is_removed());
-        assert_eq!(parsed.responses[0].href(), "/cal/gone.ics");
-    }
-
-    #[test]
-    fn captures_a_property_value_nested_below_a_single_href() {
-        // A server that wraps current-user-principal deeper than a direct <href>
-        // must still yield the href (else discovery fails to find the principal).
-        let xml = "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/</D:href><D:propstat><D:prop><D:current-user-principal><D:authenticated-as><D:href>/principals/u/</D:href></D:authenticated-as></D:current-user-principal></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>";
-        let parsed = parse_multistatus(xml).unwrap();
-        assert_eq!(
-            parsed.responses[0].props.get("current-user-principal"),
-            Some("/principals/u/")
-        );
-    }
-
-    #[test]
-    fn keeps_every_href_in_a_multi_href_response() {
-        // RFC 4918 §14.16: a status-only response may cover several hrefs; a
-        // multi-href removal must tombstone all of them, not just the first.
-        let xml = "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/a.ics</D:href><D:href>/b.ics</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response><D:sync-token>t2</D:sync-token></D:multistatus>";
-        let parsed = parse_multistatus(xml).unwrap();
-        assert!(parsed.responses[0].is_removed());
-        assert_eq!(parsed.responses[0].hrefs, vec!["/a.ics", "/b.ics"]);
-        assert_eq!(parsed.responses[0].href(), "/a.ics");
-    }
-
-    #[test]
-    fn malformed_xml_is_an_error_not_a_panic() {
-        assert!(parse_multistatus("<D:multistatus><unclosed>").is_err());
-    }
-}
+#[path = "dav_tests.rs"]
+mod tests;

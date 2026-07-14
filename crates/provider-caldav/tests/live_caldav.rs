@@ -19,7 +19,7 @@ use std::time::Duration as StdDuration;
 use engine_core::{
     calendar::Event,
     ids::{AccountId, ProviderKey},
-    sync::SyncScope,
+    sync::{SyncScope, SyncUpdate},
     time::TimeZoneId,
 };
 use engine_provider::Provider;
@@ -165,20 +165,15 @@ async fn caldav_calendar_sync_loop() {
     );
 }
 
-/// The full CalDAV write lifecycle against the real Stalwart: create → update
-/// (`If-Match`) → delete (`If-Match`), verified by re-reading the collection. Leaves
-/// the seed untouched. Skips with no `STALWART_HTTP_ADDR`.
-#[tokio::test]
-async fn caldav_write_round_trip() {
+/// Connects a provider to the live Stalwart harness, or `None` to skip (offline gate).
+async fn connect(test: &str) -> Option<(CalDavProvider, AccountId)> {
     let Some(harness) = Harness::from_env() else {
-        eprintln!("skipping caldav_write_round_trip: STALWART_HTTP_ADDR unset");
-        return;
+        eprintln!("skipping {test}: STALWART_HTTP_ADDR unset");
+        return None;
     };
-    let _serial = common::serial_guard().await;
     harness
         .wait_until_ready(StdDuration::from_secs(30))
         .expect("harness ready");
-
     let provider = CalDavProvider::connect(CalDavConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::Basic {
@@ -188,7 +183,86 @@ async fn caldav_write_round_trip() {
     ))
     .await
     .expect("connect + discover");
+    Some((provider, AccountId::try_from("caldav-write-live").unwrap()))
+}
 
-    let account = AccountId::try_from("caldav-write-live").unwrap();
-    common::write_round_trip(&provider, &account).await;
+/// The full CalDAV write lifecycle against the real Stalwart, driven off the `ETag`s the
+/// `PUT`s return. Leaves the seed untouched. Skips with no `STALWART_HTTP_ADDR`.
+#[tokio::test]
+async fn caldav_write_round_trip() {
+    let Some((provider, account)) = connect("caldav_write_round_trip").await else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::write::round_trip(&provider, &account).await;
+}
+
+/// The headline of #62: an edit made with the structural patcher (#58) survives the real
+/// server. Stalwart **reserializes** what it stores — it re-folds content lines and
+/// reorders `RRULE` parts — so this is the server that proves the preservation claim is
+/// about content, not bytes on the wire.
+#[tokio::test]
+async fn caldav_patched_update_preserves_the_document() {
+    let Some((provider, account)) = connect("caldav_patched_update_preserves_the_document").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::write::patched_update_preserves_the_document(&provider, &account).await;
+}
+
+/// A superseded `If-Match` really does come back `412` from Stalwart, and the adapter
+/// classes it `Conflict` — the input the outbox needs to refetch-and-merge instead of
+/// blindly retrying.
+#[tokio::test]
+async fn caldav_stale_if_match_is_a_conflict() {
+    let Some((provider, account)) = connect("caldav_stale_if_match_is_a_conflict").await else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::write::stale_if_match_is_a_conflict(&provider, &account).await;
+}
+
+/// Stalwart accepts a resource carrying a master **and** a `RECURRENCE-ID` override the
+/// patcher split out of it, and hands it back folded into one event.
+#[tokio::test]
+async fn caldav_instance_override_split_is_accepted() {
+    let Some((provider, account)) = connect("caldav_instance_override_split_is_accepted").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::write::instance_override_split_is_accepted(&provider, &account).await;
+}
+
+/// Stalwart reports `DAV:current-user-privilege-set` on Alice's own calendar, and it
+/// grants `DAV:write` — so the collection the write tests above target reports itself
+/// writable. The read-only half of this pair is SabreDAV's shared calendar
+/// (`live_sabredav.rs`); Stalwart's harness account owns everything it can see, so it
+/// cannot produce a collection it may not write.
+#[tokio::test]
+async fn caldav_reports_the_bound_calendar_as_writable() {
+    let Some((provider, account)) = connect("caldav_reports_the_bound_calendar_as_writable").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+
+    let calendars = provider
+        .sync_calendars(&account, None)
+        .await
+        .expect("sync_calendars");
+    let listed = match calendars.update {
+        SyncUpdate::Snapshot { objects, .. } => objects,
+        SyncUpdate::Delta { changed, .. } => changed,
+    };
+    let bound = listed
+        .iter()
+        .find(|calendar| calendar.id.as_str() == provider.collection_href())
+        .expect("the bound collection is listed");
+    assert!(
+        bound.access.may_write,
+        "Stalwart grants DAV:write on the account's own calendar"
+    );
+    assert!(bound.access.may_read);
 }

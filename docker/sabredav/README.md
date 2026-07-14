@@ -10,6 +10,18 @@ ways that exercise the client: the **two-step RFC 6764 discovery** (the
 seed as Stalwart, so one dataset validates both servers and the same assertions
 hold in [`provider-caldav`'s gated tests](../../crates/provider-caldav/tests/).
 
+Two things it proves that **Stalwart cannot** (see "Which server proves what" in
+[`caldav.md`](../../docs/agent-guidance/caldav.md)):
+
+- **A read-only calendar.** Its seed gives Alice a *second* collection — one Bob owns
+  and shares with her read-only — so a single `PROPFIND` of one calendar home returns
+  two collections with two different answers to "what may I do here"
+  (`DAV:current-user-privilege-set`, RFC 3744 §5.4). On the Stalwart harness Alice owns
+  every calendar she can see, so it can only ever show the writable answer.
+- **Byte-verbatim storage.** SabreDAV hands back the exact iCalendar it was given, where
+  Stalwart reserializes (re-folding lines, reordering `RRULE` parts). So the structural
+  patcher's preservation guarantee is provable here in its strictest form.
+
 It is **test infrastructure, not product code**: PHP + Composer + `sabre/dav` over
 a SQLite backend, served by the PHP built-in web server, seeded over CalDAV.
 
@@ -21,9 +33,9 @@ a SQLite backend, served by the PHP built-in web server, seeded over CalDAV.
 - `server.php` — a minimal CalDAV server: **HTTP Basic** auth against one throwaway
   account (the engine client uses Basic, not the stock PDO backend's Digest), the
   PDO principal/calendar backends, and a `/.well-known/caldav` redirect.
-- `entrypoint.sh` — initializes the SQLite DB from the schema, seeds one principal,
-  starts the server, seeds the calendar via CalDAV, writes a readiness marker, then
-  runs the server in the foreground.
+- `entrypoint.sh` — initializes the SQLite DB from the schema, seeds the two principals
+  (Alice, and Bob who owns the read-only share), starts the server, seeds the calendar
+  via CalDAV, writes a readiness marker, then runs the server in the foreground.
 - `seed.sh` — `MKCALENDAR` + `PUT` the shared `../stalwart/seed/calendar/*.ics`.
 - `docker-compose.yml` — the single service, health-gated on the post-seed marker.
 
@@ -54,7 +66,12 @@ Without `SABREDAV_HTTP_ADDR` set, the gated test **skips**, so the offline
 | HTTP (CalDAV) | `127.0.0.1:18081` (Stalwart uses 18080) |
 | Account     | `alice@test.local`                      |
 | Password    | `sabredav-alice-pw` (throwaway)         |
-| Calendar    | `/calendars/alice@test.local/default/`  |
+| Calendar    | `/calendars/alice@test.local/default/` — hers, writable |
+| Calendar    | `/calendars/alice@test.local/bob-readonly/` — Bob's, shared **read-only** |
+
+Only the writable `default` collection is seeded with events and is the one the
+provider binds by default; `bob-readonly` exists to be *listed*, so the privilege
+mapping has a collection that answers "no, you may not write here".
 
 The credentials are throwaway and committed on purpose — this server never holds
 real data. Do not wire it to a host trust store or real accounts.
