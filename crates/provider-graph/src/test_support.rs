@@ -21,38 +21,63 @@ pub(crate) fn tls() -> &'static TlsClientConfig {
     TLS.get_or_init(TlsClientConfig::bundled)
 }
 
-/// Returns the first routed fixture whose key is a substring of the requested URL.
+/// What a fake route answers with: a fixture body, or an HTTP status plus the Graph error
+/// envelope to fail with. The failing form exists so a recovery path can be driven offline —
+/// notably Graph answering `410 SyncStateNotFound` once a stored deltaLink has aged out.
+pub(crate) type FakeRoute = Result<Value, (u16, Value)>;
+
+/// Returns the first routed answer whose key is a substring of the requested URL.
 struct Fake {
-    routes: Vec<(String, Value)>,
+    routes: Vec<(String, FakeRoute)>,
+}
+
+impl Fake {
+    fn route(&self, url: &str) -> Result<&FakeRoute, GraphError> {
+        self.routes
+            .iter()
+            .find(|(key, _)| url.contains(key.as_str()))
+            .map(|(_, answer)| answer)
+            .ok_or_else(|| GraphError::protocol(format!("no fake route for {url}")))
+    }
 }
 
 #[async_trait]
 impl GraphTransport for Fake {
     async fn get(&self, url: &str) -> Result<Value, GraphError> {
-        self.routes
-            .iter()
-            .find(|(key, _)| url.contains(key.as_str()))
-            .map(|(_, doc)| doc.clone())
-            .ok_or_else(|| GraphError::protocol(format!("no fake route for {url}")))
+        match self.route(url)? {
+            Ok(doc) => Ok(doc.clone()),
+            Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
+        }
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {
         // A raw route carries its bytes as a JSON string (the `$value` MIME); anything
         // else is serialized back to JSON bytes so the seam stays uniform.
-        self.routes
-            .iter()
-            .find(|(key, _)| url.contains(key.as_str()))
-            .map(|(_, doc)| match doc {
-                Value::String(mime) => mime.clone().into_bytes(),
-                other => other.to_string().into_bytes(),
-            })
-            .ok_or_else(|| GraphError::protocol(format!("no fake route for {url}")))
+        match self.route(url)? {
+            Ok(Value::String(mime)) => Ok(mime.clone().into_bytes()),
+            Ok(other) => Ok(other.to_string().into_bytes()),
+            Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
+        }
     }
 }
 
 /// Builds a [`GraphClient`] backed by URL-substring → fixture routes.
 pub(crate) fn fake_client(routes: Vec<(&str, Value)>) -> GraphClient {
-    let routes = routes.into_iter().map(|(k, v)| (k.to_owned(), v)).collect();
+    fake_client_fallible(
+        routes
+            .into_iter()
+            .map(|(key, doc)| (key, Ok(doc)))
+            .collect(),
+    )
+}
+
+/// Builds a [`GraphClient`] whose routes may *fail* with an HTTP status, so an error-recovery
+/// path is drivable without a live server (see [`FakeRoute`]).
+pub(crate) fn fake_client_fallible(routes: Vec<(&str, FakeRoute)>) -> GraphClient {
+    let routes = routes
+        .into_iter()
+        .map(|(key, answer)| (key.to_owned(), answer))
+        .collect();
     GraphClient::with_transport(Box::new(Fake { routes }), "https://graph.test".to_owned())
 }
 
