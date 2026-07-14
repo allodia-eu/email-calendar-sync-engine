@@ -111,7 +111,7 @@ async fn a_failed_guard_is_recorded_without_a_blind_retry() {
     // A stale revision — a CalDAV `412`, a JMAP `stateMismatch` — is recorded Failed with a
     // Conflict class and returned. The caller re-syncs and re-applies the edit to the fresh
     // copy; the outbox never blind-retries a write whose base has moved.
-    let provider = FakeMail::new(vec![], vec![]).conflicting_writes();
+    let provider = FakeMail::new(vec![], vec![]).failing(Fault::WriteGuard);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let base = stored("/cal/default/evt-3.ics", "evt-3@test.local");
 
@@ -181,7 +181,7 @@ async fn delete_calendar_event_enqueues_then_deletes_and_records_success() {
 async fn a_failed_delete_is_recorded_too_not_just_a_failed_edit() {
     // The delete path records its own failure — a guarded delete whose revision the server
     // has superseded is a Conflict, and the durable op must say so rather than vanishing.
-    let provider = FakeMail::new(vec![], vec![]).conflicting_writes();
+    let provider = FakeMail::new(vec![], vec![]).failing(Fault::WriteGuard);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let base = stored("/cal/default/evt-8.ics", "evt-8@test.local");
 

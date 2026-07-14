@@ -2,9 +2,10 @@
 //!
 //! The methods are grouped across sibling modules to keep each file small:
 //! provider-driven sync and cache maintenance (`sync`), the read and search surface
-//! (`reads`), and the outbox-mediated writes (`writes`). This module holds the type
-//! itself, its lifecycle constructors, the shared per-domain scope helper, and the
-//! sync-error mapping every group reuses.
+//! (`reads`), the outbox-mediated mail writes (`writes`), and the calendar writes, which
+//! additionally reconcile the store to the server's copy (`calendar_writes`). This module
+//! holds the type itself, its lifecycle constructors, the shared per-domain scope helper,
+//! and the sync-error mapping every group reuses.
 
 use core::time::Duration;
 use std::path::Path;
@@ -19,9 +20,12 @@ use store_sqlite::SqliteStore;
 
 use crate::{ApiError, clock::SystemClock};
 
+mod calendar_writes;
 mod reads;
 mod sync;
 mod writes;
+
+pub use calendar_writes::{CalendarDelete, CalendarWrite, Reconciled};
 
 /// The worker identity this engine stamps on every lease it claims.
 ///

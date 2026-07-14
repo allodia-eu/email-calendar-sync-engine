@@ -153,9 +153,12 @@ async fn caldav_calendar_sync_loop() {
     )
     .await
     .expect("second sync_calendar");
-    assert_eq!(second.events.upserted, 0, "no event changes on a re-sync");
     assert_eq!(
-        second.events.tombstoned, 0,
+        second.events.applied.upserted, 0,
+        "no event changes on a re-sync"
+    );
+    assert_eq!(
+        second.events.applied.tombstoned, 0,
         "nothing tombstoned on a re-sync"
     );
     assert_eq!(
@@ -265,4 +268,16 @@ async fn caldav_reports_the_bound_calendar_as_writable() {
         "Stalwart grants DAV:write on the account's own calendar"
     );
     assert!(bound.access.may_read);
+}
+
+/// Read-your-writes (#65): a write reconciles the **store** to the server's copy, so a
+/// host can re-read what it wrote — and guard its next edit on the revision the server
+/// actually reported, instead of a `412` on the superseded one it wrote over.
+#[tokio::test]
+async fn caldav_write_reconciles_the_store() {
+    let Some((provider, account)) = connect("caldav_write_reconciles_the_store").await else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::reconcile::read_your_writes(&provider, &account).await;
 }

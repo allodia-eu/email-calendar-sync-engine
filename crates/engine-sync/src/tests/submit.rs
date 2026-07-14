@@ -32,7 +32,7 @@ async fn submit_mail_enqueues_then_sends_and_records_success() {
 
 #[tokio::test]
 async fn submit_mail_records_failure_without_blind_retry() {
-    let provider = FakeMail::new(vec![], vec![]).failing_submit();
+    let provider = FakeMail::new(vec![], vec![]).failing(Fault::Submit);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     let err = submit_mail(
@@ -70,7 +70,7 @@ async fn submit_mail_records_failure_without_blind_retry() {
 async fn submit_mail_parks_an_ambiguous_send_for_confirmation() {
     // A post-DATA ambiguity must be recorded NeedsConfirmation, not Failed — so the
     // outbox never blind-retries and risks a double-send (`providers.md`).
-    let provider = FakeMail::new(vec![], vec![]).ambiguous_submit();
+    let provider = FakeMail::new(vec![], vec![]).failing(Fault::AmbiguousSubmit);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     let err = submit_mail(

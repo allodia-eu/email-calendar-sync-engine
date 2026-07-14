@@ -38,7 +38,7 @@ async fn edit_mail_enqueues_then_applies_and_records_success() {
 async fn edit_mail_records_conflict_without_blind_retry() {
     // A stale target (UIDVALIDITY changed) is recorded Failed (class Conflict) and
     // returned — the caller re-syncs and recomputes; the outbox does not blind-retry.
-    let provider = FakeMail::new(vec![], vec![]).conflicting_writes();
+    let provider = FakeMail::new(vec![], vec![]).failing(Fault::WriteGuard);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     let err = edit_mail(
