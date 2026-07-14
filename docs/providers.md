@@ -251,6 +251,7 @@ Shared mailboxes can be accessed with `GraphClient::for_mailbox(token, MailboxPr
 
 - A `GraphProvider` is **bound to one folder** for email sync. The folder list syncs at the account level; cross-folder fan-out is the host's job.
 - Initial sync is a snapshot; subsequent syncs use the per-folder `deltaLink` cursor.
+- **A `deltaLink` expires.** Graph then answers `410 SyncStateNotFound`, and that cursor can never produce a delta again. The pass drops it and **restarts as a full snapshot**, so the folder re-enumerates and reconciles. Without that recovery the folder is wedged permanently: every pass replays the same dead cursor and no new mail is delivered again.
 - Changed delta entries that carry only partial properties are re-fetched so the engine always applies whole objects.
 
 ## TLS and trust policy
