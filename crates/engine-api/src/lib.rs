@@ -106,3 +106,40 @@ pub enum ApiError {
     #[error("scope is busy: another sync is in progress; retry shortly")]
     Busy,
 }
+
+impl ApiError {
+    /// Whether this failure is a provider **conflict** — the provider's state moved
+    /// underneath the operation (an IMAP `UIDVALIDITY` renumbering, a stale or
+    /// expunged target), classified
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict). The
+    /// documented recovery is *re-sync the affected scope, then retry* (e.g. the
+    /// [`Engine::message_body`] error contract); this accessor lets a host automate
+    /// that recovery without parsing error text.
+    #[must_use]
+    pub fn is_conflict(&self) -> bool {
+        matches!(
+            self,
+            Self::Sync(SyncError::Provider(err))
+                if err.class() == engine_core::error::FailureClass::Conflict
+        )
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use engine_provider::ProviderError;
+
+    use super::*;
+
+    #[test]
+    fn conflict_classification_is_exposed_to_hosts() {
+        let conflict = ApiError::Sync(SyncError::Provider(ProviderError::conflict(
+            "UIDVALIDITY changed for X: re-sync before retrying",
+        )));
+        assert!(conflict.is_conflict());
+
+        let transient = ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip")));
+        assert!(!transient.is_conflict(), "retryable is not a conflict");
+        assert!(!ApiError::Busy.is_conflict(), "Busy is not a conflict");
+    }
+}
