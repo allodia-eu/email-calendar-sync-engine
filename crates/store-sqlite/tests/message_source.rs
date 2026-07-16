@@ -212,3 +212,41 @@ async fn body_text_round_trips_through_sqlite() {
         Some(plain_only)
     );
 }
+
+#[tokio::test]
+async fn body_keys_list_one_accounts_warm_set_only() {
+    let store = SqliteStore::open_in_memory(clock()).expect("open store");
+    let other = AccountId::try_from("other-acct").expect("valid account");
+    let body = MessageBody::new(Some("text".to_owned()), None);
+
+    assert!(
+        store
+            .message_body_keys(&account())
+            .await
+            .expect("keys")
+            .is_empty(),
+        "no keys before any body is cached"
+    );
+
+    // Two bodies for this account, one for another — the same IMAP-style key on both
+    // accounts must not cross over (the cache is keyed by account).
+    for k in ["imap:v1:u1@INBOX", "imap:v1:u2@INBOX"] {
+        store
+            .put_message_body(&account(), &key(k), &body)
+            .await
+            .expect("put body");
+    }
+    store
+        .put_message_body(&other, &key("imap:v1:u1@INBOX"), &body)
+        .await
+        .expect("put other-account body");
+
+    let mut keys = store.message_body_keys(&account()).await.expect("keys");
+    keys.sort();
+    assert_eq!(keys, vec![key("imap:v1:u1@INBOX"), key("imap:v1:u2@INBOX")]);
+    assert_eq!(
+        store.message_body_keys(&other).await.expect("other keys"),
+        vec![key("imap:v1:u1@INBOX")],
+        "the other account sees only its own warm set"
+    );
+}

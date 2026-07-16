@@ -339,6 +339,14 @@ through **separate, lease-free** traits in `engine-store` (beside `Store`), keye
   `Engine::message_body`, `message_inline_parts`, `message_attachments`, and
   `message_attachment` (`engine-api.md`). Durable per-attachment blob entities, quota
   eviction, and embeddings/RAG over the indexed text are later slices.
+- A host warming the cache in bulk (an offline-first client fetching every body in its
+  synced window) plans its work with `Engine::messages_missing_body(account, limit)` —
+  the windowed read's ranking (newest first) filtered against
+  `MessageBodyStore::message_body_keys(account)`, the cached-body key set — then pulls
+  each result through `Engine::message_body` as usual. The diff runs up front on keys
+  alone, so a pass over an already-warm window deserializes nothing and fetches
+  nothing; the warming loop itself (pacing, retry, when to run) is host policy, not
+  engine state.
 
 ## Re-normalization on a normalizer-version change
 

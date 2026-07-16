@@ -94,6 +94,12 @@ impl<C: Clock> MessageBodyStore for SqliteStore<C> {
         self.call(move |conn| select_body(conn, &account, &key))
             .await
     }
+
+    async fn message_body_keys(&self, account: &AccountId) -> Result<Vec<ProviderKey>> {
+        let account = account.as_str().to_owned();
+        self.call(move |conn| select_body_keys(conn, &account))
+            .await
+    }
 }
 
 /// Upserts the metadata row mapping `(account, key)` to its blob's content hash.
@@ -146,6 +152,22 @@ fn upsert_body(
     )
     .map_err(backend)?;
     Ok(())
+}
+
+/// Reads every provider key with a cached body text for `account`.
+fn select_body_keys(conn: &Connection, account: &str) -> Result<Vec<ProviderKey>> {
+    let mut stmt = conn
+        .prepare("SELECT provider_key FROM message_body WHERE account = ?1")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([account], |row| row.get::<_, String>(0))
+        .map_err(backend)?;
+    let mut keys = Vec::new();
+    for row in rows {
+        let raw = row.map_err(backend)?;
+        keys.push(ProviderKey::new(raw).map_err(backend)?);
+    }
+    Ok(keys)
 }
 
 /// Reads the cached body text for `(account, key)`, if any. An empty stored `plain`

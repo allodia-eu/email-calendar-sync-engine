@@ -85,4 +85,14 @@ pub trait MessageBodyStore {
         account: &AccountId,
         key: &ProviderKey,
     ) -> Result<Option<MessageBody>>;
+
+    /// Returns the provider key of every message with a cached body text for
+    /// `account` — the already-warm set. A host's background body-warming pass diffs
+    /// this against its synced window to fetch only the bodies still missing, one key
+    /// scan instead of probing each message individually.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`](crate::StoreError) on a backend failure.
+    async fn message_body_keys(&self, account: &AccountId) -> Result<Vec<ProviderKey>>;
 }
