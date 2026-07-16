@@ -133,18 +133,116 @@ let outcome = engine.submit_mail(&provider, &account, &draft).await?;
 
 ## How the pieces fit
 
-```text
-Host apps / mobile / desktop / CLI / server
-    │
-    ▼
-engine-api (stable Rust facade)
-    │
-    ▼
-Engine
- ├─ sync ──► provider adapters ──► JMAP / IMAP / CalDAV / Graph
- ├─ outbox ──► durable writes
- ├─ search / index ──► SQLite FTS
- └─ store ──► SQLite (encrypted)
+Your application talks to **one type** — `Engine`, from `engine-api` — and hands it the provider
+adapter(s) it constructed. Everything below the facade is provider-agnostic: the adapters translate
+each protocol into the same normalized model, and everything the engine learns lands in a local
+SQLite store, so reads and search keep working offline.
+
+```mermaid
+flowchart TD
+    HOST["🧩 Your application<br/>native app · CLI tool<br/>daemon · server adapter"]
+
+    HOST ==>|"one async Rust API"| API
+    HOST -.->|"constructs a provider<br/>and hands it in"| TRAIT
+
+    subgraph ENGINE["The engine — provider-agnostic"]
+        API["<b>engine-api</b> — <b>Engine</b><br/>the one stable facade<br/>open · sync · read<br/>search · write"]
+        SYNC["<b>engine-sync</b><br/>streaming sync loop +<br/>crash-safe write outbox"]
+        SEARCH["<b>engine-search</b><br/>query DSL → ranked,<br/>coverage-aware results"]
+        MODEL["<b>engine-core</b><br/>+ <b>engine-mime</b><br/>+ <b>engine-recurrence</b><br/>one normalized model:<br/>Message · Thread · Mailbox<br/>Event · Calendar"]
+        STORE["<b>engine-store</b> trait<br/>→ <b>store-sqlite</b><br/>local-first SQLite<br/>FTS index · raw blobs<br/>offline reads &amp; search"]
+
+        API --> SYNC
+        API --> SEARCH
+        API -->|reads| STORE
+        SYNC -->|normalize + derive| MODEL
+        SYNC -->|commit chunks atomically| STORE
+        SEARCH --> STORE
+    end
+
+    subgraph ADAPTERS["Provider adapters — pick only the crates you need"]
+        TRAIT["<b>engine-provider</b><br/>one contract:<br/>Provider + Watch"]
+        JMAP["<b>provider-jmap</b><br/>mail + calendar<br/>EventSource push"]
+        IMAP["<b>provider-imap</b><br/>mail + SMTP submit<br/>IDLE push"]
+        CALDAV["<b>provider-caldav</b><br/>calendar + iMIP RSVP"]
+        GRAPH["<b>provider-graph</b><br/>Microsoft 365 mail"]
+
+        TRAIT -.- JMAP
+        TRAIT -.- IMAP
+        TRAIT -.- CALDAV
+        TRAIT -.- GRAPH
+    end
+
+    TLS["<b>engine-tls</b><br/>one TLS trust policy<br/>for every connection"]
+
+    SYNC ==>|"drives"| TRAIT
+    STORE ~~~ TRAIT
+    ADAPTERS --- TLS
+    JMAP --> SRV["🌐 Mail &amp; calendar servers<br/>JMAP · IMAP/SMTP<br/>CalDAV · Microsoft Graph"]
+    IMAP --> SRV
+    CALDAV --> SRV
+    GRAPH --> SRV
+
+    classDef host fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
+    classDef facade fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef internal fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef storec fill:#fef3c7,stroke:#d97706,color:#451a03
+    classDef adapter fill:#f3e8ff,stroke:#9333ea,color:#3b0764
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray: 4 3
+
+    class HOST host
+    class API facade
+    class SYNC,SEARCH,MODEL internal
+    class STORE,TLS storec
+    class TRAIT,JMAP,IMAP,CALDAV,GRAPH adapter
+    class SRV external
+    style ENGINE fill:none,stroke:#94a3b8,stroke-dasharray: 6 4
+    style ADAPTERS fill:none,stroke:#94a3b8,stroke-dasharray: 6 4
+```
+
+### A sync pass streams — the UI never waits for the whole mailbox
+
+`sync_mail_streamed` commits each chunk in its own transaction and checkpoints the cursor as it
+goes, so recent mail renders while the backlog is still arriving — and a crash resumes from the
+last committed chunk instead of starting over.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Your app
+    participant Engine as Engine (engine-api)
+    participant Provider as Provider adapter
+    participant Store as SQLite store
+
+    App->>Engine: sync_mail_streamed(provider, account)
+    Engine->>Store: claim sync scope (cursor + fencing token)
+    Engine->>Provider: stream changes since cursor
+    loop each chunk, as it arrives
+        Provider-->>Engine: chunk of messages
+        Engine->>Engine: normalize + derive search rows
+        Engine->>Store: commit chunk + checkpoint cursor (one transaction)
+        Engine-->>App: progress event (SyncObserver)
+    end
+    Engine->>Store: release scope
+    Note over App,Store: a crash mid-sync resumes from the last committed chunk
+```
+
+### Writes are durable — recorded locally before any network I/O
+
+Every UI-visible write (send, flag, move, delete, calendar create/update/delete) becomes a pending
+op in the store's outbox **first**, then a fenced worker performs the provider side effect and
+records the outcome. An ambiguous outcome — an SMTP connection lost after `DATA` — parks as
+`NeedsConfirmation` and is never blind-retried, so the engine cannot double-send mail.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Enqueued: recorded durably first
+    Enqueued --> Claimed: fenced worker picks it up
+    Claimed --> Succeeded: provider confirms
+    Claimed --> Failed: provider rejects
+    Claimed --> NeedsConfirmation: ambiguous (SMTP lost after DATA)
+    Succeeded --> [*]
 ```
 
 ## Workspace layout
