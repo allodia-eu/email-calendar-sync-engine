@@ -20,7 +20,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `calendars` / `events` and `search_mail` / `search_calendar` (which now also
   matches fetched **body** text); open a message with `message_body` (fetch-on-demand;
   caches the raw bytes on disk and the extracted text in SQLite, so reopen is a fast
-  SQLite read and the body becomes searchable), resolve inline CID resources with
+  SQLite read and the body becomes searchable), plan a bulk body-warming pass with
+  `messages_missing_body` (the newest synced messages whose body text is not yet
+  cached — a host feeds each through `message_body` to make its window readable
+  offline), resolve inline CID resources with
   `message_inline_parts`, list ordinary downloadable attachments with
   `message_attachments`, fetch a selected attachment with `message_attachment`; and
   write with `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /

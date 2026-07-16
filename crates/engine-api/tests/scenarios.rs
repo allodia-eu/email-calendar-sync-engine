@@ -32,6 +32,7 @@ use engine_core::{
     ids::{MailboxId, MessageId, ProviderKey},
     mail::{Mailbox, MailboxRole},
     membership::Memberships,
+    raw::RawMime,
     sync::{JmapDataType, SyncState, SyncUpdate},
 };
 use engine_provider::{
@@ -212,6 +213,19 @@ impl Provider for SimProvider {
         _chunk_size: usize,
     ) -> EmailStream<'a> {
         Box::pin(futures_util::stream::iter(self.build_chunks(cursor)))
+    }
+
+    async fn fetch_message_source(
+        &self,
+        _account: &AccountId,
+        _message: &Message,
+    ) -> ProviderResult<RawMime> {
+        if self.offline.load(Ordering::SeqCst) {
+            return Err(ProviderError::retryable("account is offline"));
+        }
+        Ok(RawMime::new(
+            b"Content-Type: text/plain\r\n\r\nwarmed body".to_vec(),
+        ))
     }
 }
 
@@ -408,6 +422,53 @@ async fn startup_loads_the_initial_page_well_under_500ms() {
     assert!(
         elapsed.as_millis() < 500,
         "initial page load took {elapsed:?}, over the 500ms startup budget"
+    );
+}
+
+#[tokio::test]
+async fn missing_body_work_list_shrinks_as_a_warm_pass_fetches() {
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = SimProvider::new(messages(5), 5);
+    engine
+        .sync_mail_streamed(&provider, &account(), responsive(), &no_observer())
+        .await
+        .unwrap();
+
+    // A metadata-only sync leaves every body unwarmed — the work list is the whole
+    // window, newest first (m0), same ranking as the windowed read.
+    let missing = engine.messages_missing_body(&account(), 50).await.unwrap();
+    assert_eq!(missing.len(), 5);
+    assert_eq!(missing[0].envelope.subject.as_deref(), Some("Subject 0"));
+
+    // Warm the two newest — the work list drops exactly those and keeps ranking.
+    for message in &missing[..2] {
+        engine
+            .message_body(&provider, &account(), message)
+            .await
+            .unwrap();
+    }
+    let rest = engine.messages_missing_body(&account(), 50).await.unwrap();
+    assert_eq!(rest.len(), 3);
+    assert_eq!(rest[0].envelope.subject.as_deref(), Some("Subject 2"));
+
+    // The cap keeps the newest *missing*, not just the newest.
+    let capped = engine.messages_missing_body(&account(), 1).await.unwrap();
+    assert_eq!(capped.len(), 1);
+    assert_eq!(capped[0].envelope.subject.as_deref(), Some("Subject 2"));
+
+    // A fully-warm window returns an empty work list.
+    for message in &rest {
+        engine
+            .message_body(&provider, &account(), message)
+            .await
+            .unwrap();
+    }
+    assert!(
+        engine
+            .messages_missing_body(&account(), 50)
+            .await
+            .unwrap()
+            .is_empty()
     );
 }
 

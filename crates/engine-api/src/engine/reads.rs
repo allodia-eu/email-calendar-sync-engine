@@ -11,7 +11,7 @@ use engine_core::{
     time::{Horizon, UtcDateTime},
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
-use engine_store::{OccurrenceRow, StoreRead};
+use engine_store::{MessageBodyStore, OccurrenceRow, StoreRead};
 use serde_json::Value;
 
 use super::decode_error;
@@ -101,12 +101,48 @@ impl Engine {
         account: &AccountId,
         limit: usize,
     ) -> Result<Vec<Message>, ApiError> {
-        // Rank every mail scope's index entries by date (cheap — keys + dates, no payloads),
-        // keep the newest `limit`, then deserialize just those.
+        self.newest_mail(account, limit, &HashSet::new()).await
+    }
+
+    /// One account's newest messages **without a cached body text** — the work list a
+    /// host's background body-warming pass feeds through [`Engine::message_body`] so
+    /// the synced window becomes readable (and searchable) offline. Ranked exactly
+    /// like [`Engine::messages_windowed`] (newest first, undated last) and capped at
+    /// `limit`, but filtered against the body cache up front — so an already-warm
+    /// window costs one key scan and deserializes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn messages_missing_body(
+        &self,
+        account: &AccountId,
+        limit: usize,
+    ) -> Result<Vec<Message>, ApiError> {
+        let warmed: HashSet<ProviderKey> = self
+            .store
+            .message_body_keys(account)
+            .await?
+            .into_iter()
+            .collect();
+        self.newest_mail(account, limit, &warmed).await
+    }
+
+    /// The shared windowed-read core: rank every mail scope's index entries by date
+    /// (cheap — keys + dates, no payloads), drop keys in `skip`, keep the newest
+    /// `limit`, then deserialize just those.
+    async fn newest_mail(
+        &self,
+        account: &AccountId,
+        limit: usize,
+        skip: &HashSet<ProviderKey>,
+    ) -> Result<Vec<Message>, ApiError> {
         let mut ranked: Vec<(SyncScope, ProviderKey, Option<UtcDateTime>)> = Vec::new();
         for scope in self.mail_scopes(account).await? {
             for (key, date, _thread) in self.store.scope_mail_index(&scope).await? {
-                ranked.push((scope.clone(), key, date));
+                if !skip.contains(&key) {
+                    ranked.push((scope.clone(), key, date));
+                }
             }
         }
         // Newest first. `Option<UtcDateTime>` orders `None` below any `Some`, so `Reverse` sinks
