@@ -217,7 +217,10 @@ specifics they implement against the Stalwart fixture. Read it before touching
   - **Locations are a map, not a scalar.** JSCalendar `locations` is `Id[Location]`, so
     renaming "the location" patches `locations/<its id>/name` — keeping that location's
     coordinates and any others. The id lives *only* in the preserved `RawJsCalendar`, which
-    is what the read path's raw is for on the write side.
+    is what the read path's raw is for on the write side. A **create** has no such id yet, so
+    it mints the sole entry at a fixed id (`{"1": {"@type": "Location", "name": …}}`) — the
+    same id a later location edit reuses when it finds the event already has one, and the
+    entry `parse_locations` reads straight back into the projection.
   - **A destroy of an already-gone event is success**, not a `notFound` error: the desired
     end state holds, which is what makes an outbox retry of a delete whose response was lost
     safe (the same contract CalDAV gets from treating `404`/`410` as success).

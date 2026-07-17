@@ -150,7 +150,10 @@ async fn round_trip() {
                 amsterdam("2026-06-01T10:00:00"),
                 amsterdam("2026-06-01T11:00:00"),
                 stamp(),
-            ),
+            )
+            // A create mints the `locations` map from nothing; the read below proves the
+            // server stored it and `parse_locations` reads it back.
+            .location("Room 6"),
         )
         .await
         .expect("create event");
@@ -174,6 +177,11 @@ async fn round_trip() {
          not flatten it to the UTC instant it happens to denote today"
     );
     assert_eq!(made.duration, "PT1H".parse().unwrap());
+    assert_eq!(
+        made.locations.first().and_then(|l| l.name.as_deref()),
+        Some("Room 6"),
+        "the location stated on the create survived the server and read back"
+    );
 
     // ---- Patch: retitle and move it. ----
     provider

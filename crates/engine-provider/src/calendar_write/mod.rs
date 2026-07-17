@@ -78,6 +78,9 @@ pub struct EventDraft {
     pub end: CalendarDateTime,
     /// The description, if any.
     pub description: Option<String>,
+    /// The location, if any. A create is the one write that can set it from nothing;
+    /// an edit already reshapes it through [`EventPatch::location`](crate::EventPatch::location).
+    pub location: Option<String>,
     /// When the event was created — the caller's, because engine time types deliberately
     /// cannot read the system clock. A server that stamps its own ignores it.
     pub stamp: UtcDateTime,
@@ -101,6 +104,7 @@ impl EventDraft {
             start,
             end,
             description: None,
+            location: None,
             stamp,
         }
     }
@@ -109,6 +113,13 @@ impl EventDraft {
     #[must_use]
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// Gives the new event a location.
+    #[must_use]
+    pub fn location(mut self, location: impl Into<String>) -> Self {
+        self.location = Some(location.into());
         self
     }
 }
@@ -276,9 +287,26 @@ mod tests {
             zoned("2026-08-01T09:30:00"),
             "2026-07-14T10:00:00Z".parse().unwrap(),
         )
-        .description("agenda");
+        .description("agenda")
+        .location("Room A");
         assert_eq!(draft.uid, uid());
         assert_eq!(draft.description.as_deref(), Some("agenda"));
+        assert_eq!(draft.location.as_deref(), Some("Room A"));
+    }
+
+    #[test]
+    fn a_draft_has_no_location_until_one_is_given() {
+        // A create is the one write that can set a location from nothing; without the
+        // builder it carries none, which the adapters render as no LOCATION at all.
+        let draft = EventDraft::new(
+            calendar(),
+            uid(),
+            "Sprint planning",
+            zoned("2026-08-01T09:00:00"),
+            zoned("2026-08-01T09:30:00"),
+            "2026-07-14T10:00:00Z".parse().unwrap(),
+        );
+        assert!(draft.location.is_none());
     }
 
     #[test]
@@ -352,7 +380,8 @@ mod tests {
             zoned("2026-08-01T09:00:00"),
             zoned("2026-08-01T09:30:00"),
             "2026-07-14T10:00:00Z".parse().unwrap(),
-        );
+        )
+        .location("Room A");
         let encoded = serde_json::to_value(&draft).unwrap();
         assert_eq!(
             serde_json::from_value::<EventDraft>(encoded).unwrap(),

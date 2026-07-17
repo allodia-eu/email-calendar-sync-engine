@@ -113,7 +113,10 @@ pub(crate) async fn round_trip(provider: &CalDavProvider, account: &AccountId) {
                 amsterdam("2026-06-01T10:00:00"),
                 amsterdam("2026-06-01T11:00:00"),
                 stamp(),
-            ),
+            )
+            // A create is the one write that sets a location from nothing (the LOCATION
+            // line / JSCalendar `locations` map); the read below proves the server kept it.
+            .location("Room 6"),
         )
         .await
         .expect("create event");
@@ -130,6 +133,11 @@ pub(crate) async fn round_trip(provider: &CalDavProvider, account: &AccountId) {
         made.start,
         amsterdam("2026-06-01T10:00:00"),
         "the create was born zoned — never flattened to the UTC instant it denotes today"
+    );
+    assert_eq!(
+        made.locations.first().and_then(|l| l.name.as_deref()),
+        Some("Room 6"),
+        "the location stated on the create survived the server and read back"
     );
     // The ETag the PUT reported *is* the resource's ETag — so it can be used as the next
     // precondition without re-reading the collection first.
