@@ -211,8 +211,11 @@ client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
   and they are not interchangeable**:
   - **Create** → `build_event_ical`, a **minimal** RFC 5545 builder (`UID`, `DTSTAMP`,
     `DTSTART`/`DTEND` **in the draft's own form** — zoned, floating or all-day, never
-    flattened to UTC — `SUMMARY`, optional `DESCRIPTION`; TEXT escaped per §3.3.11), locked
-    by a round-trip test through the parser. It emits **six properties**. Using it to
+    flattened to UTC — `SUMMARY`, optional `DESCRIPTION`, optional `LOCATION`; TEXT escaped
+    per §3.3.11), locked by a round-trip test through the parser (which asserts the `LOCATION`
+    lands back in the projection's `locations`, the same field the read path fills). A create
+    is the one write that sets a location from nothing; an edit reshapes it through the
+    patcher's `LOCATION` path below. It emits at most **seven properties**. Using it to
     *update* an existing event would be data loss: every property it does not emit — the
     `RRULE`, the attendees, the alarms — would be deleted from the user's calendar by a
     `PUT` that reports success. Nothing can: `patch_event` is the only update path, and it

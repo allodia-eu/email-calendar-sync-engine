@@ -47,6 +47,9 @@ pub(crate) fn build_event_ical(draft: &EventDraft) -> RawIcal {
     if let Some(description) = &draft.description {
         push_property(&mut ical, "DESCRIPTION", &escape_text(description));
     }
+    if let Some(location) = &draft.location {
+        push_property(&mut ical, "LOCATION", &escape_text(location));
+    }
     ical.push_str("END:VEVENT\r\n");
     ical.push_str("END:VCALENDAR\r\n");
     RawIcal::new(ical)
@@ -104,7 +107,8 @@ mod tests {
         // title, start, and an escaped description surviving intact.
         let ical = build_event_ical(
             &draft("Team sync, take 2; final", utc(14, 30), utc(15, 0))
-                .description("Line one\nLine two; with, commas"),
+                .description("Line one\nLine two; with, commas")
+                .location("Room 2B; the annex, upstairs"),
         );
         let event = parse_calendar_object(
             ical.as_str(),
@@ -124,6 +128,20 @@ mod tests {
             event.description.as_deref(),
             Some("Line one\nLine two; with, commas")
         );
+        // The LOCATION survives the same escape/unescape inverse the DESCRIPTION does,
+        // landing back in the projection the read path builds.
+        assert_eq!(
+            event.locations.first().and_then(|l| l.name.as_deref()),
+            Some("Room 2B; the annex, upstairs")
+        );
+    }
+
+    #[test]
+    fn a_draft_without_a_location_emits_no_location_line() {
+        // Absent stays absent — no empty LOCATION: line, which a reader would take as a
+        // location named the empty string.
+        let ical = build_event_ical(&draft("No place", utc(9, 0), utc(10, 0)));
+        assert!(!ical.as_str().contains("LOCATION"), "{}", ical.as_str());
     }
 
     #[test]

@@ -232,6 +232,15 @@ fn draft_to_json(draft: &EventDraft) -> Result<Value, JmapError> {
     if let Some(description) = &draft.description {
         object.insert("description".to_owned(), json!(description));
     }
+    if let Some(location) = &draft.location {
+        // JSCalendar has no scalar location: it is a map of id -> Location (RFC 8984
+        // §4.2.5). A create mints the sole entry at a fixed id, the same one a later
+        // location edit reuses when it finds the event has one.
+        object.insert(
+            "locations".to_owned(),
+            json!({ NEW_LOCATION_ID: { "@type": "Location", "name": location } }),
+        );
+    }
     for (key, value) in start_fields(&draft.start)? {
         object.insert(key, value);
     }

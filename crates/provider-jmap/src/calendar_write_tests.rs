@@ -67,6 +67,33 @@ async fn create_posts_a_jscalendar_object_and_learns_the_server_assigned_id() {
 }
 
 #[tokio::test]
+async fn a_create_with_a_location_posts_a_jscalendar_locations_map() {
+    // JSCalendar has no scalar location — it is a map of id -> Location (RFC 8984 §4.2.5).
+    // A create mints the sole entry, at the same fixed id a later location edit reuses, so
+    // the read path's `parse_locations` lands the name back in the projection.
+    let (p, exec) = recording(vec![set_response(
+        &json!({ "created": { "new": { "id": EVENT } } }),
+    )]);
+    let draft = EventDraft::new(
+        calendar(),
+        uid(),
+        "Sprint planning",
+        zoned("2026-08-01T09:00:00"),
+        zoned("2026-08-01T09:30:00"),
+        stamp(),
+    )
+    .location("Room A");
+
+    p.create_event(&account(), &draft).await.unwrap();
+
+    let (_, _, args) = exec.sole_call();
+    assert_eq!(
+        args["create"]["new"]["locations"],
+        json!({ "1": { "@type": "Location", "name": "Room A" } }),
+    );
+}
+
+#[tokio::test]
 async fn an_all_day_create_states_the_day_not_a_midnight_instant() {
     let (p, exec) = recording(vec![set_response(
         &json!({ "created": { "new": { "id": EVENT } } }),
