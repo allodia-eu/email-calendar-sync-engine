@@ -65,6 +65,12 @@ PII, and keeping them preserves the real shape). Event times were captured with
 `Prefer: outlook.timezone="Europe/Amsterdam"` — the authoring-zone form the live
 provider requests (see Finding 6).
 
+`calendars.json` reflects the throwaway account's real state: **two** calendars (the
+default `Calendar` and a user-added `Extra calendar test`). Graph event JSON never names
+its own calendar, so the provider binds each event to the calendar it was fetched under
+(`Event.calendars`); that is how events from multiple calendars under one account stay
+separable (see Finding 11).
+
 The one exception to "ids verbatim" is `event_online_meeting.json`: a Teams meeting's
 `onlineMeeting.joinUrl` and the meeting-id/passcodes echoed in its `body` are **live,
 joinable credentials**, not opaque handles, so those were replaced with same-shape
@@ -73,7 +79,9 @@ public repo must not ship a working join link (see Finding 10).
 
 | Fixture | Real Graph call | Protects |
 | --- | --- | --- |
-| `calendar/calendars.json` / `calendar.json` | `GET /me/calendars` | calendar → `Calendar` normalization; the default calendar |
+| `calendar/calendars.json` | `GET /me/calendars` | calendar-list → `Calendar` normalization: **two** calendars under one account — the default `Calendar` and the non-default `Extra calendar test` (`hexColor: #f7630c`) |
+| `calendar/calendar.json` | one entry from `GET /me/calendars` | a single `Calendar` (the default) in isolation |
+| `calendar/event_extra_calendar.json` | a `singleInstance` from the non-default calendar's `calendarView` | an event bound to a **non-default** calendar — membership keeps it separable from the default calendar's events |
 | `calendar/event_series_master.json` | `GET /me/events/{id}` (a `seriesMaster`) | `patternedRecurrence` → `Recurrence`, zone, location, organizer |
 | `calendar/event_single.json` | a `singleInstance` from `GET /me/events` | non-recurring event + attendee projection |
 | `calendar/event_allday.json` | an all-day `singleInstance` | `isAllDay` → zoneless `Date` + one-day duration |
@@ -101,6 +109,12 @@ public repo must not ship a working join link (see Finding 10).
 10. **A Teams online meeting carries `isOnlineMeeting: true`, `onlineMeetingProvider:
     "teamsForBusiness"`, and an `onlineMeeting.joinUrl`** (the deprecated
     `onlineMeetingUrl` stays `null`); the join link, meeting-id, and passcodes are also
-    duplicated as HTML in the `body`. The provider does not project these yet — the
-    fixture exists so the staged online-meeting-provider mapper has a real payload to
-    build against; today they are only preserved verbatim on `Event.extended`.
+    duplicated as HTML in the `body`. The `joinUrl` **is** projected today, as an
+    `Event.virtual_locations` entry. What is *not* modelled yet is the online-meeting
+    **provider identity** (`onlineMeetingProvider`/`isOnlineMeeting`); that stays on the
+    preserved raw payload (`Event.extended`) for a future provider-typing mapper.
+11. **One MS account owns many calendars** (`GET /me/calendars` → a list). Each is a
+    distinct `Calendar` with its own immutable id, `isDefaultCalendar` flag, and colour
+    (`hexColor` `#rrggbb` wins over the named `color`). A Graph `event` object does not
+    carry its calendar id, so calendar membership comes from the fetch context: the
+    provider is calendar-bound and stamps `Event.calendars` with the calendar it synced.

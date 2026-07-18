@@ -25,9 +25,16 @@ fn window() -> CalendarWindow {
 async fn calendars_snapshot_projects_the_calendar_list() {
     let client = fake_client(vec![("/calendars?$top", json(CALENDARS))]);
     let calendars = calendars(&client).await.unwrap();
-    assert_eq!(calendars.len(), 1);
+    // A single MS account exposes many calendars; each is a distinct container.
+    assert_eq!(calendars.len(), 2);
     assert_eq!(calendars[0].name, "Calendar");
     assert!(calendars[0].is_default);
+    // The non-default "Extra calendar test" keeps its own id, name, and `#rrggbb` color.
+    let extra = &calendars[1];
+    assert_eq!(extra.name, "Extra calendar test");
+    assert!(!extra.is_default);
+    assert_eq!(extra.color.as_deref(), Some("#f7630c"));
+    assert_ne!(extra.id, calendars[0].id);
 }
 
 #[tokio::test]

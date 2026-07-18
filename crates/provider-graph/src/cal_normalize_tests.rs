@@ -14,6 +14,8 @@ const MASTER: &str = include_str!("../tests/fixtures/calendar/event_series_maste
 const SINGLE: &str = include_str!("../tests/fixtures/calendar/event_single.json");
 const ALLDAY: &str = include_str!("../tests/fixtures/calendar/event_allday.json");
 const ONLINE: &str = include_str!("../tests/fixtures/calendar/event_online_meeting.json");
+const CALENDARS: &str = include_str!("../tests/fixtures/calendar/calendars.json");
+const EXTRA_EVENT: &str = include_str!("../tests/fixtures/calendar/event_extra_calendar.json");
 
 fn json(fixture: &str) -> Value {
     serde_json::from_str(fixture).unwrap()
@@ -110,25 +112,59 @@ fn all_day_event_is_a_zoneless_date_with_a_day_duration() {
 }
 
 #[test]
-fn an_online_meeting_normalizes_and_preserves_its_teams_join_payload() {
-    // The engine does not project online-meeting fields yet (that support is staged), but
-    // the raw Graph payload it preserves must carry them intact so the future mapper has
-    // something to read. This fixture is a real Teams "for business" meeting.
+fn an_online_meeting_projects_its_join_url_and_preserves_the_teams_payload() {
+    // This fixture is a real Teams "for business" meeting. The join URL is already
+    // projected as a virtual location; the online-meeting *provider identity*
+    // (`onlineMeetingProvider`/`isOnlineMeeting`) is not modelled yet (staged), so the
+    // preserved raw payload is what a future provider-typing mapper reads.
     let event = event(ONLINE);
     assert_eq!(event.title, "PIM fixture: Teams online meeting");
     assert!(!event.is_recurring());
     assert!(matches!(event.start, CalendarDateTime::Zoned { .. }));
 
+    // The join URL is surfaced as a virtual location today.
+    assert_eq!(event.virtual_locations.len(), 1);
+    assert!(
+        event.virtual_locations[0]
+            .uri
+            .starts_with("https://teams.live.com/meet/")
+    );
+
+    // The provider-typed fields ride the preserved raw payload until they are modelled.
     let raw = event
         .extended
         .get("microsoft.graph/event")
         .expect("raw Graph event preserved");
     assert_eq!(raw["isOnlineMeeting"], Value::Bool(true));
     assert_eq!(raw["onlineMeetingProvider"], "teamsForBusiness");
-    let join_url = raw["onlineMeeting"]["joinUrl"]
-        .as_str()
-        .expect("a Teams join URL");
-    assert!(join_url.starts_with("https://teams.live.com/meet/"));
+}
+
+#[test]
+fn a_non_default_calendar_normalizes_with_its_own_id_and_color() {
+    // One MS account exposes several calendars; each is a distinct container with its own
+    // id, name, default flag, and `#rrggbb` color (Graph's `hexColor` wins over `color`).
+    let list = json(CALENDARS);
+    let entries = list["value"].as_array().unwrap();
+    let default = calendar_from_json(&entries[0]).unwrap();
+    let extra = calendar_from_json(&entries[1]).unwrap();
+    assert!(default.is_default && default.color.is_none());
+    assert_eq!(extra.name, "Extra calendar test");
+    assert!(!extra.is_default);
+    assert_eq!(extra.color.as_deref(), Some("#f7630c"));
+    assert_ne!(extra.id, default.id);
+}
+
+#[test]
+fn an_event_is_bound_to_the_calendar_it_was_fetched_under() {
+    // Graph event JSON does not name its own calendar, so the normalizer binds the event
+    // to the calendar it was fetched from. That membership is how events from multiple
+    // calendars under one account stay separable and never mix.
+    let extra = CalendarId::try_from("extra-cal").unwrap();
+    let event = event_from_json(&json(EXTRA_EVENT), &extra).unwrap();
+    assert_eq!(event.title, "PIM fixture: event on a secondary calendar");
+    assert_eq!(event.calendars.len().get(), 1);
+    assert!(event.calendars.contains(&extra));
+    assert!(!event.calendars.contains(&calendar_id()));
 }
 
 #[test]

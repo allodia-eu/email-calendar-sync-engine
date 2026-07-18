@@ -84,8 +84,9 @@ async fn syncs_the_calendar_list_and_an_event_snapshot() {
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
-    assert_eq!(objects.len(), 1);
+    assert_eq!(objects.len(), 2);
     assert_eq!(objects[0].name, "Calendar");
+    assert_eq!(objects[1].name, "Extra calendar test");
 
     let events = provider.sync_events(&account(), None).await.unwrap();
     assert!(events.is_snapshot());
