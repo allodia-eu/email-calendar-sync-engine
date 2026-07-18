@@ -31,7 +31,16 @@ Recommended first provider spine:
    returns *partial* changed objects that the adapter re-fetches. It is the first
    adapter validated without the Stalwart fixture: deterministically by a
    fixture-replay HTTP server over scrubbed real captures, plus an optional
-   token-gated live test. Calendar/submission/writes are later slices.
+   token-gated live test. Graph **submission** (`sendMail` in MIME format) and
+   **calendar read/sync + writes** (`calendarView`/delta, `If-Match`-guarded
+   create/patch/delete) are also implemented. **Google (Gmail + Google Calendar) is
+   implemented** under `provider-google`; `google.md` is authoritative. Unlike Graph,
+   Gmail's mail sync is **account-global** (`historyId`, JMAP-like — one
+   `GmailMessages` scope, no per-folder fan-out; labels are multi-membership), and
+   Google Calendar is **IANA-native** with **RRULE masters** (no Windows-zone table,
+   no pre-expanded `calendarView`). Gmail has read/sync + on-demand source + writes +
+   send; Google Calendar has read/sync + `If-Match`-guarded writes. Same replay +
+   token-gated live validation as Graph.
 5. Optional further external-provider smoke tests against real hosted or
    self-managed servers.
 
