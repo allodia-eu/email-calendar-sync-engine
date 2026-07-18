@@ -28,6 +28,8 @@ use engine_provider::{
 };
 use tokio::sync::oneshot;
 
+#[path = "sync/expansion.rs"]
+mod expansion;
 #[path = "sync/reads.rs"]
 mod reads;
 #[path = "sync/sync_lifecycle.rs"]

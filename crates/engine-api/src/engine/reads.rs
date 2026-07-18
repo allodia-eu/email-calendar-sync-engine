@@ -339,6 +339,42 @@ impl Engine {
         Ok(events)
     }
 
+    /// The events named by provider `keys` within an account — a targeted resolve for the
+    /// event-detail read and the grid's occurrence→master join, **without deserializing the
+    /// whole calendar**. The calendar counterpart of [`Engine::messages_by_keys`], and the
+    /// read to reach for whenever a caller wants a *known* handful of events rather than the
+    /// account's entire event history: on a real diary [`Engine::events`] decodes every one
+    /// of thousands of event payloads, where this decodes only the `keys` asked for.
+    ///
+    /// A provider key is unique within an account and lives in one calendar scope, so each
+    /// resolved key is dropped from the wanted set and never probed in a later scope. Keys
+    /// not found (moved, tombstoned) are simply absent; order is unspecified. Empty `keys`
+    /// returns nothing without touching the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn events_by_keys(
+        &self,
+        account: &AccountId,
+        keys: &[ProviderKey],
+    ) -> Result<Vec<Event>, ApiError> {
+        let mut wanted: HashSet<ProviderKey> = keys.iter().cloned().collect();
+        let mut events = Vec::new();
+        for scope in self.scopes_of(account, ObjectKind::Event).await? {
+            if wanted.is_empty() {
+                break;
+            }
+            for key in wanted.iter().cloned().collect::<Vec<_>>() {
+                if let Some(payload) = self.store.object_payload(&scope, &key).await? {
+                    events.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+                    wanted.remove(&key);
+                }
+            }
+        }
+        Ok(events)
+    }
+
     /// The normalized payload of every object of `kind` across the account's scopes,
     /// enumerated and filtered by [`SyncScope::object_kind`] — so the facade never
     /// hard-codes or branches on which scopes a provider uses. One batch read per scope
