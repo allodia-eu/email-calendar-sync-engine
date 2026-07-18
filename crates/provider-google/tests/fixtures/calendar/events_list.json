@@ -1,0 +1,244 @@
+{
+  "accessRole": "owner",
+  "defaultReminders": [
+    {
+      "method": "popup",
+      "minutes": 30
+    }
+  ],
+  "description": "",
+  "etag": "\"p32no7cdunbe9a0o\"",
+  "items": [
+    {
+      "conferenceData": {
+        "conferenceId": "nvu-cwmt-xjg",
+        "conferenceSolution": {
+          "iconUri": "https://fonts.gstatic.com/s/i/productlogos/meet_2020q4/v6/web-512dp/logo_meet_2020q4_color_2x_web_512dp.png",
+          "key": {
+            "type": "hangoutsMeet"
+          },
+          "name": "Google Meet"
+        },
+        "entryPoints": [
+          {
+            "entryPointType": "video",
+            "label": "meet.google.com/nvu-cwmt-xjg",
+            "uri": "https://meet.google.com/nvu-cwmt-xjg"
+          }
+        ]
+      },
+      "created": "2026-07-18T14:34:16.000Z",
+      "creator": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "end": {
+        "dateTime": "2026-07-18T19:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "etag": "\"3568770513076990\"",
+      "eventType": "default",
+      "hangoutLink": "https://meet.google.com/nvu-cwmt-xjg",
+      "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+      "iCalUID": "76dgn561cvj1pisu56i6od9lon@google.com",
+      "id": "76dgn561cvj1pisu56i6od9lon",
+      "kind": "calendar#event",
+      "organizer": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "reminders": {
+        "useDefault": true
+      },
+      "sequence": 0,
+      "start": {
+        "dateTime": "2026-07-18T18:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "status": "confirmed",
+      "summary": "Sample event with Meet",
+      "updated": "2026-07-18T14:34:16.538Z"
+    },
+    {
+      "attendees": [
+        {
+          "email": "testuser@example.test",
+          "organizer": true,
+          "responseStatus": "accepted",
+          "self": true
+        },
+        {
+          "email": "guest@example.test",
+          "responseStatus": "needsAction"
+        }
+      ],
+      "created": "2026-07-18T14:40:25.000Z",
+      "creator": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "description": "A one-off meeting.",
+      "end": {
+        "dateTime": "2026-08-03T11:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "etag": "\"3568771251472222\"",
+      "eventType": "default",
+      "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+      "iCalUID": "e4n4cn7ekp59crc84vljaknin4@google.com",
+      "id": "e4n4cn7ekp59crc84vljaknin4",
+      "kind": "calendar#event",
+      "location": "Room 1",
+      "organizer": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "reminders": {
+        "useDefault": true
+      },
+      "sequence": 0,
+      "start": {
+        "dateTime": "2026-08-03T10:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "status": "confirmed",
+      "summary": "Fixture: single meeting",
+      "updated": "2026-07-18T14:40:25.736Z"
+    },
+    {
+      "created": "2026-07-18T14:40:26.000Z",
+      "creator": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "end": {
+        "date": "2026-08-06"
+      },
+      "etag": "\"3568771253016606\"",
+      "eventType": "default",
+      "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+      "iCalUID": "478v4sp8glv0228najn5jq667o@google.com",
+      "id": "478v4sp8glv0228najn5jq667o",
+      "kind": "calendar#event",
+      "organizer": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "reminders": {
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 30
+          }
+        ],
+        "useDefault": false
+      },
+      "sequence": 0,
+      "start": {
+        "date": "2026-08-05"
+      },
+      "status": "confirmed",
+      "summary": "Fixture: all day",
+      "updated": "2026-07-18T14:40:26.508Z"
+    },
+    {
+      "created": "2026-07-18T14:40:27.000Z",
+      "creator": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "end": {
+        "dateTime": "2026-08-03T09:15:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "etag": "\"3568771254631198\"",
+      "eventType": "default",
+      "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+      "iCalUID": "fefqreu9s29nvs1amdqkvssd4k@google.com",
+      "id": "fefqreu9s29nvs1amdqkvssd4k",
+      "kind": "calendar#event",
+      "organizer": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "recurrence": [
+        "RRULE:FREQ=WEEKLY;COUNT=6;BYDAY=MO"
+      ],
+      "reminders": {
+        "useDefault": true
+      },
+      "sequence": 0,
+      "start": {
+        "dateTime": "2026-08-03T09:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "status": "confirmed",
+      "summary": "Fixture: weekly standup",
+      "updated": "2026-07-18T14:40:27.315Z"
+    },
+    {
+      "conferenceData": {
+        "conferenceId": "aaa-bbbb-ccc",
+        "conferenceSolution": {
+          "iconUri": "https://fonts.gstatic.com/s/i/productlogos/meet_2020q4/v6/web-512dp/logo_meet_2020q4_color_2x_web_512dp.png",
+          "key": {
+            "type": "hangoutsMeet"
+          },
+          "name": "Google Meet"
+        },
+        "createRequest": {
+          "conferenceSolutionKey": {
+            "type": "hangoutsMeet"
+          },
+          "requestId": "fixture-meet-001",
+          "status": {
+            "statusCode": "success"
+          }
+        },
+        "entryPoints": [
+          {
+            "entryPointType": "video",
+            "label": "meet.google.com/aaa-bbbb-ccc",
+            "uri": "https://meet.google.com/aaa-bbbb-ccc"
+          }
+        ]
+      },
+      "created": "2026-07-18T14:40:27.000Z",
+      "creator": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "end": {
+        "dateTime": "2026-08-04T15:30:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "etag": "\"3568771258371518\"",
+      "eventType": "default",
+      "hangoutLink": "https://meet.google.com/aaa-bbbb-ccc",
+      "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+      "iCalUID": "862fgtojfi0njod4k2ll6rt8oc@google.com",
+      "id": "862fgtojfi0njod4k2ll6rt8oc",
+      "kind": "calendar#event",
+      "organizer": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "reminders": {
+        "useDefault": true
+      },
+      "sequence": 0,
+      "start": {
+        "dateTime": "2026-08-04T15:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "status": "confirmed",
+      "summary": "Fixture: meet call",
+      "updated": "2026-07-18T14:40:29.185Z"
+    }
+  ],
+  "kind": "calendar#events",
+  "nextSyncToken": "events-sync-token-1",
+  "summary": "testuser@example.test",
+  "timeZone": "Europe/Amsterdam",
+  "updated": "2026-07-18T14:40:33.010Z"
+}

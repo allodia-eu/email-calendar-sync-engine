@@ -1,0 +1,35 @@
+{
+  "created": "2026-07-18T14:40:27.000Z",
+  "creator": {
+    "email": "testuser@example.test",
+    "self": true
+  },
+  "end": {
+    "dateTime": "2026-08-03T09:15:00+02:00",
+    "timeZone": "Europe/Amsterdam"
+  },
+  "etag": "\"3568771254631198\"",
+  "eventType": "default",
+  "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+  "iCalUID": "fefqreu9s29nvs1amdqkvssd4k@google.com",
+  "id": "fefqreu9s29nvs1amdqkvssd4k",
+  "kind": "calendar#event",
+  "organizer": {
+    "email": "testuser@example.test",
+    "self": true
+  },
+  "recurrence": [
+    "RRULE:FREQ=WEEKLY;COUNT=6;BYDAY=MO"
+  ],
+  "reminders": {
+    "useDefault": true
+  },
+  "sequence": 0,
+  "start": {
+    "dateTime": "2026-08-03T09:00:00+02:00",
+    "timeZone": "Europe/Amsterdam"
+  },
+  "status": "confirmed",
+  "summary": "Fixture: weekly standup",
+  "updated": "2026-07-18T14:40:27.315Z"
+}

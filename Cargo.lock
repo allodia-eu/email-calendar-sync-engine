@@ -1097,6 +1097,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "provider-google"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "engine-core",
+ "engine-provider",
+ "engine-rfc5322",
+ "engine-tls",
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "thiserror",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "provider-graph"
 version = "0.1.0"
 dependencies = [

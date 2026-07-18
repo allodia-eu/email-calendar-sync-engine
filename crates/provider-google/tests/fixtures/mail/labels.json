@@ -1,0 +1,99 @@
+{
+  "labels": [
+    {
+      "id": "CHAT",
+      "labelListVisibility": "labelHide",
+      "messageListVisibility": "hide",
+      "name": "CHAT",
+      "type": "system"
+    },
+    {
+      "id": "SENT",
+      "name": "SENT",
+      "type": "system"
+    },
+    {
+      "id": "INBOX",
+      "name": "INBOX",
+      "type": "system"
+    },
+    {
+      "id": "IMPORTANT",
+      "labelListVisibility": "labelHide",
+      "messageListVisibility": "hide",
+      "name": "IMPORTANT",
+      "type": "system"
+    },
+    {
+      "id": "TRASH",
+      "labelListVisibility": "labelHide",
+      "messageListVisibility": "hide",
+      "name": "TRASH",
+      "type": "system"
+    },
+    {
+      "id": "DRAFT",
+      "name": "DRAFT",
+      "type": "system"
+    },
+    {
+      "id": "SPAM",
+      "labelListVisibility": "labelHide",
+      "messageListVisibility": "hide",
+      "name": "SPAM",
+      "type": "system"
+    },
+    {
+      "id": "CATEGORY_FORUMS",
+      "labelListVisibility": "labelHide",
+      "messageListVisibility": "hide",
+      "name": "CATEGORY_FORUMS",
+      "type": "system"
+    },
+    {
+      "id": "CATEGORY_UPDATES",
+      "labelListVisibility": "labelHide",
+      "messageListVisibility": "hide",
+      "name": "CATEGORY_UPDATES",
+      "type": "system"
+    },
+    {
+      "id": "CATEGORY_PERSONAL",
+      "labelListVisibility": "labelHide",
+      "messageListVisibility": "hide",
+      "name": "CATEGORY_PERSONAL",
+      "type": "system"
+    },
+    {
+      "id": "CATEGORY_PROMOTIONS",
+      "labelListVisibility": "labelHide",
+      "messageListVisibility": "hide",
+      "name": "CATEGORY_PROMOTIONS",
+      "type": "system"
+    },
+    {
+      "id": "CATEGORY_SOCIAL",
+      "labelListVisibility": "labelHide",
+      "messageListVisibility": "hide",
+      "name": "CATEGORY_SOCIAL",
+      "type": "system"
+    },
+    {
+      "id": "STARRED",
+      "name": "STARRED",
+      "type": "system"
+    },
+    {
+      "id": "UNREAD",
+      "name": "UNREAD",
+      "type": "system"
+    },
+    {
+      "id": "Label_1",
+      "labelListVisibility": "labelShow",
+      "messageListVisibility": "show",
+      "name": "Fixture Label",
+      "type": "user"
+    }
+  ]
+}

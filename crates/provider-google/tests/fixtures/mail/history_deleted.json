@@ -1,0 +1,49 @@
+{
+  "history": [
+    {
+      "id": "1683",
+      "messages": [
+        {
+          "id": "message-3",
+          "threadId": "message-3"
+        }
+      ],
+      "messagesAdded": [
+        {
+          "message": {
+            "id": "message-3",
+            "labelIds": [
+              "UNREAD",
+              "SENT",
+              "INBOX"
+            ],
+            "threadId": "message-3"
+          }
+        }
+      ]
+    },
+    {
+      "id": "1734",
+      "messages": [
+        {
+          "id": "message-3",
+          "threadId": "message-3"
+        }
+      ],
+      "messagesDeleted": [
+        {
+          "message": {
+            "id": "message-3",
+            "labelIds": [
+              "UNREAD",
+              "SENT",
+              "INBOX"
+            ],
+            "threadId": "message-3"
+          }
+        }
+      ]
+    }
+  ],
+  "historyId": "1761"
+}

@@ -1,0 +1,36 @@
+{
+  "created": "2026-07-18T14:40:26.000Z",
+  "creator": {
+    "email": "testuser@example.test",
+    "self": true
+  },
+  "end": {
+    "date": "2026-08-06"
+  },
+  "etag": "\"3568771253016606\"",
+  "eventType": "default",
+  "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+  "iCalUID": "478v4sp8glv0228najn5jq667o@google.com",
+  "id": "478v4sp8glv0228najn5jq667o",
+  "kind": "calendar#event",
+  "organizer": {
+    "email": "testuser@example.test",
+    "self": true
+  },
+  "reminders": {
+    "overrides": [
+      {
+        "method": "popup",
+        "minutes": 30
+      }
+    ],
+    "useDefault": false
+  },
+  "sequence": 0,
+  "start": {
+    "date": "2026-08-05"
+  },
+  "status": "confirmed",
+  "summary": "Fixture: all day",
+  "updated": "2026-07-18T14:40:26.508Z"
+}

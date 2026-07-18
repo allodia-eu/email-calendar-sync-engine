@@ -141,6 +141,53 @@ pub enum SyncScope {
         /// The calendar.
         calendar: CalendarId,
     },
+    /// A Gmail **account-global** message scope.
+    ///
+    /// Unlike Graph mail (`delta` per folder) and IMAP (state per mailbox), Gmail's
+    /// `historyId` is an **account-wide** incremental cursor (like JMAP's per-account
+    /// `Email` state), so all of an account's messages sync under one scope — there is
+    /// no per-label fan-out. Gmail labels are multi-membership on the message itself,
+    /// synced under [`GmailLabelList`](Self::GmailLabelList); a message's membership is
+    /// its `labelIds`, not the scope it was fetched under.
+    GmailMessages {
+        /// The account.
+        account: AccountId,
+    },
+    /// A Gmail per-account label-list (label discovery) scope.
+    ///
+    /// Like [`GraphFolderList`](Self::GraphFolderList), the label list is re-discovered
+    /// as a snapshot each pass (`GET /users/me/labels`), so it carries no cursor of its
+    /// own — but it is a distinct **container** scope, claimed and applied before the
+    /// account's [`GmailMessages`](Self::GmailMessages) that reference its labels
+    /// (`store-and-sync.md` referential apply order).
+    GmailLabelList {
+        /// The account.
+        account: AccountId,
+    },
+    /// A Google Calendar per-account calendar-list (calendar discovery) scope.
+    ///
+    /// Like [`GmailLabelList`](Self::GmailLabelList), the calendar list is
+    /// re-discovered as a snapshot each pass (`GET /calendar/v3/users/me/calendarList`),
+    /// so it carries no cursor of its own — but it is a distinct **container** scope,
+    /// claimed and applied before the per-calendar
+    /// [`GoogleCalendar`](Self::GoogleCalendar) event scopes it parents.
+    GoogleCalendarList {
+        /// The account.
+        account: AccountId,
+    },
+    /// A Google Calendar `(account, calendar)` event scope.
+    ///
+    /// Google Calendar `events.list` returns a per-calendar `nextSyncToken` cursor and
+    /// (unlike Graph's *mandatory* `calendarView` window) an **optional** `timeMin`, so
+    /// — like [`GraphCalendar`](Self::GraphCalendar) — a Google calendar provider is
+    /// bound to one calendar for events; the cross-calendar fan-out is the
+    /// orchestrator's job.
+    GoogleCalendar {
+        /// The account.
+        account: AccountId,
+        /// The calendar.
+        calendar: CalendarId,
+    },
 }
 
 /// The search domain whose member objects a scope holds — the index a per-account
@@ -180,7 +227,11 @@ impl SyncScope {
             | Self::GraphFolderList { account }
             | Self::GraphFolder { account, .. }
             | Self::GraphCalendarList { account }
-            | Self::GraphCalendar { account, .. } => account,
+            | Self::GraphCalendar { account, .. }
+            | Self::GmailMessages { account }
+            | Self::GmailLabelList { account }
+            | Self::GoogleCalendarList { account }
+            | Self::GoogleCalendar { account, .. } => account,
         }
     }
 
@@ -204,16 +255,22 @@ impl SyncScope {
                 _ => None,
             },
             // Graph mirrors IMAP: a per-folder message scope + a folder-list container.
-            Self::ImapMailbox { .. } | Self::GraphFolder { .. } => Some(ObjectKind::Message),
-            Self::ImapMailboxList { .. } | Self::GraphFolderList { .. } => {
-                Some(ObjectKind::Mailbox)
+            // Gmail's message scope is account-global (like JMAP's Email) but still a
+            // message scope; its label list is the mailbox container.
+            Self::ImapMailbox { .. } | Self::GraphFolder { .. } | Self::GmailMessages { .. } => {
+                Some(ObjectKind::Message)
             }
-            // Graph calendar mirrors CalDAV: a per-calendar event scope + a calendar-list
-            // container.
-            Self::DavCollection { .. } | Self::GraphCalendar { .. } => Some(ObjectKind::Event),
-            Self::DavCollectionList { .. } | Self::GraphCalendarList { .. } => {
-                Some(ObjectKind::Calendar)
-            }
+            Self::ImapMailboxList { .. }
+            | Self::GraphFolderList { .. }
+            | Self::GmailLabelList { .. } => Some(ObjectKind::Mailbox),
+            // Graph/Google calendar mirror CalDAV: a per-calendar event scope + a
+            // calendar-list container.
+            Self::DavCollection { .. }
+            | Self::GraphCalendar { .. }
+            | Self::GoogleCalendar { .. } => Some(ObjectKind::Event),
+            Self::DavCollectionList { .. }
+            | Self::GraphCalendarList { .. }
+            | Self::GoogleCalendarList { .. } => Some(ObjectKind::Calendar),
         }
     }
 
@@ -424,6 +481,48 @@ mod tests {
         let calendar = SyncScope::GraphCalendar {
             account: account(),
             calendar: CalendarId::try_from("AAkALgcal-default").unwrap(),
+        };
+        assert_ne!(list, calendar);
+        assert_eq!(list.account(), &account());
+        assert_eq!(calendar.account(), &account());
+        assert_eq!(list.object_kind(), Some(ObjectKind::Calendar));
+        assert_eq!(calendar.object_kind(), Some(ObjectKind::Event));
+        assert_eq!(calendar.search_domain(), Some(SearchDomain::Calendar));
+        for scope in [&list, &calendar] {
+            let json = serde_json::to_string(scope).unwrap();
+            assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
+        }
+    }
+
+    #[test]
+    fn gmail_message_scope_is_account_global_and_roundtrips() {
+        // Gmail's message scope is account-global (historyId is account-wide, JMAP-like),
+        // so there is one message scope per account — not a per-label fan-out — plus the
+        // label-list container. The two must never share a lease.
+        let messages = SyncScope::GmailMessages { account: account() };
+        let labels = SyncScope::GmailLabelList { account: account() };
+        assert_ne!(messages, labels);
+        assert_eq!(messages.object_kind(), Some(ObjectKind::Message));
+        assert_eq!(messages.search_domain(), Some(SearchDomain::Mail));
+        assert_eq!(labels.object_kind(), Some(ObjectKind::Mailbox));
+        assert_eq!(labels.search_domain(), None);
+        for scope in [&messages, &labels] {
+            assert_eq!(scope.account(), &account());
+            let json = serde_json::to_string(scope).unwrap();
+            assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
+        }
+    }
+
+    #[test]
+    fn google_calendar_list_is_distinct_from_a_calendar_and_roundtrips() {
+        // The calendar-list container scope must never collide with the event scope of
+        // any single calendar, or the two would share one lease. Google calendar sync is
+        // per calendar (a per-calendar nextSyncToken), so each calendar is a distinct
+        // member scope, mirroring the Graph GraphCalendar/GraphCalendarList split.
+        let list = SyncScope::GoogleCalendarList { account: account() };
+        let calendar = SyncScope::GoogleCalendar {
+            account: account(),
+            calendar: CalendarId::try_from("primary").unwrap(),
         };
         assert_ne!(list, calendar);
         assert_eq!(list.account(), &account());

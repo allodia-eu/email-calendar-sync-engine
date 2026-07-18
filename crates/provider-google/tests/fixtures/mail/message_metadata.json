@@ -1,0 +1,38 @@
+{
+  "historyId": "1617",
+  "id": "message-1",
+  "internalDate": "1784385423000",
+  "labelIds": [
+    "UNREAD",
+    "SENT",
+    "INBOX"
+  ],
+  "payload": {
+    "headers": [
+      {
+        "name": "From",
+        "value": "Test User <testuser@example.test>"
+      },
+      {
+        "name": "To",
+        "value": "testuser@example.test"
+      },
+      {
+        "name": "Subject",
+        "value": "Fixture: first message"
+      },
+      {
+        "name": "Message-Id",
+        "value": "<message-1@mail.gmail.test>"
+      },
+      {
+        "name": "Date",
+        "value": "Sat, 18 Jul 2026 07:37:03 -0700"
+      }
+    ],
+    "mimeType": "text/plain"
+  },
+  "sizeEstimate": 561,
+  "snippet": "The first fixture message body.",
+  "threadId": "message-1"
+}
