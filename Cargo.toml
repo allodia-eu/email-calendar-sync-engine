@@ -96,6 +96,7 @@ engine-store = { path = "crates/engine-store" }
 engine-search = { path = "crates/engine-search" }
 engine-recurrence = { path = "crates/engine-recurrence" }
 engine-provider = { path = "crates/engine-provider" }
+engine-rfc5322 = { path = "crates/engine-rfc5322" }
 provider-jmap = { path = "crates/provider-jmap" }
 provider-imap = { path = "crates/provider-imap" }
 provider-caldav = { path = "crates/provider-caldav" }

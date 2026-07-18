@@ -2,6 +2,7 @@
 
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
 use engine_provider::Draft;
+use engine_rfc5322::assemble_message;
 use time::{OffsetDateTime, macros::datetime};
 
 use super::*;

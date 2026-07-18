@@ -36,6 +36,17 @@ pub(crate) trait GraphTransport: Send + Sync {
     /// that streams a message's RFC 822 MIME rather than JSON.
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError>;
 
+    /// `POST`s `body` with `content_type` to `url`, returning the parsed JSON response
+    /// body when the server sent one — an action that answers with an empty body
+    /// (Graph `sendMail` returns `202 Accepted` with none) yields `None`. A non-2xx
+    /// becomes a classified [`GraphError::Status`].
+    async fn post(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GraphError>;
+
     /// The HTTP version the transport negotiated, or `None` before its first response.
     /// Defaults to `None`: only [`HttpTransport`] speaks HTTP, so a fake fed canned
     /// fixtures has no version to report.
@@ -84,6 +95,29 @@ impl HttpTransport {
         self.http_version.record(response.version());
         Ok(response)
     }
+
+    /// Issues the authenticated `POST` the write shapes share, recording the negotiated
+    /// HTTP version like [`send`](Self::send) — the write counterpart, so both funnels
+    /// observe the version. Carries the immutable-id preference so a write that *does*
+    /// echo an object (a future create) returns the stable id form.
+    async fn send_post(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<reqwest::Response, GraphError> {
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(&self.token)
+            .header("Prefer", "IdType=\"ImmutableId\"")
+            .header("Content-Type", content_type)
+            .body(body)
+            .send()
+            .await?;
+        self.http_version.record(response.version());
+        Ok(response)
+    }
 }
 
 #[async_trait]
@@ -108,6 +142,28 @@ impl GraphTransport for HttpTransport {
             return Err(GraphError::status(status.as_u16(), body));
         }
         Ok(resp.bytes().await?.to_vec())
+    }
+
+    async fn post(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GraphError> {
+        let resp = self.send_post(url, content_type, body).await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GraphError::status(status.as_u16(), body));
+        }
+        // A `202 Accepted` (sendMail) / `204 No Content` (delete) carries no body; a
+        // create/patch echoes the object as JSON. Distinguish by whether a body arrived.
+        let text = resp.text().await.unwrap_or_default();
+        if text.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(serde_json::from_str(&text)?))
+        }
     }
 
     fn http_version(&self) -> Option<HttpVersion> {
@@ -231,6 +287,26 @@ impl GraphClient {
     /// Returns a classified [`GraphError`] (a non-2xx is [`GraphError::Status`]).
     pub(crate) async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {
         self.transport.get_bytes(&self.rebase(url)).await
+    }
+
+    /// Authenticated `POST` of `body` with `content_type`, rebasing absolute Graph
+    /// links onto a non-default base like [`get`]. Returns the parsed JSON response
+    /// body when the action echoed one (a `202`/`204` carries none).
+    ///
+    /// [`get`]: Self::get
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`GraphError`] (a non-2xx is [`GraphError::Status`]).
+    pub(crate) async fn post(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GraphError> {
+        self.transport
+            .post(&self.rebase(url), content_type, body)
+            .await
     }
 
     /// The HTTP version this client's transport negotiated, or `None` before its first

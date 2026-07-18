@@ -16,16 +16,20 @@
 use std::collections::BTreeSet;
 
 use engine_core::{
-    ids::{AccountId, MailboxId},
-    mail::MailboxRole,
+    ids::{AccountId, MailboxId, MessageIdHeader},
+    mail::{EmailAddress, MailboxRole},
     sync::SyncUpdate,
 };
-use engine_provider::Provider;
+use engine_provider::{Draft, Provider};
 use provider_graph::{GraphClient, GraphProvider};
 
 fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
 }
+
+/// The throwaway test account's own address — every live send is addressed to it (the
+/// account sends only to itself), so nothing leaves the mailbox.
+const SELF_ADDRESS: &str = "allodia-e2e@outlook.com";
 
 /// The bearer token, or `None` to skip the gated test.
 fn token() -> Option<String> {
@@ -98,4 +102,70 @@ async fn live_message_snapshot_then_delta() {
         .await
         .expect("delta");
     assert!(!delta.is_snapshot());
+}
+
+#[tokio::test]
+async fn live_send_preserves_message_id_end_to_end() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_send_preserves_message_id_end_to_end: GRAPH_ACCESS_TOKEN unset");
+        return;
+    };
+    let provider = provider(token);
+
+    // A unique, self-addressed draft: the whole point of the MIME send is that our
+    // pre-generated Message-ID reaches the wire verbatim, so we prove it does by finding
+    // it come back. Uniqueness comes from the wall clock (a test may read it).
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let message_id = MessageIdHeader::new(format!("graph-live-{unique}@allodia-e2e.test")).unwrap();
+    let me = EmailAddress::new(SELF_ADDRESS);
+    let draft = Draft::new(
+        message_id.clone(),
+        me.clone(),
+        vec![me],
+        format!("provider-graph MIME send probe {unique}"),
+        "Sent by the provider-graph live test; safe to delete.",
+    );
+
+    // `submit_email` returns a receipt with a Message-ID-derived placeholder key (Graph
+    // answers 202 with no id) echoing the Message-ID for reconciliation.
+    let receipt = provider
+        .submit_email(&account(), &draft)
+        .await
+        .expect("submit_email");
+    assert_eq!(receipt.message_id, message_id);
+    assert_eq!(
+        receipt.email_key.as_str(),
+        format!("sent:graph-live-{unique}@allodia-e2e.test")
+    );
+
+    // The self-addressed copy lands back in the Inbox; poll for our exact Message-ID to
+    // prove Graph preserved it (it is bracket-stripped in the projection, as we generated it).
+    let mut found = false;
+    for _ in 0..15 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let snapshot = provider
+            .sync_email(&account(), None)
+            .await
+            .expect("resync inbox");
+        let SyncUpdate::Snapshot { objects, .. } = &snapshot.update else {
+            continue;
+        };
+        if objects.iter().any(|m| {
+            m.envelope
+                .message_id
+                .iter()
+                .any(|id| id.as_str() == message_id.as_str())
+        }) {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "the sent Message-ID {} never appeared in the inbox — Graph did not preserve it",
+        message_id.as_str()
+    );
 }
