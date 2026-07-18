@@ -19,6 +19,7 @@ pub(crate) type Recorded = Arc<Mutex<Vec<u8>>>;
 
 /// An async stream backed by a fixed server script (read side) and a recording
 /// buffer (write side).
+#[derive(Debug)]
 pub(crate) struct MockStream {
     to_client: io::Cursor<Vec<u8>>,
     from_client: Recorded,

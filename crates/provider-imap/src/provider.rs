@@ -19,8 +19,7 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, Draft, EmailStream, MailEdit,
-    MailEditReceipt, Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt,
-    TlsVersion,
+    MailEditReceipt, Provider, ProviderResult, ScopeSync, SubmissionReceipt, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -30,8 +29,9 @@ use tokio::{
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
 use crate::{
-    config::{ImapConfig, SmtpSettings},
+    config::{ImapConfig, ImapSecurity},
     error::ImapError,
+    filing::{SmtpSender, resolve_smtp},
     mail::mailbox_from_list,
     tls_info,
     transport::Connection,
@@ -41,21 +41,6 @@ use crate::{
 /// so its cursor is a fixed sentinel — the store round-trips it unread.
 const FOLDER_LIST_CURSOR: &str = "imap-folders";
 
-/// The resolved SMTP transport a provider holds after `connect`: plaintext, or
-/// implicit TLS carrying the connector + credentials each fresh send re-dials with.
-enum SmtpSender {
-    Plaintext {
-        addr: String,
-    },
-    ImplicitTls {
-        addr: String,
-        server_name: String,
-        connector: TlsConnector,
-        username: String,
-        password: String,
-    },
-}
-
 /// An IMAP read/sync provider bound to a single mailbox for its email scope, with
 /// optional SMTP submission.
 pub struct ImapProvider<S> {
@@ -63,7 +48,9 @@ pub struct ImapProvider<S> {
     /// keep this file under the size limit) can lock the shared IMAP session.
     pub(crate) connection: Mutex<Connection<S>>,
     mailbox: MailboxId,
-    smtp: Option<SmtpSender>,
+    /// The resolved SMTP transport, or `None` when submission is unconfigured.
+    /// `pub(crate)` so [`crate::filing`] (which owns the submission dispatch) reads it.
+    pub(crate) smtp: Option<SmtpSender>,
     /// The sync-depth window floor: when set, a snapshot fetches only mail delivered
     /// on or after this date (`ImapConfig::with_since`). `None` syncs the whole mailbox.
     since: Option<time::Date>,
@@ -136,15 +123,34 @@ pub(crate) async fn connect_session(
     let tcp = TcpStream::connect(&config.addr).await?;
     let server_name = ServerName::try_from(config.server_name.clone())
         .map_err(|e| ImapError::bad(format!("invalid TLS server name: {e}")))?;
-    let tls = connector.connect(server_name, tcp).await?;
+    // Implicit TLS wraps the socket now; STARTTLS runs the plaintext handshake command
+    // first and upgrades the raw socket in place. Either way the result is one
+    // `TlsStream`, so the rest of the dial — and every downstream type — is identical.
+    let (tls, resumed) = match config.security {
+        ImapSecurity::ImplicitTls => (connector.connect(server_name, tcp).await?, false),
+        ImapSecurity::StartTls => {
+            let mut plain = Connection::open(tcp).await?;
+            plain.start_tls().await?;
+            let upgraded = connector
+                .connect(server_name, plain.into_inner_stream()?)
+                .await?;
+            (upgraded, true)
+        }
+    };
     let tls_version = tls_info::tls_version(&tls);
-    let connection = open_session(tls, tls_version, config).await?;
+    // STARTTLS already consumed the one greeting on the plaintext connection, so it
+    // resumes without reading another; implicit TLS reads its greeting here.
+    let connection = if resumed {
+        finish_session(Connection::resume(tls), tls_version, config).await?
+    } else {
+        open_session(tls, tls_version, config).await?
+    };
     Ok((connection, tls_version))
 }
 
-/// Greets, logs in, and negotiates capabilities over an already-established `stream`,
-/// reporting [`ConnectStep::TlsEstablished`] (when the handshake agreed a version) and
-/// [`ConnectStep::Authenticated`] to the config's observer.
+/// Greets over an already-established `stream`, then logs in and negotiates
+/// capabilities via [`finish_session`]. The implicit-TLS / mock path (the STARTTLS
+/// path uses [`finish_session`] directly, its greeting already read).
 ///
 /// Generic over the stream, so the offline suite asserts the exact step sequence over
 /// a `MockStream` — the handshake has already happened by the time this is called, so
@@ -158,11 +164,26 @@ pub(crate) async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     tls_version: Option<TlsVersion>,
     config: &ImapConfig,
 ) -> Result<Connection<S>, ImapError> {
+    finish_session(Connection::open(stream).await?, tls_version, config).await
+}
+
+/// Logs in and negotiates capabilities over an already-greeted `connection`, reporting
+/// [`ConnectStep::TlsEstablished`] (when the handshake agreed a version) then
+/// [`ConnectStep::Authenticated`] to the config's observer. Shared by the implicit-TLS
+/// path ([`open_session`]) and the STARTTLS resume, so both emit the same step order.
+///
+/// # Errors
+///
+/// [`ImapError`] on a login or capability-negotiation failure.
+async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
+    mut connection: Connection<S>,
+    tls_version: Option<TlsVersion>,
+    config: &ImapConfig,
+) -> Result<Connection<S>, ImapError> {
     let observer: &dyn ConnectObserver = config.connect_observer();
     if let Some(version) = tls_version {
         observer.step(&ConnectStep::TlsEstablished(version));
     }
-    let mut connection = Connection::open(stream).await?;
     connection.login(&config.username, &config.password).await?;
     observer.step(&ConnectStep::Authenticated);
     // Detect + ENABLE QRESYNC (RFC 7162) so deltas reconcile flag/expunge changes
@@ -171,27 +192,6 @@ pub(crate) async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     // does not establish the connection.
     connection.negotiate_qresync().await?;
     Ok(connection)
-}
-
-/// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,
-/// capturing the TLS connector and credentials each future send re-dials with.
-fn resolve_smtp(
-    settings: &SmtpSettings,
-    connector: &TlsConnector,
-    config: &ImapConfig,
-) -> SmtpSender {
-    match &settings.tls_server_name {
-        None => SmtpSender::Plaintext {
-            addr: settings.addr.clone(),
-        },
-        Some(server_name) => SmtpSender::ImplicitTls {
-            addr: settings.addr.clone(),
-            server_name: server_name.clone(),
-            connector: connector.clone(),
-            username: config.username.clone(),
-            password: config.password.clone(),
-        },
-    }
 }
 
 /// Formats a calendar date as the IMAP `d-Mon-yyyy` form `UID SEARCH SINCE` expects
@@ -251,6 +251,18 @@ impl<S> ImapProvider<S> {
     #[cfg(test)]
     pub(crate) fn with_connection(connection: Connection<S>, mailbox: MailboxId) -> Self {
         Self::build(connection, mailbox, None, None, None)
+    }
+
+    /// Wraps a mock IMAP `connection` but with an injected `smtp` sender, so the
+    /// offline suite can drive [`submit`](Self::submit) against an in-process SMTP
+    /// server (the IMAP filing side degrades gracefully over the exhausted mock).
+    #[cfg(test)]
+    pub(crate) fn with_connection_and_smtp(
+        connection: Connection<S>,
+        mailbox: MailboxId,
+        smtp: SmtpSender,
+    ) -> Self {
+        Self::build(connection, mailbox, Some(smtp), None, None)
     }
 }
 
@@ -337,13 +349,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         ))
     }
 
-    /// Submits `draft` over SMTP and files the sent copy in Sent.
+    /// Submits `draft` over the configured SMTP transport and files the sent copy in
+    /// Sent (`crate::filing`). Plaintext, implicit TLS, and STARTTLS are all dispatched
+    /// there; `AUTH PLAIN` runs only once the stream is TLS-secured.
     ///
     /// The pre-generated `Message-ID` travels on the message, so the sent copy
     /// reconciles by it. A post-`DATA` ambiguity becomes a
-    /// [`ProviderError::needs_confirmation`] (never blind-retried); a clean
-    /// rejection is permanent (5xx) or transient (4xx). Sent placement is a
-    /// best-effort `APPEND` — a successful send is not failed for a Sent-filing
+    /// [`ProviderError::needs_confirmation`](engine_provider::ProviderError::needs_confirmation)
+    /// (never blind-retried); a clean rejection is permanent (5xx) or transient (4xx). Sent
+    /// placement is a best-effort `APPEND` — a successful send is not failed for a Sent-filing
     /// hiccup; with UIDPLUS the receipt carries the real Sent key, otherwise a
     /// `Message-ID`-derived one that the next Sent sync resolves.
     async fn submit_email(
@@ -351,33 +365,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         _account: &AccountId,
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
-        let smtp = self
-            .smtp
-            .as_ref()
-            .ok_or_else(|| ProviderError::invalid_state("no SMTP transport configured"))?;
-        match smtp {
-            SmtpSender::Plaintext { addr } => {
-                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
-                self.submit_over(tcp, draft, None).await
-            }
-            SmtpSender::ImplicitTls {
-                addr,
-                server_name,
-                connector,
-                username,
-                password,
-            } => {
-                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
-                let name = ServerName::try_from(server_name.clone())
-                    .map_err(|e| ImapError::bad(format!("invalid SMTP TLS server name: {e}")))?;
-                let tls = connector
-                    .connect(name, tcp)
-                    .await
-                    .map_err(ImapError::from)?;
-                self.submit_over(tls, draft, Some((username.as_str(), password.as_str())))
-                    .await
-            }
-        }
+        self.submit(draft).await
     }
 
     /// Applies a [`MailEdit`] to the bound mailbox: mark-read/flag (`UID STORE`),
@@ -386,7 +374,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     /// A thin lock-and-call: the mutation logic (key parse, the SELECT + UIDVALIDITY
     /// guard, command dispatch) lives in the `mutate` module so it stays
     /// stream-generic and unit-testable. A stale UID (its mailbox's `UIDVALIDITY`
-    /// changed) is a [`ProviderError::conflict`].
+    /// changed) is a [`ProviderError::conflict`](engine_provider::ProviderError::conflict).
     async fn edit_mail(
         &self,
         _account: &AccountId,
@@ -402,7 +390,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     /// guard, the body read) lives in the `fetch` module so it stays stream-generic
     /// and unit-testable. The message is addressed by its own key, so any of the
     /// account's folders can be read over this one bound session; a stale UID (its
-    /// mailbox's `UIDVALIDITY` changed) is a [`ProviderError::conflict`].
+    /// mailbox's `UIDVALIDITY` changed) is a
+    /// [`ProviderError::conflict`](engine_provider::ProviderError::conflict).
     async fn fetch_message_source(
         &self,
         _account: &AccountId,
@@ -422,3 +411,9 @@ mod tests;
 #[cfg(test)]
 #[path = "provider_submit_over_tests.rs"]
 mod submit_over_tests;
+
+// The STARTTLS connect path drives a real in-process TLS server, so it lives in its own
+// sibling file (with its own cert/server harness).
+#[cfg(test)]
+#[path = "provider_starttls_tests.rs"]
+mod starttls_tests;

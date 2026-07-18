@@ -26,8 +26,11 @@ Then point the Rust smoke suite at it (from the repo root):
 
 ```sh
 export STALWART_HTTP_ADDR=127.0.0.1:18080
-export STALWART_IMAP_ADDR=127.0.0.1:11993   # IMAP is implicit-TLS
-export STALWART_SMTP_ADDR=127.0.0.1:11025
+export STALWART_IMAP_ADDR=127.0.0.1:11993          # IMAP implicit-TLS
+export STALWART_SMTP_ADDR=127.0.0.1:11025          # SMTP plaintext
+export STALWART_SMTP_TLS_ADDR=127.0.0.1:11465      # SMTP submission implicit-TLS
+export STALWART_IMAP_STARTTLS_ADDR=127.0.0.1:11143 # IMAP STARTTLS
+export STALWART_SMTP_STARTTLS_ADDR=127.0.0.1:11587 # SMTP submission STARTTLS
 export STALWART_ACCOUNT=alice@test.local
 export STALWART_PASSWORD=harness-alice-pw
 cargo test -p stalwart-harness --test smoke -- --nocapture
@@ -49,7 +52,14 @@ Without `STALWART_HTTP_ADDR` set, every Stalwart-touching test **skips**, so
 | ----------------------------- | --------- | ------- | ------------------ |
 | HTTP — JMAP + CalDAV + admin  | 8080      | `18080` | plaintext          |
 | SMTP                          | 25        | `11025` | plaintext          |
+| SMTP submission               | 465       | `11465` | implicit TLS (self-signed) |
 | IMAP                          | 993       | `11993` | implicit TLS (self-signed) |
+| IMAP                          | 143       | `11143` | STARTTLS (self-signed)     |
+| SMTP submission               | 587       | `11587` | STARTTLS (self-signed)     |
+
+Stalwart supports STARTTLS on 143/587 but [recommends](https://stalw.art/docs/install/security/)
+implicit TLS (993/465), so a fresh bootstrap does not create these listeners; the
+entrypoint provisions them via the management API to exercise the engine's STARTTLS paths.
 
 ## Seeded accounts
 

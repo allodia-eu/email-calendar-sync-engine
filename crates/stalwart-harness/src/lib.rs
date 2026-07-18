@@ -35,6 +35,12 @@ pub const GATE_VAR: &str = "STALWART_HTTP_ADDR";
 // port; SMTP is plaintext.
 const DEFAULT_IMAP_ADDR: &str = "127.0.0.1:11993";
 const DEFAULT_SMTP_ADDR: &str = "127.0.0.1:11025";
+// Implicit-TLS submission (465) is a Stalwart default listener; STARTTLS listeners
+// (143/587) are provisioned by the entrypoint (Stalwart recommends implicit TLS, so a
+// fresh bootstrap does not create them). Together they cover every IMAP/SMTP transport.
+const DEFAULT_SMTP_TLS_ADDR: &str = "127.0.0.1:11465";
+const DEFAULT_IMAP_STARTTLS_ADDR: &str = "127.0.0.1:11143";
+const DEFAULT_SMTP_STARTTLS_ADDR: &str = "127.0.0.1:11587";
 const DEFAULT_ACCOUNT: &str = "alice@test.local";
 const DEFAULT_PASSWORD: &str = "harness-alice-pw";
 
@@ -96,6 +102,12 @@ pub struct Harness {
     pub imap_addr: String,
     /// `host:port` of the plaintext SMTP listener.
     pub smtp_addr: String,
+    /// `host:port` of the SMTP submission listener over implicit TLS (port 465).
+    pub smtp_tls_addr: String,
+    /// `host:port` of the IMAP STARTTLS listener (cleartext connect, upgraded).
+    pub imap_starttls_addr: String,
+    /// `host:port` of the SMTP submission STARTTLS listener.
+    pub smtp_starttls_addr: String,
     /// Seeded account used to authenticate (full email address).
     pub account: String,
     /// The account's password.
@@ -122,6 +134,9 @@ impl Harness {
             http_addr,
             imap_addr: var("STALWART_IMAP_ADDR", DEFAULT_IMAP_ADDR),
             smtp_addr: var("STALWART_SMTP_ADDR", DEFAULT_SMTP_ADDR),
+            smtp_tls_addr: var("STALWART_SMTP_TLS_ADDR", DEFAULT_SMTP_TLS_ADDR),
+            imap_starttls_addr: var("STALWART_IMAP_STARTTLS_ADDR", DEFAULT_IMAP_STARTTLS_ADDR),
+            smtp_starttls_addr: var("STALWART_SMTP_STARTTLS_ADDR", DEFAULT_SMTP_STARTTLS_ADDR),
             account: var("STALWART_ACCOUNT", DEFAULT_ACCOUNT),
             password: var("STALWART_PASSWORD", DEFAULT_PASSWORD),
         })
@@ -250,6 +265,9 @@ mod tests {
             http_addr: "127.0.0.1:18080".to_owned(),
             imap_addr: "127.0.0.1:11993".to_owned(),
             smtp_addr: "127.0.0.1:11025".to_owned(),
+            smtp_tls_addr: "127.0.0.1:11465".to_owned(),
+            imap_starttls_addr: "127.0.0.1:11143".to_owned(),
+            smtp_starttls_addr: "127.0.0.1:11587".to_owned(),
             account: "alice@test.local".to_owned(),
             password: "pw".to_owned(),
         };

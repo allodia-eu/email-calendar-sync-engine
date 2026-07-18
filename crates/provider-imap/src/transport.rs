@@ -23,16 +23,22 @@ const MAX_LITERAL: usize = 64 * 1024 * 1024;
 /// A connected IMAP session over a generic async byte stream.
 pub(crate) struct Connection<S> {
     pub(crate) inner: BufReader<S>,
-    tag: u32,
+    /// The command-tag counter (`a1`, `a2`, …); `pub(crate)` so
+    /// [`Connection::resume`](crate::transport_starttls) can reset it on the
+    /// post-STARTTLS stream.
+    pub(crate) tag: u32,
     /// Whether QRESYNC (RFC 7162) was negotiated for this session — set by
     /// [`Connection::negotiate_qresync`]. When `true`, the sync layer opens mailboxes
-    /// with CONDSTORE and reconciles deltas via `CHANGEDSINCE`/`VANISHED`.
-    qresync: bool,
+    /// with CONDSTORE and reconciles deltas via `CHANGEDSINCE`/`VANISHED`. `pub(crate)`
+    /// so [`Connection::resume`](crate::transport_starttls) can seed the post-STARTTLS
+    /// defaults.
+    pub(crate) qresync: bool,
     /// Whether the server advertised `IDLE` (RFC 2177) in its post-auth `CAPABILITY` —
     /// recorded by [`Connection::negotiate_qresync`] from the same response. When
     /// `true`, a [`crate::watch::ImapWatcher`] can keep a standing connection idling to
     /// push change notifications; when `false`, the host must fall back to polling.
-    idle_advertised: bool,
+    /// `pub(crate)` for the same reason as [`qresync`](Self::qresync).
+    pub(crate) idle_advertised: bool,
     /// The tag of a streamed `UID FETCH` ([`Connection::uid_fetch_stream_start`]) whose
     /// tagged completion has not yet been read — set while its rows are being pulled
     /// one at a time. If a streaming fetch is **abandoned** mid-response (the caller
@@ -164,8 +170,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     }
 
     /// Sends a tagged command and collects its untagged responses and completion
-    /// detail. A `NO`/`BAD` completion is an error.
-    async fn command(&mut self, command: &str) -> ImapResult<Response> {
+    /// detail. A `NO`/`BAD` completion is an error. `pub(crate)` so the STARTTLS
+    /// preamble (`crate::transport_starttls`) can issue `CAPABILITY`/`STARTTLS` over
+    /// the plaintext connection reusing the tagged round trip.
+    pub(crate) async fn command(&mut self, command: &str) -> ImapResult<Response> {
         // If a streamed `UID FETCH` was abandoned mid-response, finish reading it to
         // its tag first so this command's reply is not corrupted by leftover lines.
         self.drain_pending().await?;
@@ -432,8 +440,10 @@ fn parse_append_uid(detail: &str) -> Option<(u32, u32)> {
     Some((validity, uid))
 }
 
-/// One command's untagged responses plus its completion detail.
-struct Response {
+/// One command's untagged responses plus its completion detail. `pub(crate)` so
+/// the STARTTLS preamble (`crate::transport_starttls`) can read a `CAPABILITY`
+/// response through the shared [`Connection::command`].
+pub(crate) struct Response {
     untagged: Vec<Vec<u8>>,
     detail: String,
 }
@@ -441,7 +451,7 @@ struct Response {
 impl Response {
     /// The untagged lines plus the completion detail, consumed (no clone), so a
     /// `[UIDVALIDITY n]` response code in either place is seen.
-    fn into_all_lines(self) -> Vec<Vec<u8>> {
+    pub(crate) fn into_all_lines(self) -> Vec<Vec<u8>> {
         let mut lines = self.untagged;
         lines.push(self.detail.into_bytes());
         lines

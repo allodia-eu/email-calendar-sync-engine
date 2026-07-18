@@ -8,8 +8,12 @@
 # docker/stalwart/README.md and crates/stalwart-harness).
 #
 # Transport: JMAP + CalDAV + management on plaintext HTTP 8080; SMTP plaintext on
-# 25; IMAP implicit-TLS on 993 with the server's self-signed test certificate
-# (tests trust-skip explicitly; this never touches a host trust store).
+# 25; SMTP submission implicit-TLS on 465; IMAP implicit-TLS on 993 — all Stalwart
+# default listeners, using the server's self-signed test certificate (tests trust-skip
+# explicitly; this never touches a host trust store). The entrypoint additionally
+# provisions STARTTLS listeners for IMAP (143) and SMTP submission (587) — Stalwart
+# supports these ports but recommends implicit TLS (993/465), so a fresh bootstrap does
+# not create them; we add them to cover the engine's STARTTLS transports.
 #
 # Determinism: the image is pinned by sha256 digest and the whole setup is driven
 # from fixed inputs. Start from a clean slate with `docker compose down -v`
@@ -44,7 +48,10 @@ services:
       # interfaces. High host ports avoid clashing with a real local server.
       - "127.0.0.1:18080:8080" # HTTP: JMAP + CalDAV/CardDAV + management
       - "127.0.0.1:11025:25" # SMTP (plaintext)
+      - "127.0.0.1:11465:465" # SMTP submission (implicit TLS) — Stalwart default listener
       - "127.0.0.1:11993:993" # IMAP (implicit TLS)
+      - "127.0.0.1:11143:143" # IMAP (STARTTLS) — entrypoint adds this listener
+      - "127.0.0.1:11587:587" # SMTP submission (STARTTLS) — entrypoint adds this listener
     # Healthy only once the shared dataset is seeded: the marker is written at
     # the end of the entrypoint, and HTTP liveness must also answer. This is the
     # real readiness signal tests wait on — not a sleep.

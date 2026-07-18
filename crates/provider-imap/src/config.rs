@@ -10,14 +10,38 @@ use std::sync::Arc;
 
 use engine_provider::ConnectObserver;
 
-/// SMTP submission settings captured at config time: the address, and — for a
-/// real provider — the TLS server name that switches on implicit TLS + `AUTH
-/// PLAIN`. `tls_server_name` is `None` for the Stalwart fixture's plaintext MX
-/// (port 25, no auth) and `Some` for implicit TLS (port 465).
+/// How the IMAP session is secured: TLS from the first byte (port 993), or a
+/// cleartext connection upgraded in place with `STARTTLS` (port 143). Both present
+/// [`ImapConfig::server_name`] for the handshake; the difference is only *when* the
+/// handshake runs (`docs/agent-guidance/imap-smtp.md`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ImapSecurity {
+    /// Implicit TLS: the socket is TLS-wrapped before the greeting (port 993).
+    ImplicitTls,
+    /// STARTTLS: connect in the clear, negotiate the TLS upgrade, then log in
+    /// (port 143). Credentials never cross the wire before the upgrade.
+    StartTls,
+}
+
+/// How SMTP submission is secured. Plaintext is the fixture's local MX (port 25, no
+/// auth); the two TLS modes carry the `server_name` presented to the handshake and
+/// authenticate with `AUTH PLAIN` — only ever over the established TLS.
+#[derive(Clone)]
+pub(crate) enum SmtpSecurity {
+    /// Plaintext, no auth — an MX that accepts local mail (Stalwart's port 25).
+    Plaintext,
+    /// Implicit TLS from the first byte (port 465), then `AUTH PLAIN`.
+    ImplicitTls { server_name: String },
+    /// Cleartext connect upgraded with `STARTTLS` (port 587), then `AUTH PLAIN`.
+    StartTls { server_name: String },
+}
+
+/// SMTP submission settings captured at config time: the address and how the
+/// connection is secured ([`SmtpSecurity`]).
 #[derive(Clone)]
 pub(crate) struct SmtpSettings {
     pub(crate) addr: String,
-    pub(crate) tls_server_name: Option<String>,
+    pub(crate) security: SmtpSecurity,
 }
 
 /// How to connect an [`ImapProvider`](crate::ImapProvider): the address, the TLS
@@ -29,6 +53,7 @@ pub struct ImapConfig {
     pub(crate) server_name: String,
     pub(crate) username: String,
     pub(crate) password: String,
+    pub(crate) security: ImapSecurity,
     pub(crate) smtp: Option<SmtpSettings>,
     pub(crate) since: Option<time::Date>,
     pub(crate) connect_observer: Option<Arc<dyn ConnectObserver>>,
@@ -50,10 +75,23 @@ impl ImapConfig {
             server_name: server_name.into(),
             username: username.into(),
             password: password.into(),
+            security: ImapSecurity::ImplicitTls,
             smtp: None,
             since: None,
             connect_observer: None,
         }
+    }
+
+    /// Secures the IMAP session with **STARTTLS** (port 143) instead of implicit TLS:
+    /// the client connects in the clear, then upgrades the socket to TLS with the
+    /// injected connector before logging in, so credentials never cross the wire
+    /// unencrypted. The connect **fails** if the server does not advertise `STARTTLS`
+    /// (no silent downgrade). [`server_name`](Self::new) is presented to the handshake
+    /// exactly as for implicit TLS.
+    #[must_use]
+    pub fn with_starttls(mut self) -> Self {
+        self.security = ImapSecurity::StartTls;
+        self
     }
 
     /// Bounds mail sync to messages delivered on or after `since` (the sync-depth
@@ -76,7 +114,7 @@ impl ImapConfig {
     pub fn with_smtp(mut self, smtp_addr: impl Into<String>) -> Self {
         self.smtp = Some(SmtpSettings {
             addr: smtp_addr.into(),
-            tls_server_name: None,
+            security: SmtpSecurity::Plaintext,
         });
         self
     }
@@ -85,8 +123,7 @@ impl ImapConfig {
     /// typically `:465`), authenticating with `AUTH PLAIN` using the account
     /// credentials. The injected TLS connector (from
     /// [`ImapProvider::connect`](crate::ImapProvider::connect)) secures the
-    /// connection, presenting `server_name`. STARTTLS (port 587) is a later
-    /// refinement.
+    /// connection from the first byte, presenting `server_name`.
     #[must_use]
     pub fn with_smtp_tls(
         mut self,
@@ -95,7 +132,29 @@ impl ImapConfig {
     ) -> Self {
         self.smtp = Some(SmtpSettings {
             addr: smtp_addr.into(),
-            tls_server_name: Some(server_name.into()),
+            security: SmtpSecurity::ImplicitTls {
+                server_name: server_name.into(),
+            },
+        });
+        self
+    }
+
+    /// Enables **STARTTLS** SMTP submission via `smtp_addr` (`host:port`, typically
+    /// `:587`): the client connects in the clear, `EHLO`s, upgrades the socket with
+    /// `STARTTLS`, re-`EHLO`s over TLS, and only then authenticates with `AUTH PLAIN`.
+    /// The submission **fails** if the server does not advertise `STARTTLS` (no
+    /// cleartext auth). The injected TLS connector presents `server_name`.
+    #[must_use]
+    pub fn with_smtp_starttls(
+        mut self,
+        smtp_addr: impl Into<String>,
+        server_name: impl Into<String>,
+    ) -> Self {
+        self.smtp = Some(SmtpSettings {
+            addr: smtp_addr.into(),
+            security: SmtpSecurity::StartTls {
+                server_name: server_name.into(),
+            },
         });
         self
     }
@@ -136,6 +195,7 @@ impl core::fmt::Debug for ImapConfig {
             .field("addr", &self.addr)
             .field("server_name", &self.server_name)
             .field("username", &self.username)
+            .field("security", &self.security)
             .field("since", &self.since)
             .finish_non_exhaustive()
     }
@@ -165,17 +225,31 @@ mod tests {
             .with_since(since)
             .with_smtp("h:25");
         assert_eq!(plain.since, Some(since));
+        // IMAP defaults to implicit TLS until `with_starttls` flips it.
+        assert_eq!(plain.security, ImapSecurity::ImplicitTls);
         let smtp = plain.smtp.expect("smtp configured");
         assert_eq!(smtp.addr, "h:25");
-        // No TLS server name: the plaintext MX path (no implicit TLS, no `AUTH PLAIN`).
-        assert_eq!(smtp.tls_server_name, None);
+        // Plaintext MX path (no implicit TLS, no `AUTH PLAIN`).
+        assert!(matches!(smtp.security, SmtpSecurity::Plaintext));
 
         let tls = ImapConfig::new("h:993", "h", "u", "p")
             .with_smtp_tls("h:465", "smtp.example.com")
             .smtp
             .expect("smtp configured");
         assert_eq!(tls.addr, "h:465");
-        assert_eq!(tls.tls_server_name.as_deref(), Some("smtp.example.com"));
+        assert!(
+            matches!(tls.security, SmtpSecurity::ImplicitTls { server_name } if server_name == "smtp.example.com")
+        );
+
+        let starttls = ImapConfig::new("h:143", "h", "u", "p")
+            .with_starttls()
+            .with_smtp_starttls("h:587", "smtp.example.com");
+        assert_eq!(starttls.security, ImapSecurity::StartTls);
+        let smtp = starttls.smtp.expect("smtp configured");
+        assert_eq!(smtp.addr, "h:587");
+        assert!(
+            matches!(smtp.security, SmtpSecurity::StartTls { server_name } if server_name == "smtp.example.com")
+        );
     }
 
     #[test]
