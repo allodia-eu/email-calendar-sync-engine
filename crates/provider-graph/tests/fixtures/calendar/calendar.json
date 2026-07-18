@@ -1,0 +1,22 @@
+{
+  "allowedOnlineMeetingProviders": [
+    "unknown"
+  ],
+  "canEdit": true,
+  "canShare": true,
+  "canViewPrivateItems": true,
+  "changeKey": "sBrd26skdkm5ORF+XkiJIQAAAAACoA==",
+  "color": "auto",
+  "defaultOnlineMeetingProvider": "unknown",
+  "groupClassId": "0006f0b7-0000-0000-c000-000000000046",
+  "hexColor": "",
+  "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0AsBrd26skdkm5ORF_XkiJIQAAAAAiyQAA",
+  "isDefaultCalendar": true,
+  "isRemovable": false,
+  "isTallyingResponses": true,
+  "name": "Calendar",
+  "owner": {
+    "address": "testuser@example.test",
+    "name": "Test User"
+  }
+}

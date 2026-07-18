@@ -176,7 +176,11 @@ offline-tested end to end.
   Microsoft Graph uses a `patternedRecurrence` with series-master / occurrence /
   exception items and a separate cancelled-occurrence list. Normalization maps
   Graph's structured form, Google/iCalendar `RRULE` strings, and JSCalendar
-  `recurrenceRules` into one override/exclusion model; round-trips use raw.
+  `recurrenceRules` into one override/exclusion model; round-trips use raw. (For
+  Graph this is **implemented for the series master + rule**; its per-instance
+  `exception`/cancellation *overrides* are deferred — Graph v1.0 exposes no
+  recurrence-id to key them, and the master↔override dedup is itself staged, so a
+  Graph `exception` is dropped rather than mapped. See `graph.md` → "Calendar".)
 - **Rule:** `RawIcal` and `RawJsCalendar` are preserved beside the projection
   (model invariant). Provider writes round-trip from raw plus targeted patches,
   never by re-serializing the lossy projection. The projection exists for

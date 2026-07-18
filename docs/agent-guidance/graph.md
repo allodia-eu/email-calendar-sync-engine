@@ -12,8 +12,10 @@ account-wide message delta, so sync is per folder.
 
 ## The crate
 
-`provider-graph` implements the `engine_provider::Provider` contract for the
-**mail read/sync + submission** spine. Layers:
+`provider-graph` implements the `engine_provider::Provider` contract for **mail
+(read/sync + submission)** and **calendar (read/sync + writes)** — mail on
+`GraphProvider` (folder-bound), calendar on `GraphCalendarProvider` (calendar-bound),
+each over its own `GraphClient` on the same token. The mail layers:
 
 - **`error`** — `GraphError` (`Status`/`Json`/`Protocol`/`Transport`) → the
   engine-neutral `FailureClass`. Graph error bodies are a documented
@@ -195,34 +197,73 @@ shared mailboxes; verification awaits a work/school account.)
 - **Snapshot order is delta-defined**, not newest-first (consumer delta has no
   `$orderby`). A streaming newest-first snapshot via the list endpoint is a
   possible later refinement.
-- **Mail read/sync + submission.** Calendar and **mutating mail writes**
-  (`edit_mail` — mark-read/flag/move/delete) are later slices; the provider
+- **Mail read/sync + submission (`GraphProvider`).** **Mutating mail writes**
+  (`edit_mail` — mark-read/flag/move/delete) are a later slice; the provider
   advertises `mail` + `submission` (see **Submission** above). Submission is
-  account-level, so it needs no per-folder config.
+  account-level, so it needs no per-folder config. Calendar is a separate provider
+  (see **Calendar** below), not this one.
 
-## Calendar (deferred — design notes from the official delta doc)
+## Calendar (implemented)
 
-When the calendar slice lands, follow Microsoft's
-[delta-query-events](https://learn.microsoft.com/graph/delta-query-events) doc.
-The `@odata.nextLink`/`@odata.deltaLink`/`@removed` machinery (and the
-full-object + `@odata.etag` re-fetch heuristic) in `fetch` is **directly
-reusable**; the two real differences shape the slice:
+`GraphCalendarProvider` implements the calendar read/sync **and** write spine, bound to
+one calendar (`SyncScope::GraphCalendar`), with the calendar list under the per-account
+`SyncScope::GraphCalendarList` — the same shape as the mail folder/folder-list split.
+Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normalize`
+(event/calendar JSON → model) + `cal_recur` (`patternedRecurrence` → `Recurrence`),
+`windows_zones` (Windows→IANA), `cal_write` (create/patch/delete), `calendar` (the
+provider). It advertises `calendars` **and** `calendar_writes(WriteGuard::Enforced)`.
 
-- **Time-windowed.** Event delta is `GET /me/calendarView/delta?startDateTime=…&
-  endDateTime=…`, **not** `/me/events/delta` (the unbounded form is beta-only). The
-  date range is **mandatory** in v1.0 and the token encodes it. This fits the
-  engine's model — `providers.md` already says calendar sync "may be inherently
-  time-windowed … surfaced as scoped, possibly-incomplete coverage" — so the slice
-  drives the window off the host's recurrence-expansion horizon and reports
-  coverage. A new `GraphCalendarWindow`-style scope is likely needed (the cursor
-  is per-(calendar, window)).
-- **Recurrences are pre-expanded.** `calendarView` returns "single instances or
-  occurrences and exceptions of a recurring series" — i.e. Graph expands the
-  series, whereas the engine stores a master + `RRULE` and expands locally
-  (`calendar-semantics.md`, `engine-recurrence`). The slice must decide: ingest the
-  windowed instances as `event_occurrence` rows directly (bypassing local
-  expansion for Graph), or fetch masters via `/me/events` and use `calendarView`
-  only as the change signal. This tension is the key calendar design call.
+- **`calendarView/delta` is the source, masters + local expansion.** Event delta is
+  `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` (v1.0's only
+  windowed delta; `/me/events` has no v1.0 delta). It returns the series `seriesMaster`
+  (with `patternedRecurrence`), standalone `singleInstance`s, the server's pre-expanded
+  `occurrence`s, and per-instance `exception`s, ending at an `@odata.deltaLink`. The
+  engine stores a master + rule and expands **locally**, so the adapter projects only
+  `seriesMaster`/`singleInstance` and **drops `occurrence`** (re-expanded from the master)
+  **and `exception`** (see the limitation below). This reuses the mail delta machinery
+  (`@odata.nextLink`/`deltaLink`/`@removed`, `410`→snapshot restart).
+- **Time-windowed, per calendar.** The mandatory date range comes from a host-supplied
+  `CalendarWindow` (its recurrence-expansion horizon; `providers.md`); the `deltaLink`
+  encodes it, so it is applied only to the initial request.
+- **Authoring-zone times via `Prefer: outlook.timezone`.** A plain read returns UTC,
+  which expands a recurring master DST-incorrectly. The provider sends `Prefer:
+  outlook.timezone="<display_zone IANA>"` (the host's home/display zone) on every
+  `calendarView` request, so Graph returns each event's wall clock in that zone (echoing
+  the IANA name), which the adapter stores. Windows zone names (a read without the header)
+  still map through the CLDR `windowsZones` table (`windows_zones`, CLDR 49); an unknown
+  or `tzone://Microsoft/Custom` zone is preserved as a custom zone, never guessed.
+- **Recurrence mapping.** `patternedRecurrence` `pattern`+`range` → one `RecurrenceRule`:
+  `daily`/`weekly`/`absoluteMonthly`(BYMONTHDAY)/`relativeMonthly`(BYDAY+`index`)/
+  `absoluteYearly`/`relativeYearly` → `FREQ`+`BY*`; `range` `noEnd`/`numbered`/`endDate`
+  → unbounded/`COUNT`/`UNTIL`. Graph's full weekday names map to the engine `Weekday`.
+- **Writes — the server does the surgery (like JMAP).** `create_event` `POST`s to
+  `/me/calendars/{id}/events` (Graph assigns id **and** `iCalUId` — a client `UID` is not
+  accepted, so the receipt carries the server's id/uid); `patch_event` translates the
+  neutral `EventEdit` intent into a **partial** event `PATCH` (never re-serializing the
+  projection); `delete_event` `DELETE`s. All are `If-Match`-ETag guarded — a stale one is
+  a `412` → `Conflict` — so Graph advertises `WriteGuard::Enforced` (unlike JMAP). A start
+  move is rejected if it would change the time *form* (`has_same_form`). The raw Graph
+  event JSON is preserved beside the projection in `Event::extended`
+  (`"microsoft.graph/event"`), since Graph is neither iCal nor JSCalendar.
+
+### Calendar limitations (documented, not bugs)
+
+- **Per-instance overrides are not reconciled.** A moved/cancelled single occurrence is a
+  Graph `exception` object, but Graph v1.0 exposes **no `recurrenceId`/`originalStart`** on
+  it (both `null`, even on a direct `GET`), so the override cannot be keyed onto the
+  series — and the engine's cross-object master/override dedup is itself staged
+  (`calendar-semantics.md`). Exceptions are therefore **dropped**: the series expands by
+  its rule, and a per-occurrence edit is not yet reflected. (Also why `patch_event` supports
+  only `PatchTarget::Series`; a per-occurrence patch returns `InvalidState`.)
+- **One display zone per provider.** All events are read in the provider's `display_zone`
+  (Outlook's own behavior), so a recurring event *authored* in another zone expands in the
+  display zone — correct to the instant, but its DST transitions follow the display zone.
+- **Windowed coverage.** Sync covers the `CalendarWindow` only; events outside it are not
+  synced (the `providers.md` "possibly-incomplete coverage" model). Coverage reporting is
+  a follow-up.
+- **No alerts / `SEQUENCE`.** Graph reminders → engine `Alert`s, and iTIP `SEQUENCE`, are
+  not yet mapped (the reminder rides the preserved raw). `create_event` rejects a
+  floating-time start (Graph has no floating events).
 
 ## Testing
 
@@ -232,19 +273,24 @@ reusable**; the two real differences shape the slice:
   fixture-routing fake transport (`test_support`) exercises the folder/snapshot/
   delta/re-fetch/tombstone/pagination orchestration; a blocking mock HTTP server
   exercises the real reqwest transport and the status/transport classification.
+  For the calendar slice, the same fake transport drives the calendar-list /
+  `calendarView`-delta orchestration (masters/singles kept, occurrences/exceptions
+  dropped, `@removed` tombstones), the `patternedRecurrence`→`Recurrence` and Windows/
+  IANA-zone normalizers, and the create/patch/delete body shapes + form guard + `409`/
+  `412` conflict mapping. The MIME `sendMail` request shape is asserted by a **capturing**
+  mock server that decodes the posted base64 (`test_support::capturing_server`).
 - **End-to-end replay (deterministic, runs in CI, no token):** a fixture-replay
   HTTP server (`test_support::replay_server`) serves the captured responses over
-  real HTTP, and `GraphClient::with_base` points the real client at it. One test
-  drives the **whole stack** — reqwest transport + `@odata`-link rebasing + the
-  folder/snapshot/delta/re-fetch orchestration — without a token, so CI gets the
-  real-HTTP coverage scarce live tokens can't provide. This is the primary
-  integration test.
+  real HTTP, and `GraphClient::with_base` points the real client at it. Tests drive the
+  **whole stack** — reqwest transport + `@odata`-link rebasing + orchestration — without
+  a token, for both the mail folder/snapshot/delta path and the calendar event snapshot.
 - **Live (gated on `GRAPH_ACCESS_TOKEN`, skips otherwise):**
   `tests/live_provider.rs` checks folder role resolution, the snapshot→delta
-  cycle, and a **self-addressed `sendMail`** whose exact pre-generated `Message-ID`
-  is polled back out of the Inbox (proving Graph preserves it in the MIME form)
-  against a *real* account — an occasional drift check against the actual API, not
-  the CI gate. There is no CI harness (no live account in CI); the token
+  cycle, a **self-addressed `sendMail`** whose exact pre-generated `Message-ID`
+  is polled back out of the Inbox (proving Graph preserves it in the MIME form), and a
+  **calendar cycle** — list calendars, snapshot+delta the events, then create→patch
+  (asserting the ETag advances)→delete a throwaway event — all against a *real* account,
+  an occasional drift check against the actual API, not the CI gate. There is no CI harness (no live account in CI); the token
   is obtained with `tools/graph-oauth` (a standalone PKCE-loopback login + refresh
   helper, outside the engine workspace). Excluded from the offline coverage metric
   via the `ci.yml` `--ignore-filename-regex`, like the other providers' live tests.

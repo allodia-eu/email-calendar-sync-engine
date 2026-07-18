@@ -76,6 +76,29 @@ impl GraphTransport for Fake {
             Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
         }
     }
+
+    async fn patch(
+        &self,
+        url: &str,
+        _content_type: &str,
+        _if_match: Option<&str>,
+        _body: Vec<u8>,
+    ) -> Result<Option<Value>, GraphError> {
+        // Body/If-Match ignored (canned answer, `AGENTS.md`); the request shape is
+        // asserted by the mock-server transport test and the live test.
+        match self.route(url)? {
+            Ok(Value::Null) => Ok(None),
+            Ok(doc) => Ok(Some(doc.clone())),
+            Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
+        }
+    }
+
+    async fn delete(&self, url: &str, _if_match: Option<&str>) -> Result<(), GraphError> {
+        match self.route(url)? {
+            Ok(_) => Ok(()),
+            Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
+        }
+    }
 }
 
 /// Builds a [`GraphClient`] backed by URL-substring → fixture routes.
