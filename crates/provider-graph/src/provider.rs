@@ -21,8 +21,9 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, PageToken, PassMode, Provider,
-    ProviderResult, ScopeSync, SubmissionReceipt, SyncKind, split_page,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
+    PageToken, PassMode, Provider, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind,
+    split_page,
 };
 
 use crate::{fetch, transport::GraphClient};
@@ -35,7 +36,8 @@ const FOLDER_LIST_CURSOR: &str = "graph-folders";
 ///
 /// Construct one with [`GraphProvider::new`] from a connected
 /// [`GraphClient`](crate::GraphClient) and the folder to bind. It advertises mail
-/// read/sync; submission and calendar are later slices.
+/// read/sync, mutating writes (mark-read/flag, move, delete), and submission; calendar
+/// is a separate provider.
 pub struct GraphProvider {
     client: GraphClient,
     folder: MailboxId,
@@ -69,7 +71,10 @@ impl GraphProvider {
         Self {
             client,
             folder,
-            capabilities: Capabilities::none().with_mail().with_submission(),
+            capabilities: Capabilities::none()
+                .with_mail()
+                .with_mail_writes()
+                .with_submission(),
             since: None,
         }
     }
@@ -250,6 +255,20 @@ impl Provider for GraphProvider {
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
         crate::submit::send(&self.client, draft).await
+    }
+
+    /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (a `PATCH` of
+    /// `isRead`/`flag`), move (`POST …/move`), or permanent delete (`POST …/permanentDelete`).
+    ///
+    /// The target's mailbox comes from its provider key, not this provider's bound folder,
+    /// so one connected provider can edit a message in any of the account's folders — Graph
+    /// addresses a message by its immutable id alone (`crate::mutate`).
+    async fn edit_mail(
+        &self,
+        _account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        crate::mutate::edit_mail(&self.client, edit).await
     }
 }
 

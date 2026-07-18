@@ -29,6 +29,8 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/messages_delta_removed.json` | replay after `DELETE` | `{ id, @removed:{reason} }` tombstone shape |
 | `mail/messages_list_page1.json` / `_page2.json` | `GET …/messages?$top=2` + its `@odata.nextLink` | real `nextLink` pagination chain |
 | `mail/message_detail.json` | `GET /me/messages/{id}` | full single-message shape (the changed-id re-fetch) |
+| `mail/message_patched.json` | `PATCH /me/messages/{id}` body `{isRead,flag}` | the write echo of a mark-read + flag edit (`isRead:true`, `flag.flagStatus:"flagged"`) |
+| `mail/message_moved.json` | `POST /me/messages/{id}/move` body `{destinationId}` | the move echo — **same `id`** (immutable), `parentFolderId` now the destination |
 | `wellknown/*.json` | `GET /me/mailFolders/{inbox,drafts,…}` | well-known-name → id role resolution |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
 | `me.json` | `GET /me` | account identity probe |
@@ -55,6 +57,28 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
    `@removed`.
 5. **Immutable ids** (requested via `Prefer: IdType="ImmutableId"`) are stable
    across calls and URL-safe — the right `ProviderKey` for Graph mail.
+
+## Mail-write findings (captured, not assumed)
+
+The write echoes above and the delete are the offline record of live probes against
+the throwaway account (`message_patched.json` / `message_moved.json`; the delete has
+no body, so no fixture).
+
+12. **Writes are per-property, not per-keyword.** Graph has no keyword set: read/flag are
+    the typed `isRead` bool and `flag.flagStatus` (`flagged`/`notFlagged`). So
+    `SetKeywords` `PATCH`es `{isRead, flag}` and maps only `$seen`/`$flagged`; any other
+    keyword is rejected (`$draft` is read-only). A `PATCH` echoes the updated message (200).
+13. **`move` preserves the immutable id.** `POST /messages/{id}/move` returns `201` with
+    the moved message carrying the **same** immutable `id` and the new `parentFolderId`, so
+    the edit receipt's key is the unchanged target (the JMAP shape, not IMAP's new key).
+14. **A permanent delete is `POST …/permanentDelete`, and it needs `Content-Length: 0`.**
+    `DELETE /messages/{id}` only soft-deletes (to Deleted Items — that is a Trash *move*).
+    The irreversible delete is `POST /me/messages/{id}/permanentDelete`, which answers `204`
+    — but a bodyless `POST` **must** send `Content-Length: 0` or Graph returns
+    `411 Length Required` (reqwest omits the header for an empty body, so the transport sets
+    it). A re-delete of an already-purged message is `403 ErrorCannotDeleteObject`, **not** a
+    clean `404` (the item lingers in Purges, still `GET`-able by id during retention); delete
+    idempotency keys on `404` only, mirroring the calendar re-delete (Finding 9).
 
 ## Calendar fixtures (`calendar/`)
 
