@@ -86,6 +86,13 @@ impl HttpTransport {
         if let Some(if_match) = if_match {
             request = request.header("If-Match", if_match);
         }
+        // A bodyless `POST` action (Graph `permanentDelete`) needs an explicit
+        // `Content-Length: 0`: reqwest omits the header for an empty body, and Graph
+        // answers such a `POST` with `411 Length Required`. (`DELETE` needs no length,
+        // so the extra header is harmless there.)
+        if body.is_empty() {
+            request = request.header(reqwest::header::CONTENT_LENGTH, 0);
+        }
         let response = request.body(body).send().await?;
         self.http_version.record(response.version());
         Ok(response)

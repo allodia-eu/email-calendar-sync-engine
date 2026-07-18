@@ -18,13 +18,13 @@ use std::collections::BTreeSet;
 use engine_core::{
     calendar::Event,
     ids::{AccountId, CalendarId, MailboxId, MessageIdHeader, Uid},
-    mail::{EmailAddress, MailboxRole},
+    mail::{EmailAddress, MailboxRole, Message, SystemKeyword},
     membership::Memberships,
     sync::SyncUpdate,
     time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId},
 };
 use engine_provider::{
-    Draft, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider,
+    Draft, EventDeletion, EventDraft, EventEdit, EventPatch, MailEdit, PatchTarget, Provider,
 };
 use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient, GraphProvider};
 
@@ -173,6 +173,137 @@ async fn live_send_preserves_message_id_end_to_end() {
         "the sent Message-ID {} never appeared in the inbox — Graph did not preserve it",
         message_id.as_str()
     );
+}
+
+/// Sends a unique self-addressed message and polls the inbox until it appears, returning
+/// the synced [`Message`] (with its immutable-id provider key). Panics if it never lands.
+async fn send_and_await_inbox(provider: &GraphProvider, message_id: &MessageIdHeader) -> Message {
+    let me = EmailAddress::new(SELF_ADDRESS);
+    let draft = Draft::new(
+        message_id.clone(),
+        me.clone(),
+        vec![me],
+        "provider-graph write probe",
+        "Sent by the provider-graph live write test; safe to delete.",
+    );
+    provider
+        .submit_email(&account(), &draft)
+        .await
+        .expect("submit_email");
+
+    for _ in 0..15 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let snapshot = provider.sync_email(&account(), None).await.expect("resync");
+        let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {
+            continue;
+        };
+        if let Some(msg) = objects.into_iter().find(|m| {
+            m.envelope
+                .message_id
+                .iter()
+                .any(|id| id.as_str() == message_id.as_str())
+        }) {
+            return msg;
+        }
+    }
+    panic!("the sent message never appeared in the inbox");
+}
+
+/// Re-syncs the inbox and finds the message with `message_id`, if still present.
+async fn find_in_inbox(provider: &GraphProvider, message_id: &MessageIdHeader) -> Option<Message> {
+    let snapshot = provider.sync_email(&account(), None).await.expect("resync");
+    let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {
+        return None;
+    };
+    objects.into_iter().find(|m| {
+        m.envelope
+            .message_id
+            .iter()
+            .any(|id| id.as_str() == message_id.as_str())
+    })
+}
+
+#[tokio::test]
+async fn live_mail_edit_marks_moves_and_deletes() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_mail_edit_marks_moves_and_deletes: GRAPH_ACCESS_TOKEN unset");
+        return;
+    };
+    let provider = provider(token.clone());
+
+    // Land a fresh, unique self-addressed message in the inbox to edit.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let message_id = MessageIdHeader::new(format!("graph-edit-{unique}@allodia-e2e.test")).unwrap();
+    let message = send_and_await_inbox(&provider, &message_id).await;
+    let key = message.id.key().clone();
+    assert!(
+        !message.has_system_keyword(SystemKeyword::Seen),
+        "a freshly delivered message is unread"
+    );
+
+    // Mark it read + flagged; a re-sync must reflect both keyword changes.
+    provider
+        .edit_mail(
+            &account(),
+            &MailEdit::SetKeywords {
+                target: key.clone(),
+                add: [
+                    engine_core::mail::Keyword::system(SystemKeyword::Seen),
+                    engine_core::mail::Keyword::system(SystemKeyword::Flagged),
+                ]
+                .into(),
+                remove: std::collections::BTreeSet::new(),
+            },
+        )
+        .await
+        .expect("set keywords");
+    let edited = find_in_inbox(&provider, &message_id)
+        .await
+        .expect("the message is still in the inbox after a keyword edit");
+    assert!(edited.has_system_keyword(SystemKeyword::Seen), "now read");
+    assert!(
+        edited.has_system_keyword(SystemKeyword::Flagged),
+        "now flagged"
+    );
+
+    // Move it to Archive; a re-sync of the inbox must no longer find it.
+    let archive = archive_folder_id(&provider).await;
+    provider
+        .edit_mail(&account(), &MailEdit::move_to(key.clone(), archive))
+        .await
+        .expect("move to archive");
+    assert!(
+        find_in_inbox(&provider, &message_id).await.is_none(),
+        "the moved message left the inbox"
+    );
+
+    // Immutable ids survive the move, so the same key deletes it (from Archive) to clean up.
+    provider
+        .edit_mail(&account(), &MailEdit::delete(key))
+        .await
+        .expect("permanent delete");
+    // (A repeat delete is NOT retried: Graph answers a re-delete of a purged message with
+    // `403 ErrorCannotDeleteObject`, not the clean `404` idempotency keys on. That 404
+    // path is offline-tested; the outbox's NeedsConfirmation owns the ambiguous retry.)
+}
+
+/// Resolves the account's Archive folder id from a folder-list sync.
+async fn archive_folder_id(provider: &GraphProvider) -> MailboxId {
+    let folders = provider
+        .sync_mailboxes(&account(), None)
+        .await
+        .expect("sync folders");
+    let SyncUpdate::Snapshot { objects, .. } = folders.update else {
+        panic!("expected a folder snapshot");
+    };
+    objects
+        .into_iter()
+        .find(|m| m.role == Some(MailboxRole::Archive))
+        .expect("an archive folder")
+        .id
 }
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ account-wide message delta, so sync is per folder.
 ## The crate
 
 `provider-graph` implements the `engine_provider::Provider` contract for **mail
-(read/sync + submission)** and **calendar (read/sync + writes)** — mail on
+(read/sync + submission + writes)** and **calendar (read/sync + writes)** — mail on
 `GraphProvider` (folder-bound), calendar on `GraphCalendarProvider` (calendar-bound),
 each over its own `GraphClient` on the same token. The mail layers:
 
@@ -43,8 +43,12 @@ each over its own `GraphClient` on the same token. The mail layers:
   paging.
 - **`submit`** — mail submission via `POST /me/sendMail` in **MIME format** (see
   **Submission** below). Adds a `post` verb to the `GraphTransport` seam.
-- **`provider`** — `GraphProvider`, bound to one folder for email; submission is
-  account-level, so every bound provider advertises it.
+- **`mutate`** — mutating mail writes (`edit_mail`: mark-read/flag, move, delete) via
+  the `patch`/`post` verbs (see **Mail writes** below). Account-level like submission,
+  keyed by the message's immutable id, so any folder-bound provider can edit any
+  message.
+- **`provider`** — `GraphProvider`, bound to one folder for email; submission and
+  writes are account-level, so every bound provider advertises them.
 
 ## Graph specifics implemented
 
@@ -135,6 +139,40 @@ whole message the caller assembled — pre-generated `Message-ID`, threading, `C
   Graph preserves it in the MIME form (`tests/live_provider.rs`, gated on
   `GRAPH_ACCESS_TOKEN`). The `Mail.Send` delegated scope is required.
 
+## Mail writes (mark-read/flag, move, delete)
+
+`edit_mail` applies a neutral [`MailEdit`] to an already-synced message, keyed by its
+immutable id — so, like the IMAP adapter, one folder-bound provider can edit a message
+in **any** of the account's folders (the target's mailbox comes from its key, not the
+bound folder). Graph advertises `mail_writes`. The three neutral edits map onto three
+different Graph shapes (Graph models mail state as typed properties, not a keyword set):
+
+- **`SetKeywords` → `PATCH /messages/{id}` `{isRead, flag}`.** `$seen`→`isRead` (bool),
+  `$flagged`→`flag.flagStatus` (`flagged`/`notFlagged`). These are the **only** two
+  writable keyword-like properties Graph exposes, so any other keyword is **rejected**
+  (`InvalidState`), never silently dropped — `$draft` is read-only and Graph categories
+  are a separate concept. Both sides empty is a no-op (no request). The edits are
+  **unconditional** (no `If-Match`): the `MailEdit` shape carries no ETag guard, like
+  IMAP `UID STORE` and JMAP `Email/set`.
+- **`MoveTo` → `POST /messages/{id}/move` `{destinationId}`.** Immutable ids are stable
+  across a move (live-verified: the `201` echo keeps the id, updates `parentFolderId`),
+  so the receipt key is the **unchanged** target and the destination folder reconciles
+  the new membership on its next sync — the JMAP shape, not IMAP's synthesize-a-new-key.
+- **`Delete` → `POST /messages/{id}/permanentDelete`.** The neutral `Delete` is a
+  **permanent**, irreversible delete (a Trash *move* is `MoveTo(trash)`), so it uses
+  `permanentDelete`, not `DELETE /messages/{id}` (which only soft-deletes to Deleted
+  Items). The bodyless `POST` **must** send `Content-Length: 0` or Graph returns `411
+  Length Required` (reqwest omits the header for an empty body, so the transport sets it).
+  An already-gone message (`404`) is idempotent success; the ambiguous re-delete Graph
+  answers with `403 ErrorCannotDeleteObject` (the purged item lingers, still `GET`-able by
+  id during retention) **propagates**, left to the outbox's `NeedsConfirmation` — the same
+  shape as the calendar delete.
+
+**Live-verified.** `tests/live_provider.rs` sends a self-addressed message, then
+mark-reads + flags it (asserting the re-sync reflects both keywords), moves it to Archive
+(asserting it leaves the inbox), and permanent-deletes it — all against the real account.
+The `Mail.ReadWrite` delegated scope is required.
+
 ## Shared mailboxes (the multi-mailbox model)
 
 One signed-in user (one OAuth credential) can access several mailboxes: their own
@@ -197,11 +235,10 @@ shared mailboxes; verification awaits a work/school account.)
 - **Snapshot order is delta-defined**, not newest-first (consumer delta has no
   `$orderby`). A streaming newest-first snapshot via the list endpoint is a
   possible later refinement.
-- **Mail read/sync + submission (`GraphProvider`).** **Mutating mail writes**
-  (`edit_mail` — mark-read/flag/move/delete) are a later slice; the provider
-  advertises `mail` + `submission` (see **Submission** above). Submission is
-  account-level, so it needs no per-folder config. Calendar is a separate provider
-  (see **Calendar** below), not this one.
+- **Mail read/sync + submission + writes (`GraphProvider`).** The provider advertises
+  `mail` + `mail_writes` + `submission` (see **Submission** and **Mail writes** above).
+  Both submission and writes are account-level (keyed by immutable id), so they need no
+  per-folder config. Calendar is a separate provider (see **Calendar** below), not this one.
 
 ## Calendar (implemented)
 
@@ -278,7 +315,10 @@ provider). It advertises `calendars` **and** `calendar_writes(WriteGuard::Enforc
   dropped, `@removed` tombstones), the `patternedRecurrence`→`Recurrence` and Windows/
   IANA-zone normalizers, and the create/patch/delete body shapes + form guard + `409`/
   `412` conflict mapping. The MIME `sendMail` request shape is asserted by a **capturing**
-  mock server that decodes the posted base64 (`test_support::capturing_server`).
+  mock server that decodes the posted base64 (`test_support::capturing_server`); the same
+  capturing server asserts the mail-write shapes — the `PATCH {isRead,flag}` body, the
+  `POST …/move {destinationId}` body, and the `POST …/permanentDelete` verb with its
+  `Content-Length: 0` — since the fixture-routing fake ignores request bodies.
 - **End-to-end replay (deterministic, runs in CI, no token):** a fixture-replay
   HTTP server (`test_support::replay_server`) serves the captured responses over
   real HTTP, and `GraphClient::with_base` points the real client at it. Tests drive the

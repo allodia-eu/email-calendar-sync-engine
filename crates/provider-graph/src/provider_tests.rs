@@ -47,6 +47,9 @@ async fn advertises_per_folder_scopes_and_mail_capability() {
     let provider = GraphProvider::new(fake_client(vec![]), folder.clone());
     let info = provider.connection_info();
     assert!(info.capabilities.mail());
+    // Mutating writes and submission are advertised alongside read/sync.
+    assert!(info.capabilities.mail_writes());
+    assert!(info.capabilities.submission());
     // A fixture-fed fake transport speaks no HTTP and reqwest never reports TLS.
     assert_eq!(info.http_version, None);
     assert_eq!(info.tls_version, None);
@@ -61,6 +64,20 @@ async fn advertises_per_folder_scopes_and_mail_capability() {
             folder,
         }
     );
+}
+
+#[tokio::test]
+async fn edit_mail_flows_through_the_provider_to_the_write() {
+    // The `Provider::edit_mail` wrapper delegates to `crate::mutate`; a delete routed to a
+    // 204 (no body) resolves with the target key.
+    let target = engine_core::ids::ProviderKey::new("message-write").unwrap();
+    let client = fake_client(vec![("/permanentDelete", serde_json::Value::Null)]);
+    let provider = GraphProvider::new(client, MailboxId::try_from("folder-inbox").unwrap());
+    let receipt = provider
+        .edit_mail(&account(), &MailEdit::delete(target.clone()))
+        .await
+        .unwrap();
+    assert_eq!(receipt.message_key, target);
     assert!(format!("{provider:?}").contains("GraphProvider"));
 }
 

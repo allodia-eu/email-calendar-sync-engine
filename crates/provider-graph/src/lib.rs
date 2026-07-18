@@ -42,6 +42,7 @@ mod error;
 mod fetch;
 mod http_transport;
 mod json;
+mod mutate;
 mod normalize;
 mod principal;
 mod provider;
