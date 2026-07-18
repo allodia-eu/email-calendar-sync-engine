@@ -19,6 +19,22 @@
 //! cleared and rewritten in one batch — the store applies `removed` before the upserts —
 //! so changed instants replace stale ones atomically while unchanged ones stay
 //! byte-stable.
+//!
+//! # Idempotent per scope
+//!
+//! Re-deriving every stored event is not cheap on a real calendar — it deserializes and
+//! re-expands *thousands* of events, holding the scope's write lease the whole time — so a
+//! scope whose persisted [`ExpansionWindow`] already equals the requested `(horizon, zone)`
+//! is **skipped**: nothing it would write differs from what is there. That makes a routine
+//! refresh over an unchanged window a handful of cheap reads instead of a seconds-long
+//! re-expansion that blocks every concurrent store read behind its lease.
+//!
+//! The window a scope is compared against carries the `(horizon, zone)` but **not** the
+//! tzdata release, so the one recovery this skip does not cover is a bare **tzdata bump**
+//! with an otherwise identical window (a horizon advance or a display-zone change both move
+//! the window and re-expand as before). That is picked up at the next horizon advance rather
+//! than the next refresh — a self-healing, at-most-a-day delay, and a tzdata bump arrives
+//! only with a new binary the host must restart into anyway.
 
 use core::time::Duration;
 
@@ -39,6 +55,11 @@ use crate::SyncError;
 pub struct HorizonExpansion {
     /// How many occurrence rows the pass wrote across the account's calendars.
     pub occurrences: usize,
+    /// How many calendar scopes were **skipped** because their persisted
+    /// [`ExpansionWindow`] already matched the requested `(horizon, zone)` — nothing to
+    /// rewrite, so the pass never claimed their lease. In the steady state (a refresh over
+    /// an unchanged window) this is every scope and `occurrences` is zero.
+    pub skipped: usize,
     /// The events the expander refused, with the reason.
     ///
     /// An unsupported recurrence rule or an unresolvable zone materializes **zero**
@@ -67,6 +88,13 @@ pub struct UnexpandableEvent {
 ///
 /// It re-expands *every* event in the scope on every call, so a host should widen in
 /// coarse chunks against a persisted watermark rather than call it per page.
+///
+/// **Idempotent per scope:** a scope whose persisted [`ExpansionWindow`] already equals the
+/// requested `(horizon, host_zone)` is skipped (counted in [`HorizonExpansion::skipped`]) —
+/// re-expanding it would reproduce byte-for-byte what is stored, at the cost of a full
+/// re-deserialize under a held lease. A **horizon advance** or a **display-zone change** both
+/// move the window and re-expand as before; only a bare **tzdata bump** with an otherwise
+/// identical window is not caught here (see the module docs — it heals at the next advance).
 ///
 /// **This is the only call that moves a scope's [`ExpansionWindow`]**, and it records the
 /// one it expanded over. A sync or a post-write reconcile re-expands the events it *changed*
@@ -101,6 +129,14 @@ where
         .into_iter()
         .filter(|scope| scope.object_kind() == Some(ObjectKind::Event))
     {
+        // Already expanded over exactly this window? Then re-deriving every event would only
+        // reproduce the stored rows — skip it, and never claim the lease. This is a lease-free
+        // read (the sync/reconcile paths resolve the same window before claiming), so it costs
+        // nothing when the pass does have work to do.
+        if store.expansion_window(&scope).await?.as_ref() == Some(&window) {
+            report.skipped += 1;
+            continue;
+        }
         let claim = store
             .claim_sync_scope(account.clone(), &scope, req.clone())
             .await?;

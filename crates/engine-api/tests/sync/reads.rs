@@ -253,7 +253,13 @@ async fn events_by_keys_resolves_only_the_named_events() {
         .unwrap();
     assert_eq!(mixed.len(), 1);
     assert_eq!(mixed[0].id.key().as_str(), "evt-b");
-    assert!(engine.events_by_keys(&account(), &[]).await.unwrap().is_empty());
+    assert!(
+        engine
+            .events_by_keys(&account(), &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     // An account that never synced resolves nothing rather than erroring.
     let other = AccountId::try_from("nobody").unwrap();
@@ -456,19 +462,51 @@ async fn a_widened_horizon_needs_an_expansion_because_a_resync_will_not_backfill
         ]
     );
 
-    // Re-expanding is idempotent: rows replace, they do not accumulate.
+    // Re-expanding over the SAME window is a no-op, and now says so: the scope's stored
+    // ExpansionWindow already matches, so the pass skips it rather than re-deriving every
+    // event under a held lease — the optimization that keeps a routine refresh from blocking
+    // a concurrent read for seconds. The rows are untouched (idempotent either way).
     let again = engine
         .expand_horizon(&account(), rest_of_year, &zone)
         .await
         .unwrap();
-    assert_eq!(again.occurrences, 12);
+    assert_eq!(
+        again.occurrences, 0,
+        "nothing re-derived over an unchanged window"
+    );
+    assert_eq!(
+        again.skipped, 1,
+        "the one event scope was skipped, lease untaken"
+    );
     assert_eq!(
         engine
             .occurrences_in(&account(), august)
             .await
             .unwrap()
             .len(),
-        5
+        5,
+        "the occurrences the earlier expand wrote are still there, unchanged"
+    );
+
+    // A DIFFERENT window is not skipped — a horizon advance still re-expands, so paging the
+    // grid forward keeps materializing. (The window carries the zone too, so a zone change
+    // re-expands the same way; only a bare tzdata bump with an identical window is not caught.)
+    let into_next_year = Horizon::new(
+        "2026-07-01T00:00:00Z".parse().unwrap(),
+        "2027-02-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap();
+    let widened = engine
+        .expand_horizon(&account(), into_next_year, &zone)
+        .await
+        .unwrap();
+    assert_eq!(
+        widened.skipped, 0,
+        "a moved window is re-expanded, not skipped"
+    );
+    assert!(
+        widened.occurrences >= 12,
+        "the wider horizon re-derived the series"
     );
 }
 
@@ -530,12 +568,23 @@ async fn an_unexpandable_recurrence_is_reported_rather_than_silently_dropped() {
     );
 
     // The expansion path reports it too, so a host that only ever advances the horizon
-    // still learns the event cannot be shown.
+    // still learns the event cannot be shown. Expand over a WIDER window than the sync
+    // covered, so the pass actually runs (an identical window would be skipped as already
+    // expanded) — a horizon advance is exactly when a host reaches for this.
+    let wider = Horizon::new(
+        "2026-01-01T00:00:00Z".parse().unwrap(),
+        "2027-06-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap();
     let expanded = engine
-        .expand_horizon(&account(), year, &zone)
+        .expand_horizon(&account(), wider, &zone)
         .await
         .unwrap();
     assert_eq!(expanded.occurrences, 0);
+    assert_eq!(
+        expanded.skipped, 0,
+        "a wider window runs, it is not skipped"
+    );
     assert_eq!(expanded.unexpandable.len(), 1);
     assert_eq!(expanded.unexpandable[0].event.as_str(), "evt-payday");
 }
