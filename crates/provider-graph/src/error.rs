@@ -97,10 +97,13 @@ fn error_code(body: &str) -> Option<String> {
 
 /// Maps an HTTP status to a [`FailureClass`]. Graph throttles with `429`
 /// (+ `Retry-After`); an expired/invalid delta token is `410 Gone`, which forces a
-/// full resync (the analogue of JMAP `cannotCalculateChanges`).
+/// full resync (the analogue of JMAP `cannotCalculateChanges`); a failed write
+/// precondition — a stale `If-Match` ETag on a calendar write — is `409`/`412`, a
+/// [`Conflict`](FailureClass::Conflict) the caller resolves by refetch-and-retry.
 fn status_class(status: u16) -> FailureClass {
     match status {
         401 => FailureClass::Authentication,
+        409 | 412 => FailureClass::Conflict,
         410 => FailureClass::NeedsResync,
         429 => FailureClass::RateLimited,
         500..=599 => FailureClass::Retryable,
@@ -158,6 +161,15 @@ mod tests {
         assert_eq!(
             GraphError::status(404, "{}").failure_class(),
             FailureClass::Permanent
+        );
+        // A stale If-Match on a calendar write is a conflict (refetch, then retry).
+        assert_eq!(
+            GraphError::status(412, "{}").failure_class(),
+            FailureClass::Conflict
+        );
+        assert_eq!(
+            GraphError::status(409, "{}").failure_class(),
+            FailureClass::Conflict
         );
     }
 

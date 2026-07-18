@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{AccountId, DavCollectionId, MailboxId};
+use crate::ids::{AccountId, CalendarId, DavCollectionId, MailboxId};
 
 open_enum! {
     /// A JMAP data type, whose `/changes` state is tracked per account
@@ -117,6 +117,30 @@ pub enum SyncScope {
         /// The mail folder.
         folder: MailboxId,
     },
+    /// A Microsoft Graph per-account calendar-list (calendar discovery) scope.
+    ///
+    /// Like [`GraphFolderList`](Self::GraphFolderList), the calendar list is
+    /// re-discovered as a snapshot each pass (`GET /me/calendars`), so it carries no
+    /// cursor of its own — but it is a distinct **container** scope, claimed and
+    /// applied before the per-calendar [`GraphCalendar`](Self::GraphCalendar) event
+    /// scopes it parents (`store-and-sync.md` referential apply order).
+    GraphCalendarList {
+        /// The account.
+        account: AccountId,
+    },
+    /// A Microsoft Graph `(account, calendar)` event scope.
+    ///
+    /// Graph calendar sync is per calendar and inherently **time-windowed**
+    /// (`/me/calendars/{id}/calendarView/delta` requires a start/end date range, and
+    /// the returned `deltaLink` encodes it), so — like [`GraphFolder`](Self::GraphFolder)
+    /// for mail — a Graph calendar provider is bound to one calendar for events; the
+    /// cross-calendar fan-out is the orchestrator's job.
+    GraphCalendar {
+        /// The account.
+        account: AccountId,
+        /// The calendar.
+        calendar: CalendarId,
+    },
 }
 
 /// The search domain whose member objects a scope holds — the index a per-account
@@ -154,7 +178,9 @@ impl SyncScope {
             | Self::DavCollectionList { account }
             | Self::DavCollection { account, .. }
             | Self::GraphFolderList { account }
-            | Self::GraphFolder { account, .. } => account,
+            | Self::GraphFolder { account, .. }
+            | Self::GraphCalendarList { account }
+            | Self::GraphCalendar { account, .. } => account,
         }
     }
 
@@ -182,8 +208,12 @@ impl SyncScope {
             Self::ImapMailboxList { .. } | Self::GraphFolderList { .. } => {
                 Some(ObjectKind::Mailbox)
             }
-            Self::DavCollection { .. } => Some(ObjectKind::Event),
-            Self::DavCollectionList { .. } => Some(ObjectKind::Calendar),
+            // Graph calendar mirrors CalDAV: a per-calendar event scope + a calendar-list
+            // container.
+            Self::DavCollection { .. } | Self::GraphCalendar { .. } => Some(ObjectKind::Event),
+            Self::DavCollectionList { .. } | Self::GraphCalendarList { .. } => {
+                Some(ObjectKind::Calendar)
+            }
         }
     }
 
@@ -379,6 +409,29 @@ mod tests {
         assert_eq!(list.account(), &account());
         assert_eq!(inbox.account(), &account());
         for scope in [&list, &inbox] {
+            let json = serde_json::to_string(scope).unwrap();
+            assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
+        }
+    }
+
+    #[test]
+    fn graph_calendar_list_is_distinct_from_a_calendar_and_roundtrips() {
+        // The calendar-list container scope must never collide with the event scope of
+        // any single calendar, or the two would share one lease. Graph calendar sync is
+        // per calendar (time-windowed calendarView/delta), so each calendar is a
+        // distinct member scope, mirroring the mail GraphFolder/GraphFolderList split.
+        let list = SyncScope::GraphCalendarList { account: account() };
+        let calendar = SyncScope::GraphCalendar {
+            account: account(),
+            calendar: CalendarId::try_from("AAkALgcal-default").unwrap(),
+        };
+        assert_ne!(list, calendar);
+        assert_eq!(list.account(), &account());
+        assert_eq!(calendar.account(), &account());
+        assert_eq!(list.object_kind(), Some(ObjectKind::Calendar));
+        assert_eq!(calendar.object_kind(), Some(ObjectKind::Event));
+        assert_eq!(calendar.search_domain(), Some(SearchDomain::Calendar));
+        for scope in [&list, &calendar] {
             let json = serde_json::to_string(scope).unwrap();
             assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
         }

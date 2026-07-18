@@ -1,0 +1,96 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('testuser%40example.test')/events/$entity",
+  "@odata.etag": "W/\"sBrd26skdkm5ORF+XkiJIQAADtxi4Q==\"",
+  "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0AsBrd26skdkm5ORF_XkiJIQAADt0QwAAA",
+  "createdDateTime": "2026-07-18T07:43:09.8641979Z",
+  "lastModifiedDateTime": "2026-07-18T07:46:27.5509919Z",
+  "changeKey": "sBrd26skdkm5ORF+XkiJIQAADtxi4Q==",
+  "categories": [],
+  "transactionId": null,
+  "originalStartTimeZone": "W. Europe Standard Time",
+  "originalEndTimeZone": "W. Europe Standard Time",
+  "iCalUId": "040000008200E00074C5B7101A82E00800000000C59E58148916DD01000000000000000010000000EF92B5A896B7BB44B4F204EA69833FAF",
+  "uid": "040000008200E00074C5B7101A82E00800000000C59E58148916DD01000000000000000010000000EF92B5A896B7BB44B4F204EA69833FAF",
+  "reminderMinutesBeforeStart": 15,
+  "isReminderOn": true,
+  "hasAttachments": false,
+  "subject": "PIM fixture: weekly standup",
+  "bodyPreview": "Standup agenda",
+  "importance": "normal",
+  "sensitivity": "normal",
+  "isAllDay": false,
+  "isCancelled": false,
+  "isOrganizer": true,
+  "responseRequested": true,
+  "seriesMasterId": null,
+  "showAs": "busy",
+  "type": "seriesMaster",
+  "webLink": "https://outlook.live.com/owa/?itemid=AAkALgAAAAAAHYQDEapmEc2byACqAC%2FEWg0AsBrd26skdkm5ORF%2BXkiJIQAADt0QwAAA&exvsurl=1&path=/calendar/item",
+  "onlineMeetingUrl": null,
+  "isOnlineMeeting": false,
+  "onlineMeetingProvider": "unknown",
+  "allowNewTimeProposals": true,
+  "occurrenceId": null,
+  "isDraft": false,
+  "hideAttendees": false,
+  "responseStatus": {
+    "response": "organizer",
+    "time": "0001-01-01T00:00:00Z"
+  },
+  "body": {
+    "contentType": "html",
+    "content": "<html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\r\n<meta name=\"Generator\" content=\"Microsoft Exchange Server\">\r\n<!-- converted from text -->\r\n<style><!-- .EmailQuote { margin-left: 1pt; padding-left: 4pt; border-left: #800000 2px solid; } --></style></head>\r\n<body>\r\n<font size=\"2\"><span style=\"font-size:11pt;\"><div class=\"PlainText\">Standup agenda</div></span></font>\r\n</body>\r\n</html>\r\n"
+  },
+  "start": {
+    "dateTime": "2026-08-03T09:00:00.0000000",
+    "timeZone": "Europe/Amsterdam"
+  },
+  "end": {
+    "dateTime": "2026-08-03T09:30:00.0000000",
+    "timeZone": "Europe/Amsterdam"
+  },
+  "location": {
+    "displayName": "Room A",
+    "locationType": "default",
+    "uniqueId": "Room A",
+    "uniqueIdType": "private"
+  },
+  "locations": [
+    {
+      "displayName": "Room A",
+      "locationType": "default",
+      "uniqueId": "Room A",
+      "uniqueIdType": "private"
+    }
+  ],
+  "recurrence": {
+    "pattern": {
+      "type": "weekly",
+      "interval": 1,
+      "month": 0,
+      "dayOfMonth": 0,
+      "daysOfWeek": [
+        "monday"
+      ],
+      "firstDayOfWeek": "sunday",
+      "index": "first"
+    },
+    "range": {
+      "type": "endDate",
+      "startDate": "2026-08-03",
+      "endDate": "2026-10-05",
+      "recurrenceTimeZone": "W. Europe Standard Time",
+      "numberOfOccurrences": 0
+    }
+  },
+  "attendees": [],
+  "organizer": {
+    "emailAddress": {
+      "name": "Test User",
+      "address": "testuser@example.test"
+    }
+  },
+  "onlineMeeting": null,
+  "calendar@odata.associationLink": "https://graph.microsoft.com/v1.0/users('testuser@example.test')/calendars('AQMkADAwATNiZmYAZS1iNDJlLTExAGJjLTAwAi0wMAoALgAAA8Y2iiLYtTxBsRxgTMsTKQEBAACwGt3bqyR2Sbk5EX5eSIkhAAACAQ0AAAA=')/$ref",
+  "calendar@odata.navigationLink": "https://graph.microsoft.com/v1.0/users('testuser@example.test')/calendars('AQMkADAwATNiZmYAZS1iNDJlLTExAGJjLTAwAi0wMAoALgAAA8Y2iiLYtTxBsRxgTMsTKQEBAACwGt3bqyR2Sbk5EX5eSIkhAAACAQ0AAAA=')"
+}

@@ -1,6 +1,6 @@
 [package]
 name = "provider-graph"
-description = "Microsoft Graph (v1.0) read/sync provider adapter for the PIM sync engine: bearer-auth HTTP transport, per-folder mail-folder/message delta sync, normalizing Graph mail JSON into the engine's SyncUpdate shapes. Implements the engine-provider contract."
+description = "Microsoft Graph (v1.0) provider adapter for the PIM sync engine: bearer-auth HTTP transport; mail read/sync (per-folder message delta) + submission (sendMail in MIME format); calendar read/sync (calendarView/delta, patternedRecurrence, Windows-to-IANA zones) + writes (create/patch/delete, If-Match guarded). Implements the engine-provider contract."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
