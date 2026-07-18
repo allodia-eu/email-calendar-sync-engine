@@ -1,0 +1,60 @@
+{
+  "historyId": "1617",
+  "id": "message-1",
+  "internalDate": "1784385423000",
+  "labelIds": [
+    "UNREAD",
+    "SENT",
+    "INBOX"
+  ],
+  "payload": {
+    "body": {
+      "data": "VGhlIGZpcnN0IGZpeHR1cmUgbWVzc2FnZSBib2R5Lg0K",
+      "size": 33
+    },
+    "filename": "",
+    "headers": [
+      {
+        "name": "Received",
+        "value": "from 000000000000 named unknown by gmailapi.google.com with HTTPREST; Sat, 18 Jul 2026 07:37:03 -0700"
+      },
+      {
+        "name": "Received",
+        "value": "from 000000000000 named unknown by gmailapi.google.com with HTTPREST; Sat, 18 Jul 2026 07:37:03 -0700"
+      },
+      {
+        "name": "From",
+        "value": "Test User <testuser@example.test>"
+      },
+      {
+        "name": "To",
+        "value": "testuser@example.test"
+      },
+      {
+        "name": "Subject",
+        "value": "Fixture: first message"
+      },
+      {
+        "name": "Message-Id",
+        "value": "<message-1@mail.gmail.test>"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "Content-Type",
+        "value": "text/plain; charset=\"UTF-8\""
+      },
+      {
+        "name": "Date",
+        "value": "Sat, 18 Jul 2026 07:37:03 -0700"
+      }
+    ],
+    "mimeType": "text/plain",
+    "partId": ""
+  },
+  "sizeEstimate": 561,
+  "snippet": "The first fixture message body.",
+  "threadId": "message-1"
+}

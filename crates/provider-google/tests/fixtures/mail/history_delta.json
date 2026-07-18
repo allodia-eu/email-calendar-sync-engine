@@ -1,0 +1,135 @@
+{
+  "history": [
+    {
+      "id": "1556",
+      "messages": [
+        {
+          "id": "message-1",
+          "threadId": "message-1"
+        }
+      ],
+      "messagesAdded": [
+        {
+          "message": {
+            "id": "message-1",
+            "labelIds": [
+              "UNREAD",
+              "SENT",
+              "INBOX"
+            ],
+            "threadId": "message-1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "1658",
+      "labelsAdded": [
+        {
+          "labelIds": [
+            "IMPORTANT"
+          ],
+          "message": {
+            "id": "message-2",
+            "labelIds": [
+              "UNREAD",
+              "IMPORTANT",
+              "SENT",
+              "INBOX"
+            ],
+            "threadId": "message-1"
+          }
+        }
+      ],
+      "messages": [
+        {
+          "id": "message-2",
+          "threadId": "message-1"
+        }
+      ]
+    },
+    {
+      "id": "1659",
+      "labelsAdded": [
+        {
+          "labelIds": [
+            "STARRED"
+          ],
+          "message": {
+            "id": "message-2",
+            "labelIds": [
+              "UNREAD",
+              "IMPORTANT",
+              "STARRED",
+              "SENT",
+              "INBOX"
+            ],
+            "threadId": "message-1"
+          }
+        }
+      ],
+      "messages": [
+        {
+          "id": "message-2",
+          "threadId": "message-1"
+        }
+      ]
+    },
+    {
+      "id": "1660",
+      "labelsAdded": [
+        {
+          "labelIds": [
+            "Label_1"
+          ],
+          "message": {
+            "id": "message-2",
+            "labelIds": [
+              "UNREAD",
+              "Label_1",
+              "IMPORTANT",
+              "STARRED",
+              "SENT",
+              "INBOX"
+            ],
+            "threadId": "message-1"
+          }
+        }
+      ],
+      "messages": [
+        {
+          "id": "message-2",
+          "threadId": "message-1"
+        }
+      ]
+    },
+    {
+      "id": "1661",
+      "labelsRemoved": [
+        {
+          "labelIds": [
+            "UNREAD"
+          ],
+          "message": {
+            "id": "message-2",
+            "labelIds": [
+              "Label_1",
+              "IMPORTANT",
+              "STARRED",
+              "SENT",
+              "INBOX"
+            ],
+            "threadId": "message-1"
+          }
+        }
+      ],
+      "messages": [
+        {
+          "id": "message-2",
+          "threadId": "message-1"
+        }
+      ]
+    }
+  ],
+  "historyId": "1681"
+}

@@ -1,0 +1,70 @@
+{
+  "etag": "\"p32no7cdunbe9a0o\"",
+  "items": [
+    {
+      "accessRole": "owner",
+      "backgroundColor": "#9fe1e7",
+      "colorId": "14",
+      "conferenceProperties": {
+        "allowedConferenceSolutionTypes": [
+          "hangoutsMeet"
+        ]
+      },
+      "defaultReminders": [
+        {
+          "method": "popup",
+          "minutes": 30
+        }
+      ],
+      "etag": "\"1784385237904822\"",
+      "foregroundColor": "#000000",
+      "id": "testuser@example.test",
+      "kind": "calendar#calendarListEntry",
+      "notificationSettings": {
+        "notifications": [
+          {
+            "method": "email",
+            "type": "eventCreation"
+          },
+          {
+            "method": "email",
+            "type": "eventChange"
+          },
+          {
+            "method": "email",
+            "type": "eventCancellation"
+          },
+          {
+            "method": "email",
+            "type": "eventResponse"
+          }
+        ]
+      },
+      "primary": true,
+      "selected": true,
+      "summary": "testuser@example.test",
+      "timeZone": "Europe/Amsterdam"
+    },
+    {
+      "accessRole": "reader",
+      "backgroundColor": "#16a765",
+      "colorId": "8",
+      "conferenceProperties": {
+        "allowedConferenceSolutionTypes": [
+          "hangoutsMeet"
+        ]
+      },
+      "defaultReminders": [],
+      "description": "Feestdagen - Nederland",
+      "etag": "\"1784385238124175\"",
+      "foregroundColor": "#000000",
+      "id": "nl.dutch#holiday@group.v.calendar.google.com",
+      "kind": "calendar#calendarListEntry",
+      "selected": true,
+      "summary": "Feestdagen in Nederland",
+      "timeZone": "Europe/Amsterdam"
+    }
+  ],
+  "kind": "calendar#calendarList",
+  "nextSyncToken": "cal-sync-token-1"
+}

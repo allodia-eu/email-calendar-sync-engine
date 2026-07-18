@@ -1,0 +1,4 @@
+/target
+# Captured tokens — refresh token is sensitive even for a throwaway account.
+/.local/
+Cargo.lock

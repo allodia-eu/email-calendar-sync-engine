@@ -1,0 +1,41 @@
+[package]
+name = "provider-google"
+description = "Google (Gmail + Google Calendar) provider adapter for the PIM sync engine: bearer-auth HTTP transport; Gmail read/sync (account-global historyId delta) + writes (messages.modify/trash/delete) + submission (messages.send in base64url MIME); Google Calendar read/sync (events.list syncToken, IANA-native RRULE masters) + writes (insert/patch/delete, If-Match guarded). Implements the engine-provider contract."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+# `http` enables `HttpVersion::from_http`, the one place a reqwest response's version is
+# mapped onto the engine's neutral `HttpVersion` (`ConnectionInfo`).
+engine-provider = { workspace = true, features = ["http"] }
+# The shared RFC 5322 / MIME assembler, for `messages.send` in MIME format (submission
+# preserves the caller's Message-ID and threading — see `submit`).
+engine-rfc5322 = { workspace = true }
+# One shared TLS trust policy across every provider (`docs/agent-guidance/tls.md`);
+# `reqwest` enables the preconfigured-client builder this HTTP transport uses.
+engine-tls = { workspace = true, features = ["reqwest"] }
+# reqwest + rustls (pure-Rust TLS, mobile cross-compile) on the engine's standard
+# HTTP stack, mirroring provider-graph/provider-jmap.
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+# `async-stream` builds the `stream_email` chunk stream with `try_stream!`.
+async-stream = { workspace = true }
+# The generated `Date` header for the assembled `messages.send` message reads the wall
+# clock at submission (engine time types deliberately cannot), mirroring the Graph path.
+time = { workspace = true }
+
+[dev-dependencies]
+# `time` for the gated live send test's delivery poll (`tokio::time::sleep`).
+tokio = { workspace = true, features = ["time"] }
+# `StreamExt` drains `stream_email` into its chunks in the offline tests.
+futures-util = { workspace = true }
+# The gated live test builds a (bundled) TlsClientConfig to pass into `connect`.
+engine-tls = { workspace = true }
+
+[lints]
+workspace = true

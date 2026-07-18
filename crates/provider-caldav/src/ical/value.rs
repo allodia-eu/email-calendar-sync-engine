@@ -102,24 +102,6 @@ pub(crate) fn parse_duration(value: &str) -> Result<Duration, CalDavError> {
         .map_err(|e| CalDavError::ical(format!("bad DURATION {value:?}: {e}")))
 }
 
-/// Parses an `RRULE` `UNTIL` bound into a wall-clock [`LocalDateTime`]. A `DATE`
-/// form becomes end-of-day (inclusive). A `Z` (UTC) `UNTIL` is read as its
-/// wall-clock value; converting it to the event's zone is staged
-/// (`calendar-semantics.md`), and the supported seed uses `COUNT`, not `UNTIL`.
-///
-/// # Errors
-///
-/// Returns [`CalDavError::Ical`] if the bound is not a date or date-time.
-pub(crate) fn parse_until(value: &str) -> Result<LocalDateTime, CalDavError> {
-    let body = value.trim().trim_end_matches(['Z', 'z']);
-    if body.len() == 8 {
-        let date = parse_date(body)?;
-        return LocalDateTime::new(date.year(), date.month(), date.day(), 23, 59, 59)
-            .map_err(|e| CalDavError::ical(format!("bad UNTIL {value:?}: {e}")));
-    }
-    parse_local(body)
-}
-
 /// Parses an 8-digit `YYYYMMDD` basic-format date.
 fn parse_date(value: &str) -> Result<CalendarDate, CalDavError> {
     if value.len() != 8 || !value.bytes().all(|b| b.is_ascii_digit()) {

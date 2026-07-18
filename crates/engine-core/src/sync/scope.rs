@@ -141,6 +141,53 @@ pub enum SyncScope {
         /// The calendar.
         calendar: CalendarId,
     },
+    /// A Gmail **account-global** message scope.
+    ///
+    /// Unlike Graph mail (`delta` per folder) and IMAP (state per mailbox), Gmail's
+    /// `historyId` is an **account-wide** incremental cursor (like JMAP's per-account
+    /// `Email` state), so all of an account's messages sync under one scope — there is
+    /// no per-label fan-out. Gmail labels are multi-membership on the message itself,
+    /// synced under [`GmailLabelList`](Self::GmailLabelList); a message's membership is
+    /// its `labelIds`, not the scope it was fetched under.
+    GmailMessages {
+        /// The account.
+        account: AccountId,
+    },
+    /// A Gmail per-account label-list (label discovery) scope.
+    ///
+    /// Like [`GraphFolderList`](Self::GraphFolderList), the label list is re-discovered
+    /// as a snapshot each pass (`GET /users/me/labels`), so it carries no cursor of its
+    /// own — but it is a distinct **container** scope, claimed and applied before the
+    /// account's [`GmailMessages`](Self::GmailMessages) that reference its labels
+    /// (`store-and-sync.md` referential apply order).
+    GmailLabelList {
+        /// The account.
+        account: AccountId,
+    },
+    /// A Google Calendar per-account calendar-list (calendar discovery) scope.
+    ///
+    /// Like [`GmailLabelList`](Self::GmailLabelList), the calendar list is
+    /// re-discovered as a snapshot each pass (`GET /calendar/v3/users/me/calendarList`),
+    /// so it carries no cursor of its own — but it is a distinct **container** scope,
+    /// claimed and applied before the per-calendar
+    /// [`GoogleCalendar`](Self::GoogleCalendar) event scopes it parents.
+    GoogleCalendarList {
+        /// The account.
+        account: AccountId,
+    },
+    /// A Google Calendar `(account, calendar)` event scope.
+    ///
+    /// Google Calendar `events.list` returns a per-calendar `nextSyncToken` cursor and
+    /// (unlike Graph's *mandatory* `calendarView` window) an **optional** `timeMin`, so
+    /// — like [`GraphCalendar`](Self::GraphCalendar) — a Google calendar provider is
+    /// bound to one calendar for events; the cross-calendar fan-out is the
+    /// orchestrator's job.
+    GoogleCalendar {
+        /// The account.
+        account: AccountId,
+        /// The calendar.
+        calendar: CalendarId,
+    },
 }
 
 /// The search domain whose member objects a scope holds — the index a per-account
@@ -180,7 +227,11 @@ impl SyncScope {
             | Self::GraphFolderList { account }
             | Self::GraphFolder { account, .. }
             | Self::GraphCalendarList { account }
-            | Self::GraphCalendar { account, .. } => account,
+            | Self::GraphCalendar { account, .. }
+            | Self::GmailMessages { account }
+            | Self::GmailLabelList { account }
+            | Self::GoogleCalendarList { account }
+            | Self::GoogleCalendar { account, .. } => account,
         }
     }
 
@@ -204,16 +255,22 @@ impl SyncScope {
                 _ => None,
             },
             // Graph mirrors IMAP: a per-folder message scope + a folder-list container.
-            Self::ImapMailbox { .. } | Self::GraphFolder { .. } => Some(ObjectKind::Message),
-            Self::ImapMailboxList { .. } | Self::GraphFolderList { .. } => {
-                Some(ObjectKind::Mailbox)
+            // Gmail's message scope is account-global (like JMAP's Email) but still a
+            // message scope; its label list is the mailbox container.
+            Self::ImapMailbox { .. } | Self::GraphFolder { .. } | Self::GmailMessages { .. } => {
+                Some(ObjectKind::Message)
             }
-            // Graph calendar mirrors CalDAV: a per-calendar event scope + a calendar-list
-            // container.
-            Self::DavCollection { .. } | Self::GraphCalendar { .. } => Some(ObjectKind::Event),
-            Self::DavCollectionList { .. } | Self::GraphCalendarList { .. } => {
-                Some(ObjectKind::Calendar)
-            }
+            Self::ImapMailboxList { .. }
+            | Self::GraphFolderList { .. }
+            | Self::GmailLabelList { .. } => Some(ObjectKind::Mailbox),
+            // Graph/Google calendar mirror CalDAV: a per-calendar event scope + a
+            // calendar-list container.
+            Self::DavCollection { .. }
+            | Self::GraphCalendar { .. }
+            | Self::GoogleCalendar { .. } => Some(ObjectKind::Event),
+            Self::DavCollectionList { .. }
+            | Self::GraphCalendarList { .. }
+            | Self::GoogleCalendarList { .. } => Some(ObjectKind::Calendar),
         }
     }
 
@@ -235,221 +292,5 @@ impl SyncScope {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn account() -> AccountId {
-        AccountId::try_from("acct-1").unwrap()
-    }
-
-    #[test]
-    fn scope_exposes_account() {
-        let scope = SyncScope::JmapType {
-            account: account(),
-            data_type: JmapDataType::Email,
-        };
-        assert_eq!(scope.account(), &account());
-    }
-
-    #[test]
-    fn search_domain_routes_objects_and_skips_containers() {
-        use SearchDomain::{Calendar, Mail};
-        let a = account();
-        // Mail-object scopes.
-        let jmap_mail = SyncScope::JmapType {
-            account: a.clone(),
-            data_type: JmapDataType::Email,
-        };
-        let imap = SyncScope::ImapMailbox {
-            account: a.clone(),
-            mailbox: MailboxId::try_from("INBOX").unwrap(),
-        };
-        assert_eq!(jmap_mail.search_domain(), Some(Mail));
-        assert_eq!(imap.search_domain(), Some(Mail));
-        // Calendar-object scopes.
-        let jmap_cal = SyncScope::JmapType {
-            account: a.clone(),
-            data_type: JmapDataType::CalendarEvent,
-        };
-        let dav = SyncScope::DavCollection {
-            account: a.clone(),
-            collection: DavCollectionId::try_from("/dav/cal/a/default/").unwrap(),
-        };
-        assert_eq!(jmap_cal.search_domain(), Some(Calendar));
-        assert_eq!(dav.search_domain(), Some(Calendar));
-        // Containers and discovery scopes hold no directly searchable objects.
-        for data_type in [
-            JmapDataType::Mailbox,
-            JmapDataType::Calendar,
-            JmapDataType::Thread,
-            JmapDataType::EmailSubmission,
-        ] {
-            let container = SyncScope::JmapType {
-                account: a.clone(),
-                data_type,
-            };
-            assert_eq!(container.search_domain(), None, "{container:?}");
-        }
-        assert_eq!(
-            SyncScope::ImapMailboxList { account: a.clone() }.search_domain(),
-            None
-        );
-        assert_eq!(
-            SyncScope::DavCollectionList { account: a }.search_domain(),
-            None
-        );
-    }
-
-    #[test]
-    fn object_kind_classifies_every_scope() {
-        use ObjectKind::{Calendar, Event, Mailbox, Message};
-        let a = account();
-        let jmap = |data_type| SyncScope::JmapType {
-            account: a.clone(),
-            data_type,
-        };
-        assert_eq!(jmap(JmapDataType::Email).object_kind(), Some(Message));
-        assert_eq!(jmap(JmapDataType::Mailbox).object_kind(), Some(Mailbox));
-        assert_eq!(jmap(JmapDataType::CalendarEvent).object_kind(), Some(Event));
-        assert_eq!(jmap(JmapDataType::Calendar).object_kind(), Some(Calendar));
-        // JMAP types with no host-facing view object.
-        assert_eq!(jmap(JmapDataType::Thread).object_kind(), None);
-        assert_eq!(jmap(JmapDataType::EmailSubmission).object_kind(), None);
-        // IMAP / CalDAV scopes.
-        assert_eq!(
-            SyncScope::ImapMailbox {
-                account: a.clone(),
-                mailbox: MailboxId::try_from("INBOX").unwrap(),
-            }
-            .object_kind(),
-            Some(Message)
-        );
-        assert_eq!(
-            SyncScope::ImapMailboxList { account: a.clone() }.object_kind(),
-            Some(Mailbox)
-        );
-        assert_eq!(
-            SyncScope::DavCollection {
-                account: a.clone(),
-                collection: DavCollectionId::try_from("/dav/cal/a/default/").unwrap(),
-            }
-            .object_kind(),
-            Some(Event)
-        );
-        assert_eq!(
-            SyncScope::DavCollectionList { account: a.clone() }.object_kind(),
-            Some(Calendar)
-        );
-        // Graph scopes mirror IMAP: a per-folder message scope + the folder-list
-        // container.
-        assert_eq!(
-            SyncScope::GraphFolder {
-                account: a.clone(),
-                folder: MailboxId::try_from("folder-inbox").unwrap(),
-            }
-            .object_kind(),
-            Some(Message)
-        );
-        assert_eq!(
-            SyncScope::GraphFolderList { account: a }.object_kind(),
-            Some(Mailbox)
-        );
-    }
-
-    #[test]
-    fn container_types_apply_before_members() {
-        assert!(JmapDataType::Mailbox.is_container());
-        assert!(JmapDataType::Calendar.is_container());
-        assert!(!JmapDataType::Email.is_container());
-        assert!(!JmapDataType::CalendarEvent.is_container());
-    }
-
-    #[test]
-    fn scopes_are_distinct_and_hashable() {
-        let jmap = SyncScope::JmapType {
-            account: account(),
-            data_type: JmapDataType::Email,
-        };
-        let imap = SyncScope::ImapMailbox {
-            account: account(),
-            mailbox: MailboxId::try_from("inbox").unwrap(),
-        };
-        assert_ne!(jmap, imap);
-        let json = serde_json::to_string(&jmap).unwrap();
-        assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), jmap);
-    }
-
-    #[test]
-    fn imap_mailbox_list_is_distinct_from_a_mailbox_and_roundtrips() {
-        // The folder-list container scope must never collide with the email scope
-        // of any single mailbox, or the two would share one lease.
-        let list = SyncScope::ImapMailboxList { account: account() };
-        let inbox = SyncScope::ImapMailbox {
-            account: account(),
-            mailbox: MailboxId::try_from("INBOX").unwrap(),
-        };
-        assert_ne!(list, inbox);
-        assert_eq!(list.account(), &account());
-        let json = serde_json::to_string(&list).unwrap();
-        assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), list);
-    }
-
-    #[test]
-    fn graph_folder_list_is_distinct_from_a_folder_and_roundtrips() {
-        // The folder-list container scope must never collide with the message
-        // scope of any single folder, or the two would share one lease. Graph mail
-        // delta is per-folder (no account-wide message delta), so each folder is a
-        // distinct member scope.
-        let list = SyncScope::GraphFolderList { account: account() };
-        let inbox = SyncScope::GraphFolder {
-            account: account(),
-            folder: MailboxId::try_from("folder-inbox").unwrap(),
-        };
-        assert_ne!(list, inbox);
-        assert_eq!(list.account(), &account());
-        assert_eq!(inbox.account(), &account());
-        for scope in [&list, &inbox] {
-            let json = serde_json::to_string(scope).unwrap();
-            assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
-        }
-    }
-
-    #[test]
-    fn graph_calendar_list_is_distinct_from_a_calendar_and_roundtrips() {
-        // The calendar-list container scope must never collide with the event scope of
-        // any single calendar, or the two would share one lease. Graph calendar sync is
-        // per calendar (time-windowed calendarView/delta), so each calendar is a
-        // distinct member scope, mirroring the mail GraphFolder/GraphFolderList split.
-        let list = SyncScope::GraphCalendarList { account: account() };
-        let calendar = SyncScope::GraphCalendar {
-            account: account(),
-            calendar: CalendarId::try_from("AAkALgcal-default").unwrap(),
-        };
-        assert_ne!(list, calendar);
-        assert_eq!(list.account(), &account());
-        assert_eq!(calendar.account(), &account());
-        assert_eq!(list.object_kind(), Some(ObjectKind::Calendar));
-        assert_eq!(calendar.object_kind(), Some(ObjectKind::Event));
-        assert_eq!(calendar.search_domain(), Some(SearchDomain::Calendar));
-        for scope in [&list, &calendar] {
-            let json = serde_json::to_string(scope).unwrap();
-            assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
-        }
-    }
-
-    #[test]
-    fn dav_collection_list_is_distinct_from_a_collection_and_roundtrips() {
-        // The calendar/address-book-list container scope must never collide with
-        // the events/contacts scope of any single collection, or the two would
-        // share one lease.
-        let list = SyncScope::DavCollectionList { account: account() };
-        let calendar = SyncScope::DavCollection {
-            account: account(),
-            collection: DavCollectionId::try_from("/dav/cal/alice/default/").unwrap(),
-        };
-        assert_ne!(list, calendar);
-        assert_eq!(list.account(), &account());
-        let json = serde_json::to_string(&list).unwrap();
-        assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), list);
-    }
-}
+#[path = "scope_tests.rs"]
+mod tests;

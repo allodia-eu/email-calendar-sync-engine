@@ -1,0 +1,70 @@
+{
+  "accessRole": "owner",
+  "defaultReminders": [
+    {
+      "method": "popup",
+      "minutes": 30
+    }
+  ],
+  "description": "",
+  "etag": "\"p32vqrreinbe9a0o\"",
+  "items": [
+    {
+      "attendees": [
+        {
+          "email": "testuser@example.test",
+          "organizer": true,
+          "responseStatus": "accepted",
+          "self": true
+        },
+        {
+          "email": "guest@example.test",
+          "responseStatus": "needsAction"
+        }
+      ],
+      "created": "2026-07-18T14:40:25.000Z",
+      "creator": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "description": "A one-off meeting.",
+      "end": {
+        "dateTime": "2026-08-03T11:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "etag": "\"3568771349374430\"",
+      "eventType": "default",
+      "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+      "iCalUID": "e4n4cn7ekp59crc84vljaknin4@google.com",
+      "id": "e4n4cn7ekp59crc84vljaknin4",
+      "kind": "calendar#event",
+      "location": "Room 1",
+      "organizer": {
+        "email": "testuser@example.test",
+        "self": true
+      },
+      "reminders": {
+        "useDefault": true
+      },
+      "sequence": 0,
+      "start": {
+        "dateTime": "2026-08-03T10:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "status": "confirmed",
+      "summary": "Fixture: single meeting (updated)",
+      "updated": "2026-07-18T14:41:14.687Z"
+    },
+    {
+      "etag": "\"3568771351065566\"",
+      "id": "862fgtojfi0njod4k2ll6rt8oc",
+      "kind": "calendar#event",
+      "status": "cancelled"
+    }
+  ],
+  "kind": "calendar#events",
+  "nextSyncToken": "events-sync-token-2",
+  "summary": "testuser@example.test",
+  "timeZone": "Europe/Amsterdam",
+  "updated": "2026-07-18T14:41:15.941Z"
+}
