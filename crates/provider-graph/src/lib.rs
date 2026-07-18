@@ -33,17 +33,27 @@
 //! Tier-1 metadata only: like the other adapters, the raw MIME/body is fetched on
 //! demand later, not materialized here.
 
+mod cal_fetch;
+mod cal_normalize;
+mod cal_recur;
+mod cal_write;
+mod calendar;
 mod error;
 mod fetch;
+mod http_transport;
 mod json;
 mod normalize;
 mod principal;
 mod provider;
+mod submit;
 mod transport;
+mod windows_zones;
 
 #[cfg(test)]
 mod test_support;
 
+pub use cal_fetch::CalendarWindow;
+pub use calendar::GraphCalendarProvider;
 pub use error::GraphError;
 pub use principal::MailboxPrincipal;
 pub use provider::GraphProvider;

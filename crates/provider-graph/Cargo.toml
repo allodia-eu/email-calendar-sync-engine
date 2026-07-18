@@ -1,6 +1,6 @@
 [package]
 name = "provider-graph"
-description = "Microsoft Graph (v1.0) read/sync provider adapter for the PIM sync engine: bearer-auth HTTP transport, per-folder mail-folder/message delta sync, normalizing Graph mail JSON into the engine's SyncUpdate shapes. Implements the engine-provider contract."
+description = "Microsoft Graph (v1.0) provider adapter for the PIM sync engine: bearer-auth HTTP transport; mail read/sync (per-folder message delta) + submission (sendMail in MIME format); calendar read/sync (calendarView/delta, patternedRecurrence, Windows-to-IANA zones) + writes (create/patch/delete, If-Match guarded). Implements the engine-provider contract."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,9 @@ engine-core = { workspace = true }
 # `http` enables `HttpVersion::from_http`, the one place a reqwest response's version is
 # mapped onto the engine's neutral `HttpVersion` (`ConnectionInfo`).
 engine-provider = { workspace = true, features = ["http"] }
+# The shared RFC 5322 / MIME assembler + base64 codec, for `sendMail` in MIME format
+# (submission preserves the caller's Message-ID and threading — see `submit`).
+engine-rfc5322 = { workspace = true }
 # One shared TLS trust policy across every provider (`docs/agent-guidance/tls.md`);
 # `reqwest` enables the preconfigured-client builder this HTTP transport uses.
 engine-tls = { workspace = true, features = ["reqwest"] }
@@ -22,9 +25,13 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 # `async-stream` builds the `stream_email` chunk stream with `try_stream!`.
 async-stream = { workspace = true }
+# The generated `Date` header for the assembled `sendMail` message reads the wall clock
+# at submission (engine time types deliberately cannot), mirroring provider-imap's SMTP path.
+time = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+# `time` for the gated live send test's delivery poll (`tokio::time::sleep`).
+tokio = { workspace = true, features = ["time"] }
 # `StreamExt` drains `stream_email` into its chunks in the offline tests.
 futures-util = { workspace = true }
 # The gated live test builds a (bundled) TlsClientConfig to pass into `connect`.

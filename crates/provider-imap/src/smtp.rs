@@ -1,12 +1,16 @@
-//! SMTP submission (RFC 5321): the wire conversation. RFC 5322 message assembly
-//! lives in the `assemble` submodule (split for the file-size limit).
+//! SMTP submission (RFC 5321): the conversation.
 //!
-//! Like the IMAP transport, the conversation is generic over the stream so it is
+//! The RFC 5322 / MIME **message assembly** lives in `engine-rfc5322`
+//! ([`engine_rfc5322::assemble_message`]/[`assemble_filed_message`]), shared with the
+//! Graph adapter's MIME send; this module is the SMTP-specific half — the wire
+//! conversation. Like the IMAP transport, it is generic over the stream so it is
 //! driven offline over a mock and live over a real socket. It captures the two
 //! invariants `providers.md` calls out: **per-recipient acceptance/rejection**
 //! before `DATA` (each `RCPT TO` reply), and the **post-`DATA` ambiguity** — when
 //! the final acknowledgement is lost the send is [`Disposition::Ambiguous`], which
 //! the caller turns into a `NeedsConfirmation` op rather than blind-retrying.
+//!
+//! [`assemble_filed_message`]: engine_rfc5322::assemble_filed_message
 //!
 //! Three transports, all through this one conversation core ([`converse`]):
 //! - **plaintext** ([`send`], no auth) — the fixture's local MX (port 25);
@@ -22,14 +26,6 @@
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::error::{ImapError, ImapResult};
-
-mod assemble;
-mod mime;
-
-use assemble::reject_control;
-pub(crate) use assemble::{
-    assemble_filed_message, assemble_message, is_ascii_printable, normalize_body_lines,
-};
 
 /// One recipient's disposition from its `RCPT TO` reply (before `DATA`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +137,22 @@ where
         )));
     }
     smtp.into_inner_stream()
+}
+
+/// Rejects an SMTP command value carrying CR, LF, or NUL — the bytes that would
+/// inject an extra command or split the command stream (RFC 5321 §2.3.8). Returns the
+/// value unchanged when clean. (Header-value screening during message assembly lives
+/// in `engine-rfc5322`.)
+fn reject_control<'a>(field: &str, value: &'a str) -> ImapResult<&'a str> {
+    if value
+        .bytes()
+        .any(|b| b == b'\r' || b == b'\n' || b == b'\0')
+    {
+        return Err(ImapError::protocol(format!(
+            "{field} contains a forbidden control character (CR, LF, or NUL)"
+        )));
+    }
+    Ok(value)
 }
 
 /// The conversation core shared by every transport: validates the envelope addresses,
@@ -390,24 +402,6 @@ fn auth_plain_token(user: &str, password: &str) -> String {
 #[cfg(test)]
 #[path = "smtp_tests.rs"]
 mod tests;
-
-// The threading-header tests live in a sibling file: `smtp_tests.rs` is already at
-// the 500-line limit, so the In-Reply-To/References cases go here rather than grow it.
-#[cfg(test)]
-#[path = "smtp_threading_tests.rs"]
-mod threading_tests;
-
-#[cfg(test)]
-#[path = "smtp_mime_tests.rs"]
-mod mime_tests;
-
-#[cfg(test)]
-#[path = "smtp_cc_bcc_tests.rs"]
-mod cc_bcc_tests;
-
-#[cfg(test)]
-#[path = "smtp_assemble_tests.rs"]
-mod assemble_tests;
 
 #[cfg(test)]
 #[path = "smtp_starttls_tests.rs"]

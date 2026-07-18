@@ -1,14 +1,19 @@
-//! MIME body assembly for SMTP submission.
+//! MIME body assembly: the `multipart/{alternative,related,mixed}` nesting under the
+//! RFC 5322 envelope headers, and the base64 attachment parts.
 
 use std::fmt::Write as _;
 
-use engine_provider::{Draft, DraftAttachment, DraftAttachmentDisposition};
+use engine_provider::{
+    Draft, DraftAttachment, DraftAttachmentDisposition, ProviderError, ProviderResult,
+};
 
-use crate::error::{ImapError, ImapResult};
+use crate::{
+    assemble::{is_ascii_printable, normalize_body_lines, reject_control},
+    base64,
+};
 
-/// The body-specific headers and bytes appended after the RFC 5322 envelope
-/// headers.
-pub(super) struct MimeBody {
+/// The body-specific headers and bytes appended after the RFC 5322 envelope headers.
+pub(crate) struct MimeBody {
     /// Root MIME headers, terminated by CRLF but not by the blank header/body line.
     pub content_headers: String,
     /// Root MIME body bytes with CRLF line endings.
@@ -21,7 +26,7 @@ struct Part {
 }
 
 /// Builds the root MIME body for a draft.
-pub(super) fn assemble(draft: &Draft) -> ImapResult<MimeBody> {
+pub(crate) fn assemble(draft: &Draft) -> ProviderResult<MimeBody> {
     let inline = draft
         .attachments
         .iter()
@@ -72,7 +77,7 @@ fn body_part(draft: &Draft) -> Part {
 fn text_part(kind: &str, body: &str) -> Part {
     let subtype = if kind == "html" { "html" } else { "plain" };
     let mut bytes = Vec::new();
-    for line in super::normalize_body_lines(body) {
+    for line in normalize_body_lines(body) {
         bytes.extend_from_slice(line.as_bytes());
         bytes.extend_from_slice(b"\r\n");
     }
@@ -82,7 +87,7 @@ fn text_part(kind: &str, body: &str) -> Part {
     }
 }
 
-fn attachment_part(attachment: &DraftAttachment) -> ImapResult<Part> {
+fn attachment_part(attachment: &DraftAttachment) -> ProviderResult<Part> {
     let media_type = media_type(&attachment.media_type)?;
     let name = parameter("name", &attachment.file_name)?;
     let filename = parameter("filename", &attachment.file_name)?;
@@ -93,7 +98,7 @@ fn attachment_part(attachment: &DraftAttachment) -> ImapResult<Part> {
             write!(
                 &mut content_headers,
                 "Content-ID: <{}>\r\nContent-Disposition: inline; {filename}\r\n",
-                super::reject_control("Content-ID", content_id.as_str())?
+                reject_control("Content-ID", content_id.as_str())?
             )
             .expect("writing to a String cannot fail");
         }
@@ -127,7 +132,7 @@ fn multipart(subtype: &str, boundary: &str, parts: Vec<Part>) -> Part {
 }
 
 fn base64_body(content: &[u8]) -> Vec<u8> {
-    let encoded = crate::base64::encode(content);
+    let encoded = base64::encode(content);
     let mut body = Vec::with_capacity(encoded.len() + encoded.len() / 76 * 2);
     for line in encoded.as_bytes().chunks(76) {
         body.extend_from_slice(line);
@@ -151,23 +156,23 @@ fn boundary(draft: &Draft, kind: &str) -> String {
     }
 }
 
-fn media_type(value: &str) -> ImapResult<&str> {
-    let value = super::reject_control("attachment media type", value)?;
+fn media_type(value: &str) -> ProviderResult<&str> {
+    let value = reject_control("attachment media type", value)?;
     if value.is_empty()
         || !value.bytes().all(
             |b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'/' | b'+' | b'-' | b'.'),
         )
     {
-        return Err(ImapError::protocol(
+        return Err(ProviderError::permanent(
             "attachment media type is not safe for a MIME header",
         ));
     }
     Ok(value)
 }
 
-fn parameter(name: &str, value: &str) -> ImapResult<String> {
-    let value = super::reject_control("attachment filename", value)?;
-    if super::is_ascii_printable(value) {
+fn parameter(name: &str, value: &str) -> ProviderResult<String> {
+    let value = reject_control("attachment filename", value)?;
+    if is_ascii_printable(value) {
         let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
         Ok(format!("{name}=\"{escaped}\""))
     } else {

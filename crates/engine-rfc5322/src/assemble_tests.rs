@@ -1,9 +1,7 @@
-//! Offline tests for SMTP message assembly (`assemble_message`): headers, RFC
-//! 2047 encoding, CRLF hardening, and body normalization.
-//!
-//! Sibling of `smtp_tests.rs` (kept separate so that file stays at its line limit).
+//! Tests for message assembly (`assemble_message`): headers, RFC 2047 encoding, CRLF
+//! hardening, and body normalization.
 
-use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
+use engine_core::{error::FailureClass, ids::MessageIdHeader, mail::EmailAddress};
 use engine_provider::Draft;
 use time::{OffsetDateTime, macros::datetime};
 
@@ -54,10 +52,7 @@ fn assemble_message_rejects_header_injection_via_crlf() {
     let mut poisoned = draft(&["bob@test.local"], "body");
     poisoned.subject = "Hi\r\nBcc: victim@evil.example".to_owned();
     let err = assemble_message(&poisoned, fixed_date()).unwrap_err();
-    assert_eq!(
-        err.failure_class(),
-        engine_core::error::FailureClass::Permanent
-    );
+    assert_eq!(err.class(), FailureClass::Permanent);
 
     // A Message-ID and an address with CRLF are rejected the same way.
     let mut bad_addr = draft(&["bob@test.local"], "body");
@@ -86,4 +81,19 @@ fn assemble_message_normalizes_a_bare_cr_in_the_body() {
     let message = assembled(&draft(&["bob@test.local"], "a\rb"));
     let body = &message[message.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4..];
     assert_eq!(body, b"a\r\nb\r\n");
+}
+
+#[test]
+fn an_ascii_display_name_is_quoted_and_a_crlf_body_is_one_break() {
+    let mut d = draft(&["bob@test.local"], "line1\r\nline2");
+    d.from = EmailAddress::named("Alice Smith", "alice@test.local");
+    let text = String::from_utf8(assembled(&d)).unwrap();
+    // A plain-ASCII display name is a quoted-string, not an RFC 2047 encoded-word.
+    assert!(
+        text.contains("From: \"Alice Smith\" <alice@test.local>\r\n"),
+        "{text}"
+    );
+    // A `\r\n` in the body is a single line break (not doubled by the normalizer).
+    let body = &text[text.find("\r\n\r\n").unwrap() + 4..];
+    assert_eq!(body, "line1\r\nline2\r\n");
 }

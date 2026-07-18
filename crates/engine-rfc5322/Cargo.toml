@@ -1,0 +1,17 @@
+[package]
+name = "engine-rfc5322"
+description = "Outbound RFC 5322 / MIME message assembly for the PIM sync engine: turns an engine-provider Draft (envelope, threading, Cc/Bcc, HTML alternative, inline + regular attachments) into the message bytes a submission transport sends. Pure, no I/O; header-injection hardened; returns the engine-neutral ProviderError. Shared by provider-imap (SMTP) and provider-graph (Graph sendMail MIME)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-provider = { workspace = true }
+# `OffsetDateTime` + the RFC 2822 formatter for the generated `Date` header (RFC 5322
+# §3.6 requires one; an APPENDed/filed copy has no server in the loop to add it).
+time = { workspace = true }
+
+[lints]
+workspace = true

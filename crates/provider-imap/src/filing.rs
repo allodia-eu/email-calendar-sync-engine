@@ -13,6 +13,7 @@ use engine_core::{
     mail::MailboxRole,
 };
 use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
+use engine_rfc5322::{assemble_filed_message, assemble_message};
 use time::OffsetDateTime;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -222,13 +223,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     }
 
     /// Derives the [`Submission`] (wire message, envelope, EHLO identity) from `draft`.
-    fn prepare(draft: &Draft) -> ImapResult<Submission> {
+    fn prepare(draft: &Draft) -> ProviderResult<Submission> {
         // One timestamp for both the transmitted and the filed copy, so they differ ONLY in
         // the Bcc header.
         let now = OffsetDateTime::now_utc();
         // The over-the-wire message OMITS the Bcc header — Bcc recipients are reached via the
         // envelope only, so no recipient can see them.
-        let message = smtp::assemble_message(draft, now)?;
+        let message = assemble_message(draft, now)?;
         let from = draft.from.email.as_str();
         // Every envelope recipient gets a `RCPT TO`: To + Cc + Bcc, de-duplicated
         // case-insensitively (the same address can appear in more than one field — e.g. To and
@@ -286,7 +287,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         let filed = if draft.bcc.is_empty() {
             sub.message.clone()
         } else {
-            smtp::assemble_filed_message(draft, sub.now)?
+            assemble_filed_message(draft, sub.now)?
         };
         // Best-effort Sent placement; a successful send is never failed for it. The
         // Sent folder is resolved by its `\Sent` SPECIAL-USE role (falling back to
@@ -344,7 +345,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     pub async fn save_draft(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
         // A saved draft retains the Bcc header so resuming it restores every recipient (it is
         // APPENDed locally, never transmitted).
-        let message = smtp::assemble_filed_message(draft, OffsetDateTime::now_utc())?;
+        let message = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
         // Unlike Sent placement this surfaces an `APPEND` failure (saving the draft is
         // the whole op). The Drafts folder is resolved by its `\Drafts` SPECIAL-USE
         // role (falling back to the conventional "Drafts").

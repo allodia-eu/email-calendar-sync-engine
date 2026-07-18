@@ -1,10 +1,9 @@
-//! Offline tests for the `Cc`/`Bcc` headers in the assembled message.
+//! Tests for the `Cc`/`Bcc` headers in the assembled message.
 //!
-//! A `Cc` header is always emitted when present (visible to everyone), but `Bcc` is emitted
-//! ONLY in the filed Sent/Drafts copy ([`assemble_filed_message`]), never in the
-//! over-the-wire message ([`assemble_message`]) — so recipients can't see the Bcc list while
-//! the sender's Sent folder still records it (Outlook/Thunderbird behavior). Sibling of
-//! `smtp_tests.rs` (kept separate so that file stays at its line limit).
+//! A `Cc` header is always emitted when present (visible to everyone), but `Bcc` is
+//! emitted ONLY in the filed Sent/Drafts copy ([`assemble_filed_message`]), never in
+//! the over-the-wire message ([`assemble_message`]) — so recipients can't see the Bcc
+//! list while the sender's Sent folder still records it (Outlook/Thunderbird behavior).
 
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
 use engine_provider::Draft;
@@ -75,7 +74,7 @@ fn a_bcc_only_message_uses_undisclosed_recipients_for_the_empty_to() {
 #[test]
 fn the_two_assemblies_are_identical_when_there_is_no_bcc() {
     // With no Bcc the wire and filed copies are byte-identical (the Bcc header is the only
-    // difference), which is why `submit_over` reuses the wire bytes for the Sent copy then.
+    // difference), which is why a caller can reuse the wire bytes for the Sent copy then.
     let draft = draft_with_cc_bcc().with_bcc(Vec::new());
     assert_eq!(wire(&draft), filed(&draft));
 }

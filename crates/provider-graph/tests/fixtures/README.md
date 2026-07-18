@@ -55,3 +55,66 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
    `@removed`.
 5. **Immutable ids** (requested via `Prefer: IdType="ImmutableId"`) are stable
    across calls and URL-safe — the right `ProviderKey` for Graph mail.
+
+## Calendar fixtures (`calendar/`)
+
+Captured the same way, from events created on the throwaway account. Only **PII was
+scrubbed** (emails → `testuser@example.test`, name → `Test User`); the opaque Graph
+object ids are kept verbatim (they are per-object handles for a throwaway account, not
+PII, and keeping them preserves the real shape). Event times were captured with
+`Prefer: outlook.timezone="Europe/Amsterdam"` — the authoring-zone form the live
+provider requests (see Finding 6).
+
+`calendars.json` reflects the throwaway account's real state: **two** calendars (the
+default `Calendar` and a user-added `Extra calendar test`). Graph event JSON never names
+its own calendar, so the provider binds each event to the calendar it was fetched under
+(`Event.calendars`); that is how events from multiple calendars under one account stay
+separable (see Finding 11).
+
+The one exception to "ids verbatim" is `event_online_meeting.json`: a Teams meeting's
+`onlineMeeting.joinUrl` and the meeting-id/passcodes echoed in its `body` are **live,
+joinable credentials**, not opaque handles, so those were replaced with same-shape
+placeholders (the meeting number, the `?p=` URL passcode, and the display passcode) — a
+public repo must not ship a working join link (see Finding 10).
+
+| Fixture | Real Graph call | Protects |
+| --- | --- | --- |
+| `calendar/calendars.json` | `GET /me/calendars` | calendar-list → `Calendar` normalization: **two** calendars under one account — the default `Calendar` and the non-default `Extra calendar test` (`hexColor: #f7630c`) |
+| `calendar/calendar.json` | one entry from `GET /me/calendars` | a single `Calendar` (the default) in isolation |
+| `calendar/event_extra_calendar.json` | a `singleInstance` from the non-default calendar's `calendarView` | an event bound to a **non-default** calendar — membership keeps it separable from the default calendar's events |
+| `calendar/event_series_master.json` | `GET /me/events/{id}` (a `seriesMaster`) | `patternedRecurrence` → `Recurrence`, zone, location, organizer |
+| `calendar/event_single.json` | a `singleInstance` from `GET /me/events` | non-recurring event + attendee projection |
+| `calendar/event_allday.json` | an all-day `singleInstance` | `isAllDay` → zoneless `Date` + one-day duration |
+| `calendar/event_online_meeting.json` | a Teams `singleInstance` from `calendarView` | the online-meeting shape (`isOnlineMeeting`, `onlineMeetingProvider`, `onlineMeeting.joinUrl`) preserved on `Event.extended` — captured ahead of online-meeting-provider support |
+| `calendar/events_delta.json` | `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` | the delta page shape: `seriesMaster`/`singleInstance` **kept**, `occurrence`/`exception` **dropped**, `@odata.deltaLink` cursor |
+
+6. **Event `start`/`end` default to UTC; the authoring zone needs `Prefer:
+   outlook.timezone`.** A plain `GET` returns event times in UTC, which would expand a
+   recurring master DST-incorrectly. Sending `Prefer: outlook.timezone="<IANA>"` returns
+   each event's wall clock in that zone (and echoes the IANA name in `timeZone`), which
+   is what the provider stores. `originalStartTimeZone` carries the true authoring zone
+   but not a usable wall clock, so the display-zone request is the mechanism.
+7. **`calendarView/delta` returns the series master *and* its expanded occurrences.**
+   The initial delta carries the `seriesMaster` (with `patternedRecurrence`), every
+   pre-expanded `occurrence` (a UTC instant, `seriesMasterId` set), any `exception`, and
+   standalone `singleInstance`s, ending at an `@odata.deltaLink`. The engine expands the
+   master locally, so the provider keeps `seriesMaster`/`singleInstance` and drops
+   `occurrence`/`exception`.
+8. **Graph v1.0 exposes no `recurrenceId`/`originalStart` on an `exception`** (both are
+   `null`, even on a direct `GET`), so a per-instance override cannot be keyed — hence
+   exceptions are dropped, a documented limitation (`graph.md`).
+9. **A re-delete of a just-deleted event is `400 ErrorInvalidRequest`**, not a clean
+   `404` — the item has moved to Deleted Items. Delete idempotency keys on `404` (a
+   truly-gone event); the ambiguous-retry case is the outbox's `NeedsConfirmation`.
+10. **A Teams online meeting carries `isOnlineMeeting: true`, `onlineMeetingProvider:
+    "teamsForBusiness"`, and an `onlineMeeting.joinUrl`** (the deprecated
+    `onlineMeetingUrl` stays `null`); the join link, meeting-id, and passcodes are also
+    duplicated as HTML in the `body`. The `joinUrl` **is** projected today, as an
+    `Event.virtual_locations` entry. What is *not* modelled yet is the online-meeting
+    **provider identity** (`onlineMeetingProvider`/`isOnlineMeeting`); that stays on the
+    preserved raw payload (`Event.extended`) for a future provider-typing mapper.
+11. **One MS account owns many calendars** (`GET /me/calendars` → a list). Each is a
+    distinct `Calendar` with its own immutable id, `isDefaultCalendar` flag, and colour
+    (`hexColor` `#rrggbb` wins over the named `color`). A Graph `event` object does not
+    carry its calendar id, so calendar membership comes from the fetch context: the
+    provider is calendar-bound and stamps `Event.calendars` with the calendar it synced.
