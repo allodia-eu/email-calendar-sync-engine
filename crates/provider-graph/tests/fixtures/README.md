@@ -65,12 +65,19 @@ PII, and keeping them preserves the real shape). Event times were captured with
 `Prefer: outlook.timezone="Europe/Amsterdam"` — the authoring-zone form the live
 provider requests (see Finding 6).
 
+The one exception to "ids verbatim" is `event_online_meeting.json`: a Teams meeting's
+`onlineMeeting.joinUrl` and the meeting-id/passcodes echoed in its `body` are **live,
+joinable credentials**, not opaque handles, so those were replaced with same-shape
+placeholders (the meeting number, the `?p=` URL passcode, and the display passcode) — a
+public repo must not ship a working join link (see Finding 10).
+
 | Fixture | Real Graph call | Protects |
 | --- | --- | --- |
 | `calendar/calendars.json` / `calendar.json` | `GET /me/calendars` | calendar → `Calendar` normalization; the default calendar |
 | `calendar/event_series_master.json` | `GET /me/events/{id}` (a `seriesMaster`) | `patternedRecurrence` → `Recurrence`, zone, location, organizer |
 | `calendar/event_single.json` | a `singleInstance` from `GET /me/events` | non-recurring event + attendee projection |
 | `calendar/event_allday.json` | an all-day `singleInstance` | `isAllDay` → zoneless `Date` + one-day duration |
+| `calendar/event_online_meeting.json` | a Teams `singleInstance` from `calendarView` | the online-meeting shape (`isOnlineMeeting`, `onlineMeetingProvider`, `onlineMeeting.joinUrl`) preserved on `Event.extended` — captured ahead of online-meeting-provider support |
 | `calendar/events_delta.json` | `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` | the delta page shape: `seriesMaster`/`singleInstance` **kept**, `occurrence`/`exception` **dropped**, `@odata.deltaLink` cursor |
 
 6. **Event `start`/`end` default to UTC; the authoring zone needs `Prefer:
@@ -91,3 +98,9 @@ provider requests (see Finding 6).
 9. **A re-delete of a just-deleted event is `400 ErrorInvalidRequest`**, not a clean
    `404` — the item has moved to Deleted Items. Delete idempotency keys on `404` (a
    truly-gone event); the ambiguous-retry case is the outbox's `NeedsConfirmation`.
+10. **A Teams online meeting carries `isOnlineMeeting: true`, `onlineMeetingProvider:
+    "teamsForBusiness"`, and an `onlineMeeting.joinUrl`** (the deprecated
+    `onlineMeetingUrl` stays `null`); the join link, meeting-id, and passcodes are also
+    duplicated as HTML in the `body`. The provider does not project these yet — the
+    fixture exists so the staged online-meeting-provider mapper has a real payload to
+    build against; today they are only preserved verbatim on `Event.extended`.

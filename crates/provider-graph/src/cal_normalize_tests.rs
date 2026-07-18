@@ -13,6 +13,7 @@ const CALENDAR: &str = include_str!("../tests/fixtures/calendar/calendar.json");
 const MASTER: &str = include_str!("../tests/fixtures/calendar/event_series_master.json");
 const SINGLE: &str = include_str!("../tests/fixtures/calendar/event_single.json");
 const ALLDAY: &str = include_str!("../tests/fixtures/calendar/event_allday.json");
+const ONLINE: &str = include_str!("../tests/fixtures/calendar/event_online_meeting.json");
 
 fn json(fixture: &str) -> Value {
     serde_json::from_str(fixture).unwrap()
@@ -106,6 +107,28 @@ fn all_day_event_is_a_zoneless_date_with_a_day_duration() {
     assert!(event.is_all_day());
     // The exclusive end (the 11th) yields a one-day duration.
     assert_eq!(event.duration, "P1D".parse::<Duration>().unwrap());
+}
+
+#[test]
+fn an_online_meeting_normalizes_and_preserves_its_teams_join_payload() {
+    // The engine does not project online-meeting fields yet (that support is staged), but
+    // the raw Graph payload it preserves must carry them intact so the future mapper has
+    // something to read. This fixture is a real Teams "for business" meeting.
+    let event = event(ONLINE);
+    assert_eq!(event.title, "PIM fixture: Teams online meeting");
+    assert!(!event.is_recurring());
+    assert!(matches!(event.start, CalendarDateTime::Zoned { .. }));
+
+    let raw = event
+        .extended
+        .get("microsoft.graph/event")
+        .expect("raw Graph event preserved");
+    assert_eq!(raw["isOnlineMeeting"], Value::Bool(true));
+    assert_eq!(raw["onlineMeetingProvider"], "teamsForBusiness");
+    let join_url = raw["onlineMeeting"]["joinUrl"]
+        .as_str()
+        .expect("a Teams join URL");
+    assert!(join_url.starts_with("https://teams.live.com/meet/"));
 }
 
 #[test]
