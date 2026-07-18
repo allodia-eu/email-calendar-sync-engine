@@ -93,6 +93,46 @@ async fn negotiate_starttls_rejects_data_buffered_past_the_220() {
 }
 
 #[tokio::test]
+async fn negotiate_starttls_reports_a_refused_upgrade() {
+    // The server advertises STARTTLS but then refuses the command with a non-220 — the
+    // upgrade cannot proceed, so no credentials are ever sent in the clear.
+    let server = script(&[
+        "220 mail ESMTP\r\n",
+        "250-mail\r\n250 STARTTLS\r\n",
+        "454 4.7.0 TLS not available right now\r\n",
+    ]);
+    let (stream, _recorded) = MockStream::new(server);
+
+    let err = negotiate_starttls(stream, "client.test")
+        .await
+        .expect_err("a refused STARTTLS must error");
+    assert!(matches!(err, ImapError::Protocol(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn negotiate_starttls_fails_when_neither_ehlo_nor_helo_is_accepted() {
+    // A server that greets but rejects both EHLO and HELO: the preamble cannot even
+    // learn the extensions, so it aborts before STARTTLS.
+    let server = script(&[
+        "220 mail ready\r\n",
+        "502 5.5.1 EHLO not supported\r\n",
+        "502 5.5.1 HELO not supported\r\n",
+    ]);
+    let (stream, recorded) = MockStream::new(server);
+
+    let err = negotiate_starttls(stream, "client.test")
+        .await
+        .expect_err("EHLO+HELO refusal must error");
+    assert!(matches!(err, ImapError::Protocol(_)), "{err:?}");
+    let sent = written(&recorded);
+    assert!(
+        sent.contains("EHLO client.test") && sent.contains("HELO client.test"),
+        "{sent}"
+    );
+    assert!(!sent.contains("STARTTLS"), "must not send STARTTLS: {sent}");
+}
+
+#[tokio::test]
 async fn send_after_starttls_skips_greeting_and_authenticates() {
     // No 220 greeting in the script: after a STARTTLS upgrade the server sends none,
     // and the client's first line is EHLO.

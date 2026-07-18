@@ -412,3 +412,9 @@ fn placed_key(
 #[cfg(test)]
 #[path = "filing_tests.rs"]
 mod tests;
+
+// The submission-dispatch tests drive a real in-process SMTP server (their own cert +
+// TLS harness), so they live in a sibling file to keep `filing_tests.rs` small.
+#[cfg(test)]
+#[path = "filing_smtp_server_tests.rs"]
+mod smtp_server_tests;

@@ -239,6 +239,26 @@ async fn submit_over_smtp_rejects_permanently_when_no_recipient_accepts() {
 }
 
 #[tokio::test]
+async fn submit_over_smtp_defers_retryably_on_a_transient_rejection() {
+    // A 4xx on MAIL FROM is transient: the send is deferred and surfaced as retryable
+    // (never filed as sent), distinct from the permanent case above.
+    let provider = connected_provider(script(&[GREETING, LOGIN_OK])).await;
+    let smtp = script(&[
+        "220 mail\r\n",
+        "250 OK\r\n",
+        "451 4.3.0 mailbox busy, try again later\r\n", // transient failure on MAIL FROM
+    ]);
+    let (smtp_stream, _) = MockStream::new(smtp);
+
+    let err = provider
+        .submit_over(smtp_stream, &submit_draft(), None)
+        .await
+        .unwrap_err();
+    assert!(err.is_retryable(), "a 4xx must defer retryably");
+    assert!(!err.requires_confirmation());
+}
+
+#[tokio::test]
 async fn submit_falls_back_to_a_message_id_key_without_appenduid() {
     // APPEND succeeds but the server returns no APPENDUID → a Message-ID-derived key.
     let imap = script(&[

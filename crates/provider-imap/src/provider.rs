@@ -252,6 +252,18 @@ impl<S> ImapProvider<S> {
     pub(crate) fn with_connection(connection: Connection<S>, mailbox: MailboxId) -> Self {
         Self::build(connection, mailbox, None, None, None)
     }
+
+    /// Wraps a mock IMAP `connection` but with an injected `smtp` sender, so the
+    /// offline suite can drive [`submit`](Self::submit) against an in-process SMTP
+    /// server (the IMAP filing side degrades gracefully over the exhausted mock).
+    #[cfg(test)]
+    pub(crate) fn with_connection_and_smtp(
+        connection: Connection<S>,
+        mailbox: MailboxId,
+        smtp: SmtpSender,
+    ) -> Self {
+        Self::build(connection, mailbox, Some(smtp), None, None)
+    }
 }
 
 #[async_trait]
@@ -399,3 +411,9 @@ mod tests;
 #[cfg(test)]
 #[path = "provider_submit_over_tests.rs"]
 mod submit_over_tests;
+
+// The STARTTLS connect path drives a real in-process TLS server, so it lives in its own
+// sibling file (with its own cert/server harness).
+#[cfg(test)]
+#[path = "provider_starttls_tests.rs"]
+mod starttls_tests;
