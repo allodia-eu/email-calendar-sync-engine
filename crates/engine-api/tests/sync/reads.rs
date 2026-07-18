@@ -202,6 +202,70 @@ async fn lists_synced_calendars_and_events() {
     assert!(engine.events(&other).await.unwrap().is_empty());
 }
 
+/// `events_by_keys` resolves a *named handful* of events without reading the rest — the
+/// targeted read the event-detail view and the occurrence→master join use so a large
+/// calendar's whole event history is never deserialized to answer for one block.
+#[tokio::test]
+async fn events_by_keys_resolves_only_the_named_events() {
+    let engine = Engine::open_in_memory().unwrap();
+    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+    let provider = FakeProvider {
+        events: vec![
+            event("evt-a", "uid-a@h", "work"),
+            event("evt-b", "uid-b@h", "work"),
+            event("evt-c", "uid-c@h", "work"),
+        ],
+        ..FakeProvider::new()
+    };
+    engine
+        .sync_calendar(&provider, &account(), horizon(), &zone)
+        .await
+        .unwrap();
+
+    // Two of the three, by key: exactly those two come back, and nothing else.
+    let mut got: Vec<String> = engine
+        .events_by_keys(
+            &account(),
+            &[
+                ProviderKey::new("evt-a").unwrap(),
+                ProviderKey::new("evt-c").unwrap(),
+            ],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|e| e.id.key().as_str().to_owned())
+        .collect();
+    got.sort();
+    assert_eq!(got, vec!["evt-a".to_owned(), "evt-c".to_owned()]);
+
+    // A key that isn't there is simply absent (not an error), and an empty request
+    // touches nothing — the join passes an empty set when a window holds no occurrences.
+    let mixed = engine
+        .events_by_keys(
+            &account(),
+            &[
+                ProviderKey::new("evt-b").unwrap(),
+                ProviderKey::new("evt-missing").unwrap(),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(mixed.len(), 1);
+    assert_eq!(mixed[0].id.key().as_str(), "evt-b");
+    assert!(engine.events_by_keys(&account(), &[]).await.unwrap().is_empty());
+
+    // An account that never synced resolves nothing rather than erroring.
+    let other = AccountId::try_from("nobody").unwrap();
+    assert!(
+        engine
+            .events_by_keys(&other, &[ProviderKey::new("evt-a").unwrap()])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// The read a calendar grid pages over: `occurrences_in` materializes a recurring
 /// series into one row per instance in the window, where `events()` — which returns
 /// the projected *envelope* — reports the whole series exactly once, at its start.
