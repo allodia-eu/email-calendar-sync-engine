@@ -88,7 +88,10 @@ expansion, or scheduling.
 - **Adapters may deliver non-IANA zones.** Microsoft Graph uses Windows zone
   names (and `tzone://Microsoft/Custom` for legacy custom zones). The adapter
   maps these to IANA at its boundary (CLDR `windowsZones`); the engine time model
-  is IANA-only.
+  is IANA-only. **Google Calendar is IANA-native by contrast** (`provider-google`):
+  event times carry an IANA `timeZone` directly, so no zone table is needed — the
+  adapter pairs the wall clock (the RFC 3339 `dateTime` stripped of its offset) with
+  that zone.
 - **Out of scope:** `RSCALE` / non-Gregorian recurrence (RFC 7529) is preserved
   raw, not expanded.
 
@@ -181,6 +184,11 @@ offline-tested end to end.
   `exception`/cancellation *overrides* are deferred — Graph v1.0 exposes no
   recurrence-id to key them, and the master↔override dedup is itself staged, so a
   Graph `exception` is dropped rather than mapped. See `graph.md` → "Calendar".)
+  **Google** is the same posture but *without* Graph's data-loss: it returns masters
+  with an `RRULE` (parsed by the shared `engine_core::calendar::parse_rrule`) and
+  *does* expose `recurringEventId` on an override — but override reconciliation is
+  still staged, so `provider-google` drops a `recurringEventId` instance for now
+  rather than mapping it. See `google.md` → "Google Calendar".)
 - **Rule:** `RawIcal` and `RawJsCalendar` are preserved beside the projection
   (model invariant). Provider writes round-trip from raw plus targeted patches,
   never by re-serializing the lossy projection. The projection exists for

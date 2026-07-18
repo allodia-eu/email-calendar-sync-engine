@@ -26,10 +26,10 @@ Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
 
 ## The crate
 
-`provider-google` implements the `engine_provider::Provider` contract. **Gmail is
-complete** (read/sync + on-demand source + writes + submission) on `GmailProvider`;
-**Google Calendar** (read/sync + writes) is the second slice on a calendar-bound
-provider. The mail layers:
+`provider-google` implements the `engine_provider::Provider` contract for **mail
+(read/sync + on-demand source + writes + submission)** on `GmailProvider` and **calendar
+(read/sync + writes)** on `GoogleCalendarProvider` (calendar-bound), each over its own
+`GoogleClient` on the same token. The mail layers:
 
 - **`error`** — `GoogleError` (`Status`/`HistoryExpired`/`Json`/`Protocol`/`Transport`)
   → the engine-neutral `FailureClass`. Google error bodies are a documented
@@ -141,6 +141,40 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   captured finding), so reconcile-by-`Message-ID` would not match — but `send` **returns
   the sent message's id** in its response, so the receipt uses that directly (no reconcile
   round-trip, unlike SMTP/Graph `sendMail`, which return nothing).
+
+## Google Calendar
+
+`GoogleCalendarProvider` is **bound to one calendar** (like `GraphCalendarProvider`): its
+`event_scope` names that calendar (`GoogleCalendar`) and syncs its `events.list`; the
+calendar list syncs under the per-account `GoogleCalendarList`. It advertises calendar
+read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
+
+- **IANA-native** (`cal_normalize`): event `start`/`end` are `{ dateTime, timeZone }` with
+  an IANA zone (the wall clock is the RFC 3339 value stripped of its offset, paired with
+  the `timeZone`) — **no Windows-zone table**. An all-day event is `{ date }`. `location`
+  and `description` are plain strings; `hangoutLink`/`conferenceData` video entry point →
+  a virtual location; the raw event rides `Event::extended` under `"google/event"`.
+- **RRULE strings → the shared parser.** `recurrence` is an array of RFC 5545 `RRULE`
+  strings, parsed through `engine_core::calendar::parse_rrule` — the one shared
+  RRULE-string parser (CalDAV delegates to it too). Google returns recurring events as
+  **masters with an `RRULE`** (`singleEvents=false`), the master + rule + local-expansion
+  model the engine wants — cleaner than Graph's pre-expanded `calendarView` (no
+  data-loss). A per-instance override (`recurringEventId` set) is dropped (deferred —
+  `calendar-semantics.md`); a `status:"cancelled"` entry is a tombstone.
+- **Sync** (`cal_fetch`): `events.list` with a per-calendar `nextSyncToken`. The window
+  (`timeMin`/`timeMax`) is **optional** and applies only to the initial snapshot (a
+  `syncToken` request cannot also carry a window). A `410` on a stale `syncToken`
+  classifies as `NeedsResync` → snapshot restart (the same mechanism as Gmail's
+  history-expiry; here the error classifier maps `410` directly, no special case).
+- **Writes** (`cal_write`): `events.insert` (create), `events.patch` (a partial merge —
+  the neutral `EventEdit` intent → a partial event JSON, never re-serializing the
+  projection; a start/end move that would change the time *form* is refused),
+  `events.delete`. All `If-Match`-guarded (`412` → `Conflict`). Delete idempotency:
+  Google signals **already-gone as `404` *or* `410`** (both → success); a `412` on a
+  still-existing event is a real conflict (surfaced, not swallowed). A *guarded* re-delete
+  returns `412` (the deleted event is left cancelled with a new ETag, failing the stale
+  `If-Match`), so the live test does not assert re-delete idempotency — the `404`/`410`
+  path is proven offline.
 
 ## Testing (3-tier, mirroring Graph — `AGENTS.md` offline-mock caveat)
 

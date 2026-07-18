@@ -31,9 +31,6 @@ pub(crate) const GOOGLE_BASE: &str = "https://www.googleapis.com";
 /// Implemented by [`HttpTransport`](crate::http_transport) (live reqwest) and, in
 /// tests, by a fake fed canned fixtures keyed by URL — so the whole fetch
 /// orchestration runs offline.
-///
-/// The `patch` verb is added by the calendar-write slice as it lands, so every
-/// intermediate state compiles with no unused methods.
 #[async_trait]
 pub(crate) trait GoogleTransport: Send + Sync {
     /// Fetches `url`, returning the parsed JSON or a classified error.
@@ -42,7 +39,7 @@ pub(crate) trait GoogleTransport: Send + Sync {
     /// `POST`s `body` with `content_type` to `url`, returning the parsed JSON response
     /// body when the server sent one — an action answering with an empty body yields
     /// `None`. A non-2xx becomes a classified [`GoogleError::Status`]. Gmail's
-    /// `messages.modify`/`send`/`trash` post here.
+    /// `messages.modify`/`send`/`trash` and Calendar's `events.insert` post here.
     async fn post(
         &self,
         url: &str,
@@ -50,10 +47,24 @@ pub(crate) trait GoogleTransport: Send + Sync {
         body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError>;
 
-    /// `DELETE`s `url`. A `2xx` (Google answers `204`) is success; a non-2xx becomes a
-    /// classified [`GoogleError::Status`] (a `404` — already gone — is the caller's to
-    /// treat as idempotent success). Gmail's `messages.delete` posts here.
-    async fn delete(&self, url: &str) -> Result<(), GoogleError>;
+    /// `PATCH`es `body` with `content_type` to `url`, guarded by `if_match` (an `If-Match`
+    /// ETag precondition; a stale one is `412` → [`FailureClass::Conflict`]). Returns the
+    /// updated object's JSON (Google echoes it). Calendar's `events.patch` posts here.
+    ///
+    /// [`FailureClass::Conflict`]: engine_core::error::FailureClass::Conflict
+    async fn patch(
+        &self,
+        url: &str,
+        content_type: &str,
+        if_match: Option<&str>,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError>;
+
+    /// `DELETE`s `url`, guarded by `if_match` (used by Calendar's `events.delete`; Gmail's
+    /// `messages.delete` passes `None`). A `2xx` (Google answers `204`) is success; a
+    /// non-2xx becomes a classified [`GoogleError::Status`] (a `404` — already gone — is
+    /// the caller's to treat as idempotent success).
+    async fn delete(&self, url: &str, if_match: Option<&str>) -> Result<(), GoogleError>;
 
     /// The HTTP version the transport negotiated, or `None` before its first response.
     /// Defaults to `None`: only the reqwest transport speaks HTTP, so a fake fed canned
@@ -150,13 +161,34 @@ impl GoogleClient {
         self.transport.post(url, content_type, body).await
     }
 
-    /// Authenticated `DELETE`.
+    /// Authenticated `PATCH` guarded by `if_match`. Returns the updated object JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`GoogleError`] (a stale `If-Match` is a `412` conflict).
+    pub(crate) async fn patch(
+        &self,
+        url: &str,
+        content_type: &str,
+        if_match: Option<&str>,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError> {
+        self.transport
+            .patch(url, content_type, if_match, body)
+            .await
+    }
+
+    /// Authenticated `DELETE` guarded by `if_match`.
     ///
     /// # Errors
     ///
     /// Returns a classified [`GoogleError`] (a non-2xx is [`GoogleError::Status`]).
-    pub(crate) async fn delete(&self, url: &str) -> Result<(), GoogleError> {
-        self.transport.delete(url).await
+    pub(crate) async fn delete(
+        &self,
+        url: &str,
+        if_match: Option<&str>,
+    ) -> Result<(), GoogleError> {
+        self.transport.delete(url, if_match).await
     }
 
     /// The HTTP version this client's transport negotiated, or `None` before its first

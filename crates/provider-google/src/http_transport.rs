@@ -41,18 +41,23 @@ impl HttpTransport {
         })
     }
 
-    /// Issues an authenticated write (`POST`/`DELETE`) the write shapes share, recording
-    /// the negotiated HTTP version — the write funnel, so every path observes it.
+    /// Issues an authenticated write (`POST`/`PATCH`/`DELETE`) the write shapes share,
+    /// recording the negotiated HTTP version — the write funnel, so every path observes
+    /// it. Carries an optional `Content-Type` and `If-Match` precondition.
     async fn send_write(
         &self,
         method: reqwest::Method,
         url: &str,
         content_type: Option<&str>,
+        if_match: Option<&str>,
         body: Vec<u8>,
     ) -> Result<reqwest::Response, GoogleError> {
         let mut request = self.client.request(method, url).bearer_auth(&self.token);
         if let Some(content_type) = content_type {
             request = request.header("Content-Type", content_type);
+        }
+        if let Some(if_match) = if_match {
+            request = request.header("If-Match", if_match);
         }
         let response = request.body(body).send().await?;
         self.http_version.record(response.version());
@@ -96,14 +101,33 @@ impl GoogleTransport for HttpTransport {
         body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError> {
         let resp = self
-            .send_write(reqwest::Method::POST, url, Some(content_type), body)
+            .send_write(reqwest::Method::POST, url, Some(content_type), None, body)
             .await?;
         write_body(resp).await
     }
 
-    async fn delete(&self, url: &str) -> Result<(), GoogleError> {
+    async fn patch(
+        &self,
+        url: &str,
+        content_type: &str,
+        if_match: Option<&str>,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError> {
         let resp = self
-            .send_write(reqwest::Method::DELETE, url, None, Vec::new())
+            .send_write(
+                reqwest::Method::PATCH,
+                url,
+                Some(content_type),
+                if_match,
+                body,
+            )
+            .await?;
+        write_body(resp).await
+    }
+
+    async fn delete(&self, url: &str, if_match: Option<&str>) -> Result<(), GoogleError> {
+        let resp = self
+            .send_write(reqwest::Method::DELETE, url, None, if_match, Vec::new())
             .await?;
         let status = resp.status();
         if status.is_success() {
@@ -222,7 +246,7 @@ mod tests {
         let base = mock_server(http("204 No Content", ""));
         HttpTransport::new("tok".to_owned(), crate::test_support::tls())
             .unwrap()
-            .delete(&base)
+            .delete(&base, None)
             .await
             .unwrap();
     }

@@ -26,6 +26,10 @@
 //! (Phases B–E of the Google plan); this module set is the shared transport spine.
 
 mod base64url;
+mod cal_fetch;
+mod cal_normalize;
+mod cal_write;
+mod calendar;
 mod error;
 mod fetch;
 mod http_transport;
@@ -39,6 +43,8 @@ mod transport;
 #[cfg(test)]
 mod test_support;
 
+pub use cal_fetch::CalendarWindow;
+pub use calendar::GoogleCalendarProvider;
 pub use error::GoogleError;
 pub use provider::GmailProvider;
 pub use transport::GoogleClient;

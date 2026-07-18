@@ -84,3 +84,12 @@ on the account.
 9. **`events.list` returns a `nextSyncToken` on the final page**; a `410` on replay means
    the token expired (→ full resync). A deleted event appears in the delta as `{id, etag,
    kind, status:"cancelled"}` (a minimal tombstone).
+10. **Calendar writes are `If-Match`-guarded** (`events.insert`/`patch`/`delete`); a stale
+    ETag is a `412 conditionNotMet`. `events.patch` merges a partial event and echoes the
+    updated one with a new `etag` (the ETag advances on every write).
+11. **Delete idempotency differs from Graph.** Google signals *already-gone* as `404` **or
+    `410 Gone`** (both are treated as idempotent success). A `delete` leaves the event
+    **cancelled with a new ETag**, so a *guarded* re-delete (the stale `If-Match`) returns
+    `412`, not `404`/`410` — a real conflict, surfaced for the caller to refetch. The live
+    test therefore does not re-delete with the old guard; the `404`/`410`-gone idempotency
+    is covered offline.

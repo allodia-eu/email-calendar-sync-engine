@@ -70,7 +70,23 @@ impl GoogleTransport for Fake {
         }
     }
 
-    async fn delete(&self, url: &str) -> Result<(), GoogleError> {
+    async fn patch(
+        &self,
+        url: &str,
+        _content_type: &str,
+        _if_match: Option<&str>,
+        _body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError> {
+        // Body/If-Match ignored (canned answer, `AGENTS.md`); the request shape is
+        // asserted by the capturing-server tests and the live tests.
+        match self.route(url)? {
+            Ok(Value::Null) => Ok(None),
+            Ok(doc) => Ok(Some(doc.clone())),
+            Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
+        }
+    }
+
+    async fn delete(&self, url: &str, _if_match: Option<&str>) -> Result<(), GoogleError> {
         match self.route(url)? {
             Ok(_) => Ok(()),
             Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),

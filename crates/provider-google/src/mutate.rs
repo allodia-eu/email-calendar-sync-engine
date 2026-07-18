@@ -55,7 +55,9 @@ pub(crate) async fn edit(
         MailEdit::MoveTo { destination, .. } => move_to(client, key, destination).await?,
         MailEdit::Delete { .. } => {
             // Permanent delete (past Trash), enabled by the full mail.google.com scope.
-            client.delete(&client.url(&messages_path(key))).await?;
+            client
+                .delete(&client.url(&messages_path(key)), None)
+                .await?;
         }
     }
     Ok(MailEditReceipt::new(key.clone()))

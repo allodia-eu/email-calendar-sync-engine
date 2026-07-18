@@ -16,6 +16,7 @@ mod kind;
 mod location;
 mod participant;
 mod recurrence;
+mod recurrence_parse;
 mod recurrence_set;
 
 pub use alert::{Alert, AlertAction, Trigger};
@@ -25,4 +26,5 @@ pub use kind::EventKind;
 pub use location::{Location, RelativeTo, VirtualLocation};
 pub use participant::{Participant, ParticipantKind, ParticipantRole, ParticipationStatus};
 pub use recurrence::{Frequency, NDay, RecurrenceBound, RecurrenceRule, RecurrenceSkip, Weekday};
+pub use recurrence_parse::{RruleParseError, parse_rrule};
 pub use recurrence_set::{Recurrence, RecurrenceOverride};
