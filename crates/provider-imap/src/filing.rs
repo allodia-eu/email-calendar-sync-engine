@@ -14,15 +14,87 @@ use engine_core::{
 };
 use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
 use time::OffsetDateTime;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+};
+use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
 use crate::{
-    error::ImapResult,
+    config::{ImapConfig, SmtpSecurity, SmtpSettings},
+    error::{ImapError, ImapResult},
     mail::{mailbox_from_list, message_key},
     provider::ImapProvider,
-    smtp::{self, Disposition},
+    smtp::{self, Disposition, SmtpResult},
     transport::Connection,
 };
+
+/// The resolved SMTP transport a provider holds after `connect`: plaintext, implicit
+/// TLS, or STARTTLS — the two TLS variants carrying the connector + credentials each
+/// fresh send re-dials with (submission opens a new connection per send).
+pub(crate) enum SmtpSender {
+    Plaintext {
+        addr: String,
+    },
+    ImplicitTls {
+        addr: String,
+        server_name: String,
+        connector: TlsConnector,
+        username: String,
+        password: String,
+    },
+    StartTls {
+        addr: String,
+        server_name: String,
+        connector: TlsConnector,
+        username: String,
+        password: String,
+    },
+}
+
+/// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,
+/// capturing the TLS connector and credentials each future send re-dials with.
+pub(crate) fn resolve_smtp(
+    settings: &SmtpSettings,
+    connector: &TlsConnector,
+    config: &ImapConfig,
+) -> SmtpSender {
+    match &settings.security {
+        SmtpSecurity::Plaintext => SmtpSender::Plaintext {
+            addr: settings.addr.clone(),
+        },
+        SmtpSecurity::ImplicitTls { server_name } => SmtpSender::ImplicitTls {
+            addr: settings.addr.clone(),
+            server_name: server_name.clone(),
+            connector: connector.clone(),
+            username: config.username.clone(),
+            password: config.password.clone(),
+        },
+        SmtpSecurity::StartTls { server_name } => SmtpSender::StartTls {
+            addr: settings.addr.clone(),
+            server_name: server_name.clone(),
+            connector: connector.clone(),
+            username: config.username.clone(),
+            password: config.password.clone(),
+        },
+    }
+}
+
+/// Everything derived from a draft once, shared by the wire send and the filed copy —
+/// so a STARTTLS send (which negotiates before transmitting) and a plaintext/implicit
+/// one run identical preparation and filing around the differing transmit step.
+struct Submission {
+    /// One timestamp for both the transmitted and filed copy (they differ only in Bcc).
+    now: OffsetDateTime,
+    /// The over-the-wire message — **without** the `Bcc` header.
+    message: Vec<u8>,
+    /// Envelope `MAIL FROM` address.
+    from: String,
+    /// De-duplicated envelope `RCPT TO` list (To + Cc + Bcc).
+    to: Vec<String>,
+    /// The `EHLO` identity (the sender's domain).
+    ehlo: String,
+}
 
 /// Where a placed copy is filed. One value ties together the SPECIAL-USE role used
 /// to resolve the server's real folder, the conventional folder name to fall back
@@ -69,12 +141,68 @@ impl Filing {
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
-    /// The submission core over an arbitrary SMTP stream — the seam the offline
-    /// tests drive with a mock while
-    /// [`Provider::submit_email`](engine_provider::Provider::submit_email) supplies a TCP (or
-    /// TLS) socket. Runs the conversation (optionally authenticating with `auth`), maps the
-    /// disposition to a result/classified error, then files the Sent copy via the IMAP
-    /// connection.
+    /// Submits `draft` over the provider's configured SMTP transport, opening a fresh
+    /// connection per send. Plaintext and implicit TLS transmit directly; STARTTLS
+    /// negotiates the cleartext upgrade, TLS-wraps the socket, then transmits over TLS.
+    /// `AUTH PLAIN` runs only over an established TLS stream (implicit or post-upgrade).
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::invalid_state`] when no SMTP transport is configured, or a
+    /// classified failure on a rejected/ambiguous send or a transport error.
+    pub(crate) async fn submit(&self, draft: &Draft) -> ProviderResult<SubmissionReceipt> {
+        let sender = self
+            .smtp
+            .as_ref()
+            .ok_or_else(|| ProviderError::invalid_state("no SMTP transport configured"))?;
+        match sender {
+            SmtpSender::Plaintext { addr } => {
+                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
+                self.submit_over(tcp, draft, None).await
+            }
+            SmtpSender::ImplicitTls {
+                addr,
+                server_name,
+                connector,
+                username,
+                password,
+            } => {
+                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
+                let tls = tls_connect(connector, server_name, tcp).await?;
+                self.submit_over(tls, draft, Some((username, password)))
+                    .await
+            }
+            SmtpSender::StartTls {
+                addr,
+                server_name,
+                connector,
+                username,
+                password,
+            } => {
+                let sub = Self::prepare(draft)?;
+                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
+                // Cleartext STARTTLS handshake, then upgrade the socket and transmit
+                // (with `AUTH PLAIN`) over the now-established TLS.
+                let tcp = smtp::negotiate_starttls(tcp, &sub.ehlo).await?;
+                let tls = tls_connect(connector, server_name, tcp).await?;
+                let result = smtp::send_after_starttls(
+                    tls,
+                    &sub.ehlo,
+                    &sub.from,
+                    &sub.to,
+                    &sub.message,
+                    Some((username, password)),
+                )
+                .await?;
+                self.file_result(result, &sub, draft).await
+            }
+        }
+    }
+
+    /// The submission core over an arbitrary SMTP stream — the seam the offline tests
+    /// drive with a mock. Reads the greeting itself, so it is the plaintext / implicit-
+    /// TLS path (STARTTLS reads the greeting during its negotiation and uses
+    /// [`smtp::send_after_starttls`] via [`submit`](Self::submit)).
     ///
     /// # Errors
     ///
@@ -88,6 +216,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     where
         W: AsyncRead + AsyncWrite + Unpin + Send,
     {
+        let sub = Self::prepare(draft)?;
+        let result = smtp::send(smtp, &sub.ehlo, &sub.from, &sub.to, &sub.message, auth).await?;
+        self.file_result(result, &sub, draft).await
+    }
+
+    /// Derives the [`Submission`] (wire message, envelope, EHLO identity) from `draft`.
+    fn prepare(draft: &Draft) -> ImapResult<Submission> {
         // One timestamp for both the transmitted and the filed copy, so they differ ONLY in
         // the Bcc header.
         let now = OffsetDateTime::now_utc();
@@ -110,9 +245,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
             .collect();
         let ehlo = from
             .rsplit_once('@')
-            .map_or("localhost", |(_, domain)| domain);
+            .map_or("localhost", |(_, domain)| domain)
+            .to_owned();
+        Ok(Submission {
+            now,
+            message,
+            from: from.to_owned(),
+            to,
+            ehlo,
+        })
+    }
 
-        let result = smtp::send(smtp, ehlo, from, &to, &message, auth).await?;
+    /// Classifies the send's disposition, then (on delivery) files the Sent copy and
+    /// returns its receipt.
+    async fn file_result(
+        &self,
+        result: SmtpResult,
+        sub: &Submission,
+        draft: &Draft,
+    ) -> ProviderResult<SubmissionReceipt> {
         match result.disposition {
             Disposition::Delivered => {}
             Disposition::RejectedPermanent(text) => {
@@ -133,9 +284,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         // Thunderbird behavior. Identical to the wire message when there's no Bcc, so only
         // re-assemble then.
         let filed = if draft.bcc.is_empty() {
-            message.clone()
+            sub.message.clone()
         } else {
-            smtp::assemble_filed_message(draft, now)?
+            smtp::assemble_filed_message(draft, sub.now)?
         };
         // Best-effort Sent placement; a successful send is never failed for it. The
         // Sent folder is resolved by its `\Sent` SPECIAL-USE role (falling back to
@@ -207,6 +358,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     }
 }
 
+/// TLS-wraps `tcp` with `connector`, presenting `server_name` (SNI/cert name; may
+/// differ from a loopback address). Shared by the implicit-TLS and post-STARTTLS
+/// submission paths.
+async fn tls_connect(
+    connector: &TlsConnector,
+    server_name: &str,
+    tcp: TcpStream,
+) -> ProviderResult<TlsStream<TcpStream>> {
+    let name = ServerName::try_from(server_name.to_owned())
+        .map_err(|e| ImapError::bad(format!("invalid SMTP TLS server name: {e}")))?;
+    let tls = connector
+        .connect(name, tcp)
+        .await
+        .map_err(ImapError::from)?;
+    Ok(tls)
+}
+
 /// Finds the account's folder carrying `role` (RFC 6154 SPECIAL-USE) via `LIST`;
 /// `None` when the server advertises none.
 async fn resolve_role_folder<S>(
@@ -239,3 +407,7 @@ fn placed_key(
             .expect("a Message-ID-derived placement key is never empty"),
     }
 }
+
+#[cfg(test)]
+#[path = "filing_tests.rs"]
+mod tests;

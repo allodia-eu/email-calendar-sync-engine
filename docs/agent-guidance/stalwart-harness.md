@@ -82,11 +82,20 @@ These were confirmed before/with implementation; do not relitigate without cause
   management API together. Bump deliberately: re-resolve the digest and update the
   comment that records the version.
 - **Transport:** **plaintext HTTP on 8080** (JMAP + CalDAV + management) and
-  **plaintext SMTP on 25**; **IMAP is implicit-TLS on 993** — that is Stalwart
-  v0.16's default and there is no plain IMAP listener. The smoke suite and the
-  IMAP seeder accept the server's **self-signed test certificate explicitly**
-  (rustls with a probe-only no-verify verifier; `curl -k`). This never touches a
-  host trust store. Host ports are loopback-only and high-numbered.
+  **plaintext SMTP on 25**; **IMAP is implicit-TLS on 993**. Stalwart **supports**
+  STARTTLS on the standard IMAP (143) and submission (587) ports, but its
+  [security guidance](https://stalw.art/docs/install/security/) recommends implicit
+  TLS (993/465) and treats 143/587 as non-essential ("should generally be disabled"),
+  so the harness's fresh bootstrap does **not** create those listeners — it comes up
+  with 993/465 only. To exercise the engine's STARTTLS paths (which real, older servers
+  do require), the **entrypoint provisions** (via the `x:NetworkListener/set` registry
+  method) an **IMAP STARTTLS listener on 143** and an **SMTP submission STARTTLS listener
+  on 587** (`useTls` + `tlsImplicit:false`), both host-mapped and surfaced as
+  `STALWART_IMAP_STARTTLS_ADDR` / `STALWART_SMTP_STARTTLS_ADDR`; a newly created listener
+  needs a server restart to bind, which the entrypoint does on a fresh bootstrap. The
+  smoke suite and the IMAP seeder accept the server's **self-signed test certificate
+  explicitly** (rustls with a probe-only no-verify verifier; `curl -k`). This never
+  touches a host trust store. Host ports are loopback-only and high-numbered.
 - **Seeding mechanism:** **Stalwart-native via `curl`** in the entrypoint — it
   talks to the server over its management API (accounts) and the real wire
   protocols (IMAP `APPEND`/`STORE`/`COPY`/`MOVE` for mail, CalDAV `PUT` for

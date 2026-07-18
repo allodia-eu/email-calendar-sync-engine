@@ -1,4 +1,5 @@
-//! SMTP submission (RFC 5321): the conversation and RFC 5322 message assembly.
+//! SMTP submission (RFC 5321): the wire conversation. RFC 5322 message assembly
+//! lives in the `assemble` submodule (split for the file-size limit).
 //!
 //! Like the IMAP transport, the conversation is generic over the stream so it is
 //! driven offline over a mock and live over a real socket. It captures the two
@@ -7,20 +8,28 @@
 //! the final acknowledgement is lost the send is [`Disposition::Ambiguous`], which
 //! the caller turns into a `NeedsConfirmation` op rather than blind-retrying.
 //!
-//! Authentication is optional: against the fixture's plaintext MX (port 25) the
-//! conversation is `EHLO → MAIL → RCPT* → DATA` with no auth; against a real
-//! provider the caller supplies a TLS stream and credentials, and an `AUTH PLAIN`
-//! step runs after `EHLO`. STARTTLS (port 587) is a later refinement — the TLS path
-//! here is implicit TLS (the stream is already secured by the caller).
+//! Three transports, all through this one conversation core ([`converse`]):
+//! - **plaintext** ([`send`], no auth) — the fixture's local MX (port 25);
+//! - **implicit TLS** ([`send`] with `auth`) — the caller hands an already-secured stream (port
+//!   465), and `AUTH PLAIN` runs after `EHLO`;
+//! - **STARTTLS** ([`negotiate_starttls`] then [`send_after_starttls`]) — this module negotiates
+//!   the cleartext upgrade (port 587) and the caller TLS-wraps the socket between the two calls;
+//!   `AUTH PLAIN` then runs over the established TLS.
+//!
+//! `AUTH PLAIN` is only ever sent once the stream is secured (implicit TLS, or after
+//! the STARTTLS upgrade) — never in the clear.
 
-use engine_core::mail::EmailAddress;
-use engine_provider::Draft;
-use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::error::{ImapError, ImapResult};
 
+mod assemble;
 mod mime;
+
+use assemble::reject_control;
+pub(crate) use assemble::{
+    assemble_filed_message, assemble_message, is_ascii_printable, normalize_body_lines,
+};
 
 /// One recipient's disposition from its `RCPT TO` reply (before `DATA`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,216 +66,89 @@ pub(crate) struct SmtpResult {
     pub disposition: Disposition,
 }
 
-/// Whether the assembled message carries a `Bcc` header — the one difference between the
-/// over-the-wire message and the filed Sent/Drafts copy (Outlook/Thunderbird behavior).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BccHeader {
-    /// Over-the-wire: omit `Bcc`. Bcc recipients are reached via the SMTP envelope only, so no
-    /// recipient can see the Bcc list (nor that a Bcc happened).
-    Omit,
-    /// Filed Sent/Drafts copy: include `Bcc`. APPENDed locally, never transmitted, so the
-    /// sender keeps a record of whom they Bcc'd while it stays private to them.
-    Include,
+/// Runs the SMTP conversation over a **fresh** `stream`: reads the greeting, then
+/// `EHLO → [AUTH] → MAIL → RCPT* → DATA`, identifying as `ehlo_domain`. When `auth` is
+/// `Some`, authenticates with `AUTH PLAIN` after `EHLO` (only meaningful over TLS — the
+/// caller supplies an already-secured stream). The plaintext / implicit-TLS entry.
+pub(crate) async fn send<S>(
+    stream: S,
+    ehlo_domain: &str,
+    from: &str,
+    to: &[String],
+    message: &[u8],
+    auth: Option<(&str, &str)>,
+) -> ImapResult<SmtpResult>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut smtp = SmtpStream::new(stream);
+    read_greeting(&mut smtp).await?;
+    converse(&mut smtp, ehlo_domain, from, to, message, auth).await
 }
 
-/// Assembles the **over-the-wire** RFC 5322 message for `draft` — **without** a `Bcc` header,
-/// so no recipient can see the Bcc list. Use [`assemble_filed_message`] for the Sent/Drafts
-/// copy. See [`assemble`] for the full contract.
-pub(crate) fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ImapResult<Vec<u8>> {
-    assemble(draft, date, BccHeader::Omit)
+/// Runs the conversation over a stream already **past** its greeting and a `STARTTLS`
+/// upgrade: the client sends `EHLO` directly (a server sends no fresh greeting after
+/// `STARTTLS`), so this is [`converse`] with `AUTH PLAIN` over the now-established TLS.
+/// Paired with [`negotiate_starttls`], which the caller runs (and TLS-wraps the socket)
+/// before this.
+pub(crate) async fn send_after_starttls<S>(
+    stream: S,
+    ehlo_domain: &str,
+    from: &str,
+    to: &[String],
+    message: &[u8],
+    auth: Option<(&str, &str)>,
+) -> ImapResult<SmtpResult>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut smtp = SmtpStream::new(stream);
+    converse(&mut smtp, ehlo_domain, from, to, message, auth).await
 }
 
-/// Assembles the RFC 5322 message for the **filed Sent/Drafts copy** — identical to
-/// [`assemble_message`] but **with** the `Bcc` header, so the sender's Sent folder records
-/// whom they Bcc'd (Outlook/Thunderbird behavior). This copy is APPENDed locally and never
-/// transmitted, so the Bcc never reaches a recipient.
-pub(crate) fn assemble_filed_message(draft: &Draft, date: OffsetDateTime) -> ImapResult<Vec<u8>> {
-    assemble(draft, date, BccHeader::Include)
-}
-
-/// Assembles the RFC 5322 message bytes for `draft`, stamped with `date` (CRLF
-/// line endings), emitting a `Bcc` header only when `bcc` is [`BccHeader::Include`].
-///
-/// The caller's pre-generated `Message-ID` is set verbatim so the sent copy
-/// reconciles by it on a later sync (`store-and-sync.md`).
+/// The plaintext half of a `STARTTLS` submission (RFC 3207): reads the greeting,
+/// `EHLO`s, confirms the server advertises `STARTTLS` (refusing otherwise — so
+/// credentials never cross an un-upgradable link), issues `STARTTLS`, and on the `220`
+/// returns the underlying stream for the caller to TLS-wrap. The conversation then
+/// continues over TLS via [`send_after_starttls`].
 ///
 /// # Errors
 ///
-/// Every header-interpolated value (`Message-ID`, addresses, subject, display
-/// names, the `In-Reply-To`/`References` threading ids, and attachment media
-/// metadata) is rejected if it carries a CR, LF, or NUL — RFC 5322 §2.2 forbids
-/// those in a header field body, and allowing them would let a hostile draft inject
-/// extra headers or split the message / SMTP command stream. A non-ASCII subject or
-/// display name is emitted as an RFC 2047 `B` encoded-word, never raw 8-bit bytes,
-/// so the headers stay 7-bit clean. A `Date` header is generated from `date` (RFC
-/// 5322 §3.6 requires it; for an IMAP `APPEND` — `save_draft` or the Sent copy —
-/// no server is in the loop to add one). For a reply or forward the `In-Reply-To`
-/// and `References` headers (RFC 5322 §3.6.4) thread the message with its original;
-/// each is omitted when its draft field is empty. A `Cc` header is emitted when the
-/// draft carries Cc recipients (visible to everyone); a `Bcc` header is emitted only
-/// for [`BccHeader::Include`] (the filed copy), never for transmission.
-fn assemble(draft: &Draft, date: OffsetDateTime, bcc: BccHeader) -> ImapResult<Vec<u8>> {
-    let message_id = reject_control("Message-ID", draft.message_id.as_str())?;
-    let from = address_field(&draft.from)?;
-    // A message with no To recipients (a Bcc-only send) still needs a valid `To` header — name
-    // an empty RFC 5322 §3.4 group, exactly as Outlook/Thunderbird do — rather than emit a bare
-    // empty `To:` that many MTAs and spam filters penalize.
-    let to_header = if draft.to.is_empty() {
-        "To: undisclosed-recipients:;\r\n".to_owned()
-    } else {
-        format!("To: {}\r\n", address_list(&draft.to)?)
-    };
-    // A `Cc:` header is emitted (visible to every recipient) when present.
-    let cc_header = if draft.cc.is_empty() {
-        String::new()
-    } else {
-        format!("Cc: {}\r\n", address_list(&draft.cc)?)
-    };
-    // A `Bcc:` header is emitted ONLY for the filed Sent/Drafts copy (`BccHeader::Include`).
-    // The transmitted message omits it, so Bcc recipients — delivered via the SMTP envelope
-    // (`RCPT TO`, see `submit_over`) — stay hidden from every recipient.
-    let bcc_header = if bcc == BccHeader::Omit || draft.bcc.is_empty() {
-        String::new()
-    } else {
-        format!("Bcc: {}\r\n", address_list(&draft.bcc)?)
-    };
-    let subject = encode_header_text(reject_control("subject", &draft.subject)?);
-    let in_reply_to = match &draft.in_reply_to {
-        Some(parent) => format!(
-            "In-Reply-To: <{}>\r\n",
-            reject_control("In-Reply-To", parent.as_str())?
-        ),
-        None => String::new(),
-    };
-    let references = if draft.references.is_empty() {
-        String::new()
-    } else {
-        let ids = draft
-            .references
-            .iter()
-            .map(|r| reject_control("References", r.as_str()).map(|id| format!("<{id}>")))
-            .collect::<ImapResult<Vec<_>>>()?
-            .join(" ");
-        format!("References: {ids}\r\n")
-    };
-    let date = date
-        .format(&Rfc2822)
-        .map_err(|e| ImapError::protocol(format!("cannot format the Date header: {e}")))?;
-    let headers = format!(
-        "Date: {date}\r\nMessage-ID: <{message_id}>\r\nFrom: {from}\r\n{to_header}\
-         {cc_header}{bcc_header}{in_reply_to}{references}Subject: {subject}\r\n\
-         MIME-Version: 1.0\r\n",
-    );
-    let body = mime::assemble(draft)?;
-    let mut message = headers.into_bytes();
-    message.extend_from_slice(body.content_headers.as_bytes());
-    message.extend_from_slice(b"\r\n");
-    message.extend_from_slice(&body.body);
-    Ok(message)
-}
-
-/// Rejects a header/command value carrying CR, LF, or NUL — the bytes that would
-/// inject extra headers or split the SMTP command stream (RFC 5322 §2.2 / RFC 5321
-/// §2.3.8). Returns the value unchanged when clean.
-fn reject_control<'a>(field: &str, value: &'a str) -> ImapResult<&'a str> {
-    if value
-        .bytes()
-        .any(|b| b == b'\r' || b == b'\n' || b == b'\0')
+/// [`ImapError::Protocol`] if `STARTTLS` is not advertised or the `220` does not
+/// arrive, or if any bytes are buffered past the `220` — a conformant server sends
+/// nothing between it and the client-initiated TLS handshake, so buffered plaintext is
+/// a command-injection attempt (CVE-2011-0411 class) that must not cross the boundary.
+pub(crate) async fn negotiate_starttls<S>(stream: S, ehlo_domain: &str) -> ImapResult<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut smtp = SmtpStream::new(stream);
+    read_greeting(&mut smtp).await?;
+    let (_esmtp, extensions) = ehlo(&mut smtp, ehlo_domain).await?;
+    if !extensions
+        .split_whitespace()
+        .any(|word| word.eq_ignore_ascii_case("STARTTLS"))
     {
+        return Err(ImapError::protocol(
+            "server does not advertise STARTTLS; refusing to authenticate in the clear",
+        ));
+    }
+    smtp.write_line("STARTTLS").await?;
+    let (code, text) = smtp.read_reply().await?;
+    if code != 220 {
         return Err(ImapError::protocol(format!(
-            "{field} contains a forbidden control character (CR, LF, or NUL)"
+            "STARTTLS refused: {code} {text}"
         )));
     }
-    Ok(value)
+    smtp.into_inner_stream()
 }
 
-/// Formats one address as an RFC 5322 header value: `Display Name <email>` (the name
-/// quoted when ASCII, RFC 2047-encoded when not), or bare `email`. The email is
-/// rejected on CR/LF/NUL but never encoded — it goes verbatim into both the header
-/// and the SMTP `MAIL`/`RCPT` command.
-fn address_field(addr: &EmailAddress) -> ImapResult<String> {
-    let email = reject_control("address", &addr.email)?;
-    match &addr.name {
-        Some(name) => {
-            let name = encode_header_phrase(reject_control("display name", name)?);
-            Ok(format!("{name} <{email}>"))
-        }
-        None => Ok(email.to_owned()),
-    }
-}
-
-/// Formats an address list as a comma-separated RFC 5322 header value (each via
-/// [`address_field`]) — the shared body of the `To`/`Cc`/`Bcc` headers.
-fn address_list(addresses: &[EmailAddress]) -> ImapResult<String> {
-    Ok(addresses
-        .iter()
-        .map(address_field)
-        .collect::<ImapResult<Vec<_>>>()?
-        .join(", "))
-}
-
-/// Whether `s` is entirely printable 7-bit ASCII (so it needs no encoding).
-fn is_ascii_printable(s: &str) -> bool {
-    s.bytes().all(|b| (0x20..0x7f).contains(&b))
-}
-
-/// Encodes unstructured header text (a subject): verbatim when printable ASCII,
-/// else an RFC 2047 `B` encoded-word.
-fn encode_header_text(text: &str) -> String {
-    if is_ascii_printable(text) {
-        text.to_owned()
-    } else {
-        encoded_word(text)
-    }
-}
-
-/// Encodes an address display-name phrase: a quoted-string when printable ASCII (so
-/// specials like `,`/`.` are safe in the phrase position), else an RFC 2047 `B`
-/// encoded-word.
-fn encode_header_phrase(name: &str) -> String {
-    if is_ascii_printable(name) {
-        let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
-        format!("\"{escaped}\"")
-    } else {
-        encoded_word(name)
-    }
-}
-
-/// One RFC 2047 base64 encoded-word, `=?UTF-8?B?<base64>?=`. Long values are not yet
-/// folded into 75-octet words (a later refinement); most subjects and names fit one.
-fn encoded_word(text: &str) -> String {
-    format!("=?UTF-8?B?{}?=", crate::base64::encode(text.as_bytes()))
-}
-
-/// Splits a body into lines on any of CRLF, a lone CR, or a lone LF, so a bare CR
-/// from legacy text never reaches the wire (RFC 5321/5322 forbid a bare CR or LF).
-/// Each returned line is re-emitted CRLF-terminated by the caller.
-fn normalize_body_lines(body: &str) -> Vec<&str> {
-    let mut lines = Vec::new();
-    let mut rest = body;
-    loop {
-        let Some(idx) = rest.find(['\r', '\n']) else {
-            lines.push(rest);
-            return lines;
-        };
-        lines.push(&rest[..idx]);
-        // A `\r\n` is one break; a lone `\r` or `\n` is also one.
-        let skip = if rest.as_bytes()[idx] == b'\r' && rest.as_bytes().get(idx + 1) == Some(&b'\n')
-        {
-            2
-        } else {
-            1
-        };
-        rest = &rest[idx + skip..];
-    }
-}
-
-/// Runs the SMTP conversation over `stream`, submitting `message` from `from` to
-/// `to`, identifying as `ehlo_domain`. When `auth` is `Some`, authenticates with
-/// `AUTH PLAIN` after `EHLO` (only meaningful over TLS — the caller supplies a TLS
-/// stream).
-pub(crate) async fn send<S>(
-    stream: S,
+/// The conversation core shared by every transport: validates the envelope addresses,
+/// `EHLO`s, optionally authenticates, then `MAIL → RCPT* → DATA` and classifies the
+/// outcome. Assumes the greeting has already been read (both entries do so, or — for
+/// STARTTLS — the upgrade consumed it).
+async fn converse<S>(
+    smtp: &mut SmtpStream<S>,
     ehlo_domain: &str,
     from: &str,
     to: &[String],
@@ -283,26 +165,7 @@ where
         reject_control("RCPT TO address", address)?;
     }
 
-    let mut smtp = SmtpStream::new(stream);
-
-    let (code, _) = smtp.read_reply().await?;
-    if code != 220 {
-        return Err(ImapError::protocol(format!(
-            "unexpected SMTP greeting code {code}"
-        )));
-    }
-
-    smtp.write_line(&format!("EHLO {ehlo_domain}")).await?;
-    let (code, _) = smtp.read_reply().await?;
-    let esmtp = code == 250;
-    if !esmtp {
-        // Fall back to HELO for a server without ESMTP.
-        smtp.write_line(&format!("HELO {ehlo_domain}")).await?;
-        let (code, _) = smtp.read_reply().await?;
-        if code != 250 {
-            return Err(ImapError::protocol(format!("EHLO/HELO refused: {code}")));
-        }
-    }
+    let (esmtp, _extensions) = ehlo(smtp, ehlo_domain).await?;
 
     if let Some((user, pass)) = auth {
         if !esmtp {
@@ -371,6 +234,41 @@ where
     })
 }
 
+/// Reads and checks the `220` greeting.
+async fn read_greeting<S>(smtp: &mut SmtpStream<S>) -> ImapResult<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let (code, _) = smtp.read_reply().await?;
+    if code != 220 {
+        return Err(ImapError::protocol(format!(
+            "unexpected SMTP greeting code {code}"
+        )));
+    }
+    Ok(())
+}
+
+/// Sends `EHLO`, falling back to `HELO` for a non-ESMTP server. Returns whether ESMTP
+/// was accepted and the reply text (its advertised extensions — `negotiate_starttls`
+/// checks it for `STARTTLS`).
+async fn ehlo<S>(smtp: &mut SmtpStream<S>, ehlo_domain: &str) -> ImapResult<(bool, String)>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    smtp.write_line(&format!("EHLO {ehlo_domain}")).await?;
+    let (code, text) = smtp.read_reply().await?;
+    if code == 250 {
+        return Ok((true, text));
+    }
+    // Fall back to HELO for a server without ESMTP.
+    smtp.write_line(&format!("HELO {ehlo_domain}")).await?;
+    let (code, text) = smtp.read_reply().await?;
+    if code != 250 {
+        return Err(ImapError::protocol(format!("EHLO/HELO refused: {code}")));
+    }
+    Ok((false, text))
+}
+
 fn is_success(code: u16) -> bool {
     (200..300).contains(&code)
 }
@@ -395,6 +293,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
         Self {
             inner: BufReader::new(stream),
         }
+    }
+
+    /// Unwraps the underlying stream after `STARTTLS`, for the TLS upgrade.
+    ///
+    /// Errors if the read buffer holds any bytes past the `STARTTLS` `220`: a
+    /// conformant server sends nothing before the client-initiated TLS handshake, so
+    /// buffered plaintext is a command-injection attempt (CVE-2011-0411 class) and
+    /// MUST NOT be carried across the TLS boundary.
+    fn into_inner_stream(self) -> ImapResult<S> {
+        if !self.inner.buffer().is_empty() {
+            return Err(ImapError::protocol(
+                "unexpected buffered data after STARTTLS (possible command injection)",
+            ));
+        }
+        Ok(self.inner.into_inner())
     }
 
     /// Reads a (possibly multiline) reply, returning its code and joined text. The
@@ -495,3 +408,7 @@ mod cc_bcc_tests;
 #[cfg(test)]
 #[path = "smtp_assemble_tests.rs"]
 mod assemble_tests;
+
+#[cfg(test)]
+#[path = "smtp_starttls_tests.rs"]
+mod starttls_tests;

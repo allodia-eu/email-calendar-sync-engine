@@ -36,7 +36,9 @@ is authoritative for the `provider-caldav` calendar client.
   connection — which shares `connect_session` — is observed too.
 - Layers: `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
   `ENABLE`/`SELECT [(CONDSTORE)]`/`UID FETCH [(CHANGEDSINCE … VANISHED)]`/`LIST`/
-  `CREATE`/`APPEND`, literal handling), `parse` (pure response parsers,
+  `CREATE`/`APPEND`, literal handling), `transport_starttls` (the plaintext `STARTTLS`
+  preamble + the raw-socket unwrap and greeting-less `resume` for the upgrade — see
+  **STARTTLS** below), `parse` (pure response parsers,
   panic-resistant on hostile input), `mail` (normalize rows → `Message`/`Mailbox`),
   `cursor` (the per-mailbox `SyncState` — `UIDVALIDITY`/`UIDNEXT` plus an optional
   QRESYNC `HIGHESTMODSEQ` — + opaque `PageToken` encodings), `sync` (snapshot/delta
@@ -206,12 +208,20 @@ is authoritative for the `provider-caldav` calendar client.
   in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
   only when the server advertises none does it fall back to creating the
   conventional `Sent`/`Drafts` name. This costs one `LIST` per submission (rare path).
-- **Two transports.** `ImapConfig::with_smtp(addr)` is **plaintext, no auth** — for
+- **Three transports.** `ImapConfig::with_smtp(addr)` is **plaintext, no auth** — for
   an MX that accepts local mail (the fixture's port 25). `with_smtp_tls(addr,
   server_name)` is **implicit TLS + `AUTH PLAIN`** (port 465) using the account
-  credentials and the injected connector — what a real provider needs. AUTH is only
-  attempted over the TLS transport (never in the clear). **STARTTLS (port 587) is a
-  later refinement**; implicit TLS covers the common case.
+  credentials and the injected connector. `with_smtp_starttls(addr, server_name)` is
+  **STARTTLS + `AUTH PLAIN`** (port 587): the client connects in the clear, `EHLO`s,
+  upgrades the socket with `STARTTLS`, re-`EHLO`s over TLS, then authenticates — it
+  **fails** if the server does not advertise `STARTTLS` (no cleartext auth). AUTH is
+  only ever attempted once the stream is secured (implicit TLS, or after the upgrade),
+  never in the clear. The upgrade is negotiated in `smtp::negotiate_starttls` (greeting
+  → `EHLO` → `STARTTLS`), then the caller TLS-wraps the socket and the conversation
+  continues over `smtp::send_after_starttls` (which skips the greeting a server does
+  not re-send post-upgrade). Data buffered past the `STARTTLS` `220` is rejected — a
+  command-injection guard (CVE-2011-0411 class), so injected cleartext never crosses
+  the TLS boundary.
 - **Per-recipient acceptance/rejection** is captured from each `RCPT TO` reply (a
   `250` accept, a `550` reject). The message still goes to the accepted recipients;
   if none accept, it is a permanent rejection with no `DATA`.
@@ -379,8 +389,14 @@ is authoritative for the `provider-caldav` calendar client.
   `search-coverage.md` slice). `UID SEARCH SINCE` is parsed for both the classic
   `* SEARCH` and extended `* ESEARCH … ALL` replies; richer criteria and the
   full-text provider fallback remain a later refinement.
-- **No SMTP STARTTLS** (port 587). Implicit TLS (465) + `AUTH PLAIN` is implemented; STARTTLS is a later
-  refinement.
+- **STARTTLS is implemented** for both IMAP (`ImapConfig::with_starttls`, port 143)
+  and SMTP submission (`with_smtp_starttls`, port 587), alongside implicit TLS. Both
+  connect in the clear, verify the peer advertises `STARTTLS`, upgrade the socket, and
+  only then log in / authenticate — refusing to proceed (never sending credentials in
+  the clear) if it is not advertised. Because a STARTTLS dial is byte-for-byte an
+  implicit-TLS one *after* the upgrade, the provider stays generic over a single
+  `TlsStream` type — the upgrade happens on the raw socket before it becomes the
+  session stream (`Connection::start_tls` / `into_inner_stream` / `resume`).
 - **IDLE watches one mailbox per connection.** `NOTIFY` (RFC 5465 — watch many
   mailboxes over a single connection) is a later refinement; per-folder `IDLE` (one
   `ImapWatcher` per watched mailbox) covers the common case (usually just INBOX), as
@@ -431,7 +447,16 @@ is authoritative for the `provider-caldav` calendar client.
   distinctness** (the IMAP identity contrast), streamed paging with progress, an
   **SMTP submission** that delivers and files the Sent copy (found by its generated
   `Message-ID`), and a **`save_draft`** that files a draft and reads it back flagged
-  `\Draft`. Reuses `crates/stalwart-harness`. A second gated file,
+  `\Draft`. Reuses `crates/stalwart-harness`. A third gated file,
+  `tests/live_imap_tls.rs`, covers the **TLS transports beyond that baseline** —
+  every important IMAP/SMTP port is thus exercised live: an **IMAP STARTTLS** dial
+  (`STALWART_IMAP_STARTTLS_ADDR` / 143) that reports a negotiated `tls_version` (proof
+  the cleartext socket upgraded before login) and loads the INBOX seed; an **SMTP
+  submission over STARTTLS** + `AUTH PLAIN` (`STALWART_SMTP_STARTTLS_ADDR` / 587); and an
+  **SMTP submission over implicit TLS** + `AUTH PLAIN` (`STALWART_SMTP_TLS_ADDR` / 465,
+  the `with_smtp_tls` path) — the first two pin the `STARTTLS` command shape the offline
+  mocks cannot validate, the third gives the implicit-TLS submission path its first live
+  proof. A second gated file,
   `tests/live_imap_qresync.rs`, exercises the **QRESYNC incremental delta** against
   Stalwart (which advertises `CONDSTORE QRESYNC` post-auth): it snapshot-syncs the
   dedicated `QResync` seed mailbox, then re-flags one message and **expunges** another

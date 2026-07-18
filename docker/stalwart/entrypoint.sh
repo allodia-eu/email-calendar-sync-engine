@@ -85,6 +85,31 @@ ensure_account() { # local-name  description  password
   log "created account $1"
 }
 
+listener_exists() { # name
+  jmap '["x:NetworkListener/get",{"ids":null,"properties":["name"]},"c0"]' \
+    | grep -q "\"name\":\"$1\""
+}
+
+# Add a STARTTLS listener (`useTls` with `tlsImplicit:false`) if absent. Stalwart
+# supports STARTTLS on 143/587 but recommends implicit TLS (993/465), so a fresh
+# bootstrap comes up with 993/465 only; we add 143/587 to exercise the engine's STARTTLS
+# transports (which real, older servers require). Sets CREATED_LISTENER=1 when it creates
+# one, so the caller restarts once to bind the new socket (a fresh bootstrap; a warm start
+# already has them in its config).
+ensure_starttls_listener() { # create-key  name  bind  protocol
+  if listener_exists "$2"; then
+    log "listener $2 already present"
+    return 0
+  fi
+  resp=$(jmap "[\"x:NetworkListener/set\",{\"create\":{\"$1\":{\"name\":\"$2\",\"bind\":{\"$3\":true},\"protocol\":\"$4\",\"useTls\":true,\"tlsImplicit\":false}}},\"c0\"]")
+  if ! printf '%s' "$resp" | grep -q '"created"'; then
+    log "FAILED to create listener $2: $resp"
+    return 1
+  fi
+  CREATED_LISTENER=1
+  log "created STARTTLS listener $2 ($3, $4)"
+}
+
 trap 'stop_server; exit 0' TERM INT
 
 rm -f "$MARKER"
@@ -112,6 +137,19 @@ log "default domain id: $DOMAIN_ID"
 
 ensure_account alice "Alice Tester" "${HARNESS_ALICE_PW:-harness-alice-pw}"
 ensure_account bob "Bob Tester" "${HARNESS_BOB_PW:-harness-bob-pw}"
+
+# STARTTLS listeners for the IMAP (143) and SMTP submission (587) transports the
+# provider speaks in addition to implicit TLS. A newly created listener needs a server
+# restart to bind its socket; a warm start already has them in its persisted config.
+CREATED_LISTENER=0
+ensure_starttls_listener imapstarttls imap "[::]:143" imap
+ensure_starttls_listener submission submission "[::]:587" smtp
+if [ "$CREATED_LISTENER" = 1 ]; then
+  log "restarting to bind the new STARTTLS listeners"
+  stop_server
+  start_server
+  wait_http
+fi
 
 log "seeding shared dataset"
 SEED_DIR="${SEED_DIR:-/harness/seed}" /bin/sh /harness/seed.sh

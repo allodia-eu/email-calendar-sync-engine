@@ -79,6 +79,7 @@ mod target;
 mod tls_info;
 mod tokenize;
 mod transport;
+mod transport_starttls;
 mod watch;
 
 #[cfg(test)]
