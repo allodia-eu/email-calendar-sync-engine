@@ -42,8 +42,9 @@ is authoritative for the `provider-caldav` calendar client.
   QRESYNC `HIGHESTMODSEQ` — + opaque `PageToken` encodings), `sync` (snapshot/delta
   UID-window paging), `qresync` (the QRESYNC incremental delta — flag changes +
   expunges via `CHANGEDSINCE`/`VANISHED`), `idle`/`watch` (the `IDLE` push primitives +
-  the `ImapWatcher`), `smtp` (the submission conversation +
-  RFC 5322 assembly), `provider` (the `Provider` impl).
+  the `ImapWatcher`), `smtp` (the submission *conversation*; the RFC 5322/MIME
+  message assembly it feeds to `DATA` is the shared `engine-rfc5322` crate — see
+  **SMTP submission**), `provider` (the `Provider` impl).
 
 ## How IMAP differs from JMAP (the shape)
 
@@ -181,7 +182,10 @@ is authoritative for the `provider-caldav` calendar client.
 - **`submit_email`** runs the conversation `EHLO → [AUTH] → MAIL FROM → RCPT TO* →
   DATA`, then files the sent copy. The pre-generated `Message-ID` is on the message
   so the sent copy reconciles by it.
-- **Message assembly (`assemble_message`)** is hardened against header injection:
+- **Message assembly (`engine_rfc5322::assemble_message`)** lives in the shared
+  **`engine-rfc5322`** crate (the Graph adapter reuses it for `sendMail` in MIME
+  format — `graph.md`), returning the engine-neutral `ProviderError`; `provider-imap`
+  feeds its bytes to the SMTP `DATA` command. It is hardened against header injection:
   every interpolated value (`Message-ID`, addresses, subject, display names, and the
   `In-Reply-To`/`References` threading ids) is **rejected on CR/LF/NUL** (RFC 5322
   §2.2 / RFC 5321 §2.3.8 — otherwise a poisoned draft could inject headers or split

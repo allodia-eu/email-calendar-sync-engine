@@ -294,6 +294,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-rfc5322"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "engine-provider",
+ "time",
+]
+
+[[package]]
 name = "engine-search"
 version = "0.1.0"
 dependencies = [
@@ -1095,11 +1104,13 @@ dependencies = [
  "async-trait",
  "engine-core",
  "engine-provider",
+ "engine-rfc5322",
  "engine-tls",
  "futures-util",
  "reqwest",
  "serde_json",
  "thiserror",
+ "time",
  "tokio",
 ]
 
@@ -1112,6 +1123,7 @@ dependencies = [
  "engine-core",
  "engine-mime",
  "engine-provider",
+ "engine-rfc5322",
  "engine-search",
  "engine-store",
  "engine-sync",

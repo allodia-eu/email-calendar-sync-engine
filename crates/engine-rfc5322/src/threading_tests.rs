@@ -1,8 +1,6 @@
-//! Offline tests for the SMTP threading headers (`In-Reply-To` / `References`).
-//!
-//! Sibling of `smtp_tests.rs` (kept separate so that file stays at its line limit).
+//! Tests for the threading headers (`In-Reply-To` / `References`).
 
-use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
+use engine_core::{error::FailureClass, ids::MessageIdHeader, mail::EmailAddress};
 use engine_provider::Draft;
 use time::macros::datetime;
 
@@ -69,10 +67,7 @@ fn assemble_message_rejects_a_threading_id_carrying_crlf() {
     let mut bad_parent = reply_draft();
     bad_parent.in_reply_to = Some(mid("evil@host>\r\nBcc: victim@evil.example"));
     let err = assemble_message(&bad_parent, datetime!(2026-06-20 12:00:00 UTC)).unwrap_err();
-    assert_eq!(
-        err.failure_class(),
-        engine_core::error::FailureClass::Permanent
-    );
+    assert_eq!(err.class(), FailureClass::Permanent);
 
     // ...and a References id with CRLF are both rejected the same way.
     let mut bad_ref = reply_draft();

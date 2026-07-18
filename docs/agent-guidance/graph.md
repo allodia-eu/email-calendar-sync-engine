@@ -13,7 +13,7 @@ account-wide message delta, so sync is per folder.
 ## The crate
 
 `provider-graph` implements the `engine_provider::Provider` contract for the
-**mail read/sync** spine. Layers:
+**mail read/sync + submission** spine. Layers:
 
 - **`error`** — `GraphError` (`Status`/`Json`/`Protocol`/`Transport`) → the
   engine-neutral `FailureClass`. Graph error bodies are a documented
@@ -39,7 +39,10 @@ account-wide message delta, so sync is per folder.
   link-following stays on the chosen endpoint.
 - **`fetch`** — folder-list resolution and the message snapshot/delta + re-fetch
   paging.
-- **`provider`** — `GraphProvider`, bound to one folder for email.
+- **`submit`** — mail submission via `POST /me/sendMail` in **MIME format** (see
+  **Submission** below). Adds a `post` verb to the `GraphTransport` seam.
+- **`provider`** — `GraphProvider`, bound to one folder for email; submission is
+  account-level, so every bound provider advertises it.
 
 ## Graph specifics implemented
 
@@ -98,6 +101,37 @@ account-wide message delta, so sync is per folder.
   bracket-stripped as a threading hint (never identity); `conversationId`→thread
   provenance; `@odata.etag`→`ETag` and (full `GET` only) `changeKey`→`ChangeKey`
   revision tokens; `bodyPreview`→the snippet.
+
+## Submission (mail send)
+
+`submit_email` sends via `POST /me/sendMail` in **MIME format** (`Content-Type:
+text/plain`, the RFC 5322 message base64-encoded as the body), *not* the JSON
+`message` resource. The reason is the Write Contract (`store-and-sync.md`): the JSON
+form lets Graph mint its own `Message-ID`, which breaks reconcile-by-`Message-ID`
+when the sent copy syncs back and cannot carry `In-Reply-To`/`References` (Graph's
+`internetMessageHeaders` only accepts custom `x-*` headers). The MIME form ships the
+whole message the caller assembled — pre-generated `Message-ID`, threading, `Cc`/
+`Bcc`, an HTML alternative, attachments — verbatim, exactly like IMAP's SMTP `DATA`.
+
+- **One shared assembler.** The RFC 5322 / MIME bytes come from **`engine-rfc5322`**
+  (`assemble_filed_message`) — the same crate `provider-imap` feeds to SMTP `DATA`,
+  hoisted out of `provider-imap` so both adapters share one hardened, tested
+  assembler rather than duplicating RFC 5322 correctness. The **filed** variant is
+  used (it keeps the `Bcc` header): Graph reads every recipient from the MIME to build
+  the delivery envelope and strips `Bcc` before delivering, so the Sent-Items copy
+  records whom the sender Bcc'd while no recipient sees it. Graph files the Sent copy
+  itself; there is no separate `APPEND` step (unlike IMAP).
+- **No returned id, like SMTP.** `sendMail` answers `202 Accepted` with **no body**,
+  so there is no server key for the sent copy. The `SubmissionReceipt` carries a
+  `Message-ID`-derived placeholder key (`sent:<Message-ID>`, mirroring IMAP's
+  no-`UIDPLUS` filing key) and echoes the `Message-ID`; the real sent object
+  reconciles by `Message-ID` when Sent Items next syncs. A malformed MIME body is the
+  documented `400 ErrorMimeContentInvalidBase64String` (permanent); `401`/`429`/`5xx`
+  classify as auth/rate-limit/retryable through the shared status mapping.
+- **Live-verified.** A self-addressed send against the real account is confirmed to
+  come back into the Inbox carrying the *exact* pre-generated `Message-ID` — proving
+  Graph preserves it in the MIME form (`tests/live_provider.rs`, gated on
+  `GRAPH_ACCESS_TOKEN`). The `Mail.Send` delegated scope is required.
 
 ## Shared mailboxes (the multi-mailbox model)
 
@@ -161,8 +195,10 @@ shared mailboxes; verification awaits a work/school account.)
 - **Snapshot order is delta-defined**, not newest-first (consumer delta has no
   `$orderby`). A streaming newest-first snapshot via the list endpoint is a
   possible later refinement.
-- **Mail only.** Calendar, submission, and writes are later slices; the provider
-  advertises `mail` capability only.
+- **Mail read/sync + submission.** Calendar and **mutating mail writes**
+  (`edit_mail` — mark-read/flag/move/delete) are later slices; the provider
+  advertises `mail` + `submission` (see **Submission** above). Submission is
+  account-level, so it needs no per-folder config.
 
 ## Calendar (deferred — design notes from the official delta doc)
 
@@ -204,9 +240,11 @@ reusable**; the two real differences shape the slice:
   real-HTTP coverage scarce live tokens can't provide. This is the primary
   integration test.
 - **Live (gated on `GRAPH_ACCESS_TOKEN`, skips otherwise):**
-  `tests/live_provider.rs` checks folder role resolution and the snapshot→delta
-  cycle against a *real* account — an occasional drift check against the actual
-  API, not the CI gate. There is no CI harness (no live account in CI); the token
+  `tests/live_provider.rs` checks folder role resolution, the snapshot→delta
+  cycle, and a **self-addressed `sendMail`** whose exact pre-generated `Message-ID`
+  is polled back out of the Inbox (proving Graph preserves it in the MIME form)
+  against a *real* account — an occasional drift check against the actual API, not
+  the CI gate. There is no CI harness (no live account in CI); the token
   is obtained with `tools/graph-oauth` (a standalone PKCE-loopback login + refresh
   helper, outside the engine workspace). Excluded from the offline coverage metric
   via the `ci.yml` `--ignore-filename-regex`, like the other providers' live tests.

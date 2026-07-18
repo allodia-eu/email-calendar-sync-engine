@@ -39,6 +39,7 @@ mod json;
 mod normalize;
 mod principal;
 mod provider;
+mod submit;
 mod transport;
 
 #[cfg(test)]

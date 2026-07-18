@@ -21,8 +21,8 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EmailChunk, EmailStream, PageToken, PassMode, Provider,
-    ProviderResult, ScopeSync, SyncKind, split_page,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, PageToken, PassMode, Provider,
+    ProviderResult, ScopeSync, SubmissionReceipt, SyncKind, split_page,
 };
 
 use crate::{fetch, transport::GraphClient};
@@ -59,12 +59,17 @@ impl core::fmt::Debug for GraphProvider {
 
 impl GraphProvider {
     /// Binds a connected client to one mail folder for email sync.
+    ///
+    /// Submission is an **account-level** capability, not a folder one — `sendMail`
+    /// posts to `/me/sendMail` and Graph files the Sent copy itself — so every bound
+    /// `GraphProvider` advertises it. The cross-folder orchestrator submits through any
+    /// one of an account's folder-bound providers.
     #[must_use]
     pub fn new(client: GraphClient, folder: MailboxId) -> Self {
         Self {
             client,
             folder,
-            capabilities: Capabilities::none().with_mail(),
+            capabilities: Capabilities::none().with_mail().with_submission(),
             since: None,
         }
     }
@@ -234,6 +239,17 @@ impl Provider for GraphProvider {
         // the message's provider key is that immutable id. One credential (the bound
         // client's token) backs the fetch, like every other call on this provider.
         Ok(fetch::message_source(&self.client, message.id.key()).await?)
+    }
+
+    /// Sends `draft` via `POST /me/sendMail` in MIME format (`submit`), so the caller's
+    /// pre-generated `Message-ID` and threading survive to the wire. The outbox owns
+    /// durability/idempotency; this performs only the provider call.
+    async fn submit_email(
+        &self,
+        _account: &AccountId,
+        draft: &Draft,
+    ) -> ProviderResult<SubmissionReceipt> {
+        crate::submit::send(&self.client, draft).await
     }
 }
 
