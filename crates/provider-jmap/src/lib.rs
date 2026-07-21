@@ -31,6 +31,7 @@
 //!   blob sub-step. Calendar raw (`RawJsCalendar`) *is* preserved on the object
 //!   (`docs/agent-guidance/jmap.md`).
 
+mod auth;
 mod calendar;
 mod calendar_write;
 mod error;
@@ -70,19 +71,25 @@ const MAX_SESSION_REDIRECTS: usize = 5;
 
 /// Credentials for authenticating to a JMAP server.
 ///
-/// `Debug` is redacted — the secret never appears in logs (`north-star.md`
-/// security). Basic auth covers the Stalwart fixture; bearer covers OAuth
-/// providers.
+/// This names the credential the caller *holds*, not the header that goes on the wire.
+/// JMAP specifies no authentication mechanism of its own — RFC 8620 §8.2 defers to the
+/// IANA scheme registry and marks Basic NOT RECOMMENDED — so the scheme is whatever the
+/// server challenges for, and the transport re-frames the secret to match (see
+/// `crate::auth`). A `Basic` credential is therefore also presentable as a bearer token;
+/// the variant records that a username came with it, not that Basic will be sent.
+///
+/// `Debug` is redacted — the secret never appears in logs (`north-star.md` security).
 #[derive(Clone)]
 pub enum Credentials {
-    /// HTTP Basic credentials.
+    /// A username and secret: a login password, an app-specific password, or an API
+    /// token that the user happened to enter alongside their address.
     Basic {
         /// The username (full email address for the fixture).
         username: String,
         /// The password or app-specific token.
         password: String,
     },
-    /// An OAuth bearer token.
+    /// A bare secret with no username — an OAuth or API bearer token.
     Bearer(String),
 }
 
