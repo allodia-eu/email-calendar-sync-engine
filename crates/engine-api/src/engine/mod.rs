@@ -21,6 +21,7 @@ use store_sqlite::SqliteStore;
 use crate::{ApiError, clock::SystemClock};
 
 mod calendar_writes;
+mod contact_photo;
 mod contact_query;
 mod contacts;
 mod reads;

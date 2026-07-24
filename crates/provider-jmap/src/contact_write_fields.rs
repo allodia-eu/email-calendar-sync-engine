@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use engine_core::contact::{
     Anniversary, ContactAddress, ContactCard, ContactEmail, ContactField, ContactLanguage,
-    ContactName, ContactNickname, ContactNote, ContactOnlineService, ContactPhone, ContactProperty,
-    ContactRelation, ContactResource, Organization, PersonalInfo, PropertyId, Title,
+    ContactMember, ContactName, ContactNickname, ContactNote, ContactOnlineService, ContactPhone,
+    ContactProperty, ContactRelation, ContactResource, Organization, PersonalInfo, PropertyId,
+    Title,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -48,7 +49,7 @@ pub(super) fn card_object(card: &ContactCard) -> Map<String, Value> {
             language_values(&card.languages),
         );
     }
-    insert_property(&mut object, "members", &card.members);
+    insert_members(&mut object, &card.members);
     insert_property(&mut object, "personalInfo", &card.personal_info);
     insert_property(&mut object, "calendars", &card.calendars);
     insert_property(
@@ -117,6 +118,32 @@ pub(super) fn field_value(field: ContactField, value: &Value) -> Result<Value, J
             )));
         }
     })
+}
+
+/// Writes a group Card's `members`.
+///
+/// RFC 9553 §2.1.7 types this as `String[Boolean]`: the key is the member Card's
+/// **`uid`** and the value MUST be `true`. It is therefore not a property-object map
+/// — [`insert_property`] would emit the member as a nested object under a synthesized
+/// property id, which no server would read as a membership. Per-member
+/// contexts/pref/label that the neutral model can carry (a vCard `MEMBER` parameter)
+/// have no JSContact representation and are dropped here by design.
+fn insert_members(
+    object: &mut Map<String, Value>,
+    members: &BTreeMap<PropertyId, ContactProperty<ContactMember>>,
+) {
+    if members.is_empty() {
+        return;
+    }
+    object.insert(
+        "members".into(),
+        Value::Object(
+            members
+                .values()
+                .map(|member| (member.value.uid.clone(), Value::Bool(true)))
+                .collect(),
+        ),
+    );
 }
 
 fn insert_property<T: Serialize>(

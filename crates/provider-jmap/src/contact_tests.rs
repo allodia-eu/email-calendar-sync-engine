@@ -436,12 +436,13 @@ fn card_kinds_members_media_and_structured_name_variants_are_normalized() {
             {"kind": "credential", "value": "PhD"},
             {"kind": "x-custom", "value": "Custom"}
         ]},
-        "members": {"member": {
-            "uid": "urn:uuid:person",
-            "contexts": {"work": true},
-            "pref": 1,
-            "label": "Primary"
-        }},
+        // RFC 9553 §2.1.7: `members` is String[Boolean] — the KEY is the member's
+        // uid and the value is `true`. There is no `Member` object, and no per-member
+        // contexts/pref/label. A `false` entry is not a membership.
+        "members": {
+            "urn:uuid:person": true,
+            "urn:uuid:not-a-member": false
+        },
         "media": {"photo": {
             "uri": "https://contacts.example/photo",
             "kind": "photo",
@@ -467,14 +468,13 @@ fn card_kinds_members_media_and_structured_name_variants_are_normalized() {
             NameComponentKind::Other("x-custom".into())
         ]
     );
+    // The member is keyed by its uid, and a `false` entry is not a member.
+    assert_eq!(card.members.len(), 1);
     let member = card
         .members
-        .get(&PropertyId::new("member").unwrap())
+        .get(&PropertyId::new("urn:uuid:person").unwrap())
         .unwrap();
     assert_eq!(member.value.uid, "urn:uuid:person");
-    assert!(member.contexts.contains("work"));
-    assert_eq!(member.preference, Some(1));
-    assert_eq!(member.label.as_deref(), Some("Primary"));
     let photo = &card
         .media
         .get(&PropertyId::new("photo").unwrap())

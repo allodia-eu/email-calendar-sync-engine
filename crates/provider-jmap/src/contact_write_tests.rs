@@ -222,7 +222,9 @@ fn programmatic_cards_map_all_populated_jscontact_fields() {
         true
     );
     assert_eq!(object["preferredLanguages"]["en"]["pref"], 1);
-    assert_eq!(object["members"]["member"]["uid"], "urn:uuid:member");
+    // RFC 9553 §2.1.7: emitted as String[Boolean] keyed by the member's uid — not as
+    // a nested object under a synthesized property id, which no server would read.
+    assert_eq!(object["members"]["urn:uuid:member"], true);
     assert_eq!(object["personalInfo"]["expertise"]["kind"], "expertise");
     assert_eq!(
         object["calendars"]["calendar"]["uri"],

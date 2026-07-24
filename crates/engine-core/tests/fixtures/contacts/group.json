@@ -5,7 +5,7 @@
   "kind": "group",
   "name": { "full": "Project Team" },
   "members": {
-    "a": { "@type": "Member", "uid": "urn:uuid:alice" },
-    "b": { "@type": "Member", "uid": "urn:uuid:bob" }
+    "urn:uuid:alice": true,
+    "urn:uuid:bob": true
   }
 }

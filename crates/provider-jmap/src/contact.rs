@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use engine_core::{
     contact::{
         AddressBook, ContactCard, ContactDraft, ContactEmail, ContactField, ContactFieldSet,
-        ContactKind, ContactName, ContactPatch, ContactProperty, ContactResource,
+        ContactKind, ContactMember, ContactName, ContactPatch, ContactProperty, ContactResource,
         ContactSourceClass, NameComponent, NameComponentKind, PropertyId,
     },
     ids::{AccountId, AddressBookId, ContactId},
@@ -100,12 +100,7 @@ pub(crate) fn card(value: &Value) -> Result<ContactCard, JmapError> {
             .and_then(Value::as_str)
             .map(|address| ContactEmail::new(address.to_owned()))
     })?;
-    card.members = property_map(value.get("members"), |entry| {
-        entry
-            .get("uid")
-            .and_then(Value::as_str)
-            .map(|uid| engine_core::contact::ContactMember::new(uid.to_owned()))
-    })?;
+    card.members = members(value.get("members"))?;
     card.media = property_map(value.get("media"), |entry| {
         Some(ContactResource {
             uri: entry.get("uri")?.as_str()?.to_owned(),
@@ -159,6 +154,31 @@ fn normalize_name(value: Option<&Value>) -> Option<ContactName> {
             .push(NameComponent::new(kind, component.get("value")?.as_str()?));
     }
     Some(name)
+}
+
+/// Normalizes a group Card's `members`.
+///
+/// RFC 9553 §2.1.7 types this as `String[Boolean]`: **each key is a member Card's
+/// `uid`** and each value MUST be `true`. There is no `Member` object, so — unlike
+/// every other property map — the uid cannot be read out of the entry, and
+/// [`property_map`] does not apply. Reading it as an object with a `uid` field
+/// silently yields *no members* against a real server.
+fn members(
+    value: Option<&Value>,
+) -> Result<BTreeMap<PropertyId, ContactProperty<ContactMember>>, JmapError> {
+    value
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|map| map.iter())
+        // A value other than `true` is not a membership; the spec admits only `true`.
+        .filter(|(_, flag)| flag.as_bool() == Some(true))
+        .map(|(uid, _)| {
+            Ok((
+                property_id(uid)?,
+                ContactProperty::new(ContactMember::new(uid.clone())),
+            ))
+        })
+        .collect()
 }
 
 fn property_map<T>(
