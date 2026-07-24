@@ -1,0 +1,17 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:urn:uuid:3334f1a8-1b42-4db1-937d-a65b01345416
+KIND:individual
+FN:山田 太郎
+N:太郎;山田;;;
+NICKNAME;TYPE=home:Taro
+EMAIL;TYPE=work;PREF=1:Taro@例え.テスト
+EMAIL;TYPE=home:taro@example.net
+TEL;TYPE=cell:tel:+81-90-1234-5678
+ADR;TYPE=home;GEO="geo:35.6852,139.7528":;;千代田1-1;千代田区;東京都;100-0001;JP
+ORG:Example 株式会社;研究開発
+TITLE:主任研究員
+NOTE:Prefers email.
+PHOTO:https://contacts.example.test/photo/3334
+X-ACME-PROFILE;X-ORDER=keep:opaque
+END:VCARD

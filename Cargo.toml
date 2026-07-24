@@ -49,6 +49,10 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 # `HttpVersion` in one place (`engine-provider`'s `http` feature). Must stay on the same
 # major as the copy reqwest resolves, or the versions would be distinct types.
 http = "1.4.1"
+# URL parsing for `engine-provider`'s `same_origin` credential guard: an adapter must
+# not send the account's `Authorization` header to a host named by remote content.
+# Same major as the copy reqwest resolves, for one `Url` type across the tree.
+url = "2.5.7"
 # Pure-Rust TLS for the hand-rolled IMAP transport (implicit-TLS on 993). `ring`
 # (not rustls' default `aws-lc-rs`) keeps the hand-rolled transport's crypto
 # provider explicit. The transport is generic over any async stream; this only
@@ -87,6 +91,10 @@ mail-parser = { version = "0.11.4", default-features = false, features = ["full_
 # copies of one message and giving filesystem-safe, fixed-length names. Pure Rust,
 # no C surface.
 sha2 = { version = "0.11.0", default-features = false }
+# IDNA domain canonicalization for conservative cross-provider contact identity.
+# Only the email domain is folded; the local part remains byte/case exact
+# (`docs/agent-guidance/contacts.md`).
+idna = "1.1.0"
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }

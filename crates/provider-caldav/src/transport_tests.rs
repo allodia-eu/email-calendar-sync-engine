@@ -5,11 +5,17 @@
 //! it can neither exercise the transport nor observe a negotiated HTTP version. Split
 //! out of `transport.rs` to keep that file under the line limit.
 
+use std::sync::{Arc, Mutex};
+
 use super::*;
 
 /// A blocking mock HTTP server answering one canned response per connection — the
 /// same shape `provider-jmap`'s tests use.
 fn mock_server(responses: Vec<String>) -> String {
+    mock_server_bytes(responses.into_iter().map(String::into_bytes).collect())
+}
+
+fn mock_server_bytes(responses: Vec<Vec<u8>>) -> String {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("local addr");
@@ -18,10 +24,97 @@ fn mock_server(responses: Vec<String>) -> String {
             let (mut stream, _) = listener.accept().expect("accept");
             let mut buf = [0u8; 8192];
             let _ = stream.read(&mut buf);
-            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(&response);
         }
     });
     format!("http://{addr}")
+}
+
+/// Serves canned responses and hands back every request's raw head, so a test can
+/// assert on the headers that actually went out (notably `Authorization`).
+fn mock_server_capturing(responses: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for response in responses {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 8192];
+            let read = stream.read(&mut buf).unwrap_or(0);
+            sink.lock()
+                .expect("seen lock")
+                .push(String::from_utf8_lossy(&buf[..read]).into_owned());
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+/// A vCard `PHOTO;VALUE=uri` is *card content* — it can name any host. Resolving it
+/// through `Url::join` yields that foreign absolute URL unchanged, so authenticating
+/// it unconditionally would hand the account's CardDAV password to whoever the card
+/// names. Credentials must stay on the account's own origin.
+#[tokio::test]
+async fn a_foreign_photo_uri_is_fetched_without_the_account_credentials() {
+    let body = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_owned();
+    let (foreign, foreign_seen) = mock_server_capturing(vec![body.clone()]);
+    let (base, base_seen) = mock_server_capturing(vec![body]);
+    let client = DavClient::new(
+        &base,
+        Credentials::Basic {
+            username: "alice".to_owned(),
+            password: "super-secret".to_owned(),
+        },
+        &engine_tls::TlsClientConfig::default(),
+    )
+    .expect("client");
+
+    // The attacker-named host in the card gets no Authorization header at all.
+    let foreign_photo = format!("{foreign}/p.png");
+    DavExecutor::get_bytes(&client, &foreign_photo)
+        .await
+        .expect("foreign get");
+    let sent = foreign_seen.lock().expect("seen").join("\n").to_lowercase();
+    assert!(
+        !sent.contains("authorization"),
+        "credentials leaked to a foreign photo host: {sent}"
+    );
+    // The account's own server still authenticates as before.
+    DavExecutor::get_bytes(&client, "/contacts/ada.jpg")
+        .await
+        .expect("same-origin get");
+    let sent = base_seen.lock().expect("seen").join("\n").to_lowercase();
+    assert!(
+        sent.contains("authorization: basic"),
+        "same-origin request lost its credentials: {sent}"
+    );
+}
+
+#[tokio::test]
+async fn binary_get_preserves_non_utf8_photo_bytes() {
+    let photo = [0xff, 0xd8, 0xff, 0x00, 0x80, 0xd9];
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        photo.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(&photo);
+    let base = mock_server_bytes(vec![response]);
+    let client = DavClient::new(
+        &base,
+        Credentials::Bearer("tok".to_owned()),
+        &engine_tls::TlsClientConfig::default(),
+    )
+    .expect("client");
+
+    assert_eq!(
+        DavExecutor::get_bytes(&client, "/contacts/ada.jpg")
+            .await
+            .expect("binary get"),
+        photo
+    );
 }
 
 fn multistatus(body: &str) -> String {

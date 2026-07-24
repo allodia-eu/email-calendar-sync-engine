@@ -47,6 +47,8 @@ impl core::fmt::Debug for Credentials {
 /// The WebDAV methods this adapter issues — the read reports plus the write verbs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DavMethod {
+    /// `GET`, used for URI-backed CardDAV photos.
+    Get,
     /// `PROPFIND` (RFC 4918 §9.1).
     Propfind,
     /// `REPORT` (RFC 3253 §3.6; CalDAV/RFC 6578 reports).
@@ -61,6 +63,7 @@ impl DavMethod {
     /// The HTTP method token.
     fn as_str(self) -> &'static str {
         match self {
+            Self::Get => "GET",
             Self::Propfind => "PROPFIND",
             Self::Report => "REPORT",
             Self::Put => "PUT",
@@ -155,6 +158,19 @@ pub(crate) trait DavExecutor: Send + Sync {
         depth: &str,
         body: String,
     ) -> Result<HttpResponse, CalDavError>;
+
+    /// Fetches an opaque binary resource without UTF-8 decoding.
+    ///
+    /// The default keeps replay fakes small. The live transport overrides it so
+    /// image bytes never pass through [`HttpResponse::body`].
+    async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
+        let response = self.send(DavMethod::Get, href, "0", String::new()).await?;
+        if (200..300).contains(&response.status) {
+            Ok(response.body.into_bytes())
+        } else {
+            Err(CalDavError::status(response.status, response.body))
+        }
+    }
 
     /// Sends a **write** — a `PUT`/`DELETE` carrying a typed body and a conditional
     /// precondition instead of a `Depth` + XML body — returning the raw response
@@ -252,8 +268,16 @@ impl DavClient {
         })
     }
 
-    /// Resolves `href` against the connection origin and builds an authenticated
-    /// request for `method` — the shared head of every read and write.
+    /// Resolves `href` against the connection origin and builds a request for
+    /// `method` — the shared head of every read and write.
+    ///
+    /// Credentials ride along **only when the resolved URL is same-origin with the
+    /// account's base**. Most hrefs are server-issued and relative, so they resolve
+    /// onto the base and authenticate as usual. But some come from remote *content* —
+    /// a vCard `PHOTO;VALUE=uri` naming any host — and `Url::join` returns an absolute
+    /// foreign URL unchanged. Authenticating those would send the account's Basic
+    /// password (or bearer token) to whoever the card names, so they are fetched
+    /// anonymously instead (`engine_provider::same_origin`).
     fn request(
         &self,
         method: DavMethod,
@@ -265,7 +289,11 @@ impl DavClient {
             .map_err(|e| CalDavError::protocol(format!("bad href {href:?}: {e}")))?;
         let method = Method::from_bytes(method.as_str().as_bytes())
             .map_err(|e| CalDavError::protocol(format!("bad method: {e}")))?;
+        let authenticate = engine_provider::same_origin(url.as_str(), self.base.as_str());
         let builder = self.client.request(method, url);
+        if !authenticate {
+            return Ok(builder);
+        }
         Ok(match &self.credentials {
             Credentials::Basic { username, password } => {
                 builder.basic_auth(username, Some(password))
@@ -299,6 +327,21 @@ impl DavExecutor for DavClient {
             .send()
             .await?;
         self.collect(response).await
+    }
+
+    async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
+        let response = self.request(DavMethod::Get, href)?.send().await?;
+        self.http_version.record(response.version());
+        let status = response.status().as_u16();
+        let bytes = response.bytes().await?;
+        if (200..300).contains(&status) {
+            Ok(bytes.to_vec())
+        } else {
+            Err(CalDavError::status(
+                status,
+                String::from_utf8_lossy(&bytes).into_owned(),
+            ))
+        }
     }
 
     async fn send_write(&self, request: WriteRequest) -> Result<HttpResponse, CalDavError> {
@@ -357,6 +400,7 @@ mod tests {
     #[test]
     fn dav_method_tokens() {
         assert_eq!(DavMethod::Propfind.as_str(), "PROPFIND");
+        assert_eq!(DavMethod::Get.as_str(), "GET");
         assert_eq!(DavMethod::Report.as_str(), "REPORT");
         assert_eq!(DavMethod::Put.as_str(), "PUT");
         assert_eq!(DavMethod::Delete.as_str(), "DELETE");

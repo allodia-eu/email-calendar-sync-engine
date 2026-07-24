@@ -22,17 +22,19 @@ use core::time::Duration;
 use std::collections::BTreeSet;
 
 use engine_core::{
-    ids::{AccountId, ProviderKey},
+    ids::{AccountId, MailboxId, ProviderKey},
     mail::Message,
     sync::{SyncState, SyncUpdate, SyncWindow},
 };
 use engine_provider::{EmailChunk, PassMode, Provider};
-use engine_store::{ApplyBatch, LeaseRequest, Store, StoreError, SyncApplied, WorkerId};
+use engine_store::{
+    ApplyBatch, ContactStore, LeaseRequest, Store, StoreError, StoreRead, SyncApplied, WorkerId,
+};
 use futures_util::StreamExt;
 
 use crate::{
     MAX_STALE_RECLAIMS, MailSyncReport, MailboxScope, SyncCommit, SyncError, SyncObserver,
-    derive_messages, run_scope,
+    derive_messages, recipients, run_scope,
 };
 
 /// How a streaming sync runs: the depth window, plus how it separates network
@@ -128,12 +130,19 @@ pub async fn sync_mail_streamed<P, S, O>(
 ) -> Result<MailSyncReport, SyncError>
 where
     P: Provider,
-    S: Store,
+    S: Store + StoreRead + ContactStore,
     O: SyncObserver,
 {
     let req = LeaseRequest::new(worker, ttl);
-    let mailboxes = run_scope(store, account, &MailboxScope(provider), &req).await?;
-    let email = stream_email(provider, store, account, &req, tuning, observer).await?;
+    let (mailboxes, ()) = run_scope(store, account, &MailboxScope(provider), &req)
+        .await?
+        .into_applied();
+    let sent = recipients::sent_mailboxes(store, account).await?;
+    if !sent.is_empty() {
+        recipients::backfill(store, account, &sent).await?;
+    }
+    let email = stream_email(provider, store, account, &req, tuning, observer, &sent).await?;
+    recipients::record_coverage(store, account, tuning.window, !sent.is_empty()).await?;
     Ok(MailSyncReport { mailboxes, email })
 }
 
@@ -160,11 +169,17 @@ pub async fn sync_email_streamed<P, S, O>(
 ) -> Result<SyncApplied, SyncError>
 where
     P: Provider,
-    S: Store,
+    S: Store + StoreRead + ContactStore,
     O: SyncObserver,
 {
     let req = LeaseRequest::new(worker, ttl);
-    stream_email(provider, store, account, &req, tuning, observer).await
+    let sent = recipients::sent_mailboxes(store, account).await?;
+    if !sent.is_empty() {
+        recipients::backfill(store, account, &sent).await?;
+    }
+    let applied = stream_email(provider, store, account, &req, tuning, observer, &sent).await?;
+    recipients::record_coverage(store, account, tuning.window, !sent.is_empty()).await?;
+    Ok(applied)
 }
 
 /// Streams the email scope chunk by chunk under one lease. Each additive chunk
@@ -180,6 +195,7 @@ async fn stream_email<P, S, O>(
     req: &LeaseRequest,
     tuning: StreamTuning,
     observer: &O,
+    sent: &BTreeSet<MailboxId>,
 ) -> Result<SyncApplied, SyncError>
 where
     P: Provider,
@@ -225,7 +241,9 @@ where
             let is_reconcile_final = chunk.is_reconcile_final();
             let (update, advance_to) = build_update(chunk, &mut present);
             let derived = derive_messages(changed_of(&update));
-            let batch = ApplyBatch::with_cursor(&update, &derived, &[], advance_to.as_ref());
+            let observations = recipients::observations(account, &update, sent);
+            let batch = ApplyBatch::with_cursor(&update, &derived, &[], advance_to.as_ref())
+                .with_recipient_observations(&observations);
             match store.apply_sync_update(&lease, batch).await {
                 Ok(applied) => {
                     totals.add(applied);

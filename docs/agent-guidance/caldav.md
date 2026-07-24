@@ -16,8 +16,26 @@ and outbox-driven by `engine_sync::create_calendar_event`/`patch_calendar_event`
 `delete_calendar_event`. **iTIP/iMIP**
 inbound parsing + the RSVP write primitive are **implemented** (see "iMIP
 scheduling"); the remaining scheduling deferrals (the Scheduling-Inbox `REPORT`,
-client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and
-**CardDAV/contacts** are out of this slice — see "Known limitations".
+client-iMIP SMTP delivery, `ClientImip` local-origin persistence) remain. The
+same crate also contains a deliberately separate `CardDavProvider`; calendar and
+contact normalization share only the DAV transport/TLS layer.
+
+## CardDAV contacts
+
+`CardDavProvider` starts at `/.well-known/carddav`, resolves the current
+principal and `addressbook-home-set`, snapshots address-book collections and
+rights, then binds one adapter to one address book. Cards sync with RFC 6578
+`sync-collection`; expired tokens restart with a snapshot. Servers without that
+report use a CTag check followed by a full `addressbook-query`, retaining each
+resource ETag. Direct canonical refetch uses `addressbook-multiget`.
+
+vCard 3/4 input is unfolded and normalized into the JSContact-shaped
+`ContactCard` while retaining the complete raw vCard, including malformed legacy
+or extension lines the parser does not understand. Targeted writes edit the raw
+document and preserve untouched lines. Creates use `If-None-Match: *`; update
+and delete require the source ETag under `If-Match`, so the destination
+advertises `WriteGuard::Enforced`. Embedded data-URI and authenticated URI photo
+reads are supported; photo mutation is not.
 
 ## The crate
 
@@ -369,10 +387,9 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
   the caller's job in this slice (the engine supplies the conditional-`PUT`
   transport + outbox, not the serialization). The lossy projection is never
   re-serialized to the wire.
-- **CardDAV/contacts are out of scope.** Contacts land after step 5
-  (`north-star.md`); the `DavCollectionList`/`DavCollection` scopes and the
-  WebDAV/multistatus machinery are already shaped to serve an address-book home
-  without rework.
+- **CardDAV collection mutation is out of scope.** Existing address books and
+  group cards are readable; address-book/group create, rename, delete, and
+  membership mutation remain deferred.
 - **Custom (non-IANA) `VTIMEZONE` expansion is staged.** A `TZID` is resolved as
   an IANA zone; a genuinely custom embedded `VTIMEZONE` is preserved in `RawIcal`
   but not parsed into the expander, so such an event stores with no occurrences
@@ -382,10 +399,9 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
 - **`RRULE UNTIL` with a `Z` (UTC) bound** is read as its wall-clock value;
   converting it to the event's zone needs tzdata and is staged. The supported seed
   uses `COUNT`, not `UNTIL`.
-- **No CTag fallback yet.** Sync uses the RFC 6578 sync-token (which Stalwart and
-  modern servers support). A server with no `sync-collection` support would need
-  the CTag-+-per-resource-ETag diffing path (`providers.md`); it is not yet
-  implemented.
+- **Calendar CalDAV has no CTag fallback yet.** Calendar event sync still relies
+  on RFC 6578. CardDAV implements CTag + per-resource ETag snapshot fallback
+  when `sync-collection` is unavailable.
 - **Calendar events are fetched whole, not paged** — consistent with the JMAP
   calendar slice (events have no natural recency sort, and the REPORT returns the
   collection in one pass).

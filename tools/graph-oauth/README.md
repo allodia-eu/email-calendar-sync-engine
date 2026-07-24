@@ -21,13 +21,16 @@ In <https://entra.microsoft.com> → **App registrations** → **New registratio
 3. **API permissions → Microsoft Graph → Delegated**: `offline_access`, `openid`,
    `profile`, `User.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
    and (for shared-mailbox delegate access) `Mail.ReadWrite.Shared`,
-   `Mail.Send.Shared`, `Calendars.ReadWrite.Shared`.
+   `Mail.Send.Shared`, `Calendars.ReadWrite.Shared`. For contacts, add
+   `Contacts.ReadWrite`; for the independently optional tenant sources add
+   `OrgContact.Read.All`, `User.ReadBasic.All`, and `ProfilePhoto.Read.All`.
+   Tenant directory permissions may require administrator consent.
 4. Copy the **Application (client) ID**.
 
 > The `*.Shared` scopes are an Exchange Online (work/school) feature. A **personal**
 > Microsoft account usually cannot consent to them — if `login` errors on consent,
 > re-run with the non-shared set:
-> `--scopes "offline_access openid profile User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite"`
+> `--scopes "offline_access openid profile User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.ReadWrite"`
 
 ## Usage
 
@@ -43,6 +46,8 @@ cargo run --manifest-path tools/graph-oauth/Cargo.toml -- refresh
 # 3. Capture real Graph responses as fixtures (refreshes automatically).
 cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me
 cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me/mailFolders mailfolders.json
+cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me/contacts contacts.json
+cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /contacts org-contacts.json
 ```
 
 Tokens are written to `tools/graph-oauth/.local/tokens.json` (gitignored). The

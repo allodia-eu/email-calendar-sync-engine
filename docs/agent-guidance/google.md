@@ -193,3 +193,25 @@ Google occasionally answers a transient `500 backendError`; it classifies as `Re
 and live-test cleanup is best-effort. Push is **poll-first** — no Pub/Sub/webhook infra;
 when wanted, it slots behind the existing `Watch` seam (Gmail `users.watch`, Calendar
 `events.watch`).
+
+## Google People
+
+`GoogleContactProvider` binds independently to owned Connections, Other
+Contacts, Workspace directory people, or contact groups. Each source has its own
+scope, token lifecycle, source class, and permission degradation. Connection
+tokens that expire with `410` restart as a snapshot; optional-source permission
+failures do not fail owned contacts. Contact groups normalize to the same
+provider-neutral group-card kind as JMAP and vCard.
+
+`contactGroups.list` has pagination but no sync token, so group sync is always a
+snapshot. OAuth capture defaults include
+`https://www.googleapis.com/auth/contacts`,
+`https://www.googleapis.com/auth/contacts.other.readonly`, and
+`https://www.googleapis.com/auth/directory.readonly`; the Workspace directory
+scope/source may be unavailable for consumer accounts.
+
+Only owned Connections are writable. The source `etag` is retained in
+`RevisionTokens`, copied into update payloads, and carried as the transport
+precondition; the adapter advertises `WriteGuard::Enforced`. Other Contacts,
+directory entries, and groups are read-only. Group mutation and photo upload
+remain deferred; photos are authenticated on-demand reads.

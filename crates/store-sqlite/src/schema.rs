@@ -293,3 +293,97 @@ ALTER TABLE sync_scope ADD COLUMN horizon_start TEXT;
 ALTER TABLE sync_scope ADD COLUMN horizon_end   TEXT;
 ALTER TABLE sync_scope ADD COLUMN expansion_zone TEXT;
 ";
+
+/// Migration v7: contacts, unified people, photos, and recipient observations.
+///
+/// Provider contacts continue to live in `object`; `contact_state.generation`
+/// changes with contact-card applies and fences atomic replacement of the
+/// derived people tables. Recipient rows keep their source identity after
+/// suppression so replay cannot resurrect cleared history.
+pub(crate) const V7: &str = "\
+CREATE TABLE contact_state (
+    singleton      INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+    generation     INTEGER NOT NULL,
+    next_person_id INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+INSERT INTO contact_state (singleton, generation, next_person_id)
+VALUES (1, 0, 1);
+
+CREATE TABLE person (
+    id           INTEGER NOT NULL PRIMARY KEY,
+    ordinal      INTEGER NOT NULL UNIQUE,
+    display_name TEXT    NOT NULL,
+    payload      TEXT    NOT NULL
+) STRICT;
+
+CREATE INDEX person_display_name ON person (display_name, id);
+
+CREATE TABLE person_alias (
+    retired_id INTEGER NOT NULL PRIMARY KEY,
+    current_id INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE person_source (
+    person_id INTEGER NOT NULL,
+    account   TEXT    NOT NULL,
+    contact   TEXT    NOT NULL,
+    PRIMARY KEY (person_id, account, contact)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX person_source_lookup ON person_source (account, contact);
+
+CREATE TABLE person_email (
+    person_id INTEGER NOT NULL,
+    email     TEXT    NOT NULL,
+    PRIMARY KEY (person_id, email)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX person_email_lookup ON person_email (email);
+
+CREATE TABLE contact_source_availability (
+    scope_key TEXT NOT NULL PRIMARY KEY,
+    available INTEGER NOT NULL,
+    reason    TEXT
+) STRICT, WITHOUT ROWID;
+
+-- One row per *media resource*, not per card: a card may carry several (a PHOTO and
+-- a LOGO both land in `ContactCard::media`). Keying on (account, contact) alone made
+-- them share a row, so with the card-ETag fingerprint fallback — identical for every
+-- resource on one card — a LOGO fetch would satisfy a later PHOTO read and return the
+-- wrong bytes. `resource` is a stable digest of the resource's URI.
+CREATE TABLE contact_photo (
+    account       TEXT NOT NULL,
+    contact       TEXT NOT NULL,
+    resource      TEXT NOT NULL,
+    fingerprint   TEXT NOT NULL,
+    content_hash  TEXT NOT NULL,
+    media_type    TEXT,
+    fetched_at    TEXT NOT NULL,
+    PRIMARY KEY (account, contact, resource)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE recipient_observation (
+    account        TEXT    NOT NULL,
+    source_message TEXT    NOT NULL,
+    email          TEXT    NOT NULL,
+    name           TEXT,
+    sent_at        TEXT,
+    suppressed     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account, source_message, email)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX recipient_email
+    ON recipient_observation (email, suppressed, sent_at);
+
+CREATE TABLE recipient_coverage (
+    account                  TEXT    NOT NULL PRIMARY KEY,
+    window_json              TEXT    NOT NULL,
+    sent_collection_present  INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE recipient_index_state (
+    account TEXT    NOT NULL PRIMARY KEY,
+    version INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+";

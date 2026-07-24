@@ -2,7 +2,7 @@
 #
 # `docker compose up -d --wait` brings up a Stalwart server that self-bootstraps
 # through its management API, creates the test accounts, and seeds one shared
-# dataset every protocol sees (JMAP, IMAP, SMTP, CalDAV) — then reports healthy
+# dataset every protocol sees (JMAP, IMAP, SMTP, CalDAV, CardDAV) — then reports healthy
 # once seeding is done (the healthcheck gates on a post-seed marker). Tests
 # connect to the host-mapped ports below via the STALWART_* env vars (see
 # docker/stalwart/README.md and crates/stalwart-harness).

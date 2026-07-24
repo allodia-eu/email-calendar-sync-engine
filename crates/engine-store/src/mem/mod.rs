@@ -20,7 +20,9 @@ use std::{
 };
 
 use engine_core::{
-    ids::{AccountId, ProviderKey},
+    ids::{AccountId, ContactId, MessageId, ProviderKey},
+    people::{CanonicalEmail, PeopleSnapshot},
+    recipient::{RecipientCoverage, RecipientObservation},
     search_index::{
         EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow, MembershipRow,
     },
@@ -32,12 +34,14 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
+    CachedContactPhoto, ContactSourceAvailability,
     apply::{DerivedWrite, FtsField, OccurrenceRow, StorableObject},
     error::{Result, StoreError},
     lease::{Clock, FenceToken, LeaseRequest},
     outbox::PendingOpState,
 };
 
+mod contact;
 mod read;
 mod write;
 
@@ -189,6 +193,22 @@ struct Inner {
     ops: BTreeMap<PendingOpId, OpCell>,
     idempotency: HashMap<(AccountId, IdempotencyKey), PendingOpId>,
     next_op: u64,
+    contact_generation: u64,
+    people: PeopleSnapshot,
+    observations: BTreeMap<(AccountId, MessageId, CanonicalEmail), ObservationCell>,
+    recipient_versions: BTreeMap<AccountId, u32>,
+    recipient_coverage: BTreeMap<AccountId, RecipientCoverage>,
+    contact_availability: BTreeMap<SyncScope, ContactSourceAvailability>,
+    /// Keyed by (account, contact, **resource**) — a card can carry several media
+    /// resources and they must not share a cache entry.
+    contact_photos: BTreeMap<(AccountId, ContactId, String), CachedContactPhoto>,
+}
+
+/// One durable observation row. Suppression survives an idempotent replay.
+#[derive(Debug, Clone)]
+struct ObservationCell {
+    observation: RecipientObservation,
+    suppressed: bool,
 }
 
 /// An in-memory [`Store`](crate::Store) + [`StoreRead`](crate::StoreRead),
@@ -215,6 +235,13 @@ impl<C: Clock> MemStore<C> {
                 ops: BTreeMap::new(),
                 idempotency: HashMap::new(),
                 next_op: 0,
+                contact_generation: 0,
+                people: PeopleSnapshot::empty(),
+                observations: BTreeMap::new(),
+                recipient_versions: BTreeMap::new(),
+                recipient_coverage: BTreeMap::new(),
+                contact_availability: BTreeMap::new(),
+                contact_photos: BTreeMap::new(),
             }),
         }
     }

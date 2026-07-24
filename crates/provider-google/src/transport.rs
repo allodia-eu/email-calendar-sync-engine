@@ -36,6 +36,15 @@ pub(crate) trait GoogleTransport: Send + Sync {
     /// Fetches `url`, returning the parsed JSON or a classified error.
     async fn get(&self, url: &str) -> Result<Value, GoogleError>;
 
+    /// Fetches authenticated raw bytes from a Google API URL.
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GoogleError>;
+
+    /// Fetches raw bytes **without** the account's OAuth token, for a URL that came
+    /// from remote content rather than from the API root — a People `photos[].url`
+    /// points at `googleusercontent.com`, which serves it publicly. Sending the token
+    /// off-origin would hand it to whatever host the payload names.
+    async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GoogleError>;
+
     /// `POST`s `body` with `content_type` to `url`, returning the parsed JSON response
     /// body when the server sent one — an action answering with an empty body yields
     /// `None`. A non-2xx becomes a classified [`GoogleError::Status`]. Gmail's
@@ -144,6 +153,21 @@ impl GoogleClient {
     /// Returns a classified [`GoogleError`] (a non-2xx is [`GoogleError::Status`]).
     pub(crate) async fn get(&self, url: &str) -> Result<Value, GoogleError> {
         self.transport.get(url).await
+    }
+
+    /// Raw byte fetch, authenticated **only on the API origin**.
+    ///
+    /// Photo URLs reach this from the People payload (`photos[].url`), i.e. from
+    /// remote content, and Google serves them off `googleusercontent.com` — a
+    /// different origin that needs no token. Gating on the origin keeps the OAuth
+    /// access token from travelling to whatever host a payload names, while every
+    /// base-rooted API call authenticates exactly as before.
+    pub(crate) async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GoogleError> {
+        if engine_provider::same_origin(url, &self.base) {
+            self.transport.get_bytes(url).await
+        } else {
+            self.transport.get_bytes_unauthenticated(url).await
+        }
     }
 
     /// Authenticated `POST` of `body` with `content_type`. Returns the parsed JSON

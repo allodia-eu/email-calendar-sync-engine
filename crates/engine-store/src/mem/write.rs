@@ -6,13 +6,13 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    sync::{SyncScope, SyncState, SyncUpdate},
+    sync::{ObjectKind, SyncScope, SyncState, SyncUpdate},
     time::ExpansionWindow,
     write::{PendingOp, PendingOpId, PendingOutcome, ResourceKey},
 };
 use serde::Serialize;
 
-use super::{Inner, MemStore, OpCell, ScopeCell, expiry_after, is_live};
+use super::{Inner, MemStore, ObservationCell, OpCell, ScopeCell, expiry_after, is_live};
 use crate::{
     apply::{ApplyBatch, DerivedWrite, StorableObject, SyncApplied},
     error::{Result, StoreError},
@@ -62,7 +62,14 @@ impl<C: Clock> Store for MemStore<C> {
         T: StorableObject + Serialize + Send + Sync,
     {
         let mut inner = self.lock();
-        let Inner { scopes, ops, .. } = &mut *inner;
+        let is_contact = lease.scope().object_kind() == Some(ObjectKind::ContactCard);
+        let Inner {
+            scopes,
+            ops,
+            contact_generation,
+            observations,
+            ..
+        } = &mut *inner;
         let cell = scopes
             .get_mut(lease.scope())
             .ok_or(StoreError::StaleLease)?;
@@ -111,6 +118,22 @@ impl<C: Clock> Store for MemStore<C> {
                 op.lease_expiry = None;
                 applied.reconciled += 1;
             }
+        }
+
+        for observation in batch.recipient_observations {
+            let key = (
+                observation.account.clone(),
+                observation.source_message.clone(),
+                observation.email.clone(),
+            );
+            observations.entry(key).or_insert_with(|| ObservationCell {
+                observation: observation.clone(),
+                suppressed: false,
+            });
+        }
+
+        if is_contact && (applied.upserted > 0 || applied.tombstoned > 0) {
+            *contact_generation = contact_generation.saturating_add(1);
         }
 
         // A streaming page (`next_state == None`) leaves the cursor unchanged.

@@ -368,3 +368,22 @@ specifics they implement against the Stalwart fixture. Read it before touching
 - **Fuzzing:** `fuzz/` is a separate cargo-fuzz workspace (`cargo +nightly fuzz
   run jmap_parse`) driving `provider_jmap::fuzz_parse` (behind the `fuzzing`
   feature) over the JSON parse + normalize pipeline.
+
+## JMAP Contacts
+
+RFC 9610's `urn:ietf:params:jmap:contacts` capability supplies a separate primary
+account. `AddressBook/get|changes` and `ContactCard/get|changes` map onto normal
+container/card scopes while preserving non-empty multi-address-book membership,
+JSContact property-map ids, group cards, rights, extensions, and raw JSContact.
+
+`ContactCard/set` implements create/update/destroy. Update is the server's
+PatchObject and does not rebuild the stored document. There is no enforceable
+per-object revision guard, so contact writes advertise `WriteGuard::Absent`; an
+account-wide `ifInState` is not presented as lost-update protection.
+Blob-backed media is fetched through the session download template on demand.
+For host-facing writes, connect a source adapter per discovered book and
+call `JmapProvider::with_contact_address_book` with that opaque id; destination
+validation must never assume that the server's default book id is literally
+`default`. Programmatic cards and normalized patch values are encoded back to
+JSContact names and property-map metadata; raw-backed creates retain unknown
+extensions while dropping only the immutable server `id`.

@@ -1,6 +1,6 @@
 //! `provider-graph` — the Microsoft Graph (v1.0) read/sync provider.
 //!
-//! Graph is the cloud-API counterpart to `provider-jmap` (OAuth bearer + JSON over
+//! Graph is the Microsoft mail/contact counterpart to `provider-jmap` (OAuth bearer + JSON over
 //! HTTP), but its mail sync is shaped like IMAP/CalDAV, not JMAP: message `delta`
 //! is rooted at a **folder** (`/me/mailFolders/{id}/messages/delta`) with a
 //! per-folder `deltaLink` cursor — there is **no** account-wide message delta — so
@@ -38,6 +38,9 @@ mod cal_normalize;
 mod cal_recur;
 mod cal_write;
 mod calendar;
+mod contact;
+mod contact_normalize;
+mod contact_write;
 mod error;
 mod fetch;
 mod http_transport;
@@ -51,10 +54,13 @@ mod transport;
 mod windows_zones;
 
 #[cfg(test)]
+mod contact_tests;
+#[cfg(test)]
 mod test_support;
 
 pub use cal_fetch::CalendarWindow;
 pub use calendar::GraphCalendarProvider;
+pub use contact::{GraphContactProvider, GraphContactSource};
 pub use error::GraphError;
 pub use principal::MailboxPrincipal;
 pub use provider::GraphProvider;

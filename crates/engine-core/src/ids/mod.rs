@@ -206,11 +206,13 @@ macro_rules! content_id {
 // textual macro scoping (they are declared before the `mod` statements).
 mod account;
 mod calendar;
+mod contact;
 mod dav;
 mod mail;
 
 pub use account::AccountId;
 pub use calendar::{CalendarId, EventId, Uid};
+pub use contact::{AddressBookId, ContactId, PersonId};
 pub use dav::DavCollectionId;
 pub use mail::{BlobId, MailboxId, MessageId, MessageIdHeader, PartId, ThreadId};
 

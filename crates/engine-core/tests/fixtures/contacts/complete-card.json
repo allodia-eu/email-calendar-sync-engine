@@ -1,0 +1,48 @@
+{
+  "@type": "Card",
+  "version": "1.0",
+  "uid": "urn:uuid:3334f1a8-1b42-4db1-937d-a65b01345416",
+  "kind": "individual",
+  "name": {
+    "components": [
+      { "kind": "given", "value": "山田" },
+      { "kind": "surname", "value": "太郎" }
+    ],
+    "full": "山田 太郎",
+    "sortAs": { "surname": "Yamada", "given": "Taro" }
+  },
+  "nicknames": {
+    "n1": { "name": "Taro", "contexts": { "private": true } }
+  },
+  "emails": {
+    "work": { "address": "Taro@例え.テスト", "contexts": { "work": true }, "pref": 1 },
+    "home": { "address": "taro@example.net", "contexts": { "private": true } }
+  },
+  "phones": {
+    "mobile": { "number": "tel:+81-90-1234-5678", "features": { "mobile": true } }
+  },
+  "addresses": {
+    "home": {
+      "full": "〒100-0001 東京都千代田区千代田1-1",
+      "countryCode": "JP",
+      "coordinates": "geo:35.6852,139.7528",
+      "contexts": { "private": true }
+    }
+  },
+  "organizations": {
+    "org": { "name": "Example 株式会社", "units": [{ "name": "研究開発" }] }
+  },
+  "titles": {
+    "title": { "name": "主任研究員", "organizationId": "org" }
+  },
+  "notes": {
+    "note": { "note": "Prefers email." }
+  },
+  "media": {
+    "photo": { "kind": "photo", "uri": "https://contacts.example.test/photo/3334" }
+  },
+  "x-acme-profile": {
+    "opaque": true,
+    "order-sensitive": ["keep", "verbatim"]
+  }
+}

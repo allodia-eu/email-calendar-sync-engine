@@ -94,6 +94,39 @@ fn seed_two_accounts() -> Connection {
             (account, key, body_term),
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO contact_source_availability (scope_key, available)
+             VALUES (?1, 1)",
+            [scope],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO contact_photo
+                 (account, contact, resource, fingerprint, content_hash, fetched_at)
+             VALUES (?1, ?2, 'res-1', 'revision', 'hash', '2026-01-01T00:00:00Z')",
+            (account, key),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO recipient_observation
+                 (account, source_message, email, name, sent_at)
+             VALUES (?1, ?2, 'recipient@example.test', 'Recipient',
+                     '2026-01-01T00:00:00Z')",
+            (account, key),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO recipient_coverage
+                 (account, window_json, sent_collection_present)
+             VALUES (?1, '{\"kind\":\"full\"}', 1)",
+            [account],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO recipient_index_state (account, version) VALUES (?1, 1)",
+            [account],
+        )
+        .unwrap();
     }
     conn
 }

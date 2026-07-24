@@ -10,7 +10,7 @@
 #   1. start the server (bootstrap mode if the store is empty),
 #   2. complete setup via `x:Bootstrap/set` (no ACME/auto-TLS), restart to full,
 #   3. create the test accounts via `x:Account/set` (idempotent),
-#   4. seed mail (IMAP over TLS) + calendars (CalDAV over plain HTTP),
+#   4. seed mail (IMAP over TLS), calendars (CalDAV), and contacts (CardDAV),
 #   5. write a readiness marker and run the server in the foreground.
 #
 # It is idempotent: on a re-run against an already-bootstrapped data volume it

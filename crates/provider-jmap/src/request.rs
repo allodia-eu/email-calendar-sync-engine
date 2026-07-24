@@ -23,6 +23,8 @@ pub(crate) mod capability {
     pub(crate) const SUBMISSION: &str = "urn:ietf:params:jmap:submission";
     /// `urn:ietf:params:jmap:calendars` (JMAP Calendars draft).
     pub(crate) const CALENDARS: &str = "urn:ietf:params:jmap:calendars";
+    /// `urn:ietf:params:jmap:contacts` (RFC 9610).
+    pub(crate) const CONTACTS: &str = "urn:ietf:params:jmap:contacts";
 }
 
 /// One method call: `[name, arguments, callId]`.

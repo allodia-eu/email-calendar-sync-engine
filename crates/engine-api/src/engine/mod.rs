@@ -21,11 +21,16 @@ use store_sqlite::SqliteStore;
 use crate::{ApiError, clock::SystemClock};
 
 mod calendar_writes;
+mod contact_query;
+mod contacts;
 mod reads;
 mod sync;
 mod writes;
 
 pub use calendar_writes::{CalendarDelete, CalendarWrite, Reconciled};
+pub use contacts::{
+    ContactDelete, ContactReconciled, ContactWrite, PeoplePage, PeopleQuery, RecipientSuggestions,
+};
 
 /// The worker identity this engine stamps on every lease it claims.
 ///

@@ -102,6 +102,8 @@ fn tombstoning_an_object_cascades_to_its_derived_rows() {
         &delta_change("e1"),
         &derived,
         &[],
+        &[],
+        false,
         Some("c1"),
     )
     .unwrap();
@@ -121,6 +123,8 @@ fn tombstoning_an_object_cascades_to_its_derived_rows() {
         &remove,
         &DerivedWrite::empty(),
         &[],
+        &[],
+        false,
         Some("c2"),
     )
     .unwrap();
@@ -146,6 +150,8 @@ fn replaying_occurrences_does_not_duplicate_rows() {
         &delta_change("e1"),
         &derived,
         &[],
+        &[],
+        false,
         Some("c1"),
     )
     .unwrap();
@@ -156,6 +162,8 @@ fn replaying_occurrences_does_not_duplicate_rows() {
         &delta_change("e1"),
         &derived,
         &[],
+        &[],
+        false,
         Some("c1"),
     )
     .unwrap();
@@ -177,6 +185,8 @@ fn removed_derived_keys_clear_rows_but_keep_the_object() {
         &delta_change("e1"),
         &derived,
         &[],
+        &[],
+        false,
         Some("c1"),
     )
     .unwrap();
@@ -209,6 +219,8 @@ fn overridden_and_base_occurrences_coexist() {
         &delta_change("e1"),
         &derived,
         &[],
+        &[],
+        false,
         Some("c1"),
     )
     .unwrap();
@@ -238,6 +250,8 @@ fn re_expansion_updates_version_and_keeps_instants_byte_stable() {
         &delta_change("e1"),
         &initial,
         &[],
+        &[],
+        false,
         Some("c1"),
     )
     .unwrap();

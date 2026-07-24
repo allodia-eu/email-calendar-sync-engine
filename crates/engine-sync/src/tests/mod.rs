@@ -26,7 +26,9 @@ use engine_provider::{
     Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
-use engine_store::{LeaseRequest, ManualClock, PendingOpState, Store, StoreRead, WorkerId};
+use engine_store::{
+    ContactStore, LeaseRequest, ManualClock, PendingOpState, Store, StoreRead, WorkerId,
+};
 use store_sqlite::SqliteStore;
 
 use super::{
@@ -38,6 +40,7 @@ use super::{
 
 mod calendar_sync;
 mod calendar_write;
+mod contact_sync;
 mod mail_edit;
 mod mail_sync;
 mod streaming;

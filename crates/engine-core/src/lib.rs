@@ -2,8 +2,8 @@
 //! sync engine.
 //!
 //! This crate is deliberately **I/O-free and async-free**. It defines the
-//! normalized mail and calendar types, the identity newtypes that keep account,
-//! object, and collection keys from being mixed by accident, and the contract
+//! normalized mail, calendar, contact, people, and recipient types; identity newtypes that keep
+//! account, object, and collection keys from being mixed by accident, and the contract
 //! types (`SyncScope`, `SyncState`, `SyncUpdate`, `SearchCoverage`, `PendingOp`)
 //! that both stores and sync orchestration consume. Network access, runtime,
 //! storage, recurrence *expansion*, and text extraction live in other crates;
@@ -14,7 +14,7 @@
 //! - **Provider object identity and collection membership are separate axes.** A stored mail object
 //!   is a provider object, not a deduplicated RFC 5322 message; membership in a
 //!   mailbox/label/calendar is a set, modeled independently from identity. See [`ids`] and the
-//!   mail/calendar modules.
+//!   domain modules.
 //! - **Keywords, membership, and collection role are three distinct axes.**
 //!   `$seen`/`\Flagged`/Gmail `STARRED` are keywords; folders/labels/calendars are membership;
 //!   inbox/sent/drafts/trash are normalized roles.
@@ -33,6 +33,7 @@ mod macros;
 
 pub mod attachment;
 pub mod calendar;
+pub mod contact;
 pub mod coverage;
 pub mod error;
 pub mod extended;
@@ -40,7 +41,9 @@ pub mod ids;
 pub mod mail;
 pub mod membership;
 pub mod patch;
+pub mod people;
 pub mod raw;
+pub mod recipient;
 pub mod scheduling;
 pub mod search_index;
 pub mod sync;

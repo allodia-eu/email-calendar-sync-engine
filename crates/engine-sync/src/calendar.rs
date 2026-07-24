@@ -39,7 +39,7 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
     time::{ExpansionWindow, TimeZoneId},
 };
-use engine_provider::{Provider, ProviderError, ScopeSync};
+use engine_provider::{Provider, ProviderError};
 use engine_recurrence::{Horizon, expand};
 use engine_store::{DerivedWrite, LeaseRequest, Store, StoreRead, SyncApplied, WorkerId};
 
@@ -105,7 +105,9 @@ where
     S: Store + StoreRead,
 {
     let req = LeaseRequest::new(worker, ttl);
-    let calendars = run_scope(store, account, &CalendarScope(provider), &req).await?;
+    let (calendars, ()) = run_scope(store, account, &CalendarScope(provider), &req)
+        .await?
+        .into_applied();
 
     // The store's window wins. `horizon`/`host_zone` seed it only when the scope has never
     // been expanded, so a first sync still materializes something without the host having
@@ -207,7 +209,7 @@ where
         window: window.clone(),
         unexpandable: Mutex::default(),
     };
-    let applied = run_scope(store, account, &scope, req).await?;
+    let (applied, ()) = run_scope(store, account, &scope, req).await?.into_applied();
     Ok(EventSyncReport {
         applied,
         unexpandable: scope
@@ -222,6 +224,8 @@ struct CalendarScope<'p, P>(&'p P);
 
 #[async_trait::async_trait]
 impl<P: Provider> ScopeSyncer for CalendarScope<'_, P> {
+    type Halt = core::convert::Infallible;
+    type Meta = ();
     type Object = Calendar;
 
     fn scope(&self, account: &AccountId) -> SyncScope {
@@ -232,8 +236,11 @@ impl<P: Provider> ScopeSyncer for CalendarScope<'_, P> {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> Result<ScopeSync<Calendar>, ProviderError> {
-        self.0.sync_calendars(account, cursor).await
+    ) -> Result<crate::ScopeFetch<Calendar, (), Self::Halt>, ProviderError> {
+        self.0
+            .sync_calendars(account, cursor)
+            .await
+            .map(|sync| crate::ScopeFetch::Proceed { sync, meta: () })
     }
 
     fn derive(&self, _update: &SyncUpdate<Calendar>) -> DerivedWrite {
@@ -257,6 +264,8 @@ struct EventScope<'p, P> {
 
 #[async_trait::async_trait]
 impl<P: Provider> ScopeSyncer for EventScope<'_, P> {
+    type Halt = core::convert::Infallible;
+    type Meta = ();
     type Object = Event;
 
     fn scope(&self, account: &AccountId) -> SyncScope {
@@ -267,8 +276,11 @@ impl<P: Provider> ScopeSyncer for EventScope<'_, P> {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> Result<ScopeSync<Event>, ProviderError> {
-        self.provider.sync_events(account, cursor).await
+    ) -> Result<crate::ScopeFetch<Event, (), Self::Halt>, ProviderError> {
+        self.provider
+            .sync_events(account, cursor)
+            .await
+            .map(|sync| crate::ScopeFetch::Proceed { sync, meta: () })
     }
 
     fn derive(&self, update: &SyncUpdate<Event>) -> DerivedWrite {

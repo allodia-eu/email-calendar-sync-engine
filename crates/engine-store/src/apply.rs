@@ -21,7 +21,9 @@ use core::fmt;
 // vocabulary stays discoverable in one place.
 pub use engine_core::search_index::{FtsField, FtsRow};
 use engine_core::{
+    contact::{AddressBook, ContactCard},
     ids::ProviderKey,
+    recipient::RecipientObservation,
     search_index::{
         EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailIndexRow,
         MailProjection, MembershipRow,
@@ -66,6 +68,18 @@ impl StorableObject for engine_core::mail::Mailbox {
 }
 
 impl StorableObject for engine_core::calendar::Calendar {
+    fn provider_key(&self) -> &ProviderKey {
+        self.id.key()
+    }
+}
+
+impl StorableObject for ContactCard {
+    fn provider_key(&self) -> &ProviderKey {
+        self.id.key()
+    }
+}
+
+impl StorableObject for AddressBook {
     fn provider_key(&self) -> &ProviderKey {
         self.id.key()
     }
@@ -290,6 +304,8 @@ pub struct ApplyBatch<'a, T> {
     pub derived: &'a DerivedWrite,
     /// Pending-op reconciliations to resolve in the same transaction.
     pub reconcile: &'a [PendingReconciliation],
+    /// Sent-recipient observations committed atomically with this object page.
+    pub recipient_observations: &'a [RecipientObservation],
     /// The cursor to advance to on commit, or `None` to **leave the scope cursor
     /// unchanged**.
     ///
@@ -327,8 +343,16 @@ impl<'a, T> ApplyBatch<'a, T> {
             update,
             derived,
             reconcile,
+            recipient_observations: &[],
             next_state,
         }
+    }
+
+    /// Attaches observations that must commit atomically with the object page.
+    #[must_use]
+    pub fn with_recipient_observations(mut self, observations: &'a [RecipientObservation]) -> Self {
+        self.recipient_observations = observations;
+        self
     }
 }
 

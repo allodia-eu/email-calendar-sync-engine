@@ -10,9 +10,10 @@
 //!    server is opt-in; absence is the skip signal.
 //! 2. **Readiness.** [`Harness::wait_until_ready`] polls the plaintext `/healthz/live` endpoint — a
 //!    real signal, not a sleep.
-//! 3. **Probes.** Minimal JMAP / IMAP / SMTP / CalDAV checks used by the connectivity smoke suite
-//!    (`tests/smoke.rs`). They assert on content the harness controls (subjects, `Message-ID`s,
-//!    iCalendar UIDs, counts), never on server-assigned ids (JMAP id, IMAP UID, DAV ETag).
+//! 3. **Probes.** Minimal JMAP / IMAP / SMTP / CalDAV / CardDAV checks used by the connectivity
+//!    smoke suite (`tests/smoke.rs`). They assert on content the harness controls (subjects,
+//!    `Message-ID`s, iCalendar UIDs, counts), never on server-assigned ids (JMAP id, IMAP UID, DAV
+//!    ETag).
 //!
 //! The deep protocol suites (JMAP `Email/changes`, IMAP `UIDVALIDITY`, …) are
 //! the provider clients' job in build-order steps 4–5; this crate only proves
@@ -47,6 +48,8 @@ const DEFAULT_PASSWORD: &str = "harness-alice-pw";
 /// iCalendar UID of the seeded one-off event (`one-off.ics`), used to fetch a
 /// known calendar resource back over CalDAV.
 pub const ONE_OFF_EVENT_UID: &str = "oneoff-2001";
+/// Stable file name of the seeded person card.
+pub const CONTACT_UID: &str = "contact-3001";
 
 /// Errors raised by the harness probes.
 #[derive(Debug, thiserror::Error)]
@@ -152,6 +155,18 @@ impl Harness {
     #[must_use]
     pub fn event_path(&self, uid: &str) -> String {
         format!("{}{uid}.ics", self.calendar_collection_path())
+    }
+
+    /// Path of the seeded account's default address-book collection.
+    #[must_use]
+    pub fn address_book_collection_path(&self) -> String {
+        format!("/dav/card/{}/default/", self.account)
+    }
+
+    /// CardDAV path of a seeded vCard resource.
+    #[must_use]
+    pub fn contact_path(&self, uid: &str) -> String {
+        format!("{}{uid}.vcf", self.address_book_collection_path())
     }
 
     /// Basic-auth credentials for the seeded account.

@@ -1,0 +1,9 @@
+BEGIN:VCARD
+VERSION:3.0
+FN:Legacy Person
+N:Person;Legacy;;;
+EMAIL;TYPE=INTERNET,WORK:legacy@example.test
+ADR;TYPE=HOME:;;Main Street 1;Amsterdam;;1011AA;NL
+PHOTO;ENCODING=b;TYPE=JPEG:not-valid-base64!!!
+X-LEGACY-UNKNOWN;VALUE=TEXT:must survive
+END:VCARD

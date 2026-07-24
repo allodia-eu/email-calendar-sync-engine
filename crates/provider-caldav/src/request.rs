@@ -27,6 +27,51 @@ pub(crate) const CALENDAR_LIST_PROPFIND: &str = concat!(
     r#"<ic:calendar-color/><c:calendar-description/></d:prop></d:propfind>"#,
 );
 
+/// CardDAV principal/address-book-home discovery.
+pub(crate) const ADDRESS_BOOK_PRINCIPAL_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
+    r#"<d:prop><d:current-user-principal/><a:addressbook-home-set/></d:prop></d:propfind>"#,
+);
+
+/// Lists address-book collections and rights.
+pub(crate) const ADDRESS_BOOK_LIST_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav" "#,
+    r#"xmlns:cs="http://calendarserver.org/ns/">"#,
+    r#"<d:prop><d:resourcetype/><d:displayname/><d:sync-token/><cs:getctag/>"#,
+    r#"<d:current-user-privilege-set/><a:addressbook-description/></d:prop></d:propfind>"#,
+);
+
+/// CardDAV RFC 6578 sync report requesting vCard payloads.
+pub(crate) fn address_book_sync_report(sync_token: &str) -> String {
+    format!(
+        concat!(
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            r#"<d:sync-collection xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
+            r#"<d:sync-token>{token}</d:sync-token><d:sync-level>1</d:sync-level>"#,
+            r#"<d:prop><d:getetag/><a:address-data content-type="text/vcard" version="4.0"/>"#,
+            r#"</d:prop></d:sync-collection>"#,
+        ),
+        token = xml_escape(sync_token),
+    )
+}
+
+/// Reads the collection CTag when RFC 6578 sync is unavailable.
+pub(crate) const ADDRESS_BOOK_CTAG_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">"#,
+    r#"<d:prop><cs:getctag/></d:prop></d:propfind>"#,
+);
+
+/// Full CardDAV addressbook-query used by the CTag fallback.
+pub(crate) const ADDRESS_BOOK_QUERY_REPORT: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<a:addressbook-query xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
+    r#"<d:prop><d:getetag/><a:address-data/></d:prop>"#,
+    r#"<a:filter/></a:addressbook-query>"#,
+);
+
 /// Builds a `sync-collection` REPORT body (RFC 6578 §3.2) for the given prior
 /// `sync_token` — empty for an initial (full) sync.
 pub(crate) fn sync_collection_report(sync_token: &str) -> String {

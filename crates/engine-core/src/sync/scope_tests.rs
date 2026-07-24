@@ -245,6 +245,53 @@ fn google_calendar_list_is_distinct_from_a_calendar_and_roundtrips() {
 }
 
 #[test]
+fn contact_scopes_classify_containers_and_cards() {
+    use ObjectKind::{AddressBook, ContactCard};
+    let a = account();
+    let book = AddressBookId::try_from("personal").unwrap();
+    let card_scopes = [
+        SyncScope::JmapType {
+            account: a.clone(),
+            data_type: JmapDataType::ContactCard,
+        },
+        SyncScope::GraphContacts {
+            account: a.clone(),
+            address_book: book.clone(),
+        },
+        SyncScope::GraphOrgContacts { account: a.clone() },
+        SyncScope::GraphDirectoryUsers { account: a.clone() },
+        SyncScope::GoogleContacts { account: a.clone() },
+        SyncScope::GoogleOtherContacts { account: a.clone() },
+        SyncScope::GoogleDirectoryPeople { account: a.clone() },
+        SyncScope::GoogleContactGroups { account: a.clone() },
+        SyncScope::CardDavAddressBook {
+            account: a.clone(),
+            address_book: book,
+        },
+    ];
+    for scope in card_scopes {
+        assert_eq!(scope.object_kind(), Some(ContactCard), "{scope:?}");
+        assert_eq!(scope.search_domain(), Some(SearchDomain::Contacts));
+        let json = serde_json::to_string(&scope).unwrap();
+        assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
+    }
+
+    let container_scopes = [
+        SyncScope::JmapType {
+            account: a.clone(),
+            data_type: JmapDataType::AddressBook,
+        },
+        SyncScope::GraphContactFolderList { account: a.clone() },
+        SyncScope::GoogleContactSourceList { account: a.clone() },
+        SyncScope::CardDavAddressBookList { account: a },
+    ];
+    for scope in container_scopes {
+        assert_eq!(scope.object_kind(), Some(AddressBook), "{scope:?}");
+        assert_eq!(scope.search_domain(), None);
+    }
+}
+
+#[test]
 fn dav_collection_list_is_distinct_from_a_collection_and_roundtrips() {
     // The calendar/address-book-list container scope must never collide with
     // the events/contacts scope of any single collection, or the two would

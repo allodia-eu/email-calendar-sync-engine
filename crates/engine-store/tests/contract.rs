@@ -10,4 +10,9 @@ async fn in_memory_store_satisfies_contract() {
         (store, clock)
     })
     .await;
+    contract::run_contacts(|| {
+        let clock = ManualClock::new("2026-01-01T00:00:00Z".parse().unwrap());
+        (MemStore::new(clock.clone()), clock)
+    })
+    .await;
 }

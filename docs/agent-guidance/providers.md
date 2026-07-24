@@ -21,8 +21,9 @@ Recommended first provider spine:
    primitive (step 5d) are implemented** in `engine_core::scheduling` +
    `provider_caldav::imip` (`calendar-semantics.md`/`caldav.md`); the residual
    scheduling deferrals (mail-sync wiring, Scheduling-Inbox `REPORT`, client-iMIP
-   SMTP delivery, `ClientImip` persistence) and **CardDAV/contacts** land after
-   step 5.
+   SMTP delivery, `ClientImip` persistence) remain. **CardDAV contacts are
+   implemented** as a separate `CardDavProvider` sharing only the DAV transport
+   with CalDAV.
 4. External cloud providers. **Microsoft Graph mail read/sync is implemented**
    under `provider-graph`; `graph.md` is authoritative. Graph's mail sync is
    per-folder (no account-wide message delta), so it follows the IMAP/CalDAV
@@ -39,8 +40,11 @@ Recommended first provider spine:
    `GmailMessages` scope, no per-folder fan-out; labels are multi-membership), and
    Google Calendar is **IANA-native** with **RRULE masters** (no Windows-zone table,
    no pre-expanded `calendarView`). Gmail has read/sync + on-demand source + writes +
-   send; Google Calendar has read/sync + `If-Match`-guarded writes. Same replay +
-   token-gated live validation as Graph.
+   send; Google Calendar has read/sync + `If-Match`-guarded writes. Graph
+   personal/org/directory contacts and Google Connections/Other
+   Contacts/directory/groups are implemented as independent contact sources,
+   with optional permissions degrading per source. Same replay + token-gated
+   live validation pattern as mail/calendar.
 5. Optional further external-provider smoke tests against real hosted or
    self-managed servers.
 
@@ -49,6 +53,13 @@ If product pressure changes the order, the domain model tests still need JMAP an
 ## Provider Contract
 
 - Provider adapters return normalized `SyncUpdate` values plus opaque next cursors.
+- Contact adapters implement the separate `ContactsProvider` contract. Discovery
+  and source-bound card sync are separate scopes; writes carry neutral
+  `ContactDraft`/`ContactPatch` intent, name one destination, and refetch the
+  server-canonical card without advancing the normal cursor. Capabilities report
+  reads, groups, photos, and contact-write guard strength independently. JMAP and
+  Graph are `WriteGuard::Absent`; Google and CardDAV are
+  `WriteGuard::Enforced`.
 - The streaming primitive is `stream_email(account, cursor, window, fetch_batch, chunk_size) -> EmailStream`: a pull stream of `EmailChunk`s for one sync pass. Each chunk carries a `PassMode` (additive or reconcile, constant across the pass), its `changed` upserts and explicit `removed` keys, a `present` id set (reconcile only — the orchestrator accumulates it to tombstone at end of pass), an optional `total`, and an `advance_to` cursor disposition: additive chunks checkpoint the cursor on **every** commit (so a killed cold backfill resumes where it stopped), reconcile chunks hold it until a final tombstoning chunk. The two knobs are decoupled (`store-and-sync.md`): `fetch_batch` bounds each network round trip, `chunk_size` bounds how many messages a chunk commits/reports — a large batch with a small chunk gives *both* few round trips *and* row-as-it-arrives commits. `sync_email` is a **default drain** over the stream (one combined `SyncUpdate`), so a new adapter implements one streaming method and gets both incremental streaming and whole-scope fetch for free; it drains under `default_sync_window` (the provider's default depth, e.g. an IMAP/Graph `with_since`), while the streaming path takes its `window` **per sync** so a host changes depth without reconnecting.
 - `PageToken`/`SyncPage`/`SyncKind` are provider-**internal** paging helpers (an HTTP adapter re-chunks its own whole-page fetch into the stream with `split_page`), not trait surface. Whatever resumes an adapter's fetch — JMAP query position or `Email/changes` state, IMAP UID range, Gmail/Graph page token or delta link — the adapter encodes and decodes it itself; the engine only round-trips the opaque `SyncState` cursor.
 - Adapters own protocol pagination, retries, throttling, and provider quirks. Chunks should be ordered so the first ones are the most useful (mail newest-first), since a streaming host renders them as they commit.
@@ -77,7 +88,9 @@ Use Stalwart Docker for deterministic local and CI tests across JMAP, IMAP, SMTP
 - Mailboxes/folders and labels where supported.
 - Messages with duplicate/missing Message-ID cases, attachments, flags/keywords, and moved/copied messages.
 - Calendars with one-off events, recurring events, exceptions, attendees, and virtual locations.
-- Contacts/address book entries if CardDAV is in scope. (Deferred: contacts land after step 5, so the step-3 seed covers mail + calendar only; CardDAV is added without rework when contacts arrive.)
+- Contacts/address-book entries for shared JMAP/CardDAV parity. The generic and
+  adapter behavior is covered offline now; adding these objects to the live
+  Stalwart seed remains the harness follow-up tracked in `stalwart-harness.md`.
 
 The JMAP suite must cover (all **implemented** — see `jmap.md`):
 - Session discovery and capability detection.
@@ -119,6 +132,37 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
 - CalDAV/CardDAV sync uses RFC 6578 sync-token where supported; otherwise CTag plus per-resource ETag diffing. (**Implemented** for the sync-token path in `provider-caldav`; the CTag fallback is a documented follow-up — `caldav.md`.)
 - CalDAV writes use ETags and `If-Match`; conflicts refetch before merge. (**Implemented** in `provider-caldav` — the neutral create/patch/delete verbs render as a conditional `PUT` (`If-None-Match`/`If-Match`) + `DELETE`, outbox-driven by `engine_sync::create_calendar_event`/`patch_calendar_event`/`delete_calendar_event`, a `412` → `Conflict`; `caldav.md`. This is the transport that can actually promise the guard — `WriteGuard::Enforced`.)
 - iTIP/iMIP scheduling is distinct from ordinary event storage. (**Implemented** for the inbound half: detect (`find_calendar_part`) → parse (`provider_caldav::imip::parse`) → `reconcile`/trust → apply, and the RSVP write primitive (`set_my_partstat` → conditional `PUT` via the existing outbox driver). The CalDAV Scheduling-Inbox `REPORT`, client-iMIP SMTP delivery, and `ClientImip` local-origin persistence stay deferred; `calendar-semantics.md`.)
+
+## Credentials and remote-content URLs
+
+Some URLs an adapter fetches are **not** server-issued endpoints — they come from
+remote *content* that a hostile or compromised source controls: a vCard
+`PHOTO;VALUE=uri`, a JSContact resource `uri`, a Graph/People photo link. Such a URL
+may name any host.
+
+**Never attach the account's `Authorization` header to a URL without first checking
+its origin.** Use `engine_provider::same_origin(url, base)`: credentials travel only
+to the origin the account is configured against; anything else is fetched
+anonymously. This costs nothing in practice — Google serves contact photos publicly
+from `googleusercontent.com`, and a card's relative href resolves onto the account's
+own origin — while removing the path by which one shared address book could exfiltrate
+a user's CardDAV password or OAuth token.
+
+Two traps this rule exists for:
+- `Url::join(base, href)` returns an **absolute foreign URL unchanged**, so resolving
+  an href against the base does not confine it to the base.
+- A same-origin *prefix* is not a same-origin host: `dav.example.com.evil.test` must
+  not match `dav.example.com`. `same_origin` compares scheme, host, and effective port
+  for equality — never a prefix or substring.
+
+Adapters therefore expose a `get_bytes_unauthenticated` alongside the authenticated
+byte fetch, and the client picks between them by origin.
+
+Placeholder substitution into a URL **template** (RFC 8620 §6.2 `downloadUrl`) has the
+same shape of hazard: percent-encode every substituted value (RFC 6570 level-1 simple
+expansion) so a payload-supplied media type cannot introduce `?`, `#`, `&`, or `/../`
+and re-point the request. JMAP ids are already unreserved, so encoding is a no-op for
+them; it is the non-id values that matter.
 
 ## Fixtures
 

@@ -97,6 +97,20 @@ impl HttpTransport {
         self.http_version.record(response.version());
         Ok(response)
     }
+
+    /// Turns a byte response into its body, classifying a non-2xx. Shared by the
+    /// authenticated and anonymous byte paths so they differ in exactly one thing:
+    /// whether the bearer token is attached.
+    async fn collect_bytes(resp: reqwest::Response) -> Result<Vec<u8>, GraphError> {
+        let status = resp.status();
+        if !status.is_success() {
+            // The `$value` error body is JSON like any other Graph error, so classify it
+            // the same way (an expired/moved message → the caller re-syncs and retries).
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GraphError::status(status.as_u16(), body));
+        }
+        Ok(resp.bytes().await?.to_vec())
+    }
 }
 
 /// Turns a successful write response into its parsed JSON body, or `None` when the
@@ -139,14 +153,15 @@ impl GraphTransport for HttpTransport {
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {
         let resp = self.send(url, None).await?;
-        let status = resp.status();
-        if !status.is_success() {
-            // The `$value` error body is JSON like any other Graph error, so classify it
-            // the same way (an expired/moved message → the caller re-syncs and retries).
-            let body = resp.text().await.unwrap_or_default();
-            return Err(GraphError::status(status.as_u16(), body));
-        }
-        Ok(resp.bytes().await?.to_vec())
+        Self::collect_bytes(resp).await
+    }
+
+    async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GraphError> {
+        // No `Authorization` and no `Prefer`: this URL came from payload content, not
+        // from the Graph API, so it gets a bare GET.
+        let resp = self.client.get(url).send().await?;
+        self.http_version.record(resp.version());
+        Self::collect_bytes(resp).await
     }
 
     async fn post(
@@ -219,6 +234,47 @@ mod tests {
             }
         });
         format!("http://{addr}")
+    }
+
+    /// Serves one canned response and hands back the raw request head, so a test can
+    /// assert on the headers that actually went out.
+    fn mock_server_capturing(
+        response: String,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<String>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let read = stream.read(&mut buf).unwrap_or(0);
+                *sink.lock().unwrap() = String::from_utf8_lossy(&buf[..read]).into_owned();
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    /// A contact payload can carry a photo URI naming any host. The anonymous byte
+    /// path exists so the account's OAuth token never reaches such a host.
+    #[tokio::test]
+    async fn the_anonymous_byte_path_sends_no_authorization_header() {
+        let (base, seen) = mock_server_capturing(http("200 OK", "bytes"));
+        let transport =
+            HttpTransport::new("super-secret".to_owned(), crate::test_support::tls()).unwrap();
+
+        transport.get_bytes_unauthenticated(&base).await.unwrap();
+
+        let sent = seen.lock().unwrap().to_lowercase();
+        assert!(
+            !sent.contains("authorization"),
+            "OAuth token leaked to a payload-named host: {sent}"
+        );
+        assert!(
+            !sent.contains("super-secret"),
+            "token in the request: {sent}"
+        );
     }
 
     fn http(status_line: &str, body: &str) -> String {

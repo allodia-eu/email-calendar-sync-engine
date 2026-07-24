@@ -81,6 +81,11 @@ impl Props {
         self.resourcetype.contains("calendar")
     }
 
+    /// Whether `<resourcetype>` marked this collection a CardDAV address book.
+    pub(crate) fn is_address_book(&self) -> bool {
+        self.resourcetype.contains("addressbook")
+    }
+
     /// The reported `current-user-privilege-set` (RFC 3744 §5.4), or `None` when the
     /// server did not report one.
     pub(crate) fn privileges(&self) -> Option<&BTreeSet<String>> {

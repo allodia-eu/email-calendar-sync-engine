@@ -32,6 +32,7 @@ const MIGRATIONS: &[&str] = &[
     schema::V4,
     schema::V5,
     schema::V6,
+    schema::V7,
 ];
 
 /// Brings `conn` up to the latest schema version.
@@ -96,6 +97,8 @@ mod tests {
         // The v1 tables exist.
         assert_eq!(table_count(&conn, "object"), 1);
         assert_eq!(table_count(&conn, "pending_op"), 1);
+        assert_eq!(table_count(&conn, "contact_state"), 1);
+        assert_eq!(table_count(&conn, "recipient_observation"), 1);
     }
 
     #[test]

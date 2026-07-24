@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{AccountId, CalendarId, DavCollectionId, MailboxId};
+use crate::ids::{AccountId, AddressBookId, CalendarId, DavCollectionId, MailboxId};
 
 open_enum! {
     /// A JMAP data type, whose `/changes` state is tracked per account
@@ -20,6 +20,10 @@ open_enum! {
         Calendar => "Calendar",
         /// `CalendarEvent` objects.
         CalendarEvent => "CalendarEvent",
+        /// `AddressBook` collections (RFC 9610).
+        AddressBook => "AddressBook",
+        /// `ContactCard` objects (RFC 9610).
+        ContactCard => "ContactCard",
     }
 }
 
@@ -29,7 +33,7 @@ impl JmapDataType {
     /// referential apply order).
     #[must_use]
     pub fn is_container(&self) -> bool {
-        matches!(self, Self::Mailbox | Self::Calendar)
+        matches!(self, Self::Mailbox | Self::Calendar | Self::AddressBook)
     }
 }
 
@@ -141,6 +145,28 @@ pub enum SyncScope {
         /// The calendar.
         calendar: CalendarId,
     },
+    /// Microsoft Graph personal-contact-folder discovery.
+    GraphContactFolderList {
+        /// The account.
+        account: AccountId,
+    },
+    /// Microsoft Graph personal contacts in one folder/root address book.
+    GraphContacts {
+        /// The account.
+        account: AccountId,
+        /// The synthetic root or discovered personal address book.
+        address_book: AddressBookId,
+    },
+    /// Microsoft Graph organizational contacts.
+    GraphOrgContacts {
+        /// The account.
+        account: AccountId,
+    },
+    /// Microsoft Graph directory users.
+    GraphDirectoryUsers {
+        /// The account.
+        account: AccountId,
+    },
     /// A Gmail **account-global** message scope.
     ///
     /// Unlike Graph mail (`delta` per folder) and IMAP (state per mailbox), Gmail's
@@ -188,6 +214,43 @@ pub enum SyncScope {
         /// The calendar.
         calendar: CalendarId,
     },
+    /// Google People synthetic contact-source/address-book discovery.
+    GoogleContactSourceList {
+        /// The account.
+        account: AccountId,
+    },
+    /// Google People owned connections.
+    GoogleContacts {
+        /// The account.
+        account: AccountId,
+    },
+    /// Google People Other Contacts.
+    GoogleOtherContacts {
+        /// The account.
+        account: AccountId,
+    },
+    /// Google Workspace directory people.
+    GoogleDirectoryPeople {
+        /// The account.
+        account: AccountId,
+    },
+    /// Google contact-group cards.
+    GoogleContactGroups {
+        /// The account.
+        account: AccountId,
+    },
+    /// CardDAV per-account address-book discovery.
+    CardDavAddressBookList {
+        /// The account.
+        account: AccountId,
+    },
+    /// CardDAV cards in one address book.
+    CardDavAddressBook {
+        /// The account.
+        account: AccountId,
+        /// The discovered address book.
+        address_book: AddressBookId,
+    },
 }
 
 /// The search domain whose member objects a scope holds — the index a per-account
@@ -198,6 +261,8 @@ pub enum SearchDomain {
     Mail,
     /// Calendar events (the event scalar/participant index, occurrences, full text).
     Calendar,
+    /// Contact cards (the people/contact structured index plus full text).
+    Contacts,
 }
 
 /// The kind of member object a scope holds, so a host can read an account's objects
@@ -212,6 +277,10 @@ pub enum ObjectKind {
     Calendar,
     /// A calendar event.
     Event,
+    /// An address-book/source collection.
+    AddressBook,
+    /// A provider contact card.
+    ContactCard,
 }
 
 impl SyncScope {
@@ -228,10 +297,21 @@ impl SyncScope {
             | Self::GraphFolder { account, .. }
             | Self::GraphCalendarList { account }
             | Self::GraphCalendar { account, .. }
+            | Self::GraphContactFolderList { account }
+            | Self::GraphContacts { account, .. }
+            | Self::GraphOrgContacts { account }
+            | Self::GraphDirectoryUsers { account }
             | Self::GmailMessages { account }
             | Self::GmailLabelList { account }
             | Self::GoogleCalendarList { account }
-            | Self::GoogleCalendar { account, .. } => account,
+            | Self::GoogleCalendar { account, .. }
+            | Self::GoogleContactSourceList { account }
+            | Self::GoogleContacts { account }
+            | Self::GoogleOtherContacts { account }
+            | Self::GoogleDirectoryPeople { account }
+            | Self::GoogleContactGroups { account }
+            | Self::CardDavAddressBookList { account }
+            | Self::CardDavAddressBook { account, .. } => account,
         }
     }
 
@@ -252,6 +332,8 @@ impl SyncScope {
                 JmapDataType::Mailbox => Some(ObjectKind::Mailbox),
                 JmapDataType::CalendarEvent => Some(ObjectKind::Event),
                 JmapDataType::Calendar => Some(ObjectKind::Calendar),
+                JmapDataType::ContactCard => Some(ObjectKind::ContactCard),
+                JmapDataType::AddressBook => Some(ObjectKind::AddressBook),
                 _ => None,
             },
             // Graph mirrors IMAP: a per-folder message scope + a folder-list container.
@@ -271,6 +353,17 @@ impl SyncScope {
             Self::DavCollectionList { .. }
             | Self::GraphCalendarList { .. }
             | Self::GoogleCalendarList { .. } => Some(ObjectKind::Calendar),
+            Self::GraphContacts { .. }
+            | Self::GraphOrgContacts { .. }
+            | Self::GraphDirectoryUsers { .. }
+            | Self::GoogleContacts { .. }
+            | Self::GoogleOtherContacts { .. }
+            | Self::GoogleDirectoryPeople { .. }
+            | Self::GoogleContactGroups { .. }
+            | Self::CardDavAddressBook { .. } => Some(ObjectKind::ContactCard),
+            Self::GraphContactFolderList { .. }
+            | Self::GoogleContactSourceList { .. }
+            | Self::CardDavAddressBookList { .. } => Some(ObjectKind::AddressBook),
         }
     }
 
@@ -286,7 +379,10 @@ impl SyncScope {
         match self.object_kind() {
             Some(ObjectKind::Message) => Some(SearchDomain::Mail),
             Some(ObjectKind::Event) => Some(SearchDomain::Calendar),
-            Some(ObjectKind::Mailbox | ObjectKind::Calendar) | None => None,
+            Some(ObjectKind::ContactCard) => Some(SearchDomain::Contacts),
+            Some(ObjectKind::Mailbox | ObjectKind::Calendar | ObjectKind::AddressBook) | None => {
+                None
+            }
         }
     }
 }

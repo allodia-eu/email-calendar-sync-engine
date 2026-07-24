@@ -19,11 +19,17 @@ futures-util = { workspace = true }
 # for the pure-logic consumers (`engine-sync`, `engine-api`); the three HTTP provider
 # adapters turn it on. `http` is a leaf crate reqwest already resolves.
 http = { workspace = true, optional = true }
+# Only for `same_origin`, the rule that keeps an account's credentials off a host
+# named by remote *content* (a vCard `PHOTO` URI). Optional alongside `http` for the
+# same reason: the pure-logic consumers never speak HTTP. `url` is a leaf crate
+# reqwest already resolves.
+url = { workspace = true, optional = true }
 
 [features]
-# The `HttpVersion::from_http` conversion (and its `http` dependency). Enabled by the
-# reqwest-backed adapters: `provider-jmap`, `provider-caldav`, `provider-graph`.
-http = ["dep:http"]
+# The `HttpVersion::from_http` conversion and the `same_origin` credential guard
+# (and their `http`/`url` dependencies). Enabled by the reqwest-backed adapters:
+# `provider-jmap`, `provider-caldav`, `provider-graph`, `provider-google`.
+http = ["dep:http", "dep:url"]
 
 [dev-dependencies]
 tokio = { workspace = true }

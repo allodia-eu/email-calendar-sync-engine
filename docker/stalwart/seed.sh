@@ -3,12 +3,13 @@
 #
 # Called by entrypoint.sh once the server is a full, bootstrapped server with the
 # test accounts present. Pure curl over the real wire protocols the engine's
-# clients will use (steps 4-5): IMAP for mail, CalDAV for calendars. No Rust
+# clients will use (steps 4-5): IMAP for mail, CalDAV for calendars, and
+# CardDAV for contacts. No Rust
 # provider client and no extra binary.
 #
 # Transport (v0.16 defaults): IMAP is implicit-TLS on 993 — `-k` accepts the
 # server's self-signed test certificate (this never touches a host trust store).
-# CalDAV rides the plaintext HTTP listener on 8080.
+# CalDAV/CardDAV ride the plaintext HTTP listener on 8080.
 #
 # Idempotent: managed mailboxes are cleared before append and CalDAV PUT is
 # idempotent by request URI, so a re-run converges to the same state. Asserting
@@ -19,6 +20,7 @@ set -eu
 SEED_DIR="${SEED_DIR:-/harness/seed}"
 MAIL_DIR="$SEED_DIR/mail"
 CAL_DIR="$SEED_DIR/calendar"
+CONTACT_DIR="$SEED_DIR/contacts"
 
 ALICE="alice@test.local"
 ALICE_PW="${HARNESS_ALICE_PW:-harness-alice-pw}"
@@ -26,6 +28,7 @@ ALICE_PW="${HARNESS_ALICE_PW:-harness-alice-pw}"
 IMAPS="imaps://127.0.0.1:993"
 HTTP="http://127.0.0.1:8080"
 CAL_COLLECTION="$HTTP/dav/cal/$ALICE/default"
+CONTACT_COLLECTION="$HTTP/dav/card/$ALICE/default"
 
 log() { printf '[seed] %s\n' "$1"; }
 
@@ -57,6 +60,12 @@ put_calendar() { # file  uid
   sed 's/$/\r/' "$1" | curl -sk --user "$ALICE:$ALICE_PW" \
     -X PUT -H 'Content-Type: text/calendar; charset=utf-8' \
     --data-binary @- "$CAL_COLLECTION/$2.ics"
+}
+
+put_contact() { # file  uid
+  sed 's/$/\r/' "$1" | curl -sk --user "$ALICE:$ALICE_PW" \
+    -X PUT -H 'Content-Type: text/vcard; charset=utf-8' \
+    --data-binary @- "$CONTACT_COLLECTION/$2.vcf"
 }
 
 log "waiting for IMAP to accept a login for $ALICE"
@@ -129,5 +138,9 @@ put_calendar "$CAL_DIR/meeting-attendees.ics" meeting-2003
 put_calendar "$CAL_DIR/virtual-location.ics" virtual-2004
 put_calendar "$CAL_DIR/all-day.ics" allday-2005
 put_calendar "$CAL_DIR/floating.ics" floating-2006
+
+log "putting contact fixtures into the default address book"
+put_contact "$CONTACT_DIR/contact-3001.vcf" contact-3001
+put_contact "$CONTACT_DIR/group-3002.vcf" group-3002
 
 log "content seed complete"

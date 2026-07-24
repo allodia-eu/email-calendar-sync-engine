@@ -18,6 +18,7 @@
 //! worker that drains the outbox and honors `depends_on` chains is the later orchestrator.
 
 mod calendar;
+mod contact;
 mod mail;
 
 use core::time::Duration;
@@ -26,6 +27,7 @@ pub use calendar::{
     CalendarWriteOutcome, create_calendar_event, delete_calendar_event, patch_calendar_event,
     put_calendar_document,
 };
+pub use contact::{ContactWriteOutcome, create_contact, delete_contact, patch_contact};
 use engine_core::{
     ids::AccountId,
     write::{PendingOp, PendingOutcome},

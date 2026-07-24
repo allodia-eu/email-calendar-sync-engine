@@ -30,16 +30,19 @@
 //! is deliberately the minimal driver that proves the cycle end to end.
 
 use core::time::Duration;
+use std::collections::BTreeSet;
 
 use engine_core::{
-    ids::AccountId,
+    ids::{AccountId, MailboxId},
     mail::{Mailbox, Message},
+    recipient::RecipientObservation,
     search_index::project_message,
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{Provider, ProviderError, ScopeSync};
 use engine_store::{
-    ApplyBatch, DerivedWrite, LeaseRequest, Store, StoreError, SyncApplied, WorkerId,
+    ApplyBatch, ContactStore, DerivedWrite, LeaseRequest, Store, StoreError, StoreRead,
+    SyncApplied, WorkerId,
 };
 
 /// How many times a scope is re-claimed after a `StaleLease` before giving up.
@@ -73,6 +76,12 @@ pub enum SyncError {
     /// no changes and the grid would stay empty forever. Sync the calendar first.
     #[error("no expansion window for this event scope: sync_calendar first")]
     NoExpansionWindow,
+    /// Pure people derivation failed.
+    #[error("people derivation error: {0}")]
+    People(engine_core::people::PeopleError),
+    /// Contact sources changed during every people-index CAS retry.
+    #[error("contact sources kept changing during people-index rebuild")]
+    ConcurrentPeopleRebuild,
 }
 
 impl SyncError {
@@ -109,11 +118,26 @@ pub async fn sync_mail<P, S>(
 ) -> Result<MailSyncReport, SyncError>
 where
     P: Provider,
-    S: Store,
+    S: Store + StoreRead + ContactStore,
 {
     let req = LeaseRequest::new(worker, ttl);
-    let mailboxes = run_scope(store, account, &MailboxScope(provider), &req).await?;
-    let email = run_scope(store, account, &EmailScope(provider), &req).await?;
+    let (mailboxes, ()) = run_scope(store, account, &MailboxScope(provider), &req)
+        .await?
+        .into_applied();
+    let sent = recipients::sent_mailboxes(store, account).await?;
+    if !sent.is_empty() {
+        recipients::backfill(store, account, &sent).await?;
+    }
+    let (email, ()) = run_scope(store, account, &EmailScope(provider, &sent), &req)
+        .await?
+        .into_applied();
+    recipients::record_coverage(
+        store,
+        account,
+        provider.default_sync_window(),
+        !sent.is_empty(),
+    )
+    .await?;
     Ok(MailSyncReport { mailboxes, email })
 }
 
@@ -143,16 +167,63 @@ where
     S: Store,
 {
     let req = LeaseRequest::new(worker, ttl);
-    run_scope(store, account, &MailboxScope(provider), &req).await
+    Ok(run_scope(store, account, &MailboxScope(provider), &req)
+        .await?
+        .into_applied()
+        .0)
+}
+
+/// What a fetch produced: something to apply, or a provider-side reason not to.
+///
+/// The `Halt` arm exists for a source that answered "not available right now"
+/// (a CardDAV address book the server stopped serving) rather than failing. The
+/// driver releases the lease and hands the reason back; any bookkeeping that
+/// implies belongs to the caller, not to the shared loop.
+pub(crate) enum ScopeFetch<T, M, H> {
+    /// Apply this batch, carrying `meta` through to the caller.
+    Proceed { sync: ScopeSync<T>, meta: M },
+    /// Do not apply; return `H` to the caller.
+    Halt(H),
+}
+
+/// The outcome of [`run_scope`].
+pub(crate) enum ScopeRun<M, H> {
+    /// The batch was applied under a valid lease.
+    Applied { applied: SyncApplied, meta: M },
+    /// The fetch declined to produce a batch.
+    Halted(H),
+}
+
+impl<M> ScopeRun<M, core::convert::Infallible> {
+    /// Unwraps a run whose syncer cannot halt (`Halt = Infallible`), so the mail
+    /// scopes do not carry a branch that is uninhabited by construction.
+    pub(crate) fn into_applied(self) -> (SyncApplied, M) {
+        match self {
+            Self::Applied { applied, meta } => (applied, meta),
+            Self::Halted(never) => match never {},
+        }
+    }
 }
 
 /// A scope-typed fetch + projection, so [`run_scope`] holds the lease/retry logic
-/// once and the per-type difference (which provider method, which projection) is
-/// supplied by an impl.
+/// once and the per-type difference (which provider method, which projection, which
+/// extra rows ride the same transaction) is supplied by an impl.
+///
+/// Every scope — mailboxes, email, address books, contact cards — goes through this
+/// one driver. The claim/fence/reclaim/release discipline is the part that is easy to
+/// get subtly wrong, so it must not be copied per scope type.
 #[async_trait::async_trait]
 pub(crate) trait ScopeSyncer: Sync {
     /// The normalized object type stored under this scope.
     type Object: engine_store::StorableObject + serde::Serialize + Send + Sync;
+
+    /// Extra per-fetch information carried through to the caller (contact sync uses
+    /// it for "the cursor was rebuilt"). `()` when there is none.
+    type Meta: Send;
+
+    /// What a non-applying fetch returns. [`core::convert::Infallible`] when the
+    /// fetch either applies or errors.
+    type Halt: Send;
 
     /// The scope this syncer claims and applies under.
     fn scope(&self, account: &AccountId) -> SyncScope;
@@ -162,20 +233,35 @@ pub(crate) trait ScopeSyncer: Sync {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> Result<ScopeSync<Self::Object>, ProviderError>;
+    ) -> Result<ScopeFetch<Self::Object, Self::Meta, Self::Halt>, ProviderError>;
 
     /// Precomputes the derived (FTS/structured) rows for the changed objects.
     fn derive(&self, update: &SyncUpdate<Self::Object>) -> DerivedWrite;
+
+    /// Recipient observations to write in the *same* transaction as the batch.
+    /// Empty for every scope but email.
+    fn observations(
+        &self,
+        _account: &AccountId,
+        _update: &SyncUpdate<Self::Object>,
+    ) -> Vec<RecipientObservation> {
+        Vec::new()
+    }
 }
 
 /// Runs the claim → fetch → derive → apply → release cycle for one scope, with
 /// `StaleLease` re-claim-and-recompute.
+///
+/// This is the single place the lease discipline lives: the lease is released on
+/// every exit path (including a provider fetch failure, so a leaked lease does not
+/// block the next sync with a spurious `ScopeHeld`), and a `StaleLease` write is
+/// never retried — the loop re-claims and recomputes from the fresh cursor instead.
 pub(crate) async fn run_scope<S, Y>(
     store: &S,
     account: &AccountId,
     syncer: &Y,
     req: &LeaseRequest,
-) -> Result<SyncApplied, SyncError>
+) -> Result<ScopeRun<Y::Meta, Y::Halt>, SyncError>
 where
     S: Store,
     Y: ScopeSyncer,
@@ -195,12 +281,21 @@ where
                 return Err(err.into());
             }
         };
-        let derived = syncer.derive(&fetched.update);
-        let batch = ApplyBatch::new(&fetched.update, &derived, &[], &fetched.next_cursor);
+        let (sync, meta) = match fetched {
+            ScopeFetch::Proceed { sync, meta } => (sync, meta),
+            ScopeFetch::Halt(halt) => {
+                store.release_sync_scope(claim.lease).await?;
+                return Ok(ScopeRun::Halted(halt));
+            }
+        };
+        let derived = syncer.derive(&sync.update);
+        let observations = syncer.observations(account, &sync.update);
+        let batch = ApplyBatch::new(&sync.update, &derived, &[], &sync.next_cursor)
+            .with_recipient_observations(&observations);
         match store.apply_sync_update(&claim.lease, batch).await {
             Ok(applied) => {
                 store.release_sync_scope(claim.lease).await?;
-                return Ok(applied);
+                return Ok(ScopeRun::Applied { applied, meta });
             }
             Err(StoreError::StaleLease) if reclaims < MAX_STALE_RECLAIMS => {
                 // The lease was superseded after we read the cursor. Drop it and
@@ -221,6 +316,8 @@ pub(crate) struct MailboxScope<'p, P>(pub(crate) &'p P);
 
 #[async_trait::async_trait]
 impl<P: Provider> ScopeSyncer for MailboxScope<'_, P> {
+    type Halt = core::convert::Infallible;
+    type Meta = ();
     type Object = Mailbox;
 
     fn scope(&self, account: &AccountId) -> SyncScope {
@@ -231,8 +328,11 @@ impl<P: Provider> ScopeSyncer for MailboxScope<'_, P> {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> Result<ScopeSync<Mailbox>, ProviderError> {
-        self.0.sync_mailboxes(account, cursor).await
+    ) -> Result<ScopeFetch<Mailbox, (), Self::Halt>, ProviderError> {
+        self.0
+            .sync_mailboxes(account, cursor)
+            .await
+            .map(|sync| ScopeFetch::Proceed { sync, meta: () })
     }
 
     fn derive(&self, _update: &SyncUpdate<Mailbox>) -> DerivedWrite {
@@ -243,10 +343,16 @@ impl<P: Provider> ScopeSyncer for MailboxScope<'_, P> {
 }
 
 /// The email-member scope syncer.
-struct EmailScope<'p, P>(&'p P);
+///
+/// Carries the account's Sent mailboxes so the recipient observations they imply are
+/// written in the *same* transaction as the batch — via the shared driver's
+/// `observations` hook rather than a copy of the whole lease loop.
+struct EmailScope<'p, P>(&'p P, &'p BTreeSet<MailboxId>);
 
 #[async_trait::async_trait]
 impl<P: Provider> ScopeSyncer for EmailScope<'_, P> {
+    type Halt = core::convert::Infallible;
+    type Meta = ();
     type Object = Message;
 
     fn scope(&self, account: &AccountId) -> SyncScope {
@@ -257,12 +363,23 @@ impl<P: Provider> ScopeSyncer for EmailScope<'_, P> {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> Result<ScopeSync<Message>, ProviderError> {
-        self.0.sync_email(account, cursor).await
+    ) -> Result<ScopeFetch<Message, (), Self::Halt>, ProviderError> {
+        self.0
+            .sync_email(account, cursor)
+            .await
+            .map(|sync| ScopeFetch::Proceed { sync, meta: () })
     }
 
     fn derive(&self, update: &SyncUpdate<Message>) -> DerivedWrite {
         derive_messages(changed_objects(update))
+    }
+
+    fn observations(
+        &self,
+        account: &AccountId,
+        update: &SyncUpdate<Message>,
+    ) -> Vec<RecipientObservation> {
+        recipients::observations(account, update, self.1)
     }
 }
 
@@ -289,20 +406,28 @@ pub(crate) fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
 mod attachment;
 mod body;
 mod calendar;
+mod contact;
 mod horizon;
 mod observer;
 mod outbox;
 mod progress;
+mod recipients;
 mod stream;
 mod threading;
 pub use attachment::{fetch_message_attachment, fetch_message_attachments};
 pub use body::{fetch_inline_parts, fetch_message_body};
 pub use calendar::{CalendarSyncReport, EventSyncReport, reconcile_calendar_events, sync_calendar};
+pub use contact::{
+    ContactReconcileReport, ContactSourceReport, ContactSyncReport, PeopleRebuildReport,
+    rebuild_people_index, reconcile_contact_card, reconcile_contact_deletion, sync_address_books,
+    sync_contact_cards, sync_contacts,
+};
 pub use horizon::{HorizonExpansion, UnexpandableEvent, expand_calendar_horizon};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
-    CalendarWriteOutcome, MailEditOutcome, SubmitOutcome, create_calendar_event,
-    delete_calendar_event, edit_mail, patch_calendar_event, put_calendar_document, submit_mail,
+    CalendarWriteOutcome, ContactWriteOutcome, MailEditOutcome, SubmitOutcome,
+    create_calendar_event, create_contact, delete_calendar_event, delete_contact, edit_mail,
+    patch_calendar_event, patch_contact, put_calendar_document, submit_mail,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::{StreamTuning, sync_email_streamed, sync_mail_streamed};

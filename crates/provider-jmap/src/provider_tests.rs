@@ -28,15 +28,17 @@ fn upserted(chunks: &[EmailChunk]) -> usize {
 async fn message_source_downloads_the_blob_and_substitutes_the_template() {
     const MIME: &[u8] = b"From: a@example.com\r\nSubject: Hi\r\n\r\nBody text\r\n";
     let exec = FakeExecutor::new(vec![]).with_download_body(MIME);
-    let raw = crate::fetch::message_source(&exec, &message_with_blob("m1", "blob-1"))
+    let raw = crate::blob::message_source(&exec, &message_with_blob("m1", "blob-1"))
         .await
         .unwrap();
     assert_eq!(raw.as_bytes(), MIME);
     // The download template's origin was rebased to the connection and every
-    // placeholder substituted (mail account `c`, the message's blob id).
+    // placeholder substituted (mail account `c`, the message's blob id). Substitutions
+    // are percent-encoded — RFC 6570 level-1 simple expansion, which is what RFC 8620
+    // §6.2 specifies — so the media type's `/` arrives as `%2F`.
     assert_eq!(
         exec.download_urls.lock().unwrap().as_slice(),
-        ["http://127.0.0.1:18080/download/c/blob-1/message?accept=application/octet-stream"]
+        ["http://127.0.0.1:18080/download/c/blob-1/message?accept=application%2Foctet-stream"]
     );
 }
 
@@ -64,7 +66,7 @@ async fn message_source_without_a_blob_id_is_a_protocol_error() {
         MessageId::try_from("m1").unwrap(),
         Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
     );
-    let err = crate::fetch::message_source(&exec, &message)
+    let err = crate::blob::message_source(&exec, &message)
         .await
         .unwrap_err();
     assert!(matches!(err, JmapError::Protocol(_)));

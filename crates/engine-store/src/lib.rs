@@ -13,6 +13,7 @@
 //! (`store-sqlite`), not part of this contract: the trait is encryption-agnostic.
 
 mod apply;
+mod contact;
 pub mod contract;
 mod error;
 mod lease;
@@ -24,6 +25,9 @@ mod store;
 pub use apply::{
     ApplyBatch, DerivedWrite, FtsField, FtsRow, OccurrenceRow, PendingReconciliation, PruneReport,
     StorableObject, SyncApplied, TzdataVersion,
+};
+pub use contact::{
+    CachedContactPhoto, ContactSourceAvailability, ContactSourceSnapshot, ContactStore,
 };
 pub use error::{Result, StoreError};
 pub use lease::{

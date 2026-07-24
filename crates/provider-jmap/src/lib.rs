@@ -3,7 +3,7 @@
 //! This crate is the first product protocol client. It talks JMAP over HTTP to a
 //! server (the Stalwart test fixture in steps 4–5, real providers later),
 //! discovers the session, ships batched method calls with result back-references,
-//! and normalizes JMAP mail and calendar objects into the engine's
+//! and normalizes JMAP mail, calendar, and contact objects into the engine's
 //! [`SyncUpdate`](engine_core::sync::SyncUpdate) shapes. It implements the
 //! [`engine_provider::Provider`] contract so the sync orchestrator never switches
 //! on provider kind.
@@ -32,8 +32,13 @@
 //!   (`docs/agent-guidance/jmap.md`).
 
 mod auth;
+mod blob;
 mod calendar;
 mod calendar_write;
+mod contact;
+mod contact_fields;
+mod contact_write;
+mod contact_write_fields;
 mod error;
 mod fetch;
 mod json;

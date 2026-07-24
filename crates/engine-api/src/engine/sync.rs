@@ -6,20 +6,66 @@ use engine_core::{
     sync::{SearchDomain, SyncWindow},
     time::TimeZoneId,
 };
-use engine_provider::Provider;
+use engine_provider::{ContactsProvider, Provider};
 use engine_recurrence::Horizon;
 use engine_store::{PruneReport, Store, SyncApplied};
 use engine_sync::{
-    CalendarSyncReport, EventSyncReport, HorizonExpansion, MailSyncReport, StreamTuning,
-    SyncObserver, ThreadDeriveReport, derive_mail_threads, expand_calendar_horizon,
-    reconcile_calendar_events, sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed,
-    sync_mailbox_list,
+    CalendarSyncReport, ContactSourceReport, ContactSyncReport, EventSyncReport, HorizonExpansion,
+    MailSyncReport, PeopleRebuildReport, StreamTuning, SyncObserver, ThreadDeriveReport,
+    derive_mail_threads, expand_calendar_horizon, reconcile_calendar_events, sync_address_books,
+    sync_calendar, sync_contact_cards, sync_contacts, sync_email_streamed, sync_mail,
+    sync_mail_streamed, sync_mailbox_list,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
 use crate::{ApiError, Engine};
 
 impl Engine {
+    /// Discovers contact sources/address books once for an account.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] for provider, store, or scope-lease failure.
+    pub async fn sync_address_books<P: ContactsProvider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+    ) -> Result<ContactSourceReport, ApiError> {
+        sync_address_books(provider, &self.store, account, worker(), LEASE_TTL)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Syncs cards for one source-bound adapter and rebuilds unified people.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] for provider, store, lease, or people-rebuild failure.
+    pub async fn sync_contact_cards<P: ContactsProvider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+    ) -> Result<(ContactSourceReport, PeopleRebuildReport), ApiError> {
+        sync_contact_cards(provider, &self.store, account, worker(), LEASE_TTL)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Runs contact discovery, card sync, and people derivation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] under the same rules as the source-level methods.
+    pub async fn sync_contacts<P: ContactsProvider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+    ) -> Result<ContactSyncReport, ApiError> {
+        sync_contacts(provider, &self.store, account, worker(), LEASE_TTL)
+            .await
+            .map_err(map_sync_error)
+    }
+
     /// Syncs one account's mail from `provider`: mailbox containers first, then
     /// email members, each through the claim → fetch → derive → apply → release
     /// cycle with `StaleLease` recovery (`store-and-sync.md`).

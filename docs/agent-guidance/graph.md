@@ -334,3 +334,26 @@ provider). It advertises `calendars` **and** `calendar_writes(WriteGuard::Enforc
   is obtained with `tools/graph-oauth` (a standalone PKCE-loopback login + refresh
   helper, outside the engine workspace). Excluded from the offline coverage metric
   via the `ci.yml` `--ignore-filename-regex`, like the other providers' live tests.
+
+## Contacts
+
+`GraphContactProvider` is source-bound independently from the mail/calendar
+providers. Personal root/folder contacts use per-collection delta links and are
+writable; contact folders are discovered recursively. Organizational contacts
+and directory users use global Graph endpoints and degrade to source-level
+`Unavailable` on missing optional permission, so personal contacts still sync.
+Every normalized card preserves raw JSON and `changeKey`.
+
+Graph contact writes deliberately advertise `WriteGuard::Absent`: the current
+contact update contract documents no enforceable per-object conditional guard.
+Personal-contact create/patch/delete are supported and the engine refetches the
+canonical contact after a successful outbox write. Organization contacts and
+directory users remain read-only. Photos are fetched only on demand.
+Birthday and homepage are retained on reads but are not writable capabilities:
+Graph exposes one scalar for each while the neutral model permits multiple
+anniversaries and links, so choosing one would silently lose intent.
+
+The capture helper defaults include delegated `Contacts.ReadWrite`,
+`OrgContact.Read.All`, `User.ReadBasic.All`, and `ProfilePhoto.Read.All`.
+Directory permissions can require administrator consent and must never become a
+prerequisite for personal contact sync.

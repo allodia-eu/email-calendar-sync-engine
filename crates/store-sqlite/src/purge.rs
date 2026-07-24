@@ -25,13 +25,22 @@ const SCOPE_TABLES: &[&str] = &[
     "event_index",
     "event_participant",
     "embedding",
+    "contact_source_availability",
 ];
 
 /// Tables keyed directly by `account`. `message_body`'s FTS5 shadow
 /// (`message_body_fts`) follows through its delete trigger. `sync_scope` is also
 /// account-keyed but is deleted last (below), since the [`SCOPE_TABLES`] deletes
 /// resolve their sub-select against it.
-const ACCOUNT_TABLES: &[&str] = &["pending_op", "message_source", "message_body"];
+const ACCOUNT_TABLES: &[&str] = &[
+    "pending_op",
+    "message_source",
+    "message_body",
+    "contact_photo",
+    "recipient_observation",
+    "recipient_coverage",
+    "recipient_index_state",
+];
 
 impl<C: Clock> SqliteStore<C> {
     /// Purges every durable trace of `account`: its synced objects, the derived
@@ -82,6 +91,20 @@ fn purge_account(conn: &mut Connection, account: &str) -> Result<()> {
         )
         .map_err(backend)?;
     }
+    // A person can span accounts, and its serialized payload contains all of its
+    // source provenance. Clear the replaceable index wholesale rather than leave
+    // stale account data; the next contact rebuild repopulates it.
+    for table in ["person_email", "person_source", "person_alias", "person"] {
+        tx.execute(&format!("DELETE FROM {table}"), [])
+            .map_err(backend)?;
+    }
+    tx.execute(
+        "UPDATE contact_state
+         SET generation = generation + 1
+         WHERE singleton = 1",
+        [],
+    )
+    .map_err(backend)?;
     tx.execute("DELETE FROM sync_scope WHERE account = ?1", [account])
         .map_err(backend)?;
     tx.commit().map_err(backend)?;

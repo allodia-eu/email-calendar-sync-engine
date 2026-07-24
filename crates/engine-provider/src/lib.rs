@@ -1,7 +1,7 @@
 //! `engine-provider` — the provider/transport trait surface.
 //!
-//! A provider adapter turns a remote account's mail and calendar state into the
-//! engine's normalized, provider-neutral shapes. This crate defines the **small**
+//! A provider adapter turns remote mail, calendar, and contact state into the
+//! engine's normalized shapes. This crate defines the **small**
 //! contract every adapter implements so the sync orchestrator and stores never
 //! switch on provider kind (`providers.md`):
 //!
@@ -18,18 +18,18 @@
 //! config carries.
 //!
 //! The trait is deliberately **shaped by JMAP** and kept minimal: it covers the
-//! step-4 mail spine (mailboxes + email) and grows a method at a time as slices
-//! land (submission, calendar). It depends only on `engine-core`; network access
+//! mail spine (mailboxes + email), calendar, submission, and contact contracts.
+//! It depends only on `engine-core`; network access
 //! and an async runtime live in the concrete provider crates (`provider-jmap`,
-//! and later `provider-imap`/`provider-smtp`/`provider-caldav`). The full
-//! orchestrator that drives many providers and scopes is a later build step; the
-//! step-4 driver is the thin loop in `engine-sync`.
+//! plus `provider-imap`/`provider-smtp`/`provider-caldav`). `engine-sync` drives
+//! the provider-neutral scopes.
 
 mod boxed;
 mod calendar_write;
 mod capability;
 mod connect_observer;
 mod connection;
+mod contact;
 mod error;
 mod mail_edit;
 mod page;
@@ -47,9 +47,13 @@ pub use calendar_write::{
 };
 pub use capability::{Capabilities, WriteGuard};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
-#[cfg(feature = "http")]
-pub use connection::ObservedHttpVersion;
 pub use connection::{ConnectionInfo, HttpVersion, TlsVersion};
+#[cfg(feature = "http")]
+pub use connection::{ObservedHttpVersion, same_origin};
+pub use contact::{
+    ContactDestination, ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt,
+    ContactsProvider,
+};
 use engine_core::{
     calendar::{Calendar, Event},
     ids::AccountId,

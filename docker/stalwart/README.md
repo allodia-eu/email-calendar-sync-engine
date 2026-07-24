@@ -2,7 +2,7 @@
 
 A reproducible, deterministic [Stalwart](https://stalw.art) server in Docker,
 seeded with **one shared dataset that every protocol sees** (JMAP, IMAP, SMTP,
-CalDAV). It is the fixture the engine's provider clients (build-order steps 4–5)
+CalDAV, CardDAV). It is the fixture the engine's provider clients (build-order steps 4–5)
 and the connectivity smoke suite target. See
 [`docs/agent-guidance/stalwart-harness.md`](../../docs/agent-guidance/stalwart-harness.md)
 for the design, the bootstrap flow, the per-fixture invariants, the gating
@@ -50,7 +50,7 @@ Without `STALWART_HTTP_ADDR` set, every Stalwart-touching test **skips**, so
 
 | Protocol                      | Container | Host    | Transport          |
 | ----------------------------- | --------- | ------- | ------------------ |
-| HTTP — JMAP + CalDAV + admin  | 8080      | `18080` | plaintext          |
+| HTTP — JMAP + CalDAV/CardDAV + admin  | 8080      | `18080` | plaintext          |
 | SMTP                          | 25        | `11025` | plaintext          |
 | SMTP submission               | 465       | `11465` | implicit TLS (self-signed) |
 | IMAP                          | 993       | `11993` | implicit TLS (self-signed) |
@@ -68,7 +68,7 @@ file — see the design doc).
 
 | Account            | Password           | Role                          |
 | ------------------ | ------------------ | ----------------------------- |
-| `alice@test.local` | `harness-alice-pw` | primary (mail + calendar)     |
+| `alice@test.local` | `harness-alice-pw` | primary (mail + calendar + contacts) |
 | `bob@test.local`   | `harness-bob-pw`   | second party / event attendee |
 | `admin`            | `harness-admin-pw` | fallback admin (management)   |
 
@@ -78,8 +78,9 @@ file — see the design doc).
 docker/stalwart/
 ├── docker-compose.yml      # single service (image pinned by digest)
 ├── entrypoint.sh           # self-bootstrap via API → restart → accounts → seed
-├── seed.sh                 # curl: IMAP APPEND/STORE/COPY/MOVE + CalDAV PUT
+├── seed.sh                 # curl: IMAP + CalDAV/CardDAV writes
 └── seed/
     ├── mail/*.eml          # messages: dup/missing Message-ID, attachment, …
-    └── calendar/*.ics      # events: recurring+exceptions, attendees, …
+    ├── calendar/*.ics      # events: recurring+exceptions, attendees, …
+    └── contacts/*.vcf      # international person + group
 ```

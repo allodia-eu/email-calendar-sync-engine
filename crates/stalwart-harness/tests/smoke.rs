@@ -12,7 +12,7 @@
 
 use std::{net::TcpStream, sync::Arc, time::Duration};
 
-use stalwart_harness::{GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, run_probe};
+use stalwart_harness::{CONTACT_UID, GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, run_probe};
 
 /// Return the configured harness, or `None` (skipping, with a note labelled by
 /// the current test's name) when Stalwart is absent.
@@ -138,6 +138,23 @@ fn caldav_one_off_event_present() {
         "seeded one-off event SUMMARY should be present in: {}",
         resp.body_text()
     );
+}
+
+#[test]
+fn carddav_seeded_contact_present() {
+    let Some(h) = ready_harness() else {
+        return;
+    };
+    let resp = h
+        .caldav_get(&h.contact_path(CONTACT_UID))
+        .expect("CardDAV GET should answer");
+    assert_eq!(resp.status, 200, "GET seeded contact status");
+    assert!(
+        resp.body_contains("FN:Zo"),
+        "seeded contact FN should be present in: {}",
+        resp.body_text()
+    );
+    assert!(resp.body_contains("contact-3001@test.local"));
 }
 
 /// Connect to the implicit-TLS IMAP listener and run the probe. The server uses
