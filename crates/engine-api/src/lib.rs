@@ -63,6 +63,12 @@ pub use engine_core::{
         MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword, ThreadProvenance,
         ThreadRef,
     },
+    // The unified-people and recipient-history types. `PeoplePage` and `RecipientSuggestions`
+    // are returned by this facade and are *made of* these, so without them a host cannot name
+    // what it just received — it would have to depend on `engine-core` directly, which is the
+    // reach-around this re-export block exists to prevent.
+    people::{CanonicalEmail, PeopleSnapshot, Person, PersonSource, PersonSourceId, SourcedValue},
+    recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
     sync::{SyncScope, SyncWindow},
     time::{CalendarDate, LocalDateTime, TimeZoneId, UtcDateTime},
     write::PendingOpId,
