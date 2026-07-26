@@ -242,7 +242,7 @@ async fn people_pages_are_generation_bound_and_contact_writes_refetch() {
         .await
         .unwrap();
     assert_eq!(page.people.len(), 1);
-    assert_eq!(page.people[0].display_name, "Ada Lovelace");
+    assert_eq!(page.people[0].display_name.as_deref(), Some("Ada Lovelace"));
 
     let draft = ContactDraft {
         address_book: AddressBookId::try_from("book").unwrap(),
@@ -266,7 +266,7 @@ async fn people_pages_are_generation_bound_and_contact_writes_refetch() {
             .unwrap()
             .people
             .iter()
-            .any(|person| person.display_name == "Grace Hopper")
+            .any(|person| person.display_name.as_deref() == Some("Grace Hopper"))
     );
 }
 
@@ -307,7 +307,7 @@ async fn people_can_be_filtered_by_synced_group_membership() {
         .await
         .unwrap();
     assert_eq!(page.people.len(), 1);
-    assert_eq!(page.people[0].display_name, "Ada Lovelace");
+    assert_eq!(page.people[0].display_name.as_deref(), Some("Ada Lovelace"));
 }
 
 #[tokio::test]
@@ -356,7 +356,10 @@ async fn people_paging_filters_cursor_validation_and_recipient_history_are_expos
         })
         .await
         .unwrap();
-    assert_eq!(first.people[0].display_name, "Ada Lovelace");
+    assert_eq!(
+        first.people[0].display_name.as_deref(),
+        Some("Ada Lovelace")
+    );
     let cursor = first.next_cursor.clone().unwrap();
     let second = engine
         .people_page(&PeopleQuery {
@@ -366,15 +369,19 @@ async fn people_paging_filters_cursor_validation_and_recipient_history_are_expos
         })
         .await
         .unwrap();
-    assert_eq!(second.people[0].display_name, "Bob Builder");
+    assert_eq!(
+        second.people[0].display_name.as_deref(),
+        Some("Bob Builder")
+    );
     assert_eq!(
         engine
             .person(first.people[0].id)
             .await
             .unwrap()
             .unwrap()
-            .display_name,
-        "Ada Lovelace"
+            .display_name
+            .as_deref(),
+        Some("Ada Lovelace")
     );
     assert!(
         engine
@@ -399,8 +406,9 @@ async fn people_paging_filters_cursor_validation_and_recipient_history_are_expos
                 .await
                 .unwrap()
                 .people[0]
-                .display_name,
-            "Bob Builder"
+                .display_name
+                .as_deref(),
+            Some("Bob Builder")
         );
     }
     let groups = engine
@@ -411,7 +419,7 @@ async fn people_paging_filters_cursor_validation_and_recipient_history_are_expos
         })
         .await
         .unwrap();
-    assert_eq!(groups.people[0].display_name, "Friends");
+    assert_eq!(groups.people[0].display_name.as_deref(), Some("Friends"));
 
     for malformed in ["x", "00"] {
         let error = engine

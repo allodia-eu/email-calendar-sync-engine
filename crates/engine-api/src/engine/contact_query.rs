@@ -81,7 +81,10 @@ pub(super) fn person_matches(
 }
 
 fn searchable_values(person: &Person) -> impl Iterator<Item = &str> {
-    std::iter::once(person.display_name.as_str())
+    person
+        .display_name
+        .as_deref()
+        .into_iter()
         .chain(person.names.iter().map(|value| value.value.as_str()))
         .chain(person.emails.iter().map(|value| value.value.as_str()))
         .chain(person.phones.iter().map(|value| value.value.as_str()))
@@ -94,8 +97,19 @@ fn searchable_values(person: &Person) -> impl Iterator<Item = &str> {
         .chain(person.titles.iter().map(|value| value.value.as_str()))
 }
 
+/// The page-ordering key. A person with no name sorts under the empty string — first,
+/// deterministically, and next to the cursor's own encoding of the same value.
 pub(super) fn person_key(person: &Person) -> (String, PersonId) {
-    (person.display_name.to_lowercase(), person.id)
+    (display_key(person), person.id)
+}
+
+/// The lowercased display name a page cursor is compared against.
+pub(super) fn display_key(person: &Person) -> String {
+    person
+        .display_name
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase()
 }
 
 pub(super) fn query_signature(query: &PeopleQuery) -> u64 {

@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     LEASE_TTL,
     contact_query::{
-        PeopleCursor, decode_cursor, encode_cursor, person_key, person_matches, query_signature,
+        PeopleCursor, decode_cursor, display_key, encode_cursor, person_key, person_matches,
+        query_signature,
     },
     map_sync_error, worker,
 };
@@ -149,7 +150,7 @@ impl Engine {
                 encode_cursor(&PeopleCursor {
                     generation: source_snapshot.generation,
                     signature,
-                    display: person.display_name.to_lowercase(),
+                    display: display_key(person),
                     person: person.id,
                 })
             })
@@ -178,15 +179,21 @@ impl Engine {
         provider.contact_destination()
     }
 
-    /// Returns the writable destinations advertised by source-bound adapters.
+    /// Returns the **writable** destinations advertised by `providers`, sorted and
+    /// deduplicated by address book.
+    ///
+    /// This is the list a host offers as "save this contact to…", so a read-only
+    /// source belongs in an address-book listing, not here. Each adapter is bound to
+    /// one account already, which is why no account is taken: filtering by one here
+    /// would only be re-stating what the caller chose when it assembled `providers`.
     pub fn contact_destinations<'a>(
         &self,
-        _account: &AccountId,
         providers: impl IntoIterator<Item = &'a dyn ContactsProvider>,
     ) -> Vec<ContactDestination> {
         let mut destinations: Vec<_> = providers
             .into_iter()
             .filter_map(ContactsProvider::contact_destination)
+            .filter(|destination| destination.writable)
             .collect();
         destinations.sort_by(|left, right| left.address_book.cmp(&right.address_book));
         destinations.dedup_by(|left, right| left.address_book == right.address_book);

@@ -101,24 +101,6 @@ pub(crate) fn card(value: &Value) -> Result<ContactCard, JmapError> {
             .map(|address| ContactEmail::new(address.to_owned()))
     })?;
     card.members = members(value.get("members"))?;
-    card.media = property_map(value.get("media"), |entry| {
-        Some(ContactResource {
-            uri: entry.get("uri")?.as_str()?.to_owned(),
-            kind: entry.get("kind").and_then(Value::as_str).map(str::to_owned),
-            media_type: entry
-                .get("mediaType")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            title: entry
-                .get("title")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            fingerprint: entry
-                .get("blobId")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        })
-    })?;
     card.source_class = ContactSourceClass::Personal;
     card.is_writable = value
         .get("isReadOnly")
@@ -218,12 +200,16 @@ fn true_keys(value: Option<&Value>) -> BTreeSet<String> {
 
 #[async_trait]
 impl ContactsProvider for JmapProvider {
+    /// A destination only once a real address book has been bound: JMAP has no
+    /// well-known default book, so advertising one before discovery would let a host's
+    /// own validation pass and the server's `ContactCard/set` fail.
     fn contact_destination(&self) -> Option<ContactDestination> {
+        let address_book = self.contact_address_book.clone()?;
         self.connection_info()
             .capabilities
             .contact_write_guard()
             .map(|guard| ContactDestination {
-                address_book: self.contact_address_book.clone(),
+                address_book,
                 source_class: ContactSourceClass::Personal,
                 writable: true,
                 write_guard: Some(guard),

@@ -118,6 +118,9 @@ For OAuth providers, use `Credentials::bearer("access-token")`. Servers that gen
 ### Notes
 
 - The JMAP account id is read from the session's `primaryAccounts`, not assumed.
+- Contact writes need an address book: call `with_contact_address_book` with an id
+  from `sync_address_books`. Until then the provider offers no contact destination —
+  there is no well-known default book to guess.
 - Raw MIME is **fetched on demand** via the session's `downloadUrl` blob template; it is not eagerly synced.
 - Mail edits (`Email/set`) use account-global stable ids, so a move does not change the object's key.
 
@@ -238,7 +241,9 @@ The `with_calendar` argument is either a name relative to the calendar home (e.g
 
 - A `CalDavProvider` is **bound to one calendar collection** for events. The calendar list syncs at the account level; cross-collection fan-out is the host's job.
 - A `CardDavProvider` is likewise bound to one address book. It preserves raw
-  vCard and uses ETag-conditional `PUT`/`DELETE`.
+  vCard and uses ETag-conditional `PUT`/`DELETE`. `rebind` switches books without
+  repeating discovery and carries write capability with it, so a rebind onto a
+  writable book stays writable.
 - Event identity is the resource href; the iCalendar `UID` is the separate cross-system identifier.
 - Writes use conditional `PUT`/`DELETE` (`If-None-Match: *` for creates, `If-Match: "<etag>"` for updates/deletes) for optimistic concurrency.
 - The body round-trips the preserved `RawIcal`; the engine does not re-serialize from the lossy projection. For simple creates, the crate provides `provider_caldav::build_event_ical`.

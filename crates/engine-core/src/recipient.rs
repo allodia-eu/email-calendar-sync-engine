@@ -159,7 +159,13 @@ pub fn rank_recipient_suggestions(
                     suggestion: RecipientSuggestion {
                         email: email.value.clone(),
                         person_id: Some(person.id),
-                        display_name: person.display_name.clone(),
+                        // A suggestion is always shown against an address, so the
+                        // address is the fallback label — real data, unlike a
+                        // placeholder the engine would have to invent.
+                        display_name: person
+                            .display_name
+                            .clone()
+                            .unwrap_or_else(|| email.value.to_string()),
                         provenance: BTreeSet::new(),
                         sent_count: 0,
                         last_sent: None,

@@ -73,15 +73,17 @@ impl Engine {
 /// megabytes — does not become a primary-key column. Only resources on the *same*
 /// card share a key space, so a 64-bit digest is ample.
 fn photo_resource_key(media: &ContactResource) -> String {
-    let digest = media
-        .uri
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-            hash.wrapping_mul(0x0100_0000_01b3) ^ u64::from(byte)
-        });
-    format!("{digest:016x}")
+    uri_digest(&media.uri)
 }
 
+/// Answers "is the cached photo still the one this card points at".
+///
+/// The last resort is the URI, because a source that versions neither the media nor
+/// the card still changes the URI when the photo changes. It is hashed for the same
+/// reason [`photo_resource_key`] hashes it: a CardDAV inline `PHOTO;ENCODING=b` *is* a
+/// `data:` URI holding the whole image, and storing that as the fingerprint would
+/// write a second copy of the image into a column that is string-compared on every
+/// read.
 fn photo_fingerprint(card: &ContactCard, media: &ContactResource) -> String {
     media
         .fingerprint
@@ -99,5 +101,56 @@ fn photo_fingerprint(card: &ContactCard, media: &ContactResource) -> String {
                 .as_ref()
                 .map(|value| format!("change-key:{}", value.as_str()))
         })
-        .unwrap_or_else(|| format!("uri:{}", media.uri))
+        .unwrap_or_else(|| format!("uri:{}", uri_digest(&media.uri)))
+}
+
+/// FNV-1a over a resource URI. Both photo cache keys are card-local and compared for
+/// equality only, so a 64-bit digest is enough to tell one resource (or one revision
+/// of one) from another without carrying the URI itself.
+fn uri_digest(uri: &str) -> String {
+    let digest = uri.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        hash.wrapping_mul(0x0100_0000_01b3) ^ u64::from(byte)
+    });
+    format!("{digest:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use engine_core::{
+        contact::{ContactCard, ContactResource},
+        ids::{AddressBookId, ContactId},
+        membership::Memberships,
+    };
+
+    use super::{photo_fingerprint, photo_resource_key};
+
+    fn inline(payload: &str) -> ContactResource {
+        ContactResource {
+            uri: format!("data:image/jpeg;base64,{payload}"),
+            ..ContactResource::default()
+        }
+    }
+
+    fn card() -> ContactCard {
+        ContactCard::new(
+            ContactId::try_from("/book/ada.vcf").unwrap(),
+            Memberships::of_one(AddressBookId::try_from("/book/").unwrap()),
+        )
+    }
+
+    /// Both keys are written to a cache row and string-compared on every read, so
+    /// neither may carry a `data:` URI's payload — a vCard inline photo is the whole
+    /// image, and a megabyte-wide key column is a second copy of it.
+    #[test]
+    fn both_photo_cache_keys_stay_short_for_an_inline_image() {
+        let big = inline(&"A".repeat(64 * 1024));
+        for key in [photo_resource_key(&big), photo_fingerprint(&card(), &big)] {
+            assert!(key.len() <= 32, "{} bytes: {key}", key.len());
+        }
+        // Still a *fingerprint*: a different inline image must not match.
+        assert_ne!(
+            photo_fingerprint(&card(), &big),
+            photo_fingerprint(&card(), &inline("Qk0=")),
+        );
+    }
 }

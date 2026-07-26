@@ -47,14 +47,14 @@ pub(crate) fn person(
                 index,
             ))
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
     card.emails = values(value, "emailAddresses")
         .enumerate()
         .filter_map(|(index, entry)| {
             let address = entry.get("value")?.as_str()?;
             Some(property(entry, ContactEmail::new(address), "email", index))
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
     card.phones = values(value, "phoneNumbers")
         .enumerate()
         .filter_map(|(index, entry)| {
@@ -68,7 +68,7 @@ pub(crate) fn person(
             }
             Some(property(entry, phone, "phone", index))
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
     card.addresses = values(value, "addresses")
         .enumerate()
         .map(|(index, entry)| {
@@ -98,16 +98,16 @@ pub(crate) fn person(
             }
             property(entry, address, "address", index)
         })
-        .collect::<Result<_, _>>()?;
-    normalize_organizations(value, &mut card)?;
-    normalize_birthdays(value, &mut card)?;
+        .collect();
+    normalize_organizations(value, &mut card);
+    normalize_birthdays(value, &mut card);
     card.notes = values(value, "biographies")
         .enumerate()
         .filter_map(|(index, entry)| {
             let note = entry.get("value")?.as_str()?;
             Some(property(entry, ContactNote::new(note), "note", index))
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
     card.urls = values(value, "urls")
         .enumerate()
         .filter_map(|(index, entry)| {
@@ -122,7 +122,7 @@ pub(crate) fn person(
                 index,
             ))
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
     card.relations = values(value, "relations")
         .enumerate()
         .filter_map(|(index, entry)| {
@@ -144,7 +144,7 @@ pub(crate) fn person(
                 index,
             ))
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
     card.keywords = values(value, "userDefined")
         .filter_map(|entry| {
             let key = entry.get("key").and_then(Value::as_str)?;
@@ -174,7 +174,7 @@ pub(crate) fn person(
                 index,
             ))
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
     if let Some(etag) = value.get("etag").and_then(Value::as_str) {
         card.revisions = RevisionTokens::from_etag(ETag::new(etag));
     }
@@ -269,9 +269,9 @@ fn name(value: &Value) -> ContactName {
     name
 }
 
-fn normalize_organizations(value: &Value, card: &mut ContactCard) -> Result<(), GoogleError> {
+fn normalize_organizations(value: &Value, card: &mut ContactCard) {
     for (index, entry) in values(value, "organizations").enumerate() {
-        let organization_id = property_id(entry, "organization", index)?;
+        let organization_id = property_id("organization", index);
         let organization = Organization {
             name: entry
                 .get("name")
@@ -296,8 +296,7 @@ fn normalize_organizations(value: &Value, card: &mut ContactCard) -> Result<(), 
         );
         if let Some(title) = entry.get("title").and_then(Value::as_str) {
             card.titles.insert(
-                PropertyId::new(format!("title-{index}"))
-                    .map_err(|error| GoogleError::protocol(error.to_string()))?,
+                property_id("title", index),
                 contact_property(
                     entry,
                     Title {
@@ -309,10 +308,9 @@ fn normalize_organizations(value: &Value, card: &mut ContactCard) -> Result<(), 
             );
         }
     }
-    Ok(())
 }
 
-fn normalize_birthdays(value: &Value, card: &mut ContactCard) -> Result<(), GoogleError> {
+fn normalize_birthdays(value: &Value, card: &mut ContactCard) {
     for (index, entry) in values(value, "birthdays").enumerate() {
         let Some(date) = entry.get("date").and_then(Value::as_object) else {
             continue;
@@ -324,7 +322,7 @@ fn normalize_birthdays(value: &Value, card: &mut ContactCard) -> Result<(), Goog
             date.get("day").and_then(Value::as_u64).unwrap_or(0)
         );
         card.anniversaries.insert(
-            property_id(entry, "birthday", index)?,
+            property_id("birthday", index),
             contact_property(
                 entry,
                 Anniversary {
@@ -335,7 +333,6 @@ fn normalize_birthdays(value: &Value, card: &mut ContactCard) -> Result<(), Goog
             ),
         );
     }
-    Ok(())
 }
 
 fn property<T>(
@@ -343,21 +340,21 @@ fn property<T>(
     value: T,
     prefix: &str,
     index: usize,
-) -> Result<(PropertyId, ContactProperty<T>), GoogleError> {
-    Ok((
-        property_id(entry, prefix, index)?,
-        contact_property(entry, value),
-    ))
+) -> (PropertyId, ContactProperty<T>) {
+    (property_id(prefix, index), contact_property(entry, value))
 }
 
-fn property_id(entry: &Value, prefix: &str, index: usize) -> Result<PropertyId, GoogleError> {
-    let id = entry
-        .get("metadata")
-        .and_then(|metadata| metadata.get("source"))
-        .and_then(|source| source.get("id"))
-        .and_then(Value::as_str)
-        .map_or_else(|| format!("{prefix}-{index}"), str::to_owned);
-    PropertyId::new(id).map_err(|error| GoogleError::protocol(error.to_string()))
+/// Keys one property of a card by field and position.
+///
+/// The People API's `metadata.source.id` looks like a per-property key but is not:
+/// it identifies the source *record* (RFC-equivalent: the whole contact), so every
+/// email, phone, address, and organization of one person carries the same value.
+/// Using it collapsed each multi-valued field into a single map entry and silently
+/// dropped everything but the last. Position within the field is what actually
+/// distinguishes Google's entries, and it matches the fallback the CardDAV and Graph
+/// adapters already use.
+fn property_id(prefix: &str, index: usize) -> PropertyId {
+    PropertyId::new(format!("{prefix}-{index}")).expect("prefixed index is never empty")
 }
 
 fn contact_property<T>(entry: &Value, value: T) -> ContactProperty<T> {

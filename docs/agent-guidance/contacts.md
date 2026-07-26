@@ -152,8 +152,17 @@ mail/calendar/identity scopes.
   `WriteGuard::Absent`: it is not a per-card ETag guard.
 - After discovery, bind a source adapter to the chosen book with
   `JmapProvider::with_contact_address_book` before exposing its destination to
-  host writes. This replaces the constructor's compatibility `default`
-  destination with the real opaque server id.
+  host writes. Until it is bound the adapter advertises **no** destination:
+  JMAP has no well-known default book, and a fabricated id (the constructor
+  once used the literal `default`) passes the host's own create-validation and
+  is then rejected by the server — failure at the wrong layer, and a "save
+  to…" picker offering a book that does not exist.
+- A create is built from the **normalized card**, not from the stored raw
+  JSContact. Raw contributes only the properties the engine does not model
+  (vendor `x-` extensions, newer JSContact properties); everything modelled is
+  re-derived from the card, including fields the host emptied. Returning raw
+  verbatim would have shipped the pre-edit values of any card a host cloned
+  and modified.
 - Media/blob references use authenticated JMAP blob retrieval.
 
 ### CardDAV
@@ -168,7 +177,24 @@ mail/calendar/identity scopes.
   original vCard.
 - Create with `If-None-Match: *`; update and delete with `If-Match` using the
   resource ETag. Capability metadata reports `WriteGuard::Enforced`.
-- Embedded and authenticated URI photos are fetched on demand.
+- **Every** value written into a vCard goes through `vcard_escape::escape` —
+  including `KIND`, whose `ContactKind::Other` payload is host-supplied text.
+  `escape` normalizes `\r\n`, a lone `\r`, and a lone `\n` to the single escape
+  `\n`, so no host string can end a content line and start a property of its
+  own.
+- A name edit rewrites `FN` **and** `N`: `patch_vcard` strips both, so emitting
+  only `FN` would delete the structured name from the server's card. `N`'s two
+  separator levels (`;` between slots, `,` within one) are split escape-aware,
+  so what the writer emits is what the parser recovers.
+- Writability comes from `Props::grants_member_writes`, shared with the CalDAV
+  calendar path: `DAV:all`, `DAV:write`, or `DAV:write-content` (never
+  `DAV:write-properties`), and an unreported privilege set means writable.
+  `CardDavProvider::rebind` re-derives it for the new collection from the books
+  discovery already listed, so a rebind neither repeats discovery nor silently
+  drops write capability.
+- Embedded and authenticated URI photos are fetched on demand. Both photo cache
+  keys hash the resource URI — an inline `PHOTO;ENCODING=b` *is* a `data:` URI
+  holding the whole image, and neither key may carry it.
 
 The Stalwart fixture writes the shared person/group cards over CardDAV; the
 gated `provider-caldav/tests/live_contacts.rs` reads them through both JMAP and
@@ -230,6 +256,19 @@ Preferred display names are deterministic:
 The same priority, then account/source/contact ids, breaks ties for other
 preferred values.
 
+Where a person has none of those — no name on any source card and no valid
+email — `Person::display_name` is `None`. **The engine does not invent a
+label.** It used to substitute the English string "Unnamed contact", which is
+untranslatable text minted inside a provider-neutral, I/O-free core and shown
+verbatim by every host. Choosing what to call a nameless contact is a
+presentation decision, so the `Option` hands it to the host, which knows the
+user's language. Hosts sort such people under the empty string; the page cursor
+encodes the same key, so paging stays consistent.
+
+`RecipientSuggestion::display_name` stays a plain `String`: a suggestion is
+always shown against an address, and falling back to that address is real data
+rather than invented text.
+
 ### Generations and stable ids
 
 Applying contact changes increments a contact-source generation. Rebuilding
@@ -253,7 +292,10 @@ Aliases are resolved by `person(PersonId)` so stale UI references remain useful.
 database; bytes live in the same content-addressed blob area as raw mail source.
 Entries are keyed by account/source-card **plus a digest of the media resource's
 URI**, and validated by the media fingerprint when present, otherwise by the card
-ETag/changeKey, otherwise by the media URI. The resource component is load-bearing: a
+ETag/changeKey, otherwise by a digest of the media URI. Both keys hash rather than
+store the URI, for the same reason: a vCard inline photo arrives as a `data:` URI
+holding the entire image, and a verbatim key would write a second copy of it into a
+column that is string-compared on every read. The resource component is load-bearing: a
 card can carry several media resources (a `PHOTO` and a `LOGO` both land in
 `ContactCard::media`) and the ETag fallback is identical for every resource on one
 card, so a card-only key let a `LOGO` fetch satisfy a later `PHOTO` read.

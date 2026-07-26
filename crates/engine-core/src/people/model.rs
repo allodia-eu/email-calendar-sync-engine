@@ -75,8 +75,15 @@ pub struct SourcedValue<T: Ord> {
 pub struct Person {
     /// Stable store-local person id.
     pub id: PersonId,
-    /// Deterministically selected display name.
-    pub display_name: String,
+    /// Deterministically selected display name: the best-ranked source name, else the
+    /// first canonical email.
+    ///
+    /// `None` when the sources carry neither — a card with no name and no address. The
+    /// engine deliberately invents nothing here: any placeholder it chose ("Unnamed
+    /// contact") would be untranslatable English baked into a provider-neutral core and
+    /// surfaced verbatim by every host. Naming the nameless is a presentation decision,
+    /// so it belongs to the host, which knows the user's language.
+    pub display_name: Option<String>,
     /// All source cards in this connected component.
     pub sources: BTreeSet<PersonSourceId>,
     /// Card kinds represented by the source records.

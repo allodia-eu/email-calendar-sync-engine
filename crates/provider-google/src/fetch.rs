@@ -30,7 +30,7 @@ use crate::{
     error::GoogleError,
     json::{opt_str, req_str},
     normalize::{METADATA_HEADERS, all_mail_mailbox, label_from_json, message_from_json},
-    transport::GoogleClient,
+    transport::{GoogleClient, encode_query_value},
 };
 
 /// The Gmail user-scoped API root (`/gmail/v1/users/me`).
@@ -247,7 +247,7 @@ fn list_url(
     use std::fmt::Write as _;
     let mut url = format!("{USERS_ME}/messages?maxResults=100");
     if let Some(page) = page {
-        let _ = write!(url, "&pageToken={}", page.as_str());
+        let _ = write!(url, "&pageToken={}", encode_query_value(page.as_str()));
     }
     if let Some(epoch) = floor.and_then(midnight_epoch) {
         let _ = write!(url, "&q=after:{epoch}");
@@ -258,9 +258,12 @@ fn list_url(
 /// The `history.list` URL from `cursor` (a `startHistoryId`), optionally continued.
 fn history_url(client: &GoogleClient, cursor: &SyncState, page: Option<&PageToken>) -> String {
     use std::fmt::Write as _;
-    let mut url = format!("{USERS_ME}/history?startHistoryId={}", cursor.as_str());
+    let mut url = format!(
+        "{USERS_ME}/history?startHistoryId={}",
+        encode_query_value(cursor.as_str())
+    );
     if let Some(page) = page {
-        let _ = write!(url, "&pageToken={}", page.as_str());
+        let _ = write!(url, "&pageToken={}", encode_query_value(page.as_str()));
     }
     client.url(&url)
 }

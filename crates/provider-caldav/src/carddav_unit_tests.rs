@@ -3,6 +3,7 @@ use engine_core::{
     ids::{AddressBookId, ContactId},
     membership::Memberships,
 };
+use engine_provider::{ContactsProvider, Provider};
 use engine_tls::TlsClientConfig;
 
 use crate::{
@@ -107,4 +108,39 @@ async fn discovery_accepts_direct_home_and_fails_closed_on_missing_or_redirected
             .await
             .is_err()
     );
+}
+
+const HOME: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/</D:href><D:propstat><D:prop><C:addressbook-home-set><D:href>/dav/addressbooks/alice/</D:href></C:addressbook-home-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+
+/// Two books: `default` grants the `DAV:all` aggregate, `shared` grants only `read`.
+const MIXED_BOOKS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:addressbook/></D:resourcetype><D:displayname>Contacts</D:displayname><D:current-user-privilege-set><D:privilege><D:all/></D:privilege><D:privilege><D:read/></D:privilege></D:current-user-privilege-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/dav/addressbooks/alice/shared/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:addressbook/></D:resourcetype><D:displayname>Shared</D:displayname><D:current-user-privilege-set><D:privilege><D:read/></D:privilege></D:current-user-privilege-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+
+/// `DAV:all` is the RFC 3744 aggregate *above* `DAV:write`, so a server that reports it
+/// alongside `read` has granted writes. Reading it as read-only made every write fail
+/// against a book the user owns — and the calendar path already got this right, which
+/// is why both now share one predicate.
+///
+/// The same fixture pins the rebind contract: switching to another book in the home
+/// re-derives write capability from the privileges discovery already collected, rather
+/// than assuming the worst and stranding the caller with a read-only provider.
+#[tokio::test]
+async fn write_capability_follows_the_aggregate_privilege_and_survives_rebinding() {
+    let provider = CardDavProvider::with_executor(
+        Box::new(Replay::new(vec![ok(HOME), ok(MIXED_BOOKS)])),
+        "/.well-known/carddav",
+        "default",
+    )
+    .await
+    .unwrap();
+    assert!(provider.connection_info().capabilities.contact_writes());
+    assert!(provider.contact_destination().is_some_and(|d| d.writable));
+
+    let shared = provider.rebind("shared").unwrap();
+    assert!(!shared.connection_info().capabilities.contact_writes());
+    assert!(shared.contact_destination().is_none());
+
+    // ...and back onto the writable book, without a second round of discovery.
+    let back = shared.rebind("default").unwrap();
+    assert!(back.connection_info().capabilities.contact_writes());
+    assert!(back.contact_destination().is_some_and(|d| d.writable));
 }

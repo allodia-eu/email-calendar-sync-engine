@@ -221,17 +221,17 @@ impl GraphClient {
     /// Authenticated `GET` returning the raw response bytes (the `$value` MIME
     /// stream), rebasing absolute Graph links onto a non-default base like [`get`].
     ///
+    /// Authenticated **only on the Graph origin**: the `$value` MIME and
+    /// `/photo/$value` endpoints are base-rooted and carry the token as before, but a
+    /// contact payload can name any host in a photo URI. Sending the OAuth token there
+    /// would hand the account's credentials to whoever the payload names, so an
+    /// off-origin URL is fetched anonymously.
+    ///
     /// [`get`]: Self::get
     ///
     /// # Errors
     ///
     /// Returns a classified [`GraphError`] (a non-2xx is [`GraphError::Status`]).
-    /// Raw byte fetch, authenticated **only on the Graph origin**.
-    ///
-    /// The `$value` MIME and `/photo/$value` endpoints are base-rooted and
-    /// authenticate as before. But a contact payload can carry a photo URI naming any
-    /// host; sending the OAuth token there would hand the account's credentials to
-    /// whoever the payload names, so an off-origin URL is fetched anonymously.
     pub(crate) async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {
         let url = self.rebase(url);
         if engine_provider::same_origin(&url, &self.base) {

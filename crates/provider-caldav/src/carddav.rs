@@ -1,5 +1,7 @@
 //! CardDAV address-book discovery, RFC 6578 sync, and conditional writes.
 
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use engine_core::{
     contact::{
@@ -23,10 +25,23 @@ use crate::{
     },
     error::CalDavError,
     transport::{Credentials, DavClient, DavExecutor, DavMethod, Precondition, WriteRequest},
-    vcard,
+    vcard_write,
 };
 
 const LIST_CURSOR: &str = "carddav-address-book-list";
+
+/// What a CardDAV collection can do, gated on whether this principal may write to it.
+fn capabilities(writable: bool) -> Capabilities {
+    let capabilities = Capabilities::none()
+        .with_contacts()
+        .with_contact_groups()
+        .with_contact_photos();
+    if writable {
+        capabilities.with_contact_writes(WriteGuard::Enforced)
+    } else {
+        capabilities
+    }
+}
 
 /// CardDAV connection settings.
 #[derive(Debug, Clone)]
@@ -76,6 +91,11 @@ pub struct CardDavProvider {
     executor: Box<dyn DavExecutor>,
     home_href: String,
     collection: AddressBookId,
+    /// Every address book the home listed as writable at connect time. Kept so
+    /// [`CardDavProvider::rebind`] can answer "may I write here?" for the collection it
+    /// switches to without repeating discovery — the alternative, assuming the worst,
+    /// silently turned a rebound provider read-only.
+    writable_books: BTreeSet<AddressBookId>,
     writable: bool,
     capabilities: Capabilities,
 }
@@ -114,41 +134,40 @@ impl CardDavProvider {
     ) -> Result<Self, CalDavError> {
         let home_href = discover_home(executor.as_ref(), discovery_path).await?;
         let collection = bind_collection(&home_href, address_book)?;
-        let books = list_address_books(executor.as_ref(), &home_href).await?;
-        let writable = books
-            .iter()
-            .find(|book| book.id == collection)
-            .is_some_and(|book| book.is_writable);
-        let mut capabilities = Capabilities::none()
-            .with_contacts()
-            .with_contact_groups()
-            .with_contact_photos();
-        if writable {
-            capabilities = capabilities.with_contact_writes(WriteGuard::Enforced);
-        }
+        let writable_books: BTreeSet<AddressBookId> =
+            list_address_books(executor.as_ref(), &home_href)
+                .await?
+                .into_iter()
+                .filter(|book| book.is_writable)
+                .map(|book| book.id)
+                .collect();
+        let writable = writable_books.contains(&collection);
         Ok(Self {
             executor,
             home_href,
+            capabilities: capabilities(writable),
             collection,
+            writable_books,
             writable,
-            capabilities,
         })
     }
 
-    /// Rebinds without repeating discovery.
+    /// Rebinds to another address book in the same home, without repeating discovery.
+    ///
+    /// Write capability is re-derived for the new collection from the privileges the
+    /// home reported at connect time, so a rebind onto a writable book stays writable
+    /// and one onto a read-only book stops advertising a destination.
     ///
     /// # Errors
     ///
     /// Returns [`CalDavError`] when `address_book` cannot form a valid address-book id.
     pub fn rebind(self, address_book: &str) -> Result<Self, CalDavError> {
         let collection = bind_collection(&self.home_href, address_book)?;
+        let writable = self.writable_books.contains(&collection);
         Ok(Self {
             collection,
-            writable: false,
-            capabilities: Capabilities::none()
-                .with_contacts()
-                .with_contact_groups()
-                .with_contact_photos(),
+            writable,
+            capabilities: capabilities(writable),
             ..self
         })
     }
@@ -309,7 +328,7 @@ impl ContactsProvider for CardDavProvider {
                 href: href.clone(),
                 content_type: Some("text/vcard; charset=utf-8"),
                 precondition: Precondition::IfNoneMatch,
-                body: vcard::build_vcard(&draft.card),
+                body: vcard_write::build_vcard(&draft.card),
             })
             .await?
             .into_write_etag()?;
@@ -334,7 +353,7 @@ impl ContactsProvider for CardDavProvider {
                 href: base.id.as_str().to_owned(),
                 content_type: Some("text/vcard; charset=utf-8"),
                 precondition: Precondition::IfMatch(etag.as_str().to_owned()),
-                body: vcard::patch_vcard(base, patch)?,
+                body: vcard_write::patch_vcard(base, patch)?,
             })
             .await?
             .into_write_etag()?;

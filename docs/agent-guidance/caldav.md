@@ -37,6 +37,13 @@ and delete require the source ETag under `If-Match`, so the destination
 advertises `WriteGuard::Enforced`. Embedded data-URI and authenticated URI photo
 reads are supported; photo mutation is not.
 
+Every written value is escaped — `KIND` included, because `ContactKind::Other`
+carries host text, and an unescaped line break there injects properties into the
+`PUT` body. A name edit writes `FN` **and** `N`: both are stripped before the
+replacement is inserted, so emitting only `FN` deletes the structured name from
+the server's card. `N`'s nested separators (`;` between slots, `,` within one)
+are split escape-aware so the writer and the parser agree.
+
 ## The crate
 
 - **`provider-caldav`** — a CalDAV client over HTTP that implements
@@ -136,7 +143,12 @@ reads are supported; photo mutation is not.
   principal** may do **here**, so a subscribed holiday feed and a colleague's read-only
   share are ordinary calendar collections distinguished only by the privileges they
   grant *this* user. `DAV:all`, `DAV:write` or `DAV:write-content` → `may_write`;
-  otherwise `CalendarAccess::reader()`. **`DAV:write-properties` is not enough** —
+  otherwise `CalendarAccess::reader()`. The predicate itself is
+  `Props::grants_member_writes` in `dav.rs`, **shared with the CardDAV
+  address-book path**: the spellings are the same RFC 3744 privileges, and two
+  copies had already drifted — the address-book copy omitted `DAV:all`, so a book
+  reporting `{all, read}` was permanently read-only and every write to a book the
+  user owns failed. **`DAV:write-properties` is not enough** —
   SabreDAV grants exactly that on a read-only share (you may rename your copy of it), so
   counting it as a write would reinstate the lie. Only `may_write` is derived: the
   privilege set says nothing standard about whether the *collection* may be deleted

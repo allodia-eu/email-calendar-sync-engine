@@ -16,7 +16,11 @@ use engine_provider::{
 };
 use serde_json::Value;
 
-use crate::{contact_normalize, contact_write, error::GoogleError, transport::GoogleClient};
+use crate::{
+    contact_normalize, contact_write,
+    error::GoogleError,
+    transport::{GoogleClient, encode_query_value},
+};
 
 const CONNECTIONS: &str = "google-connections";
 const OTHER: &str = "google-other-contacts";
@@ -149,10 +153,10 @@ impl GoogleContactProvider {
     fn page_url(&self, page_token: Option<&str>, sync_token: Option<&str>) -> String {
         let mut url = self.initial_url();
         if let Some(token) = sync_token {
-            url = format!("{url}&syncToken={token}");
+            url = format!("{url}&syncToken={}", encode_query_value(token));
         }
         if let Some(token) = page_token {
-            url = format!("{url}&pageToken={token}");
+            url = format!("{url}&pageToken={}", encode_query_value(token));
         }
         url
     }

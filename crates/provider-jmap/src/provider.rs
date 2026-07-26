@@ -86,7 +86,11 @@ impl Executor for JmapClient {
 pub struct JmapProvider {
     executor: Box<dyn Executor>,
     capabilities: Capabilities,
-    pub(crate) contact_address_book: AddressBookId,
+    /// The address book host-facing contact writes target, once
+    /// [`JmapProvider::with_contact_address_book`] has bound one. `None` until then:
+    /// JMAP has no well-known default book, so a fabricated id would advertise a
+    /// destination the server will reject.
+    pub(crate) contact_address_book: Option<AddressBookId>,
 }
 
 impl core::fmt::Debug for JmapProvider {
@@ -115,14 +119,17 @@ impl JmapProvider {
         Self {
             executor,
             capabilities,
-            contact_address_book: AddressBookId::try_from("default").expect("static id"),
+            contact_address_book: None,
         }
     }
 
-    /// Binds host-facing contact writes to one discovered address book.
+    /// Binds host-facing contact writes to one **discovered** address book.
+    ///
+    /// Until this is called the provider advertises no contact destination, so a host
+    /// that forgot to bind one fails at its own validation rather than on the wire.
     #[must_use]
     pub fn with_contact_address_book(mut self, address_book: AddressBookId) -> Self {
-        self.contact_address_book = address_book;
+        self.contact_address_book = Some(address_book);
         self
     }
 

@@ -102,6 +102,27 @@ impl core::fmt::Debug for GoogleClient {
     }
 }
 
+/// Percent-encodes one **query-parameter value**.
+///
+/// Continuation tokens (`pageToken`, `syncToken`, `startHistoryId`) are opaque
+/// server-generated strings that this crate splices into a query string. Splicing
+/// them raw means a token containing `&`, `#`, or `=` re-parameterizes or truncates
+/// the request — the caller would silently fetch a different page than the server
+/// named. Encoding everything outside the RFC 3986 unreserved set keeps the token a
+/// value, never syntax.
+pub(crate) fn encode_query_value(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
 impl GoogleClient {
     /// Connects with an OAuth bearer access token, targeting the Google APIs root.
     ///

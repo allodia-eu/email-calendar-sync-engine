@@ -405,6 +405,16 @@ fn contact_capabilities_are_writable_without_a_per_card_guard() {
     );
 }
 
+/// JMAP has no well-known "default" address book, so an unbound provider must offer
+/// no destination at all. Naming a fabricated book instead made a host's own
+/// create-validation pass and left the server to reject `addressBookIds` on the wire —
+/// the wrong layer to learn it in, and a "save to" picker offering a book that is not
+/// there.
+#[test]
+fn an_unbound_provider_advertises_no_contact_destination() {
+    assert!(provider(vec![]).contact_destination().is_none());
+}
+
 #[test]
 fn card_kinds_members_media_and_structured_name_variants_are_normalized() {
     for (kind, expected) in [

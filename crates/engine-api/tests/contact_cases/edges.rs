@@ -38,11 +38,12 @@ async fn destinations_and_source_targeted_patch_delete_are_exposed() {
             .as_str(),
         "book"
     );
+    // `other` advertises a read-only destination: it is a place contacts come *from*,
+    // never a place a host may offer to save one to.
     let providers: [&dyn ContactsProvider; 3] = [&provider, &other, &provider];
-    let destinations = engine.contact_destinations(&account, providers);
-    assert_eq!(destinations.len(), 2);
-    assert_eq!(destinations[0].address_book.as_str(), "aaa");
-    assert_eq!(destinations[1].address_book.as_str(), "book");
+    let destinations = engine.contact_destinations(providers);
+    assert_eq!(destinations.len(), 1, "{destinations:?}");
+    assert_eq!(destinations[0].address_book.as_str(), "book");
 
     let base = FakeContacts::card("c1", "Ada", "ada@example.test");
     let mut patch = ContactPatch::default();
@@ -195,4 +196,46 @@ async fn photo_cache_falls_back_through_etag_change_key_and_uri() {
         .await
         .unwrap();
     assert_eq!(provider.photos.load(Ordering::SeqCst), 3);
+}
+
+/// A CardDAV inline `PHOTO;ENCODING=b` arrives as a `data:` URI holding the whole
+/// image. It is the *fallback* fingerprint, so it must be hashed on the way into the
+/// cache row — otherwise a second copy of the image is stored beside the first and
+/// string-compared on every read. The behaviour it encodes still has to hold: a
+/// different inline image is a different photo.
+#[tokio::test]
+async fn an_inline_data_uri_photo_is_fingerprinted_by_digest_not_by_payload() {
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = FakeContacts::default();
+    let account = AccountId::try_from("account-1").unwrap();
+    let card = FakeContacts::card("c1", "Ada", "ada@example.test");
+    let inline = |payload: &str| ContactResource {
+        uri: format!("data:image/jpeg;base64,{payload}"),
+        ..ContactResource::default()
+    };
+    let big = inline(&"A".repeat(64 * 1024));
+
+    engine
+        .contact_photo(&provider, &account, &card, &big)
+        .await
+        .unwrap();
+    engine
+        .contact_photo(&provider, &account, &card, &big)
+        .await
+        .unwrap();
+    assert_eq!(
+        provider.photos.load(Ordering::SeqCst),
+        1,
+        "second read cached"
+    );
+
+    engine
+        .contact_photo(&provider, &account, &card, &inline("Qk0="))
+        .await
+        .unwrap();
+    assert_eq!(
+        provider.photos.load(Ordering::SeqCst),
+        2,
+        "a different inline image is a different photo"
+    );
 }

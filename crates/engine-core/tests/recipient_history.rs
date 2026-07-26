@@ -94,7 +94,7 @@ fn person(id: u64, name: &str, email: &str, saved: bool, writable: bool) -> Pers
     );
     Person {
         id: PersonId::new(id).unwrap(),
-        display_name: name.into(),
+        display_name: Some(name.into()),
         sources: BTreeSet::from([source.clone()]),
         kinds: BTreeSet::from([ContactKind::Individual]),
         names: vec![SourcedValue {

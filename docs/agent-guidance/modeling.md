@@ -8,7 +8,16 @@ For contacts, `ContactCard` is the normalized JSContact-shaped source record and
 collection, and derived identities from mixing. Address-book membership is
 non-empty and separate from card identity. Raw vCard, raw JSContact, and raw
 provider JSON remain beside normalized fields so a provider write never rebuilds
-an authoritative document from a lossy projection. See `contacts.md`.
+an authoritative document from a lossy projection — but "authoritative" means
+*for what the model does not carry*: a write re-derives every modelled property
+from the normalized value, or a host's edit would be silently discarded. See
+`contacts.md`.
+
+The model reports absence rather than inventing a value to fill it.
+`Person::display_name` is `Option<String>` because a card with neither a name
+nor an address has no name to show, and any placeholder the engine picked would
+be untranslatable text minted in a provider-neutral core and rendered verbatim
+by every host. Presentation defaults belong to the host.
 
 ## Required Sources
 

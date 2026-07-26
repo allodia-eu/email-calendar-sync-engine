@@ -24,7 +24,7 @@ use crate::{
     cal_normalize::{calendar_from_json, event_from_json},
     error::GoogleError,
     json::{opt_str, req_str, wrap_id},
-    transport::GoogleClient,
+    transport::{GoogleClient, encode_query_value},
 };
 
 /// The Google Calendar v3 API root.
@@ -61,7 +61,7 @@ pub(crate) async fn calendars(client: &GoogleClient) -> Result<Vec<Calendar>, Go
         let mut url = format!("{CALENDAR_BASE}/users/me/calendarList?maxResults=250");
         if let Some(token) = &page {
             use core::fmt::Write as _;
-            let _ = write!(url, "&pageToken={token}");
+            let _ = write!(url, "&pageToken={}", encode_query_value(token));
         }
         let doc = client.get(&client.url(&url)).await?;
         for entry in array(&doc, "items", "calendarList")? {
@@ -149,10 +149,16 @@ fn page_url(
         calendar.key().as_str()
     );
     if let Some(page) = page {
-        return client.url(&format!("{base}?pageToken={}", page.as_str()));
+        return client.url(&format!(
+            "{base}?pageToken={}",
+            encode_query_value(page.as_str())
+        ));
     }
     if let Some(cursor) = cursor {
-        return client.url(&format!("{base}?syncToken={}", cursor.as_str()));
+        return client.url(&format!(
+            "{base}?syncToken={}",
+            encode_query_value(cursor.as_str())
+        ));
     }
     let mut url = format!("{base}?singleEvents=false&maxResults=250");
     if let Some(window) = window {

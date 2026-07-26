@@ -105,10 +105,7 @@ fn address_book(response: &DavResponse) -> Result<AddressBook, CalDavError> {
         .props
         .get("addressbook-description")
         .map(str::to_owned);
-    book.is_writable = response
-        .props
-        .privileges()
-        .is_none_or(|rights| rights.contains("write") || rights.contains("write-content"));
+    book.is_writable = response.props.grants_member_writes();
     if let Some(rights) = response.props.privileges() {
         book.rights.extend(rights.iter().cloned());
     }

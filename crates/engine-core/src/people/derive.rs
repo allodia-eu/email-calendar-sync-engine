@@ -203,9 +203,11 @@ fn materialize_person(id: PersonId, sources: &[&PersonSource]) -> Person {
             .map(|property| property.value.name.clone())
             .collect()
     });
-    let display_name = preferred_name(sources)
-        .or_else(|| emails.first().map(|value| value.value.to_string()))
-        .unwrap_or_else(|| "Unnamed contact".into());
+    // Falls back to an address because that is the person's own data. Where there is
+    // none either, the name stays `None` rather than becoming invented English — see
+    // [`Person::display_name`].
+    let display_name =
+        preferred_name(sources).or_else(|| emails.first().map(|value| value.value.to_string()));
     Person {
         id,
         display_name,

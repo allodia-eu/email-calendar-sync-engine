@@ -177,15 +177,32 @@ fn card() -> ContactCard {
     card
 }
 
+/// Raw preservation exists to carry properties this engine does not model — a vendor
+/// `x-` extension, a JSContact property added after this version. It must not also
+/// carry *modelled* values, or a host that clones a fetched card, edits it, and
+/// creates the copy silently ships the values it edited away.
 #[test]
-fn raw_jscontact_is_preserved_without_the_server_id() {
+fn raw_jscontact_carries_extensions_forward_but_never_overrides_edits() {
     let mut card = card();
     card.raw_jscontact = Some(RawJsContact::new(
-        r#"{"id":"server-id","kind":"individual","x-acme":{"kept":true}}"#,
+        r#"{"id":"server-id","kind":"individual","x-acme":{"kept":true},
+            "emails":{"stale":{"@type":"EmailAddress","address":"stale@example.test"}},
+            "notes":{"stale":{"@type":"Note","note":"stale"}}}"#,
     ));
+    // The edit the host made on the normalized card.
+    card.notes.clear();
+
     let object = writable_object(&card);
     assert!(object.get("id").is_none());
-    assert_eq!(object["x-acme"]["kept"], true);
+    assert_eq!(object["x-acme"]["kept"], true, "extension must survive");
+    assert!(
+        object["emails"].get("stale").is_none(),
+        "modelled values come from the card, not the raw: {}",
+        object["emails"]
+    );
+    assert_eq!(object["emails"]["work"]["address"], "ada@example.test");
+    // A field the host emptied is emptied on the wire too, not restored from raw.
+    assert!(object.get("notes").is_none(), "{object:?}");
 }
 
 #[test]

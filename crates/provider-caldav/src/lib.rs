@@ -54,6 +54,7 @@ mod transport;
 mod vcard;
 mod vcard_escape;
 mod vcard_property;
+mod vcard_write;
 mod write;
 
 #[cfg(test)]

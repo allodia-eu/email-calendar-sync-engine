@@ -1,7 +1,8 @@
 use engine_core::{
     contact::{
         ContactCard, ContactEmail, ContactField, ContactKind, ContactName, ContactNote,
-        ContactPatch, ContactPhone, ContactProperty, ContactResource, FieldPatch, PropertyId,
+        ContactPatch, ContactPhone, ContactProperty, ContactResource, FieldPatch, NameComponent,
+        NameComponentKind, PropertyId,
     },
     ids::{AddressBookId, ContactId},
     membership::Memberships,
@@ -9,7 +10,10 @@ use engine_core::{
 };
 use serde_json::json;
 
-use crate::vcard::{build_vcard, parse_vcard, patch_vcard};
+use crate::{
+    vcard::parse_vcard,
+    vcard_write::{build_vcard, patch_vcard},
+};
 
 #[test]
 fn parses_multi_email_group_and_preserves_unknown_lines() {
@@ -264,4 +268,122 @@ fn raw_preserving_patch_sets_clears_and_rejects_malformed_fields() {
         ..ContactPatch::default()
     };
     assert!(!patch_vcard(&base, &clear_kind).unwrap().contains("KIND:"));
+}
+
+/// `ContactKind::Other` carries host-supplied text, so it is as untrusted as any
+/// other written value: a card whose kind embeds a line break must not be able to
+/// smuggle extra properties into the `PUT` body.
+#[test]
+fn a_hostile_contact_kind_cannot_inject_vcard_properties() {
+    let hostile = ContactKind::Other("individual\r\nEMAIL:attacker@evil.test".into());
+    let mut card = writable_card();
+    card.kind = hostile.clone();
+    let created = build_vcard(&card);
+    // The hostile text survives as *data* on the KIND line; what it must never do is
+    // start a content line of its own.
+    assert!(created.contains("KIND:individual\\nEMAIL:attacker@evil.test"));
+    assert!(
+        !created
+            .lines()
+            .any(|line| line.starts_with("EMAIL:attacker@evil.test")),
+        "{created}"
+    );
+
+    let mut base = writable_card();
+    base.raw_vcard = Some(RawVcard::new(
+        "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Old\r\nEND:VCARD\r\n",
+    ));
+    let patch = ContactPatch {
+        kind: Some(FieldPatch::Set(hostile)),
+        ..ContactPatch::default()
+    };
+    let patched = patch_vcard(&base, &patch).unwrap();
+    assert!(
+        !patched
+            .lines()
+            .any(|line| line.starts_with("EMAIL:attacker@evil.test")),
+        "{patched}"
+    );
+}
+
+/// `patch_vcard` strips both `FN` and `N` for a name edit, so it owes the card a
+/// replacement `N`: dropping it silently deletes the structured name the server
+/// held, and the next sync reports the contact as having no name components.
+#[test]
+fn a_name_edit_rewrites_the_structured_name_it_replaced() {
+    let mut base = writable_card();
+    base.raw_vcard = Some(RawVcard::new(
+        "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Old Name\r\nN:Old;Name;;;\r\nEND:VCARD\r\n",
+    ));
+    let name = ContactName {
+        full: Some("Ada Lovelace".into()),
+        components: vec![
+            NameComponent::new(NameComponentKind::Given, "Ada"),
+            NameComponent::new(NameComponentKind::Surname, "Lovelace"),
+            NameComponent::new(NameComponentKind::Suffix, "Countess"),
+        ],
+        ..ContactName::default()
+    };
+    let mut patch = ContactPatch::default();
+    patch.fields.insert(
+        ContactField::Name,
+        FieldPatch::Set(serde_json::to_value(&name).unwrap()),
+    );
+    let raw = patch_vcard(&base, &patch).unwrap();
+    assert!(raw.contains("FN:Ada Lovelace"), "{raw}");
+    assert!(raw.contains("N:Lovelace;Ada;;;Countess"), "{raw}");
+    assert!(!raw.contains("N:Old;Name"), "{raw}");
+
+    // Round-trips: what the writer emits is what the reader recovers, re-ordered into
+    // the fixed `N` slot order that vCard — not the model — dictates.
+    let reparsed = parse_vcard(
+        &raw,
+        ContactId::try_from("/contacts/ada.vcf").unwrap(),
+        AddressBookId::try_from("/contacts/").unwrap(),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        reparsed.name.unwrap().components,
+        vec![
+            NameComponent::new(NameComponentKind::Surname, "Lovelace"),
+            NameComponent::new(NameComponentKind::Given, "Ada"),
+            NameComponent::new(NameComponentKind::Suffix, "Countess"),
+        ]
+    );
+}
+
+/// The create path owes the same `N` line; a draft's components would otherwise be
+/// dropped on the way to the server.
+#[test]
+fn create_writes_structured_name_components_and_escapes_separators() {
+    let mut card = writable_card();
+    card.name = Some(ContactName {
+        full: Some("Ada Lovelace".into()),
+        components: vec![
+            NameComponent::new(NameComponentKind::Surname, "King;Noel"),
+            NameComponent::new(NameComponentKind::Given, "Ada"),
+        ],
+        ..ContactName::default()
+    });
+    let raw = build_vcard(&card);
+    assert!(raw.contains("N:King\\;Noel;Ada;;;"), "{raw}");
+    let reparsed = parse_vcard(
+        &raw,
+        ContactId::try_from("/contacts/ada.vcf").unwrap(),
+        AddressBookId::try_from("/contacts/").unwrap(),
+        true,
+    )
+    .unwrap();
+    let components = reparsed.name.unwrap().components;
+    assert_eq!(components[0].value, "King;Noel");
+    assert_eq!(components[1].value, "Ada");
+
+    // A name with no components leaves no stale `N` behind.
+    let mut plain = writable_card();
+    plain.name = Some(ContactName {
+        full: Some("Ada".into()),
+        ..ContactName::default()
+    });
+    assert!(!build_vcard(&plain).contains("\r\nN:"));
 }

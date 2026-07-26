@@ -382,8 +382,13 @@ per-object revision guard, so contact writes advertise `WriteGuard::Absent`; an
 account-wide `ifInState` is not presented as lost-update protection.
 Blob-backed media is fetched through the session download template on demand.
 For host-facing writes, connect a source adapter per discovered book and
-call `JmapProvider::with_contact_address_book` with that opaque id; destination
-validation must never assume that the server's default book id is literally
-`default`. Programmatic cards and normalized patch values are encoded back to
-JSContact names and property-map metadata; raw-backed creates retain unknown
-extensions while dropping only the immutable server `id`.
+call `JmapProvider::with_contact_address_book` with that opaque id. Until it is
+called the adapter advertises **no** destination at all: there is no well-known
+default book, and inventing one (the constructor once used the literal
+`default`) let a host's create-validation pass and pushed the failure onto the
+wire. Programmatic cards and normalized patch values are encoded back to
+JSContact names and property-map metadata. A raw-backed create contributes only
+what the engine does not model — vendor `x-` extensions, newer JSContact
+properties — while every modelled property, including one the host emptied, is
+re-derived from the card; returning raw verbatim shipped the pre-edit values of
+any card a host cloned and modified.

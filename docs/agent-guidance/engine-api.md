@@ -36,11 +36,16 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `contact_photo`; and compose recipients with `recipient_suggestions` plus the
   history-forget/clear methods. Unsupported destination fields are rejected
   before enqueue and successful writes refetch the canonical card.
-  `contact_destinations(account, adapters)` enumerates explicit writable books,
-  group membership is a `PeopleQuery` filter, and `contact_photo` is
-  fingerprint-cache-first. A JMAP adapter must be rebound to each discovered
+  `contact_destinations(adapters)` enumerates the explicitly **writable** books
+  and takes no account: each adapter is already bound to one, so an account
+  parameter could only re-state what the caller chose when it assembled the
+  list. A read-only source belongs in an address-book listing, never in a "save
+  to…" picker. Group membership is a `PeopleQuery` filter, and `contact_photo`
+  is fingerprint-cache-first. A JMAP adapter must be rebound to each discovered
   opaque address-book id with `with_contact_address_book` before it is supplied
-  as a host-facing destination.
+  as a host-facing destination — unbound, it offers no destination at all.
+  `Person::display_name` is an `Option`: a person with no name and no address
+  has none, and the host — not the engine — chooses what to call them.
 - **A calendar grid reads `occurrences_in`, not `events`.** `events` returns the
   projected envelope — a recurring series is one object, at its series start — so a host
   that lays *that* out shows a weekly meeting in exactly one week. `occurrences_in(account,

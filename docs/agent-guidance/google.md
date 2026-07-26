@@ -215,3 +215,16 @@ Only owned Connections are writable. The source `etag` is retained in
 precondition; the adapter advertises `WriteGuard::Enforced`. Other Contacts,
 directory entries, and groups are read-only. Group mutation and photo upload
 remain deferred; photos are authenticated on-demand reads.
+
+`PropertyId`s are `{field}-{index}`, **never** `metadata.source.id`. That field
+identifies the source *record* — every email, phone, address, and organization
+of one person carries the same value — so keying a `BTreeMap` on it collapsed
+each multi-valued field to its last entry. An offline fixture that omits
+`metadata.source` cannot catch this; the fixtures now carry the shape a real
+account returns.
+
+Continuation tokens (`syncToken`, `pageToken`, `startHistoryId`) are opaque
+server strings and go through `transport::encode_query_value` before being
+spliced into a query, in mail and calendar as well as contacts. Unencoded, a
+token containing `&` or `=` re-parameterizes the request and the client fetches
+a page the server never named.

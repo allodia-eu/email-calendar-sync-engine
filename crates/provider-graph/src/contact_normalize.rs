@@ -88,22 +88,21 @@ pub(crate) fn card(
             }),
         );
     }
-    for (id, key, kind) in [
-        ("business-homepage", "businessHomePage", "work"),
-        ("personal-homepage", "personalNotes", "private"),
-    ] {
-        if let Some(uri) = value.get(key).and_then(Value::as_str)
-            && uri.starts_with("http")
-        {
-            card.urls.insert(
-                property_id(id)?,
-                ContactProperty::new(ContactResource {
-                    uri: uri.into(),
-                    kind: Some(kind.into()),
-                    ..ContactResource::default()
-                }),
-            );
-        }
+    // `businessHomePage` is the only web address a Graph `contact` carries; the
+    // resource has no personal-homepage counterpart, so there is nothing to pair it
+    // with. (A second entry here used to read `personalNotes` — the notes field — and
+    // republished any note starting with `http` as a URL resource.)
+    if let Some(uri) = value.get("businessHomePage").and_then(Value::as_str)
+        && uri.starts_with("http")
+    {
+        card.urls.insert(
+            property_id("business-homepage")?,
+            ContactProperty::new(ContactResource {
+                uri: uri.into(),
+                kind: Some("work".into()),
+                ..ContactResource::default()
+            }),
+        );
     }
     if let Some(change_key) = value.get("changeKey").and_then(Value::as_str) {
         card.revisions = RevisionTokens {
@@ -265,7 +264,6 @@ fn normalize_addresses(value: &Value, card: &mut ContactCard) -> Result<(), Grap
 fn normalize_organization(value: &Value, card: &mut ContactCard) -> Result<(), GraphError> {
     if let Some(company) = value
         .get("companyName")
-        .or_else(|| value.get("companyName"))
         .and_then(Value::as_str)
         .filter(|company| !company.is_empty())
     {
@@ -423,6 +421,27 @@ mod tests {
         assert_eq!(normalized.phones.len(), 1);
         assert_eq!(normalized.notes.len(), 1);
         assert!(normalized.name.is_none());
+    }
+
+    /// A note is not a web address. `personalNotes` was read as a second homepage
+    /// field, so any note beginning with `http` was republished as a URL resource —
+    /// duplicated out of the notes it belongs to and into a field a host renders as a
+    /// link.
+    #[test]
+    fn a_note_that_starts_with_a_link_stays_a_note() {
+        let normalized = card(
+            &json!({
+                "id": "contact-2",
+                "displayName": "Ada",
+                "personalNotes": "https://internal.example/wiki — read before calling",
+            }),
+            AddressBookId::try_from("book").unwrap(),
+            ContactSourceClass::Personal,
+            true,
+        )
+        .unwrap();
+        assert!(normalized.urls.is_empty(), "{:?}", normalized.urls);
+        assert_eq!(normalized.notes.len(), 1);
     }
 
     #[test]

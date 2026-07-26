@@ -352,6 +352,10 @@ directory users remain read-only. Photos are fetched only on demand.
 Birthday and homepage are retained on reads but are not writable capabilities:
 Graph exposes one scalar for each while the neutral model permits multiple
 anniversaries and links, so choosing one would silently lose intent.
+`businessHomePage` is the **only** web address a Graph `contact` carries — the
+resource has no personal-homepage counterpart, so there is nothing to pair it
+with. (A second mapping here once read `personalNotes`, the notes field, and
+republished any note beginning with `http` as a URL resource.)
 
 The capture helper defaults include delegated `Contacts.ReadWrite`,
 `OrgContact.Read.All`, `User.ReadBasic.All`, and `ProfilePhoto.Read.All`.

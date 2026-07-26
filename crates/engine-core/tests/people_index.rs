@@ -82,7 +82,7 @@ fn exact_email_connected_components_merge_transitively() {
     let built = rebuild_people(&sources, &PeopleSnapshot::empty()).unwrap();
     assert_eq!(built.people.len(), 1);
     assert_eq!(built.people[0].sources.len(), 3);
-    assert_eq!(built.people[0].display_name, "One");
+    assert_eq!(built.people[0].display_name.as_deref(), Some("One"));
     assert_eq!(built.people[0].emails.len(), 2);
 }
 
@@ -260,7 +260,10 @@ fn a_shared_canonical_email_joins_across_source_classes() {
 
     let built = rebuild_people(&[one, two], &PeopleSnapshot::empty()).unwrap();
     assert_eq!(built.people.len(), 1);
-    assert_eq!(built.people[0].display_name, "Personal Record");
+    assert_eq!(
+        built.people[0].display_name.as_deref(),
+        Some("Personal Record")
+    );
 }
 
 #[test]
@@ -319,7 +322,10 @@ fn materialized_people_union_phone_organization_title_and_fallback_names() {
 
     let built = rebuild_people(&[src], &PeopleSnapshot::empty()).unwrap();
     let person = &built.people[0];
-    assert_eq!(person.display_name, "fallback@example.test");
+    assert_eq!(
+        person.display_name.as_deref(),
+        Some("fallback@example.test")
+    );
     assert_eq!(person.emails.len(), 1);
     assert_eq!(person.phones[0].value, "+31 20 555 0100");
     assert_eq!(person.organizations[0].value, "Example BV");
@@ -328,8 +334,12 @@ fn materialized_people_union_phone_organization_title_and_fallback_names() {
     assert!(!person.is_writable);
 }
 
+/// A card with neither a name nor an address leaves `display_name` unset. The engine
+/// used to substitute the English string "Unnamed contact" here, which every host then
+/// showed verbatim regardless of the user's language; naming the nameless is the host's
+/// call, so the core reports the absence instead of papering over it.
 #[test]
-fn an_email_less_nameless_card_gets_the_explicit_unnamed_fallback() {
+fn an_email_less_nameless_card_has_no_display_name_for_the_engine_to_invent() {
     let built = rebuild_people(
         &[source(
             "account",
@@ -342,7 +352,10 @@ fn an_email_less_nameless_card_gets_the_explicit_unnamed_fallback() {
         &PeopleSnapshot::empty(),
     )
     .unwrap();
-    assert_eq!(built.people[0].display_name, "Unnamed contact");
+    assert_eq!(built.people[0].display_name, None);
+    // The person is still materialized and addressable — only the label is missing.
+    assert_eq!(built.people.len(), 1);
+    assert!(built.people[0].names.is_empty());
 }
 
 #[test]
@@ -411,5 +424,5 @@ fn source_priority_is_deterministic_across_every_authority_class() {
         ),
     ];
     let built = rebuild_people(&sources, &PeopleSnapshot::empty()).unwrap();
-    assert_eq!(built.people[0].display_name, "Personal");
+    assert_eq!(built.people[0].display_name.as_deref(), Some("Personal"));
 }

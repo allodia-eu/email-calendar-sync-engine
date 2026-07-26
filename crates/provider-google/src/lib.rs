@@ -43,6 +43,8 @@ mod submit;
 mod transport;
 
 #[cfg(test)]
+mod contact_shape_tests;
+#[cfg(test)]
 mod contact_tests;
 #[cfg(test)]
 mod test_support;
