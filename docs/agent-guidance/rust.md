@@ -33,6 +33,15 @@ Use the checklist during API review:
 - Unsafe functions or unsafe trait impls document `# Safety`.
 - Rustdoc examples should use `?` rather than `unwrap`.
 
+## Toolchain
+
+One pinned Rust version builds this repo everywhere: the channel in `rust-toolchain.toml`. rustup
+honours it for every cargo invocation inside the checkout, and CI parses the same file, so a
+version bump is a one-line edit there (in its own PR — see AGENTS.md) and never a YAML edit. The
+sole exception is `cargo fmt`, which runs on the pinned nightly because `rustfmt.toml` uses
+nightly-only options. `rust-version` in the root `Cargo.toml` is a separate thing: the MSRV floor
+the crates promise, not what CI builds with.
+
 ## Linting
 
 Code should be clean under:
