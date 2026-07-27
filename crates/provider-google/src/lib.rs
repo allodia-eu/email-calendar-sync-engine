@@ -31,6 +31,7 @@ mod cal_write;
 mod calendar;
 mod contact;
 mod contact_normalize;
+mod contact_source;
 mod contact_write;
 mod error;
 mod fetch;
@@ -43,6 +44,8 @@ mod submit;
 mod transport;
 
 #[cfg(test)]
+mod contact_fixture_tests;
+#[cfg(test)]
 mod contact_shape_tests;
 #[cfg(test)]
 mod contact_tests;
@@ -51,7 +54,8 @@ mod test_support;
 
 pub use cal_fetch::CalendarWindow;
 pub use calendar::GoogleCalendarProvider;
-pub use contact::{GoogleContactProvider, GoogleContactSource};
+pub use contact::GoogleContactProvider;
+pub use contact_source::GoogleContactSource;
 pub use error::GoogleError;
 pub use provider::GmailProvider;
 pub use transport::GoogleClient;

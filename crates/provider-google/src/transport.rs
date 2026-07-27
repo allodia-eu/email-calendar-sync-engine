@@ -26,6 +26,12 @@ use crate::{error::GoogleError, http_transport::HttpTransport};
 /// The universal Google APIs host — serves both `gmail/v1/…` and `calendar/v3/…`.
 pub(crate) const GOOGLE_BASE: &str = "https://www.googleapis.com";
 
+/// The People API host. Unlike Gmail and Calendar, People is **not** served from
+/// [`GOOGLE_BASE`]: both `www.googleapis.com/v1/people/…` and the service-prefixed
+/// `www.googleapis.com/people/v1/…` answer an HTML `404`, so contact calls must be
+/// rooted here instead.
+pub(crate) const PEOPLE_BASE: &str = "https://people.googleapis.com";
+
 /// An authenticated request against a Google API.
 ///
 /// Implemented by [`HttpTransport`](crate::http_transport) (live reqwest) and, in
@@ -167,6 +173,20 @@ impl GoogleClient {
         format!("{}{path}", self.base)
     }
 
+    /// Builds an absolute **People API** URL from an API-relative path (`/v1/people/…`).
+    ///
+    /// People is the one Google API this client speaks that is not served from
+    /// [`GOOGLE_BASE`] (see [`PEOPLE_BASE`]), so contact paths are rooted separately. A
+    /// client built with a custom base — a replay server or a proxy — still wins, so the
+    /// offline tests and any host-supplied origin keep working unchanged.
+    pub(crate) fn people_url(&self, path: &str) -> String {
+        if self.base == GOOGLE_BASE {
+            format!("{PEOPLE_BASE}{path}")
+        } else {
+            format!("{}{path}", self.base)
+        }
+    }
+
     /// Authenticated `GET`.
     ///
     /// # Errors
@@ -267,5 +287,29 @@ mod tests {
         );
         // The Debug rendering must not leak the bearer token.
         assert!(!format!("{client:?}").contains("super-secret-token"));
+    }
+
+    /// People is the one API not served from [`GOOGLE_BASE`]: a contact path rooted
+    /// there answers an HTML `404`, so `people_url` must retarget it — while a custom
+    /// base (replay server / proxy) still wins.
+    #[test]
+    fn people_paths_root_at_the_people_host_unless_a_custom_base_is_set() {
+        let client = GoogleClient::connect("t", crate::test_support::tls()).unwrap();
+        assert_eq!(
+            client.people_url("/v1/people/me/connections"),
+            format!("{PEOPLE_BASE}/v1/people/me/connections")
+        );
+        // Gmail and Calendar are unaffected — they stay on the universal host.
+        assert_eq!(
+            client.url("/gmail/v1/users/me/labels"),
+            format!("{GOOGLE_BASE}/gmail/v1/users/me/labels")
+        );
+        // A custom base wins, so the offline fixture-replay tests are unchanged.
+        let custom =
+            GoogleClient::with_base("t", "http://127.0.0.1:9", crate::test_support::tls()).unwrap();
+        assert_eq!(
+            custom.people_url("/v1/people/me/connections"),
+            "http://127.0.0.1:9/v1/people/me/connections"
+        );
     }
 }

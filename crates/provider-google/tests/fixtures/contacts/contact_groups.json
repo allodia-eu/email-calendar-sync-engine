@@ -1,0 +1,67 @@
+{
+  "contactGroups": [
+    {
+      "etag": "etag-13",
+      "formattedName": "Fixture Group",
+      "groupType": "USER_CONTACT_GROUP",
+      "memberCount": 1,
+      "metadata": {
+        "updateTime": "2026-07-27T12:41:08.969864Z"
+      },
+      "name": "Fixture Group",
+      "resourceName": "contactGroups/group-2"
+    },
+    {
+      "formattedName": "Starred",
+      "groupType": "SYSTEM_CONTACT_GROUP",
+      "name": "starred",
+      "resourceName": "contactGroups/group-3"
+    },
+    {
+      "formattedName": "Friends",
+      "groupType": "SYSTEM_CONTACT_GROUP",
+      "name": "friends",
+      "resourceName": "contactGroups/group-4"
+    },
+    {
+      "formattedName": "Family",
+      "groupType": "SYSTEM_CONTACT_GROUP",
+      "name": "family",
+      "resourceName": "contactGroups/group-5"
+    },
+    {
+      "formattedName": "Coworkers",
+      "groupType": "SYSTEM_CONTACT_GROUP",
+      "name": "coworkers",
+      "resourceName": "contactGroups/group-6"
+    },
+    {
+      "formattedName": "My Contacts",
+      "groupType": "SYSTEM_CONTACT_GROUP",
+      "memberCount": 2,
+      "name": "myContacts",
+      "resourceName": "contactGroups/group-1"
+    },
+    {
+      "formattedName": "Chat contacts",
+      "groupType": "SYSTEM_CONTACT_GROUP",
+      "name": "chatBuddies",
+      "resourceName": "contactGroups/group-7"
+    },
+    {
+      "formattedName": "All Contacts",
+      "groupType": "SYSTEM_CONTACT_GROUP",
+      "memberCount": 2,
+      "name": "all",
+      "resourceName": "contactGroups/group-8"
+    },
+    {
+      "formattedName": "Blocked",
+      "groupType": "SYSTEM_CONTACT_GROUP",
+      "name": "blocked",
+      "resourceName": "contactGroups/group-9"
+    }
+  ],
+  "nextSyncToken": "google-sync-token-6",
+  "totalItems": 9
+}

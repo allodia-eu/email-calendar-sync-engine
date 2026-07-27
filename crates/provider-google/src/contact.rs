@@ -2,12 +2,9 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    contact::{
-        AddressBook, ContactCard, ContactDraft, ContactField, ContactFieldSet, ContactKind,
-        ContactPatch, ContactSourceClass,
-    },
+    contact::{AddressBook, ContactCard, ContactDraft, ContactKind, ContactPatch},
     error::FailureClass,
-    ids::{AccountId, AddressBookId, ContactId, ProviderKey},
+    ids::{AccountId, ContactId},
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
@@ -17,29 +14,15 @@ use engine_provider::{
 use serde_json::Value;
 
 use crate::{
-    contact_normalize, contact_write,
+    contact_normalize,
+    contact_source::{
+        GoogleContactSource, contact_id, is_source_absent, person_fields, provider_key,
+        require_owned, supported_fields,
+    },
+    contact_write,
     error::GoogleError,
     transport::{GoogleClient, encode_query_value},
 };
-
-const CONNECTIONS: &str = "google-connections";
-const OTHER: &str = "google-other-contacts";
-const DIRECTORY: &str = "google-directory";
-const GROUPS: &str = "google-contact-groups";
-const PERSON_FIELDS: &str = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,birthdays,biographies,urls,relations,userDefined,photos,memberships,metadata";
-
-/// Independently permissioned Google People source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GoogleContactSource {
-    /// User-owned connections.
-    Connections,
-    /// Suggested Other Contacts.
-    OtherContacts,
-    /// Workspace domain directory.
-    Directory,
-    /// Contact groups as group cards.
-    Groups,
-}
 
 /// Google People adapter bound to one source.
 pub struct GoogleContactProvider {
@@ -98,60 +81,8 @@ impl GoogleContactProvider {
         }
     }
 
-    fn address_book(&self) -> AddressBookId {
-        AddressBookId::try_from(match self.source {
-            GoogleContactSource::Connections => CONNECTIONS,
-            GoogleContactSource::OtherContacts => OTHER,
-            GoogleContactSource::Directory => DIRECTORY,
-            GoogleContactSource::Groups => GROUPS,
-        })
-        .expect("static id")
-    }
-
-    fn source_class(&self) -> ContactSourceClass {
-        match self.source {
-            GoogleContactSource::Connections | GoogleContactSource::Groups => {
-                ContactSourceClass::Personal
-            }
-            GoogleContactSource::OtherContacts => ContactSourceClass::Suggested,
-            GoogleContactSource::Directory => ContactSourceClass::Directory,
-        }
-    }
-
-    fn writable(&self) -> bool {
-        self.source == GoogleContactSource::Connections
-    }
-
-    fn initial_url(&self) -> String {
-        let path = match self.source {
-            GoogleContactSource::Connections => format!(
-                "/v1/people/me/connections?personFields={PERSON_FIELDS}&requestSyncToken=true&pageSize=1000"
-            ),
-            GoogleContactSource::OtherContacts => format!(
-                "/v1/otherContacts?readMask={PERSON_FIELDS}&requestSyncToken=true&pageSize=1000"
-            ),
-            GoogleContactSource::Directory => format!(
-                "/v1/people:listDirectoryPeople?readMask={PERSON_FIELDS}&sources=DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE&requestSyncToken=true&pageSize=1000"
-            ),
-            GoogleContactSource::Groups => {
-                "/v1/contactGroups?pageSize=1000&groupFields=name,groupType,memberCount,metadata"
-                    .into()
-            }
-        };
-        self.client.url(&path)
-    }
-
-    fn page_key(&self) -> &'static str {
-        match self.source {
-            GoogleContactSource::Connections => "connections",
-            GoogleContactSource::OtherContacts => "otherContacts",
-            GoogleContactSource::Directory => "people",
-            GoogleContactSource::Groups => "contactGroups",
-        }
-    }
-
     fn page_url(&self, page_token: Option<&str>, sync_token: Option<&str>) -> String {
-        let mut url = self.initial_url();
+        let mut url = self.client.people_url(&self.source.path());
         if let Some(token) = sync_token {
             url = format!("{url}&syncToken={}", encode_query_value(token));
         }
@@ -167,9 +98,7 @@ impl GoogleContactProvider {
     ) -> Result<ContactSourceSync<ContactCard>, GoogleError> {
         // contactGroups.list has pagination but no incremental sync-token contract.
         // Its stable sentinel is only a store cursor: every pass remains a snapshot.
-        let delta_cursor = (self.source != GoogleContactSource::Groups)
-            .then_some(cursor)
-            .flatten();
+        let delta_cursor = self.source.is_incremental().then_some(cursor).flatten();
         let mut cursor_recovered = false;
         let mut is_delta = delta_cursor.is_some();
         let mut active_sync_token = delta_cursor.map(SyncState::as_str);
@@ -187,40 +116,64 @@ impl GoogleContactProvider {
                     cursor_recovered = true;
                     is_delta = false;
                     active_sync_token = None;
-                    url = self.initial_url();
+                    url = self.client.people_url(&self.source.path());
                     continue;
                 }
-                Err(GoogleError::Status { status: 403, .. }) if !self.writable() => {
+                // An optional source may be refused by *shape* as well as by permission:
+                // a consumer account has no Workspace directory, and
+                // `people:listDirectoryPeople` answers `400 FAILED_PRECONDITION`
+                // ("Must be a G Suite domain user"), never `403`. Both mean "this source
+                // does not exist for this account", so both degrade rather than fail the
+                // sync.
+                //
+                // The `400` arm keys on `FAILED_PRECONDITION` specifically, **not** on
+                // the bare status: People also answers `400 INVALID_ARGUMENT` when a
+                // request is simply wrong (an unsupported `readMask` field), and
+                // degrading that would turn a permanent adapter bug into a silently
+                // empty address book.
+                Err(error) if !self.source.writable() && is_source_absent(&error) => {
                     return Ok(ContactSourceSync::Unavailable(
                         engine_provider::ContactUnavailable {
-                            reason: "Google People source permission unavailable".into(),
+                            reason: "Google People source unavailable for this account".into(),
                         },
                     ));
                 }
                 Err(error) => return Err(error),
             };
-            let entries = page
-                .get(self.page_key())
-                .and_then(Value::as_array)
-                .ok_or_else(|| {
-                    GoogleError::protocol(format!(
+            let entries = match page.get(self.source.page_key()).and_then(Value::as_array) {
+                Some(entries) => entries.as_slice(),
+                // A People page with nothing to report **omits the collection key
+                // entirely** — a quiet incremental sync answers exactly
+                // `{"nextSyncToken": "…"}`. That is the steady state, not a malformed
+                // page, so it must read as "no entries" and advance the cursor. Only a
+                // page that proves itself well-formed by carrying a cursor may be read
+                // this way; one with neither collection nor token is malformed and must
+                // not advance anything (a token-less source like `contactGroups` is
+                // therefore still strict, so a bad page can never empty the store).
+                None if self.source.is_incremental() && page.get("nextSyncToken").is_some() => &[],
+                None => {
+                    return Err(GoogleError::protocol(format!(
                         "Google contact page missing {}",
-                        self.page_key()
-                    ))
-                })?;
+                        self.source.page_key()
+                    )));
+                }
+            };
             for value in entries {
                 if contact_normalize::deleted(value) {
                     if let Some(id) = value.get("resourceName").and_then(Value::as_str) {
                         removed.push(provider_key(id)?);
                     }
                 } else if self.source == GoogleContactSource::Groups {
-                    changed.push(contact_normalize::group_card(value, self.address_book())?);
+                    changed.push(contact_normalize::group_card(
+                        value,
+                        self.source.address_book(),
+                    )?);
                 } else {
                     changed.push(contact_normalize::person(
                         value,
-                        self.address_book(),
-                        self.source_class(),
-                        self.writable(),
+                        self.source.address_book(),
+                        self.source.source_class(),
+                        self.source.writable(),
                     )?);
                 }
             }
@@ -287,9 +240,9 @@ impl ContactsProvider for GoogleContactProvider {
     }
 
     fn contact_destination(&self) -> Option<ContactDestination> {
-        self.writable().then(|| ContactDestination {
-            address_book: self.address_book(),
-            source_class: self.source_class(),
+        self.source.writable().then(|| ContactDestination {
+            address_book: self.source.address_book(),
+            source_class: self.source.source_class(),
             writable: true,
             write_guard: Some(WriteGuard::Enforced),
             supported_fields: supported_fields(),
@@ -327,16 +280,17 @@ impl ContactsProvider for GoogleContactProvider {
     ) -> ProviderResult<ContactCard> {
         let value = self
             .client
-            .get(&self.client.url(&format!(
-                "/v1/{}?personFields={PERSON_FIELDS}",
-                contact.as_str()
+            .get(&self.client.people_url(&format!(
+                "/v1/{}?personFields={}",
+                contact.as_str(),
+                person_fields()
             )))
             .await?;
         Ok(contact_normalize::person(
             &value,
-            self.address_book(),
-            self.source_class(),
-            self.writable(),
+            self.source.address_book(),
+            self.source.source_class(),
+            self.source.writable(),
         )?)
     }
 
@@ -355,8 +309,9 @@ impl ContactsProvider for GoogleContactProvider {
         let value = self
             .client
             .post(
-                &self.client.url(&format!(
-                    "/v1/people:createContact?personFields={PERSON_FIELDS}"
+                &self.client.people_url(&format!(
+                    "/v1/people:createContact?personFields={}",
+                    person_fields()
                 )),
                 "application/json",
                 contact_write::create_body(draft)?,
@@ -384,9 +339,10 @@ impl ContactsProvider for GoogleContactProvider {
         }
         self.client
             .patch(
-                &self.client.url(&format!(
-                    "/v1/{}:updateContact?updatePersonFields={fields}&personFields={PERSON_FIELDS}",
-                    base.id.as_str()
+                &self.client.people_url(&format!(
+                    "/v1/{}:updateContact?updatePersonFields={fields}&personFields={}",
+                    base.id.as_str(),
+                    person_fields()
                 )),
                 "application/json",
                 base.revisions
@@ -406,7 +362,7 @@ impl ContactsProvider for GoogleContactProvider {
             .delete(
                 &self
                     .client
-                    .url(&format!("/v1/{}:deleteContact", base.id.as_str())),
+                    .people_url(&format!("/v1/{}:deleteContact", base.id.as_str())),
                 base.revisions
                     .etag
                     .as_ref()
@@ -435,40 +391,4 @@ impl ContactsProvider for GoogleContactProvider {
                 .unwrap_or_else(|| media.uri.clone()),
         ))
     }
-}
-
-fn supported_fields() -> ContactFieldSet {
-    ContactFieldSet::from_fields([
-        ContactField::Kind,
-        ContactField::Name,
-        ContactField::Nicknames,
-        ContactField::Emails,
-        ContactField::Phones,
-        ContactField::Addresses,
-        ContactField::Organizations,
-        ContactField::Titles,
-        ContactField::Anniversaries,
-        ContactField::Notes,
-        ContactField::Urls,
-        ContactField::Relations,
-        ContactField::Keywords,
-    ])
-}
-
-fn require_owned(source: GoogleContactSource) -> ProviderResult<()> {
-    if source == GoogleContactSource::Connections {
-        Ok(())
-    } else {
-        Err(engine_provider::ProviderError::invalid_state(
-            "Google contact source is read-only",
-        ))
-    }
-}
-
-fn provider_key(value: &str) -> Result<ProviderKey, GoogleError> {
-    ProviderKey::new(value).map_err(|error| GoogleError::protocol(error.to_string()))
-}
-
-fn contact_id(value: &str) -> Result<ContactId, GoogleError> {
-    ContactId::try_from(value).map_err(|error| GoogleError::protocol(error.to_string()))
 }

@@ -344,6 +344,24 @@ and directory users use global Graph endpoints and degrade to source-level
 `Unavailable` on missing optional permission, so personal contacts still sync.
 Every normalized card preserves raw JSON and `changeKey`.
 
+**The tenant sources do not answer `403` on a personal account.** A personal MSA
+refuses them by *shape*, not by permission: `/contacts/delta` answers
+`400 BadRequest` ("This API is not supported for MSA accounts") and `/users/delta`
+answers `401` with an empty message. The degradation rule therefore treats
+`400`/`401`/`403` as "source unavailable" **for the optional sources only**.
+Swallowing `401` there cannot hide an expired token, because the same credential
+drives the personal source, which is never optional and still surfaces the
+failure. Captured in `tests/fixtures/error/contacts_*.json`.
+
+Two normalization rules the captured fixtures pin, both invisible to hand-written
+JSON. **`birthday` reads back as a full timestamp** anchored near local noon
+(`"1815-12-10T11:59:00Z"` from a date-only write), so only the date part becomes
+`Anniversary.date` — that field is JSContact date text, which the Google and
+CardDAV adapters fill with `YYYY-MM-DD`. **`categories` maps to neutral
+keywords** in *both* directions; `contact_write` already emitted it, so the read
+mapping is what keeps the round-trip lossless for a field Graph advertises as
+supported.
+
 Graph contact writes deliberately advertise `WriteGuard::Absent`: the current
 contact update contract documents no enforceable per-object conditional guard.
 Personal-contact create/patch/delete are supported and the engine refetches the

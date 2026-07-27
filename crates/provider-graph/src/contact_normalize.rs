@@ -79,13 +79,31 @@ pub(crate) fn card(
         );
     }
     if let Some(birthday) = value.get("birthday").and_then(Value::as_str) {
+        // Graph stores a birthday as an *instant* anchored near local noon, so it reads
+        // back as a full timestamp ("1815-12-10T11:59:00Z") even when set from a bare
+        // date. `Anniversary.date` is JSContact date text, so keep only the date part —
+        // otherwise the time component leaks into a neutral field the CardDAV and Google
+        // adapters fill with `YYYY-MM-DD`.
+        let date = birthday.split_once('T').map_or(birthday, |(date, _)| date);
         card.anniversaries.insert(
             property_id("birthday")?,
             ContactProperty::new(Anniversary {
-                date: birthday.into(),
+                date: date.into(),
                 kind: Some("birth".into()),
                 place: None,
             }),
+        );
+    }
+    // `categories` is the Graph counterpart of neutral keywords, and `contact_write`
+    // already maps `ContactField::Keywords` onto it — reading it back is what keeps the
+    // round-trip lossless.
+    if let Some(categories) = value.get("categories").and_then(Value::as_array) {
+        card.keywords.extend(
+            categories
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|category| !category.is_empty())
+                .map(str::to_owned),
         );
     }
     // `businessHomePage` is the only web address a Graph `contact` carries; the

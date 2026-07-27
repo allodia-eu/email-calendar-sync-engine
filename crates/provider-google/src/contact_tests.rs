@@ -421,7 +421,9 @@ async fn direct_fetch_writes_photos_and_read_only_rejections_are_targeted() {
 
 #[tokio::test]
 async fn malformed_pages_do_not_advance_contact_cursors() {
-    for page in [json!({"nextSyncToken": "next"}), json!({"connections": []})] {
+    // A page with no cursor cannot be trusted, whether or not it carries a collection:
+    // reading it as "empty" would advance a sync into an emptied address book.
+    for page in [json!({"connections": []}), json!({})] {
         assert!(
             GoogleContactProvider::connections(fake_client(vec![("requestSyncToken=true", page)]))
                 .sync_contacts(&account(), None)
@@ -429,6 +431,19 @@ async fn malformed_pages_do_not_advance_contact_cursors() {
                 .is_err()
         );
     }
+    // `{"nextSyncToken": …}` is **not** malformed — it is the real shape of a People
+    // page with nothing to report, pinned by `contact_fixture_tests` against the
+    // captured response. A token-less source stays strict, so a bad `contactGroups`
+    // page still fails rather than emptying the store.
+    assert!(
+        GoogleContactProvider::groups(fake_client(vec![(
+            "/v1/contactGroups",
+            json!({"nextSyncToken": "next"})
+        )]))
+        .sync_contacts(&account(), None)
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]

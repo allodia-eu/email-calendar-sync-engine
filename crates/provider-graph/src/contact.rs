@@ -217,9 +217,28 @@ impl GraphContactProvider {
         }
     }
 
+    /// Whether `error` means "this optional source does not exist for this account"
+    /// rather than "this sync failed".
+    ///
+    /// The tenant sources are gated on tenant-only permissions, so the obvious signal is
+    /// `403`. A personal Microsoft account refuses them by *shape* instead: `/contacts`
+    /// answers `400 BadRequest` ("This API is not supported for MSA accounts") and
+    /// `/users` answers `401` with an empty message (see the captured fixtures under
+    /// `tests/fixtures/error/`). Keying on `403` alone therefore fails a personal
+    /// account's contact sync outright.
+    ///
+    /// Swallowing `401` here cannot hide a genuinely expired token: the same credential
+    /// drives the personal source, which is never optional, so real authentication
+    /// failures still surface from there.
     fn is_optional_permission_error(&self, error: &GraphError) -> bool {
         !matches!(self.source, GraphContactSource::Personal(_))
-            && matches!(error, GraphError::Status { status: 403, .. })
+            && matches!(
+                error,
+                GraphError::Status {
+                    status: 400 | 401 | 403,
+                    ..
+                }
+            )
     }
 
     fn item_url(&self, contact: &ContactId) -> String {

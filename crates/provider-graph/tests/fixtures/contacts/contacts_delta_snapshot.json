@@ -1,0 +1,90 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(contact)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/contacts/delta?$deltatoken=opaque-token-1",
+  "value": [
+    {
+      "@odata.etag": "W/\"change-key-1\"",
+      "@odata.type": "#microsoft.graph.contact",
+      "birthday": "1815-12-10T11:59:00Z",
+      "businessAddress": {
+        "city": "Amsterdam",
+        "countryOrRegion": "Netherlands",
+        "postalCode": "1015 CJ",
+        "street": "Keizersgracht 1"
+      },
+      "businessHomePage": "https://example.test/ada",
+      "businessPhones": [
+        "+31 20 123 4567"
+      ],
+      "categories": [
+        "Fixture",
+        "Engineering"
+      ],
+      "changeKey": "change-key-1",
+      "companyName": "Analytical Engines BV",
+      "department": "Research",
+      "displayName": "Ada Byron Lovelace",
+      "emailAddresses": [
+        {
+          "address": "ada.lovelace@example.test",
+          "name": "Ada Lovelace"
+        },
+        {
+          "address": "ada@home.example.test",
+          "name": "Ada (home)"
+        }
+      ],
+      "generation": null,
+      "givenName": "Ada",
+      "homeAddress": {
+        "city": "Amsterdam",
+        "countryOrRegion": "Netherlands",
+        "street": "Herengracht 2"
+      },
+      "homePhones": [
+        "+31 20 765 4321"
+      ],
+      "id": "contact-1",
+      "jobTitle": "Chief Engineer",
+      "middleName": "Byron",
+      "mobilePhone": "+31 6 1234 5678",
+      "otherAddress": {},
+      "personalNotes": "Fixture contact for provider-graph normalization.",
+      "surname": "Lovelace",
+      "title": "Dr."
+    },
+    {
+      "@odata.etag": "W/\"change-key-3\"",
+      "@odata.type": "#microsoft.graph.contact",
+      "birthday": null,
+      "businessAddress": {},
+      "businessHomePage": null,
+      "businessPhones": [
+        "+31 20 000 0000"
+      ],
+      "categories": [],
+      "changeKey": "change-key-3",
+      "companyName": null,
+      "department": null,
+      "displayName": "Test User",
+      "emailAddresses": [
+        {
+          "address": "testuser@example.test",
+          "name": "testuser@example.test"
+        }
+      ],
+      "generation": "",
+      "givenName": "Test",
+      "homeAddress": {},
+      "homePhones": [],
+      "id": "contact-2",
+      "jobTitle": null,
+      "middleName": "",
+      "mobilePhone": null,
+      "otherAddress": {},
+      "personalNotes": "Test note",
+      "surname": "User",
+      "title": ""
+    }
+  ]
+}

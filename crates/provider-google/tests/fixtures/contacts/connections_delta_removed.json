@@ -1,0 +1,36 @@
+{
+  "connections": [
+    {
+      "etag": "etag-7",
+      "metadata": {
+        "deleted": true,
+        "objectType": "PERSON",
+        "sources": [
+          {
+            "etag": "etag-8",
+            "id": "554075f48f2b9366",
+            "type": "CONTACT",
+            "updateTime": "1970-01-01T00:00:00Z"
+          }
+        ]
+      },
+      "photos": [
+        {
+          "default": true,
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "url": "https://lh3.googleusercontent.com/contact-photo-placeholder"
+        }
+      ],
+      "resourceName": "people/contact-2"
+    }
+  ],
+  "nextSyncToken": "google-sync-token-4",
+  "totalItems": 1,
+  "totalPeople": 1
+}

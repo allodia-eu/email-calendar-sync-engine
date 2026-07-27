@@ -196,12 +196,43 @@ when wanted, it slots behind the existing `Watch` seam (Gmail `users.watch`, Cal
 
 ## Google People
 
+**People is not served from `www.googleapis.com`.** Gmail (`gmail/v1/…`) and
+Calendar (`calendar/v3/…`) share the universal API host, but People does not:
+both `www.googleapis.com/v1/people/…` and the service-prefixed
+`www.googleapis.com/people/v1/…` answer an **HTML `404`**. Contact paths are
+therefore rooted at `https://people.googleapis.com` via
+`GoogleClient::people_url`, while `GoogleClient::url` keeps mail and calendar on
+the universal host. A client built with a custom base (replay server, proxy)
+still wins for both, so offline tests are unaffected — which is precisely why
+this was invisible offline: the fixture fakes and the replay server set a custom
+base, so every contact URL resolved to the test origin regardless of host.
+Verifying a People request shape requires the gated live test.
+
+The People API must also be **enabled per Cloud project**; until it is, every
+call answers `403 SERVICE_DISABLED` from `people.googleapis.com` (a JSON
+envelope, distinct from the HTML 404 above — the two are worth telling apart when
+diagnosing).
+
 `GoogleContactProvider` binds independently to owned Connections, Other
 Contacts, Workspace directory people, or contact groups. Each source has its own
 scope, token lifecycle, source class, and permission degradation. Connection
 tokens that expire with `410` restart as a snapshot; optional-source permission
 failures do not fail owned contacts. Contact groups normalize to the same
 provider-neutral group-card kind as JMAP and vCard.
+
+**A People page with nothing to report omits its collection key entirely** — a quiet
+incremental sync answers exactly `{"nextSyncToken": "…"}`. An absent collection is
+read as "no entries" only when the page still carries a cursor; a page with neither
+is malformed and must not advance a cursor, so a token-less source
+(`contactGroups`) stays strict and a bad page can never empty the store.
+
+Each source's field mask is its own. `otherContacts.list` accepts **only**
+`names`, `emailAddresses`, `phoneNumbers`, `photos`, `metadata`; any other field
+fails the whole request with `400 INVALID_ARGUMENT`. Optional sources degrade to
+`Unavailable` on `403` or `400 FAILED_PRECONDITION` (a consumer account has no
+Workspace directory) but **never** on `400 INVALID_ARGUMENT` — masking that would
+turn a wrong request into a silently empty address book. A stale-etag write is
+also `400 FAILED_PRECONDITION`, classified `Conflict`, not `412`.
 
 `contactGroups.list` has pagination but no sync token, so group sync is always a
 snapshot. OAuth capture defaults include

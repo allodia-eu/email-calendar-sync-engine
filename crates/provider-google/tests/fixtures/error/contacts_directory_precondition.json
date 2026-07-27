@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": 400,
+    "message": "Must be a G Suite domain user.",
+    "status": "FAILED_PRECONDITION"
+  }
+}

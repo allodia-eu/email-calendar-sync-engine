@@ -54,6 +54,8 @@ mod transport;
 mod windows_zones;
 
 #[cfg(test)]
+mod contact_fixture_tests;
+#[cfg(test)]
 mod contact_tests;
 #[cfg(test)]
 mod test_support;

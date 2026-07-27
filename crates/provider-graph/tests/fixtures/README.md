@@ -142,3 +142,56 @@ public repo must not ship a working join link (see Finding 10).
     (`hexColor` `#rrggbb` wins over the named `color`). A Graph `event` object does not
     carry its calendar id, so calendar membership comes from the fetch context: the
     provider is calendar-bound and stamps `Event.calendars` with the calendar it synced.
+
+## Contact fixtures (`contacts/`)
+
+Captured from the same throwaway personal account, from a field-complete contact seeded
+through `POST /me/contacts` plus one contact created by hand in Outlook (so the
+`null`-vs-`""` split below is real, not constructed). Scrubbed to the same convention:
+contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@odata.etag` →
+`change-key-N`, `$deltatoken` → `opaque-token-N`, addresses → `example.test`.
+
+| Fixture | Real Graph call | Protects |
+| --- | --- | --- |
+| `contacts/contacts_delta_snapshot.json` | `GET /me/contacts/delta?$select=…` | **initial** sync: two full contact objects + `deltaLink`; the field-complete card exercises every `$select`ed property |
+| `contacts/contacts_delta_changed.json` | replay the `deltaLink` after `PATCH jobTitle` | a changed entry — **full** object with an advanced `changeKey` (contacts have no lightweight-partial case, unlike mail Finding 4) |
+| `contacts/contacts_delta_removed.json` | replay after `DELETE` | `{ id, @removed:{reason}, @odata.type }` tombstone shape |
+| `contacts/contact_detail.json` | `GET /me/contacts/{id}` | the un-`$select`ed single-item shape (a **superset** of the delta fields) |
+| `contacts/contact_created.json` | `POST /me/contacts` | the create echo — the `id` that becomes the write receipt |
+| `contacts/contact_patched.json` | `PATCH /me/contacts/{id}` | the patch echo with the advanced `changeKey` |
+| `contacts/contact_folders.json` | `GET /me/contactFolders?$select=…` | folder → `AddressBook`; `parentFolderId` is the contacts root |
+| `contacts/child_folders.json` | `GET /me/contactFolders/{id}/childFolders` | the recursive-discovery leg (child's parent is the folder above) |
+| `error/contacts_msa_unsupported.json` | `GET /contacts/delta` (org contacts) | the tenant-source refusal on a personal account (see Finding 15) |
+| `error/contacts_directory_unauthorized.json` | `GET /users/delta` (directory) | the directory refusal on a personal account (see Finding 15) |
+| `error/contacts_delta_token_bad.json` | `GET /me/contacts/delta?$deltatoken=bogus` | a malformed delta token → `400`, **not** the `410` resync signal |
+
+15. **The tenant contact sources do not answer `403` on a personal account.** They are
+    "optional, permission-gated" sources, but a personal MSA refuses them by *shape*, not
+    by permission: `/contacts/delta` → **`400 BadRequest`** ("This API is not supported
+    for MSA accounts"), `/users/delta` → **`401 UnknownError`** with an empty message.
+    Neither is a `403`. Any degradation-to-`Unavailable` rule that keys on `403` alone
+    therefore fails a personal account outright — and the `401` maps to
+    `FailureClass::Authentication`, which tells a host to re-authenticate over a source
+    that simply does not exist for this account type.
+16. **A malformed `$deltatoken` is `400 BadRequest` ("Badly formed token"), not `410`.**
+    Graph documents `410 Gone`/`resyncRequired` for an *expired* token; a syntactically
+    bad one is a plain `400`. The fixtures pin the `400` shape only — an expiry-driven
+    `410` cannot be forced on demand (a fresh token never ages out mid-test), so that
+    recovery stays proven by the offline fake.
+17. **Unset string fields are `null` on an API-created contact and `""` on a
+    hand-created one.** The two captured contacts differ this way across `title`,
+    `middleName`, `generation`, and `jobTitle`, so normalization must treat empty string
+    and absent identically. Unset addresses are `{}` (an empty object, never `null`), and
+    `homePhones` is `[]`.
+18. **`birthday` comes back as a full timestamp with a non-midnight time.** A contact
+    created with `"1815-12-10T00:00:00Z"` reads back as **`"1815-12-10T11:59:00Z"`** —
+    Graph stores a birthday as an instant anchored near local noon, not a date. The
+    engine's `Anniversary.date` is documented as *JSContact date text*, and the Google
+    adapter emits `YYYY-MM-DD` there, so a verbatim copy of this string puts two
+    different formats in one neutral field (and risks a day-shift when the anchor time
+    crosses midnight in the reader's zone).
+19. **`categories` is selected and written but never read back.** `CONTACT_SELECT` asks
+    for `categories`, `contact_write` maps `ContactField::Keywords` → `categories`, and
+    the captured contact really carries `["Fixture", "Engineering"]` — but
+    `contact_normalize` has no `categories` branch, so keywords are lost on the way in.
+    Graph advertises `ContactField::Keywords` as supported, making the round-trip lossy.
