@@ -109,7 +109,7 @@ async fn captured_contact_normalizes_every_selected_field() {
         card.urls[&property("business-homepage")].value.uri,
         "https://example.test/ada"
     );
-    assert!(card.notes.len() == 1);
+    assert_eq!(card.notes.len(), 1);
 
     assert_eq!(
         card.revisions
