@@ -79,7 +79,15 @@ Format on **nightly**: the workspace [`rustfmt.toml`](rustfmt.toml) uses nightly
 repo unformatted. CI runs the fmt check on a **pinned** nightly (`nightly-2026-07-07`, in
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)) so its output is reproducible against what
 you run locally; bump that pin **and** re-run fmt when intentionally adopting a newer nightly.
-Build/clippy/test/docs stay on stable.
+
+Build/clippy/test/docs run on the **pinned** channel in
+[`rust-toolchain.toml`](rust-toolchain.toml) — the single source of truth for the Rust version.
+rustup selects it for every cargo invocation inside this checkout (installing it on first use), and
+CI's `toolchain` job parses the same file and installs exactly that channel, so local and CI are
+byte-identical and the version is never duplicated in YAML. Bumping it is a deliberate, standalone
+PR: a new release can add default-warn lints, and the workspace denies all warnings, so the bump is
+where those get fixed rather than a red build on someone's unrelated change. The pin is *not* the
+MSRV — that floor is `rust-version` in the root `Cargo.toml` and moves independently.
 
 ```sh
 scripts/ci/check-file-length.sh       # every tracked *.rs must be <= 500 lines

@@ -17,8 +17,30 @@ env:
   RUSTDOCFLAGS: -D warnings
 
 jobs:
+  # `rust-toolchain.toml` is the single source of truth for the Rust version: rustup honours it for
+  # every local cargo invocation, and this job parses it so each job below installs exactly that
+  # channel. Without it CI ran a floating `stable` that drifted ahead of contributors' toolchains,
+  # failing on lints nobody could reproduce locally. The version is therefore never duplicated in
+  # YAML — a bump is a one-line edit to rust-toolchain.toml. Dependency-free (checkout + sed), so
+  # the gate the other jobs wait on costs seconds.
+  toolchain:
+    name: Read the pinned Rust toolchain
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.read.outputs.channel }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - id: read
+        run: |
+          channel=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml)
+          [ -n "$channel" ] || { echo "no [toolchain] channel in rust-toolchain.toml" >&2; exit 1; }
+          echo "Pinned Rust toolchain: $channel"
+          echo "channel=$channel" >>"$GITHUB_OUTPUT"
+
   verify:
     name: Format, lint, build, test, docs
+    needs: toolchain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -28,17 +50,19 @@ jobs:
       # nightly rustfmt output drifts between dates — pinning keeps `fmt --check` reproducible
       # against what contributors run locally (`cargo +nightly fmt`). Bump this date and
       # re-run fmt when intentionally adopting a newer nightly. Everything else stays on
-      # stable (installed last, so it is the default toolchain for clippy/build/test/docs).
+      # the pinned channel (installed last, so it is the default toolchain for
+      # clippy/build/test/docs; rust-toolchain.toml would select it inside the checkout
+      # regardless, but installing it explicitly keeps the cache key honest).
       - name: Install nightly rustfmt (pinned)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
           toolchain: nightly-2026-07-07
           components: rustfmt
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install the pinned Rust + clippy
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
-          toolchain: stable
+          toolchain: ${{ needs.toolchain.outputs.channel }}
           components: clippy
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -68,6 +92,7 @@ jobs:
   # x64/arm64, so no 32-bit runners appear here.
   test:
     name: Build & test (${{ matrix.os }})
+    needs: toolchain
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -80,10 +105,10 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
-          toolchain: stable
+          toolchain: ${{ needs.toolchain.outputs.channel }}
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -106,6 +131,7 @@ jobs:
   # rather than one per target.
   cross:
     name: Cross-compile (${{ matrix.label }})
+    needs: toolchain
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -120,10 +146,10 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
-          toolchain: stable
+          toolchain: ${{ needs.toolchain.outputs.channel }}
           targets: ${{ matrix.targets }}
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -167,14 +193,15 @@ jobs:
   # everywhere else they skip.
   stalwart:
     name: Stalwart protocol harness
+    needs: toolchain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
-          toolchain: stable
+          toolchain: ${{ needs.toolchain.outputs.channel }}
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -222,14 +249,15 @@ jobs:
   # test executes only here; everywhere else it skips.
   sabredav:
     name: SabreDAV protocol harness
+    needs: toolchain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
-          toolchain: stable
+          toolchain: ${{ needs.toolchain.outputs.channel }}
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -259,6 +287,7 @@ jobs:
 
   coverage:
     name: Code coverage
+    needs: toolchain
     runs-on: ubuntu-latest
     # Filename regex excluding test-support from the OFFLINE metric (live/harness tests
     # run in the `stalwart` job). Defined once here and reused by every llvm-cov step
@@ -269,10 +298,10 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install the pinned Rust + llvm-tools
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
-          toolchain: stable
+          toolchain: ${{ needs.toolchain.outputs.channel }}
           components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
