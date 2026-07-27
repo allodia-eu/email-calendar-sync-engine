@@ -1,7 +1,7 @@
 //! The JMAP session resource (RFC 8620 §2): capabilities, accounts, API URL, and
 //! server limits.
 //!
-//! Two real-world subtleties this handles:
+//! Three real-world subtleties this handles:
 //!
 //! - **The account id is looked up, not assumed.** The JMAP account id (e.g. `"c"`) is whatever the
 //!   server assigned and is read from `primaryAccounts` per capability; it is distinct from the
@@ -12,6 +12,11 @@
 //!   [`SessionUrlPolicy`] decides whether to trust the advertised origin or rebase
 //!   it onto the connection base — the safe default for proxied / self-hosted /
 //!   test setups.
+//! - **A session may span more than one origin, on purpose.** Fastmail serves its `apiUrl` from
+//!   `api.fastmail.com` but its `downloadUrl` from `www.fastmailusercontent.com`, a separate
+//!   cookie-less origin for untrusted user content. Rebasing is therefore scoped to the session's
+//!   *own* advertised origin: a URL the server deliberately puts elsewhere is left alone
+//!   (`rebase_template`).
 
 use engine_provider::WriteGuard;
 use reqwest::Url;
@@ -24,7 +29,9 @@ use crate::{error::JmapError, request::capability};
 pub enum SessionUrlPolicy {
     /// Replace the advertised origin (scheme/host/port) with the connection base,
     /// keeping only the path. Correct for reverse-proxied, self-hosted, and test
-    /// servers that advertise a public hostname they are not reached at.
+    /// servers that advertise a public hostname they are not reached at. Applies only
+    /// to URLs on the session's **own** advertised origin — an endpoint the server
+    /// deliberately serves cross-origin is kept verbatim (`rebase_template`).
     RebaseToConnection,
     /// Use the advertised URL verbatim (RFC-literal). Correct when a provider
     /// genuinely serves its API from a different origin than the session.
@@ -91,12 +98,15 @@ impl Session {
         // The download/upload/event-source URLs are URI *templates*
         // (`{accountId}`/`{blobId}`/…, RFC 8620 §2), so they are rebased origin-only —
         // running the braces through URL parsing (as `resolve_against` does) would
-        // percent-encode them.
+        // percent-encode them. The rebase is scoped to the origin the session advertised
+        // for *itself*, so a deliberately cross-origin endpoint survives; see
+        // [`rebase_template`].
+        let session_origin = origin_of(advertised_api);
         let template = |field: &str| {
             value
                 .get(field)
                 .and_then(Value::as_str)
-                .map(|url| rebase_template(base, url, policy))
+                .map(|url| rebase_template(base, url, policy, session_origin))
         };
         let download_url = template("downloadUrl");
         let upload_url = template("uploadUrl");
@@ -301,19 +311,52 @@ pub(crate) fn resolve_against(
 /// preserving its path and query verbatim so RFC 6570 placeholders (`{accountId}`,
 /// `{blobId}`, …) survive. Unlike [`resolve_against`], it never runs the template
 /// through URL parsing — which would percent-encode the `{`/`}` braces and break
-/// the later placeholder substitution. The origin (`scheme://authority`) never
-/// contains a placeholder, so splitting at the first `/` after `://` is safe.
-fn rebase_template(base: &Url, advertised: &str, policy: SessionUrlPolicy) -> String {
-    match policy {
-        SessionUrlPolicy::TrustAdvertised => advertised.to_owned(),
-        SessionUrlPolicy::RebaseToConnection => {
-            let path_and_query = advertised
-                .split_once("://")
-                .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]))
-                .unwrap_or("/");
-            format!("{}{path_and_query}", base.origin().ascii_serialization())
-        }
+/// the later placeholder substitution.
+///
+/// Under [`SessionUrlPolicy::RebaseToConnection`] the rewrite is scoped to
+/// `session_origin` — the origin the session advertised for **itself** (its `apiUrl`).
+/// A template the server deliberately serves from a *different* origin is kept verbatim:
+/// the mismatch the rebase corrects (a reverse-proxied or self-hosted server advertising
+/// a public hostname it is not reached at) applies uniformly to that server's own origin
+/// and cannot explain a second one, so rewriting it can only produce a URL the connection
+/// host does not route. Fastmail is the live case — its `apiUrl` is on `api.fastmail.com`
+/// while `downloadUrl` is on `www.fastmailusercontent.com`, a separate cookie-less origin
+/// for untrusted user content — and rebasing it turned every message-source download into
+/// a catch-all `302` to a marketing page.
+fn rebase_template(
+    base: &Url,
+    advertised: &str,
+    policy: SessionUrlPolicy,
+    session_origin: Option<&str>,
+) -> String {
+    if policy == SessionUrlPolicy::TrustAdvertised {
+        return advertised.to_owned();
     }
+    let advertised_origin = origin_of(advertised);
+    let same_origin = match (advertised_origin, session_origin) {
+        // Origin-free: already relative, so it is the session's own origin by definition.
+        (None, _) => true,
+        (Some(origin), Some(session)) => origin.eq_ignore_ascii_case(session),
+        (Some(_), None) => false,
+    };
+    if !same_origin {
+        return advertised.to_owned();
+    }
+    let path_and_query = advertised_origin.map_or(advertised, |origin| &advertised[origin.len()..]);
+    format!(
+        "{}/{}",
+        base.origin().ascii_serialization(),
+        path_and_query.trim_start_matches('/')
+    )
+}
+
+/// The `scheme://authority` prefix of an absolute URL, or `None` when it carries no
+/// scheme (a relative reference). The origin never contains an RFC 6570 placeholder, so
+/// splitting at the first `/` after `://` is safe on a URI template too.
+fn origin_of(url: &str) -> Option<&str> {
+    let (_, rest) = url.split_once("://")?;
+    let authority = rest.find('/').unwrap_or(rest.len());
+    Some(&url[..url.len() - rest.len() + authority])
 }
 
 /// Whether the mail account is read-only (`accounts.<id>.isReadOnly`, RFC 8620 §2).
