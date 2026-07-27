@@ -69,7 +69,15 @@ specifics they implement against the Stalwart fixture. Read it before touching
   a different origin (the loopback fixture, a reverse proxy); `SessionUrlPolicy`
   resolves this — `RebaseToConnection` (default) keeps the advertised path but
   forces the connection origin, `TrustAdvertised` is RFC-literal for genuinely
-  cross-origin providers.
+  cross-origin providers. **The rebase is scoped to the session's own advertised
+  origin.** A session may legitimately span two: Fastmail serves `apiUrl` from
+  `api.fastmail.com` and `downloadUrl` from `www.fastmailusercontent.com`, a separate
+  cookie-less origin for untrusted user content. A public-hostname mismatch applies
+  uniformly to one server's own origin and cannot explain a second, so a URL whose
+  origin differs from the advertised `apiUrl`'s is kept **verbatim** — rewriting it can
+  only aim the request at a path the connection host does not route. It did exactly
+  that: every Fastmail message-source download hit a catch-all `302` to a marketing
+  page, so no JMAP body ever cached.
 - **Generic container/member fetch.** Containers (`Mailbox`, `Calendar`) sync via
   `Foo/get` (snapshot) or `Foo/changes`→`Foo/get` (delta). Members (`Email`,
   `CalendarEvent`) sync via `Foo/query`→`Foo/get` (snapshot) or `Foo/changes`→
@@ -144,8 +152,9 @@ specifics they implement against the Stalwart fixture. Read it before touching
   §6.2): the `{accountId}`/`{blobId}`/`{type}`/`{name}` placeholders are substituted
   (the `blobId` is the one synced onto the object) and the bytes are GET with the
   same credential as every other call. The template's origin is rebased onto the
-  connection like `apiUrl`, but **without** URL-parsing it (that would percent-encode
-  the `{…}` braces). The `message_source` capability is advertised whenever the
+  connection like `apiUrl` — but only when it *is* the `apiUrl`'s origin (see the
+  session bullet above; Fastmail's is not), and **without** URL-parsing it (that would
+  percent-encode the `{…}` braces). The `message_source` capability is advertised whenever the
   session exposes mail + a `downloadUrl`. This is what lets a host render a full
   body (and, later, attachments), so JMAP reaches read parity with the IMAP/Graph
   reading path — the source is fetched lazily on first open and cached by the store,

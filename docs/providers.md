@@ -105,7 +105,7 @@ let info = provider.connection_info();
 assert!(info.capabilities.mail());
 ```
 
-For OAuth providers, use `Credentials::bearer("access-token")`. Servers that genuinely serve their API from a different origin than the session discovery endpoint can use `SessionUrlPolicy::TrustAdvertised` (the default is `RebaseToConnection`, which is correct for reverse-proxied and self-hosted servers).
+For OAuth providers, use `Credentials::bearer("access-token")`. Servers that genuinely serve their API from a different origin than the session discovery endpoint can use `SessionUrlPolicy::TrustAdvertised` (the default is `RebaseToConnection`, which is correct for reverse-proxied and self-hosted servers). The default already handles a session that spans **two** origins on purpose — Fastmail's `downloadUrl` lives on `www.fastmailusercontent.com` while its `apiUrl` is on `api.fastmail.com` — by rebasing only the URLs on the session's own advertised origin and leaving a foreign one verbatim.
 
 ### Notes
 

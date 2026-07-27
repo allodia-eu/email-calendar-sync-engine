@@ -110,6 +110,84 @@ fn rebases_upload_and_event_source_templates_keeping_placeholders() {
     );
 }
 
+/// The live Fastmail shape: the API on one origin, blob downloads on a separate
+/// cookie-less user-content origin.
+fn cross_origin_session_doc() -> Value {
+    json!({
+        "capabilities": { "urn:ietf:params:jmap:mail": {} },
+        "primaryAccounts": { "urn:ietf:params:jmap:mail": "u1" },
+        "apiUrl": "https://api.fastmail.com/jmap/api/",
+        "downloadUrl": "https://www.fastmailusercontent.com/jmap/download/{accountId}/{blobId}/{name}?type={type}",
+        "uploadUrl": "https://api.fastmail.com/jmap/upload/{accountId}/"
+    })
+}
+
+#[test]
+fn a_deliberately_cross_origin_template_is_left_verbatim() {
+    // Connected to the session's own origin, so nothing needs rebasing — but the
+    // download template lives somewhere else on purpose. Rewriting its origin pointed
+    // the blob fetch at a path `api.fastmail.com` does not route, and every
+    // message-source download came back as a catch-all `302` to a marketing page.
+    let base = Url::parse("https://api.fastmail.com/jmap/session").unwrap();
+    let session = Session::parse(
+        &cross_origin_session_doc(),
+        &base,
+        SessionUrlPolicy::RebaseToConnection,
+    )
+    .unwrap();
+    assert_eq!(
+        session.download_url(),
+        Some(
+            "https://www.fastmailusercontent.com/jmap/download/{accountId}/{blobId}/{name}?type={type}"
+        )
+    );
+    // A sibling template on the session's *own* origin still rebases, so one foreign
+    // endpoint does not opt the whole session out.
+    assert_eq!(
+        session.upload_url(),
+        Some("https://api.fastmail.com/jmap/upload/{accountId}/")
+    );
+}
+
+#[test]
+fn a_cross_origin_template_survives_an_actual_rebase() {
+    // The two behaviours together: reached through a proxy, so the session's own URLs
+    // *are* rewritten onto the connection — and the foreign one still is not.
+    let base = Url::parse("http://127.0.0.1:18080").unwrap();
+    let session = Session::parse(
+        &cross_origin_session_doc(),
+        &base,
+        SessionUrlPolicy::RebaseToConnection,
+    )
+    .unwrap();
+    assert_eq!(session.api_url(), "http://127.0.0.1:18080/jmap/api/");
+    assert_eq!(
+        session.upload_url(),
+        Some("http://127.0.0.1:18080/jmap/upload/{accountId}/")
+    );
+    assert_eq!(
+        session.download_url(),
+        Some(
+            "https://www.fastmailusercontent.com/jmap/download/{accountId}/{blobId}/{name}?type={type}"
+        )
+    );
+}
+
+#[test]
+fn a_relative_template_keeps_its_path() {
+    // A template advertised as a path carries no origin to compare, so it is the
+    // session's own by definition and is anchored on the connection — path intact.
+    // (It used to collapse to the bare origin, silently losing the whole path.)
+    let base = Url::parse("http://127.0.0.1:18080").unwrap();
+    let mut doc = session_doc();
+    doc["downloadUrl"] = json!("/download/{accountId}/{blobId}/{name}?accept={type}");
+    let session = Session::parse(&doc, &base, SessionUrlPolicy::RebaseToConnection).unwrap();
+    assert_eq!(
+        session.download_url(),
+        Some("http://127.0.0.1:18080/download/{accountId}/{blobId}/{name}?accept={type}")
+    );
+}
+
 #[test]
 fn read_only_account_does_not_advertise_mail_writes() {
     let base = Url::parse("http://127.0.0.1:18080").unwrap();
