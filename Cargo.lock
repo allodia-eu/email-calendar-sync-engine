@@ -225,6 +225,7 @@ dependencies = [
  "engine-store",
  "engine-sync",
  "futures-util",
+ "serde",
  "serde_json",
  "store-sqlite",
  "tempfile",
@@ -253,6 +254,7 @@ dependencies = [
 name = "engine-core"
 version = "0.1.0"
 dependencies = [
+ "idna",
  "serde",
  "serde_json",
  "thiserror",
@@ -279,6 +281,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -1085,6 +1088,7 @@ dependencies = [
  "engine-store",
  "engine-sync",
  "engine-tls",
+ "provider-jmap",
  "quick-xml",
  "reqwest",
  "rustls",
@@ -1108,6 +1112,7 @@ dependencies = [
  "engine-tls",
  "futures-util",
  "reqwest",
+ "serde",
  "serde_json",
  "thiserror",
  "time",
@@ -1126,6 +1131,7 @@ dependencies = [
  "engine-tls",
  "futures-util",
  "reqwest",
+ "serde",
  "serde_json",
  "thiserror",
  "time",

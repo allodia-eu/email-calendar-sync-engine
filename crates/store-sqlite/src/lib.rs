@@ -27,10 +27,13 @@
 //! own lease-free FTS index live in `message_body`/`message_body_fts` (`source_ops.rs`).
 
 mod blob;
+mod contact_ops;
+mod contact_store;
 mod convert;
 mod derived_ops;
 mod migrations;
 mod outbox_ops;
+mod photo_ops;
 mod prune;
 mod purge;
 mod read;
@@ -49,7 +52,7 @@ use std::{
 use async_trait::async_trait;
 use engine_core::{
     ids::AccountId,
-    sync::{SyncScope, SyncState},
+    sync::{ObjectKind, SyncScope, SyncState},
     time::ExpansionWindow,
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
@@ -380,6 +383,8 @@ impl<C: Clock> Store for SqliteStore<C> {
         let update = OwnedUpdate::from_update(batch.update)?;
         let derived = batch.derived.clone();
         let reconcile = batch.reconcile.to_vec();
+        let observations = batch.recipient_observations.to_vec();
+        let contact_scope = lease.scope().object_kind() == Some(ObjectKind::ContactCard);
         // `None` (a streaming page) leaves the cursor unchanged.
         let next_state = batch.next_state.map(|s| s.as_str().to_owned());
         self.call(move |conn| {
@@ -390,6 +395,8 @@ impl<C: Clock> Store for SqliteStore<C> {
                 &update,
                 &derived,
                 &reconcile,
+                &observations,
+                contact_scope,
                 next_state.as_deref(),
             )
         })

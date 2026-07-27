@@ -96,6 +96,19 @@ are one mechanism here, not alternatives.
   re-claiming and recomputing — never by retrying the stale write.
 - `release_sync_scope` frees a scope before its TTL so a finished worker does not
   block the next sync for the full lease window.
+- **The claim → fetch → apply → release cycle lives in exactly one place**:
+  `engine_sync::run_scope`, parameterized by `ScopeSyncer`. Every scope — mailboxes,
+  email, calendars, events, address books, contact cards — goes through it. This is
+  the part that is easy to get subtly wrong (release on fetch failure so a leaked
+  lease does not become a spurious `ScopeHeld`; re-claim rather than retry on
+  `StaleLease`), so a scope with an extra requirement **extends the trait, it does not
+  copy the loop**. The seams that exist for that: `ScopeSyncer::observations` (extra
+  rows to write in the *same* transaction — email's recipient observations use it),
+  `ScopeFetch::Halt`/`ScopeRun::Halted` (a fetch that declines to produce a batch —
+  an unavailable contact source), and the `Meta` associated type (per-fetch
+  information carried back to the caller, e.g. "the cursor was rebuilt"). Bookkeeping
+  a specific scope needs *around* the loop (contact-source availability) belongs in a
+  thin wrapper, not inside the driver.
 - `abandon_sync_leases` is the explicit **process-startup recovery** primitive for
   a host that knows prior workers for the store are gone after abrupt termination.
   It clears held sync leases, preserves cursors and objects, and bumps each
@@ -117,6 +130,20 @@ lease token. The transaction contains, all-or-nothing:
 5. The next `SyncState` (cursor).
 6. Pending-op reconciliations.
 7. Tombstones for snapshot reconciliation.
+8. Recipient observations derived from changed messages in a resolved Sent
+   collection. Their `(account, source message, canonical email)` identity is
+   committed with the message/cursor so replay cannot inflate counts.
+
+Contact-card applies also advance a contact-source generation. Unified people
+are rebuilt from a consistent generation and atomically replaced only when that
+generation is still current; a raced rebuild retries. Provider source rows are
+never coalesced. Stable `PersonId` assignment, merge aliases, split retention,
+history suppression, and the one-time existing-message interaction backfill are
+owned by `ContactStore`; `contacts.md` is authoritative.
+
+Contact-photo metadata is stored by `(account, contact)` with its provider
+fingerprint and content hash. Bytes use the content-addressed blob area;
+fingerprint mismatch or a missing/corrupt blob is a cache miss.
 
 Items 3–4 are **precomputed by pure engine code before the call** and carried in
 the batch; the store does not compute them. This keeps the transaction short

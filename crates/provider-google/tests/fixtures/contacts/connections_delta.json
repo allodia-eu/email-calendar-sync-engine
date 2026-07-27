@@ -1,0 +1,246 @@
+{
+  "connections": [
+    {
+      "addresses": [
+        {
+          "city": "Amsterdam",
+          "country": "Netherlands",
+          "countryCode": "NL",
+          "formattedType": "Work",
+          "formattedValue": "Keizersgracht 1\n1015 CJ Amsterdam\nNetherlands",
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "postalCode": "1015 CJ",
+          "streetAddress": "Keizersgracht 1",
+          "type": "work"
+        }
+      ],
+      "biographies": [
+        {
+          "contentType": "TEXT_PLAIN",
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "value": "Fixture contact for provider-google normalization."
+        }
+      ],
+      "birthdays": [
+        {
+          "date": {
+            "day": 10,
+            "month": 12,
+            "year": 1815
+          },
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          }
+        }
+      ],
+      "emailAddresses": [
+        {
+          "formattedType": "Work",
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "type": "work",
+          "value": "ada.lovelace@example.test"
+        },
+        {
+          "formattedType": "Home",
+          "metadata": {
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "type": "home",
+          "value": "ada@home.example.test"
+        }
+      ],
+      "etag": "etag-3",
+      "memberships": [
+        {
+          "contactGroupMembership": {
+            "contactGroupId": "4b1546498edf125b",
+            "contactGroupResourceName": "contactGroups/group-2"
+          },
+          "metadata": {
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          }
+        },
+        {
+          "contactGroupMembership": {
+            "contactGroupId": "myContacts",
+            "contactGroupResourceName": "contactGroups/group-1"
+          },
+          "metadata": {
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          }
+        }
+      ],
+      "metadata": {
+        "objectType": "PERSON",
+        "sources": [
+          {
+            "etag": "etag-4",
+            "id": "554075f48f2b9366",
+            "type": "CONTACT",
+            "updateTime": "2026-07-27T12:43:24.772772Z"
+          }
+        ]
+      },
+      "names": [
+        {
+          "displayName": "Dr. Ada Byron Lovelace",
+          "displayNameLastFirst": "Lovelace, Dr. Ada Byron",
+          "familyName": "Lovelace",
+          "givenName": "Ada",
+          "honorificPrefix": "Dr.",
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            },
+            "sourcePrimary": true
+          },
+          "middleName": "Byron",
+          "unstructuredName": "Dr. Ada Byron Lovelace"
+        }
+      ],
+      "nicknames": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "value": "Ada"
+        }
+      ],
+      "organizations": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "name": "Analytical Engines BV",
+          "title": "Principal Engineer"
+        }
+      ],
+      "phoneNumbers": [
+        {
+          "canonicalForm": "+31201234567",
+          "formattedType": "Work",
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "type": "work",
+          "value": "+31 20 123 4567"
+        },
+        {
+          "canonicalForm": "+31612345678",
+          "formattedType": "Mobile",
+          "metadata": {
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "type": "mobile",
+          "value": "+31 6 1234 5678"
+        }
+      ],
+      "photos": [
+        {
+          "default": true,
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "url": "https://lh3.googleusercontent.com/contact-photo-placeholder"
+        }
+      ],
+      "relations": [
+        {
+          "formattedType": "colleague",
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "person": "Charles Babbage",
+          "type": "colleague"
+        }
+      ],
+      "resourceName": "people/contact-2",
+      "urls": [
+        {
+          "formattedType": "Work",
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "type": "work",
+          "value": "https://example.test/ada"
+        }
+      ],
+      "userDefined": [
+        {
+          "key": "fixture",
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "554075f48f2b9366",
+              "type": "CONTACT"
+            }
+          },
+          "value": "provider-google"
+        }
+      ]
+    }
+  ],
+  "nextSyncToken": "google-sync-token-2",
+  "totalItems": 1,
+  "totalPeople": 1
+}

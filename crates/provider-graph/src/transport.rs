@@ -47,6 +47,11 @@ pub(crate) trait GraphTransport: Send + Sync {
     /// that streams a message's RFC 822 MIME rather than JSON.
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError>;
 
+    /// Fetches raw bytes **without** the account's OAuth token, for a URL that came
+    /// from remote content rather than from the Graph root — a contact payload can
+    /// carry a photo URI naming any host, and the token must not travel there.
+    async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GraphError>;
+
     /// `POST`s `body` with `content_type` to `url`, returning the parsed JSON response
     /// body when the server sent one — an action that answers with an empty body
     /// (Graph `sendMail` returns `202 Accepted` with none) yields `None`. A non-2xx
@@ -182,6 +187,12 @@ impl GraphClient {
         format!("{}{}{path}", self.base, self.principal.root())
     }
 
+    /// Builds an absolute Graph URL that is not rooted at a mailbox principal
+    /// (organization contacts and directory users).
+    pub(crate) fn global_url(&self, path: &str) -> String {
+        format!("{}{path}", self.base)
+    }
+
     /// Authenticated `GET`, rebasing absolute Graph links onto a non-default base.
     ///
     /// # Errors
@@ -210,13 +221,24 @@ impl GraphClient {
     /// Authenticated `GET` returning the raw response bytes (the `$value` MIME
     /// stream), rebasing absolute Graph links onto a non-default base like [`get`].
     ///
+    /// Authenticated **only on the Graph origin**: the `$value` MIME and
+    /// `/photo/$value` endpoints are base-rooted and carry the token as before, but a
+    /// contact payload can name any host in a photo URI. Sending the OAuth token there
+    /// would hand the account's credentials to whoever the payload names, so an
+    /// off-origin URL is fetched anonymously.
+    ///
     /// [`get`]: Self::get
     ///
     /// # Errors
     ///
     /// Returns a classified [`GraphError`] (a non-2xx is [`GraphError::Status`]).
     pub(crate) async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {
-        self.transport.get_bytes(&self.rebase(url)).await
+        let url = self.rebase(url);
+        if engine_provider::same_origin(&url, &self.base) {
+            self.transport.get_bytes(&url).await
+        } else {
+            self.transport.get_bytes_unauthenticated(&url).await
+        }
     }
 
     /// Authenticated `POST` of `body` with `content_type`, rebasing absolute Graph

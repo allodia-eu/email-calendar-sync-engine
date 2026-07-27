@@ -65,6 +65,7 @@ pub struct Session {
     mail_account_id: Option<String>,
     submission_account_id: Option<String>,
     calendar_account_id: Option<String>,
+    contact_account_id: Option<String>,
     limits: CoreLimits,
     capabilities: engine_provider::Capabilities,
     state: Option<String>,
@@ -110,6 +111,7 @@ impl Session {
         };
         let mail_account_id = account_for(capability::MAIL);
         let calendar_account_id = account_for(capability::CALENDARS);
+        let contact_account_id = account_for(capability::CONTACTS);
 
         let caps = value.get("capabilities");
         let has = |urn: &str| caps.is_some_and(|c| c.get(urn).is_some());
@@ -141,6 +143,12 @@ impl Session {
         {
             capabilities = capabilities.with_calendar_writes(WriteGuard::Absent);
         }
+        if capabilities.contacts() && !account_is_read_only(value, contact_account_id.as_deref()) {
+            capabilities = capabilities.with_contact_writes(WriteGuard::Absent);
+        }
+        if capabilities.contacts() && download_url.is_some() {
+            capabilities = capabilities.with_contact_photos();
+        }
         // Push (change notification) works whenever the server advertises an
         // EventSource endpoint (RFC 8620 §7.3) *and* the account exposes a domain the
         // engine can watch (mail or calendars) — otherwise a `Changed` could never map
@@ -163,6 +171,7 @@ impl Session {
             mail_account_id,
             submission_account_id: account_for(capability::SUBMISSION),
             calendar_account_id,
+            contact_account_id,
             limits,
             capabilities,
             state: value
@@ -234,6 +243,13 @@ impl Session {
         self.calendar_account_id
             .as_deref()
             .ok_or_else(|| JmapError::session("no primary calendar account"))
+    }
+
+    /// The JMAP account id for address books and contact cards.
+    pub(crate) fn contact_account_id(&self) -> Result<&str, JmapError> {
+        self.contact_account_id
+            .as_deref()
+            .ok_or_else(|| JmapError::session("no primary contacts account"))
     }
 
     /// The server's batching limits.
@@ -326,6 +342,9 @@ fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabiliti
     }
     if has(capability::CALENDARS) {
         caps = caps.with_calendars();
+    }
+    if has(capability::CONTACTS) {
+        caps = caps.with_contacts().with_contact_groups();
     }
     caps
 }

@@ -7,14 +7,15 @@
 //! props; the remaining richer fields (default reminders, timezone) are left at
 //! their defaults for this read slice.
 
-use std::collections::BTreeSet;
-
 use engine_core::{
     calendar::{Calendar, CalendarAccess},
     ids::CalendarId,
 };
 
-use crate::{dav::DavResponse, error::CalDavError};
+use crate::{
+    dav::{DavResponse, Props},
+    error::CalDavError,
+};
 
 /// Maps one calendar-collection response into a [`Calendar`].
 ///
@@ -35,7 +36,7 @@ pub(crate) fn calendar_from_response(response: &DavResponse) -> Result<Calendar,
         .get("calendar-description")
         .map(str::to_owned);
     calendar.color = response.props.get("calendar-color").map(str::to_owned);
-    calendar.access = access_from_privileges(response.props.privileges());
+    calendar.access = access_from_privileges(&response.props);
     Ok(calendar)
 }
 
@@ -47,28 +48,15 @@ pub(crate) fn calendar_from_response(response: &DavResponse) -> Result<Calendar,
 /// colleague's read-only share are ordinary calendar collections whose only
 /// distinguishing mark is the privileges they grant *this* user.
 ///
-/// Writing an event means replacing or creating a resource in the collection, so a
-/// write is `DAV:write` (the aggregate) or its `DAV:write-content` part, or `DAV:all`.
-/// `DAV:write-properties` is **not** enough — SabreDAV grants exactly that on a
-/// read-only share, so treating it as a write would reintroduce the very lie this
-/// mapping exists to remove.
-///
-/// **A server that reports no privilege set at all is taken as writable.** RFC 4791 §2
-/// requires a CalDAV server to support WebDAV ACL, so silence is non-conformance rather
-/// than a considered "no", and the failure modes are asymmetric: guessing "writable"
-/// costs a `403` on a write the user attempted, while guessing "read-only" hides the
-/// edit affordance entirely on a server that works fine. The `403` is the backstop.
+/// Which privileges count as a write — and why silence means "writable" — is
+/// [`Props::grants_member_writes`], shared with the CardDAV address-book path.
 ///
 /// Only `may_write` is derived. The other flags stay at the two presets: the privilege
 /// set says nothing standard about whether the *collection itself* may be deleted (that
 /// is `DAV:unbind` on the parent home, not on the calendar) or shared, so inventing an
 /// answer from one server's spelling would be exactly the over-fit this mapping avoids.
-fn access_from_privileges(privileges: Option<&BTreeSet<String>>) -> CalendarAccess {
-    let Some(privileges) = privileges else {
-        return CalendarAccess::owner();
-    };
-    let granted = |privilege: &str| privileges.contains(privilege);
-    if granted("all") || granted("write") || granted("write-content") {
+fn access_from_privileges(props: &Props) -> CalendarAccess {
+    if props.grants_member_writes() {
         CalendarAccess::owner()
     } else {
         CalendarAccess::reader()

@@ -1,0 +1,13 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(contact)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/contacts/delta?$deltatoken=opaque-token-3",
+  "value": [
+    {
+      "@odata.type": "#microsoft.graph.contact",
+      "@removed": {
+        "reason": "deleted"
+      },
+      "id": "contact-1"
+    }
+  ]
+}

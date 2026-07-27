@@ -1,6 +1,6 @@
 [package]
 name = "provider-google"
-description = "Google (Gmail + Google Calendar) provider adapter for the PIM sync engine: bearer-auth HTTP transport; Gmail read/sync (account-global historyId delta) + writes (messages.modify/trash/delete) + submission (messages.send in base64url MIME); Google Calendar read/sync (events.list syncToken, IANA-native RRULE masters) + writes (insert/patch/delete, If-Match guarded). Implements the engine-provider contract."
+description = "Google Gmail, Calendar, and People provider: sync, guarded writes, submission, contact groups/directories/photos, and bearer-auth HTTP transport."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,6 +20,7 @@ engine-tls = { workspace = true, features = ["reqwest"] }
 # reqwest + rustls (pure-Rust TLS, mobile cross-compile) on the engine's standard
 # HTTP stack, mirroring provider-graph/provider-jmap.
 reqwest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }

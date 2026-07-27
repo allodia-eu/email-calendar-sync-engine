@@ -1,0 +1,15 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:contact-3001@test.local
+KIND:individual
+FN:Zoë Ångström
+N:Ångström;Zoë;;Dr.;
+EMAIL;TYPE=work;PREF=1:zoe@example.test
+EMAIL;TYPE=home:zoe@international.example
+TEL;TYPE=cell:+31-6-12345678
+ADR;TYPE=home:;;Keizersgracht 1;Amsterdam;;1015 CJ;Netherlands
+ORG:Analytical Engines;Research
+TITLE:Principal Engineer
+PHOTO:data:image/png;base64,iVBORw0KGgo=
+X-HARNESS-EXTENSION:preserve-me
+END:VCARD

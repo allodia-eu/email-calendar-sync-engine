@@ -1,0 +1,8 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:urn:uuid:team-contacts
+KIND:group
+FN:Project Team
+MEMBER:urn:uuid:alice
+MEMBER:urn:uuid:bob
+END:VCARD

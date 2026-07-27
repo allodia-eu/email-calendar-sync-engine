@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use engine_core::{
     calendar::{Calendar, Event},
-    ids::AccountId,
+    ids::{AccountId, AddressBookId},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
@@ -86,12 +86,18 @@ impl Executor for JmapClient {
 pub struct JmapProvider {
     executor: Box<dyn Executor>,
     capabilities: Capabilities,
+    /// The address book host-facing contact writes target, once
+    /// [`JmapProvider::with_contact_address_book`] has bound one. `None` until then:
+    /// JMAP has no well-known default book, so a fabricated id would advertise a
+    /// destination the server will reject.
+    pub(crate) contact_address_book: Option<AddressBookId>,
 }
 
 impl core::fmt::Debug for JmapProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("JmapProvider")
             .field("capabilities", &self.capabilities)
+            .field("contact_address_book", &self.contact_address_book)
             .finish_non_exhaustive()
     }
 }
@@ -113,7 +119,61 @@ impl JmapProvider {
         Self {
             executor,
             capabilities,
+            contact_address_book: None,
         }
+    }
+
+    /// Binds host-facing contact writes to one **discovered** address book.
+    ///
+    /// Until this is called the provider advertises no contact destination, so a host
+    /// that forgot to bind one fails at its own validation rather than on the wire.
+    #[must_use]
+    pub fn with_contact_address_book(mut self, address_book: AddressBookId) -> Self {
+        self.contact_address_book = Some(address_book);
+        self
+    }
+
+    pub(crate) fn executor(&self) -> &dyn Executor {
+        self.executor.as_ref()
+    }
+
+    pub(crate) fn contact_account(&self) -> Result<String, JmapError> {
+        Ok(self.executor.session().contact_account_id()?.to_owned())
+    }
+
+    pub(crate) async fn contact_call(
+        &self,
+        method: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, JmapError> {
+        let mut request = Request::new([capability::CORE, capability::CONTACTS]);
+        let call = request.invoke(method, arguments);
+        let response = self.executor.execute(&request).await?;
+        Ok(response.result(&call)?.clone())
+    }
+
+    pub(crate) async fn download_contact_blob(
+        &self,
+        blob: &str,
+        media_type: Option<&str>,
+    ) -> Result<Vec<u8>, JmapError> {
+        let account = self.contact_account()?;
+        let template = self
+            .executor
+            .session()
+            .download_url()
+            .ok_or_else(|| JmapError::session("server advertised no downloadUrl"))?;
+        // `media_type` comes from the server's JSContact payload, not from a fixed
+        // literal, so the substitution must be encoded: an unencoded `?`/`#`/`&`/`..`
+        // in it would re-point or re-parameterize the download URL.
+        let url = crate::blob::download_url(
+            template,
+            &account,
+            blob,
+            media_type.unwrap_or("application/octet-stream"),
+            "contact-photo",
+        );
+        self.executor.download(&url).await
     }
 
     /// The JMAP (server-side) mail account id for mail method arguments.
@@ -352,7 +412,7 @@ impl Provider for JmapProvider {
         // The message's raw RFC 5322 source is downloaded from the session's
         // `downloadUrl` blob template using the message's synced `blobId`; one
         // credential (the connected client) backs the fetch, like every other call.
-        Ok(fetch::message_source(self.executor.as_ref(), message).await?)
+        Ok(crate::blob::message_source(self.executor.as_ref(), message).await?)
     }
 
     async fn submit_email(
@@ -395,3 +455,7 @@ mod calendar_write_tests;
 #[cfg(test)]
 #[path = "calendar_patch_tests.rs"]
 mod calendar_patch_tests;
+
+#[cfg(test)]
+#[path = "contact_tests.rs"]
+mod contact_tests;

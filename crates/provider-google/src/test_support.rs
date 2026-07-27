@@ -3,7 +3,7 @@
 //! fixture-replay HTTP server and a request-capturing server (for asserting write
 //! request *shapes*, which the fakes ignore — `AGENTS.md`).
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use async_trait::async_trait;
 use engine_provider::HttpVersion;
@@ -30,8 +30,12 @@ pub(crate) fn tls() -> &'static TlsClientConfig {
 pub(crate) type FakeRoute = Result<Value, (u16, Value)>;
 
 /// Returns the first routed answer whose key is a substring of the requested URL.
+///
+/// `unauthenticated` records the URLs fetched without the OAuth token, so a test can
+/// assert that an off-origin photo URL never carries the account's credentials.
 struct Fake {
     routes: Vec<(String, FakeRoute)>,
+    unauthenticated: Mutex<Vec<String>>,
 }
 
 impl Fake {
@@ -51,6 +55,22 @@ impl GoogleTransport for Fake {
             Ok(doc) => Ok(doc.clone()),
             Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
         }
+    }
+
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GoogleError> {
+        match self.route(url)? {
+            Ok(Value::String(bytes)) => Ok(bytes.as_bytes().to_vec()),
+            Ok(value) => Ok(value.to_string().into_bytes()),
+            Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
+        }
+    }
+
+    async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GoogleError> {
+        self.unauthenticated
+            .lock()
+            .expect("unauthenticated lock")
+            .push(url.to_owned());
+        GoogleTransport::get_bytes(self, url).await
     }
 
     async fn post(
@@ -117,7 +137,13 @@ pub(crate) fn fake_client_fallible(routes: Vec<(&str, FakeRoute)>) -> GoogleClie
         .into_iter()
         .map(|(key, answer)| (key.to_owned(), answer))
         .collect();
-    GoogleClient::with_transport(Box::new(Fake { routes }), "https://google.test".to_owned())
+    GoogleClient::with_transport(
+        Box::new(Fake {
+            routes,
+            unauthenticated: Mutex::new(Vec::new()),
+        }),
+        "https://google.test".to_owned(),
+    )
 }
 
 /// Parses a fixture string into JSON.

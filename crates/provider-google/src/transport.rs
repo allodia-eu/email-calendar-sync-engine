@@ -26,6 +26,12 @@ use crate::{error::GoogleError, http_transport::HttpTransport};
 /// The universal Google APIs host — serves both `gmail/v1/…` and `calendar/v3/…`.
 pub(crate) const GOOGLE_BASE: &str = "https://www.googleapis.com";
 
+/// The People API host. Unlike Gmail and Calendar, People is **not** served from
+/// [`GOOGLE_BASE`]: both `www.googleapis.com/v1/people/…` and the service-prefixed
+/// `www.googleapis.com/people/v1/…` answer an HTML `404`, so contact calls must be
+/// rooted here instead.
+pub(crate) const PEOPLE_BASE: &str = "https://people.googleapis.com";
+
 /// An authenticated request against a Google API.
 ///
 /// Implemented by [`HttpTransport`](crate::http_transport) (live reqwest) and, in
@@ -35,6 +41,15 @@ pub(crate) const GOOGLE_BASE: &str = "https://www.googleapis.com";
 pub(crate) trait GoogleTransport: Send + Sync {
     /// Fetches `url`, returning the parsed JSON or a classified error.
     async fn get(&self, url: &str) -> Result<Value, GoogleError>;
+
+    /// Fetches authenticated raw bytes from a Google API URL.
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GoogleError>;
+
+    /// Fetches raw bytes **without** the account's OAuth token, for a URL that came
+    /// from remote content rather than from the API root — a People `photos[].url`
+    /// points at `googleusercontent.com`, which serves it publicly. Sending the token
+    /// off-origin would hand it to whatever host the payload names.
+    async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GoogleError>;
 
     /// `POST`s `body` with `content_type` to `url`, returning the parsed JSON response
     /// body when the server sent one — an action answering with an empty body yields
@@ -93,6 +108,27 @@ impl core::fmt::Debug for GoogleClient {
     }
 }
 
+/// Percent-encodes one **query-parameter value**.
+///
+/// Continuation tokens (`pageToken`, `syncToken`, `startHistoryId`) are opaque
+/// server-generated strings that this crate splices into a query string. Splicing
+/// them raw means a token containing `&`, `#`, or `=` re-parameterizes or truncates
+/// the request — the caller would silently fetch a different page than the server
+/// named. Encoding everything outside the RFC 3986 unreserved set keeps the token a
+/// value, never syntax.
+pub(crate) fn encode_query_value(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
 impl GoogleClient {
     /// Connects with an OAuth bearer access token, targeting the Google APIs root.
     ///
@@ -137,6 +173,20 @@ impl GoogleClient {
         format!("{}{path}", self.base)
     }
 
+    /// Builds an absolute **People API** URL from an API-relative path (`/v1/people/…`).
+    ///
+    /// People is the one Google API this client speaks that is not served from
+    /// [`GOOGLE_BASE`] (see [`PEOPLE_BASE`]), so contact paths are rooted separately. A
+    /// client built with a custom base — a replay server or a proxy — still wins, so the
+    /// offline tests and any host-supplied origin keep working unchanged.
+    pub(crate) fn people_url(&self, path: &str) -> String {
+        if self.base == GOOGLE_BASE {
+            format!("{PEOPLE_BASE}{path}")
+        } else {
+            format!("{}{path}", self.base)
+        }
+    }
+
     /// Authenticated `GET`.
     ///
     /// # Errors
@@ -144,6 +194,21 @@ impl GoogleClient {
     /// Returns a classified [`GoogleError`] (a non-2xx is [`GoogleError::Status`]).
     pub(crate) async fn get(&self, url: &str) -> Result<Value, GoogleError> {
         self.transport.get(url).await
+    }
+
+    /// Raw byte fetch, authenticated **only on the API origin**.
+    ///
+    /// Photo URLs reach this from the People payload (`photos[].url`), i.e. from
+    /// remote content, and Google serves them off `googleusercontent.com` — a
+    /// different origin that needs no token. Gating on the origin keeps the OAuth
+    /// access token from travelling to whatever host a payload names, while every
+    /// base-rooted API call authenticates exactly as before.
+    pub(crate) async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GoogleError> {
+        if engine_provider::same_origin(url, &self.base) {
+            self.transport.get_bytes(url).await
+        } else {
+            self.transport.get_bytes_unauthenticated(url).await
+        }
     }
 
     /// Authenticated `POST` of `body` with `content_type`. Returns the parsed JSON
@@ -222,5 +287,29 @@ mod tests {
         );
         // The Debug rendering must not leak the bearer token.
         assert!(!format!("{client:?}").contains("super-secret-token"));
+    }
+
+    /// People is the one API not served from [`GOOGLE_BASE`]: a contact path rooted
+    /// there answers an HTML `404`, so `people_url` must retarget it — while a custom
+    /// base (replay server / proxy) still wins.
+    #[test]
+    fn people_paths_root_at_the_people_host_unless_a_custom_base_is_set() {
+        let client = GoogleClient::connect("t", crate::test_support::tls()).unwrap();
+        assert_eq!(
+            client.people_url("/v1/people/me/connections"),
+            format!("{PEOPLE_BASE}/v1/people/me/connections")
+        );
+        // Gmail and Calendar are unaffected — they stay on the universal host.
+        assert_eq!(
+            client.url("/gmail/v1/users/me/labels"),
+            format!("{GOOGLE_BASE}/gmail/v1/users/me/labels")
+        );
+        // A custom base wins, so the offline fixture-replay tests are unchanged.
+        let custom =
+            GoogleClient::with_base("t", "http://127.0.0.1:9", crate::test_support::tls()).unwrap();
+        assert_eq!(
+            custom.people_url("/v1/people/me/connections"),
+            "http://127.0.0.1:9/v1/people/me/connections"
+        );
     }
 }

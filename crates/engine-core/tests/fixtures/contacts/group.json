@@ -1,0 +1,11 @@
+{
+  "@type": "Card",
+  "version": "1.0",
+  "uid": "urn:uuid:team-contacts",
+  "kind": "group",
+  "name": { "full": "Project Team" },
+  "members": {
+    "urn:uuid:alice": true,
+    "urn:uuid:bob": true
+  }
+}

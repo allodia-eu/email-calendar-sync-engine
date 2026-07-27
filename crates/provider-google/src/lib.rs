@@ -1,8 +1,8 @@
-//! `provider-google` — the Google (Gmail + Google Calendar) read/sync/write provider.
+//! `provider-google` — the Google Gmail, Calendar, and People provider.
 //!
 //! Google is the cloud-API counterpart to `provider-graph` (OAuth bearer + JSON over
-//! HTTP), housing *both* mail (Gmail) and calendar (Google Calendar) behind one shared
-//! HTTP transport, exactly as `provider-graph` houses Microsoft mail + calendar. The
+//! HTTP), housing mail (Gmail), calendar (Google Calendar), and contacts (People)
+//! behind one shared HTTP transport. The
 //! two halves differ in sync shape in ways that make Google *simpler* than Graph:
 //!
 //! - **Gmail mail sync is account-global.** Gmail's `historyId` is an account-wide incremental
@@ -22,14 +22,17 @@
 //! - `json` — pure `serde_json::Value` extraction helpers.
 //! - `transport` — bearer HTTP behind the `GoogleTransport` seam ([`GoogleClient`]).
 //!
-//! The mail and calendar read/sync, write, and submission layers land as slices
-//! (Phases B–E of the Google plan); this module set is the shared transport spine.
+//! Mail, calendar, and People read/sync and writes share this transport spine.
 
 mod base64url;
 mod cal_fetch;
 mod cal_normalize;
 mod cal_write;
 mod calendar;
+mod contact;
+mod contact_normalize;
+mod contact_source;
+mod contact_write;
 mod error;
 mod fetch;
 mod http_transport;
@@ -41,10 +44,18 @@ mod submit;
 mod transport;
 
 #[cfg(test)]
+mod contact_fixture_tests;
+#[cfg(test)]
+mod contact_shape_tests;
+#[cfg(test)]
+mod contact_tests;
+#[cfg(test)]
 mod test_support;
 
 pub use cal_fetch::CalendarWindow;
 pub use calendar::GoogleCalendarProvider;
+pub use contact::GoogleContactProvider;
+pub use contact_source::GoogleContactSource;
 pub use error::GoogleError;
 pub use provider::GmailProvider;
 pub use transport::GoogleClient;

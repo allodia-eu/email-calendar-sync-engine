@@ -1,0 +1,156 @@
+//! On-demand contact-photo fetch and its cache keys.
+//!
+//! Split out of `contacts.rs` by responsibility: the two keys below (which resource,
+//! and is it still fresh) are the whole of the caching contract, and they are easy to
+//! get subtly wrong — see the doc comments.
+
+use engine_core::{
+    contact::{ContactCard, ContactResource},
+    ids::AccountId,
+};
+use engine_provider::{ContactPhoto, ContactsProvider};
+use engine_store::{CachedContactPhoto, ContactStore};
+
+use crate::{ApiError, Engine};
+
+impl Engine {
+    /// Authenticated on-demand contact-photo fetch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] for cache failures or [`ApiError::Sync`] when
+    /// the provider fetch fails.
+    pub async fn contact_photo<P: ContactsProvider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        card: &ContactCard,
+        media: &ContactResource,
+    ) -> Result<ContactPhoto, ApiError> {
+        let fingerprint = photo_fingerprint(card, media);
+        let resource = photo_resource_key(media);
+        if let Some(cached) = self
+            .store
+            .contact_photo(account, &card.id, &resource, &fingerprint)
+            .await?
+        {
+            let media_type = cached.media_type.clone();
+            let fingerprint = cached.fingerprint.clone();
+            return Ok(ContactPhoto::new(
+                cached.into_bytes(),
+                media_type,
+                fingerprint,
+            ));
+        }
+        let photo = provider
+            .fetch_contact_photo(account, card, media)
+            .await
+            .map_err(|error| ApiError::Sync(engine_sync::SyncError::Provider(error)))?;
+        self.store
+            .put_contact_photo(
+                account,
+                &card.id,
+                &resource,
+                &CachedContactPhoto::new(
+                    photo.as_bytes().to_vec(),
+                    photo.media_type.clone(),
+                    fingerprint,
+                ),
+            )
+            .await?;
+        Ok(photo)
+    }
+}
+
+/// Identifies *which* media resource on a card a cache entry belongs to.
+///
+/// A card can carry several (`PHOTO`, `LOGO`, `SOUND` all land in
+/// `ContactCard::media`), and the fingerprint alone cannot separate them: its ETag
+/// fallback is the card's, identical for every resource on that card. Without this
+/// discriminator a `LOGO` fetch would satisfy a later `PHOTO` read.
+///
+/// The URI is hashed rather than stored verbatim so a `data:` URI — which can be
+/// megabytes — does not become a primary-key column. Only resources on the *same*
+/// card share a key space, so a 64-bit digest is ample.
+fn photo_resource_key(media: &ContactResource) -> String {
+    uri_digest(&media.uri)
+}
+
+/// Answers "is the cached photo still the one this card points at".
+///
+/// The last resort is the URI, because a source that versions neither the media nor
+/// the card still changes the URI when the photo changes. It is hashed for the same
+/// reason [`photo_resource_key`] hashes it: a CardDAV inline `PHOTO;ENCODING=b` *is* a
+/// `data:` URI holding the whole image, and storing that as the fingerprint would
+/// write a second copy of the image into a column that is string-compared on every
+/// read.
+fn photo_fingerprint(card: &ContactCard, media: &ContactResource) -> String {
+    media
+        .fingerprint
+        .as_ref()
+        .map(|value| format!("media:{value}"))
+        .or_else(|| {
+            card.revisions
+                .etag
+                .as_ref()
+                .map(|value| format!("etag:{}", value.as_str()))
+        })
+        .or_else(|| {
+            card.revisions
+                .change_key
+                .as_ref()
+                .map(|value| format!("change-key:{}", value.as_str()))
+        })
+        .unwrap_or_else(|| format!("uri:{}", uri_digest(&media.uri)))
+}
+
+/// FNV-1a over a resource URI. Both photo cache keys are card-local and compared for
+/// equality only, so a 64-bit digest is enough to tell one resource (or one revision
+/// of one) from another without carrying the URI itself.
+fn uri_digest(uri: &str) -> String {
+    let digest = uri.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        hash.wrapping_mul(0x0100_0000_01b3) ^ u64::from(byte)
+    });
+    format!("{digest:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use engine_core::{
+        contact::{ContactCard, ContactResource},
+        ids::{AddressBookId, ContactId},
+        membership::Memberships,
+    };
+
+    use super::{photo_fingerprint, photo_resource_key};
+
+    fn inline(payload: &str) -> ContactResource {
+        ContactResource {
+            uri: format!("data:image/jpeg;base64,{payload}"),
+            ..ContactResource::default()
+        }
+    }
+
+    fn card() -> ContactCard {
+        ContactCard::new(
+            ContactId::try_from("/book/ada.vcf").unwrap(),
+            Memberships::of_one(AddressBookId::try_from("/book/").unwrap()),
+        )
+    }
+
+    /// Both keys are written to a cache row and string-compared on every read, so
+    /// neither may carry a `data:` URI's payload — a vCard inline photo is the whole
+    /// image, and a megabyte-wide key column is a second copy of it.
+    #[test]
+    fn both_photo_cache_keys_stay_short_for_an_inline_image() {
+        let big = inline(&"A".repeat(64 * 1024));
+        for key in [photo_resource_key(&big), photo_fingerprint(&card(), &big)] {
+            assert!(key.len() <= 32, "{} bytes: {key}", key.len());
+        }
+        // Still a *fingerprint*: a different inline image must not match.
+        assert_ne!(
+            photo_fingerprint(&card(), &big),
+            photo_fingerprint(&card(), &inline("Qk0=")),
+        );
+    }
+}

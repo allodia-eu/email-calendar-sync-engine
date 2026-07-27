@@ -17,6 +17,7 @@ use crate::{
 pub(crate) struct Replay {
     responses: Mutex<Vec<HttpResponse>>,
     seen: Mutex<Vec<(DavMethod, String)>>,
+    reads: Mutex<Vec<(DavMethod, String, String, String)>>,
     writes: Mutex<Vec<WriteRequest>>,
 }
 
@@ -26,6 +27,7 @@ impl Replay {
         Self {
             responses: Mutex::new(responses),
             seen: Mutex::new(Vec::new()),
+            reads: Mutex::new(Vec::new()),
             writes: Mutex::new(Vec::new()),
         }
     }
@@ -44,6 +46,11 @@ impl Replay {
     pub(crate) fn writes(&self) -> MutexGuard<'_, Vec<WriteRequest>> {
         self.writes.lock().expect("writes lock")
     }
+
+    /// Full read requests `(method, href, depth, body)`.
+    pub(crate) fn reads(&self) -> MutexGuard<'_, Vec<(DavMethod, String, String, String)>> {
+        self.reads.lock().expect("reads lock")
+    }
 }
 
 #[async_trait]
@@ -52,13 +59,19 @@ impl DavExecutor for Replay {
         &self,
         method: DavMethod,
         href: &str,
-        _depth: &str,
-        _body: String,
+        depth: &str,
+        body: String,
     ) -> Result<HttpResponse, CalDavError> {
         self.seen
             .lock()
             .expect("seen lock")
             .push((method, href.to_owned()));
+        self.reads.lock().expect("reads lock").push((
+            method,
+            href.to_owned(),
+            depth.to_owned(),
+            body,
+        ));
         Ok(self.responses.lock().expect("responses lock").remove(0))
     }
 
@@ -109,5 +122,15 @@ pub(crate) fn wrote(status: u16, etag: Option<&str>) -> HttpResponse {
         body: String::new(),
         location: None,
         etag: etag.map(str::to_owned),
+    }
+}
+
+/// An arbitrary HTTP response used to drive status-dependent recovery.
+pub(crate) fn status(status: u16, body: &str) -> HttpResponse {
+    HttpResponse {
+        status,
+        body: body.to_owned(),
+        location: None,
+        etag: None,
     }
 }

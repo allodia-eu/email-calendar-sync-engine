@@ -29,6 +29,23 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   write with `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
   `create_calendar_event` / `patch_calendar_event` / `delete_calendar_event`
   (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`.
+  Contact hosts use `sync_address_books`, source-bound `sync_contact_cards`, or
+  combined `sync_contacts`; browse via generation-bound `people_page` and
+  `person`; write one explicit destination with `create_contact` /
+  `patch_contact` / `delete_contact`; fetch authenticated media with
+  `contact_photo`; and compose recipients with `recipient_suggestions` plus the
+  history-forget/clear methods. Unsupported destination fields are rejected
+  before enqueue and successful writes refetch the canonical card.
+  `contact_destinations(adapters)` enumerates the explicitly **writable** books
+  and takes no account: each adapter is already bound to one, so an account
+  parameter could only re-state what the caller chose when it assembled the
+  list. A read-only source belongs in an address-book listing, never in a "save
+  to…" picker. Group membership is a `PeopleQuery` filter, and `contact_photo`
+  is fingerprint-cache-first. A JMAP adapter must be rebound to each discovered
+  opaque address-book id with `with_contact_address_book` before it is supplied
+  as a host-facing destination — unbound, it offers no destination at all.
+  `Person::display_name` is an `Option`: a person with no name and no address
+  has none, and the host — not the engine — chooses what to call them.
 - **A calendar grid reads `occurrences_in`, not `events`.** `events` returns the
   projected envelope — a recurring series is one object, at its series start — so a host
   that lays *that* out shows a weekly meeting in exactly one week. `occurrences_in(account,

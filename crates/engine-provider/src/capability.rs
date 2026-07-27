@@ -71,6 +71,10 @@ pub struct Capabilities {
     /// of the guard it can promise. One field rather than two, so "guarded but not
     /// writable" is unrepresentable.
     calendar_writes: Option<WriteGuard>,
+    contacts: bool,
+    contact_writes: Option<WriteGuard>,
+    contact_groups: bool,
+    contact_photos: bool,
 }
 
 impl Capabilities {
@@ -85,6 +89,10 @@ impl Capabilities {
             idle: false,
             calendars: false,
             calendar_writes: None,
+            contacts: false,
+            contact_writes: None,
+            contact_groups: false,
+            contact_photos: false,
         }
     }
 
@@ -162,6 +170,34 @@ impl Capabilities {
         self
     }
 
+    /// Marks address-book/contact read and sync as supported.
+    #[must_use]
+    pub const fn with_contacts(mut self) -> Self {
+        self.contacts = true;
+        self
+    }
+
+    /// Marks source-targeted contact writes and their guard strength.
+    #[must_use]
+    pub const fn with_contact_writes(mut self, guard: WriteGuard) -> Self {
+        self.contact_writes = Some(guard);
+        self
+    }
+
+    /// Marks contact-group reads as supported.
+    #[must_use]
+    pub const fn with_contact_groups(mut self) -> Self {
+        self.contact_groups = true;
+        self
+    }
+
+    /// Marks authenticated, on-demand contact-photo fetch as supported.
+    #[must_use]
+    pub const fn with_contact_photos(mut self) -> Self {
+        self.contact_photos = true;
+        self
+    }
+
     /// Whether mail read/sync is supported.
     #[must_use]
     pub const fn mail(self) -> bool {
@@ -215,6 +251,36 @@ impl Capabilities {
     pub const fn calendar_write_guard(self) -> Option<WriteGuard> {
         self.calendar_writes
     }
+
+    /// Whether address-book/contact read and sync is supported.
+    #[must_use]
+    pub const fn contacts(self) -> bool {
+        self.contacts
+    }
+
+    /// Whether contact writes are supported.
+    #[must_use]
+    pub const fn contact_writes(self) -> bool {
+        self.contact_writes.is_some()
+    }
+
+    /// Contact-write lost-update guard strength.
+    #[must_use]
+    pub const fn contact_write_guard(self) -> Option<WriteGuard> {
+        self.contact_writes
+    }
+
+    /// Whether contact-group reads are supported.
+    #[must_use]
+    pub const fn contact_groups(self) -> bool {
+        self.contact_groups
+    }
+
+    /// Whether authenticated contact-photo fetch is supported.
+    #[must_use]
+    pub const fn contact_photos(self) -> bool {
+        self.contact_photos
+    }
 }
 
 #[cfg(test)]
@@ -241,11 +307,18 @@ mod tests {
             .with_submission()
             .with_idle()
             .with_calendars()
-            .with_calendar_writes(WriteGuard::Enforced);
+            .with_calendar_writes(WriteGuard::Enforced)
+            .with_contacts()
+            .with_contact_writes(WriteGuard::Enforced)
+            .with_contact_groups()
+            .with_contact_photos();
         assert!(caps.mail() && caps.mail_writes() && caps.submission());
         assert!(caps.message_source() && caps.idle());
         assert!(caps.calendars() && caps.calendar_writes());
         assert_eq!(caps.calendar_write_guard(), Some(WriteGuard::Enforced));
+        assert!(caps.contacts() && caps.contact_writes());
+        assert!(caps.contact_groups() && caps.contact_photos());
+        assert_eq!(caps.contact_write_guard(), Some(WriteGuard::Enforced));
     }
 
     #[test]

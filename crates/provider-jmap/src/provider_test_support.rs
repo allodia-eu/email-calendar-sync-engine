@@ -49,12 +49,14 @@ impl FakeExecutor {
                 "urn:ietf:params:jmap:core": { "maxObjectsInGet": 500 },
                 "urn:ietf:params:jmap:mail": {},
                 "urn:ietf:params:jmap:submission": {},
-                "urn:ietf:params:jmap:calendars": {}
+                "urn:ietf:params:jmap:calendars": {},
+                "urn:ietf:params:jmap:contacts": {}
             },
             "primaryAccounts": {
                 "urn:ietf:params:jmap:mail": "c",
                 "urn:ietf:params:jmap:submission": "c",
-                "urn:ietf:params:jmap:calendars": "c"
+                "urn:ietf:params:jmap:calendars": "c",
+                "urn:ietf:params:jmap:contacts": "c"
             },
             "apiUrl": "https://mail.test.local/jmap/",
             "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}",

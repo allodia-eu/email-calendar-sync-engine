@@ -1,0 +1,7 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:group-3002@test.local
+KIND:group
+FN:Harness Friends
+MEMBER:urn:uuid:contact-3001@test.local
+END:VCARD

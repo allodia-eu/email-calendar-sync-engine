@@ -49,17 +49,19 @@ type Res<T> = Result<T, Box<dyn Error>>;
 const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 /// Google's OAuth 2.0 token endpoint.
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
-/// Default scopes — the full mail scope (`https://mail.google.com/`, which enables
-/// permanent delete past Trash) + calendar read/write, plus identity. A single
-/// consent covers the send/modify and calendar-write slices too.
+/// Default scopes — full mail, calendar read/write, owned-contact read/write,
+/// Other Contacts read, Workspace directory read, plus identity.
 const DEFAULT_SCOPES: &str = "https://mail.google.com/ \
-    https://www.googleapis.com/auth/calendar openid email profile";
+    https://www.googleapis.com/auth/calendar \
+    https://www.googleapis.com/auth/contacts \
+    https://www.googleapis.com/auth/contacts.other.readonly \
+    https://www.googleapis.com/auth/directory.readonly openid email profile";
 /// Loopback port the redirect server listens on. Google matches a registered
 /// loopback (`127.0.0.1`) redirect ignoring the port (RFC 8252 §7.3), so the OAuth
 /// client only needs the loopback registered.
 const DEFAULT_PORT: u16 = 8400;
 /// API base for the `get`/`req` commands' relative paths — the universal Google
-/// APIs host, which serves both `gmail/v1/…` and `calendar/v3/…` (matching the
+/// APIs host, which serves Gmail, Calendar, and People endpoints (matching the
 /// provider's transport base).
 const API_BASE: &str = "https://www.googleapis.com";
 

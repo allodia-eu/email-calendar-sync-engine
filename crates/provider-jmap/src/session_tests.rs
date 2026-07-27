@@ -158,6 +158,28 @@ fn event_source_without_a_syncable_domain_does_not_advertise_idle() {
 }
 
 #[test]
+fn contacts_capability_exposes_account_and_write_features() {
+    let base = Url::parse("http://127.0.0.1:18080").unwrap();
+    let doc = json!({
+        "capabilities": {
+            "urn:ietf:params:jmap:core": {},
+            "urn:ietf:params:jmap:contacts": {}
+        },
+        "primaryAccounts": { "urn:ietf:params:jmap:contacts": "contacts" },
+        "accounts": { "contacts": { "isReadOnly": false } },
+        "apiUrl": "https://mail.test.local/jmap/",
+        "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}"
+    });
+    let session = Session::parse(&doc, &base, SessionUrlPolicy::RebaseToConnection).unwrap();
+    assert_eq!(session.contact_account_id().unwrap(), "contacts");
+    let capabilities = session.capabilities();
+    assert!(capabilities.contacts());
+    assert!(capabilities.contact_groups());
+    assert_eq!(capabilities.contact_write_guard(), Some(WriteGuard::Absent));
+    assert!(capabilities.contact_photos());
+}
+
+#[test]
 fn mail_capability_without_a_primary_account_defaults_to_writable() {
     // The mail URN is advertised but `primaryAccounts` names no mail account: the
     // read-only check has no id to consult and defaults to writable, so `mail_writes`

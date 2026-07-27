@@ -130,6 +130,24 @@ raw_text! {
     RawJsCalendar
 }
 
+raw_text! {
+    /// Raw vCard text (RFC 6350, including accepted legacy vCard 3 forms),
+    /// preserved verbatim for lossless CardDAV writes.
+    RawVcard
+}
+
+raw_text! {
+    /// Raw JSContact JSON text (RFC 9553), preserving property ids, key order,
+    /// and unknown extensions.
+    RawJsContact
+}
+
+raw_text! {
+    /// A provider's raw JSON contact record (for example Graph or Google
+    /// People), retained beside the normalized card.
+    RawProviderJson
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

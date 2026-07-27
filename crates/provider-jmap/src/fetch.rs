@@ -13,8 +13,6 @@ use std::collections::BTreeSet;
 use engine_core::{
     error::FailureClass,
     ids::ProviderKey,
-    mail::Message,
-    raw::RawMime,
     sync::{SyncState, SyncUpdate},
 };
 use engine_provider::{PageToken, ScopeSync, SyncKind, SyncPage};
@@ -30,44 +28,6 @@ use crate::{
     },
 };
 
-/// Downloads a message's raw RFC 5322 source via the session's `downloadUrl`
-/// blob template (RFC 8620 §6.2).
-///
-/// Substitutes the template's `{accountId}`/`{blobId}`/`{type}`/`{name}`
-/// placeholders — `accountId` is the JMAP mail account, `blobId` is the message's
-/// synced blob handle — and GETs the bytes. Placeholder substitution is a plain
-/// replace: JMAP ids are restricted to URL-safe characters (RFC 8620 §1.2) and the
-/// requested `type`/`name` are fixed safe literals.
-///
-/// # Errors
-///
-/// Returns [`JmapError::Protocol`] if the message carries no `blobId` (it was never
-/// synced with one), [`JmapError::Session`] if the server advertised no
-/// `downloadUrl`, or a transport/HTTP error from the download.
-pub(crate) async fn message_source(
-    executor: &dyn Executor,
-    message: &Message,
-) -> Result<RawMime, JmapError> {
-    let blob = message
-        .blob_id
-        .as_ref()
-        .ok_or_else(|| JmapError::protocol("message has no blobId; cannot fetch source"))?;
-    let account = executor.session().mail_account_id()?;
-    let template = executor
-        .session()
-        .download_url()
-        .ok_or_else(|| JmapError::session("server advertised no downloadUrl"))?;
-    let url = template
-        .replace("{accountId}", account)
-        .replace("{blobId}", blob.as_str())
-        .replace("{type}", "application/octet-stream")
-        .replace("{name}", "message");
-    let bytes = executor.download(&url).await?;
-    Ok(RawMime::new(bytes))
-}
-
-/// Syncs a container type (`Foo/get` snapshot; `Foo/changes`+`Foo/get` delta),
-/// recovering to a snapshot on `cannotCalculateChanges`.
 pub(crate) async fn container_sync<T>(
     executor: &dyn Executor,
     account: &str,
@@ -77,14 +37,36 @@ pub(crate) async fn container_sync<T>(
     normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
     key_of: impl Fn(&T) -> ProviderKey + Copy,
 ) -> Result<ScopeSync<T>, JmapError> {
+    container_sync_with_status(
+        executor, account, using, type_name, cursor, normalize, key_of,
+    )
+    .await
+    .map(|(sync, _)| sync)
+}
+
+/// Container sync plus whether an expired changes state forced a snapshot.
+pub(crate) async fn container_sync_with_status<T>(
+    executor: &dyn Executor,
+    account: &str,
+    using: &[&'static str],
+    type_name: &str,
+    cursor: Option<&SyncState>,
+    normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
+    key_of: impl Fn(&T) -> ProviderKey + Copy,
+) -> Result<(ScopeSync<T>, bool), JmapError> {
     let Some(cursor) = cursor else {
-        return container_snapshot(executor, account, using, type_name, normalize, key_of).await;
+        return container_snapshot(executor, account, using, type_name, normalize, key_of)
+            .await
+            .map(|sync| (sync, false));
     };
     match container_delta(executor, account, using, type_name, cursor, normalize).await {
         Err(e) if e.failure_class() == FailureClass::NeedsResync => {
-            container_snapshot(executor, account, using, type_name, normalize, key_of).await
+            container_snapshot(executor, account, using, type_name, normalize, key_of)
+                .await
+                .map(|sync| (sync, true))
         }
-        other => other,
+        Ok(sync) => Ok((sync, false)),
+        Err(error) => Err(error),
     }
 }
 

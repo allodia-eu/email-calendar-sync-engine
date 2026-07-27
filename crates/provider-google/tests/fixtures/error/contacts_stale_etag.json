@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": 400,
+    "message": "Request person.etag is different than the current person.etag. Clear local cache and get the latest person.",
+    "status": "FAILED_PRECONDITION"
+  }
+}

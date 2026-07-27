@@ -44,26 +44,40 @@ mod body;
 mod clock;
 mod engine;
 
-pub use engine::{CalendarDelete, CalendarWrite, Engine, Reconciled};
+pub use engine::{
+    CalendarDelete, CalendarWrite, ContactDelete, ContactReconciled, ContactWrite, Engine,
+    PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled,
+};
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::calendar::{Calendar, Event};
 pub use engine_core::{
+    contact::{
+        AddressBook, ContactCard, ContactDraft, ContactField, ContactFieldSet, ContactKind,
+        ContactPatch, ContactResource, ContactSourceClass, FieldPatch,
+    },
     coverage::SearchCoverage,
-    ids::{AccountId, MessageIdHeader, ProviderKey, ThreadId},
+    ids::{AccountId, AddressBookId, ContactId, MessageIdHeader, PersonId, ProviderKey, ThreadId},
     mail::{
         AttachmentPartId, EmailAddress, InlinePart, Mailbox, MailboxRole, Message,
         MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword, ThreadProvenance,
         ThreadRef,
     },
+    // The unified-people and recipient-history types. `PeoplePage` and `RecipientSuggestions`
+    // are returned by this facade and are *made of* these, so without them a host cannot name
+    // what it just received — it would have to depend on `engine-core` directly, which is the
+    // reach-around this re-export block exists to prevent.
+    people::{CanonicalEmail, PeopleSnapshot, Person, PersonSource, PersonSourceId, SourcedValue},
+    recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
     sync::{SyncScope, SyncWindow},
     time::{CalendarDate, LocalDateTime, TimeZoneId, UtcDateTime},
     write::PendingOpId,
 };
 pub use engine_provider::{
-    Capabilities, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,
-    EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, EventWriteReceipt, MailEdit,
-    MailEditReceipt, PatchTarget, Provider, SubmissionReceipt, TextEdit, WriteGuard,
+    Capabilities, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader, Draft,
+    DraftAttachment, DraftAttachmentDisposition, EventDeletion, EventDraft, EventEdit, EventPatch,
+    EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, PatchTarget, Provider,
+    SubmissionReceipt, TextEdit, WriteGuard,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,
@@ -74,9 +88,10 @@ use engine_store::StoreError;
 pub use engine_store::{OccurrenceRow, PendingOpState, PruneReport, SyncApplied, TzdataVersion};
 use engine_sync::SyncError;
 pub use engine_sync::{
-    AccountProgress, CalendarSyncReport, CalendarWriteOutcome, EventSyncReport, HorizonExpansion,
-    IgnoreCommits, MailEditOutcome, MailSyncReport, ProgressSnapshot, StreamTuning, SubmitOutcome,
-    SyncCommit, SyncObserver, ThreadDeriveReport, UnexpandableEvent,
+    AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
+    ContactSourceReport, ContactSyncReport, ContactWriteOutcome, EventSyncReport, HorizonExpansion,
+    IgnoreCommits, MailEditOutcome, MailSyncReport, PeopleRebuildReport, ProgressSnapshot,
+    StreamTuning, SubmitOutcome, SyncCommit, SyncObserver, ThreadDeriveReport, UnexpandableEvent,
 };
 
 /// An error from an [`Engine`] operation.
@@ -105,6 +120,9 @@ pub enum ApiError {
     /// `ScopeHeld` — the sync loop surfaces it rather than waiting for the lease.
     #[error("scope is busy: another sync is in progress; retry shortly")]
     Busy,
+    /// Host input or a stale/mismatched opaque cursor was rejected before I/O.
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }
 
 impl ApiError {

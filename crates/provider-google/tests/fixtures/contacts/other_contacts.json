@@ -1,0 +1,87 @@
+{
+  "nextSyncToken": "google-sync-token-5",
+  "otherContacts": [
+    {
+      "emailAddresses": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "3bef5c7d8f5a7751",
+              "type": "OTHER_CONTACT"
+            }
+          },
+          "value": "testuser@example.test"
+        }
+      ],
+      "etag": "etag-9",
+      "metadata": {
+        "objectType": "PERSON",
+        "sources": [
+          {
+            "etag": "etag-10",
+            "id": "3bef5c7d8f5a7751",
+            "type": "OTHER_CONTACT",
+            "updateTime": "2026-07-18T14:37:03.601173Z"
+          }
+        ]
+      },
+      "photos": [
+        {
+          "default": true,
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "3bef5c7d8f5a7751",
+              "type": "OTHER_CONTACT"
+            }
+          },
+          "url": "https://lh3.googleusercontent.com/contact-photo-placeholder"
+        }
+      ],
+      "resourceName": "otherContacts/other-1"
+    },
+    {
+      "emailAddresses": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "25e401f60c681c59",
+              "type": "OTHER_CONTACT"
+            },
+            "sourcePrimary": true
+          },
+          "value": "testuser@example.test"
+        }
+      ],
+      "etag": "etag-11",
+      "metadata": {
+        "objectType": "PERSON",
+        "sources": [
+          {
+            "etag": "etag-12",
+            "id": "25e401f60c681c59",
+            "type": "OTHER_CONTACT",
+            "updateTime": "2026-07-18T14:39:24.025406Z"
+          }
+        ]
+      },
+      "photos": [
+        {
+          "default": true,
+          "metadata": {
+            "primary": true,
+            "source": {
+              "id": "25e401f60c681c59",
+              "type": "OTHER_CONTACT"
+            }
+          },
+          "url": "https://lh3.googleusercontent.com/contact-photo-placeholder"
+        }
+      ],
+      "resourceName": "otherContacts/other-2"
+    }
+  ],
+  "totalSize": 2
+}

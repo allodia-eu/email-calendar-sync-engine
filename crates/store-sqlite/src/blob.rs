@@ -86,10 +86,19 @@ impl BlobArea {
 /// Returns [`StoreError::Backend`](engine_store::StoreError) on a filesystem
 /// failure.
 pub(crate) fn write_source(root: &Path, bytes: &[u8]) -> Result<String> {
+    write_blob(root, "sources", "eml", bytes)
+}
+
+/// Writes contact-photo bytes to the shared content-addressed blob area.
+pub(crate) fn write_contact_photo(root: &Path, bytes: &[u8]) -> Result<String> {
+    write_blob(root, "contact-photos", "blob", bytes)
+}
+
+fn write_blob(root: &Path, namespace: &str, extension: &str, bytes: &[u8]) -> Result<String> {
     let hash = hex(Sha256::digest(bytes).as_slice());
-    let dir = root.join("sources");
+    let dir = root.join(namespace);
     fs::create_dir_all(&dir).map_err(backend)?;
-    let path = dir.join(format!("{hash}.eml"));
+    let path = dir.join(format!("{hash}.{extension}"));
     if !path.exists() {
         let mut tmp = NamedTempFile::new_in(&dir).map_err(backend)?;
         tmp.write_all(bytes).map_err(backend)?;
@@ -108,7 +117,16 @@ pub(crate) fn write_source(root: &Path, bytes: &[u8]) -> Result<String> {
 /// Returns [`StoreError::Backend`](engine_store::StoreError) on a non-`NotFound`
 /// filesystem failure.
 pub(crate) fn read_source(root: &Path, hash: &str) -> Result<Option<Vec<u8>>> {
-    let path = root.join("sources").join(format!("{hash}.eml"));
+    read_blob(root, "sources", "eml", hash)
+}
+
+/// Reads and verifies cached contact-photo bytes.
+pub(crate) fn read_contact_photo(root: &Path, hash: &str) -> Result<Option<Vec<u8>>> {
+    read_blob(root, "contact-photos", "blob", hash)
+}
+
+fn read_blob(root: &Path, namespace: &str, extension: &str, hash: &str) -> Result<Option<Vec<u8>>> {
+    let path = root.join(namespace).join(format!("{hash}.{extension}"));
     match fs::read(&path) {
         Ok(bytes) if hex(Sha256::digest(&bytes).as_slice()) == hash => Ok(Some(bytes)),
         Ok(_) => Ok(None),

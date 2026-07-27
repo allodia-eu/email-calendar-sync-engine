@@ -50,7 +50,8 @@ const DEFAULT_AUTHORITY: &str = "https://login.microsoftonline.com/common";
 /// non-shared set.
 const DEFAULT_SCOPES: &str = "offline_access openid profile User.Read \
     Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared \
-    Calendars.ReadWrite Calendars.ReadWrite.Shared";
+    Calendars.ReadWrite Calendars.ReadWrite.Shared Contacts.ReadWrite \
+    OrgContact.Read.All User.ReadBasic.All ProfilePhoto.Read.All";
 /// Loopback port the redirect server listens on. The Microsoft identity platform
 /// ignores the port when matching a registered `http://localhost` redirect, so the
 /// app only needs `http://localhost` registered (RFC 8252 §7.3).

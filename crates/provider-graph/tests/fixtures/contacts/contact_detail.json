@@ -1,0 +1,75 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('testuser%40example.test')/contacts/$entity",
+  "@odata.etag": "W/\"change-key-1\"",
+  "assistantName": null,
+  "birthday": "1815-12-10T11:59:00Z",
+  "businessAddress": {
+    "city": "Amsterdam",
+    "countryOrRegion": "Netherlands",
+    "postalCode": "1015 CJ",
+    "street": "Keizersgracht 1"
+  },
+  "businessHomePage": "https://example.test/ada",
+  "businessPhones": [
+    "+31 20 123 4567"
+  ],
+  "categories": [
+    "Fixture",
+    "Engineering"
+  ],
+  "changeKey": "change-key-1",
+  "children": [],
+  "companyName": "Analytical Engines BV",
+  "createdDateTime": "2026-07-27T12:15:27Z",
+  "department": "Research",
+  "displayName": "Ada Byron Lovelace",
+  "emailAddresses": [
+    {
+      "address": "ada.lovelace@example.test",
+      "name": "Ada Lovelace"
+    },
+    {
+      "address": "ada@home.example.test",
+      "name": "Ada (home)"
+    }
+  ],
+  "fileAs": "",
+  "generation": null,
+  "givenName": "Ada",
+  "homeAddress": {
+    "city": "Amsterdam",
+    "countryOrRegion": "Netherlands",
+    "street": "Herengracht 2"
+  },
+  "homePhones": [
+    "+31 20 765 4321"
+  ],
+  "id": "contact-1",
+  "imAddresses": [],
+  "initials": null,
+  "jobTitle": "Chief Engineer",
+  "lastModifiedDateTime": "2026-07-27T12:15:27Z",
+  "manager": null,
+  "middleName": "Byron",
+  "mobilePhone": "+31 6 1234 5678",
+  "nickName": null,
+  "officeLocation": null,
+  "otherAddress": {},
+  "parentFolderId": "contact-folder-root",
+  "personalNotes": "Fixture contact for provider-graph normalization.",
+  "primaryEmailAddress": {
+    "address": "ada.lovelace@example.test",
+    "name": "Ada Lovelace"
+  },
+  "profession": null,
+  "secondaryEmailAddress": {
+    "address": "ada@home.example.test",
+    "name": "Ada (home)"
+  },
+  "spouseName": null,
+  "surname": "Lovelace",
+  "title": "Dr.",
+  "yomiCompanyName": null,
+  "yomiGivenName": null,
+  "yomiSurname": null
+}

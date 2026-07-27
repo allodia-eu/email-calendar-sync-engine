@@ -66,7 +66,7 @@ The older TOML approach the secondary docs describe applies to ≤0.15 only.
 3. Create the test accounts with `x:Account/set` (idempotent: existing accounts
    are skipped). The default domain `test.local` is auto-created at bootstrap;
    its id is looked up at runtime.
-4. Seed mail + calendars (see below), write a readiness marker, and run the
+4. Seed mail + calendars + contacts (see below), write a readiness marker, and run the
    server in the foreground.
 
 Re-running against an already-bootstrapped data volume skips steps 2–3 and
@@ -99,18 +99,18 @@ These were confirmed before/with implementation; do not relitigate without cause
 - **Seeding mechanism:** **Stalwart-native via `curl`** in the entrypoint — it
   talks to the server over its management API (accounts) and the real wire
   protocols (IMAP `APPEND`/`STORE`/`COPY`/`MOVE` for mail, CalDAV `PUT` for
-  calendars). No Rust provider client and no extra pinned binary; the image ships
+  calendars, CardDAV `PUT` for contacts). No Rust provider client and no extra pinned binary; the image ships
   `curl` + `/bin/sh`.
 - **Where it lives:** `docker/stalwart/` for compose + entrypoint + seed; the Rust
   readiness/probe helpers and the smoke suite in `crates/stalwart-harness`. Tests
   discover the server through `STALWART_*` environment variables.
 - **Gating:** **env-var presence + skip** (see below). Chosen over a cargo
   feature so the offline `cargo test --workspace` needs no special flags.
-- **Scope:** step 3 = harness + seed + connectivity smoke + CI. **CardDAV /
-  contacts are deferred** (north-star lands contacts after step 5): the seed
-  covers mail + calendar; a contacts address book can be added later without
-  rework. The deep protocol suites (JMAP `Email/changes`, IMAP `UIDVALIDITY`,
-  CalDAV sync-token, …) land with the clients in steps 4–5.
+- **Scope:** the established seed covers mail + calendar + contacts. The contact
+  set contains an international person and a group, is written over CardDAV,
+  and is read through both CardDAV and JMAP Contacts by a gated normalization
+  parity test. Offline RFC-shaped fixtures remain the fast conformance layer;
+  do not treat an offline fake alone as server-acceptance evidence.
 
 ## The gating contract
 

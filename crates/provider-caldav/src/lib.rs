@@ -38,6 +38,8 @@
 //! - `provider` — the [`Provider`](engine_provider::Provider) implementation.
 
 mod calendar;
+mod carddav;
+mod carddav_ops;
 mod dav;
 mod discovery;
 mod error;
@@ -49,8 +51,20 @@ mod sync;
 #[cfg(test)]
 mod test_support;
 mod transport;
+mod vcard;
+mod vcard_escape;
+mod vcard_property;
+mod vcard_write;
 mod write;
 
+#[cfg(test)]
+mod carddav_tests;
+#[cfg(test)]
+mod carddav_unit_tests;
+#[cfg(test)]
+mod vcard_tests;
+
+pub use carddav::{CardDavConfig, CardDavProvider};
 pub use error::CalDavError;
 pub use provider::{CalDavConfig, CalDavProvider};
 pub use transport::Credentials;

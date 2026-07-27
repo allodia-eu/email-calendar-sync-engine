@@ -29,6 +29,7 @@ use crate::{
     store::{Store, StoreRead},
 };
 
+mod contact_cases;
 mod outbox_cases;
 mod scope_cases;
 
@@ -152,4 +153,22 @@ where
     outbox_cases::unknown_op_is_rejected_and_stateless(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::claim_respects_limit(&store, &clock).await;
+}
+
+/// Runs contact-generation, people-CAS, and recipient-history contracts.
+///
+/// Kept separate from [`run_all`] so a backend can implement the generic sync
+/// contract before opting into the contact-derived store surface.
+pub async fn run_contacts<S, F>(make: F)
+where
+    S: Store + StoreRead + crate::ContactStore,
+    F: Fn() -> (S, ManualClock),
+{
+    let (store, _) = make();
+    contact_cases::contact_generation_and_people_cas(&store).await;
+    let (store, _) = make();
+    contact_cases::recipient_idempotency_and_suppression(&store).await;
+    let (store, _) = make();
+    contact_cases::contact_photo_cache_is_fingerprint_bound(&store).await;
+    contact_cases::contact_photo_cache_separates_resources_on_one_card(&store).await;
 }

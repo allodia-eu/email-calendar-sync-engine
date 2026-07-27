@@ -1,7 +1,7 @@
 # google-oauth
 
 A tiny standalone dev tool to obtain Google OAuth tokens for a **throwaway test
-account** and to capture real Gmail / Google Calendar JSON responses as offline
+account** and to capture real Gmail, Google Calendar, and People JSON responses as offline
 test fixtures for the `provider-google` adapter. It mirrors `tools/graph-oauth`.
 
 It is **not** part of the engine workspace (its own `[workspace]` table detaches
@@ -12,10 +12,14 @@ drive the interactive flow locally.
 ## One-time setup: a Google OAuth client
 
 1. In the [Google Cloud Console](https://console.cloud.google.com/), create (or
-   reuse) a project and enable the **Gmail API** and **Google Calendar API**.
+   reuse) a project and enable the **Gmail API**, **Google Calendar API**, and
+   **People API**.
 2. Configure the OAuth consent screen (External, Testing mode is fine) and add the
    test account as a **Test user**. Add the scopes `https://mail.google.com/` and
-   `https://www.googleapis.com/auth/calendar`.
+   `https://www.googleapis.com/auth/calendar`,
+   `https://www.googleapis.com/auth/contacts`,
+   `https://www.googleapis.com/auth/contacts.other.readonly`, and (for Workspace
+   directory fixtures) `https://www.googleapis.com/auth/directory.readonly`.
 3. Create an **OAuth client ID** of type **Desktop app**. Note the **client ID**
    and **client secret** (for a Desktop app the secret is embedded in the app, not
    confidential).
@@ -42,6 +46,8 @@ GOOGLE_ACCESS_TOKEN="$(cargo run -q --manifest-path tools/google-oauth/Cargo.tom
 # 4. Capture a real response as a fixture.
 cargo run --manifest-path tools/google-oauth/Cargo.toml -- \
   get "/gmail/v1/users/me/labels" crates/provider-google/tests/fixtures/mail/labels.json
+cargo run --manifest-path tools/google-oauth/Cargo.toml -- \
+  get "/v1/people/me/connections?personFields=names,emailAddresses" connections.json
 ```
 
 `--client-id`/`--client-secret` also read from `GOOGLE_CLIENT_ID` /

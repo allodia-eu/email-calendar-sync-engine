@@ -1,0 +1,57 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(contact)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/contacts/delta?$deltatoken=opaque-token-2",
+  "value": [
+    {
+      "@odata.etag": "W/\"change-key-2\"",
+      "@odata.type": "#microsoft.graph.contact",
+      "birthday": "1815-12-10T11:59:00Z",
+      "businessAddress": {
+        "city": "Amsterdam",
+        "countryOrRegion": "Netherlands",
+        "postalCode": "1015 CJ",
+        "street": "Keizersgracht 1"
+      },
+      "businessHomePage": "https://example.test/ada",
+      "businessPhones": [
+        "+31 20 123 4567"
+      ],
+      "categories": [
+        "Fixture",
+        "Engineering"
+      ],
+      "changeKey": "change-key-2",
+      "companyName": "Analytical Engines BV",
+      "department": "Research",
+      "displayName": "Ada Byron Lovelace",
+      "emailAddresses": [
+        {
+          "address": "ada.lovelace@example.test",
+          "name": "Ada Lovelace"
+        },
+        {
+          "address": "ada@home.example.test",
+          "name": "Ada (home)"
+        }
+      ],
+      "generation": null,
+      "givenName": "Ada",
+      "homeAddress": {
+        "city": "Amsterdam",
+        "countryOrRegion": "Netherlands",
+        "street": "Herengracht 2"
+      },
+      "homePhones": [
+        "+31 20 765 4321"
+      ],
+      "id": "contact-1",
+      "jobTitle": "Director of Engineering",
+      "middleName": "Byron",
+      "mobilePhone": "+31 6 1234 5678",
+      "otherAddress": {},
+      "personalNotes": "Fixture contact for provider-graph normalization.",
+      "surname": "Lovelace",
+      "title": "Dr."
+    }
+  ]
+}

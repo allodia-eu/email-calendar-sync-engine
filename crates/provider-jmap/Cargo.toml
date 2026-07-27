@@ -1,6 +1,6 @@
 [package]
 name = "provider-jmap"
-description = "JMAP (RFC 8620/8621/8984) read/write provider adapter for the PIM sync engine: HTTP transport + session discovery + batched method envelope with result back-references, normalizing JMAP mail/calendar into the engine's SyncUpdate shapes. Implements the engine-provider contract."
+description = "JMAP mail, calendar, and RFC 9610 contact read/write adapter with HTTP session discovery, batched method calls, push, blobs, and normalized sync updates."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

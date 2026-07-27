@@ -93,3 +93,57 @@ on the account.
     `412`, not `404`/`410` — a real conflict, surfaced for the caller to refetch. The live
     test therefore does not re-delete with the old guard; the `404`/`410`-gone idempotency
     is covered offline.
+
+## Contact files (`contacts/`)
+
+Captured from a field-complete contact seeded through `people:createContact` plus the
+contacts the account already had. Resource names → `people/contact-N`,
+`otherContacts/other-N`, `contactGroups/group-N`; every `etag` → `etag-N` (preserving the
+create → update chain); sync tokens → `google-sync-token-N`; the photo URL's per-account
+handle → a placeholder.
+
+| Fixture | Real call | Protects |
+| --- | --- | --- |
+| `contacts/connections.json` | `GET /v1/people/me/connections?personFields=…&requestSyncToken=true` | the owned-contact snapshot + `nextSyncToken`; the seeded card exercises every `personFields` entry |
+| `contacts/connections_delta.json` | replay the `syncToken` after an update | a changed person + the `totalItems`/`totalPeople` counters |
+| `contacts/connections_delta_nochange.json` | replay with nothing changed | **the empty delta**: `{"nextSyncToken": …}` and *no* `connections` key (see Finding 12) |
+| `contacts/connections_delta_removed.json` | replay after `deleteContact` | the `metadata.deleted: true` tombstone (keeps `resourceName`, etag, default photo; no name/email) |
+| `contacts/person.json` | `GET /v1/people/{id}?personFields=…` | the single-person shape |
+| `contacts/person_created.json` | `POST /v1/people:createContact` | the create echo — `resourceName` + first `etag` |
+| `contacts/person_updated.json` | `PATCH /v1/{id}:updateContact` | the update echo with the advanced `etag` |
+| `contacts/other_contacts.json` | `GET /v1/otherContacts?readMask=…` | the suggested-source page (**its own narrower mask** — Finding 14) |
+| `contacts/contact_groups.json` | `GET /v1/contactGroups` | group → group-card normalization; no sync token |
+| `contacts/group_created.json` | `POST /v1/contactGroups` | the group create echo |
+| `error/contacts_stale_etag.json` | `updateContact` with a superseded etag | `400 FAILED_PRECONDITION` → `Conflict` (Finding 13) |
+| `error/contacts_directory_precondition.json` | `people:listDirectoryPeople` on a consumer account | `400 FAILED_PRECONDITION` → source `Unavailable` (Finding 15) |
+| `error/contacts_sync_token_invalid.json` | a malformed `syncToken` | `400 INVALID_ARGUMENT` — **not** the `410` expiry signal |
+
+12. **A People page with nothing to report omits the collection key entirely.** A quiet
+    incremental sync answers exactly `{"nextSyncToken": "…"}` — no `connections` array at
+    all. That is the steady state of every idle account, so treating a missing collection
+    as a malformed page fails the common case. An absent key is read as "no entries" only
+    when the page still carries a cursor; a page with neither is malformed and must not
+    advance anything (so a token-less source like `contactGroups` stays strict and a bad
+    page can never empty the store).
+13. **A stale-etag write is `400 FAILED_PRECONDITION`, not `412`.** People rejects
+    `updateContact` with "Request person.etag is different than the current person.etag";
+    it is still a refetch-and-retry conflict. Note the etag advances on *any* mutation,
+    including adding the person to a contact group — so a create echo's etag can already
+    be stale by the time a write uses it.
+14. **`otherContacts.list` accepts only a subset of `personFields`.** Exactly `names`,
+    `emailAddresses`, `phoneNumbers`, `photos`, `metadata` are allowed (determined by
+    probing each field); any other — `nicknames`, `addresses`, `organizations`,
+    `birthdays`, `biographies`, `urls`, `relations`, `userDefined`, `memberships` — fails
+    the **whole request** with `400 INVALID_ARGUMENT`. The suggested source therefore
+    sends its own mask, not the owned-contact one.
+15. **A consumer account refuses the Workspace directory with `400 FAILED_PRECONDITION`**
+    ("Must be a G Suite domain user"), never `403`. Optional sources degrade to
+    `Unavailable` on `403` *or* `400 FAILED_PRECONDITION` — but deliberately **not** on
+    `400 INVALID_ARGUMENT`, which is a real request defect (Finding 14) and would
+    otherwise be masked as a silently empty address book.
+16. **`displayName` is server-derived and a supplied one is ignored.** Creating a person
+    with a full name plus components returns `displayName` recomputed from the
+    components, so a host must not expect its own display name to round-trip.
+17. **Sync tokens are eventually consistent.** A write is visible to a direct `GET`
+    immediately but takes seconds (~5–15 observed) to surface in a delta, so the live
+    tests poll rather than read once.

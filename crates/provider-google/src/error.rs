@@ -153,6 +153,14 @@ fn status_class(status: u16, reason: Option<&str>) -> FailureClass {
         // A 403 is a rate limit only when its reason says so; otherwise it is an
         // insufficient-permission failure, which falls to the permanent default.
         403 if is_rate_limit_reason(reason) => FailureClass::RateLimited,
+        // People signals a **stale-etag write** with `400 FAILED_PRECONDITION`
+        // ("Request person.etag is different than the current person.etag"), not the
+        // `412` a conditional HTTP write would use. It is still a refetch-and-retry
+        // conflict, so classifying it `Permanent` would make a host drop a recoverable
+        // outbox entry. (The same status/reason pair also marks an optional source as
+        // absent — a consumer account's Workspace directory — but that is intercepted
+        // as `Unavailable` before it is ever classified.)
+        400 if reason == Some("FAILED_PRECONDITION") => FailureClass::Conflict,
         409 | 412 => FailureClass::Conflict,
         410 => FailureClass::NeedsResync,
         429 => FailureClass::RateLimited,

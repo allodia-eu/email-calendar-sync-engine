@@ -173,6 +173,48 @@ impl ConnectionInfo {
     }
 }
 
+/// Whether `url` sits on the same origin — scheme, host, and effective port — as
+/// `base`.
+///
+/// This is the rule every HTTP adapter applies **before it authenticates**. Some URLs
+/// an adapter fetches come from remote *content* rather than from a server-issued
+/// endpoint — a vCard `PHOTO;VALUE=uri`, a JSContact resource `uri`, a People
+/// `photos[].url` — and such a URL may name any host. Attaching the account's
+/// `Authorization` header unconditionally would hand the user's password (CardDAV
+/// Basic) or OAuth token to whoever the payload names, so credentials travel only to
+/// the origin the account is configured against. Anything else is fetched
+/// anonymously: a public photo CDN still works, an attacker-named host learns nothing.
+///
+/// Returns `false` when either side fails to parse, so an unparseable URL is never
+/// treated as trusted.
+///
+/// # Examples
+///
+/// ```
+/// use engine_provider::same_origin;
+///
+/// // Same scheme/host/port — the account's own server.
+/// assert!(same_origin(
+///     "https://dav.example.com/photo.png",
+///     "https://dav.example.com/addressbooks/u/"
+/// ));
+/// // A host named by card content is a different origin.
+/// assert!(!same_origin(
+///     "https://attacker.test/p.png",
+///     "https://dav.example.com/addressbooks/u/"
+/// ));
+/// ```
+#[cfg(feature = "http")]
+#[must_use]
+pub fn same_origin(url: &str, base: &str) -> bool {
+    let (Ok(url), Ok(base)) = (url::Url::parse(url), url::Url::parse(base)) else {
+        return false;
+    };
+    url.scheme() == base.scheme()
+        && url.host() == base.host()
+        && url.port_or_known_default() == base.port_or_known_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +300,63 @@ mod tests {
         observed.record(http::Version::HTTP_2);
         observed.record(http::Version::HTTP_3);
         assert_eq!(observed.get(), Some(HttpVersion::Http2));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn same_origin_matches_only_scheme_host_and_effective_port() {
+        let base = "https://dav.example.com/addressbooks/user/";
+        // Same origin, different path/query — the account's own server.
+        assert!(super::same_origin(
+            "https://dav.example.com/a/b.png?x=1",
+            base
+        ));
+        // An explicit default port is still the same origin as an implicit one.
+        assert!(super::same_origin(
+            "https://dav.example.com:443/p.png",
+            base
+        ));
+        // Foreign host — the attack this guard exists to stop.
+        assert!(!super::same_origin("https://attacker.test/p.png", base));
+        // A subdomain is a distinct host, not a relaxed match.
+        assert!(!super::same_origin(
+            "https://evil.dav.example.com/p.png",
+            base
+        ));
+        // A host that merely *starts with* the base host must not match: the check is
+        // host equality, never a prefix/substring test.
+        assert!(!super::same_origin(
+            "https://dav.example.com.evil.test/p",
+            base
+        ));
+        // A downgraded scheme would leak the credential in cleartext.
+        assert!(!super::same_origin("http://dav.example.com/p.png", base));
+        // A non-default port is a different origin.
+        assert!(!super::same_origin(
+            "https://dav.example.com:8443/p.png",
+            base
+        ));
+        // http://…:80 and http://… are the same origin, but https://…:80 is not.
+        assert!(super::same_origin("http://h.test:80/a", "http://h.test/b"));
+        assert!(!super::same_origin(
+            "https://h.test:80/a",
+            "https://h.test/b"
+        ));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn same_origin_never_trusts_an_unparseable_url() {
+        let base = "https://dav.example.com/";
+        // A relative href has already been resolved against the base by the caller; an
+        // unresolved one must not be treated as same-origin by accident.
+        assert!(!super::same_origin("/photo.png", base));
+        assert!(!super::same_origin("not a url", base));
+        assert!(!super::same_origin(
+            "https://dav.example.com/p.png",
+            "not a url"
+        ));
+        // A `data:` URI carries no host — it is decoded inline, never fetched.
+        assert!(!super::same_origin("data:image/png;base64,AAAA", base));
     }
 }

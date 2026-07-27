@@ -12,6 +12,7 @@ use std::collections::HashSet;
 
 use engine_core::{
     ids::{AccountId, ProviderKey},
+    recipient::RecipientObservation,
     sync::{SyncScope, SyncState, SyncUpdate},
     time::UtcDateTime,
 };
@@ -23,7 +24,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{convert, derived_ops};
+use crate::{contact_ops, convert, derived_ops};
 
 /// An owned, type-erased projection of a [`SyncUpdate`], built before the work is
 /// offloaded to the blocking thread (where the generic object type `T` is gone).
@@ -169,6 +170,10 @@ pub(crate) fn load_state(conn: &Connection, scope_key: &str) -> Result<Option<Sy
 ///
 /// Returns [`StoreError::StaleLease`] if the token is no longer current, or
 /// [`StoreError::Backend`] on a backend failure.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one transaction receives the complete fenced apply payload and recipient observations"
+)]
 pub(crate) fn apply(
     conn: &mut Connection,
     scope_key: &str,
@@ -176,6 +181,8 @@ pub(crate) fn apply(
     update: &OwnedUpdate,
     derived: &DerivedWrite,
     reconcile: &[PendingReconciliation],
+    observations: &[RecipientObservation],
+    contact_scope: bool,
     next_state: Option<&str>,
 ) -> Result<SyncApplied> {
     let tx = conn.transaction().map_err(convert::backend)?;
@@ -215,6 +222,11 @@ pub(crate) fn apply(
         if reconcile_op(&tx, rec)? {
             applied.reconciled += 1;
         }
+    }
+
+    contact_ops::insert_observations(&tx, observations)?;
+    if contact_scope && (applied.upserted > 0 || applied.tombstoned > 0) {
+        contact_ops::bump_generation(&tx)?;
     }
 
     // A streaming page (`next_state == None`) leaves the cursor unchanged so a

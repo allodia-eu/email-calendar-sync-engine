@@ -81,10 +81,42 @@ impl Props {
         self.resourcetype.contains("calendar")
     }
 
+    /// Whether `<resourcetype>` marked this collection a CardDAV address book.
+    pub(crate) fn is_address_book(&self) -> bool {
+        self.resourcetype.contains("addressbook")
+    }
+
     /// The reported `current-user-privilege-set` (RFC 3744 §5.4), or `None` when the
     /// server did not report one.
     pub(crate) fn privileges(&self) -> Option<&BTreeSet<String>> {
         self.privileges.as_ref()
+    }
+
+    /// Whether the reported privilege set grants writing *members* of this collection
+    /// — creating, replacing, or deleting a resource inside it.
+    ///
+    /// A write is `DAV:write` (the aggregate) or its `DAV:write-content` part, or the
+    /// `DAV:all` aggregate above both. `DAV:write-properties` is **not** enough:
+    /// SabreDAV grants exactly that on a read-only share, so treating it as a write
+    /// would reintroduce the lie this mapping exists to remove.
+    ///
+    /// **A server that reports no privilege set at all is taken as writable.** RFC 4791
+    /// §2 and RFC 6352 §6 both require WebDAV ACL support, so silence is
+    /// non-conformance rather than a considered "no", and the failure modes are
+    /// asymmetric: guessing "writable" costs a `403` on a write the user attempted,
+    /// while guessing "read-only" hides the edit affordance entirely on a server that
+    /// works fine. The `403` is the backstop.
+    ///
+    /// Calendars and address books share this one predicate deliberately — the
+    /// spellings are the same RFC 3744 privileges, and two copies drifted apart once
+    /// already (the address-book copy did not accept `DAV:all`, making a book that
+    /// reports `{all, read}` permanently read-only).
+    pub(crate) fn grants_member_writes(&self) -> bool {
+        self.privileges.as_ref().is_none_or(|privileges| {
+            ["all", "write", "write-content"]
+                .iter()
+                .any(|privilege| privileges.contains(*privilege))
+        })
     }
 }
 

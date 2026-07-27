@@ -2,7 +2,7 @@
 //! and provider orchestration run against the captured real responses without
 //! network. Shared by the `fetch` and `provider` test modules.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use async_trait::async_trait;
 use engine_tls::TlsClientConfig;
@@ -29,6 +29,9 @@ pub(crate) type FakeRoute = Result<Value, (u16, Value)>;
 /// Returns the first routed answer whose key is a substring of the requested URL.
 struct Fake {
     routes: Vec<(String, FakeRoute)>,
+    /// URLs fetched without the OAuth token, so a test can assert that an off-origin
+    /// photo URI never carries the account's credentials.
+    unauthenticated: Mutex<Vec<String>>,
 }
 
 impl Fake {
@@ -58,6 +61,14 @@ impl GraphTransport for Fake {
             Ok(other) => Ok(other.to_string().into_bytes()),
             Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
         }
+    }
+
+    async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GraphError> {
+        self.unauthenticated
+            .lock()
+            .expect("unauthenticated lock")
+            .push(url.to_owned());
+        GraphTransport::get_bytes(self, url).await
     }
 
     async fn post(
@@ -118,7 +129,13 @@ pub(crate) fn fake_client_fallible(routes: Vec<(&str, FakeRoute)>) -> GraphClien
         .into_iter()
         .map(|(key, answer)| (key.to_owned(), answer))
         .collect();
-    GraphClient::with_transport(Box::new(Fake { routes }), "https://graph.test".to_owned())
+    GraphClient::with_transport(
+        Box::new(Fake {
+            routes,
+            unauthenticated: Mutex::new(Vec::new()),
+        }),
+        "https://graph.test".to_owned(),
+    )
 }
 
 /// Parses a fixture string into JSON.

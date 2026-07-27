@@ -88,6 +88,61 @@ async fn resync_with_cursor_applies_empty_delta() {
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 1);
 }
 
+#[tokio::test]
+async fn sync_mail_observes_sent_recipients_and_records_window_coverage() {
+    let mut sent_message = message("sent-1", "sent", "Hello");
+    sent_message.envelope.to = vec![EmailAddress::named("Friend", "friend@example.test")];
+    sent_message.envelope.cc = vec![EmailAddress::new("cc@example.test")];
+    sent_message.envelope.bcc = vec![EmailAddress::new("bcc@example.test")];
+    let provider = FakeMail::new(
+        vec![mailbox("sent", "Sent", Some(MailboxRole::Sent))],
+        vec![sent_message],
+    );
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    sync_mail(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+
+    let interactions = store.recipient_interactions(None).await.unwrap();
+    assert_eq!(interactions.len(), 3);
+    assert!(
+        interactions
+            .iter()
+            .any(|item| item.email.as_str() == "bcc@example.test")
+    );
+    let coverage = store.recipient_coverage(Some(account())).await.unwrap();
+    assert_eq!(coverage.len(), 1);
+    assert!(coverage[0].sent_collection_identified);
+    assert_eq!(coverage[0].window, SyncWindow::full());
+
+    // The provider replays no changed messages on the next cursor pass, and the
+    // source-message key keeps the aggregate idempotent.
+    sync_mail(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+    assert!(
+        store
+            .recipient_interactions(None)
+            .await
+            .unwrap()
+            .iter()
+            .all(|item| item.sent_count == 1)
+    );
+}
+
 /// Wraps a [`FakeMail`] and, on the first email fetch, expires the loop's lease
 /// (advancing the shared clock) then steals + releases the scope — forcing the
 /// loop's apply to fail `StaleLease` and re-claim.

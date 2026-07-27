@@ -4,7 +4,11 @@ This guide lists the protocols the engine speaks, the standards and extensions e
 
 ## How providers are exposed
 
-Each provider crate implements the `engine_provider::Provider` trait. The host constructs the adapter, passes it to `engine-api` methods, and the engine never switches on protocol. A provider advertises what it can do through `ConnectionInfo::capabilities`, and reports what the transport negotiated (TLS version for IMAP, HTTP version for JMAP/CalDAV/Graph) through the same object.
+Mail/calendar adapters implement `engine_provider::Provider`; contact adapters
+implement `ContactsProvider` as a separate source-bound contract. The host
+constructs adapters, passes them to `engine-api`, and the engine never switches
+on protocol. `ConnectionInfo::capabilities` advertises the available domains,
+writes, guards, groups, and photos.
 
 All providers share one TLS trust policy via `engine_tls::TlsClientConfig`. See [`docs/agent-guidance/tls.md`](docs/agent-guidance/tls.md) for the trust model and platform guidance.
 
@@ -55,37 +59,41 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 
 | Provider | Crate | Data domains | Push | Standards |
 | --- | --- | --- | --- | --- |
-| **JMAP** | `provider-jmap` | mail read/write/submit, calendar read | EventSource (RFC 8620 §7.3) | RFC 8620, RFC 8621, RFC 8984 (JSCalendar) |
+| **JMAP** | `provider-jmap` | mail/calendar/contact read/write, mail submit | EventSource (RFC 8620 §7.3) | RFC 8620, RFC 8621, RFC 8984, RFC 9610 |
 | **IMAP + SMTP** | `provider-imap` | mail read/write (SMTP submit optional) | IMAP `IDLE` (RFC 2177) | RFC 9051, RFC 7162, RFC 2177, RFC 6154, RFC 6851, RFC 4315, RFC 5321/5322, RFC 2047 |
-| **CalDAV** | `provider-caldav` | calendar read/write, iMIP inbound RSVP | — | RFC 4791, RFC 5545, RFC 6578, RFC 6764, RFC 6638, RFC 6047 |
-| **Microsoft Graph** | `provider-graph` | mail read | — | Microsoft Graph v1.0 mail API |
+| **CalDAV/CardDAV** | `provider-caldav` | calendar/contact read/write, iMIP inbound RSVP | — | RFC 4791, RFC 6350, RFC 6352, RFC 6578 |
+| **Microsoft Graph** | `provider-graph` | mail read; personal/directory contacts | — | Microsoft Graph v1.0 |
+| **Google** | `provider-google` | Gmail/Calendar/People read; owned writes | — | Gmail, Calendar, People APIs |
 
 ## Capability matrix
 
-| Capability | JMAP | IMAP | CalDAV | Graph | Notes |
+| Capability | JMAP | IMAP | DAV | Graph | Google |
 | --- | --- | --- | --- | --- | --- |
-| `mail` (read/sync) | yes | yes | — | yes | |
-| `mail_writes` | yes | yes | — | — | mark-read/flag, move, delete |
-| `message_source` | yes | yes | — | yes | fetch raw RFC 5322 source on demand |
-| `submission` | yes | yes* | — | — | *SMTP only when configured |
-| `idle` (push) | yes | yes | — | — | EventSource for JMAP, `IDLE` for IMAP |
-| `calendars` | yes | — | yes | — | calendar read/sync |
-| `calendar_writes` | — | — | yes | — | create/update/delete event resources |
+| mail read/write | yes | yes | — | read | yes |
+| submission | yes | optional SMTP | — | — | yes |
+| push | EventSource | IDLE | — | — | — |
+| calendar read/write | yes | — | yes | — | yes |
+| contact read | yes | — | yes | personal + directory | owned + suggested + directory |
+| contact write guard | absent | — | enforced ETag | absent | enforced ETag |
+| groups/photos | yes/yes | — | yes/yes | read/yes | read/yes |
 
 ## JMAP
 
-Implements **JMAP Core** (RFC 8620) and **JMAP Mail** (RFC 8621) with full read/write/submit support, plus **JMAP Calendars** read support using **JSCalendar** (RFC 8984) as the normalized projection.
+Implements **JMAP Core**, **Mail**, **Calendars**, and **Contacts** with
+read/write support, using JSCalendar and JSContact projections.
 
 ### Supported standards and extensions
 
 - **RFC 8620** — JMAP Core (session resource, method calls, state changes, blob upload/download, EventSource push).
 - **RFC 8621** — JMAP Mail (`Mailbox`, `Email`, `EmailSubmission`, `Thread`).
 - **RFC 8984** — JSCalendar, the normalized calendar data model.
+- **RFC 9610** — JMAP Contacts (`AddressBook`, `ContactCard`).
 - **RFC 8620 §7.3** — EventSource push notifications via `JmapWatcher`.
 
 ### Capabilities
 
-`mail`, `mail_writes`, `message_source`, `submission`, `idle` (when `eventSourceUrl` is advertised), and `calendars` (read). JMAP calendar **writes** are not implemented; use CalDAV for calendar writes.
+Mail read/write/source/submission, calendars and calendar writes, contacts and
+contact writes/groups/photos, plus `idle` when `eventSourceUrl` is advertised.
 
 ### Connection example
 
@@ -110,6 +118,9 @@ For OAuth providers, use `Credentials::bearer("access-token")`. Servers that gen
 ### Notes
 
 - The JMAP account id is read from the session's `primaryAccounts`, not assumed.
+- Contact writes need an address book: call `with_contact_address_book` with an id
+  from `sync_address_books`. Until then the provider offers no contact destination —
+  there is no well-known default book to guess.
 - Raw MIME is **fetched on demand** via the session's `downloadUrl` blob template; it is not eagerly synced.
 - Mail edits (`Email/set`) use account-global stable ids, so a move does not change the object's key.
 
@@ -170,9 +181,11 @@ A plaintext, no-auth SMTP MX (for local fixtures) can be configured with `config
 - On servers that advertise `QRESYNC`, a delta sync reconciles flag changes and expunges in one round trip. Servers without it fall back to new-arrivals-only deltas, with periodic re-snapshots via `Engine::clear_mail_cursors`.
 - `IDLE` uses a dedicated connection per watched mailbox; the watcher emits `Changed`/`KeepAlive` events, and the host runs a normal sync on each change.
 
-## CalDAV
+## CalDAV and CardDAV
 
-Implements **CalDAV** (RFC 4791) calendar read/sync and write, normalizing iCalendar (RFC 5545) resources into the same JSCalendar-shaped engine model that JMAP uses.
+Implements **CalDAV** calendar read/sync/write and a separate
+`CardDavProvider` for address-book/card sync and guarded vCard writes. They
+share HTTP/TLS/WebDAV transport only; normalization remains domain-specific.
 
 ### Supported standards and extensions
 
@@ -182,10 +195,13 @@ Implements **CalDAV** (RFC 4791) calendar read/sync and write, normalizing iCale
 - **RFC 6764** — service discovery (`/.well-known/caldav`).
 - **RFC 6638** — CalDAV scheduling (server auto-schedule).
 - **RFC 6047** — iMIP (iTIP over email), inbound parse + RSVP write primitive.
+- **RFC 6350 / RFC 6352** — vCard and CardDAV address-book access.
 
 ### Capabilities
 
-`calendars` and `calendar_writes`. Mail methods are not supported.
+CalDAV advertises `calendars` and guarded `calendar_writes`. CardDAV advertises
+`contacts`, contact groups/photos, and guarded writes when the bound address
+book grants write privileges. Mail methods are not supported.
 
 ### Connection example
 
@@ -205,6 +221,18 @@ let config = CalDavConfig::new(
 .with_tls(tls);
 
 let provider = CalDavProvider::connect(config).await?;
+
+let contacts = provider_caldav::CardDavProvider::connect(
+    provider_caldav::CardDavConfig::new(
+        "https://dav.example.com",
+        provider_caldav::Credentials::Basic {
+            username: "alice@example.com".to_owned(),
+            password: "app-password".to_owned(),
+        },
+    )
+    .with_tls(TlsClientConfig::bundled()),
+)
+.await?;
 ```
 
 The `with_calendar` argument is either a name relative to the calendar home (e.g. `"default"`) or an absolute collection path. After listing calendars with `sync_calendars`, you can `rebind` to a different collection without re-running discovery.
@@ -212,6 +240,10 @@ The `with_calendar` argument is either a name relative to the calendar home (e.g
 ### Notes
 
 - A `CalDavProvider` is **bound to one calendar collection** for events. The calendar list syncs at the account level; cross-collection fan-out is the host's job.
+- A `CardDavProvider` is likewise bound to one address book. It preserves raw
+  vCard and uses ETag-conditional `PUT`/`DELETE`. `rebind` switches books without
+  repeating discovery and carries write capability with it, so a rebind onto a
+  writable book stays writable.
 - Event identity is the resource href; the iCalendar `UID` is the separate cross-system identifier.
 - Writes use conditional `PUT`/`DELETE` (`If-None-Match: *` for creates, `If-Match: "<etag>"` for updates/deletes) for optimistic concurrency.
 - The body round-trips the preserved `RawIcal`; the engine does not re-serialize from the lossy projection. For simple creates, the crate provides `provider_caldav::build_event_ical`.
@@ -219,16 +251,22 @@ The `with_calendar` argument is either a name relative to the calendar home (e.g
 
 ## Microsoft Graph
 
-Implements **Microsoft Graph v1.0** mail read/sync. Graph is the cloud counterpart to JMAP, but its mail sync is shaped like IMAP: it is per-folder, not account-global.
+Implements **Microsoft Graph v1.0** mail/calendar operations plus personal
+contacts, organizational contacts, and directory users. Contact sources are
+independently bound so missing optional directory permission does not disable
+personal contacts.
 
 ### Supported standards and extensions
 
 - **Microsoft Graph v1.0** mail API (`/me/mailFolders`, `/me/mailFolders/{id}/messages/delta`).
+- Contact folders/contacts delta, organizational contacts, and directory users.
 - `Prefer: IdType="ImmutableId"` so object ids are stable across folder moves.
 
 ### Capabilities
 
-`mail` and `message_source`. Submission, push, and calendar are not implemented in this slice.
+Mail, message source/submission, calendar, and contact capabilities depend on
+the concrete adapter. Personal Graph contacts are writable with
+`WriteGuard::Absent`; organizational contacts and directory users are read-only.
 
 ### Connection example
 
@@ -253,6 +291,19 @@ Shared mailboxes can be accessed with `GraphClient::for_mailbox(token, MailboxPr
 - Initial sync is a snapshot; subsequent syncs use the per-folder `deltaLink` cursor.
 - **A `deltaLink` expires.** Graph then answers `410 SyncStateNotFound`, and that cursor can never produce a delta again. The pass drops it and **restarts as a full snapshot**, so the folder re-enumerates and reconciles. Without that recovery the folder is wedged permanently: every pass replays the same dead cursor and no new mail is delivered again.
 - Changed delta entries that carry only partial properties are re-fetched so the engine always applies whole objects.
+- `GraphContactProvider::personal`, `organizational`, and `directory` separate
+  source authority and permission degradation. Personal CRUD refetches the
+  canonical contact; no conditional update guard is advertised.
+
+## Google
+
+`provider-google` covers Gmail, Google Calendar, and Google People through one
+bearer-auth HTTP transport. People sources are independently bound as owned
+connections, Other Contacts, Workspace directory people, and contact groups.
+Only owned connections are writable, and People ETags enforce updates.
+Expired People sync tokens restart only their source as a snapshot; contact
+groups are always paginated snapshots because their list API has no sync token.
+See `docs/agent-guidance/google.md` and `contacts.md` for scopes and mappings.
 
 ## TLS and trust policy
 
@@ -283,6 +334,10 @@ The `engine_provider::Capabilities` bitset tells the engine what a connected acc
 | `idle` | The provider can watch for push notifications and emit `WatchEvent`s. |
 | `calendars` | The account can read/sync calendars and events. |
 | `calendar_writes` | The account can create/update/delete calendar events. |
+| `contacts` | The adapter can discover/sync address books or contact cards. |
+| `contact_writes` | The source accepts create/patch/delete; query its guard strength. |
+| `contact_groups` | Contact group cards can be read. |
+| `contact_photos` | Authenticated contact photos can be fetched on demand. |
 
 A read-only JMAP mail account, for example, advertises `mail` but not `mail_writes`. A no-SMTP IMAP account advertises `mail` but not `submission`. An IMAP server without `IDLE` is fully functional on poll.
 
@@ -293,4 +348,6 @@ Each provider crate ships an `examples/` binary that connects to a real server:
 - `provider-imap`: `cargo run -p provider-imap --example imap_explore` (read-only; opt-in `IMAP_QRESYNC`, `IMAP_IDLE`, `IMAP_DRAFT`, `IMAP_SEND`).
 - `provider-caldav`: `cargo run -p provider-caldav --example caldav_explore` (read-only; opt-in `CALDAV_WRITE`).
 
-JMAP and Graph have gated live tests under `crates/provider-jmap/tests/` and `crates/provider-graph/tests/` that run against the Stalwart Docker harness or a real Graph token, respectively.
+JMAP and CardDAV have gated live tests against the Stalwart Docker harness,
+including shared-contact normalization parity. Graph and Google have
+token-gated live suites for their official APIs.

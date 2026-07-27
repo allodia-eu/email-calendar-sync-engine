@@ -5,7 +5,7 @@ This repository builds a standalone Rust engine for personal information managem
 ## Product Goal
 
 The engine should provide a local-first, provider-agnostic foundation for:
-- Offline mail and calendar access.
+- Offline mail, calendar, contact, and unified-people access.
 - Deterministic sync across modern and legacy protocols.
 - Fast structured and full-text search.
 - Safe queued writes that survive crashes and network loss.
@@ -16,7 +16,7 @@ The Rust core is the product kernel. Apps own UI, account onboarding, OS permiss
 
 ## Non-Goals
 
-The engine models mail and calendar (and later contacts) objects, sync, search, and writes. It deliberately does not model provider account settings — message rules and filters, vacation/auto-reply, mailbox and working-hours settings — nor free/busy lookup and meeting-time suggestions, cloud-file (Drive/OneDrive) integration, or enterprise data-classification labels. Hosts own these; later phases may add seams if a real need appears.
+The engine models mail, calendar, and contact objects, sync, search/indexing, and writes. Contacts use JSContact as their provider-neutral spine; provider records remain account-scoped and a derived people index supplies cross-account presentation. It deliberately does not model provider account settings — message rules and filters, vacation/auto-reply, mailbox and working-hours settings — nor free/busy lookup and meeting-time suggestions, cloud-file (Drive/OneDrive) integration, or enterprise data-classification labels. Hosts own these; later phases may add seams if a real need appears.
 
 ## Key Decisions
 
@@ -28,7 +28,8 @@ The engine models mail and calendar (and later contacts) objects, sync, search, 
 - **FTS works before vectors.** Full-text and structured search must be useful without embeddings. Vector search is local-only by default and remote embedding requires explicit host policy.
 - **Provider adapters are isolated crates.** Protocol quirks stay inside provider crates and surface as capabilities, changes, cursors, and transport operations.
 - **Writes are outbox mediated.** UI-visible writes first commit locally; background workers perform provider side effects with idempotency and explicit ambiguous states.
-- **Raw provider payloads are preserved.** MIME, iCalendar, JSCalendar, and vCard data stay available for re-parsing and protocol-specific writes.
+- **Raw provider payloads are preserved.** MIME, iCalendar, JSCalendar, JSContact, vCard, and
+  provider JSON stay available for re-parsing and protocol-specific writes.
 
 ## Workspace Shape
 
@@ -42,8 +43,8 @@ pim-sync-engine/
 │   ├── provider-imap/           # IMAP read/sync support.
 │   ├── provider-smtp/           # SMTP submission support.
 │   ├── provider-caldav/         # CalDAV/CardDAV support.
-│   ├── provider-google/         # Google Gmail + Calendar adapter (Gmail implemented; google.md).
-│   ├── provider-graph/          # Microsoft Graph mail read/sync (implemented; graph.md).
+│   ├── provider-google/         # Google Gmail + Calendar + People adapter.
+│   ├── provider-graph/          # Microsoft Graph mail + contact adapter.
 │   ├── engine-store/            # Store trait and contract tests.
 │   ├── store-sqlite/            # SQLite, at-rest seam (plain or SQLCipher), FTS5, vectors.
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
@@ -159,13 +160,20 @@ The engine also exposes an injectable clock/time source for recurrence expansion
 
 1. **Repository discipline and RFC-backed model.** Add workspace skeleton, strict lint/test policy, model fixtures, and `engine-core` tests first.
 2. **SQLite store and search without network.** Implement schema, structured query AST, FTS, recurrence fixtures, and ingestion CLI.
-3. **Stalwart Docker harness.** Seed deterministic accounts, messages, calendars, and protocol endpoints for local/CI tests (contacts/CardDAV deferred until contacts land, after step 5). Implemented under `docker/stalwart/` + `crates/stalwart-harness`; see `stalwart-harness.md`.
+3. **Stalwart Docker harness.** Seed deterministic accounts, messages, calendars, contacts, and
+   protocol endpoints for local/CI tests. Implemented under `docker/stalwart/` +
+   `crates/stalwart-harness`, including shared JMAP/CardDAV contact fixtures and parity coverage.
+   See `stalwart-harness.md`.
 4. **JMAP read/write.** Implement JMAP sync, JSCalendar normalization, mail submission, calendar writes, RSVP patches, and conference links. **Implemented** for mail — read/sync, submission (**with attachments**, via RFC 8620 blob upload), on-demand raw-source fetch, **mail writes** (`edit_mail` mark-read/flag/move/delete via `Email/set`), and **push** (EventSource `StateChange` → the neutral `Watch`) — and for calendar, **read and write** (`CalendarEvent/set` create/patch/destroy), under `engine-provider` + `provider-jmap` + a thin `engine-sync` loop; `jmap.md` is authoritative. Being the *second* calendar writer is what finally settled the neutral write API: a host now states an `EventDraft`/`EventPatch` and the adapter renders it, because CalDAV's client-side document surgery and JMAP's server-side patch merge share nothing below the intent. JMAP calendar writes carry **no lost-update guard** and say so (`WriteGuard::Absent`) rather than implying one; participant *RSVP* remains deferred for JMAP.
-5. **IMAP/SMTP + CalDAV/CardDAV.** Implement legacy protocol adapters against the same Stalwart fixture. **IMAP read/sync + SMTP submission are implemented** under `provider-imap` (a mailbox-bound `Provider`; `imap-smtp.md` is authoritative). **CalDAV calendar read/sync and writes are implemented** under `provider-caldav` (a collection-bound `Provider` parsing iCalendar into the same `Event` projection JMAP produces, plus conditional `PUT`/`DELETE`; `caldav.md` is authoritative). **iTIP/iMIP inbound parse/reconcile/trust/apply + the RSVP write primitive are implemented** in `engine_core::scheduling` + `provider_caldav::imip` (`calendar-semantics.md`). The residual step-5 scheduling deferrals (mail-sync wiring, the CalDAV Scheduling-Inbox `REPORT`, client-iMIP SMTP delivery, `ClientImip` local-origin persistence) and **CardDAV/contacts** follow after step 5.
-6. **Bindings and reference host.** Add the `engine-api` facade, then the UniFFI/CLI/desktop seams over it, in small, tested slices. **The `engine-api` facade is implemented** for store lifecycle and provider-driven mail/calendar sync — an `Engine` over a concrete `SqliteStore` driven by a host `SystemClock`, generic over `Provider` so it stays provider-agnostic; `engine-api.md` is authoritative. Search, the write/outbox surface, streaming progress, and the UniFFI/C-ABI bindings themselves are the remaining slices.
+5. **IMAP/SMTP + CalDAV/CardDAV.** Implement legacy protocol adapters. **IMAP read/sync + SMTP submission are implemented** under `provider-imap`. **CalDAV calendar read/sync and writes and CardDAV address-book/card sync and guarded writes are implemented** under `provider-caldav`; calendar and contact normalizers remain separate while sharing the DAV transport. **iTIP/iMIP inbound parse/reconcile/trust/apply + the RSVP write primitive are implemented** in `engine_core::scheduling` + `provider_caldav::imip`. The residual step-5 scheduling deferrals are mail-sync wiring, the CalDAV Scheduling-Inbox `REPORT`, client-iMIP SMTP delivery, and `ClientImip` local-origin persistence.
+6. **Bindings and reference host.** Add the `engine-api` facade, then the UniFFI/CLI/desktop
+   seams over it, in small, tested slices. **The Rust facade is implemented** for lifecycle,
+   mail/calendar/contact sync, reads/search, streaming progress, durable writes, unified people,
+   recipient suggestions, and contact-photo caching. UniFFI/C-ABI bindings remain. `engine-api.md`
+   is authoritative.
 7. **External provider smoke tests.** Add optional live-provider tests only after deterministic protocol tests pass.
 
-Contacts and CardDAV follow the mail and calendar spine rather than leading it: they reuse the provider-object identity and membership model and raw vCard preservation, land after step 5, and are not part of the initial search AST. The repository's mail/calendar focus is deliberate; contact sync and search are additive, not v1 gates.
+Contacts now form the third provider-neutral domain. They reuse provider-object identity, non-empty membership, atomic scoped sync, the durable outbox, raw document preservation, and capability-driven adapters. `docs/agent-guidance/contacts.md` is authoritative for JSContact normalization, unified people, recipient observations, provider source classes, and the deliberately deferred group/photo mutations.
 
 ## Testing Strategy
 

@@ -1,0 +1,10 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('testuser%40example.test')/contactFolders('contact-folder-1')/childFolders(id,displayName,parentFolderId)",
+  "value": [
+    {
+      "displayName": "Fixture Child",
+      "id": "contact-folder-child-1",
+      "parentFolderId": "contact-folder-1"
+    }
+  ]
+}

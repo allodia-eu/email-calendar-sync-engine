@@ -1,6 +1,6 @@
 [package]
 name = "engine-core"
-description = "Pure, I/O-free, async-free domain model for the PIM sync engine: identities, normalized mail and calendar types, scheduling, and cross-crate sync/search/write contracts."
+description = "Pure, I/O-free PIM domain model: mail, calendar, contacts, unified people, recipients, identities, and sync/search/write contracts."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
+idna = { workspace = true }
 
 [lints]
 workspace = true
