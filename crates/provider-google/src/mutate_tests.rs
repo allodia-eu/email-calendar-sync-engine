@@ -11,8 +11,17 @@ use engine_provider::MailEdit;
 use super::*;
 use crate::{
     GoogleClient,
-    test_support::{capturing_server, fake_client, fake_client_fallible, json, tls},
+    normalize::ALL_MAIL_ID,
+    test_support::{
+        capturing_replay_server, capturing_server, fake_client, fake_client_fallible, json, tls,
+    },
 };
+
+/// The real `messages.modify` response to an archive (captured live: `removeLabelIds:
+/// ["INBOX"]`, adding nothing) — `INBOX` is gone while `UNREAD`/`SENT` survive.
+const MODIFY_ARCHIVED: &str = include_str!("../tests/fixtures/mail/modify_archived.json");
+/// The real `messages.trash` response (captured live) — `TRASH` added, state preserved.
+const TRASH: &str = include_str!("../tests/fixtures/mail/trash.json");
 
 fn key(id: &str) -> ProviderKey {
     ProviderKey::new(id).unwrap()
@@ -81,17 +90,18 @@ async fn mark_unread_adds_unread() {
 
 #[tokio::test]
 async fn move_to_trash_uses_the_trash_endpoint() {
-    let (base, rx) = capturing_server("200 OK", r#"{"id":"message-1"}"#);
+    // Answers with the real captured `messages.trash` body.
+    let (base, rx) = capturing_server("200 OK", TRASH);
     let client = GoogleClient::with_base("tok", base, tls()).unwrap();
     edit(
         &client,
-        &MailEdit::move_to(key("message-1"), MailboxId::try_from("TRASH").unwrap()),
+        &MailEdit::move_to(key("message-4"), MailboxId::try_from("TRASH").unwrap()),
     )
     .await
     .unwrap();
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
-        request.starts_with("POST /gmail/v1/users/me/messages/message-1/trash "),
+        request.starts_with("POST /gmail/v1/users/me/messages/message-4/trash "),
         "{request}"
     );
 }
@@ -120,6 +130,61 @@ async fn move_to_a_label_replaces_membership_leaving_state_intact() {
     .await
     .unwrap();
     assert_eq!(receipt.message_key.as_str(), "message-1");
+}
+
+#[tokio::test]
+async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
+    // Archiving in Gmail is the *absence* of INBOX, not a place: there is no Archive
+    // label, and `ALL_MAIL` is an id this adapter invented for the synthetic All-Mail
+    // mailbox (`normalize::ALL_MAIL_ID`). Sending it to `messages.modify` as a label is a
+    // real `400 invalidArgument` from Gmail — captured in
+    // `tests/fixtures/error/invalid_label.json`, which is what this used to send. So a
+    // MoveTo there must strip the place labels and add *nothing*.
+    //
+    // The modify answers with the **real captured archive response**, so the receipt is
+    // built from the shape Gmail actually returns.
+    let (base, rx) = capturing_replay_server(vec![
+        (
+            "format=minimal",
+            json(r#"{"id":"message-4","labelIds":["INBOX","UNREAD","SENT","CATEGORY_UPDATES"]}"#),
+        ),
+        ("/modify", json(MODIFY_ARCHIVED)),
+    ]);
+    let client = GoogleClient::with_base("tok", base, tls()).unwrap();
+    edit(
+        &client,
+        &MailEdit::move_to(key("message-4"), MailboxId::try_from(ALL_MAIL_ID).unwrap()),
+    )
+    .await
+    .unwrap();
+
+    let _label_read = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let modify = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let body: serde_json::Value =
+        serde_json::from_str(modify.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    // The synthetic id must never reach Gmail.
+    assert_eq!(
+        body["addLabelIds"],
+        serde_json::json!([]),
+        "archive adds no label: {modify}"
+    );
+    assert!(!modify.contains(ALL_MAIL_ID), "{modify}");
+    // It leaves the inbox (and its category), but keeps read/flag state.
+    let removed: Vec<&str> = body["removeLabelIds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(removed.contains(&"INBOX"), "{removed:?}");
+    assert!(removed.contains(&"CATEGORY_UPDATES"), "{removed:?}");
+    // Read state and the Sent copy survive the archive — `UNREAD`/`SENT` are system-managed
+    // (`UNTOUCHABLE_ON_MOVE`), which the captured response confirms: it comes back holding
+    // exactly those two and no `INBOX`.
+    assert!(!removed.contains(&"UNREAD"), "{removed:?}");
+    assert!(!removed.contains(&"SENT"), "{removed:?}");
+    let after: serde_json::Value = serde_json::from_str(MODIFY_ARCHIVED).unwrap();
+    assert_eq!(after["labelIds"], serde_json::json!(["UNREAD", "SENT"]));
 }
 
 #[tokio::test]

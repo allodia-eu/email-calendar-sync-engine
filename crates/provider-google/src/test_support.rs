@@ -221,6 +221,56 @@ pub(crate) fn capturing_server(
     (format!("http://{addr}"), rx)
 }
 
+/// Spawns a routing HTTP server that **captures every** request (headers + body) and
+/// answers each from `routes` — [`replay_server`]'s path routing plus
+/// [`capturing_server`]'s body capture, for a write that takes more than one round-trip.
+///
+/// A `MoveTo` is exactly that: it reads the message's current labels, *then* `POST`s the
+/// `modify` delta computed from them. Asserting the delta therefore needs a server that
+/// both answers the read with a routed fixture and hands back the write's body — neither
+/// single-purpose helper can (`capturing_server` is one-shot and unrouted;
+/// `replay_server` discards bodies).
+///
+/// Routes match as in [`replay_server`] (first key that is a substring of the path;
+/// `404` otherwise), and captured requests arrive on the receiver in the order sent.
+pub(crate) fn capturing_replay_server(
+    routes: Vec<(&'static str, Value)>,
+) -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::Write;
+    let routes: Vec<(String, String)> = routes
+        .into_iter()
+        .map(|(key, doc)| (key.to_owned(), doc.to_string()))
+        .collect();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let request = read_full_request(&mut stream);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("")
+                .to_owned();
+            if tx.send(request).is_err() {
+                break;
+            }
+            let response = match routes.iter().find(|(key, _)| path.contains(key.as_str())) {
+                Some((_, body)) => format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+                None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_owned(),
+            };
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{addr}"), rx)
+}
+
 /// Reads a full HTTP request (headers + `Content-Length` body) off `stream`.
 fn read_full_request(stream: &mut std::net::TcpStream) -> String {
     use std::io::Read;
