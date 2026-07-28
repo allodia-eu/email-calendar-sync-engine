@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": 400,
+    "errors": [
+      {
+        "domain": "global",
+        "message": "Invalid label: ALL_MAIL",
+        "reason": "invalidArgument"
+      }
+    ],
+    "message": "Invalid label: ALL_MAIL",
+    "status": "INVALID_ARGUMENT"
+  }
+}

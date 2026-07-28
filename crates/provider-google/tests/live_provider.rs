@@ -254,6 +254,80 @@ async fn live_edit_mail_mark_read_and_flag_are_accepted() {
     cleanup(&provider, key).await;
 }
 
+#[tokio::test]
+async fn live_archive_to_all_mail_leaves_the_inbox_and_is_accepted_by_gmail() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_archive_...: GOOGLE_ACCESS_TOKEN unset");
+        return;
+    };
+    let provider = provider(token);
+    let marker = format!("archive-p{}", std::process::id());
+    // A self-addressed send lands in INBOX (and SENT), so there is an inbox membership to
+    // leave. This is the shape the product archives.
+    let receipt = provider
+        .submit_email(&account(), &live_draft(&marker))
+        .await
+        .expect("send");
+    let key = receipt.email_key;
+    // Prove the precondition before asserting on the change: without an INBOX membership to
+    // begin with, "it left the inbox" is a check that cannot fail. Gmail answers a
+    // self-addressed send with `labelIds: ["UNREAD","SENT","INBOX"]`.
+    assert!(
+        labels_of(&provider, &key)
+            .await
+            .contains(&"INBOX".to_owned()),
+        "the throwaway starts in the inbox"
+    );
+
+    // Archive = MoveTo the synthetic All-Mail id. Gmail has no Archive label, and
+    // `ALL_MAIL` is an id the adapter reserves — sending it as a *label* is a 400
+    // `invalidArgument`, which is exactly what this asserts does not happen. Only a live
+    // call can catch it: the offline fakes answer canned bytes whatever we send.
+    provider
+        .edit_mail(
+            &account(),
+            &MailEdit::move_to(key.clone(), MailboxId::try_from("ALL_MAIL").unwrap()),
+        )
+        .await
+        .expect("archive to All Mail is accepted by Gmail");
+
+    // And it really left the inbox — read the labels back rather than trusting the 200.
+    let labels = labels_of(&provider, &key).await;
+    assert!(
+        !labels.contains(&"INBOX".to_owned()),
+        "archived message left the inbox, got {labels:?}"
+    );
+    // The Sent copy is untouched — `SENT` is system-managed and preserved across a move,
+    // so archiving a conversation never hides the user's own reply.
+    assert!(
+        labels.contains(&"SENT".to_owned()),
+        "sent copy survives: {labels:?}"
+    );
+
+    cleanup(&provider, key).await;
+}
+
+/// The current label membership of `key`, read back through a snapshot (a message's labels
+/// *are* its membership). Used to assert an edit's effect against the server rather than
+/// against the `200` it answered with.
+async fn labels_of(provider: &GmailProvider, key: &engine_core::ids::ProviderKey) -> Vec<String> {
+    let snapshot = provider
+        .sync_email(&account(), None)
+        .await
+        .expect("snapshot");
+    let SyncUpdate::Snapshot { objects, .. } = &snapshot.update else {
+        panic!("expected a snapshot");
+    };
+    objects
+        .iter()
+        .find(|message| message.id.key() == key)
+        .expect("the message is in the account")
+        .mailboxes
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect()
+}
+
 // --- Google Calendar (Phase D) ---
 
 fn calendar_provider(token: String) -> GoogleCalendarProvider {

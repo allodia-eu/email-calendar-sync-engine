@@ -33,7 +33,9 @@ on the account.
 | `mail/message_raw.json` | `GET …/messages/{id}?format=raw` | base64url `raw` → `RawMime` decode |
 | `mail/history_delta.json` | `GET /users/me/history?startHistoryId=…` | delta shape: `messagesAdded`/`labelsAdded`/`labelsRemoved` (partials → re-fetch) |
 | `mail/history_deleted.json` | same, after a permanent delete | `messagesDeleted` tombstone shape |
-| `error/*.json` | a 401/403(rate)/403(perm)/404/410 | `error` envelope → `FailureClass` mapping |
+| `mail/modify_archived.json` | `POST …/messages/{id}/modify` with `removeLabelIds:["INBOX"]`, adding nothing | the **archive**: `INBOX` gone, `UNREAD`/`SENT` preserved |
+| `mail/trash.json` | `POST …/messages/{id}/trash` | the trash response: `TRASH` added, state preserved |
+| `error/*.json` | a 400(label)/401/403(rate)/403(perm)/404/410 | `error` envelope → `FailureClass` mapping |
 
 ## Real-behavior findings (captured, not assumed)
 
@@ -64,6 +66,24 @@ on the account.
    signal → `GoogleError::HistoryExpired` → snapshot restart. It has **no live test**: a
    fresh account's history window still contains an id of `1`, returning a valid (large)
    delta rather than a `404`, so the recovery is proven offline with a fake.
+8. **There is no Archive label, and the synthetic `ALL_MAIL` id is rejected as one.**
+   Archiving in Gmail is the *absence* of `INBOX` — the label list has `INBOX`, `SENT`,
+   `DRAFT`, `TRASH`, `SPAM`, `IMPORTANT`, `CATEGORY_*` and custom labels, and **nothing
+   archive-shaped**. The adapter therefore synthesizes an All-Mail mailbox under a reserved
+   `ALL_MAIL` id (finding 2's companion) — and that id must never travel back to Gmail:
+   `POST …/modify` with `addLabelIds:["ALL_MAIL"]` answers
+   **`400 invalidArgument: "Invalid label: ALL_MAIL"`** (captured as
+   `error/invalid_label.json`), which classifies `Permanent` — no retry can fix a label
+   that does not exist. So a `MoveTo` there sends the removals **alone**
+   (`mail/modify_archived.json` is the real response: `INBOX` gone, `UNREAD`/`SENT` kept).
+   This was a live bug: the adapter sent the synthetic id, every archive 400'd, and the
+   product surfaced it as a message that left the list and came straight back. Nothing
+   offline could catch it — the fakes answer canned bytes whatever they are sent — which is
+   why it is pinned by a request-body assertion *and* a live round-trip.
+9. **A self-addressed send lands in `INBOX` as well as `SENT`** (`labelIds:
+   ["UNREAD","SENT","INBOX"]` straight from `messages.send`). That is what makes the live
+   archive test meaningful: there is a real inbox membership to leave, so "it left the
+   inbox" is a check that can actually fail.
 
 ## Calendar files (`calendar/`)
 

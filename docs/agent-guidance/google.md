@@ -133,6 +133,13 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   the current place labels are fetched (`format=minimal`) and all bar the destination, the
   keyword-state labels, and the system labels `modify` cannot touch (`SENT`/`DRAFT`/`CHAT`)
   are removed while the destination is added. A `MoveTo` to `TRASH` uses `messages.trash`.
+  **A `MoveTo` to the synthetic `ALL_MAIL` is the archive, and adds no label at all**:
+  Gmail has no Archive place — archiving *is* the absence of `INBOX` — and `ALL_MAIL` is an
+  id this adapter reserves for the mailbox it synthesizes (`normalize::ALL_MAIL_ID`), so
+  sending it back as a label would be a `400` on a name Gmail has never heard of. The
+  removals alone do the work. Nothing offline can catch getting this wrong (the fakes answer
+  canned bytes regardless of the request), so it is pinned by a request-body assertion
+  (`mutate_tests`) **and** a live round-trip (`live_archive_to_all_mail_…`).
   `Delete` is a **permanent** delete past Trash — enabled by the full `mail.google.com`
   scope. A `412` is a `Conflict` the outbox resolves by refetch-and-retry.
 - **`submit_email`** → `messages.send` with the whole RFC 5322 message as a base64url

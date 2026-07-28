@@ -186,6 +186,7 @@ mod tests {
     const FORBIDDEN: &str = include_str!("../tests/fixtures/error/forbidden.json");
     const HISTORY_GONE: &str = include_str!("../tests/fixtures/error/history_gone.json");
     const SYNC_TOKEN_GONE: &str = include_str!("../tests/fixtures/error/sync_token_gone.json");
+    const INVALID_LABEL: &str = include_str!("../tests/fixtures/error/invalid_label.json");
 
     #[test]
     fn real_error_bodies_yield_their_reason_and_class() {
@@ -208,6 +209,23 @@ mod tests {
         // …while a 403 for insufficient scopes is permanent (never retried).
         let forbidden = GoogleError::status(403, FORBIDDEN);
         assert_eq!(forbidden.failure_class(), FailureClass::Permanent);
+    }
+
+    #[test]
+    fn an_unknown_label_is_a_permanent_400_not_a_conflict() {
+        // Captured live: `messages.modify` with `addLabelIds:["ALL_MAIL"]` — the synthetic
+        // id this adapter reserves for its All-Mail mailbox — comes back
+        // `400 invalidArgument: Invalid label: ALL_MAIL`. That is what archiving used to
+        // send, and it is why `mutate::move_to` now adds no label for that destination.
+        //
+        // It must classify **Permanent**: no retry fixes a label Gmail does not have, and
+        // the 400 `FAILED_PRECONDITION` → `Conflict` arm (People's stale-etag write) must
+        // not swallow it into a refetch-and-retry loop.
+        let invalid = GoogleError::status(400, INVALID_LABEL);
+        assert!(
+            matches!(&invalid, GoogleError::Status { reason: Some(r), .. } if r == "invalidArgument")
+        );
+        assert_eq!(invalid.failure_class(), FailureClass::Permanent);
     }
 
     #[test]

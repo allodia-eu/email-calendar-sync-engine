@@ -61,6 +61,44 @@ Read before relevant work:
   against a real server (the `stalwart-live` skill / `scripts/ci/stalwart-live.sh`) or a captured
   transcript — and where practical, tighten the offline fake to assert the shape it was sent.
 
+## Test against the real server — non-negotiable
+
+**Do not ship a feature or a fix to a provider until it has run against that provider's actual
+server.** This is a library other people's mail depends on; "the unit tests pass" is not evidence
+that a request Google, Microsoft, or an IMAP server will accept was ever sent. There is a real
+server available for **every** protocol this repo speaks, so there is no case where this is
+impractical:
+
+| Protocol | Real server | How |
+|---|---|---|
+| JMAP · IMAP · CalDAV · CardDAV | the Dockerized **Stalwart** harness (`docker/stalwart`) | `scripts/ci/stalwart-live.sh` / the `stalwart-live` skill; `crates/provider-{jmap,imap}/tests/live_*.rs` |
+| CalDAV (a second implementation) | the **SabreDAV** fixture (`docker/sabredav`) | `crates/provider-caldav/tests/live_sabredav.rs` |
+| Gmail · Google Calendar · Google People | a **throwaway Google test account** | `tools/google-oauth` mints the token; `crates/provider-google/tests/live_*.rs` |
+| Microsoft Graph | a **test Microsoft account** | `tools/graph-oauth` mints the token; `crates/provider-graph/tests/live_*.rs` |
+
+The live tests are env-gated so the offline suite stays green without credentials — which makes them
+easy to forget. Forgetting is the failure mode this rule exists to prevent:
+
+- **The fakes cannot fail on a wrong request.** They answer canned bytes whatever you send (above).
+  A green offline run says the *response parsing* is right and says nothing at all about the request.
+- **Real servers reject things no spec reading predicts.** Gmail 400s an unknown label id; it
+  rewrites the caller's `Message-ID` on send; `messages.insert` needs the `/upload/` endpoint. Every
+  one of those was found by calling the server and would have shipped otherwise.
+- **Coverage does not help here.** A line can be 100% covered by a test whose fake would have
+  accepted any bytes at all.
+
+So, concretely, before a provider change is done:
+
+1. Run that provider's `live_*` tests, and **add one** when the change introduces a request shape or
+   a server behaviour no existing live test exercises.
+2. **Capture the real response as a fixture** (`tests/fixtures/`, scrubbed of PII per that
+   directory's README) and wire it into an offline test, so the next agent inherits the observed
+   truth rather than a guess.
+3. **Prove the new check can fail** — revert the fix, watch the test go red, restore. A live test
+   that would pass against the broken code is not a live test; it is a slow unit test.
+4. If a live run genuinely cannot be done, say so explicitly in the PR and name what is unverified.
+   That is a disclosure, not a default.
+
 ## Required Verification
 
 **Run this full gate and make it pass before every `git push`** (not only at final hand-off). It

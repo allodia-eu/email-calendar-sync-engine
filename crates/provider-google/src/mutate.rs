@@ -12,7 +12,8 @@
 //!   the current place labels are fetched and all of them (bar the destination, the keyword-state
 //!   labels, and the system labels `modify` cannot touch) are removed while the destination is
 //!   added. A move to `TRASH` uses the dedicated `messages.trash` (the idiomatic, single-call
-//!   trash).
+//!   trash), and a move to the synthetic All-Mail id is the **archive** — Gmail has no Archive
+//!   label, so it removes the place labels and adds none.
 //! - [`MailEdit::Delete`] → `messages.delete`, a **permanent** delete past Trash, which the full
 //!   `mail.google.com` scope enables.
 
@@ -24,7 +25,7 @@ use engine_core::{
 };
 use engine_provider::{MailEdit, MailEditReceipt, ProviderResult};
 
-use crate::{error::GoogleError, fetch, transport::GoogleClient};
+use crate::{error::GoogleError, fetch, normalize::ALL_MAIL_ID, transport::GoogleClient};
 
 /// The Gmail system label id for the Trash place — a `MoveTo` here uses `messages.trash`.
 const TRASH_LABEL: &str = "TRASH";
@@ -66,6 +67,13 @@ pub(crate) async fn edit(
 /// Moves `key` to `destination`: `messages.trash` for the Trash label, otherwise a
 /// replacement `modify` that leaves the message in exactly the destination (bar
 /// preserved state/system labels).
+///
+/// A move to the synthetic All-Mail id is the **archive**, and is the one destination
+/// that is added to *nothing*: [`ALL_MAIL_ID`] is an id this adapter reserves for the
+/// mailbox it synthesizes ([`crate::normalize::all_mail_mailbox`]) because Gmail exposes
+/// no label for All Mail — an archived message simply carries no place label. Sending it
+/// back as a label would be a `400 invalidArgument` on a name Gmail has never heard of,
+/// so archiving is the removals alone.
 async fn move_to(
     client: &GoogleClient,
     key: &ProviderKey,
@@ -81,15 +89,19 @@ async fn move_to(
             .await?;
         return Ok(());
     }
+    let label = destination.as_str();
     let current = fetch::message_labels(client, key).await?;
     let remove: Vec<String> = current
         .into_iter()
-        .filter(|label| {
-            label != destination.as_str() && !UNTOUCHABLE_ON_MOVE.contains(&label.as_str())
-        })
+        .filter(|current| current != label && !UNTOUCHABLE_ON_MOVE.contains(&current.as_str()))
         .collect();
     let remove_refs: Vec<&str> = remove.iter().map(String::as_str).collect();
-    modify(client, key, &[destination.as_str()], &remove_refs).await
+    let add: &[&str] = if label == ALL_MAIL_ID {
+        &[]
+    } else {
+        std::slice::from_ref(&label)
+    };
+    modify(client, key, add, &remove_refs).await
 }
 
 /// `POST`s `messages.modify` with the given label deltas (a no-op when both are empty).
