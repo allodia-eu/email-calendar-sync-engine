@@ -4,7 +4,7 @@
 //! object resource is created or replaced with a single `PUT` of its iCalendar body (RFC
 //! 4791 §5.3.2) and removed with `DELETE` — CalDAV has **no partial write**, so a patch is
 //! still a whole-document `PUT`, of the stored bytes with the edit applied
-//! ([`patch_event_ical`](crate::ical::patch_event_ical)), never of a re-serialized
+//! ([`patch_event_ical`](engine_ical::patch_event_ical)), never of a re-serialized
 //! projection (`calendar-semantics.md`).
 //!
 //! Optimistic concurrency rides on the resource `ETag`, and CalDAV **enforces** it
@@ -22,11 +22,11 @@ use engine_core::{
     raw::RawIcal,
     version::{ETag, RevisionTokens},
 };
+use engine_ical::{build_event_ical, patch_event_ical};
 use engine_provider::{EventDeletion, EventDraft, EventEdit, EventWrite, EventWriteReceipt};
 
 use crate::{
     error::CalDavError,
-    ical::{build_event_ical, patch_event_ical},
     transport::{DavExecutor, DavMethod, Precondition, WriteRequest},
 };
 

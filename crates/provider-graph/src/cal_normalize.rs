@@ -6,7 +6,9 @@
 //! [`Event::extended`](engine_core::calendar::Event::extended) (the model invariant that
 //! raw is kept beside the lossy projection — `calendar-semantics.md`). Two Graph
 //! realities shape it: event `start`/`end` are `{ dateTime, timeZone }` with a
-//! **Windows** zone name (mapped to IANA at this boundary — [`crate::windows_zones`]),
+//! **Windows** zone name (mapped to IANA at this boundary by the shared
+//! [`resolve_zone_name`](engine_core::time::resolve_zone_name) policy — the iCalendar `TZID`
+//! boundary uses it too, since Outlook-authored invitations carry the same Windows names),
 //! and recurrence is a structured `patternedRecurrence` (mapped in [`crate::cal_recur`]),
 //! not an `RRULE` string.
 //!
@@ -22,7 +24,7 @@ use engine_core::{
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
-    time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId},
+    time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId, resolve_zone_name},
     version::{ChangeKey, ETag, RevisionTokens},
 };
 use serde_json::Value;
@@ -31,7 +33,6 @@ use crate::{
     cal_recur::parse_recurrence,
     error::GraphError,
     json::{bool_field, datetime, opt_str, req_str, wrap_id},
-    windows_zones::windows_to_iana,
 };
 
 /// The namespaced key under which the whole raw Graph event JSON is preserved.
@@ -149,16 +150,7 @@ fn parse_endpoint(value: &Value, key: &str, all_day: bool) -> Result<CalendarDat
 /// (a legacy `tzone://Microsoft/Custom`, or an unknown name) is preserved as a custom
 /// zone rather than guessed (`calendar-semantics.md`).
 fn resolve_zone(name: &str) -> Result<TimeZoneId, GraphError> {
-    if let Some(iana) = windows_to_iana(name) {
-        return TimeZoneId::iana(iana)
-            .map_err(|e| GraphError::protocol(format!("bad IANA zone {iana:?}: {e}")));
-    }
-    if name.contains('/') && !name.starts_with("tzone:") {
-        return TimeZoneId::iana(name)
-            .map_err(|e| GraphError::protocol(format!("bad IANA zone {name:?}: {e}")));
-    }
-    TimeZoneId::custom(name)
-        .map_err(|e| GraphError::protocol(format!("bad custom zone {name:?}: {e}")))
+    resolve_zone_name(name).map_err(|e| GraphError::protocol(format!("bad zone {name:?}: {e}")))
 }
 
 /// The event description: the plain-text `body` when Graph sent text, else the

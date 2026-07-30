@@ -51,7 +51,6 @@ mod principal;
 mod provider;
 mod submit;
 mod transport;
-mod windows_zones;
 
 #[cfg(test)]
 mod contact_fixture_tests;

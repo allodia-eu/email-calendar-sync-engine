@@ -8,6 +8,10 @@ publish.workspace = true
 
 [dependencies]
 engine-core = { workspace = true }
+# The single hardened iCalendar parser, for `Engine::message_scheduling`. iMIP arrives over
+# *mail* on every account type, so this read must not depend on the CalDAV adapter being in
+# the build — which is exactly why the parser is its own transport-neutral crate.
+engine-ical = { workspace = true }
 engine-store = { workspace = true }
 engine-sync = { workspace = true }
 engine-provider = { workspace = true }

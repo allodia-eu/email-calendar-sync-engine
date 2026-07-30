@@ -3,21 +3,21 @@
 //!
 //! The RFC 5545 RRULE-string grammar lives in one shared place —
 //! [`engine_core::calendar::parse_rrule`] — so this is a thin wrapper that maps a parse
-//! failure onto [`CalDavError::Ical`]. Google Calendar's adapter parses the same wire
+//! failure onto [`IcalError`]. Google Calendar's adapter parses the same wire
 //! shape through the same shared parser.
 
 use engine_core::calendar::{RecurrenceRule, parse_rrule as parse_rrule_shared};
 
-use crate::error::CalDavError;
+use crate::error::IcalError;
 
 /// Parses an `RRULE` value into a [`RecurrenceRule`].
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] if `FREQ` is missing/unknown, `COUNT` is not a positive
+/// Returns [`IcalError`] if `FREQ` is missing/unknown, `COUNT` is not a positive
 /// integer, or `UNTIL` is malformed.
-pub(crate) fn parse_rrule(value: &str) -> Result<RecurrenceRule, CalDavError> {
-    parse_rrule_shared(value).map_err(|e| CalDavError::ical(e.to_string()))
+pub(crate) fn parse_rrule(value: &str) -> Result<RecurrenceRule, IcalError> {
+    parse_rrule_shared(value).map_err(|e| IcalError::new(e.to_string()))
 }
 
 #[cfg(test)]

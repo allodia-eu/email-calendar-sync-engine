@@ -290,9 +290,10 @@ async fn a_patch_round_trips_raw_ical_preserving_non_jscalendar_properties() {
         time::UtcDateTime,
         version::{ETag, RevisionTokens},
     };
+    use engine_ical::parse_calendar_object;
     use engine_provider::{EventEdit, EventPatch, PatchTarget};
 
-    use crate::{ical::parse_calendar_object, test_support::wrote};
+    use crate::test_support::wrote;
 
     let resource = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
         UID:rt-9001@test.local\r\nDTSTART;TZID=Europe/Amsterdam:20260318T100000\r\n\

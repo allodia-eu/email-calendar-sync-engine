@@ -36,7 +36,9 @@ pub use key::{InstanceKey, Revision};
 pub use message::SchedulingMessage;
 pub use reconcile::{ScheduleAction, apply_reply, cancel, reconcile};
 use serde::{Deserialize, Serialize};
-pub use trust::{ImipTrust, ImipUntrusted, evaluate_imip_trust};
+pub use trust::{
+    ImipTrust, ImipUntrusted, addresses_match, evaluate_imip_trust, normalize_address,
+};
 
 open_enum! {
     /// An iTIP scheduling method (RFC 5546 §1.4). Canonical spelling is

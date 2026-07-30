@@ -26,30 +26,28 @@ use super::{
     unfold::unescape_text,
     value::{parse_calendar_date_time, parse_duration, parse_utc},
 };
-use crate::error::CalDavError;
+use crate::error::IcalError;
 
 /// The cross-system `UID` of a `VEVENT`.
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] if the `UID` is missing or empty.
-pub(crate) fn vevent_uid(vevent: &Component) -> Result<Uid, CalDavError> {
+/// Returns [`IcalError`] if the `UID` is missing or empty.
+pub(crate) fn vevent_uid(vevent: &Component) -> Result<Uid, IcalError> {
     let uid = vevent
         .value("UID")
         .map(str::trim)
         .filter(|uid| !uid.is_empty())
-        .ok_or_else(|| CalDavError::ical("VEVENT missing UID"))?;
-    Uid::new(uid).map_err(|e| CalDavError::ical(format!("bad UID: {e}")))
+        .ok_or_else(|| IcalError::new("VEVENT missing UID"))?;
+    Uid::new(uid).map_err(|e| IcalError::new(format!("bad UID: {e}")))
 }
 
 /// The `RECURRENCE-ID` of a `VEVENT`, present only on an override instance.
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] if the value is unparseable.
-pub(super) fn recurrence_id_of(
-    vevent: &Component,
-) -> Result<Option<CalendarDateTime>, CalDavError> {
+/// Returns [`IcalError`] if the value is unparseable.
+pub(super) fn recurrence_id_of(vevent: &Component) -> Result<Option<CalendarDateTime>, IcalError> {
     match vevent.property("RECURRENCE-ID") {
         Some(line) => Ok(Some(parse_calendar_date_time(line)?)),
         None => Ok(None),
@@ -61,14 +59,14 @@ pub(super) fn recurrence_id_of(
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] on a missing/invalid `DTSTART`/`UID` or any
+/// Returns [`IcalError`] on a missing/invalid `DTSTART`/`UID` or any
 /// unparseable time, duration, or recurrence value.
 pub(crate) fn event_from_vevent(
     vevent: &Component,
     id: EventId,
     calendar: CalendarId,
     raw_ical: RawIcal,
-) -> Result<Event, CalDavError> {
+) -> Result<Event, IcalError> {
     let uid = vevent_uid(vevent)?;
     let start = parse_start(vevent)?;
     let duration = event_duration(vevent, &start)?;
@@ -111,28 +109,28 @@ pub(crate) fn event_from_vevent(
 }
 
 /// Parses the mandatory `DTSTART`.
-fn parse_start(vevent: &Component) -> Result<CalendarDateTime, CalDavError> {
+fn parse_start(vevent: &Component) -> Result<CalendarDateTime, IcalError> {
     let line = vevent
         .property("DTSTART")
-        .ok_or_else(|| CalDavError::ical("VEVENT missing DTSTART"))?;
+        .ok_or_else(|| IcalError::new("VEVENT missing DTSTART"))?;
     parse_calendar_date_time(line)
 }
 
 /// Derives the event length from `DTEND`, else an explicit `DURATION`, else the
 /// RFC 5545 §3.6.1 default (one day for an all-day start, otherwise zero).
-fn event_duration(vevent: &Component, start: &CalendarDateTime) -> Result<Duration, CalDavError> {
+fn event_duration(vevent: &Component, start: &CalendarDateTime) -> Result<Duration, IcalError> {
     if let Some(dtend) = vevent.property("DTEND") {
         let end = parse_calendar_date_time(dtend)?;
         return start
             .duration_until(&end)
-            .map_err(|e| CalDavError::ical(format!("bad DTSTART/DTEND span: {e}")));
+            .map_err(|e| IcalError::new(format!("bad DTSTART/DTEND span: {e}")));
     }
     if let Some(duration) = vevent.value("DURATION") {
         return parse_duration(duration);
     }
     if start.is_all_day() {
         return Duration::from_parts(0, 1, 0, 0, 0, 0)
-            .map_err(|e| CalDavError::ical(format!("one-day default: {e}")));
+            .map_err(|e| IcalError::new(format!("one-day default: {e}")));
     }
     Ok(Duration::ZERO)
 }
@@ -148,7 +146,7 @@ fn category_set(vevent: &Component) -> BTreeSet<String> {
 }
 
 /// Parses a `CREATED`/`LAST-MODIFIED` UTC timestamp, if present.
-fn opt_utc(vevent: &Component, name: &str) -> Result<Option<UtcDateTime>, CalDavError> {
+fn opt_utc(vevent: &Component, name: &str) -> Result<Option<UtcDateTime>, IcalError> {
     match vevent.value(name) {
         Some(value) => parse_utc(value).map(Some),
         None => Ok(None),

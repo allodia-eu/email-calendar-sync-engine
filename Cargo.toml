@@ -100,6 +100,9 @@ idna = "1.1.0"
 engine-core = { path = "crates/engine-core" }
 engine-tls = { path = "crates/engine-tls" }
 engine-mime = { path = "crates/engine-mime" }
+# The iCalendar layer is transport-neutral: iMIP carries it over *mail* on every
+# account type, so it cannot live inside the CalDAV adapter (see the crate docs).
+engine-ical = { path = "crates/engine-ical" }
 engine-store = { path = "crates/engine-store" }
 engine-search = { path = "crates/engine-search" }
 engine-recurrence = { path = "crates/engine-recurrence" }

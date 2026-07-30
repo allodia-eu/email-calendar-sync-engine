@@ -39,11 +39,11 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
         scheduling::{ScheduleAction, reconcile},
         version::ETag,
     };
+    use engine_ical::parse_calendar_object;
     use engine_provider::EventWrite;
     use engine_sync::put_calendar_document;
 
     use crate::{
-        ical::parse_calendar_object,
         imip,
         test_support::{ok, wrote},
         transport::{DavMethod, Precondition},

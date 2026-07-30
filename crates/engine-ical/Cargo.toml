@@ -1,0 +1,21 @@
+[package]
+name = "engine-ical"
+description = "Transport-neutral iCalendar (RFC 5545) parser, serializer, and fold-aware line patcher over the engine's normalized calendar model."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+# The neutral write verbs (`EventDraft`/`EventPatch`/`EventEdit`) this crate's
+# serializer and structural patcher render. `engine-provider` is the port crate, not a
+# transport, so depending on it keeps this crate transport-neutral (and there is no
+# cycle: `engine-provider` depends only on `engine-core`).
+engine-provider = { workspace = true }
+# The recurrence-override fold round-trips the JSON-shaped patch payload.
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

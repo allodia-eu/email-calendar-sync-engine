@@ -16,13 +16,15 @@
 //!
 //! Layers (mirroring `provider-jmap`'s `Executor` seam so the whole protocol is
 //! offline-testable by replaying captured transcripts):
-//! - `ical` — the iCalendar parser: text → normalized [`Event`](engine_core::calendar::Event)s,
-//!   folding a resource's master + `RECURRENCE-ID` override `VEVENT`s into one event; plus the two
-//!   writers — `build_event_ical` (how CalDAV serializes a neutral `EventDraft`) and
-//!   `patch_event_ical` (how it applies a neutral `EventPatch`), the structural patcher that edits
-//!   a stored resource *in place* so an edit cannot delete the properties the projection does not
-//!   model. Both are **internal**: a host states intent through the neutral write verbs
-//!   (`engine_provider::EventDraft`/`EventEdit`) and never assembles iCalendar itself.
+//! - The iCalendar layer is **not** in this crate — it is `engine_ical`, because iCalendar also
+//!   arrives over *mail* (iMIP) on accounts with no CalDAV in the picture at all. It parses text →
+//!   normalized [`Event`](engine_core::calendar::Event)s, folding a resource's master +
+//!   `RECURRENCE-ID` override `VEVENT`s into one event, and carries the two writers —
+//!   `build_event_ical` (how CalDAV serializes a neutral `EventDraft`) and `patch_event_ical`, the
+//!   structural patcher that edits a stored resource *in place* so an edit cannot delete the
+//!   properties the projection does not model. Both stay **internal to this crate's write path**: a
+//!   host states intent through the neutral write verbs (`engine_provider::EventDraft`/`EventEdit`)
+//!   and never assembles iCalendar itself.
 //! - `dav` — the WebDAV `multistatus` XML parser.
 //! - `transport` — the HTTP `DavExecutor` seam (read reports + writes) + its `reqwest`
 //!   implementation.
@@ -43,7 +45,6 @@ mod carddav_ops;
 mod dav;
 mod discovery;
 mod error;
-mod ical;
 pub mod imip;
 mod provider;
 mod request;
@@ -83,5 +84,5 @@ pub fn fuzz_parse(data: &[u8]) {
     ) else {
         return;
     };
-    let _ = ical::parse_calendar_object(&String::from_utf8_lossy(data), id, calendar);
+    let _ = engine_ical::parse_calendar_object(&String::from_utf8_lossy(data), id, calendar);
 }

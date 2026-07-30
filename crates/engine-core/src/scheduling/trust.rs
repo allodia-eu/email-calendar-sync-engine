@@ -32,9 +32,18 @@ pub enum ImipTrust {
     Untrusted(ImipUntrusted),
 }
 
-/// Normalizes a calendar address for comparison: lowercased, with a leading
+/// Normalizes a calendar address for comparison: trimmed, lowercased, with a leading
 /// `mailto:` scheme removed.
-pub(super) fn normalize_address(address: &str) -> String {
+///
+/// Public because comparing an iTIP `ATTENDEE`/`ORGANIZER` against an address the host
+/// knows is not only the trust decision's job: matching an invitation's attendee against
+/// the account's own address **set** (its aliases) is the same comparison, and a second
+/// implementation of it is a second set of bugs. iCalendar writes `mailto:` scheme
+/// prefixes inconsistently and cases the domain freely, so a naive `==` misses real
+/// matches — and a missed match on this path means "you are not invited to this", which
+/// silently hides the RSVP a user is waiting for.
+#[must_use]
+pub fn normalize_address(address: &str) -> String {
     let lowered = address.trim().to_ascii_lowercase();
     lowered
         .strip_prefix("mailto:")
@@ -43,8 +52,9 @@ pub(super) fn normalize_address(address: &str) -> String {
 }
 
 /// Returns `true` if two calendar addresses are equal after normalization
-/// (case-insensitive, scheme-insensitive).
-pub(super) fn addresses_match(a: &str, b: &str) -> bool {
+/// (case-insensitive, `mailto:`-scheme-insensitive). See [`normalize_address`].
+#[must_use]
+pub fn addresses_match(a: &str, b: &str) -> bool {
     normalize_address(a) == normalize_address(b)
 }
 

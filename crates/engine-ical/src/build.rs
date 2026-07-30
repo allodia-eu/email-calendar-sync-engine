@@ -27,7 +27,7 @@ use super::format::{date_time_line, escape_text, format_utc, strip_control};
 /// The `DTSTAMP` is the draft's caller-supplied stamp — engine-core time types cannot read
 /// the system clock, so a create's stamp is stated, not sampled.
 #[must_use]
-pub(crate) fn build_event_ical(draft: &EventDraft) -> RawIcal {
+pub fn build_event_ical(draft: &EventDraft) -> RawIcal {
     let mut ical = String::new();
     ical.push_str("BEGIN:VCALENDAR\r\n");
     ical.push_str("VERSION:2.0\r\n");
