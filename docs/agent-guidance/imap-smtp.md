@@ -348,8 +348,60 @@ is authoritative for the `provider-caldav` calendar client.
   a second connection pushes a `Changed` — confirming the path across a second server
   implementation, like the QRESYNC delta was.
 
+- **`NAMESPACE` + `MYRIGHTS`: whose mail is this, and what may I do in it.** Both are issued
+  only when the post-auth `CAPABILITY` advertises them (`NAMESPACE`, RFC 2342; `ACL`,
+  RFC 4314), like CONDSTORE/QRESYNC — Stalwart advertises neither before authentication.
+  - **`LIST` alone cannot tell you whose mail a folder holds, and that was a real defect.**
+    A flat `LIST "" "*"` returns the credential's own folders *interleaved with* every
+    folder shared with it: alice's nine, plus six belonging to a group mailbox and one to
+    a peer, indistinguishable from folders she happens to have named `Shared Folders/…`.
+    Two things went wrong as a result. A provider bound to a shared mailbox synced the
+    *sharer's* folders too, so one engine account held two principals' mail; and the
+    `\Sent` lookup that files a sent copy could pick another principal's Sent Items (on
+    Stalwart a bare `Sent Items` happens to sort first, so it looked correct there and
+    would break on a server that orders differently). Both are fixed by attributing every
+    row against the namespaces: the provider derives one `MailStore` from its bound
+    mailbox and lists only that store (`crate::discovery`, `crate::namespace`). A server
+    advertising no namespaces yields the old behaviour exactly — everything is the
+    credential's own.
+  - **RFC 2342's three positions are Personal, Other Users', Shared, and which one a server
+    uses is not assumable.** Stalwart puts granted stores in the **second** while naming
+    the prefix "Shared Folders", leaving the third `NIL`. The engine treats both non-personal
+    positions alike, since its only question is mine-versus-not-mine. Prefix matching must
+    end at the delimiter: `Shared Foldersomething` is the user's own folder, and a bare
+    `starts_with` would silently stop syncing it.
+  - **Discovery** lists one level under each foreign prefix (`LIST "" "Shared Folders/%"`),
+    because that level is the owner: `Shared Folders/support@test.local` is the store and
+    everything below it is its folders. The handle is that full path — what a host hands
+    back to bind an `ImapProvider`. The credential's **own** store is deliberately not
+    reported: its handle would have to be the personal namespace's prefix, the empty string,
+    which is no handle at all. (This is the one place the IMAP and JMAP answers differ in
+    shape — a JMAP session names the personal account explicitly, so `provider-jmap` does
+    include it.) `Enumerable` is advertised only when a foreign namespace actually exists,
+    so a credential with no shares does not promise a list that is always empty.
+  - **Rights are one `MYRIGHTS` per selectable mailbox.** RFC 4314 offers no bulk form, so
+    that per-folder round trip is the price of an honest answer; it is skipped for
+    `\NoSelect` namespace containers, which Stalwart answers `NO Mailbox does not exist.`
+    (they are path components, not mailboxes). A `NO`/`BAD` — or a server without `ACL` —
+    reads as *unknown* and keeps `owner()`, never as "no rights", which would hide mail the
+    caller can plainly see. The letter → `MailboxAccess` mapping is tabulated in the `acl`
+    module; the three non-obvious ones are that reading needs `l`+`r`, removing a message
+    needs `t`+`e` (mark deleted *and* expunge — RFC 6851 `MOVE` requires the same pair), and
+    rename maps to `x` alone because the `k` a rename also needs belongs to the *new parent*,
+    which is not a right of this mailbox.
+
 ## Known limitations (documented, not bugs)
 
+- **Rights cost one `MYRIGHTS` per selectable mailbox, on every folder sync.** RFC 4314
+  offers no bulk form and no `LIST` return option carries rights, so an honest per-mailbox
+  answer is N sequential round trips — on a 40-folder account against an `ACL`-advertising
+  server, ~40 extra commands per pass. It is deliberately **not** narrowed to the foreign
+  namespaces: a credential can hold restricted rights on a folder in its own namespace
+  (an administrator ACL), and assuming otherwise would report a restricted folder as
+  writable — the exact class of wrong answer this feature exists to remove. A cache keyed
+  on the folder list (rights change far less often than mail does) is the obvious
+  optimization if the cost ever shows up in practice; it is not built here because it adds
+  an invalidation problem with no measured need. Servers without `ACL` pay nothing.
 - **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
   **implemented** for servers that advertise QRESYNC (RFC 7162) — the common case
   (Stalwart, Dovecot, Cyrus, Gmail). A server that advertises **neither** QRESYNC nor a

@@ -207,3 +207,35 @@ async fn fetch_message_source_fetches_and_decodes_the_raw() {
     let text = String::from_utf8(raw.as_bytes().to_vec()).unwrap();
     assert!(text.contains("Fixture: first message"));
 }
+
+#[tokio::test]
+async fn gmail_offers_no_shared_mailbox_mechanism() {
+    use engine_core::error::FailureClass;
+    use engine_provider::SharedMailboxes;
+
+    // A deliberate "no", not an omission. Gmail delegation is a real product feature, but
+    // reaching another user's mailbox over the API needs `users/{userId}` with a **service
+    // account holding domain-wide delegation** — a different credential model than the user
+    // bearer token this adapter holds. Advertising anything else would offer a host an
+    // onboarding flow that could only ever fail.
+    let provider = GmailProvider::new(fake_client(vec![]));
+    assert_eq!(
+        provider.connection_info().capabilities.shared_mailboxes(),
+        SharedMailboxes::Unsupported
+    );
+    // So both verbs stay at their rejecting defaults — a capability-checking caller never
+    // reaches them, and one that does gets a clear refusal rather than an empty list that
+    // looks like "no shares yet".
+    assert_eq!(
+        provider.list_shared_mailboxes().await.unwrap_err().class(),
+        FailureClass::InvalidState
+    );
+    assert_eq!(
+        provider
+            .resolve_shared_mailbox("shared@example.test")
+            .await
+            .unwrap_err()
+            .class(),
+        FailureClass::InvalidState
+    );
+}

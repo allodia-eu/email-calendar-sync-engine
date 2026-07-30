@@ -4,12 +4,15 @@
 //! belonging to a non-empty set of [`Mailbox`] collections via
 //! [`crate::membership::Memberships`], carrying [`Keyword`]s as its state axis,
 //! and projecting the RFC 5322 headers into a typed [`Envelope`]. Collections
-//! carry a normalized [`MailboxRole`] distinct from their id and name. A message's
-//! [`ThreadRef`] — and a whole [`Thread`] — carry [`ThreadProvenance`].
+//! carry a normalized [`MailboxRole`] distinct from their id and name, and the caller's
+//! [`MailboxAccess`] rights — which live on the collection because that is the only level
+//! at which the protocols answer "may I write here?". A message's [`ThreadRef`] — and a
+//! whole [`Thread`] — carry [`ThreadProvenance`].
 //!
 //! The three axes are kept separate throughout: object identity, collection
 //! membership, and keyword state. See `modeling.md`.
 
+mod access;
 mod address;
 mod body;
 mod content;
@@ -20,6 +23,7 @@ mod message;
 mod role;
 mod thread;
 
+pub use access::MailboxAccess;
 pub use address::{EmailAddress, EmailAddressGroup};
 pub use body::EmailBodyPart;
 pub use content::{

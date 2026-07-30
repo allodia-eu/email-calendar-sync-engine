@@ -202,8 +202,80 @@ multi-account:
   (`north-star.md`). Search/threading remain per-account.
 
 So adding a shared mailbox is, for the engine, just another account pointed at a
-`User` principal. (Not live-verified — a personal Microsoft account cannot host
-shared mailboxes; verification awaits a work/school account.)
+`User` principal.
+
+### Onboarding: `resolve_shared_mailbox`, and only that
+
+**Live-verified** against a real Microsoft 365 tenant (`tools/graph-oauth --profile work`;
+`tests/live_shared.rs`, gated on `GRAPH_SHARED_MAILBOX` so it skips for the personal
+account the rest of the live suite uses). The delta cursor cycle, writes, and `sendMail`
+all work unchanged on `/users/{shared}/…`; what follows is what the probing established.
+
+- **There is no list API.** No Graph route answers "which mailboxes have been shared with
+  me", so the adapter advertises `SharedMailboxes::ByAddress`, leaves
+  `list_shared_mailboxes` at its rejecting default, and a host asks the user to type an
+  address. `resolve_shared_mailbox` then verifies it with **one** request:
+  `GET /users/{addr}/mailFolders/inbox?$select=id`. A mail-folder read, deliberately — it
+  needs only the `Mail.Read*.Shared` scope the sync already uses and tests the permission
+  that actually matters.
+- **Graph will not tell you a mailbox exists but is not shared with you.** Probing every
+  mailbox of a real tenant produced **three** distinct `404` codes and no `403`:
+  `ErrorInvalidUser` (not a principal), `MailboxNotEnabledForRESTAPI` (inactive,
+  soft-deleted, or on-premises), and `ErrorItemNotFound` — *"Default folder Inbox not
+  found"* — for a principal that resolves but is a group rather than a mailbox. An
+  unshared mailbox is a `404` too. So all four classify `Permanent`, and `Permanent` here
+  means **"not resolvable by you"**, not "does not exist". `403 ErrorAccessDenied` is a
+  different failure — the credential's *grant* does not cover the route — and classifies
+  `Authentication`, because a re-consent is what would fix it.
+- **Percent-encoding is not a safety boundary; validate.** `GET /v1.0/users/..%2Fme/…`
+  answers **`200` with the signed-in user's own Inbox**: Graph decodes the segment and
+  re-resolves the path. The address is user input, so a resolver that only escaped it would
+  confirm `../me` as a shared mailbox and a host would onboard its own inbox under someone
+  else's name. Addresses are therefore *validated* first (`principal::validate_address`
+  rejects `/`, `\`, `%`, `?`, controls, whitespace, `"`, `<`, `>` — while allowing the `#`
+  that Entra guest UPNs really contain); the encoding is the second layer.
+- **Submission must send as the mailbox it posts to.** `sendMail` goes to the client's
+  principal, so a draft whose `From` names a different mailbox is refused before the
+  request rather than resolved silently on the server. Sending from a shared mailbox as a
+  delegate, the delivered message carries `From:` = the shared mailbox **and** a `Sender:`
+  = the signed-in delegate — a header the adapter never writes; Exchange adds it, and
+  clients render it as "on behalf of".
+  - **This refuses a send from an *alias* of the bound mailbox**, which Exchange Online
+    itself allows. The client cannot tell an alias from a mistake: doing so needs the
+    mailbox's `proxyAddresses`, a directory read the delegated credential may not have, and
+    guessing wrong sends a message whose `From` header does not match its sender. The
+    workaround is exact rather than approximate — **bind a client to the alias**, since
+    `/users/{alias}` resolves to the same target mailbox, and then the endpoint and the
+    header agree. A client bound to `/me` is unaffected: the credential does not reveal its
+    own address without a directory read, so there is nothing to compare and the draft is
+    taken as given.
+- **There is no mailbox kind, and there cannot be on this credential model.** See below.
+
+### Delegated `mailboxSettings` is self-only (settled, do not re-litigate)
+
+`mailboxSettings` carries `userPurpose`, Graph's shared-vs-user-vs-room discriminator, and
+it has **no `.Shared` scope variant**. With `MailboxSettings.ReadWrite` granted,
+`/me/mailboxSettings` answers `200` while **every** `/users/{other}/mailboxSettings` route
+answers `403 ErrorAccessDenied` — whole object and each sub-path — *even with Full Access to
+that mailbox*. Verified live, and independently reported with the identical symptom in
+[OfficeDev/office-js#6057](https://github.com/OfficeDev/office-js/issues/6057), open and
+unanswered by Microsoft since 2025-09-01; the best available explanation in that thread is
+that delegated access to `/mailboxSettings` is signed-in-user-only **by design**. The API
+reference's permission table, which lists the `/users/{id}` route under delegated
+work/school permissions, is misleading here.
+
+This is **not a bug awaiting a fix**: the absence of mailbox kind is a permanent property of
+the user-credential model, so there is nothing to work around and nothing to wait for. If
+kind is ever genuinely needed it requires an **application** permission and a different
+credential model — a separate decision. `MailboxSettings.ReadWrite` stays in the tool's
+default scopes for the *own* mailbox only (the foundation for automatic replies); it
+contributes nothing to shared mailboxes.
+
+Because kind is unknowable, `SharedMailbox` carries none — see `providers.md`. Graph grants
+Full Access all-or-nothing per mailbox, so a folder there reports `MailboxAccess::owner()`,
+which is *correct* rather than optimistic. Folder-level Outlook sharing (a single shared
+Inbox rather than the whole mailbox) is not reported by Graph at all: a documented
+limitation, not a silent one.
 
 ## Known limitations (documented, not bugs)
 

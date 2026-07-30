@@ -22,8 +22,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
-    PageToken, PassMode, Provider, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind,
-    split_page,
+    PageToken, PassMode, Provider, ProviderResult, ScopeSync, SharedMailbox, SharedMailboxes,
+    SubmissionReceipt, SyncKind, split_page,
 };
 
 use crate::{fetch, transport::GraphClient};
@@ -74,7 +74,13 @@ impl GraphProvider {
             capabilities: Capabilities::none()
                 .with_mail()
                 .with_mail_writes()
-                .with_submission(),
+                .with_submission()
+                // Graph has no route that lists the mailboxes shared with a credential, so
+                // a host must ask the user for an address and the adapter verifies it
+                // (`crate::shared`). Unconditional, because the mechanism is a property of
+                // the credential rather than of the bound folder — and a credential that
+                // has been granted no mailbox simply resolves nothing.
+                .with_shared_mailboxes(SharedMailboxes::ByAddress),
             since: None,
         }
     }
@@ -269,6 +275,23 @@ impl Provider for GraphProvider {
         edit: &MailEdit,
     ) -> ProviderResult<MailEditReceipt> {
         crate::mutate::edit_mail(&self.client, edit).await
+    }
+
+    /// Verifies that this credential can open the mailbox at `address`, with one mail-folder
+    /// `GET` (`crate::shared`).
+    ///
+    /// There is no [`list_shared_mailboxes`](Provider::list_shared_mailboxes) counterpart:
+    /// Graph exposes no route that enumerates the mailboxes shared with a credential, which
+    /// is exactly what [`SharedMailboxes::ByAddress`] states.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`ProviderError`](engine_provider::ProviderError): *no such mailbox* is
+    /// [`Permanent`](engine_core::error::FailureClass::Permanent) and *exists but not shared
+    /// with you* is [`Authentication`](engine_core::error::FailureClass::Authentication); a
+    /// throttle or server error keeps its own class rather than being read as a negative.
+    async fn resolve_shared_mailbox(&self, address: &str) -> ProviderResult<SharedMailbox> {
+        crate::shared::resolve(&self.client, address).await
     }
 }
 

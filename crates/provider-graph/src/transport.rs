@@ -193,6 +193,21 @@ impl GraphClient {
         format!("{}{path}", self.base)
     }
 
+    /// Builds an absolute URL rooted at *another* mailbox than this client's — the
+    /// shared-mailbox probe, which asks about an address the client is not bound to
+    /// (`crate::shared`).
+    pub(crate) fn principal_url(&self, principal: &MailboxPrincipal, path: &str) -> String {
+        format!("{}{}{path}", self.base, principal.root())
+    }
+
+    /// The mailbox this client's requests are rooted at.
+    ///
+    /// Read by submission, which must not send a message whose `From` names a different
+    /// mailbox than the one the request is posted to (`crate::submit`).
+    pub(crate) fn principal(&self) -> &MailboxPrincipal {
+        &self.principal
+    }
+
     /// Authenticated `GET`, rebasing absolute Graph links onto a non-default base.
     ///
     /// # Errors

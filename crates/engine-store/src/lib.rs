@@ -55,4 +55,9 @@ pub use store::{IndexRowCounts, MailIndexEntry, Store, StoreRead};
 /// - `3`: a message's thread id moved from `thread_id` to `thread`, which records whether the
 ///   provider assigned the id or the engine derived it (`threading.md`); a stored message
 ///   deserializes with no thread until the re-snapshot restores the provider's id.
-pub const NORMALIZER_VERSION: u32 = 3;
+/// - `4`: a mailbox carries the caller's [`MailboxAccess`](engine_core::mail::MailboxAccess)
+///   rights, sourced from JMAP `myRights` / the IMAP `MYRIGHTS` letters. A stored mailbox projected
+///   before this holds no rights at all and would deserialize as the `owner()` default — i.e. as
+///   writable — so the re-snapshot is what makes a shared, read-only folder *say* it is read-only
+///   rather than silently inviting a write that the server then refuses.
+pub const NORMALIZER_VERSION: u32 = 4;

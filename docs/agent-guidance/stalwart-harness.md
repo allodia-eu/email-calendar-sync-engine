@@ -27,6 +27,11 @@ part of it.
 > see**, so this fixture cannot produce a collection she may not write — the read-only
 > `DAV:current-user-privilege-set` case is SabreDAV's to prove, and it seeds a shared
 > calendar for exactly that.
+>
+> That second fact is about **calendars only**, and stays true. It is no longer true of
+> her *mail*: the shared-mailbox fixture gives her one store she owns outright and one she
+> may only read (see "The shared-mailbox fixture" below), which is what makes the
+> read-only `MailboxAccess` path provable here.
 
 ## What it is
 
@@ -138,8 +143,9 @@ and the cross-compile build.
 | Account | Holds | Used for |
 | --- | --- | --- |
 | `alice@test.local` | **the whole shared seed** (mail, calendar, contacts) | every read/sync/write suite; several assert its exact mailbox and calendar counts |
-| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, and the **organizer** in the scheduling suite |
+| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, the **organizer** in the scheduling suite, and the **grantor** of the read-only share below |
 | `carol@test.local` | nothing | scratch: the **attendee** in the scheduling suite |
+| `support@test.local` | one seeded message | a **group** principal: a mailbox with no credentials of its own, which Alice belongs to |
 
 `Harness::scratch` exposes the two scratch accounts as a pair. They exist because
 some server behaviour cannot be observed without writing to a mailbox: RFC 6638
@@ -149,6 +155,36 @@ exchange through Alice would push her INBOX permanently over the exact count the
 mail suites assert, so the whole two-party exchange happens between Bob and Carol,
 where nothing counts what is delivered. Prefer a scratch account over relaxing an
 assertion on the seeded one.
+
+### The shared-mailbox fixture (two shares, deliberately unequal)
+
+Alice can open two stores besides her own, and they differ in **rights**, because that
+contrast is the whole point:
+
+- **`support@test.local`** is a `Group` principal (`x:Account/set` with `"@type":"Group"`)
+  with Alice added via `memberGroupIds` — the vendor-neutral analogue of a Microsoft 365
+  shared mailbox: no credentials of its own, reached through a member's. Alice holds
+  **full** rights on its folders (`rliteswkxpa`).
+- **Bob grants Alice `lr`** (lookup + read) on his own INBOX, via an IMAP
+  `SETACL` in `seed.sh` — the only direction he can make. Alice holds **read only**.
+
+Both appear in Alice's JMAP session as `accounts` entries with `isPersonal: false`, and in
+her IMAP `LIST` under the `Shared Folders` prefix her `NAMESPACE` advertises. **This
+supersedes the earlier note that "Alice owns every calendar she can see":** she now has
+mail she does not own, on purpose.
+
+The finding this fixture exists to pin: Stalwart reports
+`accounts.<id>.isReadOnly: **false**` for *both* — including Bob's, whose single mailbox
+grants read alone. The account-level flag therefore cannot answer "may I write here?", which
+is why the engine carries rights on the mailbox (`modeling.md`). A smoke test asserts that
+`isReadOnly` really is `false`, so if Stalwart ever changes its mind the rationale gets
+revisited rather than silently outliving its evidence.
+
+Two more observed details worth not rediscovering: Stalwart puts these stores in RFC 2342's
+**Other Users'** position (the second), not Shared (the third), despite naming the prefix
+"Shared Folders"; and `MYRIGHTS` on the `\NoSelect` containers a shared namespace introduces
+(`Shared Folders`, `Shared Folders/support@test.local`) answers `NO Mailbox does not exist.`
+— they are path components, not mailboxes.
 
 ## Rate limiters are disarmed on purpose
 
@@ -205,6 +241,7 @@ sequence numbers are deterministic) rather than by searching.
 | `05-flagged.eml`         | INBOX, `\Flagged` + keyword  | JMAP keywords ↔ IMAP flags. Stalwart marks owner-appended mail `\Seen`, so the distinctive markers are `\Flagged` and the custom keyword `harness`. |
 | `06-thread-root/reply`   | INBOX (`In-Reply-To`/`References`) | Threading by references, independent of subject. |
 | `07-moved.eml`           | INBOX → **MOVE**d to Projects | A moved message keeps a single membership (contrast the copy). |
+| `08-shared.eml`          | the **`support@` group mailbox's** INBOX | A shared store's sync returns *its* mail, not the credential's: this message exists in none of Alice's folders. |
 
 Folders `Archive` and `Projects` exercise non-INBOX mailboxes. Two further dedicated
 mailboxes carry isolated copies of INBOX fixtures so a test can mutate them without

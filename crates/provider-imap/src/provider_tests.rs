@@ -243,6 +243,53 @@ async fn save_draft_creates_drafts_when_no_special_use_folder_exists() {
 }
 
 #[tokio::test]
+async fn a_shared_store_creates_its_own_fallback_folder_not_the_credentials() {
+    // The store bound here is `support@`'s, reached through the shared namespace, and its
+    // `LIST` advertises no `\Drafts`. The fallback must create `Drafts` *inside that store* —
+    // an unqualified "Drafts" would create one in alice's personal namespace and file the
+    // shared mailbox's draft into her own folder, which is precisely the cross-principal
+    // filing the store scoping exists to prevent.
+    let imap = script(&[
+        GREETING,
+        LOGIN_OK,
+        "* LIST (\\NoSelect) \"/\" \"Shared Folders/support@test.local\"\r\n\
+         * LIST () \"/\" \"Shared Folders/support@test.local/INBOX\"\r\n\
+         a2 OK LIST done\r\n",
+        "a3 OK CREATE completed\r\n",
+        "+ OK send literal\r\n",
+        "a4 OK [APPENDUID 70 4] APPEND completed\r\n",
+    ]);
+    let (stream, recorded) = MockStream::new(imap);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let namespaces = crate::namespace::parse_namespace(&[
+        br#"NAMESPACE (("" "/")) (("Shared Folders" "/")) NIL"#.to_vec(),
+    ]);
+    let provider = ImapProvider::with_connection_in_namespaces(
+        conn,
+        MailboxId::try_from("Shared Folders/support@test.local/INBOX").unwrap(),
+        namespaces,
+    );
+
+    let key = provider.save_draft(&submit_draft()).await.unwrap();
+    assert_eq!(
+        key.as_str(),
+        "imap:v70:u4@Shared Folders/support@test.local/Drafts"
+    );
+
+    let sent = written(&recorded);
+    assert!(
+        sent.contains("CREATE \"Shared Folders/support@test.local/Drafts\""),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("APPEND \"Shared Folders/support@test.local/Drafts\" (\\Draft \\Seen)"),
+        "{sent}"
+    );
+    assert!(!sent.contains("CREATE \"Drafts\""), "{sent}");
+}
+
+#[tokio::test]
 async fn save_draft_files_into_the_special_use_drafts_folder() {
     // The server names its drafts folder differently and tags it `\Drafts`; the
     // client must file into that real folder (no CREATE), not a stray "Drafts".
@@ -330,6 +377,7 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
         }),
         None,
         None,
+        crate::namespace::Namespaces::default(),
     );
     assert!(provider.connection_info().capabilities.submission());
 

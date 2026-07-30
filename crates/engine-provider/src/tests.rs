@@ -2,10 +2,12 @@
 //! capability-gated rejections, and the `Box<dyn Provider>` blanket impl delegating
 //! to both overrides and defaults.
 
+use async_trait::async_trait;
 use engine_core::{
-    ids::{MailboxId, MessageId},
+    ids::{AccountId, MailboxId, MessageId},
+    mail::{Mailbox, Message},
     membership::Memberships,
-    sync::{JmapDataType, SyncUpdate},
+    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
 };
 
 use super::*;

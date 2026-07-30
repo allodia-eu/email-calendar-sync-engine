@@ -4,15 +4,14 @@
 //! whole protocol over an in-memory mock while the live client uses a `tokio-rustls`
 //! TLS stream — command sequencing, literal handling, and parsing are identical in
 //! both (`docs/agent-guidance/imap-smtp.md`). It speaks only the handful of commands
-//! the read/sync slice needs (`LOGIN`, `SELECT`, `UID SEARCH`, `UID FETCH`, `LIST`,
-//! `LOGOUT`); the higher-level snapshot/delta logic lives in [`crate::sync`].
+//! the engine needs; the vocabulary itself lives in [`crate::transport_commands`], and the
+//! higher-level snapshot/delta logic in [`crate::sync`]. This file owns the framing: the
+//! greeting, tags, `{n}` literals, the tagged request/response round trip, `LOGIN`, and the
+//! post-auth capability negotiation.
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
-use crate::{
-    error::{ImapError, ImapResult},
-    parse::{self, FetchRow, ListRow, SelectData},
-};
+use crate::error::{ImapError, ImapResult};
 
 /// The largest `{n}` literal we will read into memory. A hostile or buggy server
 /// could announce an enormous literal (`* {4000000000}`); the cap bounds the
@@ -21,6 +20,13 @@ use crate::{
 const MAX_LITERAL: usize = 64 * 1024 * 1024;
 
 /// A connected IMAP session over a generic async byte stream.
+// The flags below are independent facts the post-auth `CAPABILITY` reported — one per
+// optional extension — not the state of a state machine, so the excessive-bools
+// heuristic's "use an enum" suggestion does not apply; each is queried on its own.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent negotiated-extension flags, not state-machine state"
+)]
 pub(crate) struct Connection<S> {
     pub(crate) inner: BufReader<S>,
     /// The command-tag counter (`a1`, `a2`, …); `pub(crate)` so
@@ -39,6 +45,15 @@ pub(crate) struct Connection<S> {
     /// push change notifications; when `false`, the host must fall back to polling.
     /// `pub(crate)` for the same reason as [`qresync`](Self::qresync).
     pub(crate) idle_advertised: bool,
+    /// Whether the server advertised `NAMESPACE` (RFC 2342) post-auth. When `false` there
+    /// is no way to tell whose mail a folder holds, so every mailbox is read as the
+    /// credential's own — the behaviour that predates shared-mailbox support.
+    pub(crate) namespace_advertised: bool,
+    /// Whether the server advertised `ACL` (RFC 4314) post-auth. When `false`, `MYRIGHTS`
+    /// is not issued at all and a mailbox's rights are reported as
+    /// [`MailboxAccess::owner`](engine_core::mail::MailboxAccess::owner) — the only honest
+    /// answer when the protocol offers no way to ask.
+    pub(crate) acl_advertised: bool,
     /// The tag of a streamed `UID FETCH` ([`Connection::uid_fetch_stream_start`]) whose
     /// tagged completion has not yet been read — set while its rows are being pulled
     /// one at a time. If a streaming fetch is **abandoned** mid-response (the caller
@@ -54,6 +69,8 @@ impl<S> core::fmt::Debug for Connection<S> {
             .field("tag", &self.tag)
             .field("qresync", &self.qresync)
             .field("idle_advertised", &self.idle_advertised)
+            .field("namespace_advertised", &self.namespace_advertised)
+            .field("acl_advertised", &self.acl_advertised)
             .finish_non_exhaustive()
     }
 }
@@ -66,6 +83,19 @@ impl<S> Connection<S> {
     /// so it needs no stream bounds (the unbounded provider builder consults it).
     pub(crate) fn idle_advertised(&self) -> bool {
         self.idle_advertised
+    }
+
+    /// Whether the server advertised `NAMESPACE` (RFC 2342) post-auth — the precondition
+    /// for telling the credential's own mailboxes from ones shared with it. A plain field
+    /// read, like [`idle_advertised`](Self::idle_advertised).
+    pub(crate) fn namespace_advertised(&self) -> bool {
+        self.namespace_advertised
+    }
+
+    /// Whether the server advertised `ACL` (RFC 4314) post-auth — the precondition for
+    /// asking what may be done in a mailbox.
+    pub(crate) fn acl_advertised(&self) -> bool {
+        self.acl_advertised
     }
 }
 
@@ -83,6 +113,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             tag: 0,
             qresync: false,
             idle_advertised: false,
+            namespace_advertised: false,
+            acl_advertised: false,
             pending_tag: None,
         };
         connection.read_greeting().await?;
@@ -184,8 +216,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         self.read_response(&tag).await
     }
 
-    /// Reads untagged responses until this command's tagged completion.
-    async fn read_response(&mut self, tag: &str) -> ImapResult<Response> {
+    /// Reads untagged responses until this command's tagged completion. `pub(crate)` so
+    /// `APPEND` (`crate::transport_commands`), which writes its own tag ahead of a
+    /// synchronizing literal, can finish the round trip through the same reader.
+    pub(crate) async fn read_response(&mut self, tag: &str) -> ImapResult<Response> {
         let mut untagged = Vec::new();
         let prefix = format!("{tag} ");
         loop {
@@ -242,9 +276,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
         // Record IDLE (RFC 2177) from the same post-auth list so a watcher (and the
         // provider's advertised `Capabilities::idle`) knows whether push is available.
-        self.idle_advertised = capabilities
-            .iter()
-            .any(|cap| cap.eq_ignore_ascii_case("IDLE"));
+        let advertises = |name: &str| {
+            capabilities
+                .iter()
+                .any(|cap| cap.eq_ignore_ascii_case(name))
+        };
+        self.idle_advertised = advertises("IDLE");
+        // Shared-mailbox discovery needs both: `NAMESPACE` to know whose mail a folder
+        // holds, `ACL` to ask what may be done in it. Recorded from the same post-auth
+        // list, because — like CONDSTORE/QRESYNC — a server may advertise neither before
+        // authentication.
+        self.namespace_advertised = advertises("NAMESPACE");
+        self.acl_advertised = advertises("ACL");
         if capabilities
             .iter()
             .any(|cap| cap.eq_ignore_ascii_case("QRESYNC"))
@@ -263,174 +306,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         }
         Ok(())
     }
-
-    /// `SELECT mailbox`, returning its UID space and message count. Response codes
-    /// in either an untagged `* OK [..]` or the tagged completion are honored.
-    pub(crate) async fn select(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self.command(&format!("SELECT {}", quote(mailbox))).await?;
-        parse::parse_select(&response.into_all_lines())
-    }
-
-    /// `SELECT mailbox (CONDSTORE)` — opens the mailbox CONDSTORE-aware (RFC 7162
-    /// §3.1.8) so the response carries `[HIGHESTMODSEQ n]`, the baseline a QRESYNC
-    /// delta records in its cursor. Used in place of [`Connection::select`] for the
-    /// sync path on a QRESYNC session.
-    pub(crate) async fn select_condstore(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self
-            .command(&format!("SELECT {} (CONDSTORE)", quote(mailbox)))
-            .await?;
-        parse::parse_select(&response.into_all_lines())
-    }
-
-    /// `EXAMINE mailbox` — the read-only `SELECT` (RFC 9051 §6.3.2): same response
-    /// shape, but opens the mailbox without write intent and does not reset
-    /// `\Recent`, so a body peek needs no write access to the folder.
-    pub(crate) async fn examine(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self.command(&format!("EXAMINE {}", quote(mailbox))).await?;
-        parse::parse_select(&response.into_all_lines())
-    }
-
-    /// `UID FETCH <set> (<items>)`, returning the parsed rows.
-    pub(crate) async fn uid_fetch(&mut self, set: &str, items: &str) -> ImapResult<Vec<FetchRow>> {
-        let response = self.command(&format!("UID FETCH {set} ({items})")).await?;
-        parse::parse_fetch(&response.untagged)
-    }
-
-    /// `UID FETCH <set> (<items>) (CHANGEDSINCE <modseq> VANISHED)` — the QRESYNC
-    /// incremental delta (RFC 7162 §3.1.4.1, §3.2.5). The server returns a `FETCH` for
-    /// every message whose mod-sequence is greater than `modseq` (new arrivals *and*
-    /// flag changes, with full metadata) and a `* VANISHED (EARLIER) <set>` listing the
-    /// UIDs expunged since `modseq`. Returns the changed rows paired with the expanded
-    /// vanished UIDs, both read from the one command's untagged responses.
-    pub(crate) async fn uid_fetch_changedsince(
-        &mut self,
-        set: &str,
-        items: &str,
-        modseq: u64,
-    ) -> ImapResult<(Vec<FetchRow>, Vec<u32>)> {
-        let response = self
-            .command(&format!(
-                "UID FETCH {set} ({items}) (CHANGEDSINCE {modseq} VANISHED)"
-            ))
-            .await?;
-        let rows = parse::parse_fetch(&response.untagged)?;
-        let vanished = crate::parse_qresync::parse_vanished(&response.untagged);
-        Ok((rows, vanished))
-    }
-
-    /// `UID SEARCH SINCE <date>` — the UIDs of messages whose `INTERNALDATE` is on or
-    /// after `date` (an IMAP `dd-Mon-yyyy` date, RFC 9051 §6.4.4), used to find the
-    /// floor of a sync-depth window so a snapshot fetches only recent mail. `date` is
-    /// caller-formatted from a calendar date (digits + a fixed month abbreviation), so
-    /// it carries no quoting or injection risk. Returns the matched UIDs (empty if none
-    /// match), tolerating both the classic `* SEARCH` and extended `* ESEARCH` reply.
-    pub(crate) async fn uid_search_since(&mut self, date: &str) -> ImapResult<Vec<u32>> {
-        let response = self.command(&format!("UID SEARCH SINCE {date}")).await?;
-        Ok(parse::parse_search(&response.untagged))
-    }
-
-    /// `UID FETCH <uid> (BODY.PEEK[])`, returning the raw RFC 5322 bytes of the
-    /// message (the whole source, headers + every part), or `None` if the server
-    /// returned no `BODY[]` for that UID — i.e. it was expunged since the last sync
-    /// (fetching a non-existent UID is a tagged `OK` with no data, RFC 9051 §6.4.8).
-    /// `.PEEK` does not set `\Seen` — fetching a body to read it must not silently
-    /// mark it read; the host decides that via a separate edit. Only the matching
-    /// UID's data is accepted, so an unsolicited `FETCH` for another UID (a
-    /// concurrent flag update) cannot return the wrong message's bytes.
-    pub(crate) async fn uid_fetch_body(&mut self, uid: u32) -> ImapResult<Option<Vec<u8>>> {
-        let response = self
-            .command(&format!("UID FETCH {uid} (BODY.PEEK[])"))
-            .await?;
-        Ok(parse::parse_fetch_body(&response.untagged, uid))
-    }
-
-    /// `LIST "" "*"`, returning every mailbox.
-    pub(crate) async fn list(&mut self) -> ImapResult<Vec<ListRow>> {
-        let response = self.command(r#"LIST "" "*""#).await?;
-        parse::parse_list(&response.untagged)
-    }
-
-    /// `CREATE <mailbox>`. Used to ensure the Sent folder exists before filing a
-    /// copy; an "already exists" rejection is the caller's to ignore.
-    pub(crate) async fn create(&mut self, mailbox: &str) -> ImapResult<()> {
-        self.command(&format!("CREATE {}", quote(mailbox))).await?;
-        Ok(())
-    }
-
-    /// `APPEND <mailbox> (<flags>) {N}` followed by the message literal — used to
-    /// file a sent copy in Sent (`\Seen`) or save a draft in Drafts (`\Draft`).
-    /// Returns the `[APPENDUID validity uid]` when the server supports UIDPLUS, so
-    /// the caller can key the object; `None` otherwise (it then reconciles by
-    /// `Message-ID` on a later sync).
-    pub(crate) async fn append(
-        &mut self,
-        mailbox: &str,
-        flags: &str,
-        message: &[u8],
-    ) -> ImapResult<Option<(u32, u32)>> {
-        let tag = self.next_tag();
-        // A synchronizing literal: send the header, await the `+` continuation, then
-        // the raw bytes.
-        let header = format!(
-            "{tag} APPEND {} ({flags}) {{{}}}\r\n",
-            quote(mailbox),
-            message.len()
-        );
-        self.inner.write_all(header.as_bytes()).await?;
-        self.inner.flush().await?;
-        // The server may emit untagged responses (e.g. `* n EXISTS`) before the `+`
-        // continuation request; skip them and wait for the continuation (RFC 9051
-        // §7 allows unsolicited untagged responses at any point).
-        loop {
-            let line = self.read_line().await?;
-            if strip_ascii_prefix(&line, b"* ").is_some() {
-                continue;
-            }
-            if strip_ascii_prefix(&line, b"+ ").is_some() {
-                break;
-            }
-            return Err(ImapError::protocol(format!(
-                "APPEND expected a continuation, got: {}",
-                String::from_utf8_lossy(&line).trim()
-            )));
-        }
-        self.inner.write_all(message).await?;
-        self.inner.write_all(b"\r\n").await?;
-        self.inner.flush().await?;
-        let response = self.read_response(&tag).await?;
-        Ok(parse_append_uid(&response.detail))
-    }
-
-    /// `UID STORE <set> <item>` — alters the flags of the named UIDs, where `item`
-    /// is e.g. `+FLAGS.SILENT (\Seen)` or `-FLAGS.SILENT (\Flagged)` (RFC 9051
-    /// §6.4.6). The `.SILENT` suffix suppresses the per-message `FETCH` echo, so no
-    /// response parsing is needed — a tagged `OK` is success, a `NO`/`BAD` an error.
-    pub(crate) async fn uid_store(&mut self, set: &str, item: &str) -> ImapResult<()> {
-        self.command(&format!("UID STORE {set} {item}")).await?;
-        Ok(())
-    }
-
-    /// `UID MOVE <set> <mailbox>` — moves the named UIDs to `dest` (RFC 6851), so
-    /// the move is atomic server-side (copy + `\Deleted` + expunge in one command,
-    /// where supported). The destination is a quoted string.
-    pub(crate) async fn uid_move(&mut self, set: &str, dest: &str) -> ImapResult<()> {
-        self.command(&format!("UID MOVE {set} {}", quote(dest)))
-            .await?;
-        Ok(())
-    }
-
-    /// `UID EXPUNGE <set>` — permanently removes only the named `\Deleted` UIDs
-    /// (UIDPLUS, RFC 4315), so a concurrent `\Deleted` mark elsewhere in the mailbox
-    /// is not collaterally expunged.
-    pub(crate) async fn uid_expunge(&mut self, set: &str) -> ImapResult<()> {
-        self.command(&format!("UID EXPUNGE {set}")).await?;
-        Ok(())
-    }
 }
 
 /// Extracts `(validity, uid)` from an `[APPENDUID validity uid]` response code
 /// (RFC 4315), if present.
-fn parse_append_uid(detail: &str) -> Option<(u32, u32)> {
+pub(crate) fn parse_append_uid(detail: &str) -> Option<(u32, u32)> {
     let start = detail.find("[APPENDUID ")? + "[APPENDUID ".len();
     let rest = &detail[start..];
     let end = rest.find(']')?;
@@ -444,8 +324,13 @@ fn parse_append_uid(detail: &str) -> Option<(u32, u32)> {
 /// the STARTTLS preamble (`crate::transport_starttls`) can read a `CAPABILITY`
 /// response through the shared [`Connection::command`].
 pub(crate) struct Response {
-    untagged: Vec<Vec<u8>>,
-    detail: String,
+    /// The untagged `* …` lines, with the `* ` peeled and any literals inlined.
+    /// `pub(crate)` so the command vocabulary (`crate::transport_commands`) can hand them
+    /// straight to a parser.
+    pub(crate) untagged: Vec<Vec<u8>>,
+    /// The tagged completion's text after the status word — where a response code like
+    /// `[APPENDUID …]` may also appear.
+    pub(crate) detail: String,
 }
 
 impl Response {
@@ -481,8 +366,10 @@ pub(crate) fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'
     Some(rest.strip_suffix(b"\r").unwrap_or(rest))
 }
 
-/// Wraps a value as an IMAP quoted string, escaping `\` and `"`.
-fn quote(value: &str) -> String {
+/// Wraps a value as an IMAP quoted string, escaping `\` and `"`. `pub(crate)` so the
+/// command vocabulary (`crate::transport_commands`) quotes its mailbox arguments with the
+/// same escaping.
+pub(crate) fn quote(value: &str) -> String {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
 }

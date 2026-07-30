@@ -1,0 +1,14 @@
+From: Customer <customer@example.test>
+To: Support <support@test.local>
+Subject: Harness shared mailbox message
+Date: Mon, 08 Jun 2026 09:00:00 +0000
+Message-ID: <shared-9001@test.local>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+The only message in the `support` group mailbox.
+
+It is APPENDed by the seeder into `Shared Folders/support@test.local/INBOX` — the
+RFC 2342 shared namespace alice reaches the credential-less group mailbox through — so
+a shared-mailbox sync has something of its own to find, distinguishable from every
+message in alice's personal folders.

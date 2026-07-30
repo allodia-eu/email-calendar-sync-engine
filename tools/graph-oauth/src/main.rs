@@ -14,25 +14,39 @@
 //!
 //! ## Commands
 //!
-//! - `login`   — open the sign-in URL, catch the loopback redirect, exchange the
-//!               code, and save `access_token` + `refresh_token` to the tokens file.
+//! - `login`   — open the sign-in URL, catch the loopback redirect, exchange the code, and save
+//!   `access_token` + `refresh_token` to the tokens file.
 //! - `refresh` — mint a fresh access token from the saved refresh token.
-//! - `get <graph-url> [outfile]` — refresh if needed, GET the Graph URL with the
-//!               bearer token, and pretty-print (and optionally save) the JSON. Use
-//!               this to capture real responses as fixtures.
+//! - `token`   — print a valid access token (refreshing if needed), so a live test can read it
+//!   without parsing the tokens file.
+//! - `get <graph-url> [outfile]` — refresh if needed, GET the Graph URL with the bearer token, and
+//!   pretty-print (and optionally save) the JSON. Use this to capture real responses as fixtures.
+//!
+//! ## Profiles
+//!
+//! `--profile <name>` (or `GRAPH_PROFILE`) selects an independent tokens file, so
+//! several accounts stay signed in **side by side** — a personal Microsoft account
+//! and a work/school one differ in what they can do (only a work/school tenant has
+//! shared mailboxes and can consent to the `*.Shared` scopes), and both are needed
+//! to prove the adapter against each. Without the flag the file is the original
+//! `tokens.json`, so an existing sign-in keeps working untouched.
 //!
 //! Run from the repo root, e.g.:
 //!   cargo run --manifest-path tools/graph-oauth/Cargo.toml -- login --client-id <APP_ID>
 
-use std::error::Error;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::time::{SystemTime, UNIX_EPOCH};
+mod oauth;
+mod tokens;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde_json::{Value, json};
+use std::error::Error;
+
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+use crate::{
+    oauth::{http_client, open_browser, post_token, rand_bytes, wait_for_redirect},
+    tokens::{build_tokens, load_tokens, now_epoch, save_tokens, str_field, tokens_path},
+};
 
 type Res<T> = Result<T, Box<dyn Error>>;
 
@@ -48,9 +62,19 @@ const DEFAULT_AUTHORITY: &str = "https://login.microsoftonline.com/common";
 /// a **personal** Microsoft account usually cannot consent to them, so if `login`
 /// fails with an AADSTS scope/consent error, re-run with `--scopes` limited to the
 /// non-shared set.
+///
+/// `MailboxSettings.ReadWrite` has **no `.Shared` variant**, and the live probe settled
+/// what that means: with the scope granted, `/me/mailboxSettings/…` answers `200`, while
+/// **every** `/users/{other}/mailboxSettings` route answers `403 ErrorAccessDenied` —
+/// whole object and each sub-path — even with Full Access to that mailbox. So it earns
+/// its place here for the signed-in mailbox only (the foundation for automatic replies),
+/// and contributes nothing to shared mailboxes: there is no delegated way to read
+/// another mailbox's `userPurpose`, hence no mailbox *kind* in the engine's model
+/// (`graph.md`).
 const DEFAULT_SCOPES: &str = "offline_access openid profile User.Read \
     Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared \
-    Calendars.ReadWrite Calendars.ReadWrite.Shared Contacts.ReadWrite \
+    Calendars.ReadWrite Calendars.ReadWrite.Shared \
+    Contacts.ReadWrite Contacts.ReadWrite.Shared MailboxSettings.ReadWrite \
     OrgContact.Read.All User.ReadBasic.All ProfilePhoto.Read.All";
 /// Loopback port the redirect server listens on. The Microsoft identity platform
 /// ignores the port when matching a registered `http://localhost` redirect, so the
@@ -67,19 +91,26 @@ fn main() {
 }
 
 fn run() -> Res<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Taken (not just read) so it never lands in a command's positional arguments.
+    let profile = take_flag(&mut args, "--profile").or_else(|| std::env::var("GRAPH_PROFILE").ok());
+    let profile = profile.as_deref();
     match args.first().map(String::as_str) {
-        Some("login") => cmd_login(&args[1..]),
+        Some("login") => cmd_login(&args[1..], profile),
         Some("refresh") => {
-            let _ = cmd_refresh()?;
-            println!("refreshed; saved to {}", tokens_path());
+            let _ = cmd_refresh(profile)?;
+            println!("refreshed; saved to {}", tokens_path(profile));
             Ok(())
         }
-        Some("get") => cmd_get(&args[1..]),
-        Some("req") => cmd_req(&args[1..]),
+        Some("token") => {
+            println!("{}", fresh_access_token(profile)?);
+            Ok(())
+        }
+        Some("get") => cmd_get(&args[1..], profile),
+        Some("req") => cmd_req(&args[1..], profile),
         _ => {
             eprintln!(
-                "usage:\n  graph-oauth login --client-id <APP_ID> [--authority <URL>] [--port <N>] [--scopes \"<s1 s2 ...>\"]\n  graph-oauth refresh\n  graph-oauth get <graph-url-or-path> [outfile.json]\n  graph-oauth req <METHOD> <graph-url-or-path> [body-json|@file|-] [outfile.json]"
+                "usage (every command accepts --profile <name> for a side-by-side account):\n  graph-oauth login --client-id <APP_ID> [--authority <URL>] [--port <N>] [--scopes \"<s1 s2 ...>\"]\n  graph-oauth refresh\n  graph-oauth token\n  graph-oauth get <graph-url-or-path> [outfile.json]\n  graph-oauth req <METHOD> <graph-url-or-path> [body-json|@file|-] [outfile.json]"
             );
             std::process::exit(2);
         }
@@ -90,7 +121,7 @@ fn run() -> Res<()> {
 // login
 // ---------------------------------------------------------------------------
 
-fn cmd_login(args: &[String]) -> Res<()> {
+fn cmd_login(args: &[String], profile: Option<&str>) -> Res<()> {
     let client_id = flag(args, "--client-id")
         .or_else(|| std::env::var("GRAPH_CLIENT_ID").ok())
         .ok_or("missing --client-id (or GRAPH_CLIENT_ID)")?;
@@ -144,12 +175,14 @@ fn cmd_login(args: &[String]) -> Res<()> {
         ],
     )?;
 
-    let tokens = build_tokens(&resp, &client_id, &authority, &scopes)?;
-    save_tokens(&tokens)?;
+    let tokens = build_tokens(&resp, &client_id, &authority, &scopes, profile)?;
+    save_tokens(&tokens, profile)?;
     println!(
         "\nSuccess. Tokens saved to {}\nScopes granted: {}",
-        tokens_path(),
-        resp.get("scope").and_then(Value::as_str).unwrap_or("(none)")
+        tokens_path(profile),
+        resp.get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or("(none)")
     );
     Ok(())
 }
@@ -159,8 +192,8 @@ fn cmd_login(args: &[String]) -> Res<()> {
 // ---------------------------------------------------------------------------
 
 /// Refreshes and persists the access token, returning the live access token.
-fn cmd_refresh() -> Res<String> {
-    let saved = load_tokens()?;
+fn cmd_refresh(profile: Option<&str>) -> Res<String> {
+    let saved = load_tokens(profile)?;
     let (client_id, authority, scopes) = (
         str_field(&saved, "client_id")?,
         str_field(&saved, "authority")?,
@@ -177,19 +210,22 @@ fn cmd_refresh() -> Res<String> {
             ("grant_type", "refresh_token"),
         ],
     )?;
-    let tokens = build_tokens(&resp, &client_id, &authority, &scopes)?;
-    save_tokens(&tokens)?;
+    let tokens = build_tokens(&resp, &client_id, &authority, &scopes, profile)?;
+    save_tokens(&tokens, profile)?;
     Ok(str_field(&tokens, "access_token")?)
 }
 
 /// Returns a valid access token, refreshing if the saved one is near expiry.
-fn fresh_access_token() -> Res<String> {
-    let saved = load_tokens()?;
-    let obtained = saved.get("obtained_at").and_then(Value::as_u64).unwrap_or(0);
+fn fresh_access_token(profile: Option<&str>) -> Res<String> {
+    let saved = load_tokens(profile)?;
+    let obtained = saved
+        .get("obtained_at")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let expires_in = saved.get("expires_in").and_then(Value::as_u64).unwrap_or(0);
     // Refresh with a 5-minute safety margin.
     if now_epoch() + 300 >= obtained + expires_in {
-        cmd_refresh()
+        cmd_refresh(profile)
     } else {
         str_field(&saved, "access_token")
     }
@@ -199,22 +235,34 @@ fn fresh_access_token() -> Res<String> {
 // get (fixture capture)
 // ---------------------------------------------------------------------------
 
-fn cmd_get(args: &[String]) -> Res<()> {
-    let url = args.first().ok_or("usage: get <graph-url-or-path> [outfile]")?;
-    cmd_req(&["GET".to_owned(), url.clone(), String::new(), args.get(1).cloned().unwrap_or_default()])
+fn cmd_get(args: &[String], profile: Option<&str>) -> Res<()> {
+    let url = args
+        .first()
+        .ok_or("usage: get <graph-url-or-path> [outfile]")?;
+    cmd_req(
+        &[
+            "GET".to_owned(),
+            url.clone(),
+            String::new(),
+            args.get(1).cloned().unwrap_or_default(),
+        ],
+        profile,
+    )
 }
 
 /// Generic authenticated Graph request — `req <METHOD> <url> [body] [outfile]`.
 /// Drives capture of changed/removed delta and (later) write-slice E2E. `body` may
 /// be inline JSON, `@path` to a JSON file, or empty/`-` for none.
-fn cmd_req(args: &[String]) -> Res<()> {
+fn cmd_req(args: &[String], profile: Option<&str>) -> Res<()> {
     let method = args
         .first()
         .ok_or("usage: req <METHOD> <url> [body] [outfile]")?
         .to_uppercase();
-    let url = args.get(1).ok_or("usage: req <METHOD> <url> [body] [outfile]")?;
+    let url = args
+        .get(1)
+        .ok_or("usage: req <METHOD> <url> [body] [outfile]")?;
     let full = graph_url(url);
-    let token = fresh_access_token()?;
+    let token = fresh_access_token(profile)?;
     let m = reqwest::Method::from_bytes(method.as_bytes())?;
     let mut rb = http_client()?
         .request(m, &full)
@@ -257,148 +305,6 @@ fn graph_url(url: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP helpers
-// ---------------------------------------------------------------------------
-
-fn http_client() -> Res<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder().build()?)
-}
-
-fn post_token(authority: &str, form: &[(&str, &str)]) -> Res<Value> {
-    let url = format!("{authority}/oauth2/v2.0/token");
-    let resp = http_client()?.post(&url).form(form).send()?;
-    let status = resp.status();
-    let body: Value = resp.json()?;
-    if !status.is_success() {
-        let desc = body
-            .get("error_description")
-            .and_then(Value::as_str)
-            .unwrap_or("(no description)");
-        return Err(format!("token endpoint returned {status}: {desc}").into());
-    }
-    Ok(body)
-}
-
-/// Blocks on a single loopback connection and returns `(code, state)` from the
-/// redirect query. Responds with a tiny page so the browser tab is friendly.
-fn wait_for_redirect(port: u16) -> Res<(String, Option<String>)> {
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .map_err(|e| format!("cannot bind 127.0.0.1:{port} for the redirect: {e}"))?;
-    println!("Waiting for the sign-in redirect on http://localhost:{port} ...");
-    let (mut stream, _) = listener.accept()?;
-    let mut buf = [0u8; 8192];
-    let n = stream.read(&mut buf)?;
-    let request = String::from_utf8_lossy(&buf[..n]);
-    let target = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .ok_or("malformed redirect request")?;
-
-    // Parse the query off the request target against a dummy base.
-    let url = reqwest::Url::parse(&format!("http://localhost{target}"))?;
-    let mut code = None;
-    let mut state = None;
-    let mut error = None;
-    let mut error_code = None;
-    for (k, v) in url.query_pairs() {
-        match k.as_ref() {
-            "code" => code = Some(v.into_owned()),
-            "state" => state = Some(v.into_owned()),
-            "error" => error_code = Some(v.into_owned()),
-            "error_description" => error = Some(v.into_owned()),
-            _ => {}
-        }
-    }
-
-    let page = "<html><body><h3>Sign-in complete.</h3>You can close this tab and return to the terminal.</body></html>";
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
-        page.len()
-    );
-    let _ = stream.write_all(response.as_bytes());
-
-    if let Some(code) = code {
-        Ok((code, state))
-    } else {
-        // Prefer the human-readable description, fall back to the OAuth `error`
-        // code (e.g. `access_denied`), then to a generic message.
-        let reason = error
-            .or(error_code)
-            .unwrap_or_else(|| "no code returned".into());
-        Err(format!("authorization failed: {reason}").into())
-    }
-}
-
-fn open_browser(url: &str) -> Res<()> {
-    // Best-effort; the URL is also printed so the user can open it manually.
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(opener).arg(url).spawn()?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Token persistence
-// ---------------------------------------------------------------------------
-
-/// Builds the on-disk token record, preserving config so `refresh`/`get` need no
-/// re-passing. The refresh token rotates on each refresh, so it is always re-saved.
-fn build_tokens(resp: &Value, client_id: &str, authority: &str, scopes: &str) -> Res<Value> {
-    let access = resp
-        .get("access_token")
-        .and_then(Value::as_str)
-        .ok_or("token response had no access_token")?;
-    // On refresh, Microsoft may omit a new refresh_token; fall back to the old one.
-    let refresh = resp
-        .get("refresh_token")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .or_else(|| load_tokens().ok().and_then(|t| str_field(&t, "refresh_token").ok()))
-        .ok_or("no refresh_token in response or on disk")?;
-    Ok(json!({
-        "access_token": access,
-        "refresh_token": refresh,
-        "expires_in": resp.get("expires_in").and_then(Value::as_u64).unwrap_or(3600),
-        "obtained_at": now_epoch(),
-        "scope": resp.get("scope").and_then(Value::as_str).unwrap_or(scopes),
-        "client_id": client_id,
-        "authority": authority,
-    }))
-}
-
-fn tokens_path() -> String {
-    std::env::var("GRAPH_TOKENS")
-        .unwrap_or_else(|_| format!("{}/.local/tokens.json", env!("CARGO_MANIFEST_DIR")))
-}
-
-fn load_tokens() -> Res<Value> {
-    let path = tokens_path();
-    let bytes = std::fs::read(&path).map_err(|e| format!("no tokens at {path} ({e}); run `login` first"))?;
-    Ok(serde_json::from_slice(&bytes)?)
-}
-
-fn save_tokens(tokens: &Value) -> Res<()> {
-    let path = tokens_path();
-    if let Some(dir) = std::path::Path::new(&path).parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(tokens)?)?;
-    // The refresh token is a long-lived credential; keep it owner-only.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // small utilities
 // ---------------------------------------------------------------------------
 
@@ -410,24 +316,14 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
-fn str_field(v: &Value, key: &str) -> Res<String> {
-    Ok(v.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("tokens file missing `{key}`"))?
-        .to_owned())
+/// Reads `--name value` out of `args` **and removes both**, so a global flag can
+/// appear anywhere without being mistaken for a command's positional argument
+/// (`get /me --profile work` must not treat `--profile` as the outfile).
+fn take_flag(args: &mut Vec<String>, name: &str) -> Option<String> {
+    let i = args.iter().position(|a| a == name)?;
+    // Removed even when it carries no value, so a trailing `get /me --profile` does not
+    // leave the flag behind to be read as the command's outfile.
+    args.remove(i);
+    (i < args.len()).then(|| args.remove(i))
 }
 
-fn now_epoch() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// Cryptographically-random bytes from the OS, no extra crate needed.
-fn rand_bytes(n: usize) -> Res<Vec<u8>> {
-    let mut f = std::fs::File::open("/dev/urandom")?;
-    let mut buf = vec![0u8; n];
-    f.read_exact(&mut buf)?;
-    Ok(buf)
-}

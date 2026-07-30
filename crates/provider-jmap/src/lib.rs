@@ -47,6 +47,8 @@ mod mutate;
 mod provider;
 mod request;
 mod session;
+mod session_accounts;
+mod shared;
 mod submit;
 mod submit_body;
 mod sync_ops;
@@ -56,6 +58,7 @@ mod watch;
 use core::fmt;
 use std::sync::Arc;
 
+use engine_core::ids::SharedMailboxId;
 use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 use engine_tls::TlsClientConfig;
 pub use error::JmapError;
@@ -134,6 +137,7 @@ pub struct JmapConfig {
     session_path: String,
     session_urls: SessionUrlPolicy,
     tls: TlsClientConfig,
+    account: Option<SharedMailboxId>,
     connect_observer: Option<Arc<dyn ConnectObserver>>,
 }
 
@@ -149,8 +153,28 @@ impl JmapConfig {
             session_path: "/.well-known/jmap".to_owned(),
             session_urls: SessionUrlPolicy::RebaseToConnection,
             tls: TlsClientConfig::default(),
+            account: None,
             connect_observer: None,
         }
+    }
+
+    /// Binds this client to one of the accounts the credential can reach — a mail store
+    /// **shared with** it, discovered through
+    /// [`Provider::list_shared_mailboxes`](engine_provider::Provider::list_shared_mailboxes)
+    /// or [`resolve_shared_mailbox`](engine_provider::Provider::resolve_shared_mailbox).
+    ///
+    /// Every method call then carries that account's id instead of the `primaryAccounts`
+    /// entry, and the advertised capabilities narrow to what *that* account exposes. A host
+    /// dials one client per account, exactly as it does for two separate mailboxes — which
+    /// is the whole of what "a shared mailbox is just another account" costs on this
+    /// protocol.
+    ///
+    /// The handle is validated at connect: a stale one (access revoked, or minted against
+    /// a different server) fails there rather than on the first sync.
+    #[must_use]
+    pub fn with_account(mut self, account: SharedMailboxId) -> Self {
+        self.account = Some(account);
+        self
     }
 
     /// Overrides the session-discovery path (default `/.well-known/jmap`).
@@ -198,6 +222,7 @@ impl fmt::Debug for JmapConfig {
             .field("base_url", &self.base_url)
             .field("session_path", &self.session_path)
             .field("session_urls", &self.session_urls)
+            .field("account", &self.account)
             .finish_non_exhaustive()
     }
 }
@@ -240,7 +265,12 @@ impl JmapClient {
             observer,
         )
         .await?;
-        let session = Session::parse(&document, &base, config.session_urls)?;
+        let session = Session::parse(
+            &document,
+            &base,
+            config.session_urls,
+            config.account.as_ref().map(SharedMailboxId::as_str),
+        )?;
         // The endpoint every method call will go to — the last thing connect resolves,
         // and (under `RebaseToConnection`) the one derived from the connection origin.
         observer.step(&ConnectStep::discovered(session.api_url()));

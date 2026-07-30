@@ -33,6 +33,11 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/message_moved.json` | `POST /me/messages/{id}/move` body `{destinationId}` | the move echo — **same `id`** (immutable), `parentFolderId` now the destination |
 | `wellknown/*.json` | `GET /me/mailFolders/{inbox,drafts,…}` | well-known-name → id role resolution |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
+| `mail/shared_mailbox_probe.json` | `GET /users/{shared}/mailFolders/inbox?$select=id` | the shared-mailbox probe's success shape (a **work/school** tenant, so scrubbed to `shared@example.test`) |
+| `error/shared_mailbox_invalid_user.json` | the same probe, address not in the tenant | `404 ErrorInvalidUser` |
+| `error/shared_mailbox_not_enabled.json` | the same probe, principal with an inactive/on-premises mailbox | `404 MailboxNotEnabledForRESTAPI` |
+| `error/shared_mailbox_no_inbox.json` | the same probe, a principal that is not a mailbox (a group) | `404 ErrorItemNotFound` — "Default folder Inbox not found" |
+| `error/shared_mailbox_access_denied.json` | `GET /users/{other}/mailboxSettings` **with** `MailboxSettings.ReadWrite` granted | `403 ErrorAccessDenied` — a *grant* shortfall, not a missing mailbox (see Finding below) |
 | `me.json` | `GET /me` | account identity probe |
 
 ## Real-behavior findings (captured, not assumed)
@@ -195,3 +200,19 @@ contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@od
     the captured contact really carries `["Fixture", "Engineering"]` — but
     `contact_normalize` has no `categories` branch, so keywords are lost on the way in.
     Graph advertises `ContactField::Keywords` as supported, making the round-trip lossy.
+20. **Graph will not say that a mailbox exists but is not shared with you.** Probing
+    every mailbox of a real tenant with `GET /users/{addr}/mailFolders/inbox` produced
+    **three** distinct `404` codes and **no `403`**: `ErrorInvalidUser` (not a principal),
+    `MailboxNotEnabledForRESTAPI` (inactive, soft-deleted, or on-premises), and
+    `ErrorItemNotFound` — "Default folder Inbox not found" — for a principal that resolves
+    but is a group rather than a mailbox. An unshared mailbox is simply a `404` too, so a
+    resolver cannot distinguish "not shared with you" from "does not exist". `403
+    ErrorAccessDenied` is a *different* failure — the credential's **grant** does not cover
+    the route — captured on `/users/{other}/mailboxSettings` while `/me/mailboxSettings`
+    answered `200` under the same scope.
+21. **Percent-encoding does not contain a path traversal: Graph decodes and re-resolves.**
+    `GET /v1.0/users/..%2Fme/mailFolders/inbox` answers **`200` with the signed-in user's
+    own Inbox**. An address is user input, so a resolver that only escaped it would confirm
+    `../me` as a "shared mailbox" and a host would onboard its own inbox under someone
+    else's name. Addresses are therefore *validated* before they reach a URL
+    (`principal::validate_address`); the encoding is the second layer, not the first.
