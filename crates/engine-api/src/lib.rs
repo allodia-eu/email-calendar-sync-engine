@@ -52,7 +52,8 @@ pub use engine::{
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::calendar::{
-    Calendar, Event, Participant, ParticipantKind, ParticipantRole, ParticipationStatus,
+    Calendar, Event, EventKind, EventStatus, FreeBusyStatus, Location, Participant,
+    ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, VirtualLocation,
 };
 // The inbound-scheduling (iTIP/iMIP) layer. `Engine::message_scheduling` returns a
 // `SchedulingMessage`, so without these a host could not name what it received — and the
@@ -74,12 +75,22 @@ pub use engine_core::{
         ContactPatch, ContactResource, ContactSourceClass, FieldPatch,
     },
     coverage::SearchCoverage,
-    ids::{AccountId, AddressBookId, ContactId, MessageIdHeader, PersonId, ProviderKey, ThreadId},
+    // Every id that appears on a type this facade returns. `Event` carries an `EventId`, a `Uid`
+    // and `Memberships<CalendarId>`; without these a host holding an `Event` cannot name the
+    // fields it can already read, and would have to depend on `engine-core` directly — the
+    // reach-around this re-export block exists to prevent.
+    ids::{
+        AccountId, AddressBookId, CalendarId, ContactId, EventId, MessageIdHeader, PersonId,
+        ProviderKey, ThreadId, Uid,
+    },
     mail::{
         AttachmentPartId, EmailAddress, InlinePart, Mailbox, MailboxRole, Message,
         MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword, ThreadProvenance,
         ThreadRef,
     },
+    // The set-of-containers type an `Event`'s `calendars` and a `Message`'s mailbox memberships
+    // are expressed in.
+    membership::Memberships,
     // The unified-people and recipient-history types. `PeoplePage` and `RecipientSuggestions`
     // are returned by this facade and are *made of* these, so without them a host cannot name
     // what it just received — it would have to depend on `engine-core` directly, which is the
@@ -91,7 +102,12 @@ pub use engine_core::{
     raw::RawIcal,
     recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
     sync::{SyncScope, SyncWindow},
-    time::{CalendarDate, LocalDateTime, TimeZoneId, UtcDateTime, resolve_zone_name},
+    // `CalendarDateTime` is the type of `Event::start` and `Event::recurrence_id`, and `Duration`
+    // the type of `Event::duration` — both public fields on a type this facade returns.
+    time::{
+        CalendarDate, CalendarDateTime, Duration, LocalDateTime, TimeZoneId, UtcDateTime,
+        resolve_zone_name,
+    },
     write::PendingOpId,
 };
 pub use engine_provider::{
