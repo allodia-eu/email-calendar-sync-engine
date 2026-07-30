@@ -109,7 +109,15 @@ implemented**; the precise deferrals are listed at the end of this section.
   `text/calendar` part), and the parse is `provider_caldav::imip::parse` →
   `engine_core::scheduling::SchedulingMessage` (the iCalendar parser, reused, plus
   the `VCALENDAR` `METHOD` and the `VEVENT` `DTSTAMP`). *Fetching* the part's bytes
-  on the mail path and handing them to the bridge is the deferred mail-sync wiring.
+  and parsing them is `Engine::message_scheduling` (see "Reading an invitation out
+  of mail" below) — cache-first on the raw source, so a message whose body was
+  already read costs no extra provider fetch. What remains deferred is driving
+  `reconcile`/apply from a sync pass, not reaching the bytes.
+- **The parser is transport-neutral, deliberately.** iCalendar is not a CalDAV
+  format: iMIP carries it over *mail*, on every account type (RFC 6047), so the
+  parser lives in `engine-ical` beside the model it produces, and CalDAV is one of
+  its callers. A Gmail- or Graph-only build must still be able to read an
+  invitation.
 - **Capability split.** Prefer server-side scheduling where the provider has it:
   CalDAV Scheduling Inbox (RFC 6638) or JMAP Calendars scheduling. Pure
   IMAP/SMTP has none, so the client parses iMIP from the mail stream and sends
@@ -156,16 +164,52 @@ implemented**; the precise deferrals are listed at the end of this section.
   `evaluate_imip_trust` rejects an unauthenticated or identity-mismatched message
   (`ScheduleAction::Rejected`) before its contents are considered.
 
-**Deferred (documented, not bugs):** (1) the **mail-sync wiring** that fetches the
-detected part's bytes (a Tier-3 fetch) and drives `reconcile`/apply from a real
-sync; (2) **`ClientImip` local-origin persistence** — storing a brand-new inbound
-`REQUEST` as a local event has no provider-less single-event store path yet (the
-store's writes are sync- or outbox-mediated), so the apply helpers run but
-persisting a not-yet-on-a-server event waits on that path; (3) the **CalDAV
-Scheduling Inbox** `REPORT` (RFC 6638) and a live Stalwart scheduling test; and
-(4) **iMIP-over-SMTP `REPLY` delivery** (the multipart `text/calendar` assembler).
-The `ServerAutoSchedule` RSVP path (patch + conditional `PUT`) is fully wired and
-offline-tested end to end.
+**Deferred (documented, not bugs):** (1) **driving `reconcile`/apply from a real
+sync** — the part *fetch* is done (`Engine::message_scheduling`, below), but no
+sync pass feeds it into `reconcile` and applies the result; (2) **`ClientImip`
+local-origin persistence** — storing a brand-new inbound `REQUEST` as a local
+event has no provider-less single-event store path yet (the store's writes are
+sync- or outbox-mediated), so the apply helpers run but persisting a
+not-yet-on-a-server event waits on that path; (3) the **CalDAV Scheduling Inbox**
+`REPORT` (RFC 6638) — the live suite reads the inbox over raw DAV rather than
+through the provider, which is exactly the gap; and (4) **iMIP-over-SMTP `REPLY`
+delivery** (the multipart `text/calendar` assembler).
+
+The `ServerAutoSchedule` RSVP path (patch + conditional `PUT`) is fully wired,
+offline-tested end to end, **and live-proven**: `provider-caldav`'s scheduling
+suite runs a real two-party exchange against Stalwart's auto-scheduler and
+asserts that the organizer's own copy comes back accepted, with no client-side
+iTIP delivery of any kind. `caldav.md` → "What auto-scheduling actually does"
+records the server behaviours that run pinned down, several of which contradict
+the obvious assumption (the attendee's copy appears at a server-minted href; an
+organizer's `DELETE` tombstones rather than removes; the server also *mails* both
+parties).
+
+**Reading an invitation out of mail: what really arrives.** The read is
+`Engine::message_scheduling` — it finds the `text/calendar` part in the MIME tree,
+decodes it (base64, quoted-printable and declared charsets all occur), parses it
+with the one hardened parser, and returns it alongside the addresses the message
+was **delivered to** (the MTA `Delivered-To`/`X-Original-To`/`Envelope-To` headers
+first, then `To:`/`Cc:`) — which is what makes an invitation to an alias work with
+no configuration. A payload that will not parse yields `None`, never an error; the
+mail is still readable. Two things a real server-authored invitation taught us
+(fixture: `engine-api/tests/fixtures/stalwart-invitation.eml`):
+
+- **A genuine `METHOD:REQUEST` can arrive as a dispositioned attachment.** Stalwart
+  sends the calendar part as a top-level sibling in a `multipart/mixed` carrying
+  `Content-Disposition: attachment; filename="event.ics"` — not as an
+  undispositioned `multipart/alternative` body part. So `from_inline_body` answers
+  "was this a body part" and nothing more: the RSVP gate is a scheduling `METHOD`
+  **plus** an `ATTENDEE` matching one of the account's own addresses, and a host
+  that gated on `from_inline_body` instead would discard every such invitation. The
+  corollary is that `event.ics` keeps its attachment chip — the suppression rule
+  hides the *undispositioned* iMIP body part (the Gmail/Outlook shape), and must not
+  hide a file the sender marked as one.
+- **Assume nothing about how tidily the payload is encoded.** That same part is
+  quoted-printable, its Windows `TZID` is DQUOTE-quoted *and* QP-escaped, and its
+  `ATTENDEE` line is folded mid-`mailto:` (`mailt` + CRLF + ` o:carol@…`). Unfold or
+  decode wrongly and the attendee address becomes `mailt`, which matches nobody —
+  the invitation silently stops being *mine* and no RSVP is offered.
 
 ## JSCalendar ↔ iCalendar boundary
 
@@ -318,6 +362,17 @@ objects is the sync layer's job).
   one.
 - A scheduling message whose `ORGANIZER` mismatches the authenticated sender is
   not auto-applied.
+- **An RSVP reaches the organizer on a real auto-schedule server.** Two accounts,
+  one invitation, and the assertion is on the *organizer's own copy* after the
+  attendee patches their `PARTSTAT` and `PUT`s it back. No fake can stand in: the
+  claim is about what a server does to a second account's resource. Verified to
+  fail for the right reason — stub the patcher to store the document unchanged and
+  the `PUT` still succeeds while the reply never arrives.
+- **A real server-authored invitation parses end to end**, with its Windows `TZID`
+  quoted and QP-escaped, its calendar part three levels down a `multipart/mixed`
+  tree and dispositioned as an attachment, and its `ATTENDEE` folded mid-`mailto:`.
+  Hand-written iMIP fixtures are all guesses about the shape; keep at least one
+  captured one.
 - A CalDAV event carrying properties absent from JSCalendar round-trips via
   raw-plus-patch without dropping them.
 - **Patching one property of a real resource changes only that property's bytes.** The

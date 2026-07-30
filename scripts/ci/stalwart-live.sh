@@ -35,6 +35,9 @@ export STALWART_IMAP_STARTTLS_ADDR="${STALWART_IMAP_STARTTLS_ADDR:-127.0.0.1:111
 export STALWART_SMTP_STARTTLS_ADDR="${STALWART_SMTP_STARTTLS_ADDR:-127.0.0.1:11587}" # submission STARTTLS
 export STALWART_ACCOUNT="${STALWART_ACCOUNT:-alice@test.local}"
 export STALWART_PASSWORD="${STALWART_PASSWORD:-harness-alice-pw}"
+# The scratch accounts the scheduling suite runs between (bob/carol) are *not* exported:
+# they exist only because this compose file provisions them, so `Harness::scratch` hard-codes
+# them rather than offering an override that could only ever point at a nonexistent account.
 
 usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 

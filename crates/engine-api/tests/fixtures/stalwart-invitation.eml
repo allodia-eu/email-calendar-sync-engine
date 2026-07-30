@@ -1,0 +1,67 @@
+Delivered-To: carol@test.local
+X-Spam-Status: No
+From: "Bob Tester" <bob@test.local>
+To: <carol@test.local>
+Auto-Submitted: auto-generated
+Reply-To: bob@test.local
+Subject: =?us-ascii?Q?Invitation:_Windows_zone_invitation_@_Monday_Augus?=
+	=?us-ascii?Q?t_10,_2026_10:00am_(Europe/Berlin)?=
+Message-ID: <18c70a16904d88ce.e061d21fe8fbad3d.d68c597c3fe5ae7d@bbca6afdddb6>
+Date: Thu, 30 Jul 2026 10:21:09 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; 
+	boundary="18c70a16904dc89c_7e994bd968462952_d68c597c3fe5ae7d"
+
+
+--18c70a16904dc89c_7e994bd968462952_d68c597c3fe5ae7d
+Content-Type: multipart/related; 
+	boundary="18c70a16904e32e4_1cd0c592e790a567_d68c597c3fe5ae7d"
+
+
+--18c70a16904e32e4_1cd0c592e790a567_d68c597c3fe5ae7d
+Content-Type: multipart/alternative; 
+	boundary="18c70a16904e3967_bb083f4c66db217c_d68c597c3fe5ae7d"
+
+
+--18c70a16904e3967_bb083f4c66db217c_d68c597c3fe5ae7d
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Summary Windows zone invitationWhen Monday August 10, 2026 10:00am (Europe/B=
+erlin) Guests=E2=80=A2 Bob Tester - Organizer (bob@test.local)=E2=80=A2 Caro=
+l (carol@test.local)
+Reply as carol@test.local for this event series Yes No Maybe You're receivin=
+g this e-mail as you're listed as a participant for this event.Forwarding th=
+is e-mail could allow any recipient to reply to the organizer, join the gues=
+t list, extend the invitation to others, or alter your RSVP.
+--18c70a16904e3967_bb083f4c66db217c_d68c597c3fe5ae7d
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+[trimmed for the fixture: a ~17 KB MJML invitation card whose Yes/No/Maybe
+links point at Stalwart's own web RSVP endpoint]
+--18c70a16904e3967_bb083f4c66db217c_d68c597c3fe5ae7d--
+
+--18c70a16904e32e4_1cd0c592e790a567_d68c597c3fe5ae7d
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: inline
+Content-ID: <logo.1785406869@test.local>
+
+aVZCT1J3MEtHZ29BQUFBTlN1UUFBQUE9
+--18c70a16904e32e4_1cd0c592e790a567_d68c597c3fe5ae7d--
+
+--18c70a16904dc89c_7e994bd968462952_d68c597c3fe5ae7d
+Content-Type: text/calendar; method="REQUEST"; charset="utf-8"
+Content-Disposition: attachment; filename="event.ics"
+Content-Transfer-Encoding: quoted-printable
+
+BEGIN:VCALENDAR=0D=0AVERSION:2.0=0D=0APRODID:-//Stalwart Labs LLC//Stalwart =
+Server//EN=0D=0AMETHOD:REQUEST=0D=0ABEGIN:VEVENT=0D=0ADTSTAMP:20260730T10210=
+9Z=0D=0ASEQUENCE:1=0D=0AUID:caldav-schedule-winzone@test.local=0D=0ADTSTART;=
+TZID=3D"W. Europe Standard Time":20260810T100000=0D=0ADTEND;TZID=3D"W. Europ=
+e Standard Time":20260810T110000=0D=0ASUMMARY:Windows zone invitation=0D=0AO=
+RGANIZER;CN=3D"Bob Tester":mailto:bob@test.local=0D=0AATTENDEE;CN=3DCarol;RO=
+LE=3DREQ-PARTICIPANT;PARTSTAT=3DNEEDS-ACTION;RSVP=3DTRUE:mailt=0D=0A o:carol=
+@test.local=0D=0AEND:VEVENT=0D=0AEND:VCALENDAR=0D=0A
+--18c70a16904dc89c_7e994bd968462952_d68c597c3fe5ae7d--

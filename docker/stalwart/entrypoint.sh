@@ -110,6 +110,37 @@ ensure_starttls_listener() { # create-key  name  bind  protocol
   log "created STARTTLS listener $2 ($3, $4)"
 }
 
+# Raise every inbound rate limiter out of the way (`x:MtaInboundThrottle`, one of the
+# store-backed settings objects — v0.16 has no config file for these).
+#
+# Stalwart ships two enabled by default: 5/second per sender IP, and **25/hour per (sender
+# domain, recipient)**. Both make a test's outcome depend on how many times the suite has
+# already run, which is the opposite of what a deterministic fixture is for.
+#
+# The second one is the proven biter. RFC 6638 auto-scheduling mails *both* parties of every
+# invitation, so the CalDAV scheduling suite spent that 25-message budget in about four runs
+# — and past it Stalwart abandons the **whole** iTIP delivery, the attendee's calendar copy
+# included, silently and with nothing in the log. Every scheduling test then timed out while
+# the organizer's PUT still returned 201, which reads exactly like a code regression.
+#
+# Idempotent: a warm start just re-sets the same values. Takes effect without a restart.
+relax_inbound_throttles() {
+  ids=$(jmap '["x:MtaInboundThrottle/get",{"ids":null,"properties":["description"]},"c0"]' \
+    | grep -oE '"id":"[^"]+"' | cut -d'"' -f4)
+  if [ -z "$ids" ]; then
+    log "no inbound throttles reported; nothing to relax"
+    return 0
+  fi
+  for id in $ids; do
+    resp=$(jmap "[\"x:MtaInboundThrottle/set\",{\"update\":{\"$id\":{\"rate\":{\"count\":1000000,\"period\":1000}}}},\"c0\"]")
+    if ! printf '%s' "$resp" | grep -q '"updated"'; then
+      log "FAILED to relax inbound throttle $id: $resp"
+      return 1
+    fi
+  done
+  log "relaxed inbound rate limiters: $(printf '%s' "$ids" | wc -w | tr -d ' ') throttle(s)"
+}
+
 trap 'stop_server; exit 0' TERM INT
 
 rm -f "$MARKER"
@@ -136,7 +167,15 @@ DOMAIN_ID="$(domain_id)"
 log "default domain id: $DOMAIN_ID"
 
 ensure_account alice "Alice Tester" "${HARNESS_ALICE_PW:-harness-alice-pw}"
+# Bob and Carol hold none of the seeded dataset, which is what makes them usable as the
+# two parties of a scheduling run: RFC 6638 auto-scheduling has the server *mail* both the
+# attendee (an invitation) and the organizer (the reply), and those arrive in the INBOX.
+# Pointing that at Alice would break the exact seed counts the mail suites assert on, so
+# the scheduling scenarios run entirely between these two scratch accounts.
 ensure_account bob "Bob Tester" "${HARNESS_BOB_PW:-harness-bob-pw}"
+ensure_account carol "Carol Tester" "${HARNESS_CAROL_PW:-harness-carol-pw}"
+
+relax_inbound_throttles
 
 # STARTTLS listeners for the IMAP (143) and SMTP submission (587) transports the
 # provider speaks in addition to implicit TLS. A newly created listener needs a server
