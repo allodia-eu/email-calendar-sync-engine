@@ -65,6 +65,27 @@ fn each_letter_maps_to_the_right_it_names() {
 }
 
 #[test]
+fn the_obsolete_rfc_2086_letters_resolve_to_what_they_stand_for() {
+    // RFC 4314 §2.1.1 keeps `c` and `d` as compatibility aliases: `c` for `k`+`x`, `d` for
+    // `e`+`t`+`x`. A server still speaking RFC 2086 sends only the alias, and reading it as
+    // nothing would report a mailbox the credential owns as impossible to expunge from or
+    // delete — hiding an operation the server would have allowed.
+    let only = |letters: &str| rights(&format!(r#"MYRIGHTS "m" {letters}"#)).access();
+
+    let legacy_delete = only("d");
+    assert!(legacy_delete.may_remove_items && legacy_delete.may_delete && legacy_delete.may_rename);
+
+    let legacy_create = only("c");
+    assert!(legacy_create.may_create_child && legacy_create.may_delete);
+    // `c` says nothing about messages, so it must not grant the expunge pair.
+    assert!(!legacy_create.may_remove_items);
+
+    // A conforming server sends the expanded letters *and* the alias; the reading is the
+    // same either way.
+    assert_eq!(only("lrsweitkxpad"), MailboxAccess::owner());
+}
+
+#[test]
 fn rights_letters_are_case_sensitive() {
     // RFC 4314 §2.1.1 reserves uppercase letters for server-specific extensions, so an `R`
     // must not be read as the standard `r`.

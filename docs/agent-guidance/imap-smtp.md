@@ -392,6 +392,16 @@ is authoritative for the `provider-caldav` calendar client.
 
 ## Known limitations (documented, not bugs)
 
+- **Rights cost one `MYRIGHTS` per selectable mailbox, on every folder sync.** RFC 4314
+  offers no bulk form and no `LIST` return option carries rights, so an honest per-mailbox
+  answer is N sequential round trips — on a 40-folder account against an `ACL`-advertising
+  server, ~40 extra commands per pass. It is deliberately **not** narrowed to the foreign
+  namespaces: a credential can hold restricted rights on a folder in its own namespace
+  (an administrator ACL), and assuming otherwise would report a restricted folder as
+  writable — the exact class of wrong answer this feature exists to remove. A cache keyed
+  on the folder list (rights change far less often than mail does) is the obvious
+  optimization if the cost ever shows up in practice; it is not built here because it adds
+  an invalidation problem with no measured need. Servers without `ACL` pay nothing.
 - **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
   **implemented** for servers that advertise QRESYNC (RFC 7162) — the common case
   (Stalwart, Dovecot, Cyrus, Gmail). A server that advertises **neither** QRESYNC nor a

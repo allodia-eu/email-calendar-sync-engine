@@ -61,11 +61,17 @@ impl SessionAccount {
 /// A malformed or absent map yields an empty list rather than an error: `primaryAccounts`
 /// is what the sync path needs, and a server that omits `accounts` (against the RFC) is
 /// still perfectly usable for the credential's own mail — it just cannot enumerate shares.
+///
+/// An entry keyed by the empty string is dropped for the same reason: it is not an id a
+/// method call could carry, and it is the one JSON key that cannot become a
+/// [`ProviderKey`](engine_core::ids::ProviderKey) — so dropping it here is what keeps the
+/// discovery projection from having to panic on a server's malformed map.
 pub(crate) fn parse_accounts(session: &Value) -> Vec<SessionAccount> {
     let Some(map) = session.get("accounts").and_then(Value::as_object) else {
         return Vec::new();
     };
     map.iter()
+        .filter(|(id, _)| !id.is_empty())
         .map(|(id, account)| SessionAccount {
             id: id.clone(),
             name: account
@@ -202,6 +208,22 @@ mod tests {
         // omits `accounts` simply cannot enumerate shares.
         assert!(parse_accounts(&json!({})).is_empty());
         assert!(parse_accounts(&json!({ "accounts": "nonsense" })).is_empty());
+    }
+
+    #[test]
+    fn an_entry_with_an_empty_id_is_dropped() {
+        // A JSON object may be keyed by `""`, and an account id is a `ProviderKey`, which
+        // may not be empty. Dropping the entry here is what stops the discovery projection
+        // (`crate::shared`) from panicking on a server's malformed map — the whole session
+        // stays usable, minus an entry no method call could ever have addressed.
+        let accounts = parse_accounts(&json!({
+            "accounts": {
+                "": { "name": "nameless", "isPersonal": false },
+                "c": { "name": "alice@test.local", "isPersonal": true },
+            }
+        }));
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, "c");
     }
 
     #[test]

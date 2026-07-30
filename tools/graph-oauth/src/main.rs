@@ -321,10 +321,9 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 /// (`get /me --profile work` must not treat `--profile` as the outfile).
 fn take_flag(args: &mut Vec<String>, name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
-    if i + 1 >= args.len() {
-        return None;
-    }
+    // Removed even when it carries no value, so a trailing `get /me --profile` does not
+    // leave the flag behind to be read as the command's outfile.
     args.remove(i);
-    Some(args.remove(i))
+    (i < args.len()).then(|| args.remove(i))
 }
 

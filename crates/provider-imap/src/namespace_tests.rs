@@ -109,6 +109,21 @@ fn a_bound_shared_mailbox_resolves_to_its_owners_store() {
 }
 
 #[test]
+fn binding_to_the_namespace_container_itself_lists_every_share_under_it() {
+    // A host binding to `Shared Folders` — the `\NoSelect` container — names no owner.
+    // Appending an empty component would leave a trailing delimiter on the root, after
+    // which *nothing* matches and the folder list comes back silently empty, which is the
+    // worst of the available answers.
+    let ns = alice();
+    let store = MailStore::resolve(&ns, "Shared Folders");
+    assert_eq!(store.list_pattern(), "Shared Folders*");
+    assert!(store.contains(&ns, "Shared Folders/support@test.local/INBOX"));
+    assert!(store.contains(&ns, "Shared Folders/bob@test.local/INBOX"));
+    // Still not the credential's own folders.
+    assert!(!store.contains(&ns, "INBOX"));
+}
+
+#[test]
 fn the_personal_store_excludes_every_foreign_namespace() {
     let ns = alice();
     let store = MailStore::resolve(&ns, "INBOX");

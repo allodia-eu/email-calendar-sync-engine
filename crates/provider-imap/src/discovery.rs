@@ -74,13 +74,27 @@ where
 /// host holding an IMAP credential already knows how to open the mailbox it dialed. This is
 /// the one place the IMAP and JMAP answers differ in shape: a JMAP session names the
 /// personal account explicitly, so `provider-jmap` does include it.
+///
+/// # Errors
+///
+/// Rejects with
+/// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState) when the
+/// server advertised **no** foreign namespace — matching the
+/// [`SharedMailboxes::Unsupported`](engine_provider::SharedMailboxes::Unsupported) the
+/// provider then reports. An empty `Ok` would be the worse answer: a host cannot tell it
+/// apart from "no shares yet", and would offer a pick-a-mailbox list that can never fill.
 pub(crate) async fn list_shared<S>(
     connection: &mut Connection<S>,
     namespaces: &Namespaces,
-) -> ImapResult<Vec<SharedMailbox>>
+) -> ProviderResult<Vec<SharedMailbox>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    if namespaces.foreign().next().is_none() {
+        return Err(ProviderError::invalid_state(
+            "the server advertised no shared namespace for this credential",
+        ));
+    }
     let mut stores = Vec::new();
     for namespace in namespaces.foreign() {
         let rows = connection.list_pattern(&namespace.join(&["%"])).await?;

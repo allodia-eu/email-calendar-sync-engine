@@ -144,8 +144,18 @@ impl MailStore {
             Some(delim) if !delim.is_empty() => relative.split(delim).next().unwrap_or(relative),
             _ => relative,
         };
+        // A bound mailbox that *is* the namespace container (`Shared Folders`) names no
+        // owner, so there is nothing to append — and appending an empty component would
+        // leave a trailing delimiter on the root, after which nothing matches and the
+        // folder list comes back silently empty. The whole namespace is the honest reading:
+        // every share under it.
+        let root = if owner.is_empty() {
+            namespace.prefix.clone()
+        } else {
+            namespace.join(&[owner])
+        };
         Self {
-            root: namespace.join(&[owner]),
+            root,
             delimiter: namespace.delimiter.clone(),
         }
     }
@@ -172,12 +182,30 @@ impl MailStore {
         if self.root.is_empty() {
             return namespaces.is_own(name);
         }
+        self.as_namespace().relative(name).is_some()
+    }
+
+    /// The full path a mailbox called `name` has **inside this store**.
+    ///
+    /// The credential's own store is rooted at the empty prefix, so the name is already the
+    /// path; a foreign store prepends its root. That matters for a folder the client has to
+    /// *create*: filing a sent copy falls back to the conventional `Sent` when the store
+    /// advertises no `\Sent`, and an unqualified name would create it — and file another
+    /// principal's mail into it — in the credential's own namespace (`crate::filing`).
+    pub(crate) fn qualify(&self, name: &str) -> String {
+        if self.root.is_empty() {
+            return name.to_owned();
+        }
+        self.as_namespace().join(&[name])
+    }
+
+    /// This store's root as a [`Namespace`], so prefix matching and joining reuse the one
+    /// implementation that knows a prefix must be followed by the delimiter.
+    fn as_namespace(&self) -> Namespace {
         Namespace {
             prefix: self.root.clone(),
             delimiter: self.delimiter.clone(),
         }
-        .relative(name)
-        .is_some()
     }
 }
 

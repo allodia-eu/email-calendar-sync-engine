@@ -328,8 +328,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
             name
         } else {
             // No folder advertises the role: fall back to the conventional name,
-            // creating it (an "already exists" rejection is ignored).
-            let name = filing.default_folder().to_owned();
+            // creating it (an "already exists" rejection is ignored). Qualified by the
+            // bound store, so a shared mailbox with no `\Sent` gets one of its own rather
+            // than having its sent copy filed into the credential's personal Sent folder.
+            let name = self.store.qualify(filing.default_folder());
             let _ = connection.create(&name).await;
             name
         };

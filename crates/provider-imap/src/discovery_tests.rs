@@ -310,10 +310,13 @@ async fn a_credential_with_no_shares_cannot_enumerate() {
         provider.connection_info().capabilities.shared_mailboxes(),
         SharedMailboxes::Unsupported
     );
-    // The verb still answers — with nothing, and without issuing a single `LIST`, because
-    // there is no foreign namespace to list under. (The mock's script is exhausted after
-    // the greeting, so a stray command here would fail rather than pass quietly.)
-    assert!(provider.list_shared_mailboxes().await.unwrap().is_empty());
+    // And the verb *rejects* rather than answering an empty list, which a host cannot tell
+    // apart from "no shares yet". No `LIST` is issued either — the mock's script is
+    // exhausted after the greeting, so a stray command would fail rather than pass quietly.
+    assert_eq!(
+        provider.list_shared_mailboxes().await.unwrap_err().class(),
+        engine_core::error::FailureClass::InvalidState
+    );
 }
 
 #[tokio::test]

@@ -13,11 +13,11 @@
 
 use engine_core::{
     error::FailureClass,
-    ids::{AccountId, MailboxId},
-    mail::{Mailbox, MailboxAccess, MailboxRole},
+    ids::{AccountId, MailboxId, MessageIdHeader},
+    mail::{EmailAddress, Mailbox, MailboxAccess, MailboxRole},
     sync::SyncUpdate,
 };
-use engine_provider::{Provider, SharedMailboxes};
+use engine_provider::{Draft, Provider, SharedMailboxes};
 use provider_imap::{ImapConfig, ImapProvider};
 use stalwart_harness::{Harness, SHARED_GROUP_ACCOUNT, SHARED_MESSAGE_ID};
 use tokio_rustls::{TlsConnector, client::TlsStream};
@@ -154,12 +154,15 @@ async fn live_namespace_discovery_is_per_credential() {
             .shared_mailboxes(),
         SharedMailboxes::Unsupported
     );
-    assert!(
+    // And the verb rejects rather than answering an empty list, which a host cannot tell
+    // apart from "no shares yet" — the same contract every other adapter keeps.
+    assert_eq!(
         peer_provider
             .list_shared_mailboxes()
             .await
-            .expect("answers")
-            .is_empty()
+            .unwrap_err()
+            .class(),
+        FailureClass::InvalidState
     );
 }
 
@@ -286,4 +289,74 @@ async fn live_a_read_only_share_reports_read_only_rights() {
         .unwrap_or_else(|| panic!("the shared INBOX should be listed: {folders:?}"));
     assert_eq!(shared_inbox.access, MailboxAccess::reader());
     assert!(shared.connection_info().capabilities.mail_writes());
+}
+
+#[tokio::test]
+async fn live_a_filing_fallback_never_escapes_the_bound_store() {
+    let Some(harness) = ready() else {
+        eprintln!(
+            "skipping live_a_filing_fallback_never_escapes_the_bound_store: \
+             STALWART_IMAP_ADDR unset"
+        );
+        return;
+    };
+    // The peer's share is the case that matters: it exposes **one** folder (the INBOX the
+    // ACL grants) and therefore advertises no `\Drafts`, so filing a draft there takes the
+    // fallback-to-a-conventional-name path.
+    //
+    // Unqualified, that fallback would `CREATE` and `APPEND` into `Drafts` — which resolves
+    // in the *credential's own* namespace, where alice already has one. The save would have
+    // succeeded, and another principal's draft would be sitting in her folder. Qualified, it
+    // targets `Shared Folders/<peer>/Drafts`, which Stalwart refuses outright
+    // (`NO [CANNOT] You are not allowed to create root folders under shared folders.`).
+    //
+    // So the correct live outcome is a **failure**, and the failure is the proof.
+    let discovery = connect(&harness, "INBOX").await;
+    let peer = harness.read_only_share_owner().address.clone();
+    let store = discovery
+        .resolve_shared_mailbox(&peer)
+        .await
+        .expect("the peer's share");
+    let shared = connect(&harness, &format!("{}/INBOX", store.handle.as_str())).await;
+
+    let message_id = "imap-shared-fallback-probe@test.local";
+    let draft = Draft::new(
+        MessageIdHeader::new(message_id).unwrap(),
+        EmailAddress::new(harness.account.as_str()),
+        vec![EmailAddress::new("nobody@test.local")],
+        "Shared-store filing probe",
+        "Never filed anywhere: the fallback folder is the share's, which cannot be created.",
+    );
+    let err = shared
+        .save_draft(&draft)
+        .await
+        .expect_err("the fallback must target the share, which refuses the CREATE");
+    assert!(!err.is_retryable(), "{err}");
+
+    // And nothing landed in the credential's own Drafts — the folder an unqualified
+    // fallback would have reached.
+    let own_drafts = folders(&discovery)
+        .await
+        .into_iter()
+        .find(|folder| folder.role == Some(MailboxRole::Drafts))
+        .expect("alice has her own Drafts");
+    let SyncUpdate::Snapshot { objects, .. } = connect(&harness, own_drafts.name.as_str())
+        .await
+        .sync_email(&account(), None)
+        .await
+        .expect("sync the credential's own Drafts")
+        .update
+    else {
+        panic!("a first sync is a snapshot");
+    };
+    assert!(
+        !objects.iter().any(|message| {
+            message
+                .envelope
+                .message_id
+                .iter()
+                .any(|id| id.as_str() == message_id)
+        }),
+        "the shared store's draft leaked into the credential's own Drafts: {objects:?}"
+    );
 }

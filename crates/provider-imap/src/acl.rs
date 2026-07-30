@@ -31,6 +31,13 @@
 //!   parent. Only the first is a right *of this mailbox*; the second belongs to whichever mailbox
 //!   the caller renames into, so it cannot be answered here.
 //!
+//! Two more letters exist and are **not** in the table because they are not rights of their
+//! own: RFC 4314 §2.1.1 keeps `c` and `d` from RFC 2086 as compatibility aliases — `c`
+//! stands for `k` plus `x`, `d` for `e`, `t` and `x`. A conforming server sends the
+//! expanded letters alongside them, but one still speaking RFC 2086 sends only the alias,
+//! and reading it as nothing would report a mailbox the credential owns as impossible to
+//! delete or expunge from. So [`MailboxRights::has`] resolves them.
+//!
 //! [`may_read_items`]: MailboxAccess::may_read_items
 //! [`may_set_seen`]: MailboxAccess::may_set_seen
 //! [`may_set_keywords`]: MailboxAccess::may_set_keywords
@@ -56,13 +63,22 @@ pub(crate) struct MailboxRights {
 }
 
 impl MailboxRights {
-    /// Whether the grant includes `letter`.
+    /// Whether the grant includes `letter`, directly or through one of RFC 4314 §2.1.1's
+    /// compatibility aliases (`c` ⇒ `k`,`x`; `d` ⇒ `e`,`t`,`x`).
     ///
     /// Case-sensitive, because RFC 4314 §2.1.1 makes case significant: the standard rights
     /// are lowercase, and an uppercase letter is reserved for a server-specific extension
     /// that must not be mistaken for one of them.
     fn has(&self, letter: char) -> bool {
-        self.letters.contains(letter)
+        if self.letters.contains(letter) {
+            return true;
+        }
+        match letter {
+            'k' => self.letters.contains('c'),
+            'x' => self.letters.contains('c') || self.letters.contains('d'),
+            'e' | 't' => self.letters.contains('d'),
+            _ => false,
+        }
     }
 
     /// The rights as the engine's named booleans. See this module's table for each mapping

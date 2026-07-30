@@ -240,6 +240,15 @@ all work unchanged on `/users/{shared}/…`; what follows is what the probing es
   delegate, the delivered message carries `From:` = the shared mailbox **and** a `Sender:`
   = the signed-in delegate — a header the adapter never writes; Exchange adds it, and
   clients render it as "on behalf of".
+  - **This refuses a send from an *alias* of the bound mailbox**, which Exchange Online
+    itself allows. The client cannot tell an alias from a mistake: doing so needs the
+    mailbox's `proxyAddresses`, a directory read the delegated credential may not have, and
+    guessing wrong sends a message whose `From` header does not match its sender. The
+    workaround is exact rather than approximate — **bind a client to the alias**, since
+    `/users/{alias}` resolves to the same target mailbox, and then the endpoint and the
+    header agree. A client bound to `/me` is unaffected: the credential does not reveal its
+    own address without a directory read, so there is nothing to compare and the draft is
+    taken as given.
 - **There is no mailbox kind, and there cannot be on this credential model.** See below.
 
 ### Delegated `mailboxSettings` is self-only (settled, do not re-litigate)

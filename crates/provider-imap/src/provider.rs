@@ -460,9 +460,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     /// The other principals' mail stores this credential may open, one per entry appearing
     /// under a foreign `NAMESPACE` prefix (`crate::discovery`). The credential's own store
     /// is not among them — its prefix is the empty string, which is no handle at all.
+    ///
+    /// # Errors
+    ///
+    /// Rejects when the server advertised no foreign namespace, matching the
+    /// [`SharedMailboxes::Unsupported`] this provider then reports (`crate::discovery`).
     async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
         let mut connection = self.connection.lock().await;
-        Ok(discovery::list_shared(&mut connection, &self.namespaces).await?)
+        discovery::list_shared(&mut connection, &self.namespaces).await
     }
 
     /// Finds the shared store whose owner component is `address`.
