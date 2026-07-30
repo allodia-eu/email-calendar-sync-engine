@@ -47,6 +47,36 @@ fn calendar_list_maps_primary_and_reader_roles() {
 }
 
 #[test]
+fn each_access_role_maps_to_the_grant_it_names() {
+    // Google's four roles are four different grants; collapsing any pair would tell a host
+    // it may do something the API refuses — or, for `freeBusyReader`, that it may read
+    // events it is only allowed to see the *busy times* of.
+    let owner = access_role(Some("owner"));
+    assert!(owner.may_read && owner.may_write && owner.may_share && owner.may_delete);
+
+    // A writer edits events but does not own the calendar: it cannot re-share it or
+    // delete it.
+    let writer = access_role(Some("writer"));
+    assert!(writer.may_read && writer.may_write && writer.may_rsvp);
+    assert!(!writer.may_share && !writer.may_delete);
+
+    let reader = access_role(Some("reader"));
+    assert!(reader.may_read && !reader.may_write);
+
+    // The privacy-relevant one: busy times are visible, the events themselves are not.
+    let free_busy = access_role(Some("freeBusyReader"));
+    assert!(!free_busy.may_read && free_busy.may_read_free_busy);
+    assert!(!free_busy.may_write && !free_busy.may_rsvp);
+
+    // An absent or unrecognized role reads as visible-but-immutable — the safe direction,
+    // hiding a capability rather than inviting a rejected write.
+    for unknown in [None, Some("somethingNew")] {
+        let fallback = access_role(unknown);
+        assert!(fallback.may_read && !fallback.may_write);
+    }
+}
+
+#[test]
 fn single_event_normalizes_zoned_time_participants_and_location() {
     let event = event(SINGLE);
     assert_eq!(event.title, "Fixture: single meeting");

@@ -49,6 +49,7 @@ mod mutate;
 mod normalize;
 mod principal;
 mod provider;
+mod shared;
 mod submit;
 mod transport;
 

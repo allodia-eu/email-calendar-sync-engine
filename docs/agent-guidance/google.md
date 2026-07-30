@@ -183,6 +183,30 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
   `If-Match`), so the live test does not assert re-delete idempotency — the `404`/`410`
   path is proven offline.
 
+- **`accessRole` → `CalendarAccess`, four roles and four different grants.** `owner` is
+  everything; `writer` reads and writes **events** but cannot re-share or delete the
+  calendar (those stay the owner's, so it is deliberately *not* `owner()`); `reader` sees
+  events and changes nothing; `freeBusyReader` sees only that the time is taken — the
+  privacy-relevant distinction `CalendarAccess::free_busy_only` exists for. An
+  unrecognized or absent role falls back to `reader`: visible, immutable, which hides a
+  capability rather than inviting a write the API will reject. **Live-verified** for
+  `owner` and `reader`, the two roles the throwaway account holds; `writer` and
+  `freeBusyReader` need a *second* Google account to share a calendar from and are
+  therefore covered offline only — stated here rather than left silent.
+
+## Shared mailboxes: Gmail has no usable mechanism
+
+`GmailProvider` advertises `SharedMailboxes::Unsupported`, and that is a decision rather
+than an omission. Gmail delegation is a real product feature, but it is **UI-only** as far
+as a user credential is concerned: the API route that would serve it, `users/{userId}` for
+a `userId` other than `me`, requires a **service account with domain-wide delegation** — a
+different credential model than the user bearer token this adapter holds. Advertising
+anything else would offer a host an onboarding flow that could only ever fail, so both
+discovery verbs keep their rejecting defaults (`providers.md`).
+
+Google *Calendar* does share properly, and that is a separate mechanism: it shows up as the
+`accessRole` on a `calendarList` entry (above), not as another mailbox.
+
 ## Testing (3-tier, mirroring Graph — `AGENTS.md` offline-mock caveat)
 
 1. **Offline** (always green): normalizers + error mapping against scrubbed captured

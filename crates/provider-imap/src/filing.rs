@@ -25,6 +25,7 @@ use crate::{
     config::{ImapConfig, SmtpSecurity, SmtpSettings},
     error::{ImapError, ImapResult},
     mail::{mailbox_from_list, message_key},
+    namespace::{MailStore, Namespaces},
     provider::ImapProvider,
     smtp::{self, Disposition, SmtpResult},
     transport::Connection,
@@ -316,7 +317,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         message: &[u8],
     ) -> ProviderResult<(String, Option<(u32, u32)>)> {
         let mut connection = self.connection.lock().await;
-        let folder = if let Some(name) = resolve_role_folder(&mut connection, filing.role()).await?
+        let folder = if let Some(name) = resolve_role_folder(
+            &mut connection,
+            &self.namespaces,
+            &self.store,
+            filing.role(),
+        )
+        .await?
         {
             name
         } else {
@@ -376,18 +383,28 @@ async fn tls_connect(
     Ok(tls)
 }
 
-/// Finds the account's folder carrying `role` (RFC 6154 SPECIAL-USE) via `LIST`;
-/// `None` when the server advertises none.
+/// Finds the folder carrying `role` (RFC 6154 SPECIAL-USE) in the store this provider is
+/// bound to; `None` when it advertises none.
+///
+/// Scoped to the store, not to everything `LIST` returns, and that matters concretely: a
+/// shared mailbox has its own `\Sent` folder, and a flat `LIST` interleaves it with the
+/// credential's. Picking the first match would file one principal's sent copy into another
+/// principal's folder — and `Shared Folders/...` sorts after a bare `Sent Items` on
+/// Stalwart, so it would have looked correct there while being wrong on any server that
+/// orders differently (`crate::discovery`).
 async fn resolve_role_folder<S>(
     connection: &mut Connection<S>,
+    namespaces: &Namespaces,
+    store: &MailStore,
     role: MailboxRole,
 ) -> ImapResult<Option<String>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let rows = connection.list().await?;
+    let rows = connection.list_pattern(&store.list_pattern()).await?;
     Ok(rows
         .iter()
+        .filter(|row| store.contains(namespaces, &row.name))
         .filter_map(mailbox_from_list)
         .find(|mailbox| mailbox.role.as_ref() == Some(&role))
         .map(|mailbox| mailbox.name))

@@ -10,8 +10,10 @@
 #   1. start the server (bootstrap mode if the store is empty),
 #   2. complete setup via `x:Bootstrap/set` (no ACME/auto-TLS), restart to full,
 #   3. create the test accounts via `x:Account/set` (idempotent),
-#   4. seed mail (IMAP over TLS), calendars (CalDAV), and contacts (CardDAV),
-#   5. write a readiness marker and run the server in the foreground.
+#   4. create the `support` **group** mailbox and put alice in it, so the session
+#      alice authenticates with carries a shared, non-personal account,
+#   5. seed mail (IMAP over TLS), calendars (CalDAV), and contacts (CardDAV),
+#   6. write a readiness marker and run the server in the foreground.
 #
 # It is idempotent: on a re-run against an already-bootstrapped data volume it
 # skips bootstrap and skips existing accounts, and the content seeder clears
@@ -72,6 +74,16 @@ account_exists() {
     | grep -q "\"name\":\"$1\""
 }
 
+# Id of a principal by local name. Asking for only `name` flattens each entry to
+# `{"name":"alice","id":"c"}` (no nested credentials object), so one grep per entry
+# is safe without jq. The ids are server-assigned and NOT stable across a fresh
+# bootstrap, which is exactly why callers look them up instead of hardcoding them.
+account_id() { # local-name
+  jmap '["x:Account/get",{"ids":null,"properties":["name"]},"c0"]' \
+    | grep -oE "\{\"name\":\"$1\",\"id\":\"[^\"]+\"\}" \
+    | grep -oE '"id":"[^"]+"' | cut -d'"' -f4
+}
+
 ensure_account() { # local-name  description  password
   if account_exists "$1"; then
     log "account $1 already present"
@@ -83,6 +95,44 @@ ensure_account() { # local-name  description  password
     return 1
   fi
   log "created account $1"
+}
+
+# A **group** principal: a mailbox with no credentials of its own, which every member
+# then sees as a non-personal account in their JMAP session
+# (`accounts.<id>.isPersonal:false`, RFC 8620 §1.6.2) and as
+# `Shared Folders/<address>/…` in their IMAP `LIST` (RFC 2342 shared namespace). This
+# is the vendor-neutral analogue of a Microsoft 365 shared mailbox, and the fixture
+# the engine's shared-mailbox discovery is tested against
+# (docs/agent-guidance/stalwart-harness.md).
+ensure_group() { # local-name  description
+  if account_exists "$1"; then
+    log "group $1 already present"
+    return 0
+  fi
+  resp=$(jmap "[\"x:Account/set\",{\"create\":{\"g\":{\"@type\":\"Group\",\"name\":\"$1\",\"domainId\":\"$DOMAIN_ID\",\"description\":\"$2\"}}},\"c0\"]")
+  if ! printf '%s' "$resp" | grep -q '"created"'; then
+    log "FAILED to create group $1: $resp"
+    return 1
+  fi
+  log "created group $1"
+}
+
+# Membership is recorded on the **member**, not the group: `memberGroupIds` is a
+# set-valued map on the user principal. Idempotent — re-setting the same map is a
+# no-op update.
+ensure_group_member() { # member-local-name  group-local-name
+  member_id="$(account_id "$1")"
+  group_id="$(account_id "$2")"
+  [ -n "$member_id" ] && [ -n "$group_id" ] || {
+    log "FAILED to resolve ids for member $1 / group $2"
+    return 1
+  }
+  resp=$(jmap "[\"x:Account/set\",{\"update\":{\"$member_id\":{\"memberGroupIds\":{\"$group_id\":true}}}},\"c0\"]")
+  if ! printf '%s' "$resp" | grep -q '"updated"'; then
+    log "FAILED to add $1 to group $2: $resp"
+    return 1
+  fi
+  log "$1 is a member of group $2"
 }
 
 listener_exists() { # name
@@ -176,6 +226,13 @@ ensure_account bob "Bob Tester" "${HARNESS_BOB_PW:-harness-bob-pw}"
 ensure_account carol "Carol Tester" "${HARNESS_CAROL_PW:-harness-carol-pw}"
 
 relax_inbound_throttles
+
+# The shared-mailbox fixture: a credential-less group mailbox alice belongs to. The
+# second half of the fixture — bob granting alice read-only ACL on *his* INBOX, which
+# is what proves rights belong on the mailbox and not on the account — is an IMAP
+# `SETACL` and lives in seed.sh with the rest of the IMAP seeding.
+ensure_group support "Support Shared Mailbox"
+ensure_group_member alice support
 
 # STARTTLS listeners for the IMAP (143) and SMTP submission (587) transports the
 # provider speaks in addition to implicit TLS. A newly created listener needs a server

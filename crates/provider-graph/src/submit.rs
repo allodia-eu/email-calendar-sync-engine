@@ -31,6 +31,7 @@ use crate::transport::GraphClient;
 /// (a header value carrying CR/LF/NUL) is permanent; a `400 ErrorMimeContentInvalidBase64String`
 /// is permanent; `401`/`429`/`5xx` classify as auth/rate-limit/retryable.
 pub(crate) async fn send(client: &GraphClient, draft: &Draft) -> ProviderResult<SubmissionReceipt> {
+    check_from_matches_principal(client, draft)?;
     // The filed variant keeps the `Bcc` header: Graph reads every recipient (To/Cc/Bcc)
     // from the MIME to build the delivery envelope and strips `Bcc` before delivering,
     // so the Sent-Items copy records whom the sender Bcc'd while no recipient sees it.
@@ -44,6 +45,39 @@ pub(crate) async fn send(client: &GraphClient, draft: &Draft) -> ProviderResult<
         sent_placeholder_key(draft),
         draft.message_id.clone(),
     ))
+}
+
+/// Refuses a draft whose `From` names a different mailbox than the one this client posts to.
+///
+/// The endpoint and the header were previously unrelated: `sendMail` goes to the client's
+/// principal (`/users/{shared}/sendMail`) while `From` came from the draft, so a caller could
+/// ask to send *as themselves* through a client bound to a shared mailbox. What Exchange does
+/// with that is not something to rely on — the mailbox it posts to is what it sends from — so
+/// a mismatch is refused here rather than resolved silently on the server.
+///
+/// Only checkable when the client is bound to a **named** mailbox. For
+/// [`MailboxPrincipal::Me`](crate::MailboxPrincipal::Me) the credential does not reveal its own
+/// address without a directory read, so there is nothing to compare and the draft is taken as
+/// given.
+///
+/// # What Exchange adds on the way out
+///
+/// Sending from a shared mailbox as a delegate, the delivered message carries `From:` = the
+/// shared mailbox **and** a `Sender:` = the signed-in delegate — a header the adapter never
+/// writes; Exchange adds it, and mail clients render it as "on behalf of". Observed live, and
+/// the reason this check compares against `From` alone: `Sender` is the server's to set.
+fn check_from_matches_principal(client: &GraphClient, draft: &Draft) -> ProviderResult<()> {
+    let Some(mailbox) = client.principal().address() else {
+        return Ok(());
+    };
+    if mailbox.eq_ignore_ascii_case(&draft.from.email) {
+        return Ok(());
+    }
+    Err(engine_provider::ProviderError::permanent(format!(
+        "this client sends from {mailbox:?}, but the draft's From is {:?}; \
+         bind a client to the mailbox you are sending as",
+        draft.from.email
+    )))
 }
 
 /// The placeholder key for the sent copy — `sent:<Message-ID>` — mirroring IMAP's
@@ -83,6 +117,41 @@ mod tests {
             "sent:graph-send-0001@test.local"
         );
         assert_eq!(receipt.message_id.as_str(), "graph-send-0001@test.local");
+    }
+
+    #[tokio::test]
+    async fn a_client_bound_to_a_shared_mailbox_refuses_a_draft_from_someone_else() {
+        use engine_core::error::FailureClass;
+
+        use crate::MailboxPrincipal;
+
+        // `sendMail` posts to the client's principal, so the mailbox it sends *from* is the
+        // one bound here — not whatever the draft's `From` says. A route that would accept
+        // anything is wired up deliberately: the refusal has to happen before the request,
+        // or a message would go out with a `From` header that does not match its sender.
+        let bound = crate::test_support::fake_client_fallible(vec![(
+            "/sendMail",
+            Ok(serde_json::Value::Null),
+        )])
+        .with_principal(MailboxPrincipal::user("shared@example.test"));
+
+        let err = send(&bound, &draft()).await.unwrap_err();
+        assert_eq!(err.class(), FailureClass::Permanent);
+        assert!(err.detail().contains("shared@example.test"), "{err}");
+
+        // Sending *as* the bound mailbox is what it is for, and case is not significant in
+        // an address.
+        let mut as_shared = draft();
+        as_shared.from = EmailAddress::new("Shared@Example.Test");
+        assert!(send(&bound, &as_shared).await.is_ok());
+
+        // A client bound to `/me` has nothing to compare against — the credential does not
+        // reveal its own address without a directory read — so the draft is taken as given.
+        let own = crate::test_support::fake_client_fallible(vec![(
+            "/sendMail",
+            Ok(serde_json::Value::Null),
+        )]);
+        assert!(send(&own, &draft()).await.is_ok());
     }
 
     #[tokio::test]

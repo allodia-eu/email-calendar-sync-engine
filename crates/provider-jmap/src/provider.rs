@@ -19,7 +19,7 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HttpVersion, PageToken, PassMode,
-    Provider, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind, split_page,
+    Provider, ProviderResult, ScopeSync, SharedMailbox, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
@@ -430,6 +430,24 @@ impl Provider for JmapProvider {
         )
         .await?)
     }
+
+    /// Every account the session lists — the credential's own plus each store shared with
+    /// it (RFC 8620 §1.6.2). No request: the map arrived with the session the connect
+    /// already fetched, which is why enumeration is free on this protocol
+    /// (`crate::shared`).
+    async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
+        Ok(crate::shared::list(self.executor.session()))
+    }
+
+    /// Finds the account whose session `name` is `address` (`crate::shared`).
+    ///
+    /// # Errors
+    ///
+    /// [`FailureClass::Permanent`](engine_core::error::FailureClass::Permanent) when no
+    /// listed account carries that name.
+    async fn resolve_shared_mailbox(&self, address: &str) -> ProviderResult<SharedMailbox> {
+        crate::shared::resolve(self.executor.session(), address)
+    }
 }
 
 #[cfg(test)]
@@ -439,6 +457,11 @@ mod provider_test_support;
 #[cfg(test)]
 #[path = "provider_tests.rs"]
 mod tests;
+
+// Shared-mailbox discovery over the real captured session of an account with two shares.
+#[cfg(test)]
+#[path = "shared_tests.rs"]
+mod shared_tests;
 
 #[cfg(test)]
 #[path = "provider_write_tests.rs"]

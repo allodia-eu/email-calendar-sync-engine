@@ -22,9 +22,11 @@ In <https://entra.microsoft.com> → **App registrations** → **New registratio
    `profile`, `User.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
    and (for shared-mailbox delegate access) `Mail.ReadWrite.Shared`,
    `Mail.Send.Shared`, `Calendars.ReadWrite.Shared`. For contacts, add
-   `Contacts.ReadWrite`; for the independently optional tenant sources add
-   `OrgContact.Read.All`, `User.ReadBasic.All`, and `ProfilePhoto.Read.All`.
-   Tenant directory permissions may require administrator consent.
+   `Contacts.ReadWrite` and `Contacts.ReadWrite.Shared`. Add
+   `MailboxSettings.ReadWrite` for `userPurpose` (which mailbox kind this is) and
+   automatic replies — it has **no `.Shared` variant**. For the independently
+   optional tenant sources add `OrgContact.Read.All`, `User.ReadBasic.All`, and
+   `ProfilePhoto.Read.All`; those require administrator consent.
 4. Copy the **Application (client) ID**.
 
 > The `*.Shared` scopes are an Exchange Online (work/school) feature. A **personal**
@@ -43,7 +45,10 @@ cargo run --manifest-path tools/graph-oauth/Cargo.toml -- login --client-id <APP
 # 2. (any time) mint a fresh access token from the saved refresh token.
 cargo run --manifest-path tools/graph-oauth/Cargo.toml -- refresh
 
-# 3. Capture real Graph responses as fixtures (refreshes automatically).
+# 3. Print a valid access token (refreshes if stale) — what a live test consumes.
+cargo run --manifest-path tools/graph-oauth/Cargo.toml -- token
+
+# 4. Capture real Graph responses as fixtures (refreshes automatically).
 cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me
 cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me/mailFolders mailfolders.json
 cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me/contacts contacts.json
@@ -55,3 +60,30 @@ refresh token is sensitive even for a throwaway account — don't commit it.
 
 Override defaults with `--authority`, `--scopes`, `--port`, or the env vars
 `GRAPH_CLIENT_ID`, `GRAPH_AUTHORITY`, `GRAPH_SCOPES`, `GRAPH_TOKENS`.
+
+## Profiles — several accounts signed in at once
+
+A personal Microsoft account and a work/school one are **not interchangeable**:
+only a work/school tenant has shared mailboxes and can consent to the `*.Shared`
+scopes, while the personal account is the cheap throwaway for everything else.
+Proving the adapter needs both, so `--profile <name>` (or `GRAPH_PROFILE`) gives
+each its own tokens file and they stay signed in side by side:
+
+```sh
+# The unnamed profile keeps `.local/tokens.json` — an existing sign-in is untouched.
+cargo run --manifest-path tools/graph-oauth/Cargo.toml -- login --client-id <APP_ID>
+
+# A named profile writes `.local/tokens-work.json`.
+cargo run --manifest-path tools/graph-oauth/Cargo.toml -- login --profile work --client-id <APP_ID>
+
+# Every command takes it, anywhere in the arguments.
+cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me --profile work
+cargo run --manifest-path tools/graph-oauth/Cargo.toml -- token --profile work
+```
+
+Feeding a live test, without switching anything:
+
+```sh
+GRAPH_ACCESS_TOKEN="$(cargo run -q --manifest-path tools/graph-oauth/Cargo.toml -- token --profile work)" \
+  cargo test -p provider-graph --test live_provider -- --nocapture
+```

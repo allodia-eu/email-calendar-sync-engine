@@ -7,6 +7,8 @@
 //! capability URNs (`urn:ietf:params:jmap:mail` → [`Capabilities::mail`], etc.)
 //! and grows as protocol features are added.
 
+use crate::shared::SharedMailboxes;
+
 /// What a transport can promise about the **lost-update guard** on a calendar write.
 ///
 /// Every calendar write in this crate names the revision the caller read, so the
@@ -75,6 +77,11 @@ pub struct Capabilities {
     contact_writes: Option<WriteGuard>,
     contact_groups: bool,
     contact_photos: bool,
+    /// How — if at all — the credential can find mail stores besides its own. Not a
+    /// flag: "the server lists them" and "the server only answers for an address you
+    /// name" are different promises, and a host's onboarding flow differs between them
+    /// (see [`SharedMailboxes`]).
+    shared_mailboxes: SharedMailboxes,
 }
 
 impl Capabilities {
@@ -93,6 +100,7 @@ impl Capabilities {
             contact_writes: None,
             contact_groups: false,
             contact_photos: false,
+            shared_mailboxes: SharedMailboxes::Unsupported,
         }
     }
 
@@ -198,6 +206,17 @@ impl Capabilities {
         self
     }
 
+    /// States how the credential can find mail stores besides its own.
+    ///
+    /// Independent of every other capability, including [`with_mail`](Self::with_mail):
+    /// the mechanism is a property of the **credential**, not of a synced account, so an
+    /// adapter advertises it whether or not the host has onboarded any shared store.
+    #[must_use]
+    pub const fn with_shared_mailboxes(mut self, mechanism: SharedMailboxes) -> Self {
+        self.shared_mailboxes = mechanism;
+        self
+    }
+
     /// Whether mail read/sync is supported.
     #[must_use]
     pub const fn mail(self) -> bool {
@@ -281,6 +300,17 @@ impl Capabilities {
     pub const fn contact_photos(self) -> bool {
         self.contact_photos
     }
+
+    /// How the credential can find mail stores besides its own —
+    /// [`Unsupported`](SharedMailboxes::Unsupported) unless the adapter said otherwise.
+    ///
+    /// A host reads this to shape onboarding: `Enumerable` affords a pick-from-a-list
+    /// flow, `ByAddress` requires the user to type an address, `Unsupported` means neither
+    /// verb will answer.
+    #[must_use]
+    pub const fn shared_mailboxes(self) -> SharedMailboxes {
+        self.shared_mailboxes
+    }
 }
 
 #[cfg(test)]
@@ -311,7 +341,9 @@ mod tests {
             .with_contacts()
             .with_contact_writes(WriteGuard::Enforced)
             .with_contact_groups()
-            .with_contact_photos();
+            .with_contact_photos()
+            .with_shared_mailboxes(SharedMailboxes::Enumerable);
+        assert_eq!(caps.shared_mailboxes(), SharedMailboxes::Enumerable);
         assert!(caps.mail() && caps.mail_writes() && caps.submission());
         assert!(caps.message_source() && caps.idle());
         assert!(caps.calendars() && caps.calendar_writes());
@@ -376,5 +408,26 @@ mod tests {
         // read-only calendar advertises `calendars` without `calendar_writes`.
         let read_only = Capabilities::none().with_mail();
         assert!(read_only.mail() && !read_only.mail_writes());
+    }
+
+    #[test]
+    fn shared_mailbox_discovery_is_independent_of_every_other_capability() {
+        // The mechanism is a property of the *credential*, not of a synced account, so a
+        // mail adapter can have no way to find another store (Gmail) while an adapter
+        // that has one says which of the two shapes it is. Enumerable and ByAddress are
+        // different promises — only the first affords a pick-from-a-list onboarding flow —
+        // so they are distinct values rather than one "supported" boolean.
+        let gmail = Capabilities::none().with_mail().with_mail_writes();
+        assert_eq!(gmail.shared_mailboxes(), SharedMailboxes::Unsupported);
+
+        let jmap = Capabilities::none()
+            .with_mail()
+            .with_shared_mailboxes(SharedMailboxes::Enumerable);
+        assert_eq!(jmap.shared_mailboxes(), SharedMailboxes::Enumerable);
+        assert!(jmap.mail() && !jmap.mail_writes());
+
+        let graph = Capabilities::none().with_shared_mailboxes(SharedMailboxes::ByAddress);
+        assert_eq!(graph.shared_mailboxes(), SharedMailboxes::ByAddress);
+        assert!(!graph.mail());
     }
 }

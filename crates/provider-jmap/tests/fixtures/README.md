@@ -28,6 +28,9 @@ tests driven through a fake executor.
 | `email_changes_response.json` | `[Email/changes, Email/get(#created), Email/get(#updated)]` response | Empty-delta orchestration (the changes→get back-reference path). |
 | `submit_context_response.json` | `[Mailbox/get, Identity/get]` response | Resolving the Drafts/Sent mailboxes + submission identity before a send. |
 | `submit_send_response.json` | `[Email/set, EmailSubmission/set]` response | Submission: the created email key, plus the implicit `Email/set` from `onSuccessUpdateEmail` (two responses share call id `1`). |
+| `submit_context_shared_identities_response.json` | `[Mailbox/get, Identity/get]` response, alice **after** joining the `support` group | Two submission identities, with the *group's* listed first. Taking the first identity submitted `From: alice@` under `support@` and the server answered `forbiddenFrom`; the identity is matched to the draft's `From`. |
+| `session_shared_accounts.json` | `GET /jmap/session` as alice, verbatim | Shared-mailbox discovery: three `accounts` entries (own + group mailbox + a peer's read-only INBOX), and the finding the design rests on — the read-only share reports `isReadOnly: false`. Also shows Stalwart giving every account the *same* `accountCapabilities`. |
+| `mailbox_get_shared_read_only.json` | `Mailbox/get` result with the peer's shared `accountId` | Per-mailbox rights: one Inbox whose `myRights` grants `mayReadItems` and nothing else. |
 | `calendar_get.json` | `Calendar/get` result | Calendar-container normalization. |
 | `calendarevent_get.json` | `CalendarEvent/get` result (all 6 seed events) | JSCalendar normalization: zoned/floating/all-day time model, recurrence rule + overrides, participants, virtual location. |
 | `calendar_snapshot_response.json` | `[Calendar/get]` response | Calendar container snapshot orchestration. |

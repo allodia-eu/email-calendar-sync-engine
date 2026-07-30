@@ -353,6 +353,27 @@ async fn live_calendars_list() {
     };
     // The account has at least its own primary calendar.
     assert!(objects.iter().any(|c| c.is_default), "a primary calendar");
+
+    // `accessRole` → `CalendarAccess`, against the roles this account really holds.
+    //
+    // The primary calendar is `owner`: everything, the calendar's own ACL included.
+    let primary = objects.iter().find(|c| c.is_default).expect("primary");
+    assert!(primary.access.may_read && primary.access.may_write);
+    assert!(primary.access.may_share && primary.access.may_delete);
+
+    // The subscribed holiday calendar is `reader`: visible, immutable. A host that offered
+    // "add an event" here would have the write refused by the API.
+    let subscribed = objects
+        .iter()
+        .find(|c| !c.is_default)
+        .expect("the subscribed holiday calendar");
+    assert!(subscribed.access.may_read);
+    assert!(!subscribed.access.may_write && !subscribed.access.may_share);
+
+    // NOT covered here: `writer` and `freeBusyReader`. Both need a *second* Google account
+    // to share a calendar from, and there is only one throwaway account — so the mapping
+    // for those two roles is proven offline (`cal_normalize_tests`) and not live. Named
+    // rather than left silent, per `AGENTS.md`.
 }
 
 #[tokio::test]

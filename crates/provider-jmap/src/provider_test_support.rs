@@ -66,9 +66,25 @@ impl FakeExecutor {
     }
 
     pub(crate) fn from_session(session_doc: &Value, responses: Vec<Value>) -> Self {
+        Self::from_session_selecting(session_doc, None, responses)
+    }
+
+    /// Like [`from_session`](Self::from_session), but with the session **bound** to one of
+    /// the accounts it lists — the shared-mailbox path, where every method call carries
+    /// that account's id instead of the `primaryAccounts` entry.
+    pub(crate) fn from_session_selecting(
+        session_doc: &Value,
+        selected: Option<&str>,
+        responses: Vec<Value>,
+    ) -> Self {
         let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let session =
-            Session::parse(session_doc, &base, SessionUrlPolicy::RebaseToConnection).unwrap();
+        let session = Session::parse(
+            session_doc,
+            &base,
+            SessionUrlPolicy::RebaseToConnection,
+            selected,
+        )
+        .unwrap();
         let parsed = responses
             .into_iter()
             .map(|v| Response::parse(&v).unwrap())

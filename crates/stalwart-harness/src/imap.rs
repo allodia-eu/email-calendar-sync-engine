@@ -24,6 +24,13 @@ pub struct ImapProbe {
     /// INBOX messages whose `SUBJECT` matches the duplicate-`Message-ID` pair —
     /// two are seeded, proving both are stored as distinct objects.
     pub dup_subject_hits: usize,
+    /// The untagged `* NAMESPACE` line (RFC 2342), verbatim. It reports the personal
+    /// namespace and — for an account that has been granted access to another store —
+    /// a shared one, which is how a client learns whose mail a folder holds.
+    pub namespace: String,
+    /// Mailbox names from `LIST "" "*"`, in server order. The shared ones are nested
+    /// under the shared-namespace prefix the `namespace` line advertises.
+    pub mailboxes: Vec<String>,
 }
 
 /// Drive the IMAP probe over an established (already TLS-wrapped) stream.
@@ -57,7 +64,18 @@ pub fn run_probe<S: Read + Write>(
         .find_map(|line| line.strip_prefix("* SEARCH"))
         .map_or(0, |rest| rest.split_whitespace().count());
 
-    let _ = conn.write_line("a7 LOGOUT");
+    let namespace = conn
+        .command("a7", "NAMESPACE")?
+        .into_iter()
+        .find(|line| line.starts_with("* NAMESPACE"))
+        .ok_or_else(|| protocol("NAMESPACE returned no untagged line".to_owned()))?;
+    let mailboxes = conn
+        .command("a8", r#"LIST "" "*""#)?
+        .iter()
+        .filter_map(|line| quoted_list_name(line))
+        .collect();
+
+    let _ = conn.write_line("a9 LOGOUT");
 
     Ok(ImapProbe {
         greeting,
@@ -65,7 +83,20 @@ pub fn run_probe<S: Read + Write>(
         archive_exists,
         projects_exists,
         dup_subject_hits,
+        namespace,
+        mailboxes,
     })
+}
+
+/// The mailbox name from a `* LIST (attrs) "delim" "name"` line — the last quoted
+/// token. `None` for any other line. Stalwart always quotes the name; a server that
+/// returned it as a bare atom would simply not be counted, which is fine for a probe
+/// (the provider client, not this, is what must parse `LIST` exhaustively).
+fn quoted_list_name(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("* LIST ")?;
+    let open = rest.rfind('"')?;
+    let start = rest[..open].rfind('"')?;
+    Some(rest[start + 1..open].to_owned())
 }
 
 fn protocol(detail: String) -> HarnessError {
@@ -160,6 +191,24 @@ mod tests {
         assert_eq!(parse_exists("OK [UIDVALIDITY 1]"), None);
     }
 
+    #[test]
+    fn parses_the_quoted_list_name_including_a_shared_path() {
+        assert_eq!(
+            super::quoted_list_name(r#"* LIST () "/" "INBOX""#).as_deref(),
+            Some("INBOX")
+        );
+        // The name a shared mailbox arrives under contains a space and an `@` — the
+        // reason the *last* quoted token is what is read, not a whitespace split.
+        assert_eq!(
+            super::quoted_list_name(
+                r#"* LIST (\NoSelect) "/" "Shared Folders/support@test.local""#
+            )
+            .as_deref(),
+            Some("Shared Folders/support@test.local")
+        );
+        assert_eq!(super::quoted_list_name("* 8 EXISTS"), None);
+    }
+
     // A canned stream: reads come from `script`, writes are discarded. Lets the
     // probe logic be exercised offline without a server.
     struct Canned {
@@ -209,11 +258,20 @@ a1 OK login ok\n\
 * 1 EXISTS\na4 OK selected\n\
 * 8 EXISTS\na5 OK selected\n\
 * SEARCH 2 3\na6 OK search done\n\
-a7 OK bye\n";
+* NAMESPACE ((\"\" \"/\")) ((\"Shared Folders\" \"/\")) NIL\na7 OK namespace done\n\
+* LIST () \"/\" \"INBOX\"\n\
+* LIST () \"/\" \"Shared Folders/support@test.local/INBOX\"\n\
+a8 OK list done\n\
+a9 OK bye\n";
         let probe = run_probe(canned(script), "alice@test.local", "pw").unwrap();
         assert_eq!(probe.inbox_exists, 8);
         assert_eq!(probe.archive_exists, 1);
         assert_eq!(probe.projects_exists, 1);
         assert_eq!(probe.dup_subject_hits, 2);
+        assert!(probe.namespace.contains("Shared Folders"));
+        assert_eq!(
+            probe.mailboxes,
+            ["INBOX", "Shared Folders/support@test.local/INBOX"]
+        );
     }
 }

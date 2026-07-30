@@ -1,0 +1,31 @@
+{
+ "accountId": "d",
+ "state": "sai",
+ "list": [
+  {
+   "id": "a",
+   "name": "Inbox",
+   "parentId": null,
+   "role": "inbox",
+   "sortOrder": 0,
+   "isSubscribed": false,
+   "totalEmails": 0,
+   "unreadEmails": 0,
+   "totalThreads": 0,
+   "unreadThreads": 0,
+   "myRights": {
+    "mayReadItems": true,
+    "mayAddItems": false,
+    "mayRemoveItems": false,
+    "maySetSeen": false,
+    "maySetKeywords": false,
+    "mayCreateChild": false,
+    "mayRename": false,
+    "maySubmit": false,
+    "mayDelete": false,
+    "mayShare": false
+   }
+  }
+ ],
+ "notFound": []
+}

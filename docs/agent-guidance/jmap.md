@@ -288,6 +288,39 @@ specifics they implement against the Stalwart fixture. Read it before touching
   and "which participant am I" is a neutral concept the model does not state. It needs
   designing, not guessing.
 
+- **Shared mailboxes are the session's `accounts` map, and they cost one field.** RFC 8620
+  §1.6.2's `accounts` lists **every** account the credential can reach, marking the
+  credential's own with `isPersonal: true`; the rest are stores shared with it. The client
+  used to parse `primaryAccounts` and discard the map, which is why
+  `list_shared_mailboxes()` needs no request at all — the answer arrived with the session
+  `connect` already fetched. `resolve_shared_mailbox(address)` matches an entry's `name`,
+  which RFC 8620 says is *usually* the primary address (Stalwart's is) — a display string
+  matched as given, never parsed as an address.
+  - **Binding** is `JmapConfig::with_account(handle)`: every method call then carries that
+    account id instead of the `primaryAccounts` entry, and the advertised capabilities
+    narrow to the intersection of the server's and *that account's* `accountCapabilities`.
+    The handle is validated at connect, so a revoked or foreign one fails there rather than
+    on the first sync. Nothing else about the provider changes — which is the whole of what
+    "a shared mailbox is just another account" costs on this protocol.
+  - **Rights come from `Mailbox.myRights`, and the account flag is worthless.** Live against
+    Stalwart, an account exposing a single `lr`-shared INBOX reports
+    `accounts.<id>.isReadOnly: **false**`. So `mail_writes` stays advertised for that
+    account and the *mailbox* is what says read-only (`modeling.md`). A missing `myRights`
+    object reads as `owner()` (a server that does not report rights must not have its mail
+    hidden); a right missing *within* the object reads as withheld, which is the safe
+    direction for a permission.
+  - **Stalwart reports identical `accountCapabilities` for every account**, shares included,
+    so the capability narrowing above is a no-op against it. It is kept because RFC 8620
+    defines the set per account precisely so it *can* differ, and claiming a domain the
+    session denies would be a wrong promise; it is driven offline by a trimmed session.
+  - **A shared account changes who you can send as.** Membership of a group mailbox gives
+    the credential a *second* `Identity`, and Stalwart lists the **group's ahead of the
+    user's own**. Submission therefore matches the identity to the draft's `From` rather
+    than taking `list[0]` — which it used to, and which the live suite caught the moment the
+    harness grew a group mailbox: `From: alice@` submitted under the `support@` identity is
+    a `forbiddenFrom` method error. An address the server lists no identity for falls back
+    to the first, so the server gets to refuse it rather than the client guessing.
+
 ## Known limitations (documented, not bugs)
 
 - **Raw MIME is fetched on demand, not synced.** Sync ships Tier-1 metadata only;

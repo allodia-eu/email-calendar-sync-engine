@@ -19,7 +19,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, Draft, EmailStream, MailEdit,
-    MailEditReceipt, Provider, ProviderResult, ScopeSync, SubmissionReceipt, TlsVersion,
+    MailEditReceipt, Provider, ProviderResult, ScopeSync, SharedMailbox, SharedMailboxes,
+    SubmissionReceipt, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -30,9 +31,10 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::{ImapConfig, ImapSecurity},
+    discovery,
     error::ImapError,
     filing::{SmtpSender, resolve_smtp},
-    mail::mailbox_from_list,
+    namespace::{MailStore, Namespaces},
     tls_info,
     transport::Connection,
 };
@@ -58,6 +60,15 @@ pub struct ImapProvider<S> {
     /// version of the **IMAP** session. SMTP submission re-dials per send
     /// (`SmtpSender::ImplicitTls`), so its handshake is not a fact of this provider.
     connection_info: ConnectionInfo,
+    /// The server's `NAMESPACE` answer (RFC 2342), fetched once at connect. Empty for a
+    /// server without the extension, which then reads as "every mailbox is the
+    /// credential's own" — the behaviour that predates shared-mailbox support.
+    /// `pub(crate)` so the submission path scopes its Sent/Drafts lookup the same way.
+    pub(crate) namespaces: Namespaces,
+    /// The principal whose folders this provider's mailbox list covers, derived once from
+    /// [`namespaces`](Self::namespaces) and the bound mailbox. A flat `LIST` cannot answer
+    /// this, and getting it wrong puts two principals' mail in one engine account.
+    pub(crate) store: MailStore,
 }
 
 impl<S> core::fmt::Debug for ImapProvider<S> {
@@ -91,13 +102,23 @@ impl ImapProvider<TlsStream<TcpStream>> {
             .smtp
             .as_ref()
             .map(|settings| resolve_smtp(settings, &connector, config));
-        let (connection, tls_version) = connect_session(config, &connector).await?;
+        let (mut connection, tls_version) = connect_session(config, &connector).await?;
+        // One extra round trip, at connect, and only when the server says it can answer:
+        // it is what tells the folder list whose mail it is looking at. Deliberately here
+        // rather than in `connect_session`, so a watcher's dedicated IDLE connection
+        // (which needs no attribution) does not pay for it.
+        let namespaces = if connection.namespace_advertised() {
+            connection.namespace().await?
+        } else {
+            Namespaces::default()
+        };
         Ok(Self::build(
             connection,
             mailbox,
             smtp,
             config.since,
             tls_version,
+            namespaces,
         ))
     }
 }
@@ -215,6 +236,7 @@ impl<S> ImapProvider<S> {
         smtp: Option<SmtpSender>,
         since: Option<time::Date>,
         tls_version: Option<TlsVersion>,
+        namespaces: Namespaces,
     ) -> Self {
         // Mail writes (`UID STORE`/`MOVE`/`EXPUNGE`) and body fetch (`UID FETCH
         // BODY.PEEK[]`) need no extra config — every IMAP session can issue them — so
@@ -233,6 +255,15 @@ impl<S> ImapProvider<S> {
         if connection.idle_advertised() {
             capabilities = capabilities.with_idle();
         }
+        // Discovery is enumerable exactly when the server can name a foreign namespace:
+        // `NAMESPACE` is what lists them, and `LIST` under one names the stores. A server
+        // that advertises the extension but reports no foreign namespace has nothing to
+        // enumerate, and saying `Enumerable` there would promise a list that is always
+        // empty for a reason the caller cannot distinguish from "no shares yet".
+        if connection.namespace_advertised() && namespaces.foreign().next().is_some() {
+            capabilities = capabilities.with_shared_mailboxes(SharedMailboxes::Enumerable);
+        }
+        let store = MailStore::resolve(&namespaces, mailbox.as_str());
         Self {
             connection: Mutex::new(connection),
             mailbox,
@@ -242,6 +273,8 @@ impl<S> ImapProvider<S> {
                 tls_version,
                 ..ConnectionInfo::new(capabilities)
             },
+            namespaces,
+            store,
         }
     }
 
@@ -250,7 +283,19 @@ impl<S> ImapProvider<S> {
     /// [`ImapProvider::connect`].
     #[cfg(test)]
     pub(crate) fn with_connection(connection: Connection<S>, mailbox: MailboxId) -> Self {
-        Self::build(connection, mailbox, None, None, None)
+        Self::build(connection, mailbox, None, None, None, Namespaces::default())
+    }
+
+    /// Like [`with_connection`](Self::with_connection) but with the `NAMESPACE` answer
+    /// injected, so the offline suite can drive the shared-mailbox paths over a mock
+    /// without replaying a live negotiation.
+    #[cfg(test)]
+    pub(crate) fn with_connection_in_namespaces(
+        connection: Connection<S>,
+        mailbox: MailboxId,
+        namespaces: Namespaces,
+    ) -> Self {
+        Self::build(connection, mailbox, None, None, None, namespaces)
     }
 
     /// Wraps a mock IMAP `connection` but with an injected `smtp` sender, so the
@@ -262,7 +307,14 @@ impl<S> ImapProvider<S> {
         mailbox: MailboxId,
         smtp: SmtpSender,
     ) -> Self {
-        Self::build(connection, mailbox, Some(smtp), None, None)
+        Self::build(
+            connection,
+            mailbox,
+            Some(smtp),
+            None,
+            None,
+            Namespaces::default(),
+        )
     }
 }
 
@@ -289,16 +341,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         }
     }
 
+    /// Lists the folders of the principal this provider is bound to — **not** every folder
+    /// the credential can see. A flat `LIST` returns both, so the rows are attributed
+    /// against the server's `NAMESPACE` answer (`crate::discovery`); without that, a
+    /// provider bound to a shared mailbox would sync the sharer's folders too, and one
+    /// engine account would hold two principals' mail. Each folder carries its `MYRIGHTS`.
     async fn sync_mailboxes(
         &self,
         _account: &AccountId,
         _cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
-        let rows = {
+        let mailboxes = {
             let mut connection = self.connection.lock().await;
-            connection.list().await?
+            discovery::list_store(&mut connection, &self.namespaces, &self.store).await?
         };
-        let mailboxes: Vec<Mailbox> = rows.iter().filter_map(mailbox_from_list).collect();
         // `LIST` is a full snapshot every pass, so every folder is `present`.
         let present: BTreeSet<ProviderKey> = mailboxes.iter().map(|m| m.id.key().clone()).collect();
         Ok(ScopeSync::new(
@@ -399,6 +455,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     ) -> ProviderResult<engine_core::raw::RawMime> {
         let mut connection = self.connection.lock().await;
         crate::fetch::fetch_message_source(&mut connection, message.id.key()).await
+    }
+
+    /// The other principals' mail stores this credential may open, one per entry appearing
+    /// under a foreign `NAMESPACE` prefix (`crate::discovery`). The credential's own store
+    /// is not among them — its prefix is the empty string, which is no handle at all.
+    async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
+        let mut connection = self.connection.lock().await;
+        Ok(discovery::list_shared(&mut connection, &self.namespaces).await?)
+    }
+
+    /// Finds the shared store whose owner component is `address`.
+    ///
+    /// # Errors
+    ///
+    /// [`FailureClass::Permanent`](engine_core::error::FailureClass::Permanent) when no
+    /// foreign namespace holds one.
+    async fn resolve_shared_mailbox(&self, address: &str) -> ProviderResult<SharedMailbox> {
+        let mut connection = self.connection.lock().await;
+        discovery::resolve_shared(&mut connection, &self.namespaces, address).await
     }
 }
 

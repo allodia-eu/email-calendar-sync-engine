@@ -392,6 +392,14 @@ or in `engine-core` (e.g. the Windows-1252 subject fix); a purely additive chang
 not. The cursor clear leaves scope rows and objects in place — the re-snapshot overwrites
 and tombstones them — so nothing is orphaned, and the durable outbox is untouched.
 
+Version **4** is a worked example of a bump that is *not* about decoding bytes: a mailbox
+now carries the caller's rights (`Mailbox::access`, `modeling.md`), sourced from JMAP
+`myRights` / the IMAP `MYRIGHTS` letters. A mailbox projected before that holds no rights
+at all and deserializes as the `owner()` default — that is, as **writable** — so without the
+re-snapshot a shared, read-only folder would go on inviting a write the server then refuses.
+The re-projection is what makes it say what it is. (Nothing about the schema changed; it
+stays at v7.)
+
 The **host-triggered reset** (`Engine::reset`) uses the same primitive: clear the cursors
 so the next sync is a full refetch. It is the manual counterpart of the automatic
 version-driven clear — a "reset / clean state" action a host exposes, and the escape hatch

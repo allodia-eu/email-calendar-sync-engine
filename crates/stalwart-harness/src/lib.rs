@@ -44,6 +44,31 @@ const DEFAULT_IMAP_STARTTLS_ADDR: &str = "127.0.0.1:11143";
 const DEFAULT_SMTP_STARTTLS_ADDR: &str = "127.0.0.1:11587";
 const DEFAULT_ACCOUNT: &str = "alice@test.local";
 const DEFAULT_PASSWORD: &str = "harness-alice-pw";
+/// Address of the credential-less **group** mailbox the seeded account is a member of —
+/// the vendor-neutral analogue of a Microsoft 365 shared mailbox. It has no password: it is
+/// reached through a member's credential, never its own.
+///
+/// Not env-overridable, for the same reason as
+/// [`Harness::scratch`](Harness#structfield.scratch): it exists only because the bundled
+/// entrypoint provisions it, so naming another address could only ever 404.
+pub const SHARED_GROUP_ACCOUNT: &str = "support@test.local";
+
+/// The IMAP namespace prefix Stalwart reports for mail stores the credential may open but
+/// does not own.
+///
+/// Note where it appears: RFC 2342 §5 defines three positions — Personal, **Other Users'**,
+/// Shared — and Stalwart puts these stores in the *second*, despite naming the prefix
+/// "Shared Folders", leaving the third `NIL`. The engine treats the two foreign positions
+/// alike for exactly this reason.
+///
+/// A test asserts the provider *discovers* the prefix rather than assuming it; the constant
+/// is here so a fixture path can be built without the provider.
+pub const SHARED_NAMESPACE_PREFIX: &str = "Shared Folders";
+
+/// `Message-ID` of the single message seeded into the `support` group mailbox — content
+/// the harness controls, so a shared-mailbox sync is asserted on it rather than on a
+/// server-assigned UID.
+pub const SHARED_MESSAGE_ID: &str = "shared-9001@test.local";
 
 /// iCalendar UID of the seeded one-off event (`one-off.ics`), used to fetch a
 /// known calendar resource back over CalDAV.
@@ -183,6 +208,30 @@ impl Harness {
                 ScratchAccount::new("carol@test.local", "harness-carol-pw"),
             ],
         })
+    }
+
+    /// The account that grants [`account`](Self::account) a **read-only** (`lr`) ACL on
+    /// its own INBOX — the half of the shared-mailbox fixture that proves rights belong on
+    /// the mailbox rather than on the account: Stalwart reports `isReadOnly:false` for this
+    /// share in the JMAP session while the one mailbox it exposes grants read alone.
+    ///
+    /// It is deliberately [`scratch`](Self::scratch)`[0]`. The grant is about *rights*, so
+    /// the folder's contents are irrelevant to every assertion made through it — which
+    /// makes an account no count-asserting suite owns the right place for it.
+    #[must_use]
+    pub fn read_only_share_owner(&self) -> &ScratchAccount {
+        &self.scratch[0]
+    }
+
+    /// IMAP path of `mailbox` inside `owner`'s shared namespace — e.g.
+    /// `Shared Folders/support@test.local/INBOX`.
+    ///
+    /// Built from [`SHARED_NAMESPACE_PREFIX`] so a test can *bind* a provider to a shared
+    /// folder without first discovering it; a provider under test must still learn the
+    /// prefix from `NAMESPACE` rather than assuming this shape.
+    #[must_use]
+    pub fn shared_mailbox_path(owner: &str, mailbox: &str) -> String {
+        format!("{SHARED_NAMESPACE_PREFIX}/{owner}/{mailbox}")
     }
 
     /// Path of the seeded account's default calendar collection.
@@ -358,7 +407,7 @@ impl Harness {
 
 #[cfg(test)]
 mod tests {
-    use super::Harness;
+    use super::{Harness, SHARED_GROUP_ACCOUNT};
 
     // from_env reads GATE_VAR; with it unset, the harness is absent (skip).
     // Asserting the None path here keeps the gate itself covered offline. We do
@@ -406,5 +455,13 @@ mod tests {
             "/dav/itip/carol@test.local/inbox/"
         );
         assert_eq!(h.scratch[1].auth(), ("carol@test.local", "carol-pw"));
+    }
+
+    #[test]
+    fn shared_mailbox_paths_sit_under_the_shared_namespace() {
+        assert_eq!(
+            Harness::shared_mailbox_path(SHARED_GROUP_ACCOUNT, "INBOX"),
+            "Shared Folders/support@test.local/INBOX"
+        );
     }
 }

@@ -32,6 +32,48 @@ async fn submit_email_resolves_context_then_sends() {
 }
 
 #[tokio::test]
+async fn the_submission_identity_is_matched_to_the_drafts_from_address() {
+    use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
+    use engine_provider::Draft;
+
+    // The context fixture is the real `Identity/get` of an account that belongs to a shared
+    // mailbox: **two** identities, and Stalwart lists the group's ahead of the user's own.
+    // Taking the first — which this used to do — submitted `From: alice@` under the
+    // `support@` identity, and the server answered `forbiddenFrom`. Found live; pinned here.
+    let context = || fixture("submit_context_shared_identities_response.json");
+    let send = |from: &str| {
+        let exec = FakeExecutor::new(vec![context(), fixture("submit_send_response.json")]);
+        let draft = Draft::new(
+            MessageIdHeader::new("identity-probe@test.local").unwrap(),
+            EmailAddress::new(from),
+            vec![EmailAddress::new("bob@test.local")],
+            "Identity probe",
+            "Hello",
+        );
+        async move {
+            crate::submit::send(&exec, "c", "c", &draft).await.unwrap();
+            let requests = exec.requests.lock().unwrap();
+            requests[1]["methodCalls"][1][1]["create"]["sub"]["identityId"]
+                .as_str()
+                .expect("identityId")
+                .to_owned()
+        }
+    };
+
+    // Sending as the user picks the user's identity, not the first in the list…
+    assert_eq!(send("alice@test.local").await, "c");
+    // …and sending *as the shared mailbox* picks the group's, which is the whole point of
+    // having more than one.
+    assert_eq!(send("support@test.local").await, "b");
+    // Addresses are case-insensitive in the domain by definition (RFC 5321 §2.3.11), and no
+    // mail system distinguishes the local part in practice.
+    assert_eq!(send("Support@Test.Local").await, "b");
+    // An address the server lists no identity for falls back to the first, so the server
+    // gets to refuse it rather than this code guessing.
+    assert_eq!(send("stranger@example.test").await, "b");
+}
+
+#[tokio::test]
 async fn submit_email_uploads_attachment_bytes_before_sending() {
     use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
     use engine_provider::{Draft, DraftAttachment};

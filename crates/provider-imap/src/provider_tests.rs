@@ -330,6 +330,7 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
         }),
         None,
         None,
+        crate::namespace::Namespaces::default(),
     );
     assert!(provider.connection_info().capabilities.submission());
 

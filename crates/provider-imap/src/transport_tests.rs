@@ -325,7 +325,7 @@ async fn list_returns_every_mailbox() {
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("a", "b").await.unwrap();
 
-    let rows = conn.list().await.unwrap();
+    let rows = conn.list_pattern("*").await.unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].name, "INBOX");
     assert_eq!(rows[1].name, "Sent");

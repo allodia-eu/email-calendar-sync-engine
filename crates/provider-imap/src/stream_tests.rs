@@ -328,7 +328,7 @@ async fn an_abandoned_streamed_fetch_self_heals_on_the_next_command() {
     assert_eq!(first.uid, 5);
 
     // A fresh command drains the abandoned fetch (rows 6,7 + its tag) then runs.
-    let folders = conn.list().await.unwrap();
+    let folders = conn.list_pattern("*").await.unwrap();
     assert_eq!(
         folders.len(),
         1,

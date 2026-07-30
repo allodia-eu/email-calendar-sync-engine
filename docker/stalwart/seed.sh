@@ -24,6 +24,13 @@ CONTACT_DIR="$SEED_DIR/contacts"
 
 ALICE="alice@test.local"
 ALICE_PW="${HARNESS_ALICE_PW:-harness-alice-pw}"
+BOB="bob@test.local"
+BOB_PW="${HARNESS_BOB_PW:-harness-bob-pw}"
+
+# The IMAP shared namespace alice reaches the group mailbox through (RFC 2342). Stalwart
+# reports it as `Shared Folders` with a `/` delimiter; the space is percent-encoded when
+# the path rides a curl URL.
+SHARED_SUPPORT="Shared%20Folders/support@test.local"
 
 IMAPS="imaps://127.0.0.1:993"
 HTTP="http://127.0.0.1:8080"
@@ -49,6 +56,12 @@ imap_append() { # file  mailbox
 
 imap_cmd() { # mailbox  command
   imap --url "$IMAPS/$1" --request "$2"
+}
+
+# The same tagged round trip as `imap_cmd`, authenticated as **bob** — needed only to
+# grant alice an ACL on bob's own INBOX (a mailbox alice cannot SETACL herself).
+imap_cmd_bob() { # mailbox  command
+  curl -sk --user "$BOB:$BOB_PW" --url "$IMAPS/$1" --request "$2"
 }
 
 imap_clear() { # mailbox
@@ -130,6 +143,21 @@ if ! imap_cmd INBOX "MOVE 9 Projects" >/dev/null 2>&1; then
   imap_cmd INBOX "STORE 9 +FLAGS (\\Deleted)" >/dev/null
   imap_cmd INBOX "EXPUNGE" >/dev/null
 fi
+
+# ---- The shared-mailbox fixture (RFC 2342 shared namespace + RFC 4314 ACL) ----
+#
+# Two shares that differ deliberately in their *rights*, because that contrast is the
+# point: alice is a member of the `support` group, so she holds full rights on its
+# mailbox, while bob grants her only `lr` (lookup + read) on his own INBOX. Stalwart
+# reports `isReadOnly:false` on **both** shared accounts in alice's JMAP session, so the
+# account-level flag cannot tell them apart — only the per-mailbox rights can, which is
+# why the engine carries rights on the mailbox (docs/agent-guidance/stalwart-harness.md).
+log "granting alice read-only (lr) ACL on bob's INBOX"
+imap_cmd_bob INBOX "SETACL \"INBOX\" \"$ALICE\" lr" >/dev/null
+
+log "seeding one message into the support group mailbox"
+imap_clear "$SHARED_SUPPORT/INBOX"
+imap_append "$MAIL_DIR/08-shared.eml" "$SHARED_SUPPORT/INBOX"
 
 log "putting calendar fixtures into the default calendar"
 put_calendar "$CAL_DIR/one-off.ics" oneoff-2001

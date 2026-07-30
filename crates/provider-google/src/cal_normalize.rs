@@ -72,11 +72,33 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, GoogleError>
     Ok(calendar)
 }
 
-/// Maps a Google `accessRole` to a [`CalendarAccess`]. `writer` grants write; `reader`
-/// and `freeBusyReader` are read-only; `owner` is full.
+/// Maps a Google `accessRole` on a `calendarList` entry to a [`CalendarAccess`].
+///
+/// Google names four roles, and they are four different grants — collapsing any pair of
+/// them tells a host it may do something the API will refuse:
+///
+/// - `owner` — everything, the calendar's own ACL and the calendar itself included.
+/// - `writer` — read and write **events**, but not share the calendar or delete it. Those two are
+///   the owner's alone, so this is deliberately not [`CalendarAccess::owner`].
+/// - `reader` — see the events, change nothing.
+/// - `freeBusyReader` — see only *that* the time is taken, never the events. Distinct from `reader`
+///   in the one way that matters for privacy, which is why [`CalendarAccess::free_busy_only`]
+///   exists.
+///
+/// An unrecognized or absent role falls back to `reader`: visible, immutable. That is the
+/// safe direction — a wrong guess hides a capability rather than inviting a write the server
+/// will reject.
 fn access_role(role: Option<&str>) -> CalendarAccess {
     match role {
-        Some("owner" | "writer") => CalendarAccess::owner(),
+        Some("owner") => CalendarAccess::owner(),
+        Some("writer") => CalendarAccess {
+            may_write: true,
+            // Sharing and deleting the calendar stay with the owner.
+            may_share: false,
+            may_delete: false,
+            ..CalendarAccess::reader()
+        },
+        Some("freeBusyReader") => CalendarAccess::free_busy_only(),
         _ => CalendarAccess::reader(),
     }
 }

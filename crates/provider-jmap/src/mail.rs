@@ -15,7 +15,7 @@
 
 use engine_core::{
     ids::{BlobId, MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, ThreadRef},
+    mail::{EmailAddress, Keyword, Mailbox, MailboxAccess, MailboxRole, Message, ThreadRef},
     membership::Memberships,
 };
 use serde_json::Value;
@@ -73,7 +73,43 @@ pub(crate) fn mailbox_from_json(value: &Value) -> Result<Mailbox, JmapError> {
     if let Some(subscribed) = value.get("isSubscribed").and_then(Value::as_bool) {
         mailbox.subscribed = subscribed;
     }
+    mailbox.access = mailbox_rights(value.get("myRights"));
     Ok(mailbox)
+}
+
+/// Maps a JMAP `MailboxRights` object (RFC 8621 §2) onto [`MailboxAccess`].
+///
+/// Each right is read independently and defaults to **false**, so a server that omits one
+/// is read as withholding it rather than granting it — the safe direction for a permission.
+/// The whole object being absent is different: that is a server which does not report
+/// rights at all, and the honest reading there is the credential's own mailbox
+/// ([`MailboxAccess::owner`]), which is what a caller assumed before rights existed.
+///
+/// `mayShare` is not in RFC 8621's property list (the JMAP sharing extension adds it) but
+/// Stalwart returns it, and it is the direct analogue of IMAP's `a` and DAV's `write-acl`
+/// — so it is read where present and treated as withheld where not.
+fn mailbox_rights(rights: Option<&Value>) -> MailboxAccess {
+    let Some(rights) = rights.filter(|value| value.is_object()) else {
+        return MailboxAccess::owner();
+    };
+    let may = |name: &str| {
+        rights
+            .get(name)
+            .and_then(Value::as_bool)
+            .unwrap_or_default()
+    };
+    MailboxAccess {
+        may_read_items: may("mayReadItems"),
+        may_add_items: may("mayAddItems"),
+        may_remove_items: may("mayRemoveItems"),
+        may_set_seen: may("maySetSeen"),
+        may_set_keywords: may("maySetKeywords"),
+        may_create_child: may("mayCreateChild"),
+        may_rename: may("mayRename"),
+        may_delete: may("mayDelete"),
+        may_submit: may("maySubmit"),
+        may_share: may("mayShare"),
+    }
 }
 
 /// Normalizes one JMAP `Email` object into a [`Message`].

@@ -249,6 +249,69 @@ pub fn split_page(
 pub type EmailStream<'a> =
     core::pin::Pin<Box<dyn Stream<Item = crate::ProviderResult<EmailChunk>> + Send + 'a>>;
 
+/// Default page size the whole-scope drain requests per network round trip. Streaming
+/// callers pass their own, smaller limit for a more responsive UI (see `engine-sync`).
+const DEFAULT_DRAIN_PAGE: usize = 500;
+
+/// Drains `provider`'s [`stream_email`](crate::Provider::stream_email) into one
+/// [`ScopeSync`] — the body of the [`sync_email`](crate::Provider::sync_email) default,
+/// so every adapter implements only the paged primitive.
+///
+/// Lives here rather than inline in the trait because it *is* stream logic: it is where
+/// the per-chunk [`PassMode`] decides what the combined update means. A reconcile pass
+/// tombstones against the accumulated `present` set; an additive pass (cold backfill or
+/// delta) carries only explicit removals. For a first sync the two are equivalent —
+/// nothing is stored yet to tombstone.
+///
+/// `?Sized` so it also drains a `Box<dyn Provider>`.
+///
+/// # Errors
+///
+/// Propagates the stream's classified [`ProviderError`](crate::ProviderError), and fails
+/// [`InvalidState`](engine_core::error::FailureClass::InvalidState) if the stream ends
+/// without ever handing back a cursor to advance to.
+pub(crate) async fn drain_email_stream<P: crate::Provider + ?Sized>(
+    provider: &P,
+    account: &engine_core::ids::AccountId,
+    cursor: Option<&SyncState>,
+) -> crate::ProviderResult<crate::ScopeSync<Message>> {
+    use std::collections::BTreeSet;
+
+    use engine_core::sync::SyncUpdate;
+    use futures_util::StreamExt;
+
+    let mut changed = Vec::new();
+    let mut removed = Vec::new();
+    let mut present = BTreeSet::new();
+    let mut mode = PassMode::Additive;
+    let mut next_cursor: Option<SyncState> = None;
+    let mut stream = provider.stream_email(
+        account,
+        cursor,
+        provider.default_sync_window(),
+        DEFAULT_DRAIN_PAGE,
+        0,
+    );
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        mode = chunk.mode;
+        changed.extend(chunk.changed);
+        removed.extend(chunk.removed);
+        present.extend(chunk.present);
+        if let Some(cursor) = chunk.advance_to {
+            next_cursor = Some(cursor);
+        }
+    }
+    let next_cursor = next_cursor.ok_or_else(|| {
+        crate::ProviderError::invalid_state("email stream ended without a final cursor")
+    })?;
+    let update = match mode {
+        PassMode::Reconcile => SyncUpdate::snapshot(changed, present),
+        PassMode::Additive => SyncUpdate::delta(changed, removed),
+    };
+    Ok(crate::ScopeSync::new(update, next_cursor))
+}
+
 #[cfg(test)]
 mod tests {
     use engine_core::{
