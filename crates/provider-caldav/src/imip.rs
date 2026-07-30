@@ -17,12 +17,16 @@
 //! `text/plain`-only today — `imap-smtp.md`); the documented and wired RSVP path is
 //! the conditional `PUT` above.
 
-use engine_core::{calendar::ParticipationStatus, raw::RawIcal, scheduling::SchedulingMessage};
-
-use crate::{
-    error::CalDavError,
-    ical::{Document, Edit, Edits, split_once_unquoted, split_unquoted},
+use engine_core::{
+    calendar::ParticipationStatus,
+    raw::RawIcal,
+    // One normalization for "is this cal-address me?", shared with the trust decision and
+    // with alias matching — never a second copy (see `normalize_address`).
+    scheduling::{SchedulingMessage, addresses_match},
 };
+use engine_ical::{Document, Edit, Edits, split_once_unquoted, split_unquoted};
+
+use crate::error::CalDavError;
 
 /// Parses a `text/calendar` iMIP body (a `METHOD` + a `VEVENT`) into a normalized
 /// [`SchedulingMessage`] for the pure scheduling layer to reconcile.
@@ -32,7 +36,7 @@ use crate::{
 /// Returns [`CalDavError::Ical`] if the body carries no `METHOD` (so it is not a
 /// scheduling message) or has no usable `VEVENT`/`UID`/`DTSTART`/`DTSTAMP`.
 pub fn parse(text: &str) -> Result<SchedulingMessage, CalDavError> {
-    crate::ical::parse_scheduling_message(text)
+    engine_ical::parse_scheduling_message(text).map_err(CalDavError::from)
 }
 
 /// Patches `attendee`'s `PARTSTAT` to `status` in a stored event's raw iCalendar,
@@ -67,7 +71,7 @@ pub fn set_my_partstat(
 /// `None` if no such attendee is present.
 ///
 /// The fold-aware line surgery — and the guarantee that every other line survives
-/// byte-for-byte — is [`Document`](crate::ical::Document), shared with the structural
+/// byte-for-byte — is [`Document`](engine_ical::Document), shared with the structural
 /// patcher (`ical::patch`). This function is just "find my line, rewrite one parameter".
 fn rewrite_my_partstat(raw: &str, me: &str, status: &str) -> Option<String> {
     let doc = Document::parse(raw);
@@ -126,21 +130,6 @@ fn param_key(segment: &str) -> &str {
     segment.split('=').next().unwrap_or(segment).trim()
 }
 
-/// Compares two calendar addresses after lowercasing and stripping a leading
-/// `mailto:` (mirrors `engine_core::scheduling`'s internal normalization).
-fn addresses_match(a: &str, b: &str) -> bool {
-    normalize(a) == normalize(b)
-}
-
-/// Lowercases and strips a leading `mailto:` scheme from a calendar address.
-fn normalize(address: &str) -> String {
-    let lowered = address.trim().to_ascii_lowercase();
-    lowered
-        .strip_prefix("mailto:")
-        .unwrap_or(&lowered)
-        .to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use engine_core::ids::{CalendarId, EventId};
@@ -177,7 +166,7 @@ mod tests {
 
         // Re-parse: my status is accepted; the organizer's is untouched.
         let (id, cal) = ids();
-        let event = crate::ical::parse_calendar_object(text, id, cal).unwrap();
+        let event = engine_ical::parse_calendar_object(text, id, cal).unwrap();
         let me = event
             .participants
             .iter()
@@ -208,7 +197,7 @@ mod tests {
         // parameters — CN, ROLE, RSVP — all survived the in-place rewrite. The
         // organizer's status is untouched. No NEEDS-ACTION remains in the body.
         let (id, cal) = ids();
-        let event = crate::ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
+        let event = engine_ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
         let me = event
             .participants
             .iter()
@@ -251,7 +240,7 @@ mod tests {
         )
         .unwrap();
         let (id, cal) = ids();
-        let event = crate::ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
+        let event = engine_ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
         let me = event
             .participants
             .iter()
@@ -290,7 +279,7 @@ mod tests {
         }
         // And it still parses back with my accepted status and full name intact.
         let (id, cal) = ids();
-        let event = crate::ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
+        let event = engine_ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
         let me = &event.participants[0];
         assert_eq!(me.participation_status, ParticipationStatus::Accepted);
         assert_eq!(me.name.as_deref(), Some(long));
@@ -316,7 +305,7 @@ mod tests {
         )
         .unwrap();
         let (id, cal) = ids();
-        let event = crate::ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
+        let event = engine_ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
         let me = &event.participants[0];
         assert_eq!(me.participation_status, ParticipationStatus::Accepted);
         assert_eq!(me.name.as_deref(), Some("van der Berg, Jan"));
@@ -336,7 +325,7 @@ mod tests {
         // The final unterminated line survived, and the patch parses back.
         assert!(patched.as_str().contains("END:VCALENDAR"));
         let (id, cal) = ids();
-        let event = crate::ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
+        let event = engine_ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
         assert_eq!(
             event.participants[0].participation_status,
             ParticipationStatus::Accepted
@@ -363,7 +352,7 @@ mod tests {
         .unwrap();
         assert!(patched.as_str().contains("ATTENDEE;CN=Ghost"));
         let (id, cal) = ids();
-        let event = crate::ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
+        let event = engine_ical::parse_calendar_object(patched.as_str(), id, cal).unwrap();
         let me = event
             .participants
             .iter()

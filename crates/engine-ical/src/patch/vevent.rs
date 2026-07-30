@@ -20,7 +20,7 @@ use super::super::{
     unfold::{content_lines, split_once_unquoted},
     value::parse_calendar_date_time,
 };
-use crate::error::CalDavError;
+use crate::error::IcalError;
 
 /// One `VEVENT` component, located by logical-line index.
 #[derive(Debug)]
@@ -58,7 +58,7 @@ impl Vevent {
         &self,
         doc: &Document,
         name: &str,
-    ) -> Option<Result<CalendarDateTime, CalDavError>> {
+    ) -> Option<Result<CalendarDateTime, IcalError>> {
         let group = self.property(doc, name)?;
         let logical = doc.logical(group);
         let line = content_lines(&logical).into_iter().next()?;
@@ -86,14 +86,14 @@ impl Resource {
     ///
     /// # Errors
     ///
-    /// Returns [`CalDavError::Ical`] when the resource carries only override
+    /// Returns [`IcalError`] when the resource carries only override
     /// instances, so there is no master to patch.
-    pub(super) fn master(&self, doc: &Document) -> Result<&Vevent, CalDavError> {
+    pub(super) fn master(&self, doc: &Document) -> Result<&Vevent, IcalError> {
         self.vevents
             .iter()
             .find(|vevent| vevent.property(doc, "RECURRENCE-ID").is_none())
             .ok_or_else(|| {
-                CalDavError::ical(
+                IcalError::new(
                     "resource has no master VEVENT (it carries only RECURRENCE-ID overrides)",
                 )
             })
@@ -120,11 +120,11 @@ impl Resource {
     ///
     /// # Errors
     ///
-    /// Returns [`CalDavError::Ical`] if the resource has no `END:VCALENDAR` — a
+    /// Returns [`IcalError`] if the resource has no `END:VCALENDAR` — a
     /// truncated document we must not "repair" by guessing.
-    pub(super) fn splice_point(&self) -> Result<usize, CalDavError> {
+    pub(super) fn splice_point(&self) -> Result<usize, IcalError> {
         self.end_vcalendar
-            .ok_or_else(|| CalDavError::ical("resource has no END:VCALENDAR to splice into"))
+            .ok_or_else(|| IcalError::new("resource has no END:VCALENDAR to splice into"))
     }
 }
 
@@ -133,8 +133,8 @@ impl Resource {
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] if the document has no `VEVENT` at all.
-pub(super) fn scan(doc: &Document) -> Result<Resource, CalDavError> {
+/// Returns [`IcalError`] if the document has no `VEVENT` at all.
+pub(super) fn scan(doc: &Document) -> Result<Resource, IcalError> {
     let mut stack: Vec<String> = Vec::new();
     let mut vevents = Vec::new();
     let mut end_vcalendar = None;
@@ -191,7 +191,7 @@ pub(super) fn scan(doc: &Document) -> Result<Resource, CalDavError> {
     }
 
     if vevents.is_empty() {
-        return Err(CalDavError::ical("resource has no VEVENT to patch"));
+        return Err(IcalError::new("resource has no VEVENT to patch"));
     }
     Ok(Resource {
         vevents,
@@ -295,12 +295,12 @@ mod tests {
             "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x@y\r\nRECURRENCE-ID:20260126T093000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
         );
         let resource = scan(&doc).unwrap();
-        assert!(matches!(resource.master(&doc), Err(CalDavError::Ical(_))));
+        assert!(resource.master(&doc).is_err());
     }
 
     #[test]
     fn a_document_without_a_vevent_is_an_error() {
         let doc = Document::parse("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
-        assert!(matches!(scan(&doc), Err(CalDavError::Ical(_))));
+        assert!(scan(&doc).is_err());
     }
 }

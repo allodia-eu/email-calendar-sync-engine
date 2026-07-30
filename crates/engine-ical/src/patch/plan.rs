@@ -15,26 +15,26 @@ use super::{
     },
     vevent::{Vevent, property_name},
 };
-use crate::error::CalDavError;
+use crate::error::IcalError;
 
 /// Plans every line edit `patch` implies for `vevent`, writing them into `edits`.
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] if the event has no `DTSTART` to move, or if a new
+/// Returns [`IcalError`] if the event has no `DTSTART` to move, or if a new
 /// `DTSTART`/`DTEND` would change the value's *form* (see [`ensure_same_form`]).
 pub(super) fn plan(
     doc: &Document,
     vevent: &Vevent,
     patch: &EventPatch,
     edits: &mut Edits,
-) -> Result<(), CalDavError> {
+) -> Result<(), IcalError> {
     // The start the end is validated against: the new one if this patch moves it,
     // else the one already on the event.
     let current_start = vevent
         .date_time(doc, "DTSTART")
         .transpose()?
-        .ok_or_else(|| CalDavError::ical("event has no DTSTART"))?;
+        .ok_or_else(|| IcalError::new("event has no DTSTART"))?;
     // Check the start's form before anything downstream reads it: an end validated
     // against a start that is itself illegal reports the wrong property.
     if let Some(start) = patch.start_edit() {
@@ -59,7 +59,7 @@ pub(super) fn plan(
         // the edit looks saved and the event disappears. Refuse it here, where the caller
         // can still be told.
         effective_start.duration_until(end).map_err(|_| {
-            CalDavError::ical(
+            IcalError::new(
                 "the edit would leave DTEND before DTSTART; an event cannot end before it begins",
             )
         })?;
@@ -68,7 +68,7 @@ pub(super) fn plan(
     if let Some(start) = patch.start_edit() {
         let group = vevent
             .property(doc, "DTSTART")
-            .ok_or_else(|| CalDavError::ical("event has no DTSTART"))?;
+            .ok_or_else(|| IcalError::new("event has no DTSTART"))?;
         replace(edits, group, date_time_line("DTSTART", start));
     }
     if let Some(end) = patch.end_edit() {
@@ -181,11 +181,11 @@ pub(super) fn ensure_same_form(
     current: &CalendarDateTime,
     new: &CalendarDateTime,
     name: &str,
-) -> Result<(), CalDavError> {
+) -> Result<(), IcalError> {
     if current.has_same_form(new) {
         return Ok(());
     }
-    Err(CalDavError::ical(format!(
+    Err(IcalError::new(format!(
         "{name} would change the event's time form ({}), which a move must never do \
          silently; supply the new value in the event's own form",
         current.form_name(),

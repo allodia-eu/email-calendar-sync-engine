@@ -22,7 +22,7 @@ use super::{
     unfold::unescape_text,
     value::{parse_calendar_date_time, parse_date_time_list, parse_duration},
 };
-use crate::error::CalDavError;
+use crate::error::IcalError;
 
 /// Builds the structural recurrence from a master's `RRULE`s and `EXDATE`
 /// exclusions, or `None` when the event is not recurring.
@@ -58,11 +58,11 @@ pub(super) fn parse_recurrence(
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] if the override lacks a `RECURRENCE-ID` or
+/// Returns [`IcalError`] if the override lacks a `RECURRENCE-ID` or
 /// carries an unparseable value.
-pub(super) fn fold_override(master: &mut Event, vevent: &Component) -> Result<(), CalDavError> {
+pub(super) fn fold_override(master: &mut Event, vevent: &Component) -> Result<(), IcalError> {
     let recurrence_id = recurrence_id_of(vevent)?
-        .ok_or_else(|| CalDavError::ical("override VEVENT missing RECURRENCE-ID"))?;
+        .ok_or_else(|| IcalError::new("override VEVENT missing RECURRENCE-ID"))?;
     let patch = override_patch(vevent)?;
     // Key by the recurrence-id resolved against the master's start time, so a
     // DATE-valued RECURRENCE-ID against a timed series still matches the instant.
@@ -77,7 +77,7 @@ pub(super) fn fold_override(master: &mut Event, vevent: &Component) -> Result<()
 
 /// Builds the override patch (JSCalendar-keyed, the form the expander reads) from
 /// a `RECURRENCE-ID` instance's moved start, length, title, and cancellation.
-fn override_patch(vevent: &Component) -> Result<RecurrenceOverride, CalDavError> {
+fn override_patch(vevent: &Component) -> Result<RecurrenceOverride, IcalError> {
     let mut fields: Vec<(String, Value)> = Vec::new();
     if let Some(dtstart) = vevent.property("DTSTART") {
         let start = parse_calendar_date_time(dtstart)?;
@@ -105,20 +105,20 @@ fn override_patch(vevent: &Component) -> Result<RecurrenceOverride, CalDavError>
     }
     PatchObject::new(fields)
         .map(RecurrenceOverride::Patch)
-        .map_err(|e| CalDavError::ical(format!("bad override patch: {e}")))
+        .map_err(|e| IcalError::new(format!("bad override patch: {e}")))
 }
 
 /// The override instance's length, if it carries a `DTEND` or `DURATION`.
 fn override_duration(
     vevent: &Component,
     start: &CalendarDateTime,
-) -> Result<Option<Duration>, CalDavError> {
+) -> Result<Option<Duration>, IcalError> {
     if let Some(dtend) = vevent.property("DTEND") {
         let end = parse_calendar_date_time(dtend)?;
         return start
             .duration_until(&end)
             .map(Some)
-            .map_err(|e| CalDavError::ical(format!("bad override DTSTART/DTEND span: {e}")));
+            .map_err(|e| IcalError::new(format!("bad override DTSTART/DTEND span: {e}")));
     }
     match vevent.value("DURATION") {
         Some(duration) => parse_duration(duration).map(Some),

@@ -32,6 +32,9 @@ use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
 
 mod common;
+// Declared only here: the scheduling scenarios need a second principal and an
+// auto-schedule server, which the SabreDAV fixture does not have (see the module docs).
+mod scheduling;
 
 async fn load<T: DeserializeOwned>(
     store: &SqliteStore<ManualClock>,
@@ -280,4 +283,74 @@ async fn caldav_write_reconciles_the_store() {
     };
     let _serial = common::serial_guard().await;
     common::reconcile::read_your_writes(&provider, &account).await;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling (RFC 6638 auto-schedule), Stalwart only — see `scheduling/mod.rs`.
+//
+// These share this binary's `serial_guard`, and they must: the server adds an invitation
+// to Alice's own calendar, which would otherwise race the exact event-count assertion in
+// `caldav_calendar_sync_loop` above.
+// ---------------------------------------------------------------------------
+
+/// An invitation the organizer stores lands on the attendee's calendar, owing a reply —
+/// server-side scheduling, with the attendee's client having sent nothing.
+#[tokio::test]
+async fn caldav_invitation_is_delivered_to_the_attendee() {
+    let Some(parties) = scheduling::parties("caldav_invitation_is_delivered_to_the_attendee").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    scheduling::an_invitation_is_delivered_to_the_attendee(&parties).await;
+}
+
+/// An Outlook-shaped `TZID=W. Europe Standard Time` invitation resolves to `Europe/Berlin`
+/// on the attendee's copy — including the DQUOTE-quoting the server adds.
+#[tokio::test]
+async fn caldav_invitation_windows_time_zone_resolves_to_iana() {
+    let Some(parties) =
+        scheduling::parties("caldav_invitation_windows_time_zone_resolves_to_iana").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    scheduling::an_invitations_windows_time_zone_resolves_to_iana(&parties).await;
+}
+
+/// A real server's `METHOD:REQUEST`, taken from the RFC 6638 scheduling inbox, parses
+/// through the engine's one iCalendar parser.
+#[tokio::test]
+async fn caldav_scheduling_inbox_carries_a_parseable_itip_request() {
+    let Some(parties) =
+        scheduling::parties("caldav_scheduling_inbox_carries_a_parseable_itip_request").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    scheduling::the_scheduling_inbox_carries_a_parseable_itip_request(&parties).await;
+}
+
+/// The headline: patching my `PARTSTAT` and `PUT`ting it back is the whole RSVP — the
+/// organizer's own copy shows the acceptance, with no client-side iTIP delivery.
+#[tokio::test]
+async fn caldav_rsvp_reaches_the_organizer() {
+    let Some(parties) = scheduling::parties("caldav_rsvp_reaches_the_organizer").await else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    scheduling::an_rsvp_reaches_the_organizer(&parties).await;
+}
+
+/// An organizer's delete reaches the attendee as `STATUS:CANCELLED` — the attendee's copy
+/// is tombstoned, not removed.
+#[tokio::test]
+async fn caldav_organizer_cancel_marks_the_attendees_copy_cancelled() {
+    let Some(parties) =
+        scheduling::parties("caldav_organizer_cancel_marks_the_attendees_copy_cancelled").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    scheduling::an_organizer_cancel_marks_the_attendees_copy_cancelled(&parties).await;
 }

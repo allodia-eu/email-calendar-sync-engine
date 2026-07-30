@@ -25,7 +25,12 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   cached — a host feeds each through `message_body` to make its window readable
   offline), resolve inline CID resources with
   `message_inline_parts`, list ordinary downloadable attachments with
-  `message_attachments`, fetch a selected attachment with `message_attachment`; and
+  `message_attachments`, fetch a selected attachment with `message_attachment`,
+  recognize a meeting invitation with `message_scheduling` (the inbound iMIP read —
+  cache-first on the same raw source, so it costs no extra fetch; it *reports* what
+  arrived and deliberately makes no decision, because whether to offer an RSVP is a
+  product rule over the `METHOD` plus an `ATTENDEE` matching one of the account's own
+  addresses — see `calendar-semantics.md`); and
   write with `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
   `create_calendar_event` / `patch_calendar_event` / `delete_calendar_event`
   (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`.

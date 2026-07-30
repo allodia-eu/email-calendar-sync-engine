@@ -34,6 +34,7 @@ mod datetime;
 mod duration;
 mod horizon;
 mod value;
+mod windows_zones;
 mod zone;
 
 pub use date::CalendarDate;
@@ -41,6 +42,10 @@ pub use datetime::{LocalDateTime, UtcDateTime};
 pub use duration::{Duration, SignedDuration};
 pub use horizon::{ExpansionWindow, Horizon};
 pub use value::CalendarDateTime;
+// One policy for turning a provider- or iCalendar-supplied zone name into a
+// `TimeZoneId`, shared by the Graph boundary and the iCalendar `TZID` boundary — both
+// receive Windows zone names.
+pub use windows_zones::{resolve_zone_name, windows_to_iana};
 pub use zone::TimeZoneId;
 
 /// Error returned when constructing or parsing a time value fails.

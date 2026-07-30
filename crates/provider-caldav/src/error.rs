@@ -42,6 +42,16 @@ pub enum CalDavError {
     Protocol(String),
 }
 
+/// Carries an `engine-ical` parse failure into the CalDAV taxonomy as
+/// [`CalDavError::Ical`], so `?` works on the parser's `Result` throughout this crate
+/// and the classification (`Permanent` — a malformed resource is skipped, never
+/// retried) stays in one place.
+impl From<engine_ical::IcalError> for CalDavError {
+    fn from(err: engine_ical::IcalError) -> Self {
+        Self::Ical(err.detail().to_owned())
+    }
+}
+
 impl CalDavError {
     /// Builds a [`CalDavError::Status`].
     pub(crate) fn status(status: u16, body: impl Into<String>) -> Self {

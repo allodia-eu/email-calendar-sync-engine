@@ -59,7 +59,11 @@ async fn snapshot(provider: &CalDavProvider, account: &AccountId) -> Vec<Event> 
 ///
 /// Every scenario reads its event back through this rather than trusting what it sent:
 /// the whole question these tests exist to answer is what the *server* did with it.
-async fn fetch(provider: &CalDavProvider, account: &AccountId, uid: &str) -> Option<Event> {
+pub(crate) async fn fetch(
+    provider: &CalDavProvider,
+    account: &AccountId,
+    uid: &str,
+) -> Option<Event> {
     snapshot(provider, account)
         .await
         .into_iter()
@@ -75,7 +79,7 @@ async fn require(provider: &CalDavProvider, account: &AccountId, uid: &str) -> E
 
 /// The server's stored iCalendar for an event — the bytes it hands back, not the ones
 /// we sent (they differ: Stalwart reserializes).
-fn server_ical(event: &Event) -> RawIcal {
+pub(crate) fn server_ical(event: &Event) -> RawIcal {
     event
         .raw_ical
         .clone()
@@ -93,7 +97,7 @@ fn server_etag(event: &Event) -> ETag {
 
 /// Removes any residue of `uid` from a prior interrupted run, so a scenario's create is
 /// a true create (`If-None-Match: *`). Unconditional: the residue's ETag is unknown.
-async fn pre_clean(provider: &CalDavProvider, account: &AccountId, uid: &Uid) {
+pub(crate) async fn pre_clean(provider: &CalDavProvider, account: &AccountId, uid: &Uid) {
     let href = provider.event_href(uid).expect("mint event href");
     let _ = provider
         .delete_event(account, &EventDeletion::unconditional(href, uid.clone()))

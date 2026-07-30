@@ -67,6 +67,35 @@ where
     .await
 }
 
+/// Returns the iMIP scheduling payload of `message` plus the addresses it was delivered to,
+/// or `None` when the message carries no calendar part.
+///
+/// The two travel together because they answer one question — "is this an invitation, and is
+/// it for me?" — and both come from the same raw source, so an invitation card costs **one**
+/// fetch, shared with the body and attachment reads through the same cache. Interpreting the
+/// payload is `engine-ical`'s job; this only locates and decodes it.
+///
+/// # Errors
+///
+/// Returns [`SyncError::Provider`] if the source fetch fails or [`SyncError::Store`] if a
+/// cache read fails.
+pub async fn fetch_message_scheduling<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    message: &Message,
+) -> Result<Option<(engine_mime::CalendarPart, Vec<String>)>, SyncError>
+where
+    P: Provider,
+    S: MessageSourceCache,
+{
+    with_raw_source(provider, store, account, message, |raw| {
+        engine_mime::extract_calendar_part(raw)
+            .map(|part| (part, engine_mime::extract_delivery_recipients(raw)))
+    })
+    .await
+}
+
 /// Reads the raw RFC 5322 source (cache-first: the content-addressed blob, else one provider
 /// fetch) and hands it to `extract`.
 ///

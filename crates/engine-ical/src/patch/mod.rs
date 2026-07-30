@@ -60,7 +60,7 @@ use super::{
     format::date_time_line,
     lines::{Document, Edit, Edits},
 };
-use crate::error::CalDavError;
+use crate::error::IcalError;
 
 /// Applies `patch` to the `VEVENT` named by `target` in a stored calendar object
 /// resource, returning the document to `PUT` back under `If-Match`.
@@ -71,15 +71,15 @@ use crate::error::CalDavError;
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] if the resource has no `VEVENT` or no master `VEVENT`
+/// Returns [`IcalError`] if the resource has no `VEVENT` or no master `VEVENT`
 /// to patch; if the event has no `DTSTART`; if a new `DTSTART`/`DTEND` would change the
 /// event's time form (a zoned or all-day event must not be silently converted); or if
 /// [`PatchTarget::Instance`] targets an event that does not recur.
-pub(crate) fn patch_event_ical(
+pub fn patch_event_ical(
     ical: &RawIcal,
     target: &PatchTarget,
     patch: &EventPatch,
-) -> Result<RawIcal, CalDavError> {
+) -> Result<RawIcal, IcalError> {
     let text = ical.as_str();
     let doc = Document::parse(text);
     let resource = vevent::scan(&doc)?;
@@ -115,9 +115,9 @@ fn split_override(
     master: &vevent::Vevent,
     recurrence_id: &CalendarDateTime,
     patch: &EventPatch,
-) -> Result<String, CalDavError> {
+) -> Result<String, IcalError> {
     if !master.is_recurring(doc) {
-        return Err(CalDavError::ical(
+        return Err(IcalError::new(
             "cannot override an instance of an event that does not recur; patch the series",
         ));
     }
@@ -129,7 +129,7 @@ fn split_override(
     // CalDAV's, not the neutral contract's: a JMAP server materializes the override from
     // the series itself and needs neither.
     if patch.start_edit().is_none() || patch.end_edit().is_none() {
-        return Err(CalDavError::ical(
+        return Err(IcalError::new(
             "splitting a new override needs the occurrence's start and end on the patch \
              (the master's are the first occurrence's, not this one's); pass both, \
              unchanged if the edit does not move the event",
@@ -138,7 +138,7 @@ fn split_override(
     let start = master
         .date_time(doc, "DTSTART")
         .transpose()?
-        .ok_or_else(|| CalDavError::ical("event has no DTSTART"))?;
+        .ok_or_else(|| IcalError::new("event has no DTSTART"))?;
     // The override's identity must be expressed like the series it overrides — a zoned
     // series is not overridden by a UTC RECURRENCE-ID naming "the same" moment.
     plan::ensure_same_form(&start, recurrence_id, "RECURRENCE-ID")?;
@@ -149,7 +149,7 @@ fn split_override(
     // it is spliced in *before* that line rather than replacing it.
     let anchor = master
         .property(doc, "DTSTART")
-        .ok_or_else(|| CalDavError::ical("event has no DTSTART"))?;
+        .ok_or_else(|| IcalError::new("event has no DTSTART"))?;
     edits
         .entry(anchor)
         .or_default()

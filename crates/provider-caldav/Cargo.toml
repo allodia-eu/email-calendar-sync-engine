@@ -8,6 +8,10 @@ publish.workspace = true
 
 [dependencies]
 engine-core = { workspace = true }
+# The iCalendar parser/serializer/patcher. It used to live *in* this crate; it is
+# transport-neutral (iMIP carries iCalendar over mail on accounts with no CalDAV in
+# the picture at all), so CalDAV is now one of its callers rather than its owner.
+engine-ical = { workspace = true }
 # `http` enables `HttpVersion::from_http`, the one place a reqwest response's version is
 # mapped onto the engine's neutral `HttpVersion` (`ConnectionInfo`).
 engine-provider = { workspace = true, features = ["http"] }

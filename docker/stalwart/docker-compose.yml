@@ -37,6 +37,7 @@ services:
       HARNESS_ADMIN_PW: "harness-admin-pw"
       HARNESS_ALICE_PW: "harness-alice-pw"
       HARNESS_BOB_PW: "harness-bob-pw"
+      HARNESS_CAROL_PW: "harness-carol-pw"
     volumes:
       - ./entrypoint.sh:/harness/entrypoint.sh:ro
       - ./seed.sh:/harness/seed.sh:ro

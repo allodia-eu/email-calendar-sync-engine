@@ -13,6 +13,7 @@
 //! only *interprets* them.
 
 mod attachment;
+mod scheduling;
 
 use std::borrow::Cow;
 
@@ -22,6 +23,10 @@ use engine_core::{
     raw::RawMime,
 };
 use mail_parser::{ContentType, GetHeader, HeaderName, HeaderValue, MessageParser, PartType};
+// The mail side of the mail↔calendar bridge: the iMIP `text/calendar` payload, and the
+// addresses the message was delivered to (which is how an invitation to an alias is
+// recognized with no configuration).
+pub use scheduling::{CalendarPart, extract_calendar_part, extract_delivery_recipients};
 
 /// Extracts the displayable [`MessageBody`] from a raw RFC 5322 message.
 ///

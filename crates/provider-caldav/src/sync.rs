@@ -19,12 +19,12 @@ use engine_core::{
     sync::{SyncState, SyncUpdate},
     version::{ETag, RevisionTokens},
 };
+use engine_ical::parse_calendar_object;
 use engine_provider::ScopeSync;
 
 use crate::{
     dav::MultiStatus,
     error::CalDavError,
-    ical::parse_calendar_object,
     request::sync_collection_report,
     transport::{DavExecutor, DavMethod},
 };

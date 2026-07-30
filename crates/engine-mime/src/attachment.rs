@@ -15,6 +15,12 @@ use mail_parser::{ContentType, MessageParser, MessagePart, MimeHeaders, PartType
 /// a part the sender explicitly marked `Content-Disposition: attachment`, which stays
 /// downloadable even when it also carries a `Content-ID`. Parts without a `Content-ID`, such as
 /// a provider-displayed inline PDF, remain downloadable.
+///
+/// An **iMIP `text/calendar` body part** — a meeting invitation's payload, which the reading
+/// view renders as an invitation card — is likewise omitted. The rule is the absence of any
+/// `Content-Disposition`, so a calendar file the sender explicitly *attached* (Gmail's
+/// duplicate `invite.ics`, a published `.ics`) still appears; only the part consumed into the
+/// card disappears.
 #[must_use]
 pub fn extract_attachments(raw: &RawMime) -> Vec<MessageAttachment> {
     let Some(message) = MessageParser::default().parse(raw.as_bytes()) else {
@@ -47,7 +53,8 @@ pub fn extract_attachment(raw: &RawMime, id: AttachmentPartId) -> Option<Message
 }
 
 fn attachment_meta(id: AttachmentPartId, part: &MessagePart<'_>) -> Option<MessageAttachment> {
-    if is_cid_inline(part) || matches!(part.body, PartType::Multipart(_)) {
+    if is_cid_inline(part) || is_imip_body_part(part) || matches!(part.body, PartType::Multipart(_))
+    {
         return None;
     }
     let media_type = part
@@ -86,6 +93,34 @@ fn is_cid_inline(part: &MessagePart<'_>) -> bool {
         && !part
             .content_disposition()
             .is_some_and(ContentType::is_attachment)
+}
+
+/// Whether `part` is an **iMIP scheduling body part** — the `text/calendar` payload of a
+/// meeting invitation that a reading view renders as an *invitation card*, not as a file.
+///
+/// An iMIP message carries its iTIP object as an alternative **body** part, a sibling of
+/// `text/plain` and `text/html` (RFC 6047 §2.4). It is a representation *of the message*, so
+/// no paperclip belongs on it — Outlook and Gmail both hide it. mail-parser nonetheless
+/// classifies it as an attachment (`text/calendar` is `MimeType::TextOther`, and inside a
+/// `multipart/alternative` it is added to neither the text nor the HTML body index), so
+/// without this check every invitation grew a junk `attachment-3.ics` row.
+///
+/// The discriminator is the **absence of any `Content-Disposition`**, which is exactly what
+/// separates a body part from a file the sender meant to send:
+///
+/// - Outlook and Sabre/CalDAV send only the undispositioned body part → hidden, card only.
+/// - Gmail sends the body part **and** a `Content-Disposition: attachment` copy named `invite.ics`
+///   → the body part is hidden, the deliberate copy keeps its chip (Outlook shows it too).
+/// - A published `.ics` (`METHOD:PUBLISH`, a newsletter-style calendar file) is dispositioned as an
+///   attachment → keeps its chip, and produces no card anyway.
+///
+/// So a sender who explicitly attached a calendar file always keeps it; only the part we
+/// consume into the card disappears.
+fn is_imip_body_part(part: &MessagePart<'_>) -> bool {
+    let is_calendar = part
+        .content_type()
+        .is_some_and(|ct| media_type_of(ct).eq_ignore_ascii_case("text/calendar"));
+    is_calendar && part.content_disposition().is_none()
 }
 
 fn media_type_of(content_type: &ContentType<'_>) -> String {
@@ -181,6 +216,78 @@ mod tests {
         --m\r\nContent-Type: text/calendar\r\n\
         Content-Disposition: attachment; filename=\"invite.ics\"\r\n\r\nBEGIN:VCALENDAR\r\n\
         --m--\r\n";
+
+    // --- G6: an iMIP body part is a card, not a file -----------------------------
+
+    /// Outlook / Sabre-CalDAV: the calendar payload is an alternative **body** part —
+    /// no disposition, no filename.
+    const IMIP_INLINE_ONLY: &[u8] = b"Content-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
+        --a\r\nContent-Type: text/plain\r\n\r\nWhen: today\r\n\
+        --a\r\nContent-Type: text/calendar; charset=\"iso-8859-1\"; method=REQUEST\r\n\r\n\
+        BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n\
+        --a--\r\n";
+
+    /// Gmail: the body part **and** a deliberately attached duplicate.
+    const IMIP_INLINE_PLUS_ATTACHED: &[u8] =
+        b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
+        --m\r\nContent-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
+        --a\r\nContent-Type: text/plain\r\n\r\nnote\r\n\
+        --a\r\nContent-Type: text/calendar; charset=UTF-8; method=REQUEST\r\n\r\n\
+        BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n\
+        --a--\r\n\
+        --m\r\nContent-Type: application/ics; name=\"invite.ics\"\r\n\
+        Content-Disposition: attachment; filename=\"invite.ics\"\r\n\r\n\
+        BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n\
+        --m--\r\n";
+
+    #[test]
+    fn an_imip_body_part_does_not_become_a_junk_attachment_row() {
+        // Regression (G6). `text/calendar` is a text type that belongs to neither the text
+        // nor the HTML body index, so mail-parser hands it back as an attachment and
+        // `default_file_name` invented `attachment-2.ics`. Every invitation therefore showed
+        // a paperclip nobody sent. Outlook and Gmail both hide this part.
+        let attachments = extract_attachments(&raw(IMIP_INLINE_ONLY));
+        assert!(
+            attachments.is_empty(),
+            "the invitation body part is a card, not a file: {attachments:?}"
+        );
+    }
+
+    #[test]
+    fn a_deliberately_attached_ics_still_shows_beside_the_hidden_body_part() {
+        // Gmail's belt-and-braces copy is a real file the sender chose to attach — Outlook
+        // shows it too. Hiding the body part must not hide this.
+        let attachments = extract_attachments(&raw(IMIP_INLINE_PLUS_ATTACHED));
+        assert_eq!(attachments.len(), 1, "{attachments:?}");
+        assert_eq!(attachments[0].file_name(), "invite.ics");
+    }
+
+    #[test]
+    fn a_published_ics_attachment_is_untouched() {
+        // A `METHOD:PUBLISH` calendar file (a newsletter-style .ics) is dispositioned as an
+        // attachment and produces no card, so its chip must survive.
+        let published = b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
+            --m\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n\
+            --m\r\nContent-Type: text/calendar; charset=UTF-8\r\n\
+            Content-Disposition: attachment; filename=\"agenda.ics\"\r\n\r\n\
+            BEGIN:VCALENDAR\r\nMETHOD:PUBLISH\r\nEND:VCALENDAR\r\n\
+            --m--\r\n";
+        let attachments = extract_attachments(&raw(published));
+        assert_eq!(attachments.len(), 1, "{attachments:?}");
+        assert_eq!(attachments[0].file_name(), "agenda.ics");
+    }
+
+    #[test]
+    fn a_suppressed_imip_body_part_cannot_be_downloaded_by_id_either() {
+        // The listing and the by-id fetch must agree: a part hidden from the list must not
+        // be reachable through `extract_attachment`, or a host could still surface it.
+        for id in 0..4 {
+            assert!(
+                extract_attachment(&raw(IMIP_INLINE_ONLY), AttachmentPartId::new(id)).is_none(),
+                "id {id} should not resolve to a downloadable part"
+            );
+        }
+    }
 
     #[test]
     fn extracts_attachment_metadata_without_bytes() {

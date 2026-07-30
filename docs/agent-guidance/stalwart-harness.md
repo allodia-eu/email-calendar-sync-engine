@@ -133,6 +133,59 @@ the offline run. The IMAP probe is generic over a `Read + Write` stream so the
 TLS dependency (`rustls`) stays a test-only dev-dependency, out of the library
 and the cross-compile build.
 
+## The accounts
+
+| Account | Holds | Used for |
+| --- | --- | --- |
+| `alice@test.local` | **the whole shared seed** (mail, calendar, contacts) | every read/sync/write suite; several assert its exact mailbox and calendar counts |
+| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, and the **organizer** in the scheduling suite |
+| `carol@test.local` | nothing | scratch: the **attendee** in the scheduling suite |
+
+`Harness::scratch` exposes the two scratch accounts as a pair. They exist because
+some server behaviour cannot be observed without writing to a mailbox: RFC 6638
+auto-scheduling has the server **mail** the attendee an invitation *and* the
+organizer the reply, and that mail cannot be switched off. Running such an
+exchange through Alice would push her INBOX permanently over the exact count the
+mail suites assert, so the whole two-party exchange happens between Bob and Carol,
+where nothing counts what is delivered. Prefer a scratch account over relaxing an
+assertion on the seeded one.
+
+## Rate limiters are disarmed on purpose
+
+The entrypoint raises Stalwart's **inbound rate limiters** at bootstrap and logs
+`relaxed inbound rate limiters`. This is not incidental tidying — without it the
+scheduling suite is not re-runnable, and it fails in the most misleading way
+available.
+
+Stalwart ships two enabled by default, both visible via
+`x:MtaInboundThrottle/get`:
+
+| Throttle | Key | Default rate |
+| --- | --- | --- |
+| Sender IP | `remoteIp` | 5 / second |
+| Sender address to recipient | `senderDomain` + `rcpt` | **25 / hour** |
+
+The second one is the biter. RFC 6638 auto-scheduling makes the server **mail both
+parties** of every invitation, so the CalDAV scheduling suite spends ~6 messages
+per run and used to stop working after about four. Past the cap Stalwart abandons
+the **entire** iTIP delivery — the attendee's calendar copy included — while still
+answering the organizer's `PUT` with `201`, and logs nothing. Every scheduling test
+then times out on a delivery that never arrives, which reads exactly like a code
+regression.
+
+A rate limiter also makes a result depend on *how many times the suite has already
+run*, which is the direct opposite of the determinism this fixture exists for. So
+the entrypoint sets both to effectively unlimited (`1000000/1s`). Verified: eight
+consecutive scheduling runs, where the fourth used to fail.
+
+These are **store-backed settings**, not file config: v0.16's `config.json` holds
+only the `DataStore` object, and everything else lives in the database behind the
+JMAP management API (`x:`-prefixed objects — `configuration/declarative-deployments`
+in the Stalwart docs). The object name is `MtaInboundThrottle`; guessing at
+`x:Setting`/`x:RateLimit` gets `unknownMethod`, which is easy to mistake for "not
+configurable". The full object registry is the Stalwart docs' `ref/object` index —
+consult it rather than probing.
+
 ## The seed dataset — and the invariant each fixture protects
 
 One shared dataset, loaded into `alice@test.local`. Fixtures carry content the

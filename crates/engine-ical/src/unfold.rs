@@ -70,7 +70,7 @@ fn tokenize(line: &str) -> Option<ContentLine> {
 }
 
 /// Splits at the first `delim` that is not inside a `DQUOTE`-quoted run.
-pub(crate) fn split_once_unquoted(text: &str, delim: char) -> Option<(&str, &str)> {
+pub fn split_once_unquoted(text: &str, delim: char) -> Option<(&str, &str)> {
     let mut in_quote = false;
     for (i, c) in text.char_indices() {
         match c {
@@ -83,7 +83,7 @@ pub(crate) fn split_once_unquoted(text: &str, delim: char) -> Option<(&str, &str
 }
 
 /// Splits `text` on every `delim` outside a quoted run.
-pub(crate) fn split_unquoted(text: &str, delim: char) -> Vec<&str> {
+pub fn split_unquoted(text: &str, delim: char) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut in_quote = false;
     let mut start = 0;

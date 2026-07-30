@@ -208,7 +208,10 @@ fn splitting_a_new_override_demands_the_occurrences_own_times() {
         &patch().start(amsterdam("2026-01-26T14:00:00")), // no end
     )
     .unwrap_err();
-    assert!(matches!(err, CalDavError::Ical(_)));
+    assert!(
+        err.to_string().contains("start and end"),
+        "the error should say what the caller must supply: {err}"
+    );
 
     // Retitling one occurrence is legal — it just has to say when that occurrence is.
     let after = apply(
@@ -233,5 +236,8 @@ fn overriding_an_instance_of_a_non_recurring_event_is_an_error() {
         &patch().summary("x"),
     )
     .unwrap_err();
-    assert!(matches!(err, CalDavError::Ical(_)));
+    assert!(
+        err.to_string().contains("does not recur"),
+        "the error should say why the instance cannot be overridden: {err}"
+    );
 }

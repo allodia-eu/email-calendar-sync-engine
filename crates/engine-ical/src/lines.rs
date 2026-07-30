@@ -28,7 +28,7 @@ use super::format::fold_line;
 
 /// What happens to one logical line when the document is rendered.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) enum LineEdit {
+pub enum LineEdit {
     /// Re-emit the group's physical lines verbatim (the default for every group).
     #[default]
     Keep,
@@ -41,7 +41,7 @@ pub(crate) enum LineEdit {
 /// An edit applied to one logical line: text spliced in before it, and what becomes
 /// of the line itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Edit {
+pub struct Edit {
     /// Raw text emitted immediately before the group — already folded and terminated
     /// (build it with [`Document::fold`], or splice a whole rendered component).
     pub before: String,
@@ -51,7 +51,7 @@ pub(crate) struct Edit {
 
 impl Edit {
     /// An edit that replaces the logical line with `text`.
-    pub(crate) fn replace(text: impl Into<String>) -> Self {
+    pub fn replace(text: impl Into<String>) -> Self {
         Self {
             before: String::new(),
             line: LineEdit::Replace(text.into()),
@@ -59,7 +59,7 @@ impl Edit {
     }
 
     /// An edit that splices `text` in before the (otherwise untouched) line.
-    pub(crate) fn insert_before(text: impl Into<String>) -> Self {
+    pub fn insert_before(text: impl Into<String>) -> Self {
         Self {
             before: text.into(),
             line: LineEdit::Keep,
@@ -69,13 +69,13 @@ impl Edit {
 
 /// The edits to apply to a document, keyed by logical-line index. `BTreeMap` so the
 /// render walks them in document order.
-pub(crate) type Edits = BTreeMap<usize, Edit>;
+pub type Edits = BTreeMap<usize, Edit>;
 
 /// A raw iCalendar document split into physical lines and the logical groups they
 /// fold into, holding borrowed slices of the original text so untouched lines
 /// re-emit byte-for-byte.
 #[derive(Debug)]
-pub(crate) struct Document<'a> {
+pub struct Document<'a> {
     /// Each physical line as `(content_without_terminator, terminator)`; the
     /// terminator is `""` only for an unterminated final line.
     physical: Vec<(&'a str, &'a str)>,
@@ -85,20 +85,27 @@ pub(crate) struct Document<'a> {
 
 impl<'a> Document<'a> {
     /// Splits `raw` into physical lines and folds them into logical groups.
-    pub(crate) fn parse(raw: &'a str) -> Self {
+    pub fn parse(raw: &'a str) -> Self {
         let physical = physical_lines(raw);
         let groups = logical_groups(&physical);
         Self { physical, groups }
     }
 
     /// The number of logical lines.
-    pub(crate) fn len(&self) -> usize {
+    #[must_use]
+    pub fn len(&self) -> usize {
         self.groups.len()
+    }
+
+    /// Whether the document has no logical lines at all — an empty or whitespace-only text.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
     }
 
     /// The logical (unfolded) content line at `index`, with each continuation's one
     /// leading space or tab consumed.
-    pub(crate) fn logical(&self, index: usize) -> String {
+    pub fn logical(&self, index: usize) -> String {
         let mut out = String::new();
         for (offset, &(content, _)) in self.physical[self.groups[index].clone()].iter().enumerate()
         {
@@ -116,7 +123,7 @@ impl<'a> Document<'a> {
     /// The line terminator of the logical line at `index`, falling back to CRLF when
     /// the document's final line carries none (RFC 5545 mandates CRLF; a written line
     /// gets one even if the source was truncated).
-    pub(crate) fn terminator(&self, index: usize) -> &'a str {
+    pub fn terminator(&self, index: usize) -> &'a str {
         let term = self.physical[self.groups[index].end - 1].1;
         if term.is_empty() { "\r\n" } else { term }
     }
@@ -124,19 +131,19 @@ impl<'a> Document<'a> {
     /// Folds `line` for insertion into this document, using the terminator in use at
     /// `index` (so a bare-LF document stays bare-LF). Includes the trailing
     /// terminator.
-    pub(crate) fn fold(&self, index: usize, line: &str) -> String {
+    pub fn fold(&self, index: usize, line: &str) -> String {
         fold_line(line, self.terminator(index))
     }
 
     /// Renders the whole document with `edits` applied.
-    pub(crate) fn render(&self, edits: &Edits) -> String {
+    pub fn render(&self, edits: &Edits) -> String {
         self.render_range(0..self.len(), edits)
     }
 
     /// Renders the logical lines in `groups` with `edits` applied (keyed by absolute
     /// logical-line index). Every group not named in `edits` is copied from the source
     /// byte-for-byte — the invariant this whole module exists for.
-    pub(crate) fn render_range(&self, groups: Range<usize>, edits: &Edits) -> String {
+    pub fn render_range(&self, groups: Range<usize>, edits: &Edits) -> String {
         let mut out = String::with_capacity(self.source_len());
         for index in groups {
             let edit = edits.get(&index);

@@ -414,7 +414,9 @@ mod progress;
 mod recipients;
 mod stream;
 mod threading;
-pub use attachment::{fetch_message_attachment, fetch_message_attachments};
+pub use attachment::{
+    fetch_message_attachment, fetch_message_attachments, fetch_message_scheduling,
+};
 pub use body::{fetch_inline_parts, fetch_message_body};
 pub use calendar::{CalendarSyncReport, EventSyncReport, reconcile_calendar_events, sync_calendar};
 pub use contact::{

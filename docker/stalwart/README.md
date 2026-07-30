@@ -66,11 +66,22 @@ entrypoint provisions them via the management API to exercise the engine's START
 Created at startup via Stalwart's management API (v0.16 has no declarative config
 file — see the design doc).
 
-| Account            | Password           | Role                          |
-| ------------------ | ------------------ | ----------------------------- |
-| `alice@test.local` | `harness-alice-pw` | primary (mail + calendar + contacts) |
-| `bob@test.local`   | `harness-bob-pw`   | second party / event attendee |
-| `admin`            | `harness-admin-pw` | fallback admin (management)   |
+| Account             | Password           | Role                          |
+| ------------------- | ------------------ | ----------------------------- |
+| `alice@test.local`  | `harness-alice-pw` | primary; holds the whole seed (mail + calendar + contacts) |
+| `bob@test.local`    | `harness-bob-pw`   | scratch: SMTP recipient, and **organizer** in the scheduling suite |
+| `carol@test.local`  | `harness-carol-pw` | scratch: **attendee** in the scheduling suite |
+| `admin`             | `harness-admin-pw` | fallback admin (management)   |
+
+Bob and Carol hold none of the seed. RFC 6638 auto-scheduling makes the server mail
+both parties of an invitation, so the scheduling tests run entirely between these
+two — mail delivered to Alice would break the exact INBOX count the mail suites
+assert (`docs/agent-guidance/stalwart-harness.md`).
+
+The entrypoint also **raises Stalwart's inbound rate limiters** (`x:MtaInboundThrottle`)
+at bootstrap, logging `relaxed inbound rate limiters`. The default of 25 messages/hour
+per sender-domain→recipient otherwise breaks the scheduling suite after a few runs, and
+does so silently — see the harness guidance doc.
 
 ## Layout
 

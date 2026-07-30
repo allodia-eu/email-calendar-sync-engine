@@ -115,6 +115,40 @@ pub struct Harness {
     pub account: String,
     /// The account's password.
     pub password: String,
+    /// The accounts holding **none** of the seeded dataset (`bob@`, `carol@`), for a
+    /// scenario that needs to mutate state no assertion counts.
+    ///
+    /// The shared dataset all lives in [`account`](Self::account), and several suites
+    /// assert its exact mailbox and calendar counts. A scheduling run cannot live there:
+    /// RFC 6638 auto-scheduling has the server **mail** the attendee an invitation *and*
+    /// the organizer a reply, and those land in the INBOX — so a run between Alice and
+    /// anyone would grow the count-asserted folder on every pass. Two scratch accounts let
+    /// the whole two-party exchange happen off to the side.
+    pub scratch: [ScratchAccount; 2],
+}
+
+/// An account carrying none of the seeded dataset — free to be written to.
+#[derive(Debug, Clone)]
+pub struct ScratchAccount {
+    /// The full email address, which is also the DAV principal name.
+    pub address: String,
+    /// The account's password.
+    pub password: String,
+}
+
+impl ScratchAccount {
+    fn new(address: &str, password: &str) -> Self {
+        Self {
+            address: address.to_owned(),
+            password: password.to_owned(),
+        }
+    }
+
+    /// Basic-auth credentials for this account.
+    #[must_use]
+    pub fn auth(&self) -> (&str, &str) {
+        (self.address.as_str(), self.password.as_str())
+    }
 }
 
 impl Harness {
@@ -142,13 +176,40 @@ impl Harness {
             smtp_starttls_addr: var("STALWART_SMTP_STARTTLS_ADDR", DEFAULT_SMTP_STARTTLS_ADDR),
             account: var("STALWART_ACCOUNT", DEFAULT_ACCOUNT),
             password: var("STALWART_PASSWORD", DEFAULT_PASSWORD),
+            // Not env-overridable, unlike the seeded account: these exist only because the
+            // bundled entrypoint provisions them, so naming others would just 401.
+            scratch: [
+                ScratchAccount::new("bob@test.local", "harness-bob-pw"),
+                ScratchAccount::new("carol@test.local", "harness-carol-pw"),
+            ],
         })
     }
 
     /// Path of the seeded account's default calendar collection.
     #[must_use]
     pub fn calendar_collection_path(&self) -> String {
-        format!("/dav/cal/{}/default/", self.account)
+        Self::calendar_collection_path_of(&self.account)
+    }
+
+    /// Path of `account`'s default calendar collection.
+    ///
+    /// Takes the account rather than reading `self`, so a two-party scenario can address a
+    /// [`scratch`](Self::scratch) account's collection as well.
+    #[must_use]
+    pub fn calendar_collection_path_of(account: &str) -> String {
+        format!("/dav/cal/{account}/default/")
+    }
+
+    /// Path of `account`'s RFC 6638 **scheduling inbox** — where an auto-schedule server
+    /// deposits the iTIP messages addressed to it.
+    ///
+    /// Stalwart advertises `calendar-auto-schedule` and reports this collection as
+    /// `CALDAV:schedule-inbox-URL` on the calendar home; the path is hard-coded here for
+    /// the same reason the calendar path is — a test asserts on harness-controlled
+    /// structure, and discovering it would test discovery rather than scheduling.
+    #[must_use]
+    pub fn scheduling_inbox_path_of(account: &str) -> String {
+        format!("/dav/itip/{account}/inbox/")
     }
 
     /// CalDAV path of a seeded event resource by its iCalendar UID.
@@ -238,13 +299,25 @@ impl Harness {
     /// # Errors
     /// Propagates transport/parse failures from the HTTP probe.
     pub fn caldav_propfind(&self, path: &str) -> Result<HttpResponse, HarnessError> {
+        self.dav_propfind_as(self.auth(), path)
+    }
+
+    /// `PROPFIND` a CalDAV path (Depth 1) as `auth` — any account, not only the seeded one.
+    ///
+    /// # Errors
+    /// Propagates transport/parse failures from the HTTP probe.
+    pub fn dav_propfind_as(
+        &self,
+        auth: (&str, &str),
+        path: &str,
+    ) -> Result<HttpResponse, HarnessError> {
         let body = br#"<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getetag/></d:prop></d:propfind>"#;
         http::request(
             &self.http_addr,
             "PROPFIND",
             path,
-            Some(self.auth()),
+            Some(auth),
             &[("Depth", "1"), ("Content-Type", "application/xml")],
             body,
         )
@@ -255,7 +328,31 @@ impl Harness {
     /// # Errors
     /// Propagates transport/parse failures from the HTTP probe.
     pub fn caldav_get(&self, path: &str) -> Result<HttpResponse, HarnessError> {
-        http::request(&self.http_addr, "GET", path, Some(self.auth()), &[], &[])
+        self.dav_get_as(self.auth(), path)
+    }
+
+    /// `GET` a DAV resource as `auth`.
+    ///
+    /// # Errors
+    /// Propagates transport/parse failures from the HTTP probe.
+    pub fn dav_get_as(&self, auth: (&str, &str), path: &str) -> Result<HttpResponse, HarnessError> {
+        http::request(&self.http_addr, "GET", path, Some(auth), &[], &[])
+    }
+
+    /// `DELETE` a DAV resource as `auth`.
+    ///
+    /// Exists for scheduling-inbox housekeeping: RFC 6638 §3.2 makes *the client* responsible
+    /// for removing an iTIP message once it has processed it, so a scheduling test that left
+    /// its deliveries behind would grow the collection on every run.
+    ///
+    /// # Errors
+    /// Propagates transport/parse failures from the HTTP probe.
+    pub fn dav_delete_as(
+        &self,
+        auth: (&str, &str),
+        path: &str,
+    ) -> Result<HttpResponse, HarnessError> {
+        http::request(&self.http_addr, "DELETE", path, Some(auth), &[], &[])
     }
 }
 
@@ -285,6 +382,10 @@ mod tests {
             smtp_starttls_addr: "127.0.0.1:11587".to_owned(),
             account: "alice@test.local".to_owned(),
             password: "pw".to_owned(),
+            scratch: [
+                super::ScratchAccount::new("bob@test.local", "bob-pw"),
+                super::ScratchAccount::new("carol@test.local", "carol-pw"),
+            ],
         };
         assert_eq!(
             h.calendar_collection_path(),
@@ -294,5 +395,16 @@ mod tests {
             h.event_path("oneoff-2001"),
             "/dav/cal/alice@test.local/default/oneoff-2001.ics"
         );
+        // A scratch account's collections are addressable too — both sides of a
+        // scheduling run happen off the seeded account entirely.
+        assert_eq!(
+            Harness::calendar_collection_path_of(&h.scratch[0].address),
+            "/dav/cal/bob@test.local/default/"
+        );
+        assert_eq!(
+            Harness::scheduling_inbox_path_of(&h.scratch[1].address),
+            "/dav/itip/carol@test.local/inbox/"
+        );
+        assert_eq!(h.scratch[1].auth(), ("carol@test.local", "carol-pw"));
     }
 }

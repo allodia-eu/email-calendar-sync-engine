@@ -376,16 +376,55 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
   the neutral patch can carry a participation status (`jmap.md`). On a CalDAV auto-schedule server (RFC 6638) the changed `PARTSTAT` is what
   the server turns into the iTIP `REPLY` to the organizer.
 
+### What auto-scheduling actually does (observed against Stalwart)
+
+Locked by `provider-caldav/tests/scheduling/mod.rs`, a two-party live exchange between the
+harness's scratch accounts. These are server behaviours, not spec readings — several are not
+what a client would assume:
+
+- **One organizer `PUT` produces three deliveries.** The server deposits a `METHOD:REQUEST`
+  in the attendee's scheduling inbox, **adds the event to the attendee's own calendar**
+  already carrying `PARTSTAT=NEEDS-ACTION`, *and* mails the attendee an iMIP invitation. The
+  attendee's client wrote nothing and parsed no iMIP.
+- **The attendee's copy lives at a server-minted href** (e.g. `1785405220_87408….ics`), never
+  at `<uid>.ics`. Anything that addresses a delivered invitation by minting a href from the
+  `UID` will miss it; read it back by `UID` through a sync.
+- **The RSVP round trip needs no delivery step.** `set_my_partstat` + a guarded `PUT` of the
+  attendee's copy is enough: the organizer's *separate* resource comes back
+  `PARTSTAT=ACCEPTED;SCHEDULE-STATUS=2.0`. Stalwart applies the reply as a **targeted
+  patch** — the organizer's own `PRODID` survives — so it does to the organizer's document
+  what our patcher does to ours.
+- **The organizer's `DELETE` does not remove the attendee's copy.** It arrives as an iTIP
+  `CANCEL` and the attendee's resource is rewritten with `STATUS:CANCELLED` (a tombstone in
+  the projection). A host listening only for deletions would leave a cancelled meeting
+  looking live; a test that cleans up must delete *both* copies.
+- **The server bumps `SEQUENCE`** (`0` → `1`) when it processes the organizer's create, and
+  **re-quotes a `TZID` containing spaces** (`TZID="W. Europe Standard Time"`, RFC 5545 §3.1).
+  Both are why the assertions are on parsed content, never on bytes.
+- **Delivery is asynchronous.** The `PUT` is answered before the other party's copy is
+  updated, so every cross-account read is a bounded poll on real state, never a sleep.
+- **Scheduling cannot run on the seeded account.** The iMIP mail above reaches the attendee
+  *and* the organizer (a `REPLY` arrives as "Accepted:…"), and the mail suites assert an exact
+  INBOX count on Alice — so the whole exchange runs between two scratch accounts
+  (`stalwart-harness.md`). This is why `bob`/`carol` exist.
+- **That mail is rate-limited, and exceeding the limit looks like nothing at all.** Stalwart's
+  default inbound throttle is 25 messages/hour per (sender domain, recipient); past it the
+  server abandons the **whole** iTIP delivery — calendar copy included — while still answering
+  the organizer's `PUT` with `201`, and logs nothing. The harness raises the throttle at
+  bootstrap so the suite is re-runnable (`stalwart-harness.md`).
+
 ## Known limitations (documented, not bugs)
 
 - **iTIP/iMIP inbound parse + RSVP are implemented; delivery/persistence wiring is
   staged.** `engine_core::scheduling` (keys, `SEQUENCE` ordering, the trust
   decision, `reconcile` → `ScheduleAction`, the `apply_reply`/`cancel` event
   mutations) and `provider_caldav::imip` (parse + `set_my_partstat`) are done and
-  offline-tested end to end through the conditional-`PUT` outbox driver. Still
-  deferred (`calendar-semantics.md`): the **mail-sync wiring** that fetches the
-  detected `text/calendar` part's bytes and drives `reconcile`; the **CalDAV
-  Scheduling Inbox** `REPORT` (RFC 6638) and a live Stalwart scheduling test;
+  offline-tested end to end through the conditional-`PUT` outbox driver, and the
+  RSVP round trip is **live-proven against Stalwart's auto-scheduler** (above).
+  Still deferred (`calendar-semantics.md`): the **CalDAV Scheduling Inbox**
+  `REPORT` (RFC 6638) — the live suite reads the inbox over raw DAV, precisely
+  because the provider does not expose it yet; **driving `reconcile`/apply from a
+  real sync** (the part *fetch* landed as `Engine::message_scheduling`);
   **client-iMIP `REPLY` delivery** over SMTP (the assembler is `text/plain`-only);
   and **`ClientImip` local-origin persistence** (storing a brand-new inbound
   `REQUEST` has no provider-less single-event store path yet).
@@ -476,6 +515,31 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
   | `stale_if_match_is_a_conflict` | A superseded `If-Match` really returns `412` (on `PUT` **and** `DELETE`), and the adapter classes it `Conflict` — refetch-and-merge — not blind-retryable. |
   | `instance_override_split_is_accepted` | A `RECURRENCE-ID` override the patcher splits out of a master is accepted as part of the same resource, and comes back folded into one event. |
 
+  **Scheduling (Stalwart only): `tests/scheduling/mod.rs`.** Five more scenarios, declared
+  only by `live_caldav.rs` because they need an auto-schedule server and two principals —
+  SabreDAV has neither. They drive a real invitation between the two scratch accounts:
+  delivery to the attendee's calendar, the quoted Windows `TZID` resolving to `Europe/Berlin`,
+  the scheduling-inbox `METHOD:REQUEST` parsing, the **RSVP arriving on the organizer's own
+  copy**, and an organizer cancel tombstoning the attendee's copy. What only a real server can
+  tell you here is the reply: it is a thing the *server* does to a *second account's* resource
+  in response to bytes we sent, so no fake can stand in for it. Cross-account reads are bounded
+  **polls on real state** (iTIP delivery is asynchronous), never sleeps.
+
+  | Scenario | What only a real server can tell you |
+  | --- | --- |
+  | `an_invitation_is_delivered_to_the_attendee` | The server puts the event on the *attendee's* calendar, at a href it mints itself, with `PARTSTAT=NEEDS-ACTION` — no client-side iMIP anywhere. |
+  | `an_invitations_windows_time_zone_resolves_to_iana` | Stalwart accepts a Windows `TZID` with no `VTIMEZONE` and hands it back **DQUOTE-quoted**; the parser must strip *and* CLDR-map it. |
+  | `the_scheduling_inbox_carries_a_parseable_itip_request` | A transit-form iTIP document written by someone other than our own serializer parses. |
+  | `an_rsvp_reaches_the_organizer` | Patching `PARTSTAT` and `PUT`ting it back is the whole RSVP: the organizer's separate copy reads `ACCEPTED`. |
+  | `an_organizer_cancel_marks_the_attendees_copy_cancelled` | A cancel *tombstones* the attendee's resource rather than removing it. |
+
+  Two things to know before editing this suite. It runs entirely **off the seeded account** —
+  auto-scheduling mails both parties and Alice's INBOX count is asserted elsewhere. And it only
+  works because the harness **disarms Stalwart's inbound rate limiter** at bootstrap (25
+  messages/hour per sender-domain→recipient by default); past that cap the server silently
+  abandons the whole iTIP delivery and every scenario here times out. `stalwart-harness.md`
+  has the details.
+
 ### Which server proves what
 
 The two fixtures are **not interchangeable as evidence**, and the difference decides how
@@ -488,6 +552,7 @@ the preservation assertion is written. Observed against both:
 | Stale `If-Match` | `412` | `412` |
 | Master + `RECURRENCE-ID` in one resource | Accepted | Accepted |
 | Read-only collection | **Cannot produce one** — the harness account owns everything it can see | **The privilege fixture**: Bob's calendar, shared to Alice read-only |
+| Scheduling (RFC 6638) | **Full auto-schedule** — advertises `calendar-auto-schedule`, exposes `CALDAV:schedule-inbox-URL` | **None** — one principal, no scheduling plugin |
 
 Two consequences to keep in mind before touching these tests:
 

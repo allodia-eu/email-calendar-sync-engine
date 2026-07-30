@@ -1,17 +1,35 @@
-//! The iCalendar (RFC 5545) parser: a calendar object resource → a normalized
-//! [`Event`].
+//! `engine-ical` — the iCalendar (RFC 5545) layer: text → a normalized [`Event`],
+//! the create-path serializer, and the fold-aware line patcher.
 //!
-//! A CalDAV calendar object resource is one `VCALENDAR` whose `VEVENT`s all share
-//! a `UID` (RFC 4791 §4.1): a series **master** plus its `RECURRENCE-ID`
-//! overrides. This crate folds them into a *single* [`Event`] — the master
-//! carrying its overrides inline — exactly the shape the JMAP adapter produces
-//! from one JSCalendar object, so the recurrence expander and the rest of the
-//! engine see one representation regardless of transport. The resource's identity
-//! ([`EventId`], from its href) and calendar membership ([`CalendarId`]) are
-//! supplied by the caller; the whole resource text is preserved as [`RawIcal`].
+//! A calendar object resource is one `VCALENDAR` whose `VEVENT`s all share a `UID`
+//! (RFC 4791 §4.1): a series **master** plus its `RECURRENCE-ID` overrides. This
+//! crate folds them into a *single* [`Event`] — the master carrying its overrides
+//! inline — exactly the shape the JMAP adapter produces from one JSCalendar object,
+//! so the recurrence expander and the rest of the engine see one representation
+//! regardless of transport. The resource's identity ([`EventId`], from its href) and
+//! calendar membership ([`CalendarId`]) are supplied by the caller; the whole
+//! resource text is preserved as [`RawIcal`].
+//!
+//! # Why this is a crate, and not part of the CalDAV adapter
+//!
+//! iCalendar is not a CalDAV format — it is a *transport-neutral* one, and it arrives
+//! over more than one transport. CalDAV carries it as a calendar object resource, but
+//! **iMIP carries it over mail, on every account type** (RFC 6047): a Microsoft,
+//! Google, or JMAP account receives invitations as a `text/calendar` body part with no
+//! CalDAV anywhere in the picture. While the parser lived inside `provider-caldav`, a
+//! Gmail- or Graph-only build could not read an invitation at all. So the parser sits
+//! beside the model it produces, and `provider-caldav` is one of its callers rather
+//! than its owner.
+//!
+//! There is deliberately **one** iCalendar parser in the engine. It is hardened and
+//! fuzzed (`provider_caldav::fuzz_parse`, behind that crate's `fuzzing` feature,
+//! drives [`parse_calendar_object`] over arbitrary bytes); a second parser — in a
+//! host, in another adapter — would be a second attack surface over the same hostile
+//! input, so callers get this one rather than writing their own.
 
 mod build;
 mod component;
+mod error;
 mod event;
 mod format;
 mod lines;
@@ -22,8 +40,8 @@ mod recurrence;
 mod unfold;
 mod value;
 
-// Likewise the create-path serializer: it is how CalDAV renders the neutral `EventDraft`.
-pub(crate) use build::build_event_ical;
+// The create-path serializer: how a transport renders the neutral `EventDraft`.
+pub use build::build_event_ical;
 use component::{Component, parse_components};
 use engine_core::{
     calendar::Event,
@@ -32,22 +50,21 @@ use engine_core::{
     scheduling::{ScheduleMethod, SchedulingMessage},
     time::UtcDateTime,
 };
+pub use error::IcalError;
 use event::{event_from_vevent, vevent_uid};
 // The fold-aware line-surgery engine: the one implementation of "rewrite this content
-// line, leave every other byte alone", shared by the structural patcher and the `imip`
-// RSVP primitive.
-pub(crate) use lines::{Document, Edit, Edits};
-// The structural patcher is now an *implementation detail* of `Provider::patch_event`: a
+// line, leave every other byte alone", shared by the structural patcher and the CalDAV
+// `imip` RSVP primitive.
+pub use lines::{Document, Edit, Edits};
+// The structural patcher is an *implementation detail* of `Provider::patch_event`: a
 // host states the neutral `EventPatch`/`PatchTarget` intent (`engine-provider`) and never
 // reaches for the iCalendar surgery itself.
-pub(crate) use patch::patch_event_ical;
+pub use patch::patch_event_ical;
 use recurrence::fold_override;
 // The quote-aware splitters are the crate's canonical iCalendar tokenizing
 // primitives; the `imip` RSVP patcher reuses them rather than re-implementing.
-pub(crate) use unfold::{split_once_unquoted, split_unquoted};
+pub use unfold::{split_once_unquoted, split_unquoted};
 use value::parse_utc;
-
-use crate::error::CalDavError;
 
 /// Parses one calendar object resource into a single normalized [`Event`].
 ///
@@ -59,13 +76,13 @@ use crate::error::CalDavError;
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] if the resource has no `VEVENT`, or the master
+/// Returns [`IcalError`] if the resource has no `VEVENT`, or the master
 /// `VEVENT` is missing a `UID`/`DTSTART` or carries an unparseable value.
-pub(crate) fn parse_calendar_object(
+pub fn parse_calendar_object(
     text: &str,
     id: EventId,
     calendar: CalendarId,
-) -> Result<Event, CalDavError> {
+) -> Result<Event, IcalError> {
     let roots = parse_components(text);
     let (components, master_pos) = resource_components(&roots)?;
     let representative = master_pos.unwrap_or(0);
@@ -87,13 +104,13 @@ pub(crate) fn parse_calendar_object(
 ///
 /// # Errors
 ///
-/// Returns [`CalDavError::Ical`] if the object has no `METHOD` (so it is not a
+/// Returns [`IcalError`] if the object has no `METHOD` (so it is not a
 /// scheduling message), no usable `VEVENT`, or a missing/unparseable
 /// `UID`/`DTSTART`/`DTSTAMP`.
-pub(crate) fn parse_scheduling_message(text: &str) -> Result<SchedulingMessage, CalDavError> {
+pub fn parse_scheduling_message(text: &str) -> Result<SchedulingMessage, IcalError> {
     let roots = parse_components(text);
     let method = vcalendar_method(&roots)
-        .ok_or_else(|| CalDavError::ical("scheduling object has no METHOD"))?;
+        .ok_or_else(|| IcalError::new("scheduling object has no METHOD"))?;
     let (components, master_pos) = resource_components(&roots)?;
     let representative = master_pos.unwrap_or(0);
     let rep = components[representative];
@@ -113,13 +130,11 @@ pub(crate) fn parse_scheduling_message(text: &str) -> Result<SchedulingMessage, 
 /// master is the component with no `RECURRENCE-ID` *property* (checked by
 /// presence, so a present-but-unparseable `RECURRENCE-ID` is never mistaken for a
 /// master).
-fn resource_components(
-    roots: &[Component],
-) -> Result<(Vec<&Component>, Option<usize>), CalDavError> {
+fn resource_components(roots: &[Component]) -> Result<(Vec<&Component>, Option<usize>), IcalError> {
     let vevents = collect_vevents(roots);
     let first = *vevents
         .first()
-        .ok_or_else(|| CalDavError::ical("resource has no VEVENT"))?;
+        .ok_or_else(|| IcalError::new("resource has no VEVENT"))?;
     let resource_uid = vevent_uid(first)?;
     let components: Vec<&Component> = vevents
         .iter()
@@ -157,20 +172,20 @@ fn vcalendar_method(roots: &[Component]) -> Option<ScheduleMethod> {
 }
 
 /// Reads the representative `VEVENT`'s mandatory iTIP `DTSTAMP` (RFC 5546 §3.2).
-fn dtstamp_of(vevent: &Component) -> Result<UtcDateTime, CalDavError> {
+fn dtstamp_of(vevent: &Component) -> Result<UtcDateTime, IcalError> {
     let value = vevent
         .value("DTSTAMP")
-        .ok_or_else(|| CalDavError::ical("scheduling VEVENT missing DTSTAMP"))?;
+        .ok_or_else(|| IcalError::new("scheduling VEVENT missing DTSTAMP"))?;
     parse_utc(value)
 }
 
 /// Mints the synthetic placeholder ids for a parsed iMIP event from its `UID`
 /// (see [`parse_scheduling_message`]).
-fn synthetic_ids(uid: &Uid) -> Result<(EventId, CalendarId), CalDavError> {
+fn synthetic_ids(uid: &Uid) -> Result<(EventId, CalendarId), IcalError> {
     let id = EventId::try_from(format!("imip:{}", uid.as_str()).as_str())
-        .map_err(|e| CalDavError::ical(format!("bad synthetic event id: {e}")))?;
+        .map_err(|e| IcalError::new(format!("bad synthetic event id: {e}")))?;
     let calendar = CalendarId::try_from("imip:scheduling")
-        .map_err(|e| CalDavError::ical(format!("bad synthetic calendar id: {e}")))?;
+        .map_err(|e| IcalError::new(format!("bad synthetic calendar id: {e}")))?;
     Ok((id, calendar))
 }
 
@@ -295,27 +310,27 @@ mod tests {
         let text = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:w@x\r\n\
              RECURRENCE-ID;TZID=Europe/Amsterdam:garbage\r\n\
              DTSTART;TZID=Europe/Amsterdam:20260126T140000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        assert!(matches!(
+        assert!(
             parse_calendar_object(
                 text,
                 EventId::try_from("/cal/r.ics").unwrap(),
                 CalendarId::try_from("/cal/").unwrap(),
-            ),
-            Err(CalDavError::Ical(_))
-        ));
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn a_resource_without_a_vevent_is_an_error() {
         let text = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
-        assert!(matches!(
+        assert!(
             parse_calendar_object(
                 text,
                 EventId::try_from("/cal/r.ics").unwrap(),
                 CalendarId::try_from("/cal/").unwrap(),
-            ),
-            Err(CalDavError::Ical(_))
-        ));
+            )
+            .is_err()
+        );
     }
 
     // --- iMIP / iTIP scheduling parse (parse_scheduling_message) -------------
@@ -389,19 +404,13 @@ mod tests {
     fn a_body_without_a_method_is_not_a_scheduling_message() {
         // The read-path ONE_OFF resource (no METHOD) is a stored object, not an
         // iMIP message.
-        assert!(matches!(
-            parse_scheduling_message(ONE_OFF),
-            Err(CalDavError::Ical(_))
-        ));
+        assert!(parse_scheduling_message(ONE_OFF).is_err());
     }
 
     #[test]
     fn a_scheduling_message_without_dtstamp_is_rejected() {
         let text = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:x@test.local\r\nDTSTART;TZID=Europe/Amsterdam:20260601T090000\r\nORGANIZER:mailto:boss@test.local\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        assert!(matches!(
-            parse_scheduling_message(text),
-            Err(CalDavError::Ical(_))
-        ));
+        assert!(parse_scheduling_message(text).is_err());
     }
 
     #[test]

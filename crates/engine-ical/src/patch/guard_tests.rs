@@ -7,7 +7,6 @@
 use engine_core::{raw::RawIcal, time::CalendarDate};
 
 use super::{test_support::*, *};
-use crate::error::CalDavError;
 
 // --- the form guard: a move must never silently convert ---------------------------
 
@@ -24,7 +23,6 @@ fn moving_a_zoned_event_to_a_utc_start_is_rejected() {
         )),
     )
     .unwrap_err();
-    assert!(matches!(err, CalDavError::Ical(_)));
     assert!(
         err.to_string().contains("Europe/Amsterdam"),
         "the error should name the form it refused to change: {err}"
@@ -100,7 +98,10 @@ fn an_edit_that_would_end_the_event_before_it_begins_is_refused() {
         &patch().start(amsterdam("2026-01-05T23:00:00")), // DTEND is still 10:00
     )
     .unwrap_err();
-    assert!(matches!(err, CalDavError::Ical(_)));
+    assert!(
+        err.to_string().contains("cannot end before it begins"),
+        "the error should say the edit would invert the event: {err}"
+    );
 
     // A resize that drags the end back past the start is refused the same way.
     assert!(
@@ -156,14 +157,14 @@ fn a_bare_lf_document_is_patched_without_rewriting_its_terminators() {
 #[test]
 fn an_event_without_a_dtstart_cannot_be_patched() {
     let no_start = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x@y\r\nSUMMARY:S\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-    assert!(matches!(
+    assert!(
         patch_event_ical(
             &RawIcal::new(no_start),
             &PatchTarget::Series,
             &patch().summary("x"),
-        ),
-        Err(CalDavError::Ical(_))
-    ));
+        )
+        .is_err()
+    );
 }
 
 #[test]
