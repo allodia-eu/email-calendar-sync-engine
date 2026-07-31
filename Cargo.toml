@@ -9,6 +9,53 @@ edition = "2024"
 rust-version = "1.96"
 publish = false
 
+# ---------------------------------------------------------------------------------------------
+# Debug info: the single biggest lever on build time and target/ size, so it is decided HERE
+# rather than left to rustc's default (`debug = 2`, full CodeView/DWARF for everything).
+#
+# Measured on a Surface Pro X (SQ1, 8 cores, arm64), `cargo test --workspace --all-features
+# --no-run` from an empty target dir: 4m51s and 11 GB, of which 4.4 GB was PDBs under
+# `debug/deps` and another 4.4 GB was `debug/incremental` — largely debug info too, since the
+# incremental cache stores what it would otherwise regenerate. Six test binaries carried a PDB
+# over 120 MB each. A drive that cannot hold that turns `cargo clean` into a routine, and every
+# clean throws away the cache that makes a rebuild fast. Small target dirs and warm caches are
+# the same problem.
+#
+# The split below follows from who reads the information:
+#   - Our own crates keep `line-tables-only`. That is exactly what makes a panic backtrace name a
+#     file and a line — which is how an engine panic gets traced from a product-core or client
+#     log, and it is the part worth keeping. Variable-level info is what a *debugger* needs, and
+#     the engine's debugging loop is the Stalwart/SabreDAV harnesses and test output, not
+#     breakpoints.
+#   - Dependencies get nothing. Nobody here has ever stepped into rustls, jiff or bundled SQLite;
+#     their debug info is pure disk. This is the "optimize the dependencies" advice done the way
+#     that actually helps a build — note that the *other* common form of it,
+#     `[profile.dev.package."*"] opt-level = 3`, trades MORE build time for faster dependency
+#     runtime. That is a test-speed knob, not a build-speed one; do not add it expecting this.
+#
+# This does NOT weaken the coverage gate. `cargo llvm-cov` is source-based: `-C
+# instrument-coverage` embeds the region map (with filenames and line/column spans) in the binary
+# itself, and `llvm-cov` reads that plus the profile data — it never consults DWARF. Verified by
+# running `cargo llvm-cov -p engine-core --all-features --summary-only` either side of this
+# change: regions 97.53% / functions 97.56% / lines 98.30%, identical to the digit.
+#
+# Note this governs builds OF this repo — its CI and local dev. The product core consumes these
+# crates as git dependencies, so its own `[profile.dev.package."*"]` already applies to them there.
+# ---------------------------------------------------------------------------------------------
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = 0
+
+# Opt in when you genuinely need a debugger (`cargo build --profile debugger`). It lands in
+# `target/debugger/` rather than `target/debug/`, so turning it on does not evict the warm dev
+# cache — at the cost of a second target dir while it exists, so `cargo clean -p <crate>` it
+# afterwards.
+[profile.debugger]
+inherits = "dev"
+debug = "full"
+
 # Centralized dependency versions so every crate agrees on one version.
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }

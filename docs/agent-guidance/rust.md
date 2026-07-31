@@ -42,6 +42,49 @@ sole exception is `cargo fmt`, which runs on the pinned nightly because `rustfmt
 nightly-only options. `rust-version` in the root `Cargo.toml` is a separate thing: the MSRV floor
 the crates promise, not what CI builds with.
 
+## Build time and disk
+
+`cargo clean` is a symptom, not a maintenance task. If you are cleaning to free disk, something is
+configured wrong — find it instead. A clean throws away the cache that separates a 30-second
+rebuild from a five-minute one, so a workflow that needs one regularly pays that toll over and over.
+
+The default is the trap. rustc emits full debug info (`debug = 2`) for **everything**, dependencies
+included, and nothing in a stock workspace turns it down. Measured on a Surface Pro X (SQ1, 8
+cores, arm64), `cargo test --workspace --all-features --no-run` from an empty target dir:
+
+|                                      | before | after |
+|--------------------------------------|-------:|------:|
+| Cold build                           |  4m51s | **3m18s** |
+| `target/` after that build           |  11 GB | **3.7 GB** |
+| Rebuild after touching `engine-core` |    64s | **29s** |
+
+Of that 11 GB baseline, 4.4 GB was PDBs under `debug/deps` — six test binaries carried one over
+120 MB apiece — and another 4.4 GB was `debug/incremental`, most of it the same information again.
+Running the whole gate (clippy + build + test + doc are separate unit graphs) now lands at 4.8 GB,
+with 1.0 GB of PDBs.
+
+The fix is the `[profile.dev]` block in the root [`Cargo.toml`](../../Cargo.toml) — our crates at
+`line-tables-only`, dependencies at `debug = 0`. The rationale is written there; the short version
+is that a panic backtrace needs a file and a line (which `line-tables-only` keeps) and a debugger
+needs the rest (which nobody here uses on `rustls` or bundled SQLite). Read that comment before
+changing it, and note that the other common reading of "optimize the dependencies" —
+`[profile.dev.package."*"] opt-level = 3` — makes builds *slower*, not faster.
+
+Two things this deliberately does **not** break, both verified rather than assumed:
+
+- **Coverage.** `cargo llvm-cov` is source-based: `-C instrument-coverage` embeds the region map in
+  the binary and `llvm-cov` never reads DWARF. `cargo llvm-cov -p engine-core --all-features
+  --summary-only` returns identical figures either side of the change.
+- **Backtraces.** `line-tables-only` is exactly the level that keeps file and line in a panic.
+
+Need a real debugger? `cargo build --profile debugger` gets full info, and lands in
+`target/debugger/` so it doesn't evict the warm `debug/` cache.
+
+If the loop still drags on Windows, two per-machine wins that must **not** be committed (they are
+true of one box, not of a contributor's or a runner's): link with `lld-link.exe` via a
+`.cargo/config.toml` in a parent directory of the checkout, and give worktrees a shared
+`CARGO_TARGET_DIR`. Both are described in the product core's `docs/debugging.md`.
+
 ## Linting
 
 Code should be clean under:

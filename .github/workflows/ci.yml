@@ -5,10 +5,13 @@ on:
     branches: [main]
   pull_request:
 
-# Cancel superseded runs on the same ref.
+# Cancel superseded runs on the same ref — but never on `main`. Cache saving is the last thing a
+# job does, so a cancelled run writes nothing, and `main` is now the only ref that writes at all
+# (see the `save-if` note on the cache steps). Cancelling it means a run of merges lands with the
+# shared cache never refreshed, which is precisely when it most needs to be.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,7 +68,16 @@ jobs:
           toolchain: ${{ needs.toolchain.outputs.channel }}
           components: clippy
 
+      # Caches are written ONLY on `main`, and every job below does the same. GitHub scopes a cache
+      # to the branch that created it: a PR can restore `main`'s entry, but an entry a PR *saves* is
+      # readable by nothing except that same PR — which will be merged and deleted. Saving from PRs
+      # therefore buys almost nothing and costs a lot, because all of it counts against the repo's
+      # 10 GB budget and evicts entries by LRU — and with six cache steps across the matrix, a PR
+      # writes six of them at once, so the entries `main` wrote are the ones aged out. PRs still
+      # restore `main`'s and rebuild only what they touched.
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # No rustfmt/clippy lint enforces a per-file line cap, so this script is the machine
       # enforcement of the AGENTS.md 500-line rule. Dependency-free, so it runs first.
@@ -113,6 +125,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }} # main-only; see the `verify` job
 
       - name: Build
         run: cargo build --workspace --all-features
@@ -155,6 +168,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }} # main-only; see the `verify` job
 
       # Point the cc crate and cargo at the NDK clang/ar/linker so the bundled
       # SQLite C sources cross-compile for Android (API 31 floor). iOS needs no
@@ -206,6 +220,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: stalwart
+          save-if: ${{ github.ref == 'refs/heads/main' }} # main-only; see the `verify` job
 
       # The Stalwart image is pinned by digest in docker-compose.yml. A
       # save/load image cache is intentionally omitted: RepoDigests do not
@@ -262,6 +277,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: sabredav
+          save-if: ${{ github.ref == 'refs/heads/main' }} # main-only; see the `verify` job
 
       # The image is pinned by digest and the PHP deps by composer.lock; the
       # container self-seeds and reports healthy once the marker exists, so
@@ -305,6 +321,8 @@ jobs:
           components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }} # main-only; see the `verify` job
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
