@@ -22,8 +22,9 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion, EventDraft,
-    EventEdit, EventPatch, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, PatchTarget,
-    Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt, WriteGuard,
+    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
+    PatchTarget, Provider, ProviderError, ProviderResult, RsvpResponse, ScopeSync,
+    SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{
@@ -34,8 +35,9 @@ use store_sqlite::SqliteStore;
 use super::{
     AccountId, AccountProgress, Duration, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
     create_calendar_event, delete_calendar_event, edit_mail, expand_calendar_horizon,
-    patch_calendar_event, put_calendar_document, reconcile_calendar_events, submit_mail,
-    sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed, sync_mailbox_list,
+    patch_calendar_event, put_calendar_document, reconcile_calendar_events, rsvp_calendar_event,
+    submit_mail, sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed,
+    sync_mailbox_list,
 };
 
 mod calendar_sync;
@@ -256,6 +258,27 @@ impl Provider for FakeMail {
         Ok(EventWriteReceipt::new(
             write.event.clone(),
             write.uid.clone(),
+            RevisionTokens::from_etag(ETag::new("\"put-v1\"")),
+        ))
+    }
+
+    async fn rsvp_event(
+        &self,
+        _account: &AccountId,
+        _base: &Event,
+        rsvp: &EventRsvp,
+    ) -> ProviderResult<EventWriteReceipt> {
+        if self.fails(Fault::WriteGuard) {
+            return Err(ProviderError::conflict("etag precondition failed"));
+        }
+        // Stands in for every adapter's refusal of a control it cannot honour — the
+        // driver must record and surface it, not swallow it.
+        if rsvp.comment.is_some() {
+            return Err(ProviderError::invalid_state("no note on this transport"));
+        }
+        Ok(EventWriteReceipt::new(
+            rsvp.event.clone(),
+            rsvp.uid.clone(),
             RevisionTokens::from_etag(ETag::new("\"put-v1\"")),
         ))
     }

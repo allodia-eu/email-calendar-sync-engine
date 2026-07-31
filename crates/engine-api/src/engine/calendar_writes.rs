@@ -1,5 +1,5 @@
-//! The outbox-mediated **calendar** writes on `Engine` — create, patch, replace-document
-//! (RSVP), delete — each of which reconciles the store to the server's copy before it
+//! The outbox-mediated **calendar** writes on `Engine` — create, patch, replace-document,
+//! RSVP, delete — each of which reconciles the store to the server's copy before it
 //! returns.
 //!
 //! # Read-your-writes
@@ -23,10 +23,12 @@
 //! can never fail the write: it is reported as [`Reconciled`], not as an error.
 
 use engine_core::{calendar::Event, ids::AccountId, write::PendingOpId};
-use engine_provider::{EventDeletion, EventDraft, EventPatch, EventWrite, PatchTarget, Provider};
+use engine_provider::{
+    EventDeletion, EventDraft, EventPatch, EventRsvp, EventWrite, PatchTarget, Provider,
+};
 use engine_sync::{
     CalendarWriteOutcome, EventSyncReport, create_calendar_event, delete_calendar_event,
-    patch_calendar_event, put_calendar_document,
+    patch_calendar_event, put_calendar_document, rsvp_calendar_event,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -216,6 +218,65 @@ impl Engine {
         .await
         .map_err(map_sync_error)?;
         Ok(self.reconciling(provider, account, outcome).await)
+    }
+
+    /// Answers an invitation through the durable outbox, then reconciles the store to the
+    /// server's copy of the event.
+    ///
+    /// **The one verb that tells someone.** Every other calendar write changes the user's
+    /// own copy; this one makes the server emit the iTIP `REPLY` the organizer is waiting
+    /// for. That is why it is not a [`patch_calendar_event`](Self::patch_calendar_event) of
+    /// the attendee array — the same bytes would change and nobody would be told — and why
+    /// each adapter routes it through its own scheduling path: Graph's `accept`/`decline`
+    /// action, Google's `sendUpdates`, a conditional `PUT` that an RFC 6638 server notices,
+    /// a JMAP `participationStatus` its server schedules on.
+    ///
+    /// `base` is the event **as read from the store**, and `rsvp.attendee` is the address
+    /// the invitation **matched** — on an aliased account, not the account's primary
+    /// identity ([`EventRsvp`]).
+    ///
+    /// **Read [`Capabilities::calendar_rsvp`](engine_provider::Capabilities::calendar_rsvp)
+    /// first.** It says whether the transport can answer at all, whether a note reaches the
+    /// organizer, whether the user may decline to notify them, and how strong the guard is
+    /// — which for an RSVP is **not** always
+    /// [`calendar_write_guard`](engine_provider::Capabilities::calendar_write_guard), since
+    /// Graph's action endpoint accepts no precondition. An adapter refuses a control it
+    /// cannot honour rather than dropping it, so a host that skips the check gets an error
+    /// instead of a silent lie.
+    ///
+    /// Because the write reconciles, the answer is visible in the store when this returns —
+    /// including a decline that the provider responded to by removing the event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the RSVP fails. A stale guard is recorded `Failed` with
+    /// a `Conflict` class — re-sync, re-read, answer again; **never** blind-retry, which on
+    /// a transport that already applied it would answer twice. An event with no `ATTENDEE`
+    /// at that address, or a request for a control the transport does not honour, is an
+    /// `InvalidState`. A store failure also surfaces as [`ApiError::Sync`]. A failure to
+    /// *reconcile* is **not** an error (the answer landed): it is reported in
+    /// [`CalendarWrite::reconciled`].
+    pub async fn rsvp_calendar_event<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        idempotency: &str,
+        base: &Event,
+        rsvp: &EventRsvp,
+    ) -> Result<CalendarWrite, ApiError> {
+        let write = rsvp_calendar_event(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            idempotency,
+            base,
+            rsvp,
+        )
+        .await
+        .map_err(map_sync_error)?;
+        Ok(self.reconciling(provider, account, write).await)
     }
 
     /// Deletes a calendar event through the durable outbox, guarded by the revision the

@@ -1,4 +1,4 @@
-//! The calendar write drivers: create, patch, replace-document, delete.
+//! The calendar write drivers: create, patch, replace-document, RSVP, delete.
 //!
 //! Each mirrors [`submit_mail`](super::submit_mail) — durable op → claim → provider call →
 //! record — and each is provider-neutral: the driver never knows whether the adapter under
@@ -13,8 +13,8 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
 };
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, EventWriteReceipt, PatchTarget,
-    Provider,
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
+    PatchTarget, Provider,
 };
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
@@ -144,6 +144,59 @@ where
     let leased =
         enqueue_calendar_op(store, account, worker, ttl, idempotency, &write.uid, write).await?;
     resolve(store, leased, provider.put_event(account, write).await).await
+}
+
+/// Answers an invitation through the outbox: durable op → claim → provider RSVP → record.
+///
+/// `base` is the event **as the caller read it**: the document the answer is written into on
+/// a document transport, and the revision the write is guarded by. The durable payload
+/// records the *answer*, not the document it produces, so a recovery retry re-applies it to
+/// a freshly fetched base.
+///
+/// Serialized on the same `UID` resource key as every other calendar write, so an RSVP and
+/// an edit of one event can never interleave.
+///
+/// # Errors
+///
+/// Returns [`SyncError::Provider`] if the RSVP fails (after recording it) — an adapter that
+/// cannot honour a requested control, or an event with no `ATTENDEE` at the answering
+/// address, is an
+/// [`InvalidState`](engine_core::error::FailureClass::InvalidState); a stale guard is a
+/// [`Conflict`](engine_core::error::FailureClass::Conflict), to be recovered by re-syncing
+/// and re-answering, **never** by a blind retry. Returns [`SyncError::Store`] on a store
+/// failure, or [`SyncError::Outbox`] if the request cannot be encoded or the just-enqueued
+/// op is not claimable.
+// One argument past the lint's taste, and they do not fold — the same split as
+// `patch_calendar_event`: (worker, ttl) and the idempotency key belong to the *outbox*,
+// while `base` and the answer belong to the *write*. `base` cannot move into the
+// `EventRsvp`, because the durable payload must stay the intent alone (a retry re-applies it
+// to a freshly fetched base, never to this one).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the outbox's lease params plus the write's base and intent, which must stay separate"
+)]
+pub async fn rsvp_calendar_event<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+    idempotency: &str,
+    base: &Event,
+    rsvp: &EventRsvp,
+) -> Result<CalendarWriteOutcome, SyncError>
+where
+    P: Provider,
+    S: Store,
+{
+    let leased =
+        enqueue_calendar_op(store, account, worker, ttl, idempotency, &rsvp.uid, rsvp).await?;
+    resolve(
+        store,
+        leased,
+        provider.rsvp_event(account, base, rsvp).await,
+    )
+    .await
 }
 
 /// Deletes an event through the outbox. Returns the durable op id; the next sync tombstones

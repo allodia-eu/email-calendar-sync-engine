@@ -311,3 +311,92 @@ fn the_durable_payload_records_the_intent_not_the_rendered_bytes() {
         deletion
     );
 }
+
+#[tokio::test]
+async fn rsvp_calendar_event_enqueues_then_answers_and_records_success() {
+    let provider = FakeMail::new(vec![], vec![]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let base = stored("/cal/default/evt-8.ics", "evt-8@test.local");
+
+    let outcome = rsvp_calendar_event(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        "rsvp:evt-8:accepted",
+        &base,
+        &EventRsvp::to(&base, "info@example.com", RsvpResponse::Accepted),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.event.as_str(), "/cal/default/evt-8.ics");
+    assert_eq!(outcome.uid.as_str(), "evt-8@test.local");
+    assert_eq!(
+        store.pending_op_state(outcome.op).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+}
+
+#[tokio::test]
+async fn an_rsvp_a_transport_cannot_honour_is_recorded_failed_not_dropped() {
+    // The whole point of refusing a control instead of ignoring it: the durable op must end
+    // up Failed, and the error must reach the caller. Were the note silently dropped, the
+    // op would read Succeeded and the user would believe the organizer got their message.
+    let provider = FakeMail::new(vec![], vec![]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let base = stored("/cal/default/evt-9.ics", "evt-9@test.local");
+
+    let err = rsvp_calendar_event(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        "rsvp:evt-9:declined",
+        &base,
+        &EventRsvp::to(&base, "me@example.com", RsvpResponse::Declined).comment("Away"),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(err, crate::SyncError::Provider(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn answering_twice_takes_two_idempotency_keys_and_both_run() {
+    // Changing your mind — accept, then decline — is two distinct intents, so a key derived
+    // from the event alone would collapse the second into the first and the organizer would
+    // never hear the change.
+    let provider = FakeMail::new(vec![], vec![]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let base = stored("/cal/default/evt-10.ics", "evt-10@test.local");
+
+    let mut ops = Vec::new();
+    for (key, response) in [
+        ("rsvp:evt-10:accepted", RsvpResponse::Accepted),
+        ("rsvp:evt-10:declined", RsvpResponse::Declined),
+    ] {
+        ops.push(
+            rsvp_calendar_event(
+                &provider,
+                &store,
+                &account(),
+                worker(),
+                Duration::from_mins(1),
+                key,
+                &base,
+                &EventRsvp::to(&base, "me@example.com", response),
+            )
+            .await
+            .unwrap(),
+        );
+    }
+
+    assert_ne!(ops[0].op, ops[1].op);
+    assert_eq!(
+        store.pending_op_state(ops[1].op).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+}

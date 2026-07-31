@@ -37,6 +37,78 @@ pub enum WriteGuard {
     Absent,
 }
 
+/// What a transport lets the user control about an **RSVP**, beyond the answer itself.
+///
+/// Answering an invitation always changes the participation status. The two things around
+/// it — a note for the organizer, and choosing not to tell them at all — are Outlook's
+/// "optional message" and "Email organizer" toggle, and they are **not** universal:
+///
+/// - **Graph** and **Google** expose both as first-class request fields (`comment` +
+///   `sendResponse`; attendee `comment` + `sendUpdates`), so the user's choice is honoured.
+/// - **CalDAV auto-schedule** (RFC 6638) and **JMAP** are *server*-scheduled: the server emits the
+///   iTIP `REPLY` the moment it sees the changed status, and a client cannot suppress it. CalDAV
+///   additionally has nowhere to put a per-attendee note in the stored resource.
+///
+/// So a host reads this **before** it offers either control, and an adapter that cannot
+/// honour one **refuses the write** rather than dropping it: a note that silently goes
+/// nowhere, or an "Email organizer" tick that emails them anyway, is worse than a control
+/// the user was never shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RsvpControls {
+    /// The transport has somewhere to put a note for the organizer.
+    ///
+    /// This is about *carriage*, not delivery: whether the note reaches a human is the
+    /// organizer's client's business, so a host should not report it as delivered.
+    pub comment: bool,
+    /// The user can choose **not** to notify the organizer.
+    ///
+    /// `false` on a server-scheduled transport, where the reply leaves the moment the
+    /// status changes.
+    pub suppress_notification: bool,
+    /// How strong a lost-update guard the **RSVP** carries — which is not always the same
+    /// as [`Capabilities::calendar_write_guard`], because an RSVP is a different request.
+    ///
+    /// Graph is the case that forces this to be stated separately: its calendar `PATCH`
+    /// enforces `If-Match`, but the RSVP is a *action* endpoint
+    /// (`POST /events/{id}/accept`) that accepts no precondition at all. Answering "yes"
+    /// to a meeting the organizer has since moved therefore lands, and the user has agreed
+    /// to a time they never saw. Reporting [`WriteGuard::Enforced`] for the whole adapter
+    /// would make that invisible.
+    pub guard: WriteGuard,
+}
+
+impl RsvpControls {
+    /// Refuses an RSVP that asks for a control this transport does not honour.
+    ///
+    /// Every adapter calls this **before** the write, so the rule that a control is refused
+    /// rather than dropped has one implementation rather than four — and so an adapter
+    /// cannot advertise a control it then ignores, or ignore one it advertises.
+    ///
+    /// # Errors
+    ///
+    /// Returns an
+    /// [`InvalidState`](engine_core::error::FailureClass::InvalidState)
+    /// [`ProviderError`](crate::ProviderError)
+    /// naming the control. A host that read
+    /// [`Capabilities::calendar_rsvp`](crate::Capabilities::calendar_rsvp) never reaches it.
+    pub fn accept(self, rsvp: &crate::EventRsvp) -> Result<(), crate::ProviderError> {
+        if rsvp.comment.is_some() && !self.comment {
+            return Err(crate::ProviderError::invalid_state(
+                "this transport has nowhere to carry a note to the organizer; read \
+                 Capabilities::calendar_rsvp before offering one",
+            ));
+        }
+        if !rsvp.notify_organizer && !self.suppress_notification {
+            return Err(crate::ProviderError::invalid_state(
+                "this transport's server sends the reply as soon as the participation status \
+                 changes, so the organizer cannot be kept out of it; read \
+                 Capabilities::calendar_rsvp before offering the toggle",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// The data domains a provider supports.
 ///
 /// Built with a `with_*` chain from [`Capabilities::none`] so each flag is set by
@@ -71,6 +143,10 @@ pub struct Capabilities {
     /// of the guard it can promise. One field rather than two, so "guarded but not
     /// writable" is unrepresentable.
     calendar_writes: Option<WriteGuard>,
+    /// `None` when the adapter cannot answer an invitation at all; otherwise which of the
+    /// two surrounding controls it honours. One field rather than two, so "carries a
+    /// comment but cannot RSVP" is unrepresentable.
+    calendar_rsvp: Option<RsvpControls>,
     contacts: bool,
     contact_writes: Option<WriteGuard>,
     contact_groups: bool,
@@ -89,6 +165,7 @@ impl Capabilities {
             idle: false,
             calendars: false,
             calendar_writes: None,
+            calendar_rsvp: None,
             contacts: false,
             contact_writes: None,
             contact_groups: false,
@@ -167,6 +244,19 @@ impl Capabilities {
     #[must_use]
     pub const fn with_calendar_writes(mut self, guard: WriteGuard) -> Self {
         self.calendar_writes = Some(guard);
+        self
+    }
+
+    /// Marks **RSVP** (answering an invitation) as supported, stating which of the two
+    /// surrounding controls the transport honours ([`RsvpControls`]).
+    ///
+    /// Distinct from [`with_calendar_writes`](Self::with_calendar_writes): an RSVP is a
+    /// separate verb on every transport because it makes the server tell the organizer,
+    /// which no edit does. An adapter that can create and patch events but cannot schedule
+    /// advertises the writes without this.
+    #[must_use]
+    pub const fn with_calendar_rsvp(mut self, controls: RsvpControls) -> Self {
+        self.calendar_rsvp = Some(controls);
         self
     }
 
@@ -250,6 +340,17 @@ impl Capabilities {
     #[must_use]
     pub const fn calendar_write_guard(self) -> Option<WriteGuard> {
         self.calendar_writes
+    }
+
+    /// Which RSVP controls this transport honours, or `None` if it cannot answer an
+    /// invitation at all.
+    ///
+    /// Read this **before** offering a note field or an "Email organizer" toggle: an
+    /// adapter refuses a write asking for a control it does not have, rather than dropping
+    /// it silently ([`RsvpControls`]).
+    #[must_use]
+    pub const fn calendar_rsvp(self) -> Option<RsvpControls> {
+        self.calendar_rsvp
     }
 
     /// Whether address-book/contact read and sync is supported.

@@ -15,8 +15,8 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, EventWriteReceipt, PatchTarget,
-    ProviderError, ProviderResult, TextEdit,
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWriteReceipt, PatchTarget,
+    ProviderError, ProviderResult, RsvpResponse, TextEdit,
 };
 use serde_json::{Map, Value, json};
 
@@ -92,6 +92,84 @@ pub(crate) async fn patch_event(
             RevisionTokens::none(),
         )),
     }
+}
+
+/// Answers an invitation via `events.patch` on the answering attendee's `responseStatus`,
+/// with `sendUpdates` deciding whether the organizer hears about it.
+///
+/// Google has no RSVP endpoint — answering *is* a patch of the attendee array — but it is
+/// still a distinct request, because `sendUpdates` is what turns a stored status into an
+/// email to the organizer. Omitting it (the API default is `none` for `patch`) would change
+/// the status and tell nobody, which is the exact failure the neutral verb exists to prevent.
+///
+/// **Only the answering attendee is sent.** Google applies just the caller's own
+/// `responseStatus` and `comment` when the caller is not the organizer, and ignores every
+/// other attendee change — so a one-element array cannot truncate the invitee list. That
+/// leniency is also the one place this is imprecise: an **organizer answering their own
+/// invitation** would be permitted to rewrite the array, and there the single element
+/// would stand. That is recorded as a known gap rather than worked around by rebuilding
+/// the array from the lossy projection, which would drop the per-attendee fields the
+/// engine does not model (`additionalGuests`) for *everybody* rather than nobody.
+///
+/// The write keeps the enforced `If-Match` guard the rest of this adapter promises — unlike
+/// Graph, whose RSVP action endpoint takes no precondition.
+pub(crate) async fn rsvp_event(
+    client: &GoogleClient,
+    calendar: &str,
+    base: &Event,
+    rsvp: &EventRsvp,
+) -> ProviderResult<EventWriteReceipt> {
+    // `sendUpdates` is a *query* parameter, not a body field (Calendar API v3). `all` also
+    // reaches guests outside the domain, which is what an external organizer is.
+    let notify = if rsvp.notify_organizer { "all" } else { "none" };
+    let updated = client
+        .patch(
+            &client.url(&format!(
+                "{}/{}?sendUpdates={notify}",
+                events_path(calendar),
+                base.id.key().as_str()
+            )),
+            "application/json",
+            if_match(base),
+            serde_json::to_vec(&build_rsvp(rsvp)).map_err(GoogleError::from)?,
+        )
+        .await?;
+    match updated {
+        Some(event) => receipt(&event, base.uid.clone()),
+        None => Ok(EventWriteReceipt::new(
+            base.id.clone(),
+            base.uid.clone(),
+            RevisionTokens::none(),
+        )),
+    }
+}
+
+/// The Google `responseStatus` for an answer (Calendar API v3 `Event.attendees[]`).
+const fn google_response_status(response: RsvpResponse) -> &'static str {
+    match response {
+        RsvpResponse::Accepted => "accepted",
+        RsvpResponse::Tentative => "tentative",
+        RsvpResponse::Declined => "declined",
+    }
+}
+
+/// Builds the RSVP patch body: a one-element `attendees` array naming the **matched**
+/// address, its new `responseStatus`, and the note if there is one.
+///
+/// The address is the one that travelled with the intent, never the account's primary
+/// identity — an alias invitation must answer as the alias or Google matches no attendee
+/// and the answer goes nowhere.
+fn build_rsvp(rsvp: &EventRsvp) -> Value {
+    let mut attendee = Map::new();
+    attendee.insert("email".to_owned(), json!(rsvp.attendee));
+    attendee.insert(
+        "responseStatus".to_owned(),
+        json!(google_response_status(rsvp.response)),
+    );
+    if let Some(comment) = &rsvp.comment {
+        attendee.insert("comment".to_owned(), json!(comment));
+    }
+    json!({ "attendees": [Value::Object(attendee)] })
 }
 
 /// Deletes `deletion.event` via `DELETE …/events/{id}`, guarded by the ETag it was read

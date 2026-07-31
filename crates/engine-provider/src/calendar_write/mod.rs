@@ -4,13 +4,20 @@
 //! pair: serializable requests a caller stores as a durable outbox `PendingOp` payload
 //! before the side effect, plus a receipt the outbox records on success.
 //!
-//! # The three neutral verbs, and the one that is not
+//! # The four neutral verbs, and the one that is not
 //!
-//! [`EventDraft`] (create), [`EventEdit`] (patch) and [`EventDeletion`] (delete) are the
-//! spine, and every calendar adapter implements all three. They carry **intent** — a title,
-//! a new start, which occurrence — and each adapter renders that intent in its own
-//! protocol. So a host never touches a `RawIcal`, an href or an `ETag` to edit an event,
-//! and never switches on provider kind (`providers.md`).
+//! [`EventDraft`] (create), [`EventEdit`] (patch), [`EventDeletion`] (delete) and
+//! [`EventRsvp`] (answer an invitation) are the spine, and every calendar adapter implements
+//! all four. They carry **intent** — a title, a new start, which occurrence, yes or no — and
+//! each adapter renders that intent in its own protocol. So a host never touches a
+//! `RawIcal`, an href or an `ETag` to edit an event, and never switches on provider kind
+//! (`providers.md`).
+//!
+//! [`EventRsvp`] is a verb of its own rather than an [`EventEdit`] of the attendee array for
+//! a reason the bytes hide: answering an invitation makes the server **tell the organizer**,
+//! and a patch does not. Graph, Google and every auto-scheduling CalDAV/JMAP server route it
+//! through a distinct path; expressing it as an edit would change the same participant and
+//! skip the scheduling silently.
 //!
 //! [`EventWrite`] is the exception, and is deliberately *not* part of that spine: it
 //! replaces the whole stored document, which only a **document-oriented** transport has as
@@ -43,6 +50,7 @@
 //! wins, so "the write succeeded" does not mean "no concurrent edit was lost".
 
 mod patch;
+mod rsvp;
 
 use engine_core::{
     calendar::Event,
@@ -52,6 +60,7 @@ use engine_core::{
     version::RevisionTokens,
 };
 pub use patch::{EventEdit, EventPatch, PatchTarget, TextEdit};
+pub use rsvp::{EventRsvp, RsvpResponse};
 use serde::{Deserialize, Serialize};
 
 /// A new event to create.

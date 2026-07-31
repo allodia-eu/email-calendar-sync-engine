@@ -23,7 +23,9 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_ical::{build_event_ical, patch_event_ical};
-use engine_provider::{EventDeletion, EventDraft, EventEdit, EventWrite, EventWriteReceipt};
+use engine_provider::{
+    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
+};
 
 use crate::{
     error::CalDavError,
@@ -91,6 +93,62 @@ pub(crate) async fn patch_event(
     )
     .await
     .map(|revisions| EventWriteReceipt::new(edit.event.clone(), edit.uid.clone(), revisions))
+}
+
+/// Answers an invitation: rewrite *my* `PARTSTAT` in the stored iCalendar
+/// ([`imip::set_my_partstat`](crate::imip::set_my_partstat)) and `PUT` it back under
+/// `If-Match`.
+///
+/// **The `PUT` is the whole RSVP.** CalDAV has no reply verb: on an RFC 6638 auto-schedule
+/// server the *server* notices the changed participation status and emits the iTIP `REPLY`
+/// to the organizer itself (§3.2). That is why neither of the two surrounding controls is
+/// available here, and why the adapter refuses rather than ignores them:
+///
+/// - **`notify_organizer: false`** cannot be honoured — the reply leaves the moment the `PUT`
+///   lands. Suppressing it would mean `SCHEDULE-AGENT=CLIENT` on the `ORGANIZER`, and then *nobody*
+///   sends the reply, because client-side iMIP delivery is not wired (`imip.rs`). A tick that
+///   emails them anyway is worse than one never shown.
+/// - **A `comment`** has nowhere to go: iCalendar has no per-attendee comment parameter, and a
+///   `COMMENT` property on the stored `VEVENT` is the organizer's copy of the event, not a note
+///   from an attendee.
+///
+/// Both are advertised as absent on
+/// [`Capabilities::calendar_rsvp`](engine_provider::Capabilities::calendar_rsvp), and
+/// enforced by [`RsvpControls::accept`](engine_provider::RsvpControls::accept) in the
+/// adapter — so a host that reads capabilities never reaches those errors, and one that does
+/// not gets a refusal rather than a silent drop.
+///
+/// # Errors
+///
+/// Returns [`CalDavError::Ical`] if the base carries no stored `raw_ical` (never synced from
+/// this transport) or has no `ATTENDEE` matching the answering address — you cannot answer
+/// an invitation you are not on. Returns a `412`-classified
+/// [`Conflict`](engine_core::error::FailureClass::Conflict) if the server copy moved on, and
+/// [`CalDavError`] on any transport/HTTP failure.
+pub(crate) async fn rsvp_event(
+    exec: &dyn DavExecutor,
+    base: &Event,
+    rsvp: &EventRsvp,
+) -> Result<EventWriteReceipt, CalDavError> {
+    let stored = base.raw_ical.as_ref().ok_or_else(|| {
+        CalDavError::ical(
+            "event has no stored iCalendar to answer; it was not synced from this provider. \
+             Re-sync the calendar before answering — rewriting a document we do not hold would \
+             mean rebuilding it from the lossy projection, which silently drops every property \
+             the engine does not model",
+        )
+    })?;
+    let ical = crate::imip::set_my_partstat(stored, &rsvp.attendee, &rsvp.response.status())?;
+    put(
+        exec,
+        &rsvp.event,
+        &ical,
+        rsvp.guard
+            .as_ref()
+            .map_or(Precondition::None, |tokens| guard(tokens.etag.as_ref())),
+    )
+    .await
+    .map(|revisions| EventWriteReceipt::new(rsvp.event.clone(), rsvp.uid.clone(), revisions))
 }
 
 /// Replaces an event's whole stored document (the iMIP RSVP path — `engine-provider`'s

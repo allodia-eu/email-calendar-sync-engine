@@ -10,7 +10,9 @@ use engine_core::{
     time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId, UtcDateTime},
     version::{ETag, RevisionTokens},
 };
-use engine_provider::{EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget};
+use engine_provider::{
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, PatchTarget, RsvpResponse,
+};
 use serde_json::json as sjson;
 
 use super::*;
@@ -272,4 +274,86 @@ async fn patch_sends_if_match_and_only_the_changed_field() {
     let json: serde_json::Value = serde_json::from_str(body).unwrap();
     assert_eq!(json["summary"], "Renamed");
     assert!(json.get("start").is_none());
+}
+
+#[test]
+fn build_rsvp_answers_as_the_matched_address() {
+    // D5: an invitation to an alias answers as the alias. Sending the account's primary
+    // identity here would match no attendee and the answer would reach nobody.
+    let base = base_event();
+    let body = build_rsvp(
+        &EventRsvp::to(&base, "info@example.com", RsvpResponse::Tentative).comment("Might be late"),
+    );
+    assert_eq!(body["attendees"][0]["email"], "info@example.com");
+    assert_eq!(body["attendees"][0]["responseStatus"], "tentative");
+    assert_eq!(body["attendees"][0]["comment"], "Might be late");
+
+    let plain = build_rsvp(&EventRsvp::to(
+        &base,
+        "me@example.com",
+        RsvpResponse::Declined,
+    ));
+    assert_eq!(plain["attendees"][0]["responseStatus"], "declined");
+    assert!(plain["attendees"][0].get("comment").is_none());
+}
+
+#[tokio::test]
+async fn an_rsvp_patches_the_response_status_and_asks_google_to_notify() {
+    // Over the capturing server, so the actual request is asserted rather than a fake's
+    // canned answer: the `sendUpdates` query (which is what emails the organizer at all),
+    // the `If-Match` guard, and the body.
+    let base = base_event();
+    let (url, rx) = capturing_server(
+        "200 OK",
+        &stored("evt-1", "u@google.com", "\"v8\"").to_string(),
+    );
+    let client = GoogleClient::with_base("tok", url, tls()).unwrap();
+
+    rsvp_event(
+        &client,
+        "cal-1",
+        &base,
+        &EventRsvp::to(&base, "info@example.com", RsvpResponse::Accepted),
+    )
+    .await
+    .unwrap();
+
+    let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(
+        request.starts_with("PATCH /calendar/v3/calendars/cal-1/events/evt-1?sendUpdates=all "),
+        "{request}"
+    );
+    // The RSVP keeps the enforced guard the rest of this adapter promises — unlike Graph,
+    // whose action endpoint takes none.
+    assert!(
+        request.contains("if-match: \"v7\"") || request.contains("If-Match: \"v7\""),
+        "{request}"
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body["attendees"][0]["responseStatus"], "accepted");
+}
+
+#[tokio::test]
+async fn declining_quietly_asks_google_to_tell_nobody() {
+    // `sendUpdates=none` is the whole difference between a stored status and an email. If
+    // this ever fell back to Google's default the organizer would be mailed anyway.
+    let base = base_event();
+    let (url, rx) = capturing_server(
+        "200 OK",
+        &stored("evt-1", "u@google.com", "\"v8\"").to_string(),
+    );
+    let client = GoogleClient::with_base("tok", url, tls()).unwrap();
+
+    rsvp_event(
+        &client,
+        "cal-1",
+        &base,
+        &EventRsvp::to(&base, "me@example.com", RsvpResponse::Declined).quietly(),
+    )
+    .await
+    .unwrap();
+
+    let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(request.contains("?sendUpdates=none "), "{request}");
 }

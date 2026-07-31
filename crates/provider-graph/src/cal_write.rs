@@ -14,8 +14,8 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, EventWriteReceipt, PatchTarget,
-    ProviderError, ProviderResult, TextEdit,
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWriteReceipt, PatchTarget,
+    ProviderError, ProviderResult, RsvpResponse, TextEdit,
 };
 use serde_json::{Map, Value, json};
 
@@ -84,6 +84,72 @@ pub(crate) async fn patch_event(
             RevisionTokens::none(),
         )),
     }
+}
+
+/// Answers an invitation via `POST /me/events/{id}/{accept|tentativelyAccept|decline}`.
+///
+/// Graph's RSVP is a **action endpoint**, not a `PATCH` of the attendee array, and the
+/// difference is the whole point: the action makes Exchange send the iTIP `REPLY` and (on a
+/// decline) drop the event from the calendar, while patching `attendees` would change the
+/// same field and tell nobody.
+///
+/// Both surrounding controls are native here — `comment` is the note the organizer reads,
+/// `sendResponse` is Outlook's "Email organizer" tick — so this is the one transport where
+/// [`EventRsvp::notify_organizer`] is honoured verbatim rather than refused.
+///
+/// **The write is unguarded**, and that is Graph's doing: the action endpoint accepts no
+/// `If-Match` (unlike the `PATCH` beside it), so `rsvp.guard` cannot be sent and an answer
+/// built on a stale copy lands anyway. The adapter advertises that as
+/// [`WriteGuard::Absent`](engine_provider::WriteGuard::Absent) on
+/// [`RsvpControls::guard`](engine_provider::RsvpControls::guard) rather than letting the
+/// enforced guard it promises for edits imply one here.
+///
+/// The response is `202 Accepted` with **no body**, so the receipt carries the base's
+/// identity and no revision; the post-write reconcile is what re-reads the event.
+pub(crate) async fn rsvp_event(
+    client: &GraphClient,
+    base: &Event,
+    rsvp: &EventRsvp,
+) -> ProviderResult<EventWriteReceipt> {
+    client
+        .post(
+            &client.url(&format!(
+                "/events/{}/{}",
+                base.id.key().as_str(),
+                graph_rsvp_action(rsvp.response)
+            )),
+            "application/json",
+            serde_json::to_vec(&build_rsvp(rsvp)).map_err(GraphError::from)?,
+        )
+        .await?;
+    Ok(EventWriteReceipt::new(
+        base.id.clone(),
+        base.uid.clone(),
+        RevisionTokens::none(),
+    ))
+}
+
+/// The Graph action segment for an answer (`graph.md`; Outlook's own three buttons).
+const fn graph_rsvp_action(response: RsvpResponse) -> &'static str {
+    match response {
+        RsvpResponse::Accepted => "accept",
+        RsvpResponse::Tentative => "tentativelyAccept",
+        RsvpResponse::Declined => "decline",
+    }
+}
+
+/// Builds the RSVP action body: the note, and whether Exchange emails the organizer.
+///
+/// `sendResponse` is **always** sent rather than left to Graph's default, because the
+/// default is `true` and a caller that asked for silence would be ignored — the one
+/// outcome this verb must never produce.
+fn build_rsvp(rsvp: &EventRsvp) -> Value {
+    let mut body = Map::new();
+    if let Some(comment) = &rsvp.comment {
+        body.insert("comment".to_owned(), json!(comment));
+    }
+    body.insert("sendResponse".to_owned(), json!(rsvp.notify_organizer));
+    Value::Object(body)
 }
 
 /// Deletes `deletion.event` via `DELETE /me/events/{id}`, guarded by the ETag it was read

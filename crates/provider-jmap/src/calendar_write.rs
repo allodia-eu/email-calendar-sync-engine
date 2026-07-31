@@ -1,4 +1,6 @@
-//! Calendar writes via `CalendarEvent/set` (RFC 8620 §5.3, JSCalendar RFC 8984).
+//! Calendar writes via `CalendarEvent/set` (RFC 8620 §5.3, JSCalendar RFC 8984): create,
+//! patch, destroy. The fourth verb, the RSVP, is [`calendar_rsvp`](crate::calendar_rsvp) —
+//! it alone has to resolve a participant id out of the preserved JSCalendar.
 //!
 //! This is how JMAP renders the neutral write verbs (`engine-provider`), and it is the
 //! mirror image of CalDAV's. CalDAV's write verb is `PUT` — replace the whole resource — so
@@ -211,7 +213,7 @@ pub(crate) async fn delete_event(
 }
 
 /// The `SetError` type the server reported for `target` under `map`, if any (RFC 8620 §5.3).
-fn set_error<'a>(result: &'a Value, map: &str, target: &str) -> Option<&'a str> {
+pub(crate) fn set_error<'a>(result: &'a Value, map: &str, target: &str) -> Option<&'a str> {
     result
         .get(map)
         .and_then(|f| f.get(target))
@@ -425,6 +427,6 @@ fn existing_location_id(base: &Event) -> Option<String> {
 ///
 /// A JSCalendar id is server-assigned and opaque, so it may contain either; an unescaped
 /// pointer would then address the wrong thing.
-fn escape_pointer(token: &str) -> String {
+pub(crate) fn escape_pointer(token: &str) -> String {
     token.replace('~', "~0").replace('/', "~1")
 }

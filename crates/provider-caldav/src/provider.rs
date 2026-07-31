@@ -24,8 +24,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion, EventDraft,
-    EventEdit, EventWrite, EventWriteReceipt, IgnoreConnectSteps, Provider, ProviderError,
-    ProviderResult, ScopeSync, WriteGuard,
+    EventEdit, EventRsvp, EventWrite, EventWriteReceipt, IgnoreConnectSteps, Provider,
+    ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard,
 };
 use engine_tls::TlsClientConfig;
 
@@ -33,6 +33,19 @@ use crate::{
     discovery,
     error::CalDavError,
     transport::{Credentials, DavClient, DavExecutor},
+};
+
+/// What a CalDAV RSVP can and cannot control.
+///
+/// The answer rides the same conditional `PUT` as any other write, so it keeps the enforced
+/// `If-Match` guard. Neither surrounding control is ours: an RFC 6638 auto-schedule server
+/// emits the iTIP `REPLY` itself the moment the `PARTSTAT` changes, and iCalendar has no
+/// per-attendee note to carry one in. Declared once, and used both to advertise and to
+/// enforce, so the two can never disagree.
+const CALDAV_RSVP: RsvpControls = RsvpControls {
+    comment: false,
+    suppress_notification: false,
+    guard: WriteGuard::Enforced,
 };
 
 /// Connection settings for a CalDAV account.
@@ -204,7 +217,8 @@ impl CalDavProvider {
             // the transport that can actually promise it — contrast JMAP, which cannot.
             capabilities: Capabilities::none()
                 .with_calendars()
-                .with_calendar_writes(WriteGuard::Enforced),
+                .with_calendar_writes(WriteGuard::Enforced)
+                .with_calendar_rsvp(CALDAV_RSVP),
             home_href,
             collection,
         })
@@ -364,6 +378,16 @@ impl Provider for CalDavProvider {
         write: &EventWrite,
     ) -> ProviderResult<EventWriteReceipt> {
         Ok(crate::write::put_event(self.executor.as_ref(), write).await?)
+    }
+
+    async fn rsvp_event(
+        &self,
+        _account: &AccountId,
+        base: &Event,
+        rsvp: &EventRsvp,
+    ) -> ProviderResult<EventWriteReceipt> {
+        CALDAV_RSVP.accept(rsvp)?;
+        Ok(crate::write::rsvp_event(self.executor.as_ref(), base, rsvp).await?)
     }
 
     async fn delete_event(
