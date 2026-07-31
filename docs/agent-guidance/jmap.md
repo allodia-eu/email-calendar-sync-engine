@@ -267,21 +267,26 @@ specifics they implement against the Stalwart fixture. Read it before touching
      spurious failure, not lost-update protection. And its value would have to be the sync
      cursor, which is a property of the sync, not of the event being written.
 
-  On top of that, **Stalwart does not enforce it at all**: v0.16.11–v0.16.13 parse `ifInState`
-  and never compare it (a stale-state `/set` is applied and returns a fresh `newState`, where
-  RFC 8620 §5.3 requires a `stateMismatch`; a *malformed* state string still `400`s, so it is
-  parsed, just never checked). It is an omission at the call site, not a missing feature —
-  `calendar_event/copy.rs` calls the `assert_state` helper and `calendar_event/set.rs` does
-  not. An upstream bug, so we cannot rely on it being absent either.
+  Stalwart's handling of `ifInState` **changed under us**, and neither state changes the
+  decision. v0.16.11–v0.16.13 parsed it and never compared it (a stale-state `/set` was applied
+  and returned a fresh `newState`, where RFC 8620 §5.3 requires a `stateMismatch`; a *malformed*
+  state string still `400`s, so it was parsed, just never checked). v0.16.14 fixed it, verified
+  by probe against v0.16.15: a stale-but-well-formed token is refused with `stateMismatch` and
+  the write does not land. That only sharpens reason 2 — the probe's state had moved because of
+  an edit to a *different* property of a *different* event, which is precisely the spurious
+  rejection a per-event guard must not produce.
 
-  **So we send no `ifInState`.** It would buy nothing on the server we run against and cause
-  spurious rejections on one that behaved. Instead the absence of the guard is *asserted live*
-  (`a_stale_edit_is_not_refused`): a write built on a superseded copy lands, and the concurrent
-  edit is silently lost. If Stalwart ever starts enforcing, **that test fails** and the
-  capability must change — the claim is pinned to observed behaviour, not to a reading of the
-  spec. A host that must not lose a concurrent edit has to detect it above the engine. The one
-  thing that must not happen is a neutral write API that *looks* like it gives optimistic
-  concurrency on every provider when here it gives none.
+  **So we send no `ifInState`**, on either vintage. Instead the absence of the guard is
+  *asserted live* (`a_stale_edit_is_not_refused`): a write built on a superseded copy lands, and
+  the concurrent edit is silently lost.
+
+  Be precise about what that test can and cannot catch. It drives the **adapter**, which sends
+  no precondition, so server-side `ifInState` enforcement can never fail it — and did not: it
+  passes unchanged on v0.16.15. It is a tripwire for *the writes we actually send* losing their
+  ability to clobber, which is what `WriteGuard::Absent` claims; it is **not** a tripwire for
+  Stalwart gaining a precondition. A host that must not lose a concurrent edit has to detect it
+  above the engine. The one thing that must not happen is a neutral write API that *looks* like
+  it gives optimistic concurrency on every provider when here it gives none.
 - **RSVP is still deferred for JMAP.** `participants/<id>/participationStatus` is the obvious
   mapping, but the neutral `EventPatch` carries no participation status yet (CalDAV's RSVP
   goes through `imip::set_my_partstat` + the whole-document verb, which JMAP does not have),

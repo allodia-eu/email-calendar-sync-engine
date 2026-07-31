@@ -31,11 +31,13 @@
 //!    spurious failure — and the value would have to be the sync cursor, which is a property of the
 //!    sync, not of the event being written.
 //!
-//! On top of that, Stalwart **does not enforce it at all**: v0.16.11 through v0.16.13 parse
-//! `ifInState` and never compare it (a stale-state `/set` is applied, and returns a fresh
-//! `newState`, where RFC 8620 §5.3 requires a `stateMismatch`). The check exists in their
-//! tree — `calendar_event/copy.rs` calls `assert_state`, `calendar_event/set.rs` does not —
-//! so it is an omission at the call site, an upstream bug we cannot rely on being absent.
+//! Stalwart's own handling of it changed under us, and neither state changes the above.
+//! v0.16.11 through v0.16.13 parsed `ifInState` and never compared it (a stale-state `/set`
+//! was applied and returned a fresh `newState`, where RFC 8620 §5.3 requires a
+//! `stateMismatch`); v0.16.14 fixed that, verified against v0.16.15 — a stale-but-well-formed
+//! token is now refused with `stateMismatch` and the write does not land. Which only sharpens
+//! reason 2: the probe's state had moved because of an edit to a *different* property of a
+//! *different* event, exactly the spurious rejection a per-event guard must not have.
 //!
 //! So sending `ifInState` would buy nothing on the server we run against and would cause
 //! spurious rejections on one that behaved. We send none, and say so through the capability

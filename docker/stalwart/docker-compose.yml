@@ -23,7 +23,7 @@ name: stalwart-harness
 
 services:
   stalwart:
-    # stalwartlabs/stalwart v0.16.8, pinned by multi-arch digest (linux/amd64 +
+    # stalwartlabs/stalwart v0.16.11, pinned by multi-arch digest (linux/amd64 +
     # linux/arm64). Bump deliberately: re-resolve the digest and update CI too.
     image: stalwartlabs/stalwart:v0.16.11@sha256:5ed90ea664cca8eb0058927b8c528abcb9c2c9990e73ccfd3218606555618082
     # Self-bootstrapping wrapper: bootstrap via API, restart to full server,
