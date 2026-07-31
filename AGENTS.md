@@ -39,6 +39,13 @@ Read before relevant work:
 - Keep public Rust APIs idiomatic by defaulting to the Rust API Guidelines: <https://rust-lang.github.io/api-guidelines/about.html>.
 - Use newtypes for identities and protocol-specific references. Do not pass raw strings where a type can prevent mixing account ids, provider ids, mailboxes, events, or cursors.
 - Avoid `unsafe`. If unavoidable, isolate it, document `# Safety`, and add tests around the safe boundary.
+- **`cargo clean` is a symptom, not a maintenance task.** If you are cleaning to free disk, something
+  is configured wrong — find it instead, because every clean throws away the cache that makes the
+  next build fast. The settings that keep `target/` small live in `[profile.dev]` in the root
+  [`Cargo.toml`](Cargo.toml) (measured: 11 GB → 3.7 GB, 4m51s → 3m18s); the reasoning is in
+  [`docs/agent-guidance/rust.md`](docs/agent-guidance/rust.md) → "Build time and disk". Read it
+  before changing a profile, and never put a build fix in the workflow file — a fix that lives in
+  CI is a fix nobody who builds locally gets.
 
 ## Documentation Currency
 
