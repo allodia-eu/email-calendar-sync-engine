@@ -64,7 +64,14 @@ use provider_caldav::{CalDavConfig, CalDavProvider, Credentials as DavCredential
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::{Harness, ScratchAccount};
 
-const RSVP_UID: &str = "jmap-rsvp-verb@test.local";
+/// Each test gets its **own** UID, derived from its name.
+///
+/// They share two scratch accounts and run concurrently, so a single shared UID means one
+/// test's cleanup deletes the other's invitation mid-flight — which is exactly how this
+/// first failed in CI while passing locally, where they had been run one at a time.
+fn uid_for(test: &str) -> String {
+    format!("jmap-rsvp-{test}@test.local")
+}
 
 /// How long to wait for an asynchronous iTIP delivery. A poll on real state, never a sleep.
 const DELIVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -90,6 +97,8 @@ struct Parties {
     organizer_address: String,
     attendee: JmapProvider,
     attendee_address: String,
+    /// This test's own invitation UID — see [`uid_for`].
+    uid: String,
 }
 
 async fn parties(test: &str) -> Option<Parties> {
@@ -116,6 +125,7 @@ async fn parties(test: &str) -> Option<Parties> {
     let attendee = connect_jmap(&base, &attendee_auth).await;
 
     Some(Parties {
+        uid: uid_for(test),
         organizer_address: organizer_auth.address,
         attendee_address: attendee_auth.address.clone(),
         organizer,
@@ -138,7 +148,7 @@ async fn connect_jmap(base: &str, account: &ScratchAccount) -> JmapProvider {
 fn invitation(parties: &Parties) -> String {
     format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Harness//JMAP RSVP//EN\r\n\
-         BEGIN:VEVENT\r\nUID:{RSVP_UID}\r\nDTSTAMP:20260701T080000Z\r\nSEQUENCE:0\r\n\
+         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260701T080000Z\r\nSEQUENCE:0\r\n\
          DTSTART;TZID=Europe/Amsterdam:20260812T140000\r\n\
          DTEND;TZID=Europe/Amsterdam:20260812T150000\r\n\
          SUMMARY:RSVP over JMAP\r\n\
@@ -146,6 +156,7 @@ fn invitation(parties: &Parties) -> String {
          ATTENDEE;CN=Carol;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:\
          {attendee}\r\n\
          END:VEVENT\r\nEND:VCALENDAR\r\n",
+        uid = parties.uid,
         organizer = parties.organizer_address,
         attendee = parties.attendee_address,
     )
@@ -198,7 +209,7 @@ async fn poll_jmap(parties: &Parties, what: &str, ready: impl Fn(&Event) -> bool
         if let Some(event) = jmap_events(&parties.attendee, &attendee_account())
             .await
             .into_iter()
-            .find(|e| e.uid.as_str() == RSVP_UID)
+            .find(|e| e.uid.as_str() == parties.uid)
             && ready(&event)
         {
             return event;
@@ -223,7 +234,7 @@ async fn organizer_copy_after(parties: &Parties, settle: std::time::Duration) ->
     dav_events(&parties.organizer, &organizer_account())
         .await
         .into_iter()
-        .find(|e| e.uid.as_str() == RSVP_UID)
+        .find(|e| e.uid.as_str() == parties.uid)
         .expect("the organizer still holds their own copy")
 }
 
@@ -233,7 +244,7 @@ async fn clean_up(parties: &Parties) {
     for event in dav_events(&parties.organizer, &organizer_account())
         .await
         .into_iter()
-        .filter(|e| e.uid.as_str() == RSVP_UID)
+        .filter(|e| e.uid.as_str() == parties.uid)
     {
         let _ = parties
             .organizer
@@ -243,7 +254,7 @@ async fn clean_up(parties: &Parties) {
     for event in jmap_events(&parties.attendee, &attendee_account())
         .await
         .into_iter()
-        .filter(|e| e.uid.as_str() == RSVP_UID)
+        .filter(|e| e.uid.as_str() == parties.uid)
     {
         let _ = parties
             .attendee
@@ -293,7 +304,7 @@ async fn jmap_rsvp_stores_the_answer_but_the_organizer_is_never_told() {
     // ---- The organizer places the invitation; the server delivers it. ----
     let href = parties
         .organizer
-        .event_href(&Uid::new(RSVP_UID).unwrap())
+        .event_href(&Uid::new(parties.uid.clone()).unwrap())
         .expect("mint event href");
     parties
         .organizer
@@ -301,7 +312,7 @@ async fn jmap_rsvp_stores_the_answer_but_the_organizer_is_never_told() {
             &organizer_account(),
             &EventWrite::unconditional(
                 href,
-                Uid::new(RSVP_UID).unwrap(),
+                Uid::new(parties.uid.clone()).unwrap(),
                 RawIcal::new(invitation(&parties)),
             ),
         )
@@ -402,7 +413,7 @@ async fn jmap_answering_as_a_stranger_is_refused() {
 
     let href = parties
         .organizer
-        .event_href(&Uid::new(RSVP_UID).unwrap())
+        .event_href(&Uid::new(parties.uid.clone()).unwrap())
         .expect("mint event href");
     parties
         .organizer
@@ -410,7 +421,7 @@ async fn jmap_answering_as_a_stranger_is_refused() {
             &organizer_account(),
             &EventWrite::unconditional(
                 href,
-                Uid::new(RSVP_UID).unwrap(),
+                Uid::new(parties.uid.clone()).unwrap(),
                 RawIcal::new(invitation(&parties)),
             ),
         )
@@ -435,7 +446,7 @@ async fn jmap_answering_as_a_stranger_is_refused() {
     let unchanged = jmap_events(&parties.attendee, &attendee_account())
         .await
         .into_iter()
-        .find(|e| e.uid.as_str() == RSVP_UID)
+        .find(|e| e.uid.as_str() == parties.uid)
         .expect("the invitation is still there");
     assert_eq!(
         participant(&unchanged, &parties.attendee_address),
