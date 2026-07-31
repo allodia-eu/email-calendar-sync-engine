@@ -6,10 +6,11 @@
 
 use engine_core::{
     calendar::{Event, ParticipationStatus},
+    error::FailureClass,
     ids::Uid,
     scheduling::{ScheduleMethod, addresses_match},
 };
-use engine_provider::{EventWrite, Provider};
+use engine_provider::{EventRsvp, EventWrite, Provider, RsvpResponse};
 use provider_caldav::imip;
 
 use super::{
@@ -226,6 +227,115 @@ pub(crate) async fn an_rsvp_reaches_the_organizer(parties: &Parties) {
         participant(&theirs, parties.attendee_address()).participation_status,
         ParticipationStatus::Accepted,
         "the server derived the REPLY from the stored PARTSTAT and applied it"
+    );
+
+    clean_up(parties, &uid).await;
+}
+
+// ---------------------------------------------------------------------------
+// 4b. The same round trip, through the verb a host actually calls.
+// ---------------------------------------------------------------------------
+
+const NEUTRAL_RSVP_UID: &str = "caldav-schedule-rsvp-verb@test.local";
+
+/// The attendee answers through `Provider::rsvp_event` — the neutral verb — and the
+/// **organizer's separate copy** shows it.
+///
+/// [`an_rsvp_reaches_the_organizer`] above drives the *primitive* (`set_my_partstat` plus a
+/// whole-document `PUT`). This drives what a host actually calls, which is a different code
+/// path: the adapter resolves the answering address against the stored `ATTENDEE` lines,
+/// patches the document itself, and guards the `PUT` on the revision the read reported. A
+/// green primitive says nothing about that assembly — which is why this is a second
+/// scenario rather than a rewrite of the first.
+///
+/// It also pins the two refusals against a **real** server rather than a fake that was told
+/// to refuse: CalDAV advertises neither a note nor a notify toggle, and asking for either
+/// must fail *before* anything is written. That the invitation is still unanswered
+/// afterwards is the half that matters — a refusal that had already answered is worse than
+/// no refusal at all.
+pub(crate) async fn an_rsvp_through_the_neutral_verb_reaches_the_organizer(parties: &Parties) {
+    let uid = Uid::new(NEUTRAL_RSVP_UID).unwrap();
+    let mine = invite(
+        parties,
+        &uid,
+        "RSVP via the neutral verb",
+        "Europe/Amsterdam",
+    )
+    .await;
+
+    let controls = parties
+        .attendee
+        .connection_info()
+        .capabilities
+        .calendar_rsvp()
+        .expect("CalDAV advertises that it can answer an invitation");
+    assert!(
+        !controls.comment && !controls.suppress_notification,
+        "an RFC 6638 server replies the moment the PARTSTAT changes: nowhere to put a note, \
+         and no way to keep the organizer out of it"
+    );
+
+    // Both refusals, against the real server, before the answer that works.
+    for (label, rsvp) in [
+        (
+            "a note",
+            EventRsvp::to(&mine, parties.attendee_address(), RsvpResponse::Accepted)
+                .comment("See you there"),
+        ),
+        (
+            "silence",
+            EventRsvp::to(&mine, parties.attendee_address(), RsvpResponse::Accepted).quietly(),
+        ),
+    ] {
+        let refused = parties
+            .attendee
+            .rsvp_event(&parties.attendee_account, &mine, &rsvp)
+            .await
+            .expect_err("asking for a control CalDAV cannot honour must fail");
+        assert_eq!(
+            refused.class(),
+            FailureClass::InvalidState,
+            "{label}: a control this transport cannot honour is a caller error, not a retry"
+        );
+    }
+    let still_unanswered =
+        common::fetch(&parties.attendee, &parties.attendee_account, uid.as_str())
+            .await
+            .expect("the invitation is still on the attendee's calendar");
+    assert_eq!(
+        participant(&still_unanswered, parties.attendee_address()).participation_status,
+        ParticipationStatus::NeedsAction,
+        "a refused control must leave the invitation unanswered"
+    );
+
+    // The answer a host sends: the matched address, the response, nothing else.
+    parties
+        .attendee
+        .rsvp_event(
+            &parties.attendee_account,
+            &mine,
+            &EventRsvp::to(&mine, parties.attendee_address(), RsvpResponse::Declined),
+        )
+        .await
+        .expect("the neutral verb must answer on a server-scheduled transport");
+
+    let theirs = poll_until(
+        &parties.organizer,
+        &parties.organizer_account,
+        &uid,
+        "the iTIP REPLY from the neutral verb to reach the organizer's copy",
+        |event| {
+            event
+                .participants
+                .iter()
+                .any(|p| p.participation_status == ParticipationStatus::Declined)
+        },
+    )
+    .await;
+    assert_eq!(
+        participant(&theirs, parties.attendee_address()).participation_status,
+        ParticipationStatus::Declined,
+        "the server derived the REPLY from what the neutral verb stored"
     );
 
     clean_up(parties, &uid).await;

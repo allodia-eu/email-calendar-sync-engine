@@ -429,7 +429,7 @@ pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
     CalendarWriteOutcome, ContactWriteOutcome, MailEditOutcome, SubmitOutcome,
     create_calendar_event, create_contact, delete_calendar_event, delete_contact, edit_mail,
-    patch_calendar_event, patch_contact, put_calendar_document, submit_mail,
+    patch_calendar_event, patch_contact, put_calendar_document, rsvp_calendar_event, submit_mail,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::{StreamTuning, sync_email_streamed, sync_mail_streamed};

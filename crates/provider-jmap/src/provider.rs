@@ -374,6 +374,19 @@ impl Provider for JmapProvider {
         )
     }
 
+    /// One `CalendarEvent/set` `update` of *my* participant's `participationStatus`, which
+    /// is what makes the server schedule the iTIP `REPLY` (`crate::calendar_write`).
+    async fn rsvp_event(
+        &self,
+        _account: &AccountId,
+        base: &Event,
+        rsvp: &engine_provider::EventRsvp,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        crate::session::JMAP_RSVP.accept(rsvp)?;
+        let account = self.calendar_account()?;
+        Ok(crate::calendar_rsvp::rsvp_event(self.executor.as_ref(), &account, base, rsvp).await?)
+    }
+
     /// One `CalendarEvent/set` `destroy`. An already-gone event is a success, so a retried
     /// delete resolves cleanly (`crate::calendar_write`).
     async fn delete_event(

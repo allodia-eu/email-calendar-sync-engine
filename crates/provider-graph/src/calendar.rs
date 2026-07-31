@@ -20,8 +20,9 @@ use engine_core::{
     time::TimeZoneId,
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventWriteReceipt,
-    PageToken, Provider, ProviderError, ProviderResult, ScopeSync, SyncKind, WriteGuard,
+    Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
+    EventWriteReceipt, PageToken, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync,
+    SyncKind, WriteGuard,
 };
 
 use crate::{
@@ -33,6 +34,19 @@ use crate::{
 /// The calendar list is re-discovered as a snapshot each pass (`GET /me/calendars`), so
 /// it carries no provider cursor of its own — like IMAP's/CalDAV's collection list.
 const CALENDAR_LIST_CURSOR: &str = "graph-calendars";
+
+/// What a Graph RSVP can and cannot control.
+///
+/// Both surrounding controls are native (`comment`, `sendResponse`). The guard is **not**:
+/// the RSVP is a action endpoint (`POST /events/{id}/accept`) that accepts no `If-Match`,
+/// unlike the `PATCH` this adapter uses for edits — so the enforced guard it promises for
+/// writes does not extend to answering. Declared once, and used both to advertise and to
+/// enforce, so the two can never disagree.
+const GRAPH_RSVP: RsvpControls = RsvpControls {
+    comment: true,
+    suppress_notification: true,
+    guard: WriteGuard::Absent,
+};
 
 /// A Microsoft Graph calendar read/sync/write provider bound to one calendar.
 ///
@@ -81,7 +95,8 @@ impl GraphCalendarProvider {
             display_zone,
             capabilities: Capabilities::none()
                 .with_calendars()
-                .with_calendar_writes(WriteGuard::Enforced),
+                .with_calendar_writes(WriteGuard::Enforced)
+                .with_calendar_rsvp(GRAPH_RSVP),
         }
     }
 
@@ -206,6 +221,16 @@ impl Provider for GraphCalendarProvider {
         edit: &EventEdit,
     ) -> ProviderResult<EventWriteReceipt> {
         cal_write::patch_event(&self.client, base, edit).await
+    }
+
+    async fn rsvp_event(
+        &self,
+        _account: &AccountId,
+        base: &Event,
+        rsvp: &EventRsvp,
+    ) -> ProviderResult<EventWriteReceipt> {
+        GRAPH_RSVP.accept(rsvp)?;
+        cal_write::rsvp_event(&self.client, base, rsvp).await
     }
 
     async fn delete_event(

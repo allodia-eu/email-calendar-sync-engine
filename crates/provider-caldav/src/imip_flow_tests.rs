@@ -2,9 +2,13 @@
 //! against its organizer → reconcile → RSVP → the outbox → a real store.
 //!
 //! It lives apart from `provider_tests` because it is one cohesive *scenario* rather than a
-//! provider unit test, and because it is the sole exercise of the whole-document write verb
-//! — an RSVP is a finished document, not a property patch, which is why it does not go
-//! through the neutral `patch_event` spine (`caldav.md`).
+//! provider unit test: it is the only place the inbound parse, the trust decision and the
+//! outbound answer are exercised as one flow.
+//!
+//! The answer goes through the **neutral RSVP verb** (`engine_provider::EventRsvp`), not
+//! through a host-assembled document: the host states "accept, as this address", and the
+//! adapter is what knows that CalDAV expresses it as a `PARTSTAT` rewrite in the stored
+//! iCalendar plus a conditional `PUT` (`caldav.md`).
 
 use core::time::Duration;
 
@@ -35,13 +39,12 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
     use engine_core::{
         calendar::ParticipationStatus,
         ids::CalendarId,
-        raw::RawIcal,
         scheduling::{ScheduleAction, reconcile},
         version::ETag,
     };
     use engine_ical::parse_calendar_object;
-    use engine_provider::EventWrite;
-    use engine_sync::put_calendar_document;
+    use engine_provider::{EventRsvp, RsvpResponse};
+    use engine_sync::rsvp_calendar_event;
 
     use crate::{
         imip,
@@ -61,17 +64,10 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
         ScheduleAction::ScheduleEvent
     );
 
-    // (3) I accept: patch *my* PARTSTAT into my stored copy of the event (the RSVP
-    // write primitive). Storage round-trips from raw plus this targeted patch.
-    let patched = imip::set_my_partstat(
-        &RawIcal::new(STORED_INVITE),
-        me,
-        &ParticipationStatus::Accepted,
-    )
-    .expect("rsvp patch");
-
-    // (4) Drive the conditional PUT through the existing outbox driver into a real
-    // store. Discovery consumes PRINCIPAL; the PUT consumes the write response.
+    // (3) Drive the answer through the neutral RSVP verb into a real store. The host
+    // never builds a document: it says "accept, as me@test.local", and the adapter
+    // rewrites my PARTSTAT in the stored iCalendar and PUTs it back.
+    // Discovery consumes PRINCIPAL; the PUT consumes the write response.
     let exec = std::sync::Arc::new(Replay::new(vec![
         ok(PRINCIPAL),
         wrote(204, Some("\"rt-v2\"")),
@@ -100,21 +96,20 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
     .expect("parse stored invite");
     stored.revisions = engine_core::version::RevisionTokens::from_etag(ETag::new("\"rt-v1\""));
 
-    // An RSVP is naturally a *finished document*, not a property patch — so it rides the
-    // whole-document write verb, the one thing the neutral patch spine does not cover.
-    let outcome = put_calendar_document(
+    let outcome = rsvp_calendar_event(
         &provider,
         &store,
         &account,
         WorkerId::new("t"),
         Duration::from_mins(5),
         "rsvp:meeting-7@test.local:accept",
-        &EventWrite::replacing(&stored, patched),
+        &stored,
+        &EventRsvp::to(&stored, me, RsvpResponse::Accepted),
     )
     .await
     .expect("rsvp write");
 
-    // (5) The op succeeded and recorded the server's new ETag.
+    // (4) The op succeeded and recorded the server's new ETag.
     assert_eq!(outcome.event, href);
     assert_eq!(outcome.uid, uid);
     assert_eq!(outcome.revisions.etag, Some(ETag::new("\"rt-v2\"")));
@@ -174,4 +169,109 @@ async fn a_parsed_request_whose_organizer_mismatches_the_sender_is_rejected() {
         !matches!(action, ScheduleAction::ScheduleEvent),
         "an untrusted invite is never scheduled"
     );
+}
+
+#[tokio::test]
+async fn caldav_refuses_the_two_controls_it_cannot_honour_rather_than_dropping_them() {
+    // The RSVP goes out as a `PUT` that an RFC 6638 server turns into an iTIP REPLY on its
+    // own. So "don't tell the organizer" is not something this transport can do, and
+    // iCalendar has nowhere to carry a note. Silently ignoring either would leave the user
+    // believing something that is not true — that the organizer got their message, or that
+    // they did not get an email. Both must therefore be errors, and the capability is what
+    // stops a host reaching them.
+    use engine_core::{ids::CalendarId, version::ETag};
+    use engine_ical::parse_calendar_object;
+    use engine_provider::{EventRsvp, Provider, RsvpResponse};
+
+    use crate::test_support::{Replay, ok};
+
+    let exec = std::sync::Arc::new(Replay::new(vec![ok(PRINCIPAL)]));
+    let provider = CalDavProvider::with_executor(
+        Box::new(exec.clone()),
+        "/.well-known/caldav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .expect("discovery");
+    let account = AccountId::try_from("caldav-acct").unwrap();
+    let mut stored = parse_calendar_object(
+        STORED_INVITE,
+        provider
+            .event_href(&engine_core::ids::Uid::new("meeting-7@test.local").unwrap())
+            .unwrap(),
+        CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap(),
+    )
+    .expect("parse stored invite");
+    stored.revisions = engine_core::version::RevisionTokens::from_etag(ETag::new("\"rt-v1\""));
+
+    // What the adapter advertises — and what a host reads before offering either control.
+    let controls = provider
+        .connection_info()
+        .capabilities
+        .calendar_rsvp()
+        .expect("caldav can rsvp");
+    assert!(!controls.comment);
+    assert!(!controls.suppress_notification);
+
+    let with_note = EventRsvp::to(&stored, "me@test.local", RsvpResponse::Accepted).comment("Hi");
+    let err = provider
+        .rsvp_event(&account, &stored, &with_note)
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), engine_core::error::FailureClass::InvalidState);
+
+    let quiet = EventRsvp::to(&stored, "me@test.local", RsvpResponse::Declined).quietly();
+    let err = provider
+        .rsvp_event(&account, &stored, &quiet)
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), engine_core::error::FailureClass::InvalidState);
+
+    // Neither refusal reached the network: a control we cannot honour is refused *before*
+    // the write, not after a half-applied one.
+    assert!(exec.writes().is_empty());
+}
+
+#[tokio::test]
+async fn answering_an_invitation_you_are_not_on_is_refused() {
+    // `set_my_partstat` has no ATTENDEE to rewrite, so the answer would otherwise be a PUT
+    // of an unchanged document that the server reports as success — a button that does
+    // nothing and says it worked.
+    use engine_core::{ids::CalendarId, version::ETag};
+    use engine_ical::parse_calendar_object;
+    use engine_provider::{EventRsvp, Provider, RsvpResponse};
+
+    use crate::test_support::{Replay, ok};
+
+    let exec = std::sync::Arc::new(Replay::new(vec![ok(PRINCIPAL)]));
+    let provider = CalDavProvider::with_executor(
+        Box::new(exec.clone()),
+        "/.well-known/caldav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .expect("discovery");
+    let account = AccountId::try_from("caldav-acct").unwrap();
+    let mut stored = parse_calendar_object(
+        STORED_INVITE,
+        provider
+            .event_href(&engine_core::ids::Uid::new("meeting-7@test.local").unwrap())
+            .unwrap(),
+        CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap(),
+    )
+    .expect("parse stored invite");
+    stored.revisions = engine_core::version::RevisionTokens::from_etag(ETag::new("\"rt-v1\""));
+
+    let err = provider
+        .rsvp_event(
+            &account,
+            &stored,
+            &EventRsvp::to(&stored, "stranger@example.com", RsvpResponse::Accepted),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), engine_core::error::FailureClass::Permanent);
+    assert!(exec.writes().is_empty());
 }

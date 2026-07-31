@@ -9,7 +9,9 @@ use engine_core::{
     time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId, UtcDateTime},
     version::{ETag, RevisionTokens},
 };
-use engine_provider::{EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget};
+use engine_provider::{
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, PatchTarget, RsvpResponse,
+};
 use serde_json::json as sjson;
 
 use super::*;
@@ -222,4 +224,69 @@ async fn delete_event_is_idempotent_on_404_but_a_conflict_on_412() {
     // A clean delete succeeds.
     let ok = fake_client_fallible(vec![("/events/evt-1", Ok(serde_json::Value::Null))]);
     assert!(delete_event(&ok, &deletion).await.is_ok());
+}
+
+#[test]
+fn build_rsvp_always_states_whether_the_organizer_is_emailed() {
+    // Graph's `sendResponse` defaults to true. Omitting it when the user asked for silence
+    // would email the organizer anyway — the one outcome the RSVP verb must never produce.
+    let base = base_event();
+    let quiet =
+        build_rsvp(&EventRsvp::to(&base, "info@example.com", RsvpResponse::Declined).quietly());
+    assert_eq!(quiet["sendResponse"], false);
+    assert!(quiet.get("comment").is_none());
+
+    let loud = build_rsvp(
+        &EventRsvp::to(&base, "info@example.com", RsvpResponse::Accepted).comment("See you there"),
+    );
+    assert_eq!(loud["sendResponse"], true);
+    assert_eq!(loud["comment"], "See you there");
+}
+
+#[tokio::test]
+async fn each_answer_posts_to_its_own_action_endpoint() {
+    // The action segment *is* the answer on Graph — there is no status field in the body.
+    // Each case routes only its own path, so posting to the wrong one 404s rather than
+    // passing.
+    for (response, action) in [
+        (RsvpResponse::Accepted, "accept"),
+        (RsvpResponse::Tentative, "tentativelyAccept"),
+        (RsvpResponse::Declined, "decline"),
+    ] {
+        let base = base_event();
+        let client = fake_client_fallible(vec![(
+            Box::leak(format!("/events/evt-1/{action}").into_boxed_str()),
+            Ok(sjson!(null)),
+        )]);
+        let receipt = rsvp_event(
+            &client,
+            &base,
+            &EventRsvp::to(&base, "info@example.com", response),
+        )
+        .await
+        .unwrap();
+
+        // `202 Accepted` carries no body, so the receipt echoes the base and reports no new
+        // revision — the post-write reconcile is what re-reads the event.
+        assert_eq!(receipt.event, base.id);
+        assert_eq!(receipt.uid, base.uid);
+        assert!(receipt.revisions.etag.is_none());
+    }
+}
+
+#[tokio::test]
+async fn an_rsvp_to_an_event_that_is_gone_is_an_error_not_a_silent_success() {
+    let base = base_event();
+    let client = fake_client_fallible(vec![(
+        "/events/evt-1/accept",
+        Err((404, sjson!({ "error": { "code": "ErrorItemNotFound" } }))),
+    )]);
+    let err = rsvp_event(
+        &client,
+        &base,
+        &EventRsvp::to(&base, "info@example.com", RsvpResponse::Accepted),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.class(), FailureClass::Permanent);
 }

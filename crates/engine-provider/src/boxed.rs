@@ -16,8 +16,8 @@ use engine_core::{
 
 use crate::{
     ConnectionInfo, ContactDestination, ContactPhoto, ContactSourceSync, ContactWriteReceipt,
-    ContactsProvider, Draft, EmailStream, EventDeletion, EventDraft, EventEdit, EventWrite,
-    EventWriteReceipt, MailEdit, MailEditReceipt, Provider, ProviderResult, ScopeSync,
+    ContactsProvider, Draft, EmailStream, EventDeletion, EventDraft, EventEdit, EventRsvp,
+    EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, Provider, ProviderResult, ScopeSync,
     SubmissionReceipt,
 };
 
@@ -150,6 +150,15 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         write: &EventWrite,
     ) -> ProviderResult<EventWriteReceipt> {
         (**self).put_event(account, write).await
+    }
+
+    async fn rsvp_event(
+        &self,
+        account: &AccountId,
+        base: &Event,
+        rsvp: &EventRsvp,
+    ) -> ProviderResult<EventWriteReceipt> {
+        (**self).rsvp_event(account, base, rsvp).await
     }
 
     async fn delete_event(

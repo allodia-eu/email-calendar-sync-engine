@@ -32,6 +32,10 @@ tokio = { workspace = true, features = ["time"] }
 # `StreamExt` to drain the email chunk stream in the offline sync tests.
 futures-util = { workspace = true }
 stalwart-harness = { path = "../stalwart-harness" }
+# The live RSVP test seeds its invitation with a CalDAV PUT: JMAP has no whole-document
+# write and `EventDraft` cannot state an ORGANIZER/ATTENDEE pair, so an invitation cannot
+# be created over JMAP at all. Test-only, and only for the counterparty's fixture.
+provider-caldav = { workspace = true }
 # The gated live integration test drives the full loop through the real store.
 engine-store = { workspace = true }
 engine-search = { workspace = true }

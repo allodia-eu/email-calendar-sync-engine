@@ -8,14 +8,18 @@
 //! test can prove is that a real server *accepts* it; that is `tests/live_calendar_write.rs`.
 
 use engine_core::{
+    calendar::Event,
     error::FailureClass,
     ids::EventId,
     time::{CalendarDate, CalendarDateTime},
 };
-use engine_provider::{Capabilities, EventDeletion, EventDraft, EventWrite, WriteGuard};
+use engine_provider::{
+    Capabilities, EventDeletion, EventDraft, EventRsvp, EventWrite, RsvpResponse, WriteGuard,
+};
 use serde_json::{Value, json};
 
 use super::{calendar_write_support::*, provider_test_support::*, *};
+use crate::calendar_rsvp::my_participant_id;
 
 #[tokio::test]
 async fn create_posts_a_jscalendar_object_and_learns_the_server_assigned_id() {
@@ -231,4 +235,127 @@ async fn there_is_no_whole_document_write_verb_on_this_transport() {
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::InvalidState);
+}
+
+/// The base event with two participants, keyed the way a JMAP server keys them: by an
+/// **opaque id**, not by the address. Resolving that id is the whole difficulty of a JMAP
+/// RSVP.
+fn invited() -> Event {
+    stored(&json!({
+        "@type": "Event",
+        "id": EVENT,
+        "uid": "evt-1@test.local",
+        "title": "Sprint planning",
+        "start": "2026-08-01T09:00:00",
+        "timeZone": "Europe/Amsterdam",
+        "duration": "PT30M",
+        "participants": {
+            "d7a1": {
+                "@type": "Participant",
+                "calendarAddress": "mailto:boss@test.local",
+                "roles": { "owner": true },
+                "participationStatus": "accepted",
+            },
+            "9f0c": {
+                "@type": "Participant",
+                "calendarAddress": "MAILTO:Info@Example.com",
+                "roles": { "attendee": true },
+                "participationStatus": "needs-action",
+                "expectReply": true,
+            },
+        },
+    }))
+}
+
+#[tokio::test]
+async fn an_rsvp_patches_only_my_participation_status() {
+    // One JSON pointer, so the organizer's participant, my other fields, and every property
+    // the engine does not model are left exactly as the server holds them.
+    let (p, exec) = recording(vec![set_response(
+        &json!({ "updated": { EVENT: Value::Null } }),
+    )]);
+    let base = invited();
+
+    let receipt = p
+        .rsvp_event(
+            &account(),
+            &base,
+            &EventRsvp::to(&base, "info@example.com", RsvpResponse::Accepted),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(receipt.event, EventId::try_from(EVENT).unwrap());
+    assert!(receipt.revisions.is_empty());
+
+    let (_using, method, args) = exec.sole_call();
+    assert_eq!(method, "CalendarEvent/set");
+    assert_eq!(
+        args,
+        json!({
+            "accountId": "c",
+            "update": { EVENT: { "participants/9f0c/participationStatus": "accepted" } },
+        }),
+        "an RSVP must patch my participant's status by its map key and touch nothing else"
+    );
+}
+
+#[tokio::test]
+async fn the_participant_is_matched_by_address_not_by_case_or_scheme() {
+    // The stored `calendarAddress` is `MAILTO:Info@Example.com` while the invitation matched
+    // `info@example.com`. Comparing the strings would find nobody and the answer would fail
+    // on an event the user is plainly invited to.
+    let base = invited();
+    assert_eq!(
+        my_participant_id(&base, "info@example.com").unwrap(),
+        "9f0c"
+    );
+    assert_eq!(
+        my_participant_id(&base, "INFO@example.com").unwrap(),
+        "9f0c"
+    );
+    assert_eq!(
+        my_participant_id(&base, "mailto:info@example.com").unwrap(),
+        "9f0c"
+    );
+}
+
+#[test]
+fn answering_an_invitation_you_are_not_on_is_refused() {
+    // Better a refusal than a patch at a pointer the server does not have, which is an
+    // `invalidPatch` the user cannot act on — or worse, a silent no-op.
+    let err = my_participant_id(&invited(), "stranger@example.com").unwrap_err();
+    assert_eq!(
+        engine_provider::ProviderError::from(err).class(),
+        FailureClass::Permanent
+    );
+}
+
+#[tokio::test]
+async fn jmap_refuses_the_two_controls_its_server_decides() {
+    // The server schedules the reply itself, so "don't notify" is not ours to promise; and a
+    // `participationComment` we have never seen a server relay is not a note we can claim to
+    // have sent. Both refused, not dropped.
+    let (p, exec) = recording(vec![set_response(
+        &json!({ "updated": { EVENT: Value::Null } }),
+    )]);
+    let base = invited();
+
+    let controls = p
+        .connection_info()
+        .capabilities
+        .calendar_rsvp()
+        .expect("jmap can rsvp");
+    assert!(!controls.comment);
+    assert!(!controls.suppress_notification);
+
+    for rsvp in [
+        EventRsvp::to(&base, "info@example.com", RsvpResponse::Accepted).comment("Hi"),
+        EventRsvp::to(&base, "info@example.com", RsvpResponse::Declined).quietly(),
+    ] {
+        let err = p.rsvp_event(&account(), &base, &rsvp).await.unwrap_err();
+        assert_eq!(err.class(), FailureClass::InvalidState);
+    }
+    // Refused before the network, never after a half-applied write.
+    assert_eq!(exec.request_count(), 0);
 }

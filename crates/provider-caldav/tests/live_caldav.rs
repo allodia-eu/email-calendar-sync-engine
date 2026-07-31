@@ -342,6 +342,19 @@ async fn caldav_rsvp_reaches_the_organizer() {
     scheduling::an_rsvp_reaches_the_organizer(&parties).await;
 }
 
+/// The same round trip through `Provider::rsvp_event` — the verb a host actually calls —
+/// plus the two controls CalDAV must refuse rather than silently drop.
+#[tokio::test]
+async fn caldav_rsvp_through_the_neutral_verb_reaches_the_organizer() {
+    let Some(parties) =
+        scheduling::parties("caldav_rsvp_through_the_neutral_verb_reaches_the_organizer").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    scheduling::an_rsvp_through_the_neutral_verb_reaches_the_organizer(&parties).await;
+}
+
 /// An organizer's delete reaches the attendee as `STATUS:CANCELLED` — the attendee's copy
 /// is tombstoned, not removed.
 #[tokio::test]

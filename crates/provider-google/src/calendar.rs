@@ -19,8 +19,21 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventWriteReceipt,
-    PageToken, Provider, ProviderError, ProviderResult, ScopeSync, SyncKind, WriteGuard,
+    Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
+    EventWriteReceipt, PageToken, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync,
+    SyncKind, WriteGuard,
+};
+
+/// What a Google RSVP can and cannot control.
+///
+/// Both surrounding controls are native — a per-attendee `comment`, and `sendUpdates` to
+/// decide whether the organizer is emailed — and the answer rides the same guarded
+/// `events.patch` as any other edit, so it keeps the enforced `If-Match`. Declared once,
+/// and used both to advertise and to enforce, so the two can never disagree.
+const GOOGLE_RSVP: RsvpControls = RsvpControls {
+    comment: true,
+    suppress_notification: true,
+    guard: WriteGuard::Enforced,
 };
 
 use crate::{
@@ -67,7 +80,8 @@ impl GoogleCalendarProvider {
             window: None,
             capabilities: Capabilities::none()
                 .with_calendars()
-                .with_calendar_writes(WriteGuard::Enforced),
+                .with_calendar_writes(WriteGuard::Enforced)
+                .with_calendar_rsvp(GOOGLE_RSVP),
         }
     }
 
@@ -198,6 +212,16 @@ impl Provider for GoogleCalendarProvider {
         edit: &EventEdit,
     ) -> ProviderResult<EventWriteReceipt> {
         cal_write::patch_event(&self.client, self.calendar_id(), base, edit).await
+    }
+
+    async fn rsvp_event(
+        &self,
+        _account: &AccountId,
+        base: &Event,
+        rsvp: &EventRsvp,
+    ) -> ProviderResult<EventWriteReceipt> {
+        GOOGLE_RSVP.accept(rsvp)?;
+        cal_write::rsvp_event(&self.client, self.calendar_id(), base, rsvp).await
     }
 
     async fn delete_event(

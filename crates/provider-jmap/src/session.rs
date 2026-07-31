@@ -18,11 +18,27 @@
 //!   *own* advertised origin: a URL the server deliberately puts elsewhere is left alone
 //!   (`rebase_template`).
 
-use engine_provider::WriteGuard;
+use engine_provider::{RsvpControls, WriteGuard};
 use reqwest::Url;
 use serde_json::Value;
 
 use crate::{error::JmapError, request::capability};
+
+/// What a JMAP RSVP can and cannot control.
+///
+/// Neither surrounding control is ours: the server schedules the iTIP `REPLY` when it sees
+/// the changed `participationStatus`, and there is no switch to stop it. RFC 8984 does
+/// define a `participationComment`, but whether a given server carries it into the reply is
+/// unverified against any server we run, so it is advertised as absent rather than
+/// promised — a note that may go nowhere is worse than one never offered. The guard is
+/// [`WriteGuard::Absent`] for the same reason every JMAP write is: a `CalendarEvent`
+/// carries no per-object revision. Declared once, and used both to advertise and to
+/// enforce, so the two can never disagree.
+pub(crate) const JMAP_RSVP: RsvpControls = RsvpControls {
+    comment: false,
+    suppress_notification: false,
+    guard: WriteGuard::Absent,
+};
 
 /// How to resolve the session's advertised URLs against the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,7 +167,9 @@ impl Session {
         // it so before it writes.
         if capabilities.calendars() && !account_is_read_only(value, calendar_account_id.as_deref())
         {
-            capabilities = capabilities.with_calendar_writes(WriteGuard::Absent);
+            capabilities = capabilities
+                .with_calendar_writes(WriteGuard::Absent)
+                .with_calendar_rsvp(JMAP_RSVP);
         }
         if capabilities.contacts() && !account_is_read_only(value, contact_account_id.as_deref()) {
             capabilities = capabilities.with_contact_writes(WriteGuard::Absent);

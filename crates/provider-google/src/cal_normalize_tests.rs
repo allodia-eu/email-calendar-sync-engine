@@ -13,6 +13,10 @@ const SINGLE: &str = include_str!("../tests/fixtures/calendar/event_single.json"
 const RECURRING: &str = include_str!("../tests/fixtures/calendar/event_recurring_master.json");
 const ALLDAY: &str = include_str!("../tests/fixtures/calendar/event_allday.json");
 const MEET: &str = include_str!("../tests/fixtures/calendar/event_meet.json");
+const ORGANIZER_DECLINED: &str =
+    include_str!("../tests/fixtures/calendar/event_organizer_declined.json");
+const INVITATION_ANSWERED: &str =
+    include_str!("../tests/fixtures/calendar/event_invitation_answered.json");
 
 fn calendar() -> CalendarId {
     CalendarId::try_from("primary").unwrap()
@@ -214,6 +218,61 @@ fn a_confidential_event_is_secret_and_meet_falls_back_to_an_entry_point() {
             .uri
             .contains("meet.google.com/xyz")
     );
+}
+
+#[test]
+fn the_organizer_who_is_also_a_guest_is_one_participant_carrying_the_answer() {
+    // Google names the organizer twice — the `organizer` object *and*, when they are also
+    // invited, an `attendees[]` entry (`"organizer": true, "self": true`). The projection is
+    // one participant per address with a set of roles, so the two are one participant whose
+    // status is the one the server holds. Answering an invitation writes exactly that
+    // attendee entry, so a duplicate would let a host read the stale `accepted` of a
+    // synthesized organizer instead of the answer it just sent (live-proven; see
+    // `tests/fixtures/README.md`).
+    let event = event(ORGANIZER_DECLINED);
+    let mine: Vec<_> = event
+        .participants
+        .iter()
+        .filter(|p| p.email.as_deref() == Some("testuser@example.test"))
+        .collect();
+    assert_eq!(mine.len(), 1, "one participant per address: {mine:?}");
+    assert!(mine[0].roles.contains(&ParticipantRole::Owner));
+    assert!(mine[0].roles.contains(&ParticipantRole::Attendee));
+    assert_eq!(
+        mine[0].participation_status,
+        ParticipationStatus::Declined,
+        "the answer the server holds wins over the organizer's implied acceptance"
+    );
+    // A self-organized event with no other guest has exactly that one participant.
+    assert_eq!(event.participants.len(), 1);
+}
+
+#[test]
+fn an_answered_invitation_reports_my_status_and_merges_the_foreign_organizer() {
+    // An event *organized by someone else* (imported with a foreign organizer) that the
+    // account answered `tentative`. The organizer is likewise named twice, so the same merge
+    // applies to them; my own entry carries the answer.
+    let event = event(INVITATION_ANSWERED);
+    assert_eq!(event.participants.len(), 2, "{:?}", event.participants);
+    let me = event
+        .participants
+        .iter()
+        .find(|p| p.email.as_deref() == Some("testuser@example.test"))
+        .unwrap();
+    assert_eq!(me.participation_status, ParticipationStatus::Tentative);
+    assert!(
+        !me.roles.contains(&ParticipantRole::Owner),
+        "not my meeting"
+    );
+    let boss = event
+        .participants
+        .iter()
+        .find(|p| p.email.as_deref() == Some("boss@example.test"))
+        .unwrap();
+    assert!(boss.roles.contains(&ParticipantRole::Owner));
+    assert!(boss.roles.contains(&ParticipantRole::Attendee));
+    assert_eq!(boss.participation_status, ParticipationStatus::Accepted);
+    assert_eq!(boss.name.as_deref(), Some("The Boss"));
 }
 
 #[test]

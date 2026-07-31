@@ -106,6 +106,14 @@ impl FakeExecutor {
         )
     }
 
+    /// How many requests the fake was handed.
+    ///
+    /// `sole_call` asserts exactly one; this is for the opposite claim — that a refusal
+    /// happened *before* the network, so nothing was half-applied.
+    pub(crate) fn request_count(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+
     /// Serves `body` as the blob-download response for `fetch_message_source`.
     pub(crate) fn with_download_body(mut self, body: &[u8]) -> Self {
         self.download_body = Some(body.to_vec());

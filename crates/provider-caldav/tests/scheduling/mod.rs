@@ -289,5 +289,6 @@ pub(crate) mod scenarios;
 pub(crate) use scenarios::{
     an_invitation_is_delivered_to_the_attendee, an_invitations_windows_time_zone_resolves_to_iana,
     an_organizer_cancel_marks_the_attendees_copy_cancelled, an_rsvp_reaches_the_organizer,
+    an_rsvp_through_the_neutral_verb_reaches_the_organizer,
     the_scheduling_inbox_carries_a_parseable_itip_request,
 };

@@ -16,6 +16,7 @@ const ALLDAY: &str = include_str!("../tests/fixtures/calendar/event_allday.json"
 const ONLINE: &str = include_str!("../tests/fixtures/calendar/event_online_meeting.json");
 const CALENDARS: &str = include_str!("../tests/fixtures/calendar/calendars.json");
 const EXTRA_EVENT: &str = include_str!("../tests/fixtures/calendar/event_extra_calendar.json");
+const INVITATION: &str = include_str!("../tests/fixtures/calendar/event_invitation.json");
 
 fn json(fixture: &str) -> Value {
     serde_json::from_str(fixture).unwrap()
@@ -204,6 +205,57 @@ fn a_windows_zone_name_maps_through_the_cldr_table() {
         event.start.zone(),
         Some(&TimeZoneId::iana("Europe/Berlin").unwrap())
     );
+}
+
+#[test]
+fn an_invitation_holds_one_participant_per_address_with_my_answer() {
+    // The **invitee's** copy of a meeting, captured live: unlike the organizer's own copy
+    // (`event_single.json`, where `attendees` excludes the organizer), Graph lists the
+    // organizer *both* as `organizer` and as an `attendees[]` entry. One participant per
+    // address, roles unioned — see `participants`.
+    let event = event(INVITATION);
+    assert_eq!(event.participants.len(), 2, "{:?}", event.participants);
+
+    let organizer = event
+        .participants
+        .iter()
+        .find(|p| p.email.as_deref() == Some("boss@example.test"))
+        .unwrap();
+    assert!(organizer.has_role(&ParticipantRole::Owner));
+    assert!(organizer.has_role(&ParticipantRole::Attendee));
+    // Graph writes `"none"` for the organizer's own entry — it never tracks an organizer's
+    // response — so the owner's implied acceptance stands rather than being downgraded to
+    // "hasn't answered". (Google differs: it *does* track it, so there the entry wins.)
+    assert_eq!(
+        organizer.participation_status,
+        ParticipationStatus::Accepted
+    );
+
+    // My own answer is reported as answered, from my `attendees[]` entry.
+    let me = event
+        .participants
+        .iter()
+        .find(|p| p.email.as_deref() == Some("testuser@example.test"))
+        .unwrap();
+    assert_eq!(me.participation_status, ParticipationStatus::Accepted);
+    assert!(!me.has_role(&ParticipantRole::Owner), "not my meeting");
+}
+
+#[test]
+fn a_real_attendee_who_has_not_answered_still_reads_as_needs_action() {
+    // The organizer-entry carve-out above must not swallow a *guest's* `"none"`, which
+    // genuinely means "has not responded" — the organizer's own copy in `event_single.json`
+    // has exactly that guest.
+    let event = event(SINGLE);
+    let bob = event
+        .participants
+        .iter()
+        .find(|p| p.email.as_deref() == Some("bob@example.test"))
+        .unwrap();
+    assert_eq!(bob.participation_status, ParticipationStatus::NeedsAction);
+    // And in the organizer's own copy Graph omits the organizer from `attendees`, so there
+    // is nothing to merge: one owner participant plus the guest.
+    assert_eq!(event.participants.len(), 2);
 }
 
 #[test]

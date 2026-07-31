@@ -143,19 +143,64 @@ implemented**; the precise deferrals are listed at the end of this section.
     an instance cancel excludes that occurrence).
   - `COUNTER` / `DECLINECOUNTER` / `REFRESH` / `ADD` / `PUBLISH` → `Surface(method)`
     — classified and surfaced to the host; full handling stays staged.
-- **Responding** is an outbox operation that separates calendar storage (my
-  `PARTSTAT`) from delivery (the iTIP `REPLY` via iMIP or provider scheduling),
-  consistent with the Write Contract. **Implemented:**
-  `provider_caldav::imip::set_my_partstat` patches *my* `PARTSTAT` into a stored
-  event's raw iCalendar (round-trip from raw plus a targeted edit — every other
-  property survives verbatim), producing the body for an `EventWrite::replacing` driven by
-  the `engine_sync::put_calendar_document` outbox driver — the whole-document verb, which an
-  RSVP wants because it *is* a finished document rather than a property patch. On a CalDAV auto-schedule
-  server (RFC 6638) this both stores my `PARTSTAT` and lets the server deliver the
-  iTIP `REPLY` to the organizer, so no separate delivery step is needed. Building
-  and **delivering** a standalone iTIP `REPLY` over **client** iMIP (SMTP) is
+- **Responding is a neutral verb of its own**, not an edit of the attendee array —
+  `Engine::rsvp_calendar_event(provider, account, idempotency, &base, &EventRsvp)`, outbox-mediated
+  and reconciling like every other calendar write. It is a separate verb because it does something no
+  edit does: it makes the **server tell the organizer**. Patching `participants` would change the
+  same bytes and skip the scheduling entirely, on every transport.
+
+  `EventRsvp` carries the answer (`RsvpResponse` — a closed `Accepted`/`Tentative`/`Declined`, so
+  "RSVP needs-action" is unrepresentable), the **matched** attendee address (an alias invitation
+  answers as the alias — never the account's primary identity), an optional `comment`, and
+  `notify_organizer`. Four adapters render it:
+
+  | Provider | How |
+  |---|---|
+  | CalDAV | `imip::set_my_partstat` rewrites *my* `PARTSTAT` in the stored raw (every other property survives verbatim), then a conditional `PUT`. An RFC 6638 auto-schedule server emits the `REPLY` itself. |
+  | Graph | `POST /events/{id}/accept\|tentativelyAccept\|decline` with `comment` + `sendResponse` |
+  | Google | `events.patch` on the attendee's `responseStatus`, with `sendUpdates=all\|none` |
+  | JMAP | `CalendarEvent/set` `update` of `participants/<my id>/participationStatus` |
+
+  **`Capabilities::calendar_rsvp` is not optional reading.** It is `Option<RsvpControls>`: whether the
+  transport can answer at all, whether a `comment` has anywhere to go, whether the user may decline to
+  notify, and — separately from `calendar_write_guard` — how strong the guard on *this* request is.
+  That last field exists because Graph's action endpoint accepts no `If-Match` while its `PATCH` does;
+  reporting one number for the adapter would hide it. An adapter **refuses** a control it cannot
+  honour (`RsvpControls::accept`, one implementation shared by all four) rather than dropping it: a
+  note that silently goes nowhere, or an "Email organizer" tick that emails them anyway, is worse than
+  a control the user was never shown.
+
+  Building and **delivering** a standalone iTIP `REPLY` over **client** iMIP (SMTP) is
   deferred with the rest of that path (the SMTP assembler is `text/plain`-only —
-  `imap-smtp.md`).
+  `imap-smtp.md`), so a `ClientImip` account still cannot answer.
+
+  **The answer has to read back, too**, and that is a normalization rule, not a write
+  concern: a projection holds **one participant per address**, with roles as a *set*
+  (JSCalendar's model — `engine-ical`'s `party` module states it for iCalendar's separate
+  `ORGANIZER`/`ATTENDEE` properties, and `provider-google`'s `participants` for Google's
+  `organizer` object beside its `attendees[]` entry). Emitting a synthesized organizer
+  *beside* the attendee entry for the same person publishes two contradictory statuses for
+  one address, and since only the attendee entry is what an RSVP writes, a host that looks
+  its own address up can read an `accepted` it never gave. Google shipped exactly that bug
+  and it presented as a broken *write* — the status looked frozen while every patch had in
+  fact landed.
+
+  **Which status survives the merge is a per-provider fact, and the two are opposite.**
+  Google tracks the organizer's own `responseStatus` (it starts even a self-organized event's
+  entry at `needsAction` and moves it on `events.patch`), so the attendee entry is
+  authoritative there. Graph never records a response *from* an organizer and writes
+  `"none"` in that slot, so adopting it would report the person who called the meeting as
+  not having answered — the owner's implied acceptance stands instead, while `"none"` on a
+  real guest still means `needs-action`. Both are proven by live tests against invitations
+  the account did not organize; neither is a reading of a spec. Whether the organizer even
+  appears in the attendee list also depends on **whose copy** it is: Graph omits them from
+  the organizer's own copy and includes them in an invitee's.
+
+  The guard on an RSVP is `EventRsvp::guard` — the revision the *caller* read, recorded in
+  the outbox when the user answered — never the base event's current revision at drain
+  time, and `None` means "answer unconditionally". CalDAV and Google both read the intent's
+  guard; Graph cannot send one at all (its action endpoint takes no `If-Match`, so it
+  advertises a weaker `RsvpControls::guard`).
 - **Security.** Scheduling messages are hostile input. Validate `ORGANIZER` and
   attendee identities against the message's authenticated sender (From / DKIM /
   authenticated submission) before applying anything; never auto-apply changes
@@ -175,7 +220,7 @@ not-yet-on-a-server event waits on that path; (3) the **CalDAV Scheduling Inbox*
 through the provider, which is exactly the gap; and (4) **iMIP-over-SMTP `REPLY`
 delivery** (the multipart `text/calendar` assembler).
 
-The `ServerAutoSchedule` RSVP path (patch + conditional `PUT`) is fully wired,
+The `ServerAutoSchedule` RSVP path (now behind the neutral verb) is fully wired,
 offline-tested end to end, **and live-proven**: `provider-caldav`'s scheduling
 suite runs a real two-party exchange against Stalwart's auto-scheduler and
 asserts that the organizer's own copy comes back accepted, with no client-side
@@ -367,7 +412,21 @@ objects is the sync layer's job).
   attendee patches their `PARTSTAT` and `PUT`s it back. No fake can stand in: the
   claim is about what a server does to a second account's resource. Verified to
   fail for the right reason — stub the patcher to store the document unchanged and
-  the `PUT` still succeeds while the reply never arrives.
+  the `PUT` still succeeds while the reply never arrives. The **neutral verb**
+  (`Provider::rsvp_event`) has its own scenario beside it, because a green
+  primitive says nothing about the adapter's address resolution, document patching
+  and guard assembly.
+- ⚠️ **…but on Stalwart, only over CalDAV.** The same round trip answered over
+  **JMAP** stores the `participationStatus` and the organizer is *never told*
+  (`provider-jmap/tests/live_calendar_rsvp.rs`, which pins that absence). Same two
+  accounts, same invitation, same neutral verb, minutes apart — so it is the
+  transport, not the fixture. A JMAP RSVP against this server is a **silent**
+  non-delivery: the user answers, their own calendar agrees, nobody hears. The
+  adapter is not at fault (the patch lands, it merges, a wrong address is refused);
+  what is missing is server-side scheduling, which JMAP Calendars leaves to the
+  implementation. So treat `Capabilities::calendar_rsvp` on a JMAP account as
+  **unproven per server** until checked the same way — and if Stalwart starts
+  scheduling, that test fails, which is the signal to revisit rather than relax it.
 - **A real server-authored invitation parses end to end**, with its Windows `TZID`
   quoted and QP-escaped, its calendar part three levels down a `multipart/mixed`
   tree and dispositioned as an attachment, and its `ATTENDEE` folded mid-`mailto:`.

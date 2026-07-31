@@ -14,10 +14,10 @@
 //!   and recurrence — and no offline test would notice, because there is no document on our side to
 //!   compare against.
 //! - [`a_stale_edit_is_not_refused`] — the honesty check. It asserts the *absence* of a lost-update
-//!   guard, which is what [`WriteGuard::Absent`] claims. If Stalwart ever starts enforcing
-//!   `ifInState` (the check exists in its tree — `calendar_event/copy.rs` calls `assert_state`,
-//!   `calendar_event/set.rs` does not), this test fails and the capability must be revisited. That
-//!   is the point: the claim is pinned to observed behaviour, not to a reading of the spec.
+//!   guard, which is what [`WriteGuard::Absent`] claims: the claim is pinned to observed behaviour,
+//!   not to a reading of the spec. Note what it is blind to — it drives the adapter, which sends no
+//!   precondition, so it cannot notice the server *gaining* one. Stalwart v0.16.14 started
+//!   enforcing `ifInState` and this test passed unchanged on v0.16.15; see the test's own docs.
 //! - [`recurrence_override_edit`] — is a `recurrenceOverrides/<start>/…` pointer accepted, and does
 //!   the server materialize the override itself?
 //!
@@ -318,12 +318,15 @@ const STALE_UID: &str = "jmap-stale-edit@test.local";
 /// 2. `ifInState`, the only precondition RFC 8620 §5.3 offers, is scoped to the account's whole
 ///    `CalendarEvent` state, not to the object: on a compliant server it would reject our edit
 ///    because somebody added an *unrelated* meeting. It is the wrong instrument, not merely a
-///    broken one — so we do not send it. And Stalwart does not enforce it in any case (it parses
-///    `ifInState` and never compares it; the `assert_state` helper exists in its tree and
-///    `calendar_event/set.rs` simply never calls it).
+///    broken one — so we do not send it. (Stalwart ignored `ifInState` through v0.16.13 and
+///    enforces it from v0.16.14; we send none on either, so neither vintage changes this.)
 ///
-/// **If this test ever fails, that is good news and a required design change**: the server
-/// started refusing stale writes, and `session.rs` must stop advertising `Absent`.
+/// **If this test ever fails, that is good news and a required design change**: the server started
+/// refusing the stale writes *we actually send*, and `session.rs` must stop advertising `Absent`.
+///
+/// It is blind to one thing these docs used to get wrong: the adapter sends no precondition, so
+/// Stalwart *gaining* one cannot fail this test — v0.16.15 enforces `ifInState` (stale token →
+/// `stateMismatch`) and this passes unchanged. Orthogonal anyway: `ifInState` is account-scoped.
 #[tokio::test]
 async fn a_stale_edit_is_not_refused() {
     let Some(provider) = setup("a_stale_edit_is_not_refused").await else {
