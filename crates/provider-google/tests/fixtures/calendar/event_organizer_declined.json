@@ -1,0 +1,41 @@
+{
+  "attendees": [
+    {
+      "email": "testuser@example.test",
+      "organizer": true,
+      "responseStatus": "declined",
+      "self": true
+    }
+  ],
+  "created": "2026-07-31T10:27:16.000Z",
+  "creator": {
+    "email": "testuser@example.test",
+    "self": true
+  },
+  "end": {
+    "dateTime": "2026-08-06T11:00:00+02:00",
+    "timeZone": "Europe/Amsterdam"
+  },
+  "etag": "\"3570987274816798\"",
+  "eventType": "default",
+  "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+  "iCalUID": "442of58a6quj2sil0gjmgnes74@google.com",
+  "id": "442of58a6quj2sil0gjmgnes74",
+  "kind": "calendar#event",
+  "location": "Room 1",
+  "organizer": {
+    "email": "testuser@example.test",
+    "self": true
+  },
+  "reminders": {
+    "useDefault": true
+  },
+  "sequence": 0,
+  "start": {
+    "dateTime": "2026-08-06T10:00:00+02:00",
+    "timeZone": "Europe/Amsterdam"
+  },
+  "status": "confirmed",
+  "summary": "Fixture: I organize and declined",
+  "updated": "2026-07-31T10:27:17.408Z"
+}

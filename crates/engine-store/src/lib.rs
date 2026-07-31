@@ -55,4 +55,10 @@ pub use store::{IndexRowCounts, MailIndexEntry, Store, StoreRead};
 /// - `3`: a message's thread id moved from `thread_id` to `thread`, which records whether the
 ///   provider assigned the id or the engine derived it (`threading.md`); a stored message
 ///   deserializes with no thread until the re-snapshot restores the provider's id.
-pub const NORMALIZER_VERSION: u32 = 3;
+/// - `4`: a Google **or Graph** event's `participants` no longer holds the organizer twice — the
+///   `organizer` object merges into that person's `attendees[]` entry, one participant per address
+///   with the roles unioned (`calendar-semantics.md`). A stored event keeps the duplicate pair,
+///   whose synthesized `accepted` masks the participation status the account actually answered
+///   (Google) or contradicts it with a placeholder `needs-action` (Graph), until the re-snapshot
+///   re-projects it.
+pub const NORMALIZER_VERSION: u32 = 4;

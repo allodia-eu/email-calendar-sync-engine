@@ -1,0 +1,49 @@
+{
+  "attendees": [
+    {
+      "comment": "might be late",
+      "email": "testuser@example.test",
+      "responseStatus": "tentative",
+      "self": true
+    },
+    {
+      "displayName": "The Boss",
+      "email": "boss@example.test",
+      "organizer": true,
+      "responseStatus": "accepted"
+    }
+  ],
+  "created": "2026-07-31T10:27:10.000Z",
+  "creator": {
+    "email": "testuser@example.test",
+    "self": true
+  },
+  "description": "An invitation from someone else.",
+  "end": {
+    "dateTime": "2026-08-05T11:00:00+02:00",
+    "timeZone": "Europe/Amsterdam"
+  },
+  "etag": "\"3570987262661790\"",
+  "eventType": "default",
+  "htmlLink": "https://www.google.com/calendar/event?eid=FIXTURE",
+  "iCalUID": "fixture-invitation@example.test",
+  "id": "_60q30c1g60o30dhi6grj4h9g60s30c1g8gq30c1g60o30dhi6g",
+  "kind": "calendar#event",
+  "location": "Their office",
+  "organizer": {
+    "displayName": "The Boss",
+    "email": "boss@example.test"
+  },
+  "privateCopy": true,
+  "reminders": {
+    "useDefault": true
+  },
+  "sequence": 0,
+  "start": {
+    "dateTime": "2026-08-05T10:00:00+02:00",
+    "timeZone": "Europe/Amsterdam"
+  },
+  "status": "confirmed",
+  "summary": "Fixture: invitation",
+  "updated": "2026-07-31T10:27:11.330Z"
+}

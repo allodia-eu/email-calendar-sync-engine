@@ -1,0 +1,94 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('00000000feedface')/events/$entity",
+  "@odata.etag": "W/\"graph-etag-invitation-1\"",
+  "allowNewTimeProposals": true,
+  "attendees": [
+    {
+      "emailAddress": {
+        "address": "boss@example.test",
+        "name": "The Boss"
+      },
+      "status": {
+        "response": "none",
+        "time": "0001-01-01T00:00:00Z"
+      },
+      "type": "required"
+    },
+    {
+      "emailAddress": {
+        "address": "testuser@example.test",
+        "name": "Test User"
+      },
+      "status": {
+        "response": "accepted",
+        "time": "0001-01-01T00:00:00Z"
+      },
+      "type": "required"
+    }
+  ],
+  "body": {
+    "content": "<html><body>An invitation the account received.</body></html>",
+    "contentType": "html"
+  },
+  "bodyPreview": "An invitation the account received.",
+  "calendar@odata.associationLink": "https://graph.microsoft.com/v1.0/users('00000000feedface')/calendars('FIXTURE')",
+  "calendar@odata.navigationLink": "https://graph.microsoft.com/v1.0/users('00000000feedface')/calendars('FIXTURE')",
+  "categories": [],
+  "changeKey": "graph-etag-invitation-1",
+  "createdDateTime": "2026-07-31T10:48:32.8322915Z",
+  "end": {
+    "dateTime": "2026-09-25T08:30:00.0000000",
+    "timeZone": "UTC"
+  },
+  "hasAttachments": false,
+  "hideAttendees": false,
+  "iCalUId": "040000008200E00074C5B7101A82E008000000000000000000000000000000000000001000000000000000000000000000000000000000",
+  "id": "AAMkADAwATNiZmYAZS1iNDJlLTExAGJjLTAwAi0wMAoARgAAA8Y2iiLYtTxBsRxgTMsTKQEHAINVITATIONFIXTUREAAAAX9sXAACkAAA=",
+  "importance": "normal",
+  "isAllDay": false,
+  "isCancelled": false,
+  "isDraft": false,
+  "isOnlineMeeting": false,
+  "isOrganizer": false,
+  "isReminderOn": true,
+  "lastModifiedDateTime": "2026-07-31T10:49:08.3731982Z",
+  "location": {
+    "address": {},
+    "coordinates": {},
+    "displayName": "",
+    "locationType": "default",
+    "uniqueIdType": "unknown"
+  },
+  "locations": [],
+  "occurrenceId": null,
+  "onlineMeeting": null,
+  "onlineMeetingProvider": "unknown",
+  "onlineMeetingUrl": null,
+  "organizer": {
+    "emailAddress": {
+      "address": "boss@example.test",
+      "name": "The Boss"
+    }
+  },
+  "originalEndTimeZone": "W. Europe Standard Time",
+  "originalStartTimeZone": "W. Europe Standard Time",
+  "recurrence": null,
+  "reminderMinutesBeforeStart": 15,
+  "responseRequested": true,
+  "responseStatus": {
+    "response": "accepted",
+    "time": "2026-07-31T10:48:35.936828Z"
+  },
+  "sensitivity": "normal",
+  "seriesMasterId": null,
+  "showAs": "busy",
+  "start": {
+    "dateTime": "2026-09-25T08:00:00.0000000",
+    "timeZone": "UTC"
+  },
+  "subject": "Fixture: invitation from someone else",
+  "transactionId": null,
+  "type": "singleInstance",
+  "uid": "040000008200E00074C5B7101A82E008000000000000000000000000000000000000001000000000000000000000000000000000000000",
+  "webLink": "https://outlook.office365.com/owa/?itemid=FIXTURE&exvsurl=1&path=/calendar/item"
+}

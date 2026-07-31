@@ -173,6 +173,34 @@ implemented**; the precise deferrals are listed at the end of this section.
   Building and **delivering** a standalone iTIP `REPLY` over **client** iMIP (SMTP) is
   deferred with the rest of that path (the SMTP assembler is `text/plain`-only —
   `imap-smtp.md`), so a `ClientImip` account still cannot answer.
+
+  **The answer has to read back, too**, and that is a normalization rule, not a write
+  concern: a projection holds **one participant per address**, with roles as a *set*
+  (JSCalendar's model — `engine-ical`'s `party` module states it for iCalendar's separate
+  `ORGANIZER`/`ATTENDEE` properties, and `provider-google`'s `participants` for Google's
+  `organizer` object beside its `attendees[]` entry). Emitting a synthesized organizer
+  *beside* the attendee entry for the same person publishes two contradictory statuses for
+  one address, and since only the attendee entry is what an RSVP writes, a host that looks
+  its own address up can read an `accepted` it never gave. Google shipped exactly that bug
+  and it presented as a broken *write* — the status looked frozen while every patch had in
+  fact landed.
+
+  **Which status survives the merge is a per-provider fact, and the two are opposite.**
+  Google tracks the organizer's own `responseStatus` (it starts even a self-organized event's
+  entry at `needsAction` and moves it on `events.patch`), so the attendee entry is
+  authoritative there. Graph never records a response *from* an organizer and writes
+  `"none"` in that slot, so adopting it would report the person who called the meeting as
+  not having answered — the owner's implied acceptance stands instead, while `"none"` on a
+  real guest still means `needs-action`. Both are proven by live tests against invitations
+  the account did not organize; neither is a reading of a spec. Whether the organizer even
+  appears in the attendee list also depends on **whose copy** it is: Graph omits them from
+  the organizer's own copy and includes them in an invitee's.
+
+  The guard on an RSVP is `EventRsvp::guard` — the revision the *caller* read, recorded in
+  the outbox when the user answered — never the base event's current revision at drain
+  time, and `None` means "answer unconditionally". CalDAV and Google both read the intent's
+  guard; Graph cannot send one at all (its action endpoint takes no `If-Match`, so it
+  advertises a weaker `RsvpControls::guard`).
 - **Security.** Scheduling messages are hostile input. Validate `ORGANIZER` and
   attendee identities against the message's authenticated sender (From / DKIM /
   authenticated submission) before applying anything; never auto-apply changes

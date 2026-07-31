@@ -104,15 +104,20 @@ pub(crate) async fn patch_event(
 ///
 /// **Only the answering attendee is sent.** Google applies just the caller's own
 /// `responseStatus` and `comment` when the caller is not the organizer, and ignores every
-/// other attendee change — so a one-element array cannot truncate the invitee list. That
-/// leniency is also the one place this is imprecise: an **organizer answering their own
-/// invitation** would be permitted to rewrite the array, and there the single element
-/// would stand. That is recorded as a known gap rather than worked around by rebuilding
-/// the array from the lossy projection, which would drop the per-attendee fields the
-/// engine does not model (`additionalGuests`) for *everybody* rather than nobody.
+/// other attendee change — so a one-element array cannot truncate the invitee list. Both
+/// halves of that are live-proven (`tests/live_calendar_rsvp.rs`), including the one place it
+/// is imprecise: the leniency is keyed on the **caller's role**, so an *organizer answering
+/// their own invitation* really does replace the array, and the other guests are dropped.
+/// That is a known gap — a host should answer as an attendee — rather than something worked
+/// around by rebuilding the array from the lossy projection, which would drop the
+/// per-attendee fields the engine does not model (`additionalGuests`) for *everybody*
+/// rather than nobody.
 ///
 /// The write keeps the enforced `If-Match` guard the rest of this adapter promises — unlike
-/// Graph, whose RSVP action endpoint takes no precondition.
+/// Graph, whose RSVP action endpoint takes no precondition. The precondition is
+/// [`rsvp.guard`](EventRsvp::guard), the revision the *caller* read, not whatever `base`
+/// carries at drain time: the outbox recorded the intent when the user answered, and a
+/// `guard` of `None` has to mean "answer unconditionally" for the field to mean anything.
 pub(crate) async fn rsvp_event(
     client: &GoogleClient,
     calendar: &str,
@@ -130,7 +135,10 @@ pub(crate) async fn rsvp_event(
                 base.id.key().as_str()
             )),
             "application/json",
-            if_match(base),
+            rsvp.guard
+                .as_ref()
+                .and_then(|tokens| tokens.etag.as_ref())
+                .map(ETag::as_str),
             serde_json::to_vec(&build_rsvp(rsvp)).map_err(GoogleError::from)?,
         )
         .await?;

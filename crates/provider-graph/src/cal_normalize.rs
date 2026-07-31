@@ -167,9 +167,24 @@ fn description(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The organizer (role owner) plus every attendee.
+/// The organizer (role owner) plus every attendee — **one participant per address**.
+///
+/// Which copy of the meeting this is decides whether there is anything to merge, and only a
+/// live invitation shows it: in the **organizer's own** copy Graph omits them from
+/// `attendees`, while in an **invitee's** copy it lists them *both* as `organizer` and as an
+/// `attendees[]` entry. The projection is JSCalendar-shaped — one participant per address
+/// with a *set* of roles (`engine-ical`'s `party` module states the rule for iCalendar) — so
+/// the pair becomes one participant carrying the `owner` role.
+///
+/// **The organizer's status is not taken from that entry.** Graph writes `"none"` there,
+/// because it never records a response *from* an organizer, so adopting it would report the
+/// person who called the meeting as not having answered. `"none"` on a real guest does mean
+/// "has not responded" and is kept ([`attendee_from_json`]) — the carve-out is only for the
+/// address that is already the owner. (Google is the opposite: it tracks the organizer's own
+/// `responseStatus` and moves it on an RSVP, so there the entry is authoritative —
+/// `calendar-semantics.md`.)
 fn participants(value: &Value) -> Vec<Participant> {
-    let mut out = Vec::new();
+    let mut out: Vec<Participant> = Vec::new();
     if let Some(email) = value
         .get("organizer")
         .and_then(|o| o.get("emailAddress"))
@@ -189,7 +204,22 @@ fn participants(value: &Value) -> Vec<Participant> {
         .flatten()
     {
         if let Some(email) = attendee.get("emailAddress").and_then(address) {
-            out.push(attendee_from_json(attendee, email));
+            let entry = attendee_from_json(attendee, email.clone());
+            match out.iter_mut().find(|p| {
+                p.email
+                    .as_deref()
+                    .is_some_and(|known| known.eq_ignore_ascii_case(&email.0))
+            }) {
+                // The only address that can already be present is the organizer's, and their
+                // entry never carries an answer — so the roles union and the owner's status
+                // stands. Nothing here reads the entry's `status`.
+                Some(existing) => {
+                    existing.roles.extend(entry.roles);
+                    existing.kind = entry.kind.or_else(|| existing.kind.take());
+                    existing.name = entry.name.or_else(|| existing.name.take());
+                }
+                None => out.push(entry),
+            }
         }
     }
     out

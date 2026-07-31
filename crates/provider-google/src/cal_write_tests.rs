@@ -357,3 +357,30 @@ async fn declining_quietly_asks_google_to_tell_nobody() {
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(request.contains("?sendUpdates=none "), "{request}");
 }
+
+#[tokio::test]
+async fn the_rsvps_own_guard_decides_the_precondition() {
+    // The guard travels *with the intent* — the revision the user's copy was read at, which
+    // the outbox recorded before the answer was ever attempted. Taking it off `base` instead
+    // would guard against whatever the store happens to hold at drain time, and would make
+    // `guard: None` ("answer unconditionally") impossible to express. CalDAV already reads
+    // `rsvp.guard`; this is the same contract.
+    let base = base_event();
+    let (url, rx) = capturing_server(
+        "200 OK",
+        &stored("evt-1", "u@google.com", "\"v8\"").to_string(),
+    );
+    let client = GoogleClient::with_base("tok", url, tls()).unwrap();
+
+    let mut unconditional = EventRsvp::to(&base, "me@example.com", RsvpResponse::Accepted);
+    unconditional.guard = None;
+    rsvp_event(&client, "cal-1", &base, &unconditional)
+        .await
+        .unwrap();
+
+    let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(
+        !request.to_ascii_lowercase().contains("if-match"),
+        "an unguarded RSVP must send no precondition: {request}"
+    );
+}

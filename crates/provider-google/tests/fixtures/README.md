@@ -96,6 +96,8 @@ on the account.
 | `calendar/event_recurring_master.json` | a `GET …/events/{id}` series master | `recurrence` `RRULE` + zoned start/end |
 | `calendar/event_allday.json` | an all-day event | `start.date`/`end.date` (zoneless) |
 | `calendar/event_meet.json` | a Google Meet event | `conferenceData`/`hangoutLink` (join credential scrubbed) |
+| `calendar/event_invitation_answered.json` | an `events.import`ed invitation, answered `tentative` with a note | an event the account did **not** organize, read back after an RSVP: my status, and the organizer merged with their own `attendees[]` entry (Finding 16) |
+| `calendar/event_organizer_declined.json` | a self-organized event answered `declined` | the same address as `organizer` *and* attendee → **one** participant, roles `{owner, attendee}`, carrying the answer — not the organizer's implied `accepted` (Finding 16) |
 
 8. **Google Calendar is IANA-native.** Event times are `dateTime` (RFC 3339 with offset)
    plus an IANA `timeZone` (e.g. `Europe/Amsterdam`) — no Windows-zone table (contrast
@@ -113,6 +115,30 @@ on the account.
     `412`, not `404`/`410` — a real conflict, surfaced for the caller to refetch. The live
     test therefore does not re-delete with the old guard; the `404`/`410`-gone idempotency
     is covered offline.
+16. **Google names the organizer twice, and an RSVP only writes one of them.** An event
+    carries an `organizer` object *and*, whenever that person is also invited, an
+    `attendees[]` entry marked `"organizer": true` — the ordinary self-organized meeting,
+    and the organizer of an invitation the account received. `events.patch` moves the
+    **attendee entry**; the `organizer` object never carries a status at all. A projection
+    that emitted both (as this adapter did) reported one address twice with contradictory
+    statuses, so reading one's own participation back returned a synthesized `accepted`
+    however it had been answered — which looks exactly like a *write* that does not work.
+    Both fixtures above pin the merge. Google also starts even the organizer's own entry at
+    `needsAction`, which is why the attendee entry's status is the authoritative one.
+17. **RSVP truncation depends on who is asking, not on the array.** A one-element
+    `attendees` patch *as an attendee* changes only that attendee — the other guests
+    survive. The **same request as the organizer replaces the whole array** and drops them.
+    Both directions are asserted live (`tests/live_calendar_rsvp.rs`).
+18. **`events.import` is how a live test gets a real invitation.** It places an event whose
+    `organizer` is a third party with the account as a `needsAction` attendee, mails nobody,
+    and **preserves the caller's `iCalUID`** — the one endpoint that does (`events.insert`
+    mints its own, which is why the receipt's id, never the uid, is the reconciliation key).
+    An imported event also carries `"privateCopy": true`, and its opaque `id` encodes the
+    calendar's address, so the fixture replaces it.
+19. **`events.list` is read-your-writes for an answered `responseStatus`.** Re-listing
+    immediately after an acknowledged `events.patch` returns the new status (5/5 rounds with
+    no delay), unlike People's sync tokens, which lag ~10s. Read-after-write assertions on
+    calendar RSVPs need no poll.
 
 ## Contact files (`contacts/`)
 

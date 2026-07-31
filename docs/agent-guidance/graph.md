@@ -282,6 +282,29 @@ provider). It advertises `calendars` **and** `calendar_writes(WriteGuard::Enforc
   move is rejected if it would change the time *form* (`has_same_form`). The raw Graph
   event JSON is preserved beside the projection in `Event::extended`
   (`"microsoft.graph/event"`), since Graph is neither iCal nor JSCalendar.
+- **RSVP** (`cal_write::rsvp_event`): `POST /me/events/{id}/accept|tentativelyAccept|decline`
+  with `{comment, sendResponse}`. Proven against two real accounts
+  (`tests/live_calendar_rsvp.rs` — the only test in this repo that needs a second mailbox,
+  because Graph cannot fake an invitation: an event created in a mailbox always has that
+  mailbox as organizer, and a mailbox cannot answer its own meeting). Live findings:
+  - **`sendResponse: true` really schedules the reply** — the *organizer's* copy shows
+    `tentativelyAccepted` within seconds. Unobservable from the answering mailbox, whose own
+    copy changes either way, which is why the test reads the counterparty's mailbox.
+  - **An invitee's copy lists the organizer twice** — as `organizer` *and* as an
+    `attendees[]` entry — while the organizer's own copy omits them from `attendees`.
+    `cal_normalize::participants` merges the pair into one participant (roles unioned), and
+    deliberately does **not** take that entry's status: Graph writes `"none"` there because
+    it never records a response from an organizer, so adopting it would report the person who
+    called the meeting as not having answered. `"none"` on a real guest still means
+    "has not responded". Google is the mirror image (it *does* track the organizer's own
+    status) — `calendar-semantics.md`.
+  - **`WriteGuard::Absent` is observed, not cautious.** The action endpoint has no working
+    precondition: a matching `If-Match` is accepted and ignored (`202`), and a malformed one
+    is a `500 ErrorInternalServerError` rather than a `412`. So `rsvp.guard` cannot be sent,
+    answering from a stale read is not refused, and the live test asserts that.
+  - **Declining removes the event from the invitee's calendar** (Outlook's default), so a
+    declined event cannot be re-read or re-answered — a subsequent `GET` is
+    `404 ErrorItemNotFound`. Any test answering more than once must decline last.
 
 ### Calendar limitations (documented, not bugs)
 

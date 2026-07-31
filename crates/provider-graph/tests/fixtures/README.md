@@ -107,7 +107,8 @@ public repo must not ship a working join link (see Finding 10).
 | `calendar/calendar.json` | one entry from `GET /me/calendars` | a single `Calendar` (the default) in isolation |
 | `calendar/event_extra_calendar.json` | a `singleInstance` from the non-default calendar's `calendarView` | an event bound to a **non-default** calendar — membership keeps it separable from the default calendar's events |
 | `calendar/event_series_master.json` | `GET /me/events/{id}` (a `seriesMaster`) | `patternedRecurrence` → `Recurrence`, zone, location, organizer |
-| `calendar/event_single.json` | a `singleInstance` from `GET /me/events` | non-recurring event + attendee projection |
+| `calendar/event_single.json` | a `singleInstance` from `GET /me/events` | non-recurring event + attendee projection (the **organizer's own** copy: `attendees` excludes the organizer, `responseStatus.response: "organizer"`) |
+| `calendar/event_invitation.json` | the **invitee's** copy of a meeting a second account organized, after answering (`GET /me/events/{id}`) | the invitation shape only two accounts produce: `isOrganizer: false`, and the organizer named **both** as `organizer` and in `attendees` with `status.response: "none"` → one merged participant (Finding 20) |
 | `calendar/event_allday.json` | an all-day `singleInstance` | `isAllDay` → zoneless `Date` + one-day duration |
 | `calendar/event_online_meeting.json` | a Teams `singleInstance` from `calendarView` | the online-meeting shape (`isOnlineMeeting`, `onlineMeetingProvider`, `onlineMeeting.joinUrl`) preserved on `Event.extended` — captured ahead of online-meeting-provider support |
 | `calendar/events_delta.json` | `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` | the delta page shape: `seriesMaster`/`singleInstance` **kept**, `occurrence`/`exception` **dropped**, `@odata.deltaLink` cursor |
@@ -195,3 +196,20 @@ contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@od
     the captured contact really carries `["Fixture", "Engineering"]` — but
     `contact_normalize` has no `categories` branch, so keywords are lost on the way in.
     Graph advertises `ContactField::Keywords` as supported, making the round-trip lossy.
+20. **Whose copy it is decides whether the organizer is in `attendees`.** In the
+    **organizer's own** copy Graph omits them (`event_single.json`: one guest, and
+    `responseStatus.response: "organizer"`). In an **invitee's** copy it names them twice —
+    as `organizer` *and* as an `attendees[]` entry whose `status.response` is `"none"`
+    (`event_invitation.json`). `"none"` there is "not tracked", not "has not answered":
+    Graph never records a response from an organizer. So `participants` merges the pair by
+    address (roles unioned) and keeps the owner's implied acceptance, while a real guest's
+    `"none"` still projects as `NeedsAction`. Capturing this needed a *second* account —
+    Graph cannot fake an invitation, since an event created in a mailbox always has that
+    mailbox as organizer (`tests/live_calendar_rsvp.rs`).
+21. **The RSVP action endpoint has no precondition.** `POST …/events/{id}/accept` accepts
+    and ignores a matching `If-Match` (`202`) and answers a malformed one with
+    `500 ErrorInternalServerError` — never a `412`. That is why Graph advertises
+    `RsvpControls::guard = WriteGuard::Absent` while its event `PATCH` is `Enforced`.
+22. **Declining removes the event from the invitee's calendar** (Outlook's default), so a
+    later `GET` of it is `404 ErrorItemNotFound` — not a stale-guard failure. A test that
+    answers more than once must decline last.

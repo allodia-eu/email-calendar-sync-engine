@@ -182,6 +182,28 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
   returns `412` (the deleted event is left cancelled with a new ETag, failing the stale
   `If-Match`), so the live test does not assert re-delete idempotency — the `404`/`410`
   path is proven offline.
+- **RSVP** (`cal_write::rsvp_event`): a one-element `attendees` array carrying the matched
+  address' `responseStatus` (+ `comment`), guarded by `EventRsvp::guard` (the intent's
+  revision, **not** `base`'s), with **`sendUpdates` as a query parameter** — in the body it
+  is silently ignored and the organizer is simply never told. Live findings
+  (`tests/live_calendar_rsvp.rs`):
+  - **As an attendee, the one-element array does not truncate** the guest list: Google
+    applies only the caller's own status and leaves the other attendees alone. **As the
+    organizer it replaces the array** and the other guests are dropped — the known gap, now
+    pinned by a test rather than assumed. A host should answer as an attendee.
+  - **`participants` merges the organizer with their `attendees[]` entry** (one participant
+    per address, roles as a set, the attendee entry's status winning). Google names the
+    organizer twice, and the pre-merge projection reported both — a self-organized event
+    read back as `accepted` no matter what had been answered. See `calendar-semantics.md`.
+  - `events.list` is **read-your-writes** for an answered `responseStatus` (an immediate
+    re-list shows it; no poll needed), unlike People's sync tokens.
+  - Answering an address the event does **not** yet carry is accepted, not rejected: Google
+    creates the attendee at that status. That is how a self-organized event gets its own
+    attendee entry at all.
+  - The live suite seeds a *genuine* invitation with **`events.import`** — an event whose
+    `organizer` the account is not, and which preserves the caller's `iCalUID` (unlike
+    `events.insert`, which mints its own). Nothing is mailed. That is the only way to get a
+    real `needsAction` invitation on a single test account.
 
 ## Testing (3-tier, mirroring Graph — `AGENTS.md` offline-mock caveat)
 

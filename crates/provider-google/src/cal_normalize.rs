@@ -220,9 +220,23 @@ fn recurrence(value: &Value) -> Result<Option<Recurrence>, GoogleError> {
     Ok((!recurrence.rules.is_empty()).then_some(recurrence))
 }
 
-/// The organizer (role owner) plus every attendee.
+/// The organizer (role owner) plus every attendee — **one participant per address**.
+///
+/// Google names the same person twice whenever the organizer is also a guest: the
+/// `organizer` object, and an `attendees[]` entry marked `"organizer": true`. That is the
+/// ordinary self-organized meeting *and* the organizer of an invitation the account
+/// received. The projection is JSCalendar-shaped — one participant per address carrying a
+/// *set* of roles, the rule `engine-ical`'s `party` module applies to iCalendar's separate
+/// `ORGANIZER`/`ATTENDEE` properties — so the two become one participant holding the
+/// `owner` role and the attendee entry's answer.
+///
+/// The answer must come from the attendee entry, because that is the one an RSVP writes:
+/// Google starts even the organizer's own entry at `needsAction` and moves it on
+/// `events.patch`. A separate organizer participant fixed at `accepted` would leave a host
+/// that looks its own address up reading an acceptance it never gave, whatever it had
+/// answered (live-proven — `tests/fixtures/README.md`).
 fn participants(value: &Value) -> Vec<Participant> {
-    let mut out = Vec::new();
+    let mut out: Vec<Participant> = Vec::new();
     if let Some((addr, name)) = value.get("organizer").and_then(address) {
         let mut organizer = Participant::attendee(&addr);
         organizer.name = name;
@@ -238,10 +252,29 @@ fn participants(value: &Value) -> Vec<Participant> {
         .flatten()
     {
         if let Some((addr, name)) = address(attendee) {
-            out.push(attendee_from_json(attendee, &addr, name));
+            let entry = attendee_from_json(attendee, &addr, name);
+            match out.iter_mut().find(|p| {
+                p.email
+                    .as_deref()
+                    .is_some_and(|known| known.eq_ignore_ascii_case(&addr))
+            }) {
+                Some(existing) => merge_attendee(existing, entry),
+                None => out.push(entry),
+            }
         }
     }
     out
+}
+
+/// Folds an `attendees[]` entry into the participant already carrying that address (the
+/// organizer): the roles union, and the attendee entry wins on everything it states —
+/// it is what the server updates when the invitation is answered.
+fn merge_attendee(existing: &mut Participant, entry: Participant) {
+    existing.roles.extend(entry.roles);
+    existing.participation_status = entry.participation_status;
+    existing.expect_reply = entry.expect_reply;
+    existing.name = entry.name.or_else(|| existing.name.take());
+    existing.kind = entry.kind.or_else(|| existing.kind.take());
 }
 
 /// One Google attendee → a [`Participant`], mapping `optional`/`resource` to a role and
