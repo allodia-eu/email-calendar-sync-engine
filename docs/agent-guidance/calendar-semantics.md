@@ -384,7 +384,21 @@ objects is the sync layer's job).
   attendee patches their `PARTSTAT` and `PUT`s it back. No fake can stand in: the
   claim is about what a server does to a second account's resource. Verified to
   fail for the right reason — stub the patcher to store the document unchanged and
-  the `PUT` still succeeds while the reply never arrives.
+  the `PUT` still succeeds while the reply never arrives. The **neutral verb**
+  (`Provider::rsvp_event`) has its own scenario beside it, because a green
+  primitive says nothing about the adapter's address resolution, document patching
+  and guard assembly.
+- ⚠️ **…but on Stalwart, only over CalDAV.** The same round trip answered over
+  **JMAP** stores the `participationStatus` and the organizer is *never told*
+  (`provider-jmap/tests/live_calendar_rsvp.rs`, which pins that absence). Same two
+  accounts, same invitation, same neutral verb, minutes apart — so it is the
+  transport, not the fixture. A JMAP RSVP against this server is a **silent**
+  non-delivery: the user answers, their own calendar agrees, nobody hears. The
+  adapter is not at fault (the patch lands, it merges, a wrong address is refused);
+  what is missing is server-side scheduling, which JMAP Calendars leaves to the
+  implementation. So treat `Capabilities::calendar_rsvp` on a JMAP account as
+  **unproven per server** until checked the same way — and if Stalwart starts
+  scheduling, that test fails, which is the signal to revisit rather than relax it.
 - **A real server-authored invitation parses end to end**, with its Windows `TZID`
   quoted and QP-escaped, its calendar part three levels down a `multipart/mixed`
   tree and dispositioned as an attachment, and its `ATTENDEE` folded mid-`mailto:`.

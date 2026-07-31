@@ -1190,6 +1190,7 @@ dependencies = [
  "engine-sync",
  "engine-tls",
  "futures-util",
+ "provider-caldav",
  "reqwest",
  "serde",
  "serde_json",
