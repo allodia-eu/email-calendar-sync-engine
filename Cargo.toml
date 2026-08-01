@@ -8,6 +8,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 publish = false
+license = "MPL-2.0"
 
 # ---------------------------------------------------------------------------------------------
 # Debug info: the single biggest lever on build time and target/ size, so it is decided HERE
