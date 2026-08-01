@@ -34,7 +34,7 @@ Read before relevant work:
 - Prefer small, testable modules over broad abstractions.
 - Do not add speculative features, knobs, or provider shortcuts.
 - Do not refactor unrelated code. Mention unrelated issues in the final answer instead.
-- Do not write provider-specific assumptions into generic types unless a primary spec or provider doc proves they are universal.
+- Do not write provider-specific assumptions into generic types unless a primary spec or provider doc proves they are universal. A symptom found on one provider does **not** scope the fix to that provider — see "Provider-neutral by default" below, which is a required step, not a preference.
 - Lock identity, sync, store, search, and recurrence invariants in tests before writing implementation code.
 - Keep public Rust APIs idiomatic by defaulting to the Rust API Guidelines: <https://rust-lang.github.io/api-guidelines/about.html>.
 - Use newtypes for identities and protocol-specific references. Do not pass raw strings where a type can prevent mixing account ids, provider ids, mailboxes, events, or cursors.
@@ -47,6 +47,46 @@ Read before relevant work:
   before changing a profile, and never put a build fix in the workflow file — a fix that lives in
   CI is a fix nobody who builds locally gets.
 
+## Provider-neutral by default
+
+A bug reported against one provider is a claim about **one provider**. It is not the scope of the
+fix. Treating it as the scope is how a neutral engine grows five different answers to the same
+question, and how a host ends up branching on which provider it is talking to — which is the
+engine leaking, and the thing `engine-core` exists to prevent.
+
+**Before designing a response to any provider-specific symptom, survey the same surface across
+every adapter that has it** — `provider-jmap`, `provider-imap`, `provider-caldav` (+ CardDAV),
+`provider-graph`, `provider-google` — and write the result down as a table. Do this *before*
+proposing a fix, not after: the survey routinely changes what the fix is.
+
+Then **state the result in the final summary**: which providers share the gap, and whether the fix
+landed in the neutral layer or in an adapter. If it landed in an adapter, say why the others
+genuinely differ. "I checked and they differ" is a fine answer; not having checked is not.
+
+The bar is highest for anything a **host can see**. A neutral verb, a capability, an error class,
+or a type crossing `engine-api` must describe the *problem*, not the provider that happened to
+surface it. If a host has to ask "which provider is this?" to handle a result correctly, the
+engine has pushed its job outward.
+
+**This is not hypothetical — it happened, and it cost real work.** Issue #93 arrived as "a JMAP
+RSVP schedules no iTIP `REPLY`". The investigation stayed JMAP-shaped for several rounds and
+produced two issues scoped to JMAP (an `engine-api` export, and a host-side check-then-write in
+the app) before anyone looked sideways. The eventual survey took minutes and found the framing was
+wrong twice over:
+
+- conflict handling was **detection-only on every provider** — CalDAV, Graph and Google all refuse
+  a stale write correctly via `If-Match`, and *still* told the host only that *something*
+  conflicted, never what;
+- **mail writes carried no guard concept at all** on any of the four, so `with_mail_writes()` takes
+  no `WriteGuard` and every mail mutation is silent last-writer-wins.
+
+Both JMAP-scoped issues were closed or superseded by #99, a neutral four-outcome write result that
+serves every provider. The narrow framing cost two issues and a round of rework; the survey that
+dissolved it was one `grep`.
+
+**The tell:** if a fix names a provider in its type, its capability, its error, or its issue title,
+stop and check whether the other providers have the same hole.
+
 ## Documentation Currency
 
 `docs/agent-guidance/` is the durable baseline, not a one-time sketch. A large or architectural change MUST update the affected guidance docs in the same change, so code and docs never drift:
@@ -54,6 +94,7 @@ Read before relevant work:
 - When a change alters a decision, a trait or type signature, a crate's responsibility, an invariant, or where something lives, reconcile every guidance doc that states otherwise (north-star, store-and-sync, modeling, providers, search-coverage, calendar-semantics).
 - If a new decision supersedes a doc's wording, rewrite the wording and record the rationale when it is non-obvious. Treat the docs as authoritative for the next agent: code and docs disagreeing is a bug to fix, not a discrepancy to leave.
 - In the final summary, list which guidance docs you updated and why — or state explicitly that none needed changes.
+- If the change came from a provider-specific symptom, the final summary also carries the cross-provider survey required by "Provider-neutral by default".
 
 ## Test-Driven Workflow
 
