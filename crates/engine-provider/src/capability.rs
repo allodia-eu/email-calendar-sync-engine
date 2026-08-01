@@ -30,10 +30,19 @@ pub enum WriteGuard {
     /// JMAP: a `CalendarEvent` carries no revision token at all
     /// ([`RevisionTokens::is_empty`](engine_core::version::RevisionTokens::is_empty)),
     /// and the only precondition RFC 8620 §5.3 offers — `ifInState` — is scoped to
-    /// the account's whole `CalendarEvent` state rather than to the object, so it
-    /// rejects on *unrelated* concurrent changes instead of on a lost update. On top
-    /// of that, Stalwart v0.16 parses `ifInState` and never compares it, applying the
-    /// write regardless (`jmap.md`).
+    /// "all objects of this type in the account" rather than to the object, so it
+    /// rejects on *unrelated* concurrent changes instead of on a lost update.
+    ///
+    /// Note this is **not** a server shortcoming to be waited out. Stalwart enforces
+    /// `ifInState` correctly from v0.16.14, and correct enforcement is exactly what
+    /// makes it unusable here: an inbound iTIP invitation moves the attendee's
+    /// `CalendarEvent` state while they sit idle, so guarding their next edit with it
+    /// refuses a write nothing conflicted with. Demonstrated live in
+    /// `provider-jmap/tests/live_calendar_precondition.rs`; the reasoning is in
+    /// `jmap.md`.
+    ///
+    /// The lost update JMAP genuinely cannot detect is two writers patching the **same**
+    /// property; disjoint properties merge, because `/set` takes a PatchObject.
     Absent,
 }
 
