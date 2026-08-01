@@ -1,0 +1,44 @@
+# Gromox MAPI/HTTP spike harness. Loopback-only; 18082 is free (Stalwart holds
+# 18080, SabreDAV 18081). Throwaway credentials, committed on purpose.
+services:
+  gromox-db:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpass
+      MARIADB_DATABASE: gromox
+      MARIADB_USER: gromox
+      MARIADB_PASSWORD: gromox
+    volumes:
+      - gromox_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  gromox:
+    build: .
+    depends_on:
+      gromox-db:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: gromox-db
+      MYSQL_USER: gromox
+      MYSQL_PASS: gromox
+      MYSQL_DB: gromox
+      DOMAIN: spike.test
+      MBOX_USER: alice@spike.test
+      MBOX_PASS: alicepass
+    ports:
+      - "127.0.0.1:18082:80"
+    volumes:
+      - gromox_store:/var/lib/gromox
+    healthcheck:
+      test: ["CMD", "test", "-f", "/var/lib/gromox/.mapi-ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+volumes:
+  gromox_db:
+  gromox_store:

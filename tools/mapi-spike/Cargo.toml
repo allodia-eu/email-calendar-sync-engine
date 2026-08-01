@@ -1,0 +1,24 @@
+# Throwaway spike — NOT part of the engine workspace (its own `[workspace]`
+# table detaches it from `crates/*`), so it never affects the engine's
+# fmt/clippy/coverage gates. Its only job is to measure what the MAPI ROP /
+# OXCDATA layer actually costs against a real Gromox before anyone commits to a
+# `crates/provider-mapi`. See README.md for the scope fence and the
+# measurements it must produce.
+[package]
+name = "mapi-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "mapi-spike"
+path = "src/main.rs"
+
+[dependencies]
+# Blocking HTTP keeps the spike runtime-free (mirrors tools/graph-oauth).
+# rustls so there is no OpenSSL requirement, even though the spike itself talks
+# plaintext to a loopback Gromox.
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
+
+# Detach from the engine workspace above this directory.
+[workspace]
