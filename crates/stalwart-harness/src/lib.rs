@@ -354,6 +354,30 @@ impl Harness {
     ) -> Result<HttpResponse, HarnessError> {
         http::request(&self.http_addr, "DELETE", path, Some(auth), &[], &[])
     }
+
+    /// `POST` a raw JMAP request body to `/jmap/` as the seeded account.
+    ///
+    /// Exists to send what the adapter deliberately **cannot**. A live test that drives
+    /// `JmapProvider` can only observe requests the adapter is willing to build, so it can
+    /// never show what the server does with a precondition the adapter never sends — which is
+    /// why the reason for omitting `ifInState` sat in prose until
+    /// `provider-jmap/tests/live_calendar_precondition.rs` could demonstrate it.
+    ///
+    /// Reach for this only to probe wire-level server behaviour that no adapter surface
+    /// expresses; anything the adapter *can* send belongs in a test that drives the adapter.
+    ///
+    /// # Errors
+    /// Propagates transport/parse failures from the HTTP probe.
+    pub fn jmap_post(&self, body: &[u8]) -> Result<HttpResponse, HarnessError> {
+        http::request(
+            &self.http_addr,
+            "POST",
+            "/jmap/",
+            Some(self.auth()),
+            &[("Content-Type", "application/json")],
+            body,
+        )
+    }
 }
 
 #[cfg(test)]

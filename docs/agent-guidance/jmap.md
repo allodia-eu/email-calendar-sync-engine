@@ -288,6 +288,16 @@ specifics they implement against the Stalwart fixture. Read it before touching
   Stalwart gaining a precondition. A host that must not lose a concurrent edit has to detect it
   above the engine. The one thing that must not happen is a neutral write API that *looks* like
   it gives optimistic concurrency on every provider when here it gives none.
+
+  **Reason 2 is demonstrated, not merely argued** —
+  `provider-jmap/tests/live_calendar_precondition.rs` sends `ifInState` over the harness's raw
+  JMAP seam (the adapter cannot, by design) and shows the real server refusing a write to an
+  event **nobody touched**, with `stateMismatch`, because a *different* property of a
+  *different* event changed. That is the spurious rejection, against a server implementing
+  §5.3 correctly. Two details worth carrying: the refusal is a **top-level method error**, not
+  a per-object `notUpdated`, so one unrelated change loses every write in a batched `/set`;
+  and a *malformed* token is a `400 notRequest` instead, so "a bad token fails" is **not**
+  evidence of enforcement — check *which* error you got before concluding anything.
 - **RSVP is still deferred for JMAP.** `participants/<id>/participationStatus` is the obvious
   mapping, but the neutral `EventPatch` carries no participation status yet (CalDAV's RSVP
   goes through `imip::set_my_partstat` + the whole-document verb, which JMAP does not have),
