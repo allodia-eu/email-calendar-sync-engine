@@ -304,4 +304,14 @@ The full CI gate (format on nightly, clippy, build, test, docs) is documented in
 
 ## License
 
-Not yet decided.
+[Mozilla Public License 2.0](https://spdx.org/licenses/MPL-2.0.html) — see [`LICENSE`](LICENSE).
+`SPDX-License-Identifier: MPL-2.0`
+
+MPL-2.0 is **file-level** copyleft. Changes to the files in this repository must be published under
+the same license, so improvements to the engine come back to it — but the engine may be embedded in
+a larger work under any license, open or proprietary, and files you add yourself stay yours. That is
+what an engine "designed to be embedded by native apps, command-line tools, local daemons, and
+server-side adapters" has to allow in order to be worth embedding.
+
+It is also compatible with the GNU GPL and AGPL — MPL-2.0 §1.12 makes them "Secondary Licenses" — so
+a copyleft host can use the engine without a license conflict.
