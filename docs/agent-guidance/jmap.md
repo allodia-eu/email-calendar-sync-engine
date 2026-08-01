@@ -270,11 +270,12 @@ specifics they implement against the Stalwart fixture. Read it before touching
   Stalwart's handling of `ifInState` **changed under us**, and neither state changes the
   decision. v0.16.11–v0.16.13 parsed it and never compared it (a stale-state `/set` was applied
   and returned a fresh `newState`, where RFC 8620 §5.3 requires a `stateMismatch`; a *malformed*
-  state string still `400`s, so it was parsed, just never checked). v0.16.14 fixed it, verified
-  by probe against v0.16.15: a stale-but-well-formed token is refused with `stateMismatch` and
-  the write does not land. That only sharpens reason 2 — the probe's state had moved because of
-  an edit to a *different* property of a *different* event, which is precisely the spurious
-  rejection a per-event guard must not produce.
+  state string still `400`s, so it was parsed, just never checked). v0.16.14 fixed it, and the
+  harness now pins **v0.16.15**, so enforcement is what our live runs meet: a stale-but-
+  well-formed token is refused with `stateMismatch` and the write does not land. That only
+  sharpens reason 2 — the probe's state had moved because of an edit to a *different* property
+  of a *different* event, which is precisely the spurious rejection a per-event guard must not
+  produce.
 
   **So we send no `ifInState`**, on either vintage. Instead the absence of the guard is
   *asserted live* (`a_stale_edit_is_not_refused`): a write built on a superseded copy lands, and
@@ -287,6 +288,16 @@ specifics they implement against the Stalwart fixture. Read it before touching
   Stalwart gaining a precondition. A host that must not lose a concurrent edit has to detect it
   above the engine. The one thing that must not happen is a neutral write API that *looks* like
   it gives optimistic concurrency on every provider when here it gives none.
+
+  **Reason 2 is demonstrated, not merely argued** —
+  `provider-jmap/tests/live_calendar_precondition.rs` sends `ifInState` over the harness's raw
+  JMAP seam (the adapter cannot, by design) and shows the real server refusing a write to an
+  event **nobody touched**, with `stateMismatch`, because a *different* property of a
+  *different* event changed. That is the spurious rejection, against a server implementing
+  §5.3 correctly. Two details worth carrying: the refusal is a **top-level method error**, not
+  a per-object `notUpdated`, so one unrelated change loses every write in a batched `/set`;
+  and a *malformed* token is a `400 notRequest` instead, so "a bad token fails" is **not**
+  evidence of enforcement — check *which* error you got before concluding anything.
 - **RSVP is still deferred for JMAP.** `participants/<id>/participationStatus` is the obvious
   mapping, but the neutral `EventPatch` carries no participation status yet (CalDAV's RSVP
   goes through `imip::set_my_partstat` + the whole-document verb, which JMAP does not have),

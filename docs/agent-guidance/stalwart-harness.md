@@ -81,6 +81,24 @@ These were confirmed before/with implementation; do not relitigate without cause
   moving tag. The HTTP listener serves JMAP, CalDAV/CardDAV (WebDAV), and the
   management API together. Bump deliberately: re-resolve the digest and update the
   comment that records the version.
+
+  **A bump is its own PR.** The pin decides what *every* live test in this repo is
+  evidence about, so it must not ride along inside a change that is really about
+  something else — a provider fix and a server change landing together leave neither
+  attributable. Currently pinned: **v0.16.15**. What a bump owes:
+
+  1. Re-resolve the **index** digest (`docker buildx imagetools inspect
+     stalwartlabs/stalwart:<tag>` → the top-level `Digest:`, not a per-platform one, or
+     the other architecture stops resolving).
+  2. Run the whole gated suite on the new pin — `scripts/ci/stalwart-live.sh down && …
+     all` — from a wiped volume, since the entrypoint bootstraps differently on a warm
+     store.
+  3. **Reconcile every claim that named a version.** Behaviour the docs pin to "what
+     Stalwart does" is only true of a vintage; grep for the old version string. This is
+     how v0.16.14's `ifInState` enforcement was caught (see `jmap.md` — it changed the
+     evidence but not the decision, because the engine sends no precondition).
+  4. Say what the bump did **not** fix, so the next agent does not re-run the same
+     investigation hoping. It did not fix the JMAP RSVP scheduling gap (issue #93).
 - **Transport:** **plaintext HTTP on 8080** (JMAP + CalDAV + management) and
   **plaintext SMTP on 25**; **IMAP is implicit-TLS on 993**. Stalwart **supports**
   STARTTLS on the standard IMAP (143) and submission (587) ports, but its

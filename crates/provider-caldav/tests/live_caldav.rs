@@ -367,3 +367,15 @@ async fn caldav_organizer_cancel_marks_the_attendees_copy_cancelled() {
     let _serial = common::serial_guard().await;
     scheduling::an_organizer_cancel_marks_the_attendees_copy_cancelled(&parties).await;
 }
+
+/// The fixture polices itself: a scheduling run leaves no `.ics` on either calendar and no
+/// message in the scheduling inbox, so a long-lived harness does not accumulate residue.
+#[tokio::test]
+async fn caldav_scheduling_cleanup_leaves_no_residue() {
+    let Some(parties) = scheduling::parties("caldav_scheduling_cleanup_leaves_no_residue").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    scheduling::cleanup_leaves_no_residue(&parties).await;
+}
