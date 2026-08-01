@@ -16,7 +16,7 @@
 version = 1
 
 SPDX-PackageName = "email-calendar-sync-engine"
-SPDX-PackageSupplier = "Allodia <dennis@dennisameling.com>"
+SPDX-PackageSupplier = "Allodia <info@allodia.eu>"
 SPDX-PackageDownloadLocation = "https://github.com/allodia-eu/email-calendar-sync-engine"
 
 [[annotations]]
