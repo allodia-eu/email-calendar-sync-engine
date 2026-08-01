@@ -1,0 +1,26 @@
+# Machine-readable licensing for the whole repository, per the REUSE specification
+# (https://reuse.software/spec/). It states exactly what `LICENSE` and the README
+# state in prose: every file here is MPL-2.0, and no source file carries a header.
+#
+# MPL-2.0 Exhibit A permits that -- "if it is not possible or desirable to put the
+# notice in a particular file, then You may include the notice in a location (such
+# as a LICENSE file in a relevant directory) where a recipient would be likely to
+# look for such a notice" -- and this file is the same statement in a form a tool
+# can check. `reuse lint` runs in CI, so the claim cannot quietly stop being true.
+#
+# precedence = "closest" is the default and the one we want: an in-file header, if a
+# file ever grows one, wins over this blanket statement. That matters the first time
+# something third-party is vendored in -- it keeps its own license instead of being
+# silently relabelled MPL-2.0. "override" would do the relabelling.
+
+version = 1
+
+SPDX-PackageName = "email-calendar-sync-engine"
+SPDX-PackageSupplier = "Allodia <dennis@dennisameling.com>"
+SPDX-PackageDownloadLocation = "https://github.com/allodia-eu/email-calendar-sync-engine"
+
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Allodia"
+SPDX-License-Identifier = "MPL-2.0"

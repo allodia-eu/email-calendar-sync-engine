@@ -20,6 +20,20 @@ env:
   RUSTDOCFLAGS: -D warnings
 
 jobs:
+  # The repository states its licensing once, for every file at once, in `REUSE.toml` rather than in
+  # a header on each source file — which MPL-2.0 Exhibit A explicitly allows. A statement like that
+  # is only as good as its last edit, so this checks it: `reuse lint` fails if any tracked file is
+  # not covered, if a license text is missing from `LICENSES/`, or if an SPDX identifier is wrong.
+  # Without it, adding a directory the glob does not reach would silently leave files unlicensed —
+  # exactly the failure a per-file header would have made visible in review.
+  # No Rust, no cache, no dependency on `toolchain`: it costs seconds, so it runs on every push.
+  reuse:
+    name: REUSE compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0
+
   # `rust-toolchain.toml` is the single source of truth for the Rust version: rustup honours it for
   # every local cargo invocation, and this job parses it so each job below installs exactly that
   # channel. Without it CI ran a floating `stable` that drifted ahead of contributors' toolchains,
