@@ -10,6 +10,7 @@ mod proptag;
 mod rop;
 mod ropbuf;
 mod table;
+mod transcript;
 
 use std::process::ExitCode;
 
@@ -29,6 +30,8 @@ USAGE:
     http://127.0.0.1:18082/mapi/emsmdb/?MailboxId=<guid>@<domain>
   <legacy-dn> is Autodiscover's <User><LegacyDN>.
   --insecure skips TLS verification (Exchange lab installs use self-signed certs).
+  --transcript <dir> writes every request/response byte pair to <dir>.
+  --scrub <from=to> rewrites a substring in captured bytes (repeatable).
 ";
 
 fn main() -> ExitCode {
@@ -50,6 +53,16 @@ fn main() -> ExitCode {
     // Exchange Server's MAPI vdir is HTTPS with a lab self-signed cert.
     let insecure = args.iter().any(|a| a == "--insecure");
     let mut session = http::Session::with_tls(url, user, pass, insecure);
+
+    if let Some(dir) = flag(&args, "--transcript") {
+        match session.record_to(&dir, scrub_rules(&args)) {
+            Ok(path) => println!("capturing transcripts to {}", path.display()),
+            Err(e) => {
+                eprintln!("cannot write transcripts to {dir}: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
 
     let result = match cmd.as_str() {
         "ping" => ping(&mut session),
@@ -89,6 +102,18 @@ fn main() -> ExitCode {
 fn flag(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
     args.get(i + 1).cloned()
+}
+
+/// Every `--scrub from=to`, in order. Split on the *first* `=` so a replacement
+/// containing one still works.
+fn scrub_rules(args: &[String]) -> Vec<(String, String)> {
+    args.iter()
+        .enumerate()
+        .filter(|(_, a)| a.as_str() == "--scrub")
+        .filter_map(|(i, _)| args.get(i + 1))
+        .filter_map(|spec| spec.split_once('='))
+        .map(|(from, to)| (from.to_owned(), to.to_owned()))
+        .collect()
 }
 
 /// PING validates an *existing* Session Context, so on a fresh session the
@@ -302,6 +327,12 @@ fn do_rows(
     // Decode by RopId off the stream — never positionally.
     let mut r = cursor::Reader::new(&rops);
     let mut rows_printed = 0usize;
+    // The three things a spec reading cannot settle, so the run has to report
+    // them: which row form the server chose, whether a long string came back
+    // truncated or as an error, and how many columns errored.
+    let mut row_forms: Option<(usize, usize)> = None;
+    let mut longest_string: Option<usize> = None;
+    let mut error_values = 0usize;
     while !r.is_empty() {
         let rop_id = r.u8()?;
         let _handle_index = r.u8()?;
@@ -332,13 +363,34 @@ fn do_rows(
                 );
                 for row in &q.rows {
                     let cells: Vec<String> = row
+                        .values
                         .iter()
                         .zip(columns)
                         .map(|(v, t)| format!("{}={v}", proptag::tag_name(*t)))
                         .collect();
-                    println!("    {}", cells.join("  "));
+                    println!(
+                        "    [{}] {}",
+                        if row.flagged { "Flagged" } else { "Standard" },
+                        cells.join("  ")
+                    );
                     rows_printed += 1;
                 }
+                row_forms = Some(q.form_counts());
+                longest_string = q
+                    .rows
+                    .iter()
+                    .flat_map(|row| &row.values)
+                    .filter_map(|v| match v {
+                        proptag::PropValue::Str(s) => Some(s.chars().count()),
+                        _ => None,
+                    })
+                    .max();
+                error_values = q
+                    .rows
+                    .iter()
+                    .flat_map(|row| &row.values)
+                    .filter(|v| matches!(v, proptag::PropValue::Error(_)))
+                    .count();
             }
             other => {
                 println!("  unexpected ROP 0x{other:02X}");
@@ -349,6 +401,13 @@ fn do_rows(
 
     println!("\nCP4 measurements:");
     println!("  rows decoded from a real server : {rows_printed}");
+    if let Some((standard, flagged)) = row_forms {
+        println!("  row form (server's choice)      : {standard} Standard, {flagged} Flagged");
+    }
+    if let Some(longest) = longest_string {
+        println!("  longest string value returned   : {longest} chars");
+    }
+    println!("  columns returned as flag 0xA    : {error_values}");
     println!(
         "  in-buffer handle chaining       : {}",
         if rows_printed > 0 {

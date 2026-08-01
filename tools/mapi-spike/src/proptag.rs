@@ -114,6 +114,27 @@ pub fn read_value(r: &mut Reader<'_>, ptype: u16) -> Result<PropValue> {
     })
 }
 
+/// One decoded row, plus **which form the server chose to send it in**.
+///
+/// The form is per-row and is the server's choice, not the client's, so it is a
+/// live measurement rather than something a spec reading settles. Keeping it
+/// means the spike can report what a real server *does* instead of what it is
+/// permitted to do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    /// `true` if the row arrived as a FlaggedPropertyRow (`0x01`).
+    pub flagged: bool,
+    pub values: Vec<PropValue>,
+}
+
+impl std::ops::Index<usize> for Row {
+    type Output = PropValue;
+
+    fn index(&self, i: usize) -> &PropValue {
+        &self.values[i]
+    }
+}
+
 /// Read one `PropertyRow` ([MS-OXCDATA] §2.8.1) against `columns`.
 ///
 /// The leading byte selects the form: `0x00` is a StandardPropertyRow (values
@@ -121,7 +142,7 @@ pub fn read_value(r: &mut Reader<'_>, ptype: u16) -> Result<PropValue> {
 /// per-value flag is `0x0` (value follows), `0x1` (absent — consume nothing) or
 /// `0xA` (a u32 error code follows). A client MUST handle both; which one the
 /// server picks is its choice, not the client's.
-pub fn read_row(r: &mut Reader<'_>, columns: &[u32]) -> Result<Vec<PropValue>> {
+pub fn read_row(r: &mut Reader<'_>, columns: &[u32]) -> Result<Row> {
     let flag = r.u8()?;
     let mut out = Vec::with_capacity(columns.len());
     for &tag in columns {
@@ -142,7 +163,10 @@ pub fn read_row(r: &mut Reader<'_>, columns: &[u32]) -> Result<Vec<PropValue>> {
             }
         }
     }
-    Ok(out)
+    Ok(Row {
+        flagged: flag != 0x00,
+        values: out,
+    })
 }
 
 /// `PropertyTagArray` as `RopSetColumns` carries it: a u16 count then the tags.
@@ -195,6 +219,7 @@ mod tests {
         let buf = hierarchy_row_standard();
         let mut r = Reader::new(&buf);
         let row = read_row(&mut r, &HIERARCHY_COLUMNS).unwrap();
+        assert!(!row.flagged, "leading 0x00 is a StandardPropertyRow");
         assert_eq!(row[0], PropValue::I64(0x0D00_0000_0000_0001));
         assert_eq!(row[1], PropValue::Str("Inbox".into()));
         assert_eq!(row[2], PropValue::I32(7));
@@ -216,11 +241,39 @@ mod tests {
 
         let mut r = Reader::new(&buf);
         let row = read_row(&mut r, &HIERARCHY_COLUMNS).unwrap();
+        assert!(row.flagged, "leading 0x01 is a FlaggedPropertyRow");
         assert_eq!(row[0], PropValue::I64(0x1234));
         assert_eq!(row[1], PropValue::Error(0x8004_0301));
         assert_eq!(row[2], PropValue::Absent);
         assert_eq!(row[3], PropValue::Bool(false));
         assert!(r.is_empty(), "absent must consume nothing");
+    }
+
+    /// The form is the server's choice per row, so the decoder must *report*
+    /// it rather than normalise it away — otherwise the spike cannot answer
+    /// "which form does a real server actually send?", which is a live
+    /// measurement and not something the spec settles.
+    #[test]
+    fn the_row_form_is_reported_not_normalised_away() {
+        let standard = hierarchy_row_standard();
+        assert!(
+            !read_row(&mut Reader::new(&standard), &HIERARCHY_COLUMNS)
+                .unwrap()
+                .flagged
+        );
+
+        let mut w = Writer::new();
+        w.u8(0x01);
+        w.u8(0x00).u64(1);
+        w.u8(0x00);
+        w.u16(0); // empty string
+        w.u8(0x00).u32(0);
+        w.u8(0x00).u8(1);
+        let flagged = w.finish();
+        let row = read_row(&mut Reader::new(&flagged), &HIERARCHY_COLUMNS).unwrap();
+        assert!(row.flagged);
+        // Same values, different form — the values alone cannot tell them apart.
+        assert_eq!(row.values.len(), HIERARCHY_COLUMNS.len());
     }
 
     /// The same bytes decode differently under a different column set — the
@@ -233,11 +286,11 @@ mod tests {
 
         let two_i32 = [PID_TAG_MESSAGE_FLAGS, PID_TAG_CONTENT_COUNT];
         let row = read_row(&mut Reader::new(&buf), &two_i32).unwrap();
-        assert_eq!(row, vec![PropValue::I32(1), PropValue::I32(2)]);
+        assert_eq!(row.values, vec![PropValue::I32(1), PropValue::I32(2)]);
 
         let one_i64 = [PID_TAG_MID];
         let row = read_row(&mut Reader::new(&buf), &one_i64).unwrap();
-        assert_eq!(row, vec![PropValue::I64(0x0000_0002_0000_0001)]);
+        assert_eq!(row.values, vec![PropValue::I64(0x0000_0002_0000_0001)]);
     }
 
     #[test]

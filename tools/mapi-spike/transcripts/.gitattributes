@@ -1,0 +1,5 @@
+# These captures are byte-exact wire bytes, read by offset (see README.md). Git's
+# text auto-detection plus core.autocrlf=true would rewrite LF->CRLF in any capture
+# that happened to contain no NUL in its first 8000 bytes, silently shifting every
+# offset after it. Mark them binary so no checkout or commit can touch them.
+*.bin -text -diff

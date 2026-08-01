@@ -1,24 +1,27 @@
 //! The MAPI/HTTP transport: [MS-OXCMAPIHTTP] §2.2.2 (POST format), §2.2.3
 //! (headers), §2.2.7 (meta-tags).
 //!
-//! Two things here were learned from a live Gromox and are not in the spec's
+//! Two things here were learned from live servers and are not in the spec's
 //! mandatory-header list (§2.2.2.1):
 //!
-//! * **`X-ClientInfo` is required.** Omitting it makes Gromox reject every
-//!   request before it looks at the body.
-//! * **`/mapi/emsmdb/` requires the `?MailboxId=<guid>@<domain>` query
-//!   parameter.** Without it Gromox 404s at the router, which looks like "MAPI
-//!   is not enabled" rather than "your URL is incomplete". Autodiscover hands
-//!   over the full URL; use it verbatim.
+//! * **`X-ClientInfo` is required *by Gromox*.** Omitting it makes Gromox reject every request
+//!   before it looks at the body. **Exchange does not require it** (measured: `X-ResponseCode: 0`
+//!   without it), so this is a vendor quirk, not a protocol rule. It is sent unconditionally
+//!   because Outlook does — but a client must not treat its absence as fatal.
+//! * **`/mapi/emsmdb/` requires the `?MailboxId=<guid>@<domain>` query parameter**, on both
+//!   servers. Gromox 404s at the router; Exchange returns **HTTP 400 with no `X-ResponseCode` at
+//!   all**, so a client keying only on that header sees "header absent" rather than a code. Either
+//!   way it looks like "MAPI is not enabled" rather than "your URL is incomplete". Autodiscover
+//!   hands over the full URL; use it verbatim.
 //!
-//! Gromox's `X-ResponseCode` values also do not match the spec's table: its
-//! diagnostic text is the spec's wording for 7 / 13 / 12 (missing header,
-//! missing cookie, invalid body) while the codes it returns for those are
-//! 3 / 6 / 5. So the code is reported raw and the body text is preserved —
-//! a client that maps codes by the spec table would misreport Gromox.
+//! **`X-ResponseCode` values are not portable.** Exchange matches the spec table exactly
+//! (`MissingHeader` = 7, `ContextNotFound` = 10, `InvalidRequestType` = 5, per
+//! [MS-OXCMAPIHTTP] §2.2.3.3.3). Gromox returns 3 / 6 / 5 for conditions whose own diagnostic text
+//! is the spec's wording for 7 / 13 / 12. So the code is reported raw and the body text is
+//! preserved: a client that hard-maps codes by the spec table would misreport Gromox, and one that
+//! hard-maps them by Gromox's would misreport Exchange.
 
-use std::fmt;
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use crate::cursor::Reader;
 
@@ -135,6 +138,11 @@ pub struct Session {
     request_guid: String,
     counter: u64,
     client_info: String,
+    /// When set, every exchange is written out as a byte pair. The recorder
+    /// never sees the `Authorization` header, so credentials cannot reach a
+    /// capture by omission of a scrubbing step.
+    recorder: Option<crate::transcript::Recorder>,
+    scrub: Vec<(String, String)>,
 }
 
 impl Session {
@@ -171,7 +179,21 @@ impl Session {
             request_guid: "{12345678-1234-1234-1234-123456789abc}".into(),
             counter: 0,
             client_info: "{2EF33C39-49C8-421C-B876-CDF7F2AC3AA0}:123".into(),
+            recorder: None,
+            scrub: Vec::new(),
         }
+    }
+
+    /// Capture every exchange under `dir`, rewriting each `(needle, replacement)`
+    /// pair on the way out.
+    pub fn record_to(
+        &mut self,
+        dir: &str,
+        scrub: Vec<(String, String)>,
+    ) -> std::io::Result<&std::path::Path> {
+        self.recorder = Some(crate::transcript::Recorder::new(dir)?);
+        self.scrub = scrub;
+        Ok(self.recorder.as_ref().expect("just set").dir())
     }
 
     pub fn has_session(&self) -> bool {
@@ -181,6 +203,7 @@ impl Session {
     /// POST one request type with a binary body.
     pub fn post(&mut self, request_type: &str, body: Vec<u8>) -> Result<Response> {
         self.counter += 1;
+        let recorded_request = self.recorder.is_some().then(|| body.clone());
         let mut req = self
             .client
             .post(&self.endpoint)
@@ -213,10 +236,32 @@ impl Session {
             }
         }
 
+        let status = resp.status();
         let raw = resp
             .bytes()
             .map_err(|e| Error::Http(e.to_string()))?
             .to_vec();
+
+        // Capture before any early return, so a *failed* exchange is recorded
+        // too — those are the transcripts worth the most to the next reader.
+        if let (Some(rec), Some(request)) = (self.recorder.as_mut(), recorded_request) {
+            let notes = vec![
+                ("HTTP-Status".to_owned(), status.as_u16().to_string()),
+                (
+                    "X-ResponseCode".to_owned(),
+                    code.map_or_else(|| "<absent>".to_owned(), |c| c.to_string()),
+                ),
+            ];
+            let rules: Vec<(&str, &str)> = self
+                .scrub
+                .iter()
+                .map(|(n, r)| (n.as_str(), r.as_str()))
+                .collect();
+            if let Err(e) = rec.record(request_type, &request, &raw, &notes, &rules) {
+                eprintln!("warning: could not write transcript: {e}");
+            }
+        }
+
         let Some(code) = code else {
             return Err(Error::MissingResponseCode);
         };

@@ -10,10 +10,14 @@
 //! live measurement, and a hard gate: without it every folder walk costs N
 //! round trips.
 
-use crate::cursor::{Reader, Result, Writer};
-use crate::proptag::{self, PropValue};
-use crate::rop::{ROP_GET_CONTENTS_TABLE, ROP_GET_HIERARCHY_TABLE, ROP_OPEN_FOLDER};
-use crate::rop::{ROP_QUERY_ROWS, ROP_SET_COLUMNS};
+use crate::{
+    cursor::{Reader, Result, Writer},
+    proptag::{self, Row},
+    rop::{
+        ROP_GET_CONTENTS_TABLE, ROP_GET_HIERARCHY_TABLE, ROP_OPEN_FOLDER, ROP_QUERY_ROWS,
+        ROP_SET_COLUMNS,
+    },
+};
 
 /// Slot assignments used by the CP4 chain.
 pub const H_LOGON: u8 = 0;
@@ -75,7 +79,16 @@ pub fn query_rows_request(input: u8, row_count: u16) -> Vec<u8> {
 pub struct QueryRowsResponse {
     /// 0 = the cursor is at the beginning, 2 = at the end.
     pub origin: u8,
-    pub rows: Vec<Vec<PropValue>>,
+    pub rows: Vec<Row>,
+}
+
+impl QueryRowsResponse {
+    /// How many rows arrived in each form. The server picks per row, so this is
+    /// a measurement of the server, not of the request.
+    pub fn form_counts(&self) -> (usize, usize) {
+        let flagged = self.rows.iter().filter(|r| r.flagged).count();
+        (self.rows.len() - flagged, flagged)
+    }
 }
 
 /// Decode the body of a `RopQueryRows` response, after `RopId`,
@@ -112,7 +125,7 @@ pub fn read_set_columns(r: &mut Reader<'_>) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proptag::HIERARCHY_COLUMNS;
+    use crate::proptag::{HIERARCHY_COLUMNS, PropValue};
 
     #[test]
     fn open_folder_layout() {
@@ -195,6 +208,7 @@ mod tests {
         assert_eq!(resp.rows.len(), 2);
         assert_eq!(resp.rows[0][1], PropValue::Str("Inbox".into()));
         assert_eq!(resp.rows[1][1], PropValue::Str("Sent Items".into()));
+        assert_eq!(resp.form_counts(), (2, 0));
         assert!(r.is_empty());
     }
 

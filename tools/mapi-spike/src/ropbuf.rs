@@ -4,14 +4,14 @@
 //! The framing is where implementations go wrong, so the three rules are stated
 //! here rather than left implicit:
 //!
-//! 1. **`RopSize` counts itself and the ROP list — not the handle table.** The
-//!    spec's wording is "the size of *both this field and the RopsList field*".
-//!    Writing `RopsList.len()` is the classic off-by-two.
-//! 2. **The handle table is sized by `max(index) + 1`, not by ROP count.** Its
-//!    length is whatever remains after `RopSize` bytes, so a wrong size silently
-//!    reinterprets the boundary rather than erroring.
-//! 3. **Handles never appear inside a ROP body.** Every ROP carries a *1-byte
-//!    index* into the u32 table. Writing the handle itself is failure mode (a).
+//! 1. **`RopSize` counts itself and the ROP list — not the handle table.** The spec's wording is
+//!    "the size of *both this field and the RopsList field*". Writing `RopsList.len()` is the
+//!    classic off-by-two.
+//! 2. **The handle table is sized by `max(index) + 1`, not by ROP count.** Its length is whatever
+//!    remains after `RopSize` bytes, so a wrong size silently reinterprets the boundary rather than
+//!    erroring.
+//! 3. **Handles never appear inside a ROP body.** Every ROP carries a *1-byte index* into the u32
+//!    table. Writing the handle itself is failure mode (a).
 //!
 //! Because the server processes ROPs in order and updates the table in place,
 //! one ROP may consume a handle an earlier ROP in the *same* buffer produced.
