@@ -315,3 +315,14 @@ server-side adapters" has to allow in order to be worth embedding.
 
 It is also compatible with the GNU GPL and AGPL — MPL-2.0 §1.12 makes them "Secondary Licenses" — so
 a copyleft host can use the engine without a license conflict.
+
+**This notice applies to every file in this repository:**
+
+> This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of
+> the MPL was not distributed with this file, You can obtain one at <https://mozilla.org/MPL/2.0/>.
+
+Individual source files deliberately carry no license header. MPL-2.0 Exhibit A allows the notice to
+live here instead — *"if it is not possible or desirable to put the notice in a particular file, then
+You may include the notice in a location (such as a LICENSE file in a relevant directory) where a
+recipient would be likely to look for such a notice."* A file copied out of this repository stays
+subject to the license regardless.

@@ -1,3 +1,27 @@
+NOTICE
+======
+
+This notice applies to every file in this repository.
+
+    This Source Code Form is subject to the terms of the Mozilla Public
+    License, v. 2.0. If a copy of the MPL was not distributed with this
+    file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+Individual source files deliberately carry no license header. MPL-2.0
+Exhibit A permits the notice to be given here instead:
+
+    "If it is not possible or desirable to put the notice in a particular
+    file, then You may include the notice in a location (such as a LICENSE
+    file in a relevant directory) where a recipient would be likely to look
+    for such a notice."
+
+If you copy a file out of this repository, it remains subject to the license
+below, whether or not you carry this notice with it.
+
+The full, verbatim text of the Mozilla Public License 2.0 follows.
+
+------------------------------------------------------------------------------
+
 Mozilla Public License Version 2.0
 ==================================
 
