@@ -23,9 +23,15 @@ name: stalwart-harness
 
 services:
   stalwart:
-    # stalwartlabs/stalwart v0.16.11, pinned by multi-arch digest (linux/amd64 +
+    # stalwartlabs/stalwart v0.16.15, pinned by multi-arch digest (linux/amd64 +
     # linux/arm64). Bump deliberately: re-resolve the digest and update CI too.
-    image: stalwartlabs/stalwart:v0.16.11@sha256:5ed90ea664cca8eb0058927b8c528abcb9c2c9990e73ccfd3218606555618082
+    #
+    # Bumped from v0.16.11 in its own change, after running the whole gated suite on both
+    # (see docs/agent-guidance/stalwart-harness.md → "The pinned version"). The one
+    # behaviour change that reaches this repo is v0.16.14 enforcing `CalendarEvent/set`'s
+    # `ifInState`, which the engine never sends; the JMAP RSVP gap the harness is often
+    # blamed for is unchanged through v0.16.15.
+    image: stalwartlabs/stalwart:v0.16.15@sha256:4f926193e5dd9ceb1e24ba48160702310381b12e51972c2fb0cc9de020388136
     # Self-bootstrapping wrapper: bootstrap via API, restart to full server,
     # create accounts, seed, then run the server in the foreground.
     entrypoint: ["/bin/sh", "/harness/entrypoint.sh"]

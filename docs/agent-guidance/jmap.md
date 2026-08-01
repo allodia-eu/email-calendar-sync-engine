@@ -270,11 +270,12 @@ specifics they implement against the Stalwart fixture. Read it before touching
   Stalwart's handling of `ifInState` **changed under us**, and neither state changes the
   decision. v0.16.11–v0.16.13 parsed it and never compared it (a stale-state `/set` was applied
   and returned a fresh `newState`, where RFC 8620 §5.3 requires a `stateMismatch`; a *malformed*
-  state string still `400`s, so it was parsed, just never checked). v0.16.14 fixed it, verified
-  by probe against v0.16.15: a stale-but-well-formed token is refused with `stateMismatch` and
-  the write does not land. That only sharpens reason 2 — the probe's state had moved because of
-  an edit to a *different* property of a *different* event, which is precisely the spurious
-  rejection a per-event guard must not produce.
+  state string still `400`s, so it was parsed, just never checked). v0.16.14 fixed it, and the
+  harness now pins **v0.16.15**, so enforcement is what our live runs meet: a stale-but-
+  well-formed token is refused with `stateMismatch` and the write does not land. That only
+  sharpens reason 2 — the probe's state had moved because of an edit to a *different* property
+  of a *different* event, which is precisely the spurious rejection a per-event guard must not
+  produce.
 
   **So we send no `ifInState`**, on either vintage. Instead the absence of the guard is
   *asserted live* (`a_stale_edit_is_not_refused`): a write built on a superseded copy lands, and

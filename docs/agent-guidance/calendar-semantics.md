@@ -427,6 +427,10 @@ objects is the sync layer's job).
   implementation. So treat `Capabilities::calendar_rsvp` on a JMAP account as
   **unproven per server** until checked the same way — and if Stalwart starts
   scheduling, that test fails, which is the signal to revisit rather than relax it.
+  Re-confirmed on the pinned **v0.16.15**, checked in all three places a `REPLY`
+  could land (the organizer's calendar copy, their RFC 6638 scheduling inbox, their
+  mailbox): the JMAP answer moves none of them, the CalDAV control moves all three.
+  Tracked in issue #93; do not re-investigate without reading it first.
 - **A real server-authored invitation parses end to end**, with its Windows `TZID`
   quoted and QP-escaped, its calendar part three levels down a `multipart/mixed`
   tree and dispositioned as an attachment, and its `ATTENDEE` folded mid-`mailto:`.

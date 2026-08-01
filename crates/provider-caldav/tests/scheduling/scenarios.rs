@@ -14,7 +14,8 @@ use engine_provider::{EventRsvp, EventWrite, Provider, RsvpResponse};
 use provider_caldav::imip;
 
 use super::{
-    Parties, clean_up, invite, normalized, participant, poll_until, scheduling_inbox_hrefs,
+    Parties, clean_up, invite, normalized, organizer_inbox_hrefs, participant, poll_until,
+    scheduling_inbox_hrefs,
 };
 use crate::common;
 
@@ -59,7 +60,7 @@ pub(crate) async fn an_invitation_is_delivered_to_the_attendee(parties: &Parties
         "RSVP=TRUE survived onto the attendee's copy"
     );
 
-    let organizer = participant(&mine, &parties.organizer_address);
+    let organizer = participant(&mine, parties.organizer_address());
     assert!(
         organizer.has_role(&engine_core::calendar::ParticipantRole::Owner),
         "the ORGANIZER reads back as the owning participant, not as a plain attendee"
@@ -150,7 +151,7 @@ pub(crate) async fn the_scheduling_inbox_carries_a_parseable_itip_request(partie
     assert_eq!(message.event.uid.as_str(), uid.as_str());
     assert_eq!(
         message.organizer().map(normalized),
-        Some(parties.organizer_address.clone()),
+        Some(parties.organizer_address().to_owned()),
         "the ORGANIZER identity a trust decision would be made against"
     );
     assert!(
@@ -376,4 +377,88 @@ pub(crate) async fn an_organizer_cancel_marks_the_attendees_copy_cancelled(parti
     assert!(cancelled.is_cancelled());
 
     clean_up(parties, &uid).await;
+}
+
+// ---------------------------------------------------------------------------
+// 6. Cleanup itself: a scenario leaves nothing behind on either side.
+// ---------------------------------------------------------------------------
+
+const RESIDUE_UID: &str = "caldav-schedule-residue@test.local";
+
+/// A full round trip — invitation out, answer back — leaves **nothing** on the server:
+/// neither calendar holds the event, and neither party's scheduling inbox holds a message
+/// for it.
+///
+/// This asserts the *fixture*, not the adapter, and it exists because the fixture was
+/// leaking. `clean_up` cleared the attendee's scheduling inbox and not the organizer's — but
+/// scheduling runs both ways: the attendee gets a `REQUEST`, and every answer deposits a
+/// `METHOD:REPLY` in the **organizer's** inbox. The suite's two RSVP scenarios therefore left
+/// bob two replies richer every run (measured 0 → 2 → 4 across consecutive runs), unbounded
+/// on a long-lived harness. CI never noticed because CI always starts from `down -v`.
+///
+/// It has to answer the invitation, not merely receive one: no RSVP, no `REPLY`, and the leak
+/// this guards is invisible. Drop the organizer from the inbox sweep in [`clean_up`] and the
+/// last assertion fails — verified, not assumed.
+///
+/// The assertion is about **final state** rather than a call sequence on purpose, because the
+/// mechanism the tracking issue (#93) predicted turned out not to exist. Its guess was a
+/// calendar-copy race, an organizer `DELETE` scheduling a `CANCEL` that re-creates the
+/// attendee's already-deleted copy; probed in isolation on both v0.16.11 and v0.16.15, the
+/// server simply drops a `CANCEL` for a resource the attendee has already removed. Asserting
+/// state keeps this honest whichever way a future Stalwart decides to leak.
+pub(crate) async fn cleanup_leaves_no_residue(parties: &Parties) {
+    let uid = Uid::new(RESIDUE_UID).unwrap();
+    let mine = invite(parties, &uid, "Residue check", "Europe/Amsterdam").await;
+
+    parties
+        .attendee
+        .rsvp_event(
+            &parties.attendee_account,
+            &mine,
+            &EventRsvp::to(&mine, parties.attendee_address(), RsvpResponse::Accepted),
+        )
+        .await
+        .expect("answer the invitation, so the organizer is sent a REPLY to leave behind");
+    // The REPLY has been processed once the organizer's own copy shows the answer — which is
+    // also when its inbox message exists to be cleared.
+    poll_until(
+        &parties.organizer,
+        &parties.organizer_account,
+        &uid,
+        "the REPLY to reach the organizer, so cleanup has something to clean",
+        |event| {
+            event
+                .participants
+                .iter()
+                .any(|p| p.participation_status == ParticipationStatus::Accepted)
+        },
+    )
+    .await;
+
+    clean_up(parties, &uid).await;
+
+    assert!(
+        common::fetch(&parties.organizer, &parties.organizer_account, uid.as_str())
+            .await
+            .is_none(),
+        "the organizer's copy survived cleanup"
+    );
+    assert!(
+        common::fetch(&parties.attendee, &parties.attendee_account, uid.as_str())
+            .await
+            .is_none(),
+        "the attendee's copy survived cleanup"
+    );
+    for (whose, left) in [
+        ("attendee", scheduling_inbox_hrefs(parties, uid.as_str())),
+        ("organizer", organizer_inbox_hrefs(parties, uid.as_str())),
+    ] {
+        assert!(
+            left.is_empty(),
+            "the {whose}'s scheduling inbox still holds {} iTIP message(s) for this event \
+             ({left:?}); RFC 6638 §3.2 makes clearing a processed message the client's job, \
+             and an uncleared one accumulates on every run",
+            left.len()
+        );
+    }
 }

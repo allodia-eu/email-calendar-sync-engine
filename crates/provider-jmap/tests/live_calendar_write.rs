@@ -17,7 +17,8 @@
 //!   guard, which is what [`WriteGuard::Absent`] claims: the claim is pinned to observed behaviour,
 //!   not to a reading of the spec. Note what it is blind to — it drives the adapter, which sends no
 //!   precondition, so it cannot notice the server *gaining* one. Stalwart v0.16.14 started
-//!   enforcing `ifInState` and this test passed unchanged on v0.16.15; see the test's own docs.
+//!   enforcing `ifInState` and this test passes unchanged on the pinned v0.16.15; see the test's
+//!   own docs.
 //! - [`recurrence_override_edit`] — is a `recurrenceOverrides/<start>/…` pointer accepted, and does
 //!   the server materialize the override itself?
 //!
@@ -325,8 +326,8 @@ const STALE_UID: &str = "jmap-stale-edit@test.local";
 /// refusing the stale writes *we actually send*, and `session.rs` must stop advertising `Absent`.
 ///
 /// It is blind to one thing these docs used to get wrong: the adapter sends no precondition, so
-/// Stalwart *gaining* one cannot fail this test — v0.16.15 enforces `ifInState` (stale token →
-/// `stateMismatch`) and this passes unchanged. Orthogonal anyway: `ifInState` is account-scoped.
+/// Stalwart *gaining* one cannot fail this test — the pinned v0.16.15 enforces `ifInState` (stale
+/// token → `stateMismatch`) and this passes unchanged. Orthogonal anyway: it is account-scoped.
 #[tokio::test]
 async fn a_stale_edit_is_not_refused() {
     let Some(provider) = setup("a_stale_edit_is_not_refused").await else {

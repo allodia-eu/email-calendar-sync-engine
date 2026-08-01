@@ -44,11 +44,11 @@
 //! over CalDAV moves all three (`PARTSTAT=TENTATIVE;SCHEDULE-STATUS=2.0`, one new inbox
 //! resource, one "Tentative: …" mail). It is not a `REPLY` delivered somewhere we do not look.
 //!
-//! Re-verified against **v0.16.15** (2026-07-26, the latest release at the time), which the
-//! harness does *not* pin — the pin stays at v0.16.11 because the bump fixes none of this. The
-//! 0.16.12/0.16.13 "Calendar scheduling: Wrong RSVP base URL is used" entries do not address it,
-//! and no entry through 0.16.15 does. If you are about to re-investigate this, read the tracking
-//! issue first (#93 — it carries the probe transcript and the bump's test results).
+//! The harness now pins **v0.16.15**, and this is what that version does. The bump did not fix
+//! it and was not taken in the hope that it would: the 0.16.12/0.16.13 "Calendar scheduling:
+//! Wrong RSVP base URL is used" entries do not address it, and no entry through 0.16.15 does.
+//! If you are about to re-investigate this, read the tracking issue first (#93 — it carries the
+//! probe transcript, re-run on the pinned version, and what was reported upstream).
 //!
 //! The adapter is **not** at fault, which is why it is unchanged: the patch lands, it merges,
 //! and the wrong-address case is refused. What is missing is server-side scheduling that

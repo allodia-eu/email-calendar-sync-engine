@@ -29,8 +29,11 @@
 //! assert an exact INBOX count on the seeded account — so a run involving Alice would
 //! leave her INBOX permanently over count. Off to the side, nothing counts what we deliver.
 //!
-//! Each scenario cleans up both calendar copies and the scheduling-inbox messages, so a
-//! re-run starts from the same state.
+//! Each scenario cleans up both calendar copies and **both parties'** scheduling-inbox
+//! messages, so a re-run starts from the same state. Both, because scheduling runs both ways:
+//! the attendee is sent a `REQUEST` and the organizer is sent a `REPLY`, and sweeping only the
+//! attendee left the organizer's inbox growing by two per run. [`cleanup_leaves_no_residue`]
+//! is the check that keeps it that way.
 //!
 //! **The harness has to disarm a rate limiter for this to be re-runnable.** Stalwart ships an
 //! inbound throttle of 25 messages/hour per (sender domain, recipient), and auto-scheduling
@@ -72,13 +75,18 @@ pub(crate) struct Parties {
     /// The scratch account that sends it (Bob).
     organizer: CalDavProvider,
     organizer_account: AccountId,
-    organizer_address: String,
+    organizer_auth: ScratchAccount,
 }
 
 impl Parties {
     /// The attendee's calendar address.
     fn attendee_address(&self) -> &str {
         &self.attendee_auth.address
+    }
+
+    /// The organizer's calendar address.
+    pub(crate) fn organizer_address(&self) -> &str {
+        &self.organizer_auth.address
     }
 }
 
@@ -112,7 +120,7 @@ pub(crate) async fn parties(test: &str) -> Option<Parties> {
     let organizer = connect(&organizer_account).await;
     let attendee = connect(&attendee_account).await;
     Some(Parties {
-        organizer_address: organizer_account.address.clone(),
+        organizer_auth: organizer_account,
         attendee_auth: attendee_account,
         attendee,
         organizer,
@@ -138,7 +146,7 @@ fn invitation(uid: &str, summary: &str, tzid: &str, parties: &Parties) -> String
          ATTENDEE;CN=Carol;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:\
          {attendee}\r\n\
          END:VEVENT\r\nEND:VCALENDAR\r\n",
-        organizer = parties.organizer_address,
+        organizer = parties.organizer_address(),
         attendee = parties.attendee_address(),
     )
 }
@@ -207,11 +215,25 @@ async fn poll_until(
 }
 
 /// Removes every trace of `uid`: the attendee's delivered copy (at its server-minted
-/// href), the organizer's own copy, and the iTIP messages the server deposited in the
-/// attendee's scheduling inbox.
+/// href), the organizer's own copy, and the iTIP messages the server deposited in **both**
+/// parties' scheduling inboxes.
 ///
 /// RFC 6638 §3.2 makes the *client* responsible for clearing a processed scheduling-inbox
-/// message, so without this the collection would grow on every run.
+/// message, so without this the collections would grow on every run.
+///
+/// **Both** inboxes, because scheduling is not one-way and this fixture used to forget that.
+/// The attendee receives a `REQUEST`, which was cleared — but every answered invitation also
+/// deposits a `METHOD:REPLY` in the **organizer's** inbox, and that was not. The two RSVP
+/// scenarios therefore left bob two replies richer per run: measured 0 → 2 → 4 over
+/// consecutive runs of the suite against v0.16.15, growing without bound on a long-lived
+/// harness. CI never saw it because CI always starts from `down -v`.
+///
+/// This is also *not* what the tracking issue (#93) predicted, which is why the check that
+/// guards it ([`scenarios::cleanup_leaves_no_residue`]) asserts final state rather than a
+/// call order. The predicted mechanism was a calendar-copy race — an organizer `DELETE`
+/// scheduling a `CANCEL` that re-creates the attendee's already-deleted copy. That does not
+/// happen: probed in isolation on both v0.16.11 and v0.16.15, a `CANCEL` addressed to a
+/// resource the attendee has already removed is dropped, and neither calendar leaks.
 async fn clean_up(parties: &Parties, uid: &Uid) {
     if let Some(mine) =
         common::fetch(&parties.attendee, &parties.attendee_account, uid.as_str()).await
@@ -225,25 +247,33 @@ async fn clean_up(parties: &Parties, uid: &Uid) {
             .await;
     }
     common::pre_clean(&parties.organizer, &parties.organizer_account, uid).await;
-    for href in scheduling_inbox_hrefs(parties, uid.as_str()) {
-        let _ = parties
-            .harness
-            .dav_delete_as(parties.attendee_auth.auth(), &href);
+    for who in [&parties.attendee_auth, &parties.organizer_auth] {
+        for href in inbox_hrefs_of(parties, who, uid.as_str()) {
+            let _ = parties.harness.dav_delete_as(who.auth(), &href);
+        }
     }
 }
 
-/// The hrefs of the attendee's scheduling-inbox messages that carry `uid`.
+/// The hrefs of the **attendee's** scheduling-inbox messages that carry `uid`.
+fn scheduling_inbox_hrefs(parties: &Parties, uid: &str) -> Vec<String> {
+    inbox_hrefs_of(parties, &parties.attendee_auth, uid)
+}
+
+/// The hrefs of the **organizer's** scheduling-inbox messages that carry `uid` — where the
+/// `REPLY` to an answered invitation lands.
+pub(crate) fn organizer_inbox_hrefs(parties: &Parties, uid: &str) -> Vec<String> {
+    inbox_hrefs_of(parties, &parties.organizer_auth, uid)
+}
+
+/// The hrefs of `who`'s scheduling-inbox messages that carry `uid`.
 ///
 /// Read over the harness's raw DAV helpers on purpose: exposing the RFC 6638 inbox as a
 /// provider-level `REPORT` is a documented deferral (`calendar-semantics.md`), and a test
 /// must not invent the feature it is meant to observe.
-fn scheduling_inbox_hrefs(parties: &Parties, uid: &str) -> Vec<String> {
+fn inbox_hrefs_of(parties: &Parties, who: &ScratchAccount, uid: &str) -> Vec<String> {
     let listing = parties
         .harness
-        .dav_propfind_as(
-            parties.attendee_auth.auth(),
-            &Harness::scheduling_inbox_path_of(parties.attendee_address()),
-        )
+        .dav_propfind_as(who.auth(), &Harness::scheduling_inbox_path_of(&who.address))
         .expect("PROPFIND the scheduling inbox");
     let body = String::from_utf8_lossy(&listing.body).into_owned();
     body.split("<D:href>")
@@ -253,10 +283,12 @@ fn scheduling_inbox_hrefs(parties: &Parties, uid: &str) -> Vec<String> {
         // members (the non-trailing-slash hrefs) are iTIP messages.
         .filter(|href| !href.ends_with('/'))
         .map(|href| href.replace("%40", "@"))
+        // Read as the inbox's *owner* — the other party has no access, and a failed GET
+        // here would silently match nothing and so delete nothing.
         .filter(|href| {
             parties
                 .harness
-                .dav_get_as(parties.attendee_auth.auth(), href)
+                .dav_get_as(who.auth(), href)
                 .is_ok_and(|resource| String::from_utf8_lossy(&resource.body).contains(uid))
         })
         .collect()
@@ -289,6 +321,6 @@ pub(crate) mod scenarios;
 pub(crate) use scenarios::{
     an_invitation_is_delivered_to_the_attendee, an_invitations_windows_time_zone_resolves_to_iana,
     an_organizer_cancel_marks_the_attendees_copy_cancelled, an_rsvp_reaches_the_organizer,
-    an_rsvp_through_the_neutral_verb_reaches_the_organizer,
+    an_rsvp_through_the_neutral_verb_reaches_the_organizer, cleanup_leaves_no_residue,
     the_scheduling_inbox_carries_a_parseable_itip_request,
 };
