@@ -26,17 +26,25 @@ use crate::{error::JmapError, request::capability};
 
 /// What a JMAP RSVP can and cannot control.
 ///
-/// Neither surrounding control is ours: the server schedules the iTIP `REPLY` when it sees
-/// the changed `participationStatus`, and there is no switch to stop it. RFC 8984 does
-/// define a `participationComment`, but whether a given server carries it into the reply is
-/// unverified against any server we run, so it is advertised as absent rather than
-/// promised — a note that may go nowhere is worse than one never offered. The guard is
-/// [`WriteGuard::Absent`] for the same reason every JMAP write is: a `CalendarEvent`
-/// carries no per-object revision. Declared once, and used both to advertise and to
-/// enforce, so the two can never disagree.
+/// **Silence is ours to give**, unlike on the other server-scheduled transport. JMAP
+/// schedules only when the request asks it to — `sendSchedulingMessages`, default `false` —
+/// so "answer without telling the organizer" is a per-request choice the adapter can honour
+/// verbatim, where an RFC 6638 CalDAV server emits the `REPLY` on its own and a client
+/// cannot stop it. This read `false` until #102, which was not a judgement about JMAP but a
+/// description of an adapter that never sent the argument at all: it advertised that it
+/// could not suppress the reply while in fact suppressing *every* reply.
+///
+/// The note is not ours. RFC 8984 defines a `participationComment`, but whether a given
+/// server carries it into the reply is unverified against any server we run, so it is
+/// advertised as absent rather than promised — a note that may go nowhere is worse than one
+/// never offered.
+///
+/// The guard is [`WriteGuard::Absent`] for the same reason every JMAP write is: a
+/// `CalendarEvent` carries no per-object revision. Declared once, and used both to advertise
+/// and to enforce, so the two can never disagree.
 pub(crate) const JMAP_RSVP: RsvpControls = RsvpControls {
     comment: false,
-    suppress_notification: false,
+    suppress_notification: true,
     guard: WriteGuard::Absent,
 };
 

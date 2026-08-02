@@ -54,9 +54,13 @@ pub enum WriteGuard {
 ///
 /// - **Graph** and **Google** expose both as first-class request fields (`comment` +
 ///   `sendResponse`; attendee `comment` + `sendUpdates`), so the user's choice is honoured.
-/// - **CalDAV auto-schedule** (RFC 6638) and **JMAP** are *server*-scheduled: the server emits the
-///   iTIP `REPLY` the moment it sees the changed status, and a client cannot suppress it. CalDAV
-///   additionally has nowhere to put a per-attendee note in the stored resource.
+/// - **JMAP** carries the toggle but not the note: scheduling is opt-in per request
+///   (`sendSchedulingMessages`, default `false`), so silence is honoured — while a
+///   `participationComment` no server we run is known to relay is not a note the adapter will claim
+///   to have sent.
+/// - **CalDAV auto-schedule** (RFC 6638) is the one genuinely *server*-scheduled transport: the
+///   server emits the iTIP `REPLY` the moment it sees the changed status and a client cannot
+///   suppress it, and there is nowhere to put a per-attendee note in the stored resource either.
 ///
 /// So a host reads this **before** it offers either control, and an adapter that cannot
 /// honour one **refuses the write** rather than dropping it: a note that silently goes
@@ -71,8 +75,13 @@ pub struct RsvpControls {
     pub comment: bool,
     /// The user can choose **not** to notify the organizer.
     ///
-    /// `false` on a server-scheduled transport, where the reply leaves the moment the
-    /// status changes.
+    /// `false` only where the *server* decides, as RFC 6638 auto-schedule does: the reply
+    /// leaves the moment the status changes and no request can hold it back. Where the
+    /// notification is a field of the request — Graph's `sendResponse`, Google's
+    /// `sendUpdates`, JMAP's `sendSchedulingMessages` — this is `true`.
+    ///
+    /// An adapter that never sends its transport's field must not report `false` here: that
+    /// reads as "the organizer is always told" while doing the exact opposite (#102).
     pub suppress_notification: bool,
     /// How strong a lost-update guard the **RSVP** carries — which is not always the same
     /// as [`Capabilities::calendar_write_guard`], because an RSVP is a different request.

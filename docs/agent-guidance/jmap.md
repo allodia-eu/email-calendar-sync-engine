@@ -195,6 +195,42 @@ specifics they implement against the Stalwart fixture. Read it before touching
   accepted) with overrides, participants, locations, and virtual locations. The
   original JSCalendar payload is preserved as `RawJsCalendar` beside the lossy
   projection.
+- **There is no JSCalendar version to negotiate. Read the shape, do not ask.** This is the
+  durable answer to "which version does this server speak?", and the answer is that the
+  question cannot be asked:
+  - **The session says nothing.** `urn:ietf:params:jmap:calendars` is an *empty object* in
+    the JMAP Session `capabilities`, and its account-level properties
+    (`maxCalendarsPerEvent`, `minDateTime`, `maxDateTime`, `maxExpandedQueryDuration`,
+    `maxParticipantsPerEvent`, `mayCreateCalendar`) are **byte-identical between
+    draft-24 and draft-27** — verified by diffing the two drafts in full. Nothing in the
+    session distinguishes them, by design rather than oversight.
+  - **The only in-band signal is the object's own `version`** (JSCalendar 2.0 /
+    jscalendarbis §3.1.2, value `"2.0"`). **Do not send it.** Stalwart v0.16.15 neither
+    emits it nor accepts it: a `CalendarEvent/set` create carrying `version` is rejected
+    with `invalidProperties: ["version"]`, and asking for it in `properties` returns
+    nothing. So "support the latest draft" cannot mean "emit the 2.0 markers".
+  - **What differs in practice is one spelling**, and it is fallback-shaped rather than
+    switch-shaped. A participant's address is `calendarAddress` in 2.0 and `sendTo`
+    (a map of *method* → URI; `imip` is the mail one) in 1.0 — and 2.0 **reserves**
+    `sendTo`, so no server sets both. `calendar::participant_address` reads 2.0 then falls
+    back to 1.0, which needs no version detection and survives the draft moving again. The
+    same applies to the event's organizer (`organizerCalendarAddress` in 2.0, `replyTo` in
+    1.0), which the projection does not read today — the organizer is a participant with the
+    owner role.
+  - **Writes stay on the intersection.** Everything `calendar_write` sends (`@type`, `uid`,
+    `title`, `start`/`timeZone`/`showWithoutTime`, `duration`, `locations`) is spelled the
+    same in both versions, so there is nothing to choose. That stops being true the moment a
+    write carries participants, and *that* is when a version decision has to be made — from
+    the shape read back, not from a capability.
+  - **Stalwart is the only JMAP calendar server we can test any of this against.** It serves
+    2.0 shapes (`calendarAddress`, `organizerCalendarAddress`) and its docs cite
+    draft-ietf-jmap-calendars + jscalendarbis without pinning a number. Fastmail — the draft's
+    own authors — serve **no** JMAP calendars to third parties at all: their developer page
+    says calendars are CalDAV-only and JMAP access is coming "as soon as the specification is
+    finalized", and their API tokens have no Calendars scope to grant (a request for the
+    capability is refused `403 unknownCapability`). So the 1.0 fallback above is
+    **spec-derived (RFC 8984 §4.4.6), not observed** — there is currently no server to
+    observe it on, and that is a disclosure, not an omission.
 - **Calendar writes (`CalendarEvent/set`).** The three neutral write verbs
   (`providers.md`) fold onto one `CalendarEvent/set` (`crate::calendar_write`):
   `create_event` → a `create` of a JSCalendar object under a fixed creation id, whose
@@ -298,11 +334,32 @@ specifics they implement against the Stalwart fixture. Read it before touching
   a per-object `notUpdated`, so one unrelated change loses every write in a batched `/set`;
   and a *malformed* token is a `400 notRequest` instead, so "a bad token fails" is **not**
   evidence of enforcement — check *which* error you got before concluding anything.
-- **RSVP is still deferred for JMAP.** `participants/<id>/participationStatus` is the obvious
-  mapping, but the neutral `EventPatch` carries no participation status yet (CalDAV's RSVP
-  goes through `imip::set_my_partstat` + the whole-document verb, which JMAP does not have),
-  and "which participant am I" is a neutral concept the model does not state. It needs
-  designing, not guessing.
+- **Scheduling is opt-in, and omitting the flag fails silently.** `sendSchedulingMessages`
+  (draft-ietf-jmap-calendars §5.3, default **`false`**) is what makes the server derive the
+  iTIP message from a `/set`. A request without it is stored and notifies **nobody**: the
+  organizer is never told an invitation was answered, and an attendee keeps a meeting the
+  organizer cancelled. Nothing in the response distinguishes that from success.
+
+  The adapter sends it on all four verbs. The RSVP carries the caller's choice
+  (`EventRsvp::notify_organizer`); create/patch/destroy send `true` unconditionally
+  (`calendar_write::SCHEDULE`), because the neutral write verbs carry no notify control for a
+  caller to state and the transports that do schedule — CalDAV's RFC 6638 auto-schedule, and
+  Graph — do it unconditionally, so the engine's answer to "does a calendar write reach its
+  participants?" does not depend on which transport is underneath.
+
+  This is also why JMAP is the **one** server-scheduled-looking transport that advertises
+  `RsvpControls::suppress_notification: true`: the notification is a field of the request
+  here, not something the server does on its own. It read `false` until #102 — which was not
+  a judgement about JMAP but a description of an adapter that never sent the argument at all,
+  and so advertised that it could not suppress the reply while in fact suppressing every one.
+
+  **The trap this came out of is worth more than the fix.** The live suite asserted the
+  organizer was never told, and blamed Stalwart, for months — because it only ever sent the
+  one request shape the adapter builds, and the CalDAV control arm "worked" (auto-schedule,
+  no equivalent opt-in, never comparable). A live server does not rescue you from the
+  `AGENTS.md` fake-request-shape trap if you only send one shape. Both directions are now
+  pinned (`tests/live_calendar_scheduling.rs`), and each was verified to fail with the flag
+  removed.
 
 ## Known limitations (documented, not bugs)
 
@@ -315,9 +372,11 @@ specifics they implement against the Stalwart fixture. Read it before touching
   above: the transport cannot refuse a stale edit, so last-writer-wins is the real
   semantics. This is reported honestly (`WriteGuard::Absent`) rather than papered over,
   and it is a *documented property of the transport*, not a defect in the adapter.
-- **Participant RSVP is not implemented for JMAP.** The write spine (create/patch/destroy)
-  is; setting *my* `participationStatus` is not — see above for why it needs design rather
-  than a guess.
+- **A `participationComment` is not carried.** The RSVP itself ships (see **Scheduling is
+  opt-in** above), but RFC 8984's `participationComment` is advertised as absent
+  (`RsvpControls::comment: false`) and a caller that supplies one is refused: no server we
+  run is known to relay it into the `REPLY`, and a note that may go nowhere is worse than one
+  never offered. Verify against a server before promising it.
 - **A neutral `EventDraft` cannot state a recurrence rule.** Both adapters share this gap
   (CalDAV's `build_event_ical` cannot either), so a recurring event can only be *created*
   through the CalDAV whole-document verb today. Editing one already exists on both. It is

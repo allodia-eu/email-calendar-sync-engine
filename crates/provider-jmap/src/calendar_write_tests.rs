@@ -61,7 +61,8 @@ async fn create_posts_a_jscalendar_object_and_learns_the_server_assigned_id() {
                 "start": "2026-08-01T09:00:00",
                 "timeZone": "Europe/Amsterdam",
                 "duration": "PT30M",
-            }}
+            }},
+            "sendSchedulingMessages": true,
         }),
         "the create must post a JSCalendar object with the wall clock and the zone stated \
          separately — never the UTC instant"
@@ -150,7 +151,16 @@ async fn destroy_removes_the_event() {
 
     let (_, method, args) = exec.sole_call();
     assert_eq!(method, "CalendarEvent/set");
-    assert_eq!(args, json!({ "accountId": "c", "destroy": [EVENT] }));
+    assert_eq!(
+        args,
+        json!({
+            "accountId": "c",
+            "destroy": [EVENT],
+            "sendSchedulingMessages": true,
+        }),
+        "cancelling a meeting you organize must send the iTIP CANCEL; without the flag the \
+         server stores the deletion and every attendee keeps a meeting that is not happening"
+    );
 }
 
 #[tokio::test]
@@ -295,8 +305,40 @@ async fn an_rsvp_patches_only_my_participation_status() {
         json!({
             "accountId": "c",
             "update": { EVENT: { "participants/9f0c/participationStatus": "accepted" } },
+            "sendSchedulingMessages": true,
         }),
-        "an RSVP must patch my participant's status by its map key and touch nothing else"
+        "an RSVP must patch my participant's status by its map key and touch nothing else — \
+         and must ask for the REPLY, which the server does not send by default"
+    );
+}
+
+#[tokio::test]
+async fn answering_quietly_stores_the_status_and_sends_no_reply() {
+    // The other half of the flag, and the reason it is a flag rather than a constant. The
+    // pointer is identical; `sendSchedulingMessages` is the entire difference between an
+    // answer the organizer hears about and one only the attendee's own calendar records.
+    let (p, exec) = recording(vec![set_response(
+        &json!({ "updated": { EVENT: Value::Null } }),
+    )]);
+    let base = invited();
+
+    p.rsvp_event(
+        &account(),
+        &base,
+        &EventRsvp::to(&base, "info@example.com", RsvpResponse::Declined).quietly(),
+    )
+    .await
+    .unwrap();
+
+    let (_using, _method, args) = exec.sole_call();
+    assert_eq!(
+        args,
+        json!({
+            "accountId": "c",
+            "update": { EVENT: { "participants/9f0c/participationStatus": "declined" } },
+            "sendSchedulingMessages": false,
+        }),
+        "a quiet answer must still be sent — with the flag off, not with the argument omitted"
     );
 }
 
@@ -332,10 +374,12 @@ fn answering_an_invitation_you_are_not_on_is_refused() {
 }
 
 #[tokio::test]
-async fn jmap_refuses_the_two_controls_its_server_decides() {
-    // The server schedules the reply itself, so "don't notify" is not ours to promise; and a
-    // `participationComment` we have never seen a server relay is not a note we can claim to
-    // have sent. Both refused, not dropped.
+async fn jmap_refuses_the_note_it_cannot_carry_but_honours_the_quiet_toggle() {
+    // The two controls part company here, and the reason is the protocol rather than taste.
+    // Scheduling on JMAP is **opt-in** (`sendSchedulingMessages`, default false), so the
+    // client decides whether the organizer is told and the toggle is real. A
+    // `participationComment` we have never seen a server relay is still not a note we can
+    // claim to have sent, so that one is refused rather than dropped.
     let (p, exec) = recording(vec![set_response(
         &json!({ "updated": { EVENT: Value::Null } }),
     )]);
@@ -347,15 +391,60 @@ async fn jmap_refuses_the_two_controls_its_server_decides() {
         .calendar_rsvp()
         .expect("jmap can rsvp");
     assert!(!controls.comment);
-    assert!(!controls.suppress_notification);
+    assert!(
+        controls.suppress_notification,
+        "JMAP schedules only when asked, so choosing silence is something it can honour"
+    );
 
-    for rsvp in [
-        EventRsvp::to(&base, "info@example.com", RsvpResponse::Accepted).comment("Hi"),
-        EventRsvp::to(&base, "info@example.com", RsvpResponse::Declined).quietly(),
-    ] {
-        let err = p.rsvp_event(&account(), &base, &rsvp).await.unwrap_err();
-        assert_eq!(err.class(), FailureClass::InvalidState);
-    }
+    let err = p
+        .rsvp_event(
+            &account(),
+            &base,
+            &EventRsvp::to(&base, "info@example.com", RsvpResponse::Accepted).comment("Hi"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), FailureClass::InvalidState);
     // Refused before the network, never after a half-applied write.
     assert_eq!(exec.request_count(), 0);
+}
+
+/// A participant stated the **JSCalendar 1.0** way: `sendTo`, a map of *method* → URI
+/// (RFC 8984 §4.4.6), instead of 2.0's scalar `calendarAddress`. 2.0 reserves `sendTo`, so
+/// the two never co-occur and reading both costs a fallback rather than a version switch.
+fn invited_jscalendar_1_0() -> Event {
+    stored(&json!({
+        "@type": "Event",
+        "id": EVENT,
+        "uid": "evt-1@test.local",
+        "title": "Sprint planning",
+        "start": "2026-08-01T09:00:00",
+        "timeZone": "Europe/Amsterdam",
+        "duration": "PT30M",
+        "participants": {
+            "d7a1": {
+                "@type": "Participant",
+                "sendTo": { "imip": "mailto:boss@test.local" },
+                "roles": { "owner": true },
+                "participationStatus": "accepted",
+            },
+            "9f0c": {
+                "@type": "Participant",
+                "sendTo": { "imip": "MAILTO:Info@Example.com" },
+                "roles": { "attendee": true },
+                "participationStatus": "needs-action",
+            },
+        },
+    }))
+}
+
+#[test]
+fn a_jscalendar_1_0_participant_can_still_be_answered_as() {
+    // Without the `sendTo` fallback every participant on a 1.0 server has no address, so the
+    // answering address matches nobody and the user cannot RSVP to an invitation they are
+    // plainly on — a refusal caused entirely by which spelling the server chose.
+    assert_eq!(
+        my_participant_id(&invited_jscalendar_1_0(), "info@example.com").unwrap(),
+        "9f0c"
+    );
 }

@@ -303,9 +303,9 @@ fn participant_from_json(participant: &Value) -> Participant {
     );
     Participant {
         name: opt_str(participant, "name").map(str::to_owned),
-        // `calendarAddress` is a cal-address URI ("mailto:alice@…"); store the
+        // A cal-address URI ("mailto:alice@…") in either JSCalendar version; store the
         // bare address as the reconciliation key.
-        email: opt_str(participant, "calendarAddress")
+        email: participant_address(participant)
             .map(|addr| addr.strip_prefix("mailto:").unwrap_or(addr).to_owned()),
         kind: None,
         roles,
@@ -317,6 +317,35 @@ fn participant_from_json(participant: &Value) -> Participant {
         comment: None,
         sent_by: None,
     }
+}
+
+/// A participant's calendar address, in whichever JSCalendar version the server speaks.
+///
+/// **There is no version negotiation to ask instead.** The
+/// `urn:ietf:params:jmap:calendars` capability is an empty object in the JMAP Session and
+/// its account-level properties are byte-identical between draft-24 and draft-27, so
+/// nothing in the session says which JSCalendar a server serves. JSCalendar 2.0 does define
+/// a `version` property (jscalendarbis §3.1.2) — the only in-band signal that exists — but
+/// Stalwart neither emits it nor accepts it (`invalidProperties` on a create, observed on
+/// v0.16.15). So the adapter reads the shape rather than asking, and the shape is
+/// unambiguous:
+///
+/// - **2.0** (jscalendarbis §3.4.6): a scalar `calendarAddress`.
+/// - **1.0** ([RFC 8984] §4.4.6): `sendTo`, a map of *method* → URI.
+///
+/// 2.0 **reserves** `sendTo` (implementations MUST NOT set it), so the two never co-occur
+/// and this is a fallback rather than a version switch — which is what makes it survive the
+/// draft moving again.
+///
+/// Only the `imip` method is read, because only it is defined to carry a `mailto:` URI. A
+/// participant reachable solely by some other method has no email address, and reporting
+/// `None` is better than putting an `https:` URI in a field the rest of the engine reads as
+/// one.
+///
+/// [RFC 8984]: https://www.rfc-editor.org/rfc/rfc8984.html#section-4.4.6
+pub(crate) fn participant_address(participant: &Value) -> Option<&str> {
+    opt_str(participant, "calendarAddress")
+        .or_else(|| participant.get("sendTo").and_then(|to| opt_str(to, "imip")))
 }
 
 /// Maps the `locations` map's values into locations.

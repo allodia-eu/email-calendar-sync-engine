@@ -11,9 +11,9 @@ use engine_provider::{EventRsvp, EventWriteReceipt};
 use serde_json::{Map, Value, json};
 
 use crate::{
+    calendar::participant_address,
     calendar_write::{escape_pointer, set_error},
     error::JmapError,
-    json::opt_str,
     provider::Executor,
     request::{Request, capability},
 };
@@ -23,16 +23,28 @@ use crate::{
 ///
 /// A single JSON pointer, `participants/<my id>/participationStatus`, so every other
 /// participant — and every property of mine the engine does not model — is left exactly as
-/// the server holds it. Answering makes the server schedule the iTIP `REPLY`; there is no
-/// separate reply verb and no switch to turn it off, which is why JMAP advertises neither
-/// surrounding control.
+/// the server holds it.
+///
+/// # Scheduling is opt-in, and forgetting it is silent
+///
+/// Changing the status is **not** what tells the organizer. `sendSchedulingMessages`
+/// (default **`false`**) is, and a `/set` that omits it is stored and goes nowhere: the
+/// attendee's own calendar agrees, the organizer is never told, and nothing on either side
+/// reports a failure. That is exactly what this adapter did until it was fixed — and the
+/// live test that was supposed to catch it instead recorded the absence as *server*
+/// behaviour, because it only ever sent the one request shape the adapter builds (#102).
+///
+/// It is also why JMAP is the one server-scheduled transport that **can** honour
+/// [`EventRsvp::notify_organizer`](engine_provider::EventRsvp::notify_organizer): scheduling
+/// is a per-request choice here, not something the server does on its own the way an RFC
+/// 6638 CalDAV server does.
 ///
 /// **The participant id is the map key, not the address**, and it lives only in the
 /// preserved `raw_jscalendar` — the same reason the location edit consults it. So this
-/// resolves the key by matching `calendarAddress` against the answering address, using the
-/// engine's one `addresses_match` normalization rather than a second copy: an alias
-/// invitation answers as the alias, and `MAILTO:Info@…` is the same participant as
-/// `mailto:info@…`.
+/// resolves the key by matching the participant's calendar address (in either JSCalendar
+/// version — [`participant_address`]) against the answering address, using the engine's one
+/// `addresses_match` normalization rather than a second copy: an alias invitation answers as
+/// the alias, and `MAILTO:Info@…` is the same participant as `mailto:info@…`.
 ///
 /// # Errors
 ///
@@ -55,7 +67,15 @@ pub(crate) async fn rsvp_event(
     });
     let mut update = Map::new();
     update.insert(target.to_owned(), patch);
-    let args = json!({ "accountId": calendar_account, "update": update });
+    // Without this the answer is stored and *goes nowhere*: the argument defaults to `false`,
+    // so the server writes the status and schedules no `REPLY` at all. Sent explicitly in both
+    // directions rather than omitted for the quiet case, so the request states the user's
+    // choice instead of relying on a default that could move with the draft.
+    let args = json!({
+        "accountId": calendar_account,
+        "update": update,
+        "sendSchedulingMessages": rsvp.notify_organizer,
+    });
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
     let call = req.invoke("CalendarEvent/set", args);
@@ -98,7 +118,7 @@ pub(crate) fn my_participant_id(base: &Event, me: &str) -> Result<String, JmapEr
         .into_iter()
         .flatten()
         .find(|(_, participant)| {
-            opt_str(participant, "calendarAddress").is_some_and(|addr| addresses_match(addr, me))
+            participant_address(participant).is_some_and(|addr| addresses_match(addr, me))
         })
         .map(|(id, _)| id.clone())
         .ok_or_else(|| {
