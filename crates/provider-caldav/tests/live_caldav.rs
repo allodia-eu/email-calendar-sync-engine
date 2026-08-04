@@ -241,6 +241,34 @@ async fn caldav_instance_override_split_is_accepted() {
     common::write::instance_override_split_is_accepted(&provider, &account).await;
 }
 
+/// Stalwart **does** advertise RFC 6638, so the discovered capability is `true` here — the
+/// positive half of the pair whose negative is `sabredav_reports_no_scheduling` in
+/// `live_sabredav.rs`. That the two disagree is what proves the flag is read off the
+/// server rather than assumed from the protocol.
+#[tokio::test]
+async fn caldav_discovers_the_servers_scheduling_support() {
+    let Some((provider, _account)) =
+        connect("caldav_discovers_the_servers_scheduling_support").await
+    else {
+        return;
+    };
+    common::imip::scheduling_is_discovered_from_the_server(&provider, true);
+}
+
+/// Storing an invitation that arrived as mail, as a guarded create: Stalwart honours
+/// `If-None-Match: *` on a `PUT`, and refuses the second one with a `412` rather than
+/// overwriting the copy that is now there (issue #105).
+#[tokio::test]
+async fn caldav_storing_an_invitation_is_a_guarded_create() {
+    let Some((provider, account)) =
+        connect("caldav_storing_an_invitation_is_a_guarded_create").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::imip::storing_an_invitation_is_a_guarded_create(&provider, &account).await;
+}
+
 /// Stalwart reports `DAV:current-user-privilege-set` on Alice's own calendar, and it
 /// grants `DAV:write` — so the collection the write tests above target reports itself
 /// writable. The read-only half of this pair is SabreDAV's shared calendar

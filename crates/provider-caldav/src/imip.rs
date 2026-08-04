@@ -12,10 +12,20 @@
 //!   the organizer when it sees the changed `PARTSTAT`. Storage round-trips **from raw plus a
 //!   targeted patch**, never by re-serializing the lossy projection (`modeling.md`).
 //!
-//! Building a standalone iTIP `REPLY` document for **client**-side iMIP delivery
-//! over SMTP is deferred with the rest of that path (the SMTP assembler is
-//! `text/plain`-only today — `imap-smtp.md`); the documented and wired RSVP path is
-//! the conditional `PUT` above.
+//! **Carriage** for a client-side iMIP `REPLY` is no longer deferred (issue #105): a
+//! [`Draft`](engine_provider::Draft) carrying a
+//! [`DraftCalendar`](engine_provider::DraftCalendar) is assembled as a conformant
+//! `text/calendar` alternative body part, and
+//! [`Capabilities::scheduling_submission`](engine_provider::Capabilities::scheduling_submission)
+//! says which transports can send one. A caller needs it whenever
+//! [`Capabilities::calendar_scheduling`](engine_provider::Capabilities::calendar_scheduling)
+//! is `false` — a plain RFC 4791 server stores the rewritten `PARTSTAT` and tells the
+//! organizer nothing.
+//!
+//! What stays out of this module is *building* the `REPLY` object. The engine has no
+//! `Event` → iTIP serializer, and it would need one to be lossless where the projection is
+//! not; the answer also keys to a `UID`/`SEQUENCE` the caller holds. So the caller supplies
+//! the iCalendar text, exactly as it supplies the document a `put_event` stores.
 
 use engine_core::{
     calendar::ParticipationStatus,

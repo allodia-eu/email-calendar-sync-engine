@@ -5,6 +5,7 @@ use core::fmt;
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
     mail::EmailAddress,
+    scheduling::ScheduleMethod,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +44,12 @@ pub struct Draft {
     /// Inline and regular draft attachments.
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,
+    /// An iTIP scheduling object to carry as a **body part** (iMIP, RFC 6047).
+    ///
+    /// `None` for an ordinary message. Defaulted so a payload serialized before iMIP
+    /// support still deserializes. See [`DraftCalendar`] for why this is not an attachment.
+    #[serde(default)]
+    pub calendar: Option<DraftCalendar>,
     /// The `Message-ID` this message replies to, if any — the RFC 5322 §3.6.4
     /// `In-Reply-To` value (the parent's `Message-ID`, no angle brackets). `None`
     /// for an original (non-reply) message. Defaulted so a payload serialized
@@ -80,6 +87,7 @@ impl Draft {
             text_body: text_body.into(),
             html_body: None,
             attachments: Vec::new(),
+            calendar: None,
             in_reply_to: None,
             references: Vec::new(),
         }
@@ -134,6 +142,54 @@ impl Draft {
     pub fn with_attachment(mut self, attachment: DraftAttachment) -> Self {
         self.attachments.push(attachment);
         self
+    }
+
+    /// Carries an iTIP object as an alternative body part, making this an iMIP message
+    /// (RFC 6047) — the way an answer reaches an organizer when the calendar server will
+    /// not send it
+    /// ([`Capabilities::calendar_scheduling`](crate::Capabilities::calendar_scheduling)).
+    #[must_use]
+    pub fn with_calendar(mut self, calendar: DraftCalendar) -> Self {
+        self.calendar = Some(calendar);
+        self
+    }
+}
+
+/// An iTIP scheduling object carried as an **alternative body part** (iMIP, RFC 6047 §2.4).
+///
+/// Not a [`DraftAttachment`], and the difference is what makes the message work. An
+/// attachment part carries a `Content-Disposition` and a file name — it is a document the
+/// message *encloses*. An iTIP object is a **representation of the message itself**: a
+/// sibling of the text body inside `multipart/alternative`, whose `Content-Type` carries
+/// the `method=` parameter RFC 6047 §2.4 requires and which receiving clients dispatch on.
+/// A `DraftAttachment` cannot express that parameter at all, so an answer sent as one is
+/// filed as `invite.ics` and never processed as a reply.
+///
+/// The text body stays load-bearing: RFC 6047 §2.4 says a scheduling message SHOULD carry a
+/// human-readable alternative, for the recipients whose client does not understand
+/// `text/calendar`. A caller supplies it as [`Draft::text_body`] — "Accepted: Sprint
+/// planning" — exactly as for any other message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftCalendar {
+    /// The serialized iCalendar object, `BEGIN:VCALENDAR` … `END:VCALENDAR`.
+    pub ical: String,
+    /// The scheduling method, which becomes the `method=` `Content-Type` parameter.
+    ///
+    /// RFC 6047 §2.4 requires it to equal (ignoring case) the `METHOD` property **inside**
+    /// `ical`. The assembler emits what it is given rather than re-parsing the object to
+    /// check, so a caller that builds the two from one value cannot get them apart; one
+    /// that does not, can.
+    pub method: ScheduleMethod,
+}
+
+impl DraftCalendar {
+    /// An iTIP object to carry as a body part, with the `METHOD` it declares.
+    #[must_use]
+    pub fn new(method: ScheduleMethod, ical: impl Into<String>) -> Self {
+        Self {
+            ical: ical.into(),
+            method,
+        }
     }
 }
 
@@ -310,147 +366,5 @@ impl SubmissionReceipt {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn mid(value: &str) -> MessageIdHeader {
-        MessageIdHeader::new(value).unwrap()
-    }
-
-    fn draft() -> Draft {
-        Draft::new(
-            mid("reply@host"),
-            EmailAddress::new("alice@test.local"),
-            vec![EmailAddress::new("bob@test.local")],
-            "Re: hi",
-            "thanks",
-        )
-    }
-
-    #[test]
-    fn new_defaults_the_threading_linkage_to_none() {
-        let draft = draft();
-        assert_eq!(draft.in_reply_to, None);
-        assert!(draft.references.is_empty());
-    }
-
-    #[test]
-    fn in_reply_to_builder_sets_parent_and_references() {
-        let draft = draft().in_reply_to(
-            mid("parent@host"),
-            vec![mid("root@host"), mid("parent@host")],
-        );
-        assert_eq!(draft.in_reply_to, Some(mid("parent@host")));
-        assert_eq!(draft.references, vec![mid("root@host"), mid("parent@host")]);
-    }
-
-    #[test]
-    fn new_defaults_cc_and_bcc_to_empty() {
-        let draft = draft();
-        assert!(draft.cc.is_empty());
-        assert!(draft.bcc.is_empty());
-    }
-
-    #[test]
-    fn cc_and_bcc_builders_set_recipients() {
-        let draft = draft()
-            .with_cc(vec![EmailAddress::new("carol@test.local")])
-            .with_bcc(vec![EmailAddress::new("dave@test.local")]);
-        assert_eq!(draft.cc, vec![EmailAddress::new("carol@test.local")]);
-        assert_eq!(draft.bcc, vec![EmailAddress::new("dave@test.local")]);
-    }
-
-    #[test]
-    fn cc_and_bcc_round_trip_through_serde() {
-        let draft = draft()
-            .with_cc(vec![EmailAddress::new("carol@test.local")])
-            .with_bcc(vec![EmailAddress::new("dave@test.local")]);
-        let json = serde_json::to_string(&draft).unwrap();
-        let restored: Draft = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.cc, draft.cc);
-        assert_eq!(restored.bcc, draft.bcc);
-    }
-
-    #[test]
-    fn a_payload_without_cc_or_bcc_still_deserializes() {
-        // A durable outbox payload serialized before Cc/Bcc support omits the new fields;
-        // `#[serde(default)]` keeps it loadable with empty recipient lists.
-        let json = r#"{
-            "message_id": "old@host",
-            "from": {"email": "alice@test.local"},
-            "to": [{"email": "bob@test.local"}],
-            "subject": "hi",
-            "text_body": "body"
-        }"#;
-        let restored: Draft = serde_json::from_str(json).unwrap();
-        assert!(restored.cc.is_empty());
-        assert!(restored.bcc.is_empty());
-    }
-
-    #[test]
-    fn serde_round_trip_preserves_the_threading_fields() {
-        let draft = draft().in_reply_to(
-            mid("parent@host"),
-            vec![mid("root@host"), mid("parent@host")],
-        );
-        let json = serde_json::to_string(&draft).unwrap();
-        let restored: Draft = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored, draft);
-        assert_eq!(restored.in_reply_to, Some(mid("parent@host")));
-        assert_eq!(
-            restored.references,
-            vec![mid("root@host"), mid("parent@host")]
-        );
-    }
-
-    #[test]
-    fn a_payload_without_the_threading_fields_still_deserializes() {
-        // A durable outbox payload serialized before threading support omits the new
-        // fields; `#[serde(default)]` keeps it loadable as a non-reply draft.
-        let json = r#"{
-            "message_id": "old@host",
-            "from": {"email": "alice@test.local"},
-            "to": [{"email": "bob@test.local"}],
-            "subject": "hi",
-            "text_body": "body"
-        }"#;
-        let restored: Draft = serde_json::from_str(json).unwrap();
-        assert_eq!(restored.in_reply_to, None);
-        assert!(restored.references.is_empty());
-    }
-
-    #[test]
-    fn a_payload_without_rich_body_fields_still_deserializes() {
-        // A durable outbox payload serialized before rich-body support omits the new
-        // fields; defaults keep it loadable as a plain-text draft.
-        let json = r#"{
-            "message_id": "old@host",
-            "from": {"email": "alice@test.local"},
-            "to": [{"email": "bob@test.local"}],
-            "subject": "hi",
-            "text_body": "body"
-        }"#;
-        let restored: Draft = serde_json::from_str(json).unwrap();
-        assert_eq!(restored.html_body, None);
-        assert!(restored.attachments.is_empty());
-    }
-
-    #[test]
-    fn rich_draft_builders_set_html_and_attachments() {
-        let inline = DraftAttachment::inline(
-            "chart.png",
-            "image/png",
-            ContentIdHeader::new("chart.1@test.local").unwrap(),
-            vec![1, 2, 3],
-        );
-        let file = DraftAttachment::attachment("report.pdf", "application/pdf", vec![4, 5]);
-
-        let draft = draft()
-            .with_html_body("<p>thanks</p>")
-            .with_attachment(inline.clone())
-            .with_attachment(file.clone());
-
-        assert_eq!(draft.html_body.as_deref(), Some("<p>thanks</p>"));
-        assert_eq!(draft.attachments, vec![inline, file]);
-    }
-}
+#[path = "submit_tests.rs"]
+mod tests;

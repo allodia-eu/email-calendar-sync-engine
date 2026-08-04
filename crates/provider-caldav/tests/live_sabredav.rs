@@ -232,6 +232,39 @@ async fn sabredav_instance_override_split_is_accepted() {
     common::write::instance_override_split_is_accepted(&provider, &account).await;
 }
 
+/// **The negative half of the discovered-scheduling pair, and the only place we have it.**
+///
+/// This fixture loads `Sabre\CalDAV\Plugin` and deliberately not
+/// `Sabre\CalDAV\Schedule\Plugin` (`docker/sabredav/server.php`), so it serves calendar
+/// *access* only and its `OPTIONS` reports no `calendar-auto-schedule`. That is the exact
+/// deployment issue #105 is about: an invitation from an external organizer arrives as
+/// mail and nothing puts it on the calendar, and a `PARTSTAT` rewritten here reaches the
+/// organizer only if the *caller* sends the iTIP `REPLY`.
+///
+/// It is also why the plugin must stay unloaded: this is the only server in the repo that
+/// can show the capability answering `false`, and a capability that came out `true`
+/// everywhere would be a constant wearing a discovery's clothes.
+#[tokio::test]
+async fn sabredav_reports_no_scheduling() {
+    let Some((provider, _account)) = write_provider("sabredav_reports_no_scheduling").await else {
+        return;
+    };
+    common::imip::scheduling_is_discovered_from_the_server(&provider, false);
+}
+
+/// The guarded create against the byte-verbatim server: `If-None-Match: *` is honoured
+/// here too, so storing an inbound invitation is not a Stalwart-only capability (#105).
+#[tokio::test]
+async fn sabredav_storing_an_invitation_is_a_guarded_create() {
+    let Some((provider, account)) =
+        write_provider("sabredav_storing_an_invitation_is_a_guarded_create").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::imip::storing_an_invitation_is_a_guarded_create(&provider, &account).await;
+}
+
 /// The read-only half of the privilege pair (#61), which **only SabreDAV can prove**:
 /// its seed gives Alice a calendar Bob owns and shares with her read-only, so one
 /// `PROPFIND` of one calendar home returns two collections with two different answers to

@@ -46,29 +46,77 @@ pub(crate) fn body(draft: &Draft, blob_ids: &[String]) -> (Value, Value) {
     (structure, body_values)
 }
 
-/// The message's text-or-alternative body part plus its `bodyValues` (the content the
-/// attachments wrap around). Plain-text alone, or a `multipart/alternative` when the
-/// draft carries an HTML alternative.
+/// The message's representations plus their `bodyValues` (the content the attachments wrap
+/// around): the plain text alone, or a `multipart/alternative` as soon as the draft carries
+/// an HTML alternative or an iTIP scheduling object.
+///
+/// Ordered least-to-most faithful (RFC 2046 §5.1.4), matching what `engine-rfc5322`
+/// assembles for the transports that submit raw MIME — the same message, expressed in the
+/// two ways the two transports accept it.
 fn main_body(draft: &Draft) -> (Value, Value) {
-    match &draft.html_body {
-        Some(html) => (
-            json!({
-                "type": "multipart/alternative",
-                "subParts": [
-                    { "partId": "text", "type": "text/plain" },
-                    { "partId": "html", "type": "text/html" },
-                ],
-            }),
-            json!({
-                "text": { "value": draft.text_body },
-                "html": { "value": html },
-            }),
-        ),
-        None => (
-            json!({ "partId": "text", "type": "text/plain" }),
-            json!({ "text": { "value": draft.text_body } }),
-        ),
+    let mut parts = vec![json!({ "partId": "text", "type": "text/plain" })];
+    let mut values = Map::new();
+    values.insert("text".to_owned(), json!({ "value": draft.text_body }));
+
+    if let Some(html) = &draft.html_body {
+        parts.push(json!({ "partId": "html", "type": "text/html" }));
+        values.insert("html".to_owned(), json!({ "value": html }));
     }
+    let structure = if parts.len() == 1 {
+        parts.remove(0)
+    } else {
+        json!({ "type": "multipart/alternative", "subParts": parts })
+    };
+    (structure, Value::Object(values))
+}
+
+/// Refuses a draft carrying an iTIP object, because JMAP cannot express one.
+///
+/// **Why this is a refusal and not a body part.** RFC 6047 §2.4 requires the `method=`
+/// parameter on the part's `Content-Type`, and a part with no `method=` is explicitly *not*
+/// an iMIP body part (§2.4 note 2) — a receiving client files it as a calendar document and
+/// never processes the answer. An `EmailBodyPart`'s `type` property is the media type
+/// **without parameters**, so it cannot carry it.
+///
+/// RFC 8621 §4.1.3 looks like a way round: a raw `header:Content-Type` on the part, which
+/// §4.6 permits on a body part (and forbids on the `Email`). Driven against Stalwart, all
+/// three possible shapes produce a message the organizer's client will not process, and all
+/// three **send successfully** — the silent-failure shape this whole capability exists to
+/// prevent:
+///
+/// | shape | what the server emits |
+/// |---|---|
+/// | `header:Content-Type` alone | **two** `Content-Type` fields: ours, then a generated `text/plain`. A parser taking the last sees plain text. |
+/// | `type` + `header:Content-Type` | two again — ours, then a generated `text/calendar` with no `method=`. Also breaks §4.6's "no two properties for one header field". |
+/// | `type` alone | one clean field, and no `method=` at all. |
+///
+/// Pinned live in `tests/live_imip.rs`, both because a refusal that cannot be justified
+/// gets re-litigated and because that test is what will notice if a server stops behaving
+/// this way. It is a **server** limitation, not necessarily a protocol one — but Stalwart
+/// is the only JMAP mail server this repo can drive (`jmap.md`), and shipping a path that
+/// is malformed on the only server we can verify is worse than refusing.
+///
+/// So the adapter advertises
+/// [`Capabilities::scheduling_submission`](engine_provider::Capabilities::scheduling_submission)
+/// as `false` and refuses here, exactly as `RsvpControls` refuses a control it cannot
+/// honour rather than dropping it.
+///
+/// # Errors
+///
+/// Returns an [`InvalidState`](engine_core::error::FailureClass::InvalidState)
+/// [`ProviderError`](engine_provider::ProviderError). A host that read
+/// `Capabilities::scheduling_submission` never reaches it.
+pub(crate) fn reject_unsendable_calendar(
+    draft: &Draft,
+) -> Result<(), engine_provider::ProviderError> {
+    if draft.calendar.is_some() {
+        return Err(engine_provider::ProviderError::invalid_state(
+            "JMAP cannot put the RFC 6047 `method=` parameter on a body part, so this \
+             transport cannot send an iMIP scheduling message; read \
+             Capabilities::scheduling_submission before composing one",
+        ));
+    }
+    Ok(())
 }
 
 /// An `EmailBodyPart` for one attachment (RFC 8621 §4.1.4): its uploaded `blobId`,
@@ -158,6 +206,52 @@ mod tests {
         assert_eq!(
             values["html"]["value"],
             "<img src=\"cid:chart.1@test.local\">"
+        );
+    }
+
+    #[test]
+    fn an_itip_object_is_refused_rather_than_sent_without_its_method_parameter() {
+        use engine_core::scheduling::ScheduleMethod;
+        use engine_provider::DraftCalendar;
+
+        // The rule this file's `reject_unsendable_calendar` docs justify: JMAP cannot put
+        // `method=` on a body part, and a part without it is not a scheduling message at
+        // all (RFC 6047 §2.4 note 2). Sending anyway would succeed and reach the organizer
+        // as a calendar file — the silent success `Capabilities::scheduling_submission`
+        // exists to let a host avoid.
+        let plain = draft();
+        assert!(reject_unsendable_calendar(&plain).is_ok());
+
+        let scheduling = plain.with_calendar(DraftCalendar::new(
+            ScheduleMethod::Reply,
+            "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n",
+        ));
+        let err = reject_unsendable_calendar(&scheduling)
+            .expect_err("a draft this transport cannot faithfully encode must be refused");
+        assert_eq!(err.class(), engine_core::error::FailureClass::InvalidState);
+        assert!(
+            err.to_string().contains("scheduling_submission"),
+            "the refusal must name the capability a host should have read: {err}"
+        );
+    }
+
+    #[test]
+    fn a_refused_itip_draft_never_reaches_the_body_structure() {
+        use engine_core::scheduling::ScheduleMethod;
+        use engine_provider::DraftCalendar;
+
+        // Belt and braces: even if the refusal were bypassed, the body builder must not
+        // quietly drop the object into an unmarked part. A draft carrying only text still
+        // produces exactly the plain body it always did.
+        let draft = draft().with_calendar(DraftCalendar::new(
+            ScheduleMethod::Reply,
+            "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n",
+        ));
+        let (structure, values) = body(&draft, &[]);
+        assert_eq!(structure["type"], "text/plain");
+        assert!(
+            values.get("calendar").is_none(),
+            "no half-encoded calendar part may reach the wire: {values}"
         );
     }
 

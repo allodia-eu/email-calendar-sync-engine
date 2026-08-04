@@ -133,7 +133,41 @@ impl EventDraft {
     }
 }
 
-/// A request to replace the whole stored calendar document.
+/// What a document write asks the server to verify **before** it stores anything.
+///
+/// Three states rather than "a guard or no guard", because storing a document is not
+/// always a replace. Putting an invitation that arrived as mail onto the calendar is a
+/// **create**, and a create's precondition is the opposite of an update's: not "the
+/// revision I read is still current" but "nothing is there at all". Collapsing the two
+/// leaves a guarded create unrepresentable, and an unconditional write is what a caller
+/// then falls back to — which silently overwrites a resource that appeared in the
+/// meantime, exactly the case a create is most likely to hit (the server scheduled the
+/// meeting a moment ago, or a second device stored it first).
+///
+/// Named for the condition, not for the HTTP headers that happen to express it on
+/// CalDAV: a transport is free to render these however it can, and one that cannot
+/// render a state at all says so through
+/// [`Capabilities::calendar_write_guard`](crate::Capabilities::calendar_write_guard).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WritePrecondition {
+    /// Nothing is checked: the document lands over whatever the server holds.
+    Unconditional,
+    /// The resource must still be at the revision the caller read, so a stale edit cannot
+    /// overwrite a newer one. CalDAV renders this `If-Match: <etag>`.
+    ///
+    /// An **empty** [`RevisionTokens`] still means "I asked for a guard" — it is a caller
+    /// who read an object whose transport carries no revision, which is not the same as a
+    /// caller who waived one. What that guard is *worth* is
+    /// [`Capabilities::calendar_write_guard`](crate::Capabilities::calendar_write_guard).
+    IfUnchanged(RevisionTokens),
+    /// Nothing may exist at the target yet — a **create**. A resource already there is a
+    /// [`Conflict`](engine_core::error::FailureClass::Conflict), never a silent overwrite.
+    /// CalDAV renders this `If-None-Match: *` (RFC 7232 §3.2).
+    IfAbsent,
+}
+
+/// A request to store a whole calendar document — replacing what is there, or creating
+/// where nothing is.
 ///
 /// The write verb of a **document-oriented** transport only — see the module docs. The
 /// `ical` is the provider-native payload the caller assembled (round-tripped from the
@@ -141,15 +175,14 @@ impl EventDraft {
 /// with no document verb rejects this as unsupported.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventWrite {
-    /// The event whose document is being replaced.
+    /// The event whose document is being stored.
     pub event: EventId,
     /// Its cross-system `UID`, echoed on the receipt for reconciliation.
     pub uid: Uid,
     /// The document to store.
     pub ical: RawIcal,
-    /// The revision the write is guarded by — the one the caller read. `None` replaces
-    /// unconditionally.
-    pub guard: Option<RevisionTokens>,
+    /// What the server must verify before storing it.
+    pub guard: WritePrecondition,
 }
 
 impl EventWrite {
@@ -161,18 +194,38 @@ impl EventWrite {
             event: base.id.clone(),
             uid: base.uid.clone(),
             ical,
-            guard: Some(base.revisions.clone()),
+            guard: WritePrecondition::IfUnchanged(base.revisions.clone()),
         }
     }
 
-    /// Replaces the document with **no** guard, so it lands over whatever the server holds.
+    /// Stores the document only if **nothing is there yet**.
+    ///
+    /// The guarded create: a resource already at `event` is a
+    /// [`Conflict`](engine_core::error::FailureClass::Conflict) the caller resolves by
+    /// re-reading, never an overwrite it never learns about. This is how an invitation that
+    /// arrived as mail is put on the calendar with its `ORGANIZER`, `ATTENDEE`, `UID` and
+    /// `SEQUENCE` intact — [`EventDraft`] carries none of those, so a create through the
+    /// neutral spine would store a plain appointment with no `ATTENDEE` line to answer on
+    /// afterwards.
+    #[must_use]
+    pub fn creating(event: EventId, uid: Uid, ical: RawIcal) -> Self {
+        Self {
+            event,
+            uid,
+            ical,
+            guard: WritePrecondition::IfAbsent,
+        }
+    }
+
+    /// Stores the document with **no** precondition, so it lands over whatever the server
+    /// holds.
     #[must_use]
     pub fn unconditional(event: EventId, uid: Uid, ical: RawIcal) -> Self {
         Self {
             event,
             uid,
             ical,
-            guard: None,
+            guard: WritePrecondition::Unconditional,
         }
     }
 }
@@ -242,170 +295,5 @@ impl EventWriteReceipt {
 }
 
 #[cfg(test)]
-mod tests {
-    use engine_core::{
-        ids::ProviderKey,
-        membership::Memberships,
-        time::{LocalDateTime, TimeZoneId},
-        version::ETag,
-    };
-
-    use super::*;
-
-    fn event_id() -> EventId {
-        EventId::try_from("/dav/cal/alice/default/evt-1.ics").unwrap()
-    }
-
-    fn uid() -> Uid {
-        Uid::new("evt-1@test.local").unwrap()
-    }
-
-    fn calendar() -> CalendarId {
-        CalendarId::new(ProviderKey::new("/dav/cal/alice/default/").unwrap())
-    }
-
-    fn zoned(local: &str) -> CalendarDateTime {
-        CalendarDateTime::Zoned {
-            local: local.parse::<LocalDateTime>().unwrap(),
-            zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
-        }
-    }
-
-    /// An event as a sync hands it back: id, uid, and the revision it was read at.
-    fn stored(revisions: RevisionTokens) -> Event {
-        let mut event = Event::new(
-            event_id(),
-            uid(),
-            Memberships::of_one(calendar()),
-            zoned("2026-08-01T09:00:00"),
-        );
-        event.revisions = revisions;
-        event
-    }
-
-    #[test]
-    fn a_draft_carries_intent_but_never_an_id() {
-        // The caller mints the UID — the cross-system identity, and what makes a retried
-        // create recognizable — but never the EventId: a server-assigning transport hands
-        // that back on the receipt.
-        let draft = EventDraft::new(
-            calendar(),
-            uid(),
-            "Sprint planning",
-            zoned("2026-08-01T09:00:00"),
-            zoned("2026-08-01T09:30:00"),
-            "2026-07-14T10:00:00Z".parse().unwrap(),
-        )
-        .description("agenda")
-        .location("Room A");
-        assert_eq!(draft.uid, uid());
-        assert_eq!(draft.description.as_deref(), Some("agenda"));
-        assert_eq!(draft.location.as_deref(), Some("Room A"));
-    }
-
-    #[test]
-    fn a_draft_has_no_location_until_one_is_given() {
-        // A create is the one write that can set a location from nothing; without the
-        // builder it carries none, which the adapters render as no LOCATION at all.
-        let draft = EventDraft::new(
-            calendar(),
-            uid(),
-            "Sprint planning",
-            zoned("2026-08-01T09:00:00"),
-            zoned("2026-08-01T09:30:00"),
-            "2026-07-14T10:00:00Z".parse().unwrap(),
-        );
-        assert!(draft.location.is_none());
-    }
-
-    #[test]
-    fn a_delete_is_guarded_by_the_revision_the_caller_read() {
-        let base = stored(RevisionTokens::from_etag(ETag::new("\"v7\"")));
-        let guarded = EventDeletion::of(&base);
-        assert_eq!(guarded.event, event_id());
-        assert_eq!(
-            guarded.guard.unwrap().etag,
-            Some(ETag::new("\"v7\"")),
-            "the guard must come from the event as read, never be hand-assembled"
-        );
-        assert!(
-            EventDeletion::unconditional(event_id(), uid())
-                .guard
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn a_document_write_guards_on_the_event_it_replaces() {
-        // The iMIP RSVP path: patch my PARTSTAT into the stored raw, then replace the
-        // document under the revision I read it at.
-        let base = stored(RevisionTokens::from_etag(ETag::new("\"v7\"")));
-        let write = EventWrite::replacing(&base, RawIcal::new("BEGIN:VCALENDAR\r\nEND:VCALENDAR"));
-        assert_eq!(write.event, event_id());
-        assert_eq!(write.uid, uid());
-        assert_eq!(write.guard.unwrap().etag, Some(ETag::new("\"v7\"")));
-    }
-
-    #[test]
-    fn asking_for_a_guard_and_waiving_one_stay_distinguishable_with_no_tokens() {
-        // JMAP objects carry no revision token at all. A write built from one still *asks*
-        // for a guard — it just names an empty revision, which no transport can enforce.
-        // That is not the same as deliberately waiving the guard, and the two must not
-        // collapse: `Capabilities::calendar_write_guard` is what tells a host which it got.
-        let base = stored(RevisionTokens::none());
-        let deletion = EventDeletion::of(&base);
-        assert!(deletion.guard.as_ref().unwrap().is_empty());
-        assert!(
-            EventDeletion::unconditional(event_id(), uid())
-                .guard
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn write_requests_survive_the_durable_payload_round_trip() {
-        // Every request is stored as JSON in the outbox before the network call, so a
-        // restart must read back exactly what was intended.
-        let base = stored(RevisionTokens::from_etag(ETag::new("\"v7\"")));
-
-        let deletion = EventDeletion::of(&base);
-        let encoded = serde_json::to_value(&deletion).unwrap();
-        assert_eq!(
-            serde_json::from_value::<EventDeletion>(encoded).unwrap(),
-            deletion
-        );
-
-        let write = EventWrite::replacing(&base, RawIcal::new("BEGIN:VCALENDAR\r\nEND:VCALENDAR"));
-        let encoded = serde_json::to_value(&write).unwrap();
-        assert_eq!(
-            serde_json::from_value::<EventWrite>(encoded).unwrap(),
-            write
-        );
-
-        let draft = EventDraft::new(
-            calendar(),
-            uid(),
-            "Sprint planning",
-            zoned("2026-08-01T09:00:00"),
-            zoned("2026-08-01T09:30:00"),
-            "2026-07-14T10:00:00Z".parse().unwrap(),
-        )
-        .location("Room A");
-        let encoded = serde_json::to_value(&draft).unwrap();
-        assert_eq!(
-            serde_json::from_value::<EventDraft>(encoded).unwrap(),
-            draft
-        );
-    }
-
-    #[test]
-    fn a_receipt_reports_the_id_the_write_resolved_to() {
-        let receipt = EventWriteReceipt::new(
-            event_id(),
-            uid(),
-            RevisionTokens::from_etag(ETag::new("\"v8\"")),
-        );
-        assert_eq!(receipt.revisions.etag, Some(ETag::new("\"v8\"")));
-        assert_eq!(receipt.uid, uid());
-    }
-}
+#[path = "tests.rs"]
+mod tests;

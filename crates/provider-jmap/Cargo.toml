@@ -37,6 +37,10 @@ stalwart-harness = { path = "../stalwart-harness" }
 # write and `EventDraft` cannot state an ORGANIZER/ATTENDEE pair, so an invitation cannot
 # be created over JMAP at all. Test-only, and only for the counterparty's fixture.
 provider-caldav = { workspace = true }
+# The live iMIP test reads the message the *server* built back through the engine's own
+# inbound scheduling bridge — the same detection an arriving invitation goes through — so
+# the assertion is about what a client would see, not about a string in the raw source.
+engine-mime = { workspace = true }
 # The gated live integration test drives the full loop through the real store.
 engine-store = { workspace = true }
 engine-search = { workspace = true }

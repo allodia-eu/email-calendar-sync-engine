@@ -419,12 +419,23 @@ is authoritative for the `provider-caldav` calendar client.
 - **iTIP/iMIP scheduling**: the inbound parse/reconcile/trust/apply pipeline and
   the RSVP write primitive are **implemented** in `engine_core::scheduling` +
   `provider_caldav::imip` (`calendar-semantics.md`/`caldav.md`). The piece that
-  touches *this* crate — **delivering an iTIP `REPLY` as an iMIP email** — is
-  deferred: SMTP MIME assembly now supports multipart bodies and attachments, but
-  the iTIP-specific `text/calendar` body builder is not wired yet (long
-  encoded-words/folding are likewise unrefined). The `ServerAutoSchedule` RSVP path
-  (conditional `PUT`, the server delivers the `REPLY`) needs no SMTP and is fully
-  wired. **CalDAV/CardDAV** is the other step-5 slice.
+  touches *this* crate — **delivering an iTIP `REPLY` as an iMIP email** — is now
+  **implemented too** (issue #105): a `Draft` carrying a `DraftCalendar { ical, method }`
+  is assembled as a `text/calendar` **alternative body part**, and this adapter advertises
+  `Capabilities::scheduling_submission`. A caller needs that path whenever the account's
+  calendar server does not schedule for it (`Capabilities::calendar_scheduling` is
+  `false`) — the very common IMAP-mail-plus-plain-CalDAV shape, where the
+  `ServerAutoSchedule` `PUT` stores the answer and tells the organizer nothing. What is
+  still not the engine's job is *building* the `REPLY` object: there is no `Event` → iTIP
+  serializer, and the answer keys to a `UID`/`SEQUENCE` only the caller holds. (Long
+  encoded-words/folding are likewise still unrefined.) **CalDAV/CardDAV** is the other
+  step-5 slice.
+  - The part is a sibling of the text body inside `multipart/alternative`, ordered last
+    (most faithful, RFC 2046 §5.1.4), with `method=` on its `Content-Type` (RFC 6047 §2.4),
+    `charset=utf-8`, base64 rather than `7bit` (§2.5 — iCalendar content lines are long and
+    folded, and a transport free to re-wrap them corrupts the object), and **no**
+    `Content-Disposition`. It is a representation of the message, not a file; the shared
+    assembly lives in `engine-rfc5322`, so the Graph and Google submit paths get it too.
 
 ## Testing
 

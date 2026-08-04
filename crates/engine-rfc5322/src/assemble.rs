@@ -240,3 +240,7 @@ mod cc_bcc_tests;
 #[cfg(test)]
 #[path = "mime_tests.rs"]
 mod mime_tests;
+
+#[cfg(test)]
+#[path = "imip_tests.rs"]
+mod imip_tests;

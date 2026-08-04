@@ -175,9 +175,20 @@ impl Session {
         // it so before it writes.
         if capabilities.calendars() && !account_is_read_only(value, calendar_account_id.as_deref())
         {
+            // Scheduling is advertised because the adapter *asks* for it: every calendar
+            // verb sends `sendSchedulingMessages` (`crate::calendar_write`), so the server
+            // — not the caller — delivers the iTIP. That is what a caller needs to know
+            // before deciding whether it must send an iMIP message itself.
+            //
+            // There is nothing here to detect, and the flag is not claiming otherwise.
+            // JMAP Calendars leaves scheduling to the implementation and exposes no
+            // capability to probe, so a server that accepted the argument and quietly did
+            // nothing would look exactly like one that scheduled. Contrast CalDAV, where
+            // RFC 6638 §2 gives a discoverable answer and the adapter discovers it.
             capabilities = capabilities
                 .with_calendar_writes(WriteGuard::Absent)
-                .with_calendar_rsvp(JMAP_RSVP);
+                .with_calendar_rsvp(JMAP_RSVP)
+                .with_calendar_scheduling();
         }
         if capabilities.contacts() && !account_is_read_only(value, contact_account_id.as_deref()) {
             capabilities = capabilities.with_contact_writes(WriteGuard::Absent);

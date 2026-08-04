@@ -21,10 +21,23 @@ use serde::de::DeserializeOwned;
 use store_sqlite::SqliteStore;
 
 use super::*;
-use crate::test_support::Replay;
+use crate::{
+    href::resolve_collection,
+    test_support::{Replay, ok, options},
+};
 
-fn replay(bodies: Vec<&str>) -> Replay {
-    Replay::bodies(bodies)
+/// Replays `bodies` as `207`s, with the connect-time `OPTIONS` spliced in after the
+/// discovery `PROPFIND` that consumes the first one.
+///
+/// Every `connect` below runs the RFC 6638 scheduling probe, so splicing it here keeps
+/// each test's list about the requests *that test* is exercising. It answers with a `DAV:`
+/// header carrying no `calendar-auto-schedule`, so the fixture provider is a plain CalDAV
+/// server unless a test asks for otherwise — the conservative default, since claiming
+/// scheduling nobody performs is the failure this capability exists to prevent.
+fn replay(bodies: &[&str]) -> Replay {
+    let mut responses = vec![ok(bodies[0]), options(Some("1, 3, calendar-access"))];
+    responses.extend(bodies[1..].iter().copied().map(ok));
+    Replay::new(responses)
 }
 
 const PRINCIPAL: &str = include_str!("../tests/fixtures/principal.xml");
@@ -76,7 +89,7 @@ fn resolves_relative_and_absolute_collections() {
 
 #[tokio::test]
 async fn exposes_dav_scopes_and_the_calendar_capabilities() {
-    let provider = connect(replay(vec![PRINCIPAL])).await;
+    let provider = connect(replay(&[PRINCIPAL])).await;
     let account = AccountId::try_from("a").unwrap();
 
     // CalDAV does calendar read/sync **and** writes over the same HTTP transport;
@@ -104,11 +117,44 @@ async fn exposes_dav_scopes_and_the_calendar_capabilities() {
     );
 }
 
+#[tokio::test]
+async fn scheduling_is_discovered_at_connect_rather_than_implied_by_the_rsvp_verb() {
+    // The whole point of the capability: two servers that answer discovery identically
+    // and differ only in their RFC 6638 `OPTIONS` token produce providers that both
+    // advertise `calendar_rsvp` and disagree about whether anyone will hear the answer.
+    let plain = connect(Replay::new(vec![
+        ok(PRINCIPAL),
+        options(Some("1, 3, calendar-access")),
+    ]))
+    .await;
+    assert!(
+        plain
+            .connection_info()
+            .capabilities
+            .calendar_rsvp()
+            .is_some()
+    );
+    assert!(!plain.connection_info().capabilities.calendar_scheduling());
+
+    let auto = connect(Replay::new(vec![
+        ok(PRINCIPAL),
+        options(Some("1, 3, calendar-access, calendar-auto-schedule")),
+    ]))
+    .await;
+    assert!(
+        auto.connection_info()
+            .capabilities
+            .calendar_rsvp()
+            .is_some()
+    );
+    assert!(auto.connection_info().capabilities.calendar_scheduling());
+}
+
 // One cohesive end-to-end flow (discover → list calendars → sync events → assert
 // normalization + occurrences); splitting it would obscure the single scenario.
 #[tokio::test]
 async fn calendar_sync_loop_normalizes_folds_and_expands_the_seed() {
-    let provider = connect(replay(vec![PRINCIPAL, HOME, SYNC_INITIAL])).await;
+    let provider = connect(replay(&[PRINCIPAL, HOME, SYNC_INITIAL])).await;
     let store =
         SqliteStore::open_in_memory(ManualClock::new("2026-06-20T00:00:00Z".parse().unwrap()))
             .expect("store");
@@ -211,7 +257,7 @@ async fn calendar_list_includes_a_bound_collection_outside_the_home() {
     // PRINCIPAL drives discovery; HOME is the calendar-list response (it lists only
     // the default collection, NOT /shared/team-calendar/).
     let provider = CalDavProvider::with_executor(
-        Box::new(replay(vec![PRINCIPAL, HOME])),
+        Box::new(replay(&[PRINCIPAL, HOME])),
         "/.well-known/caldav",
         "/shared/team-calendar/",
         &IgnoreConnectSteps,
@@ -242,7 +288,7 @@ async fn calendar_list_includes_a_bound_collection_outside_the_home() {
 async fn rebind_switches_collection_without_rediscovery() {
     // connect runs discovery once; rebind reuses the home + executor with no extra
     // PROPFIND, only moving the bound collection.
-    let provider = connect(replay(vec![PRINCIPAL])).await;
+    let provider = connect(replay(&[PRINCIPAL])).await;
     let account = AccountId::try_from("acct").unwrap();
     let rebound = provider.rebind("/calendars/other/").expect("rebind");
     match rebound.event_scope(&account) {
@@ -256,7 +302,7 @@ async fn rebind_switches_collection_without_rediscovery() {
 
 #[tokio::test]
 async fn mints_a_resource_href_under_the_bound_collection() {
-    let provider = connect(replay(vec![PRINCIPAL])).await;
+    let provider = connect(replay(&[PRINCIPAL])).await;
     // The conventional `<collection>/<uid>.ics`, with the UID canonically encoded:
     // `@` → `%40` (the form servers store and report — verified live against
     // Stalwart), so the minted href matches the server's resource href for a later
@@ -313,9 +359,10 @@ async fn a_patch_round_trips_raw_ical_preserving_non_jscalendar_properties() {
 
     // A shared executor handle, so the test can inspect the wire body after the
     // provider (which owns its executor) performs the PUT. Discovery consumes
-    // PRINCIPAL, then the PUT consumes the write response.
+    // PRINCIPAL and the scheduling OPTIONS, then the PUT consumes the write response.
     let exec = std::sync::Arc::new(Replay::new(vec![
-        crate::test_support::ok(PRINCIPAL),
+        ok(PRINCIPAL),
+        options(None),
         wrote(201, Some("\"rt-v2\"")),
     ]));
     let provider = CalDavProvider::with_executor(

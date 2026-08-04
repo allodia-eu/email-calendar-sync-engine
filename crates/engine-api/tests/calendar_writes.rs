@@ -34,7 +34,7 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, Provider,
-    ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard,
+    ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard, WritePrecondition,
 };
 
 /// The account's own address — and deliberately **not** the one the invitation was sent to,
@@ -62,6 +62,25 @@ const SERVER_SCHEDULED: RsvpControls = RsvpControls {
 
 #[path = "calendar_writes/scenarios.rs"]
 mod scenarios;
+
+#[path = "calendar_writes/rsvp.rs"]
+mod rsvp;
+
+#[path = "calendar_writes/failing.rs"]
+mod failing;
+use failing::{BlockingSync, UnreadableEvents};
+
+/// The participation status the event records for `address` — the one thing an RSVP is
+/// supposed to move, read the way a client reads it.
+fn status_of(event: &Event, address: &str) -> ParticipationStatus {
+    event
+        .participants
+        .iter()
+        .find(|p| p.email.as_deref() == Some(address))
+        .unwrap_or_else(|| panic!("no participant at {address}"))
+        .participation_status
+        .clone()
+}
 
 /// One event as the server holds it, with the revision it is guarded by and the pass it
 /// last changed on (the cursor is that pass number).
@@ -118,6 +137,34 @@ impl CalendarServer {
                 "etag precondition failed: the caller's copy is stale",
             )),
             _ => Ok(()),
+        }
+    }
+
+    /// Enforces a document write's [`WritePrecondition`] — the three-state guard, answered
+    /// as a real server answers it.
+    ///
+    /// [`IfAbsent`](WritePrecondition::IfAbsent) is the one that is not a variation on the
+    /// others: it refuses when the resource **exists**, which is the inverse test, and it
+    /// is the only precondition under which a write may target an id the server has never
+    /// heard of.
+    fn check_precondition(
+        state: &ServerState,
+        event: &EventId,
+        guard: &WritePrecondition,
+    ) -> ProviderResult<()> {
+        match guard {
+            WritePrecondition::IfAbsent => {
+                if state.events.contains_key(event.as_str()) {
+                    return Err(ProviderError::conflict(
+                        "if-none-match precondition failed: a resource is already stored there",
+                    ));
+                }
+                Ok(())
+            }
+            WritePrecondition::Unconditional => CalendarServer::check_guard(state, event, None),
+            WritePrecondition::IfUnchanged(tokens) => {
+                CalendarServer::check_guard(state, event, Some(tokens))
+            }
         }
     }
 
@@ -268,8 +315,19 @@ impl Provider for CalendarServer {
         write: &EventWrite,
     ) -> ProviderResult<EventWriteReceipt> {
         let mut state = self.0.lock().unwrap();
-        CalendarServer::check_guard(&state, &write.event, write.guard.as_ref())?;
-        let event = state.events[write.event.as_str()].event.clone();
+        CalendarServer::check_precondition(&state, &write.event, &write.guard)?;
+        // A replace commits a new revision of what is already there; a create has nothing
+        // to clone, so it stores a fresh event under the id and `UID` the caller minted —
+        // which is what a caller putting an inbound invitation on the calendar states.
+        let event = match state.events.get(write.event.as_str()) {
+            Some(stored) => stored.event.clone(),
+            None => Event::new(
+                write.event.clone(),
+                write.uid.clone(),
+                Memberships::of_one(CalendarId::try_from("work").unwrap()),
+                at(9),
+            ),
+        };
         Ok(CalendarServer::commit(&mut state, event))
     }
 
@@ -383,80 +441,4 @@ async fn synced(server: &CalendarServer) -> (Engine, Event) {
         .unwrap();
     let stored = engine.events(&account()).await.unwrap().remove(0);
     (engine, stored)
-}
-
-/// A provider whose event fetch parks until it is released, so a test can hold the event
-/// scope's lease while another call tries to reconcile.
-struct BlockingSync {
-    inner: CalendarServer,
-    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
-}
-
-#[async_trait::async_trait]
-impl Provider for BlockingSync {
-    fn connection_info(&self) -> ConnectionInfo {
-        self.inner.connection_info()
-    }
-
-    fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
-        self.inner.mailbox_scope(account)
-    }
-
-    fn email_scope(&self, account: &AccountId) -> SyncScope {
-        self.inner.email_scope(account)
-    }
-
-    async fn sync_events(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        if let Some(started) = self.started.lock().unwrap().take() {
-            started.send(()).unwrap();
-        }
-        let release = self.release.lock().unwrap().take();
-        if let Some(release) = release {
-            // The lease is held across this await — exactly the window a real concurrent
-            // sync leaves open.
-            let _ = release.await;
-        }
-        self.inner.sync_events(account, cursor).await
-    }
-}
-
-/// A provider whose writes land but whose event fetch is broken, so the post-write
-/// reconcile fails on its own rather than on a held lease.
-struct UnreadableEvents(CalendarServer);
-
-#[async_trait::async_trait]
-impl Provider for UnreadableEvents {
-    fn connection_info(&self) -> ConnectionInfo {
-        self.0.connection_info()
-    }
-
-    fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
-        self.0.mailbox_scope(account)
-    }
-
-    fn email_scope(&self, account: &AccountId) -> SyncScope {
-        self.0.email_scope(account)
-    }
-
-    async fn sync_events(
-        &self,
-        _account: &AccountId,
-        _cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        Err(ProviderError::retryable("the event fetch is down"))
-    }
-
-    async fn patch_event(
-        &self,
-        account: &AccountId,
-        base: &Event,
-        edit: &EventEdit,
-    ) -> ProviderResult<EventWriteReceipt> {
-        self.0.patch_event(account, base, edit).await
-    }
 }

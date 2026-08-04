@@ -170,9 +170,24 @@ implemented**; the precise deferrals are listed at the end of this section.
   note that silently goes nowhere, or an "Email organizer" tick that emails them anyway, is worse than
   a control the user was never shown.
 
-  Building and **delivering** a standalone iTIP `REPLY` over **client** iMIP (SMTP) is
-  deferred with the rest of that path (the SMTP assembler is `text/plain`-only —
-  `imap-smtp.md`), so a `ClientImip` account still cannot answer.
+  **Whether anyone is told is a second capability, and on CalDAV it is discovered**
+  (issue #105). `calendar_rsvp` says the transport can *express* an answer;
+  `Capabilities::calendar_scheduling` says the **server** performs the scheduling the write
+  implies. RFC 4791 is calendar access and RFC 6638 is a separate layer, so a plain CalDAV
+  server stores the rewritten `PARTSTAT` correctly and emits no `REPLY` — the silent success
+  `RsvpControls` exists to prevent, arriving from the transport instead of from a caller.
+  `provider-caldav` asks at connect (`OPTIONS` → the `calendar-auto-schedule` token in the
+  `DAV:` header); Graph, Google and JMAP are constants (`providers.md`).
+
+  **Carrying a client-side `REPLY` is now implemented.** When `calendar_scheduling` is
+  `false` the caller must send the iTIP object itself, and a `Draft` carrying a
+  `DraftCalendar { ical, method }` assembles it as a conformant `text/calendar` alternative
+  body part (RFC 6047 §2.4 — `imap-smtp.md`). `Capabilities::scheduling_submission` says
+  which transports can: IMAP/SMTP, Graph and Google yes; **JMAP no, and it refuses the
+  draft** rather than sending an unprocessable one (`jmap.md`). Read the two capabilities
+  together — between them they answer whether a `ClientImip` account can answer *at all*.
+  What the engine still does not do is **build** the `REPLY` object: there is no
+  `Event` → iTIP serializer, and the answer keys to a `UID`/`SEQUENCE` the caller holds.
 
   **The answer has to read back, too**, and that is a normalization rule, not a write
   concern: a projection holds **one participant per address**, with roles as a *set*
@@ -217,8 +232,10 @@ event has no provider-less single-event store path yet (the store's writes are
 sync- or outbox-mediated), so the apply helpers run but persisting a
 not-yet-on-a-server event waits on that path; (3) the **CalDAV Scheduling Inbox**
 `REPORT` (RFC 6638) — the live suite reads the inbox over raw DAV rather than
-through the provider, which is exactly the gap; and (4) **iMIP-over-SMTP `REPLY`
-delivery** (the multipart `text/calendar` assembler).
+through the provider, which is exactly the gap; and (4) an **`Event` → iTIP
+serializer**, so a caller composing a client-side `REPLY` still writes the
+iCalendar itself. **Carriage** of that reply is no longer deferred (#105): see
+`Capabilities::scheduling_submission` above.
 
 The `ServerAutoSchedule` RSVP path (now behind the neutral verb) is fully wired,
 offline-tested end to end, **and live-proven**: `provider-caldav`'s scheduling

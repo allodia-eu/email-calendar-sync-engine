@@ -45,6 +45,7 @@ mod carddav_ops;
 mod dav;
 mod discovery;
 mod error;
+mod href;
 pub mod imip;
 mod provider;
 mod request;

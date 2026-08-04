@@ -1,25 +1,15 @@
 //! The read-your-writes scenarios (issue #65), driven against the stateful fake server in
 //! the parent binary: a patch leaves the store holding the **server's** copy, a host can
 //! edit the same event twice by re-reading it in between, a delete tombstones the local
-//! row, a create lands under the id the server assigned, the RSVP document write reconciles
-//! like any other, and a write whose reconcile could not run is still a write.
+//! row, a create lands under the id the server assigned, a document write reconciles like
+//! any other, an inbound invitation is stored as a guarded create, and a write whose
+//! reconcile could not run is still a write.
+//!
+//! Answering an invitation is `rsvp.rs`.
 
-use engine_provider::RsvpResponse;
 use engine_sync::SyncError;
 
 use super::*;
-
-/// The participation status the event records for `address` — the one thing an RSVP is
-/// supposed to move, read the way a client reads it.
-fn status_of(event: &Event, address: &str) -> ParticipationStatus {
-    event
-        .participants
-        .iter()
-        .find(|p| p.email.as_deref() == Some(address))
-        .unwrap_or_else(|| panic!("no participant at {address}"))
-        .participation_status
-        .clone()
-}
 
 #[tokio::test]
 async fn a_patch_leaves_the_store_holding_the_servers_copy_not_ours() {
@@ -266,181 +256,53 @@ async fn the_rsvp_document_write_reconciles_like_any_other() {
 }
 
 #[tokio::test]
-async fn answering_moves_our_own_status_and_leaves_the_store_holding_the_servers_copy() {
-    // The neutral verb, end to end: intent in, the server's copy in the store, and the
-    // answer readable without a further sync. If this ever stopped reconciling, a client
-    // would render "you haven't answered" directly after the user answered — the exact
-    // contradiction the product side of this feature had to fix.
+async fn an_invitation_from_mail_is_stored_as_a_guarded_create() {
+    // The account shape issue #105 is about: mail on one transport, a calendar on another
+    // that does no RFC 6638 scheduling, so an invitation arrives as an iMIP message and
+    // nothing puts it on the calendar. The host does — with the invitation's own VEVENT,
+    // so its ORGANIZER, ATTENDEE, UID and SEQUENCE survive and there is something to
+    // answer on afterwards. `create_calendar_event` cannot: an `EventDraft` carries no
+    // organizer and no attendees, so it would store a plain appointment.
     let server = CalendarServer::holding(seeded_event());
-    let (engine, base) = synced(&server).await;
-    assert_eq!(
-        status_of(&base, ALIAS_ADDRESS),
-        ParticipationStatus::NeedsAction,
-        "the seed must start unanswered, or this proves nothing"
-    );
+    let (engine, _) = synced(&server).await;
 
+    let href = EventId::try_from("/cal/imip-7.ics").unwrap();
+    let uid = Uid::new("imip-7@test.local").unwrap();
+    let invitation = RawIcal::new(
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:imip-7@test.local\r\n\
+         ORGANIZER:mailto:organizer@test.local\r\nATTENDEE:mailto:info@test.local\r\n\
+         SEQUENCE:0\r\nEND:VEVENT\r\nEND:VCALENDAR",
+    );
     let write = engine
-        .rsvp_calendar_event(
+        .put_calendar_document(
             &server,
             &account(),
-            "rsvp:evt-1:accept",
-            &base,
-            &EventRsvp::to(&base, ALIAS_ADDRESS, RsvpResponse::Accepted),
+            "imip:imip-7:store",
+            &EventWrite::creating(href.clone(), uid.clone(), invitation.clone()),
         )
         .await
         .unwrap();
+    assert!(matches!(write.reconciled, Reconciled::Applied(_)));
+
+    let stored = engine.events(&account()).await.unwrap();
     assert!(
-        matches!(write.reconciled, Reconciled::Applied(_)),
-        "got {:?}",
-        write.reconciled
+        stored.iter().any(|event| event.uid == uid),
+        "the invitation is on the calendar and readable without a further sync"
     );
 
-    let stored = engine.events(&account()).await.unwrap().remove(0);
-    assert_eq!(
-        status_of(&stored, ALIAS_ADDRESS),
-        ParticipationStatus::Accepted,
-        "the answer must be readable from the store the moment the call returns"
-    );
-    assert_eq!(
-        status_of(&stored, "organizer@test.local"),
-        ParticipationStatus::NeedsAction,
-        "an RSVP moves exactly one participant — ours — and leaves everyone else alone"
-    );
-    assert_eq!(stored.revisions.etag, Some(ETag::new("\"srv-2\"")));
-}
-
-#[tokio::test]
-async fn the_answer_goes_out_as_the_address_the_invitation_matched() {
-    // D5. The invitation reached `info@`; the account is `me@`. Answering as the account's
-    // own address names an attendee this meeting does not have, and the server says so
-    // rather than adding one — which would put the user on a meeting nobody invited them to.
-    let server = CalendarServer::holding(seeded_event());
-    let (engine, base) = synced(&server).await;
-
-    let refused = engine
-        .rsvp_calendar_event(
+    // And the guard bites. A second create of the same href is a `Conflict` the host
+    // resolves by re-reading — not a silent overwrite of the copy that is now there,
+    // which is precisely what an unconditional write would have done.
+    let again = engine
+        .put_calendar_document(
             &server,
             &account(),
-            "rsvp:evt-1:wrong-identity",
-            &base,
-            &EventRsvp::to(&base, SELF_ADDRESS, RsvpResponse::Accepted),
+            "imip:imip-7:store-again",
+            &EventWrite::creating(href, uid, invitation),
         )
         .await
-        .expect_err("answering as an address the meeting has no ATTENDEE for must fail");
-    assert!(
-        format!("{refused}").contains("no ATTENDEE at that address"),
-        "got {refused}"
-    );
-
-    // And the alias, which is what a caller that read the delivery headers would send, works.
-    engine
-        .rsvp_calendar_event(
-            &server,
-            &account(),
-            "rsvp:evt-1:alias",
-            &base,
-            &EventRsvp::to(&base, ALIAS_ADDRESS, RsvpResponse::Tentative),
-        )
-        .await
-        .expect("the matched address must be the one that answers");
-    assert_eq!(
-        status_of(&engine.events(&account()).await.unwrap()[0], ALIAS_ADDRESS),
-        ParticipationStatus::Tentative
-    );
-}
-
-#[tokio::test]
-async fn answering_a_copy_the_organizer_has_since_changed_is_refused_not_applied() {
-    // The guard is the whole reason the RSVP carries the revision it was read at. Without
-    // it the answer lands on whatever the server now holds — a meeting that may have been
-    // moved to another day — and the user has accepted something they never saw.
-    let server = CalendarServer::holding(seeded_event());
-    let (engine, base) = synced(&server).await;
-
-    // Someone else moves it. `base` is now a superseded copy.
-    engine
-        .patch_calendar_event(
-            &server,
-            &account(),
-            "patch:evt-1:moved",
-            &base,
-            PatchTarget::Series,
-            EventPatch::new("2026-07-14T10:00:00Z".parse().unwrap()).start(at(15)),
-        )
-        .await
-        .unwrap();
-
-    let stale = engine
-        .rsvp_calendar_event(
-            &server,
-            &account(),
-            "rsvp:evt-1:stale",
-            &base,
-            &EventRsvp::to(&base, ALIAS_ADDRESS, RsvpResponse::Accepted),
-        )
-        .await
-        .expect_err("an answer guarded by a superseded revision must be refused");
-
-    let ApiError::Sync(SyncError::Provider(err)) = &stale else {
-        panic!("expected a provider error, got {stale:?}");
-    };
-    assert_eq!(
-        err.class(),
-        FailureClass::Conflict,
-        "a stale guard is a Conflict — re-read and answer again, never blind-retry"
-    );
-    assert_eq!(
-        status_of(&engine.events(&account()).await.unwrap()[0], ALIAS_ADDRESS),
-        ParticipationStatus::NeedsAction,
-        "and nothing was answered"
-    );
-}
-
-#[tokio::test]
-async fn a_control_this_transport_cannot_honour_fails_the_answer_rather_than_dropping_it() {
-    // A note with nowhere to go, and a "don't tell them" a scheduling server will ignore.
-    // Both must fail the write: a note that silently goes nowhere, or an organizer emailed
-    // after the user asked for silence, is worse than a control never offered. A host that
-    // read `Capabilities::calendar_rsvp` never gets here — which is what makes these two
-    // errors a backstop rather than the interface.
-    let server = CalendarServer::holding(seeded_event());
-    let (engine, base) = synced(&server).await;
-
-    let controls = server
-        .connection_info()
-        .capabilities
-        .calendar_rsvp()
-        .unwrap();
-    assert!(!controls.comment && !controls.suppress_notification);
-
-    for (idempotency, rsvp, expected) in [
-        (
-            "rsvp:evt-1:note",
-            EventRsvp::to(&base, ALIAS_ADDRESS, RsvpResponse::Declined)
-                .comment("Clashes with the offsite"),
-            "nowhere to carry a note",
-        ),
-        (
-            "rsvp:evt-1:quiet",
-            EventRsvp::to(&base, ALIAS_ADDRESS, RsvpResponse::Declined).quietly(),
-            "cannot be kept out of it",
-        ),
-    ] {
-        let refused = engine
-            .rsvp_calendar_event(&server, &account(), idempotency, &base, &rsvp)
-            .await
-            .expect_err("a control the transport cannot honour must fail the answer");
-        assert!(
-            format!("{refused}").contains(expected),
-            "the error must name the control that was refused; got {refused}"
-        );
-    }
-
-    assert_eq!(
-        status_of(&engine.events(&account()).await.unwrap()[0], ALIAS_ADDRESS),
-        ParticipationStatus::NeedsAction,
-        "and neither attempt answered anything"
-    );
+        .unwrap_err();
+    assert!(again.is_conflict(), "expected a conflict, got {again:?}");
 }
 
 #[tokio::test]

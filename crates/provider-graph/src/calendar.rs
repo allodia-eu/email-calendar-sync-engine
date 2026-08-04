@@ -81,6 +81,12 @@ impl GraphCalendarProvider {
     ///
     /// Graph *enforces* the lost-update guard — a stale `If-Match` ETag is a `412` on a
     /// write — so unlike JMAP it advertises [`WriteGuard::Enforced`].
+    ///
+    /// It also advertises [`Capabilities::calendar_scheduling`]: Exchange sends the iTIP
+    /// `REQUEST`/`REPLY`/`CANCEL` a meeting write implies, and there is no opt-out a client
+    /// can reach — the only control is `sendResponse` on an RSVP, which chooses whether the
+    /// *organizer* is told, not whether the server is the one telling them. Unlike CalDAV
+    /// there is nothing to discover: it is a property of the service, not of the tenant.
     #[must_use]
     pub fn new(
         client: GraphClient,
@@ -96,7 +102,8 @@ impl GraphCalendarProvider {
             capabilities: Capabilities::none()
                 .with_calendars()
                 .with_calendar_writes(WriteGuard::Enforced)
-                .with_calendar_rsvp(GRAPH_RSVP),
+                .with_calendar_rsvp(GRAPH_RSVP)
+                .with_calendar_scheduling(),
         }
     }
 

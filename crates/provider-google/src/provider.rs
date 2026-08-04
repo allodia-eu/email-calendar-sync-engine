@@ -64,7 +64,13 @@ impl GmailProvider {
                 .with_mail()
                 .with_message_source()
                 .with_mail_writes()
-                .with_submission(),
+                // Both submission capabilities: this transport hands the server assembled RFC
+                // 5322 bytes (`engine-rfc5322`), so it owns every `Content-Type` parameter —
+                // including the `method=` that makes an iTIP object a scheduling message
+                // rather than a calendar file (RFC 6047 §2.4). Contrast JMAP, which hands the
+                // server a body structure and cannot.
+                .with_submission()
+                .with_scheduling_submission(),
             since: None,
         }
     }

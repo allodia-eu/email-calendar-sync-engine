@@ -1183,6 +1183,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "engine-core",
+ "engine-mime",
  "engine-provider",
  "engine-recurrence",
  "engine-search",
