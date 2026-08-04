@@ -225,7 +225,12 @@ impl<S> ImapProvider<S> {
             .with_mail_writes()
             .with_message_source();
         if smtp.is_some() {
-            capabilities = capabilities.with_submission();
+            // Both submission capabilities ride the same SMTP transport: the assembler
+            // (`engine-rfc5322`) builds the whole message, so this adapter owns every
+            // `Content-Type` parameter — including the `method=` that makes an iTIP object a
+            // scheduling message rather than a calendar file (RFC 6047 §2.4). Contrast JMAP,
+            // which hands the server a body structure and cannot.
+            capabilities = capabilities.with_submission().with_scheduling_submission();
         }
         // Push (`IDLE`, RFC 2177) is gated on the server advertising it post-auth, so a
         // host knows whether to offer an "as it comes in" strategy or fall back to

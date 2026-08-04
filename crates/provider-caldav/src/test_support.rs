@@ -32,11 +32,6 @@ impl Replay {
         }
     }
 
-    /// Replays each body as a `207 Multi-Status` response, in order.
-    pub(crate) fn bodies(bodies: Vec<&str>) -> Self {
-        Self::new(bodies.into_iter().map(ok).collect())
-    }
-
     /// The `(method, href)` of each request received so far.
     pub(crate) fn seen(&self) -> MutexGuard<'_, Vec<(DavMethod, String)>> {
         self.seen.lock().expect("seen lock")
@@ -112,6 +107,7 @@ pub(crate) fn ok(body: &str) -> HttpResponse {
         body: body.to_owned(),
         location: None,
         etag: None,
+        dav: None,
     }
 }
 
@@ -122,6 +118,19 @@ pub(crate) fn wrote(status: u16, etag: Option<&str>) -> HttpResponse {
         body: String::new(),
         location: None,
         etag: etag.map(str::to_owned),
+        dav: None,
+    }
+}
+
+/// An `OPTIONS` response: `200`, no body, and the `DAV` compliance-class header the
+/// server advertised (RFC 4918 §10.1).
+pub(crate) fn options(dav: Option<&str>) -> HttpResponse {
+    HttpResponse {
+        status: 200,
+        body: String::new(),
+        location: None,
+        etag: None,
+        dav: dav.map(str::to_owned),
     }
 }
 
@@ -132,5 +141,6 @@ pub(crate) fn status(status: u16, body: &str) -> HttpResponse {
         body: body.to_owned(),
         location: None,
         etag: None,
+        dav: None,
     }
 }

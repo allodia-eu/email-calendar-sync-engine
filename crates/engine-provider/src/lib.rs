@@ -42,7 +42,7 @@ mod watch;
 
 pub use calendar_write::{
     EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
-    PatchTarget, RsvpResponse, TextEdit,
+    PatchTarget, RsvpResponse, TextEdit, WritePrecondition,
 };
 pub use capability::{Capabilities, RsvpControls, WriteGuard};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
@@ -60,7 +60,7 @@ pub use provider::Provider;
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};
 pub use submit::{
     ContentIdError, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,
-    SubmissionReceipt,
+    DraftCalendar, SubmissionReceipt,
 };
 pub use sync::ScopeSync;
 pub use watch::{Watch, WatchEvent};

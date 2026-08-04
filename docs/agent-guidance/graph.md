@@ -282,6 +282,15 @@ provider). It advertises `calendars` **and** `calendar_writes(WriteGuard::Enforc
   move is rejected if it would change the time *form* (`has_same_form`). The raw Graph
   event JSON is preserved beside the projection in `Event::extended`
   (`"microsoft.graph/event"`), since Graph is neither iCal nor JSCalendar.
+- **Both scheduling capabilities are constants here** (issue #105).
+  `Capabilities::calendar_scheduling` is `true` — the service sends the iTIP
+  `REQUEST`/`REPLY`/`CANCEL` a write implies, with no opt-out a client can reach (the
+  notify controls above choose *whom* it tells, not whether it is the one telling them), so
+  unlike CalDAV there is nothing to discover. `Capabilities::scheduling_submission` is
+  **also** `true`, from the mail side: this adapter submits assembled RFC 5322 bytes through
+  `engine-rfc5322`, so it owns every `Content-Type` parameter including the `method=` that
+  makes an iTIP object a scheduling message. It is therefore usable as the *sending*
+  transport for an account whose **calendar** lives on a plain CalDAV server (`providers.md`).
 - **RSVP** (`cal_write::rsvp_event`): `POST /me/events/{id}/accept|tentativelyAccept|decline`
   with `{comment, sendResponse}`. Proven against two real accounts
   (`tests/live_calendar_rsvp.rs` — the only test in this repo that needs a second mailbox,

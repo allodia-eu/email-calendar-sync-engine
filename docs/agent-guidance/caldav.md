@@ -100,6 +100,30 @@ are split escape-aware so the writer and the parser agree.
   cross-system `Uid`. The `getetag` is preserved in `event.revisions` (the `ETag`
   for a future `If-Match` write). The `DavCollectionId` (the scope's collection
   key) and the `CalendarId` (event membership) both wrap the collection href.
+- **Scheduling support is discovered, not assumed** (issue #105). RFC 4791 is calendar
+  *access*; RFC 6638 layers scheduling on top, and §2 makes a conforming server advertise
+  the `calendar-auto-schedule` token in the `DAV:` header of an `OPTIONS` response. So
+  `connect` asks — one more request in the sequence that already round-trips — and reports
+  the answer as `Capabilities::calendar_scheduling`. Without asking, a plain CalDAV server
+  looks identical to an auto-scheduling one right up until an RSVP is stored and the
+  organizer is never told: `calendar_rsvp` answers *"can this transport express an
+  answer?"*, which is a different question.
+  - The target is the **calendar home**, not the connection base URL. The header belongs
+    to a DAV resource and a server's site root need not be one — Stalwart's answers `302`
+    to its web UI with no `DAV:` header at all. The request is a **bare** `OPTIONS`: no
+    `Depth`, no `Content-Type`, no body, since the read path's XML framing is meaningless
+    on a request with nothing to say (`DavExecutor::send_options`).
+  - A response carrying no such token — **whatever its status** — is `false`, not an
+    error. A server may answer `OPTIONS` with a `405` and still read and write perfectly;
+    failing the connect over one discovery question would refuse a working account. A
+    transport failure still propagates, like every other discovery step.
+  - Both answers are live-pinned, and the pair is the evidence: **Stalwart advertises it,
+    the SabreDAV fixture does not** ("Which server proves what"). The SabreDAV negative is
+    a property of that harness's configuration — `docker/sabredav/server.php` loads
+    `Sabre\CalDAV\Plugin` and deliberately *not* `Sabre\CalDAV\Schedule\Plugin` — and it
+    must stay that way: it is the only server here that can show the capability answering
+    `false`, and a capability that came out `true` everywhere would be a constant wearing a
+    discovery's clothes.
 - **Calendar capabilities only (read + write), no mail.** A `CalDavProvider`
   advertises `Capabilities::calendars` **and** `calendar_writes(WriteGuard::Enforced)` —
   it reads/syncs and writes over the same HTTP transport, and it is the transport that can
@@ -216,6 +240,20 @@ are split escape-aware so the writer and the parser agree.
   the proven read path is untouched. `CalDavProvider` also implements the whole-document
   escape hatch `put_event`, which exists for the iMIP RSVP primitive alone (below); JMAP has
   no such verb.
+- **A document write states a precondition, and "create" is one of them.** `EventWrite.guard`
+  is a three-state `WritePrecondition`, and each state has an exact rendering here:
+  `IfUnchanged(tokens)` → `If-Match: "<etag>"`, `IfAbsent` → `If-None-Match: *` (RFC 7232
+  §3.2), `Unconditional` → no conditional header. `IfAbsent` is what makes **storing an
+  inbound invitation** safe: on the very common account shape of IMAP mail plus a CalDAV
+  calendar that does no scheduling, an invitation arrives as an iMIP message and nothing
+  puts it on the calendar but the host — and it must go in through this verb, not
+  `create_event`, because an `EventDraft` carries neither `ORGANIZER` nor `ATTENDEE` and
+  would store a plain appointment with nothing to answer on afterwards. The guard matters
+  because the concurrent writer is usually the *server*: an auto-scheduling one deposits
+  its own copy the moment the organizer writes, and an unconditional `PUT` would erase it
+  along with whatever the server had recorded about delivery. A `412` is the same
+  `Conflict` as any other precondition failure — re-read and decide, never a blind retry.
+  Live on both servers (`tests/common/imip.rs`).
 - **Optimistic concurrency rides on the `ETag`, and CalDAV can actually promise it.** It
   advertises `Capabilities::calendar_writes(WriteGuard::Enforced)` — the *other* calendar
   transport cannot (`jmap.md`), which is why the guard is a capability a host reads rather
@@ -374,7 +412,13 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
   the reason it exists beside the neutral patch spine at all; a transport whose update verb
   is already a patch (JMAP) has no such verb, which is why JMAP RSVP stays deferred until
   the neutral patch can carry a participation status (`jmap.md`). On a CalDAV auto-schedule server (RFC 6638) the changed `PARTSTAT` is what
-  the server turns into the iTIP `REPLY` to the organizer.
+  the server turns into the iTIP `REPLY` to the organizer. On a server that does **not**
+  auto-schedule (`Capabilities::calendar_scheduling` is `false` — the SabreDAV fixture, and
+  any plain RFC 4791 server), the same `PUT` stores the answer and tells nobody, and the
+  caller has to send the iTIP `REPLY` itself as an iMIP message. The engine now carries
+  that: a `Draft` with a `DraftCalendar` (`engine-rfc5322`, `imap-smtp.md`). It does **not**
+  build the `REPLY` object — the caller does, because it owns the `UID`/`SEQUENCE` the
+  answer keys to.
 
 ### What auto-scheduling actually does (observed against Stalwart)
 
@@ -424,10 +468,15 @@ what a client would assume:
   Still deferred (`calendar-semantics.md`): the **CalDAV Scheduling Inbox**
   `REPORT` (RFC 6638) — the live suite reads the inbox over raw DAV, precisely
   because the provider does not expose it yet; **driving `reconcile`/apply from a
-  real sync** (the part *fetch* landed as `Engine::message_scheduling`);
-  **client-iMIP `REPLY` delivery** over SMTP (the assembler is `text/plain`-only);
-  and **`ClientImip` local-origin persistence** (storing a brand-new inbound
+  real sync** (the part *fetch* landed as `Engine::message_scheduling`); and
+  **`ClientImip` local-origin persistence** (storing a brand-new inbound
   `REQUEST` has no provider-less single-event store path yet).
+  **Client-iMIP `REPLY` delivery over SMTP is no longer deferred** (issue #105): the
+  assembler carries a `text/calendar` alternative body part with its `method=` parameter,
+  and `Capabilities::scheduling_submission` says which transports can send one. What is
+  still the caller's job is *building* the `REPLY` object — the engine has no
+  `Event` → iTIP serializer, and the answer keys to a `UID`/`SEQUENCE` only the caller
+  holds.
 - **Only event object resources are written, not collections.** Creating or
   deleting a *calendar collection* (`MKCALENDAR`, RFC 4791 §5.3.1; collection
   `DELETE`) is out of scope — the write slice manages event resources within an
@@ -552,7 +601,8 @@ the preservation assertion is written. Observed against both:
 | Stale `If-Match` | `412` | `412` |
 | Master + `RECURRENCE-ID` in one resource | Accepted | Accepted |
 | Read-only collection | **Cannot produce one** — the harness account owns everything it can see | **The privilege fixture**: Bob's calendar, shared to Alice read-only |
-| Scheduling (RFC 6638) | **Full auto-schedule** — advertises `calendar-auto-schedule`, exposes `CALDAV:schedule-inbox-URL` | **None** — one principal, no scheduling plugin |
+| Scheduling (RFC 6638) | **Full auto-schedule** — advertises `calendar-auto-schedule`, exposes `CALDAV:schedule-inbox-URL` | **None** — the fixture loads no `Schedule\Plugin`, so its `DAV:` header lists `calendar-access` and not `calendar-auto-schedule` |
+| `Capabilities::calendar_scheduling` | `true` | `false` — **the only negative case in the repo** |
 
 Two consequences to keep in mind before touching these tests:
 

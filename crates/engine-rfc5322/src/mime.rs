@@ -4,7 +4,8 @@
 use std::fmt::Write as _;
 
 use engine_provider::{
-    Draft, DraftAttachment, DraftAttachmentDisposition, ProviderError, ProviderResult,
+    Draft, DraftAttachment, DraftAttachmentDisposition, DraftCalendar, ProviderError,
+    ProviderResult,
 };
 
 use crate::{
@@ -60,17 +61,68 @@ pub(crate) fn assemble(draft: &Draft) -> ProviderResult<MimeBody> {
     })
 }
 
+/// The message's representations, wrapped in a `multipart/alternative` as soon as there is
+/// more than one.
+///
+/// Ordered least-to-most faithful (RFC 2046 §5.1.4), so a receiving client picks the
+/// richest form it understands: plain text, then the HTML alternative, then — most
+/// faithful of all — the iTIP object, which *is* the message when the message is a
+/// scheduling reply (RFC 6047 §2.4).
+///
+/// The iTIP object belongs here rather than among the attachments precisely because it is
+/// a representation and not an enclosure: an attachment part carries a
+/// `Content-Disposition` and no `method=` parameter, and a reply sent that way is filed as
+/// a document instead of processed as an answer.
 fn body_part(draft: &Draft) -> Part {
-    match &draft.html_body {
-        Some(html) => multipart(
-            "alternative",
-            &boundary(draft, "alternative"),
-            vec![
-                text_part("plain", &draft.text_body),
-                text_part("html", html),
-            ],
+    let mut parts = vec![text_part("plain", &draft.text_body)];
+    if let Some(html) = &draft.html_body {
+        parts.push(text_part("html", html));
+    }
+    if let Some(calendar) = &draft.calendar {
+        parts.push(calendar_part(calendar));
+    }
+    if parts.len() == 1 {
+        return parts.remove(0);
+    }
+    multipart("alternative", &boundary(draft, "alternative"), parts)
+}
+
+/// The `text/calendar` body part of an iMIP message (RFC 6047 §2.4/§2.5).
+///
+/// Three things here are requirements rather than choices:
+///
+/// - **`method=`** — §2.4 requires it and receiving clients dispatch on it. Emitted in the
+///   iCalendar `METHOD` property's own uppercase spelling (RFC 5545 §3.7.2), not the engine's
+///   canonical lowercase one, so the two spellings a human sees in the raw message agree.
+/// - **`charset=utf-8`** — §2.4: a `text/*` part defaults to US-ASCII, an iCalendar object to
+///   UTF-8, so the parameter must be present or a non-ASCII `SUMMARY` is misdecoded.
+/// - **base64, never `7bit`** — §2.5. iCalendar content lines are long and folded, and a transport
+///   free to re-wrap them corrupts the object; base64 makes the bytes opaque. Line endings are
+///   normalized to CRLF first (RFC 5545 §3.1), because base64 would otherwise carry a caller's bare
+///   LF to the wire where a strict parser rejects it.
+///
+/// And one thing is deliberately absent: a `Content-Disposition`. This is not a file.
+fn calendar_part(calendar: &DraftCalendar) -> Part {
+    let mut lines = normalize_body_lines(&calendar.ical);
+    // An object that already ended with a line break splits into a trailing empty segment;
+    // emitting it would append a blank line *inside* the object. Harmless in a text body,
+    // which is why `text_part` does not bother — but here the bytes are the payload, and
+    // the part must decode to exactly the object the caller assembled.
+    if lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    let mut body = Vec::new();
+    for line in lines {
+        body.extend_from_slice(line.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    let method = calendar.method.as_str().to_ascii_uppercase();
+    Part {
+        content_headers: format!(
+            "Content-Type: text/calendar; charset=utf-8; method={method}\r\n\
+             Content-Transfer-Encoding: base64\r\n"
         ),
-        None => text_part("plain", &draft.text_body),
+        body: base64_body(&body),
     }
 }
 

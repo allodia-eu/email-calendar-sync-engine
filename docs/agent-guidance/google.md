@@ -182,6 +182,15 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
   returns `412` (the deleted event is left cancelled with a new ETag, failing the stale
   `If-Match`), so the live test does not assert re-delete idempotency — the `404`/`410`
   path is proven offline.
+- **Both scheduling capabilities are constants here** (issue #105).
+  `Capabilities::calendar_scheduling` is `true` — the service sends the iTIP
+  `REQUEST`/`REPLY`/`CANCEL` a write implies, with no opt-out a client can reach (the
+  notify controls above choose *whom* it tells, not whether it is the one telling them), so
+  unlike CalDAV there is nothing to discover. `Capabilities::scheduling_submission` is
+  **also** `true`, from the mail side: this adapter submits assembled RFC 5322 bytes through
+  `engine-rfc5322`, so it owns every `Content-Type` parameter including the `method=` that
+  makes an iTIP object a scheduling message. It is therefore usable as the *sending*
+  transport for an account whose **calendar** lives on a plain CalDAV server (`providers.md`).
 - **RSVP** (`cal_write::rsvp_event`): a one-element `attendees` array carrying the matched
   address' `responseStatus` (+ `comment`), guarded by `EventRsvp::guard` (the intent's
   revision, **not** `base`'s), with **`sendUpdates` as a query parameter** — in the body it

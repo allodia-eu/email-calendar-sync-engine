@@ -124,12 +124,86 @@ fn multistatus(body: &str) -> String {
     )
 }
 
+/// The `OPTIONS` answer `connect` consumes after discovery: a `DAV` compliance-class
+/// header and no body (RFC 4918 §10.1).
+fn options_response(dav: &str) -> String {
+    format!("HTTP/1.1 200 OK\r\nDAV: {dav}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+}
+
+#[tokio::test]
+async fn the_scheduling_probe_is_a_bare_options_whose_dav_header_reaches_the_capability() {
+    // What the replay fake structurally cannot check: it answers canned bytes whatever it
+    // is sent, so only a server that reads the request can say the method is `OPTIONS`,
+    // that it carries none of the read path's XML framing, and that the `DAV` header of
+    // the reply is what the capability is read from.
+    let (base, seen) = mock_server_capturing(vec![
+        multistatus(include_str!("../tests/fixtures/principal.xml")),
+        options_response(include_str!("../tests/fixtures/options-dav-stalwart.txt").trim()),
+    ]);
+    let provider = crate::CalDavProvider::connect(crate::CalDavConfig::new(
+        base,
+        Credentials::Basic {
+            username: "alice".to_owned(),
+            password: "pw".to_owned(),
+        },
+    ))
+    .await
+    .expect("connect");
+
+    assert!(
+        engine_provider::Provider::connection_info(&provider)
+            .capabilities
+            .calendar_scheduling()
+    );
+
+    let probe = &seen.lock().expect("seen")[1];
+    assert!(
+        probe.starts_with("OPTIONS /dav/cal/alice%40test.local/ HTTP/1.1"),
+        "the probe must be an OPTIONS on the discovered calendar home: {probe}"
+    );
+    let head = probe.to_lowercase();
+    assert!(
+        !head.contains("depth:") && !head.contains("content-type:"),
+        "a bare OPTIONS must not carry the read path's Depth/XML framing: {probe}"
+    );
+    assert!(
+        head.contains("authorization: basic"),
+        "the probe authenticates like every other request: {probe}"
+    );
+}
+
+#[tokio::test]
+async fn a_server_advertising_no_scheduling_class_yields_a_non_scheduling_capability() {
+    // SabreDAV's real header, over the real transport: `calendar-access` and no
+    // `calendar-auto-schedule`. This is the account shape where a stored RSVP tells the
+    // organizer nothing, so the capability must say so.
+    let base = mock_server(vec![
+        multistatus(include_str!("../tests/fixtures/principal.xml")),
+        options_response(include_str!("../tests/fixtures/options-dav-sabredav.txt").trim()),
+    ]);
+    let provider = crate::CalDavProvider::connect(crate::CalDavConfig::new(
+        base,
+        Credentials::Basic {
+            username: "alice".to_owned(),
+            password: "pw".to_owned(),
+        },
+    ))
+    .await
+    .expect("connect");
+    let caps = engine_provider::Provider::connection_info(&provider).capabilities;
+    assert!(!caps.calendar_scheduling());
+    // …and the rest of the calendar capability is unaffected: this server reads, writes
+    // and can express an answer. Only the delivery promise is missing.
+    assert!(caps.calendars() && caps.calendar_writes() && caps.calendar_rsvp().is_some());
+}
+
 #[tokio::test]
 async fn a_connected_provider_reports_the_negotiated_http_version() {
     // RFC 6764 §6 discovery is two PROPFINDs: the start URL yields the principal, the
     // principal yields the calendar-home-set.
     let base = mock_server(vec![
         multistatus(include_str!("../tests/fixtures/principal.xml")),
+        options_response("1, 3, calendar-access"),
         multistatus(include_str!("../tests/fixtures/calendar-home.xml")),
     ]);
     let provider = crate::CalDavProvider::connect(crate::CalDavConfig::new(
@@ -213,6 +287,7 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
     let base = mock_server(vec![
         redirect("/dav/cal"),
         multistatus(include_str!("../tests/fixtures/principal.xml")),
+        options_response("1, 3, calendar-access"),
     ]);
     let steps: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
     let recorded = std::sync::Arc::clone(&steps);
@@ -260,9 +335,10 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
 #[tokio::test]
 async fn a_connect_without_an_observer_still_discovers() {
     // Additive: the pre-existing config path is untouched.
-    let base = mock_server(vec![multistatus(include_str!(
-        "../tests/fixtures/principal.xml"
-    ))]);
+    let base = mock_server(vec![
+        multistatus(include_str!("../tests/fixtures/principal.xml")),
+        options_response("1, 3, calendar-access"),
+    ]);
     let provider = crate::CalDavProvider::connect(crate::CalDavConfig::new(
         base,
         Credentials::Basic {

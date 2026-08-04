@@ -94,6 +94,40 @@ async fn propfind_principal(
     ))
 }
 
+/// The RFC 6638 §2 compliance class a server advertises when it schedules for itself.
+const AUTO_SCHEDULE: &str = "calendar-auto-schedule";
+
+/// Asks `home_href` whether this server performs RFC 6638 scheduling.
+///
+/// RFC 4791 is calendar **access**; scheduling is a separate specification layered on top,
+/// and RFC 6638 §2 says a conforming server advertises `calendar-auto-schedule` in the
+/// `DAV:` header of an `OPTIONS` response. Without asking, a plain CalDAV server looks
+/// identical to an auto-scheduling one right up until an RSVP is stored and the organizer
+/// is never told — so this is discovered at connect, not assumed
+/// ([`Capabilities::calendar_scheduling`](engine_provider::Capabilities::calendar_scheduling)).
+///
+/// The target is the **calendar home**, not the connection's base URL: the header belongs to
+/// a DAV resource, and a server's site root need not be one — Stalwart's answers `302` to its
+/// web UI with no `DAV:` header at all.
+///
+/// A response that carries no such token — whatever its status — means "not advertised",
+/// which is a `false` capability and not an error: a server may answer `OPTIONS` with a
+/// `405`, and a connect that failed over it would refuse an account that reads and writes
+/// perfectly well. A transport failure still propagates, like every other discovery step.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] on a transport failure.
+pub(crate) async fn discover_scheduling(
+    exec: &dyn DavExecutor,
+    home_href: &str,
+) -> Result<bool, CalDavError> {
+    Ok(exec
+        .send_options(home_href)
+        .await?
+        .advertises(AUTO_SCHEDULE))
+}
+
 /// Lists the calendar collections under `home_href`.
 ///
 /// # Errors
@@ -146,9 +180,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        test_support::{Replay, ok},
+        test_support::{Replay, ok, options},
         transport::HttpResponse,
     };
+
+    /// The `DAV:` header Stalwart really returns for an `OPTIONS` on the calendar home.
+    const STALWART_DAV: &str = include_str!("../tests/fixtures/options-dav-stalwart.txt");
+    /// The same header from SabreDAV, which serves calendar access only.
+    const SABREDAV_DAV: &str = include_str!("../tests/fixtures/options-dav-sabredav.txt");
 
     /// A `307` to `location`.
     fn redirect_to(location: &str) -> HttpResponse {
@@ -157,6 +196,7 @@ mod tests {
             body: String::new(),
             location: Some(location.to_owned()),
             etag: None,
+            dav: None,
         }
     }
 
@@ -233,6 +273,7 @@ mod tests {
             body: String::new(),
             location: Some("/dav/cal".to_owned()),
             etag: None,
+            dav: None,
         };
         let exec = Replay::new(vec![
             redirect,
@@ -284,6 +325,76 @@ mod tests {
             calendars[0].id.as_str(),
             "/dav/cal/alice%40test.local/default/"
         );
+    }
+
+    #[tokio::test]
+    async fn scheduling_is_read_off_the_servers_own_options_header() {
+        // The two harness servers, verbatim. Stalwart advertises RFC 6638 §2's
+        // `calendar-auto-schedule`; SabreDAV — calendar access only — does not, and both
+        // list `calendar-access`, so nothing but the scheduling token separates them.
+        let stalwart = Replay::new(vec![options(Some(STALWART_DAV))]);
+        assert!(
+            discover_scheduling(&stalwart, "/dav/cal/alice%40test.local/")
+                .await
+                .unwrap()
+        );
+        assert_eq!(stalwart.seen()[0].0, DavMethod::Options);
+
+        let sabredav = Replay::new(vec![options(Some(SABREDAV_DAV))]);
+        assert!(
+            !discover_scheduling(&sabredav, "/calendars/alice@test.local/")
+                .await
+                .unwrap(),
+            "a plain CalDAV server must not be reported as scheduling: an RSVP there \
+             rewrites PARTSTAT and tells the organizer nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduling_is_asked_of_the_calendar_home_not_the_connection_root() {
+        // The `DAV:` header belongs to a DAV resource, and a server's site root need not
+        // be one — Stalwart's answers `302` to its web UI with no header at all. So the
+        // target is the home discovery just resolved.
+        let exec = Replay::new(vec![options(Some(STALWART_DAV))]);
+        discover_scheduling(&exec, "/dav/cal/alice%40test.local/")
+            .await
+            .unwrap();
+        assert_eq!(exec.seen()[0].1, "/dav/cal/alice%40test.local/");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_reports_no_scheduling_class_is_not_scheduling() {
+        // Three ways to say "no", none of which may fail the connect: no `DAV` header at
+        // all, a header listing only access classes, and a server that refuses `OPTIONS`
+        // outright. An account whose calendars read and write perfectly well must not be
+        // unusable because its server declined one discovery question.
+        for response in [
+            options(None),
+            options(Some("1, 3, calendar-access")),
+            HttpResponse {
+                status: 405,
+                body: String::new(),
+                location: None,
+                etag: None,
+                dav: None,
+            },
+        ] {
+            let exec = Replay::new(vec![response]);
+            assert!(!discover_scheduling(&exec, "/dav/cal/").await.unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_compliance_class_is_matched_whole_and_case_insensitively() {
+        // Servers choose their own case and spacing, so the match is on the trimmed token
+        // — but it is a *whole* token: a vendor class that merely contains the RFC 6638
+        // spelling is a different feature, and reading it as scheduling would promise a
+        // host that iTIP leaves the server when it does not.
+        let cased = Replay::new(vec![options(Some("1, 3, CALENDAR-AUTO-SCHEDULE"))]);
+        assert!(discover_scheduling(&cased, "/dav/cal/").await.unwrap());
+
+        let lookalike = Replay::new(vec![options(Some("1, 3, x-calendar-auto-schedule"))]);
+        assert!(!discover_scheduling(&lookalike, "/dav/cal/").await.unwrap());
     }
 
     #[tokio::test]

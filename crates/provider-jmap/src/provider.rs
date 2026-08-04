@@ -428,11 +428,16 @@ impl Provider for JmapProvider {
         Ok(crate::blob::message_source(self.executor.as_ref(), message).await?)
     }
 
+    /// Sends `draft` — refusing outright if it carries an iTIP scheduling object, which
+    /// this transport cannot express
+    /// (`crate::submit_body::reject_unsendable_calendar`). Checked here, at the capability
+    /// boundary, so nothing is uploaded or created before the refusal.
     async fn submit_email(
         &self,
         _account: &AccountId,
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
+        crate::submit_body::reject_unsendable_calendar(draft)?;
         let mail_account = self.executor.session().mail_account_id()?.to_owned();
         let submission_account = self.executor.session().submission_account_id()?.to_owned();
         Ok(crate::submit::send(

@@ -49,6 +49,9 @@ impl core::fmt::Debug for Credentials {
 pub(crate) enum DavMethod {
     /// `GET`, used for URI-backed CardDAV photos.
     Get,
+    /// `OPTIONS` (RFC 4918 §10.1) — asks a resource which WebDAV compliance classes it
+    /// supports, which is how RFC 6638 §2 says scheduling support is discovered.
+    Options,
     /// `PROPFIND` (RFC 4918 §9.1).
     Propfind,
     /// `REPORT` (RFC 3253 §3.6; CalDAV/RFC 6578 reports).
@@ -64,6 +67,7 @@ impl DavMethod {
     fn as_str(self) -> &'static str {
         match self {
             Self::Get => "GET",
+            Self::Options => "OPTIONS",
             Self::Propfind => "PROPFIND",
             Self::Report => "REPORT",
             Self::Put => "PUT",
@@ -102,8 +106,9 @@ pub(crate) struct WriteRequest {
 }
 
 /// A WebDAV HTTP response reduced to what the adapter needs: the status, the body,
-/// the `Location` header (so discovery can follow a well-known redirect), and the
-/// `ETag` header (the new entity tag a successful `PUT` returns).
+/// the `Location` header (so discovery can follow a well-known redirect), the
+/// `ETag` header (the new entity tag a successful `PUT` returns), and the `DAV`
+/// header (the compliance classes an `OPTIONS` reports).
 #[derive(Debug, Clone)]
 pub(crate) struct HttpResponse {
     /// The HTTP status code.
@@ -114,9 +119,30 @@ pub(crate) struct HttpResponse {
     pub location: Option<String>,
     /// The `ETag` header, if the server returned one (a write's new entity tag).
     pub etag: Option<String>,
+    /// The `DAV` header, if the server sent one (RFC 4918 §10.1): a comma-separated
+    /// list of the compliance classes this resource supports.
+    pub dav: Option<String>,
 }
 
 impl HttpResponse {
+    /// Whether the response's `DAV` header advertises `token` as a compliance class
+    /// (RFC 4918 §10.1).
+    ///
+    /// Tokens are comma-separated with optional whitespace, and a server chooses their
+    /// case freely — Stalwart sends the header name lowercased over HTTP/2 while SabreDAV
+    /// uppercases it — so the comparison is ASCII-case-insensitive on the trimmed token.
+    /// Matching whole tokens rather than substrings matters: `calendar-access` is a prefix
+    /// of nothing, but a substring search for it would also fire on a hypothetical
+    /// `x-calendar-access`, and the classes this drives a capability off must not be
+    /// guessed.
+    pub(crate) fn advertises(&self, token: &str) -> bool {
+        self.dav.as_deref().is_some_and(|header| {
+            header
+                .split(',')
+                .any(|class| class.trim().eq_ignore_ascii_case(token))
+        })
+    }
+
     /// Whether the status is a redirect carrying a new location (RFC 9110 — incl.
     /// `303 See Other`, which discovery must follow like the others).
     pub(crate) fn is_redirect(&self) -> bool {
@@ -158,6 +184,19 @@ pub(crate) trait DavExecutor: Send + Sync {
         depth: &str,
         body: String,
     ) -> Result<HttpResponse, CalDavError>;
+
+    /// `OPTIONS` on `href`, so the response's `DAV` header can be read for the compliance
+    /// classes the resource supports (RFC 4918 §10.1).
+    ///
+    /// The default routes through [`send`](DavExecutor::send) so a replay fake needs no
+    /// extra plumbing. The live transport overrides it to send a **bare** `OPTIONS` — no
+    /// `Depth`, no `Content-Type`, no body — because the read shape's XML framing is
+    /// meaningless on a request that has nothing to say and only invites a stricter server
+    /// to reject it.
+    async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
+        self.send(DavMethod::Options, href, "0", String::new())
+            .await
+    }
 
     /// Fetches an opaque binary resource without UTF-8 decoding.
     ///
@@ -259,12 +298,14 @@ impl DavClient {
         };
         let location = header(reqwest::header::LOCATION);
         let etag = header(reqwest::header::ETAG);
+        let dav = header(reqwest::header::HeaderName::from_static("dav"));
         let body = response.text().await?;
         Ok(HttpResponse {
             status,
             body,
             location,
             etag,
+            dav,
         })
     }
 
@@ -329,6 +370,11 @@ impl DavExecutor for DavClient {
         self.collect(response).await
     }
 
+    async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
+        let response = self.request(DavMethod::Options, href)?.send().await?;
+        self.collect(response).await
+    }
+
     async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
         let response = self.request(DavMethod::Get, href)?.send().await?;
         self.http_version.record(response.version());
@@ -362,89 +408,8 @@ impl DavExecutor for DavClient {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn response(status: u16, location: Option<&str>) -> HttpResponse {
-        HttpResponse {
-            status,
-            body: String::new(),
-            location: location.map(str::to_owned),
-            etag: None,
-        }
-    }
-
-    #[test]
-    fn redirect_detection_requires_a_location() {
-        assert!(response(307, Some("/dav/cal")).is_redirect());
-        assert!(!response(307, None).is_redirect());
-        // 303 See Other is a redirect too (must be followed by discovery).
-        assert!(response(303, Some("/dav/cal")).is_redirect());
-    }
-
-    #[test]
-    fn non_207_status_becomes_a_classified_error() {
-        let unauthorized = HttpResponse {
-            status: 401,
-            body: "denied".to_owned(),
-            location: None,
-            etag: None,
-        };
-        let err = unauthorized.into_multistatus().unwrap_err();
-        assert_eq!(
-            err.failure_class(),
-            engine_core::error::FailureClass::Authentication
-        );
-    }
-
-    #[test]
-    fn dav_method_tokens() {
-        assert_eq!(DavMethod::Propfind.as_str(), "PROPFIND");
-        assert_eq!(DavMethod::Get.as_str(), "GET");
-        assert_eq!(DavMethod::Report.as_str(), "REPORT");
-        assert_eq!(DavMethod::Put.as_str(), "PUT");
-        assert_eq!(DavMethod::Delete.as_str(), "DELETE");
-    }
-
-    #[test]
-    fn write_success_yields_the_new_etag() {
-        // A 2xx PUT returns the server's new entity tag (or None when it sent none).
-        let created = HttpResponse {
-            status: 201,
-            body: String::new(),
-            location: None,
-            etag: Some("\"v9\"".to_owned()),
-        };
-        assert_eq!(
-            created.into_write_etag().unwrap(),
-            Some("\"v9\"".to_owned())
-        );
-        let no_content = HttpResponse {
-            status: 204,
-            body: String::new(),
-            location: None,
-            etag: None,
-        };
-        assert_eq!(no_content.into_write_etag().unwrap(), None);
-    }
-
-    #[test]
-    fn write_precondition_failure_is_a_conflict() {
-        // RFC 4791 §5.3.2: a failed If-Match/If-None-Match is 412 → Conflict, so
-        // the caller refetches rather than blindly retrying.
-        let precondition_failed = HttpResponse {
-            status: 412,
-            body: String::new(),
-            location: None,
-            etag: None,
-        };
-        let err = precondition_failed.into_write_etag().unwrap_err();
-        assert_eq!(
-            err.failure_class(),
-            engine_core::error::FailureClass::Conflict
-        );
-    }
-}
+#[path = "response_tests.rs"]
+mod tests;
 
 // The live `DavClient` tests need a mock HTTP server; they live in a sibling file so
 // this one stays under the line limit.

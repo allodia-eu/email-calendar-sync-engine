@@ -17,6 +17,7 @@
 //! after it**: whatever the server does to the formatting it does to both, and anything
 //! it *drops* shows up as a missing line. See [`write::patched_update_preserves_the_document`].
 
+pub(crate) mod imip;
 pub(crate) mod reconcile;
 pub(crate) mod write;
 

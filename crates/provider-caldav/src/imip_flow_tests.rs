@@ -18,7 +18,7 @@ use engine_store::{ManualClock, WorkerId};
 use store_sqlite::SqliteStore;
 
 use super::CalDavProvider;
-use crate::test_support::Replay;
+use crate::test_support::{Replay, options};
 
 const PRINCIPAL: &str = include_str!("../tests/fixtures/principal.xml");
 
@@ -67,9 +67,13 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
     // (3) Drive the answer through the neutral RSVP verb into a real store. The host
     // never builds a document: it says "accept, as me@test.local", and the adapter
     // rewrites my PARTSTAT in the stored iCalendar and PUTs it back.
-    // Discovery consumes PRINCIPAL; the PUT consumes the write response.
+    // Discovery consumes PRINCIPAL and the scheduling `OPTIONS`; the PUT consumes the
+    // write response. The probe answers `calendar-auto-schedule`, because this flow is
+    // the auto-schedule one: the `PUT` *is* the whole RSVP only where the server turns
+    // the changed PARTSTAT into the iTIP `REPLY` itself.
     let exec = std::sync::Arc::new(Replay::new(vec![
         ok(PRINCIPAL),
+        options(Some("1, 3, calendar-access, calendar-auto-schedule")),
         wrote(204, Some("\"rt-v2\"")),
     ]));
     let provider = CalDavProvider::with_executor(
@@ -183,9 +187,9 @@ async fn caldav_refuses_the_two_controls_it_cannot_honour_rather_than_dropping_t
     use engine_ical::parse_calendar_object;
     use engine_provider::{EventRsvp, Provider, RsvpResponse};
 
-    use crate::test_support::{Replay, ok};
+    use crate::test_support::{Replay, ok, options};
 
-    let exec = std::sync::Arc::new(Replay::new(vec![ok(PRINCIPAL)]));
+    let exec = std::sync::Arc::new(Replay::new(vec![ok(PRINCIPAL), options(None)]));
     let provider = CalDavProvider::with_executor(
         Box::new(exec.clone()),
         "/.well-known/caldav",
@@ -242,9 +246,9 @@ async fn answering_an_invitation_you_are_not_on_is_refused() {
     use engine_ical::parse_calendar_object;
     use engine_provider::{EventRsvp, Provider, RsvpResponse};
 
-    use crate::test_support::{Replay, ok};
+    use crate::test_support::{Replay, ok, options};
 
-    let exec = std::sync::Arc::new(Replay::new(vec![ok(PRINCIPAL)]));
+    let exec = std::sync::Arc::new(Replay::new(vec![ok(PRINCIPAL), options(None)]));
     let provider = CalDavProvider::with_executor(
         Box::new(exec.clone()),
         "/.well-known/caldav",

@@ -72,6 +72,12 @@ impl GoogleCalendarProvider {
     ///
     /// Google *enforces* the lost-update guard — a stale `If-Match` ETag is a `412` on a
     /// write — so, like Graph and unlike JMAP, it advertises [`WriteGuard::Enforced`].
+    ///
+    /// It also advertises [`Capabilities::calendar_scheduling`]: Google Calendar mails the
+    /// invitations, replies and cancellations a write implies. `sendUpdates` chooses whom
+    /// it tells, not whether the server is the one telling them, so — as on Graph — the
+    /// caller never assembles an iMIP message itself. Nothing to discover: it is a property
+    /// of the service.
     #[must_use]
     pub fn new(client: GoogleClient, calendar: CalendarId) -> Self {
         Self {
@@ -81,7 +87,8 @@ impl GoogleCalendarProvider {
             capabilities: Capabilities::none()
                 .with_calendars()
                 .with_calendar_writes(WriteGuard::Enforced)
-                .with_calendar_rsvp(GOOGLE_RSVP),
+                .with_calendar_rsvp(GOOGLE_RSVP)
+                .with_calendar_scheduling(),
         }
     }
 

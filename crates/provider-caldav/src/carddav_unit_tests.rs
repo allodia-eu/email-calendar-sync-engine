@@ -101,6 +101,7 @@ async fn discovery_accepts_direct_home_and_fails_closed_on_missing_or_redirected
             body: String::new(),
             location: Some(format!("/redirect-{index}")),
             etag: None,
+            dav: None,
         })
         .collect();
     assert!(

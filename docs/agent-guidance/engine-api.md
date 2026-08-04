@@ -186,6 +186,21 @@ Step 6 lands in small, tested slices. Order and status:
      (JMAP) means the transport **cannot** refuse one: a stale edit silently wins, so a
      successful write does not imply no concurrent edit was lost, and a host that cares must
      detect it itself (`jmap.md`).
+   - **Read `Capabilities::calendar_scheduling()` before offering an RSVP, and
+     `scheduling_submission()` before composing an iMIP message** (issue #105). The first
+     says whether the *server* delivers the iTIP the answer implies — discovered on CalDAV,
+     constant elsewhere; the second says whether this transport can send one itself.
+     Together they answer "can this account answer an invitation at all?", which no single
+     flag does: on a plain CalDAV calendar, `rsvp_calendar_event` stores the right
+     `PARTSTAT` and the organizer learns nothing. A host that reads neither ships the exact
+     silent success the RSVP verb was designed to prevent.
+   - **`put_calendar_document` can create, not only replace.** `EventWrite::creating(…)`
+     asks the server to store the document **only if nothing is there** (`WritePrecondition::IfAbsent`),
+     so putting an invitation that arrived as mail onto the calendar is a guarded create: a
+     resource that appeared in the meantime is a `Conflict`, never a silent overwrite. This
+     is the path for an inbound invitation specifically because
+     `create_calendar_event`/`EventDraft` carries neither organizer nor attendees and would
+     store a plain appointment with nothing to answer on.
    - **A calendar write reconciles the store before it returns** (issue #65). A write's
      response is a *receipt*, not a document (a CalDAV `PUT` answers with an `ETag` and no
      body; a JMAP `/set` with an id and no object), so the driver alone would leave the row

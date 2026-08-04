@@ -363,6 +363,37 @@ specifics they implement against the Stalwart fixture. Read it before touching
 
 ## Known limitations (documented, not bugs)
 
+- **JMAP cannot send an iMIP scheduling message, and the adapter refuses rather than
+  trying** (issue #105). `Capabilities::scheduling_submission` is `false` here and `true`
+  on the three transports that submit assembled RFC 5322 bytes.
+
+  RFC 6047 §2.4 requires a `method=` parameter on the part's `Content-Type`, and §2.4
+  note 2 says a `text/calendar` part *without* one is not an iMIP body part at all — it
+  arrives as a calendar file the organizer's client never processes. An `EmailBodyPart`'s
+  `type` is a media type **without parameters**, so it cannot carry it. RFC 8621 §4.1.3's
+  raw `header:Content-Type` looks like the way round, and §4.6 explicitly permits
+  `Content-*` fields on a body part (forbidding them only on the `Email`).
+
+  Driven against Stalwart, all three shapes fail, and **all three send successfully** —
+  which is why this is a refusal and not a best-effort:
+
+  | `EmailBodyPart` shape | what the server stores |
+  | --- | --- |
+  | `header:Content-Type` alone | **two** `Content-Type` fields — ours, then a generated `text/plain`. A parser taking the last instance sees plain text. |
+  | `type` + `header:Content-Type` | two again — ours, then a generated `text/calendar` with no `method=`. Also breaks §4.6's "MUST NOT be two properties that represent the same header field". |
+  | `type` alone | one clean field, and no `method=` anywhere. |
+
+  Pinned in `tests/live_imip.rs`, which issues the three shapes over **raw JMAP**
+  (`Harness::jmap_post`) precisely because the adapter has no code path that builds them —
+  and which asks for `header:Content-Type:all`, the array form, because the singular form
+  returns only the last instance and would hide the duplicate entirely.
+
+  This is a **server** limitation, not necessarily a protocol one: a JMAP server that
+  emitted only the client's field would work. But Stalwart is the only JMAP mail server
+  this repo can drive (see the Fastmail note above), so shipping a path that is malformed
+  on the only server we can verify is worse than refusing. If that test ever goes red
+  because a server behaves better, the refusal should be lifted.
+
 - **Raw MIME is fetched on demand, not synced.** Sync ships Tier-1 metadata only;
   the raw RFC 5322 source is downloaded lazily via the `blobId` when a host opens a
   message (`fetch_message_source`, above) and cached by the store thereafter.

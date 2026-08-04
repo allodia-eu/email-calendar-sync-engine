@@ -225,6 +225,7 @@ mod tests {
             body: "<D:error xmlns:D=\"DAV:\"><D:valid-sync-token/></D:error>".to_owned(),
             location: None,
             etag: None,
+            dav: None,
         };
         let exec = replay(vec![
             rejected,

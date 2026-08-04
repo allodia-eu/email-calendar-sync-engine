@@ -155,6 +155,7 @@ pub struct Capabilities {
     mail_writes: bool,
     message_source: bool,
     submission: bool,
+    scheduling_submission: bool,
     idle: bool,
     calendars: bool,
     /// `None` when the adapter cannot write calendars at all; otherwise the strength
@@ -165,6 +166,7 @@ pub struct Capabilities {
     /// two surrounding controls it honours. One field rather than two, so "carries a
     /// comment but cannot RSVP" is unrepresentable.
     calendar_rsvp: Option<RsvpControls>,
+    calendar_scheduling: bool,
     contacts: bool,
     contact_writes: Option<WriteGuard>,
     contact_groups: bool,
@@ -180,10 +182,12 @@ impl Capabilities {
             mail_writes: false,
             message_source: false,
             submission: false,
+            scheduling_submission: false,
             idle: false,
             calendars: false,
             calendar_writes: None,
             calendar_rsvp: None,
+            calendar_scheduling: false,
             contacts: false,
             contact_writes: None,
             contact_groups: false,
@@ -226,6 +230,19 @@ impl Capabilities {
     #[must_use]
     pub const fn with_submission(mut self) -> Self {
         self.submission = true;
+        self
+    }
+
+    /// Marks this transport as able to send an **iMIP scheduling message** — a
+    /// [`Draft`](crate::Draft) carrying a [`DraftCalendar`](crate::DraftCalendar)
+    /// ([`Capabilities::scheduling_submission`]).
+    ///
+    /// Distinct from [`with_submission`](Self::with_submission): a transport can send
+    /// ordinary mail perfectly and still be unable to put the `method=` parameter on a body
+    /// part, which is what makes a message a scheduling message rather than a file.
+    #[must_use]
+    pub const fn with_scheduling_submission(mut self) -> Self {
+        self.scheduling_submission = true;
         self
     }
 
@@ -275,6 +292,19 @@ impl Capabilities {
     #[must_use]
     pub const fn with_calendar_rsvp(mut self, controls: RsvpControls) -> Self {
         self.calendar_rsvp = Some(controls);
+        self
+    }
+
+    /// Marks the server as performing **scheduling itself** — it delivers the iTIP
+    /// messages a calendar write implies, so the caller never has to
+    /// ([`Capabilities::calendar_scheduling`]).
+    ///
+    /// Distinct from [`with_calendar_rsvp`](Self::with_calendar_rsvp), which says only that
+    /// the transport can *express* an answer. On CalDAV those come apart, which is why this
+    /// is a flag rather than an implication — see the getter.
+    #[must_use]
+    pub const fn with_calendar_scheduling(mut self) -> Self {
+        self.calendar_scheduling = true;
         self
     }
 
@@ -330,6 +360,35 @@ impl Capabilities {
         self.submission
     }
 
+    /// Whether this transport can send an **iMIP scheduling message** — a
+    /// [`Draft`](crate::Draft) carrying a [`DraftCalendar`](crate::DraftCalendar).
+    ///
+    /// Read this together with
+    /// [`calendar_scheduling`](Self::calendar_scheduling): between them they answer the
+    /// only question that matters to a host holding an invitation — *can this account
+    /// answer it at all?* If the calendar server schedules, the answer travels by itself;
+    /// if not, it travels only if the mail transport can send one. **Neither means the
+    /// invitation cannot be answered**, and a host is better off saying so than storing a
+    /// `PARTSTAT` nobody will ever see.
+    ///
+    /// `false` on **JMAP**, and this is a server-verified fact rather than a spec reading.
+    /// The `method=` parameter that makes a part a scheduling message (RFC 6047 §2.4)
+    /// cannot go in an `EmailBodyPart`'s `type`, which is a media type without parameters.
+    /// RFC 8621 §4.1.3 appears to offer a way round — a raw `header:Content-Type` on the
+    /// part — but driven against Stalwart all three shapes fail: with the raw header alone
+    /// the server emits **two** `Content-Type` fields (ours, then a generated
+    /// `text/plain`), with `type` *and* the raw header it emits two again, and with `type`
+    /// alone the parameter is simply absent. Every one of those sends successfully and
+    /// arrives as something the organizer's client will not process. So the adapter
+    /// **refuses** the draft instead (`jmap.md`).
+    ///
+    /// `true` on **IMAP/SMTP**, **Graph** and **Google**, which submit assembled RFC 5322
+    /// bytes through `engine-rfc5322` and therefore own the parameter outright.
+    #[must_use]
+    pub const fn scheduling_submission(self) -> bool {
+        self.scheduling_submission
+    }
+
     /// Whether push / change notification ([`Watch`](crate::Watch), e.g. IMAP
     /// `IDLE`) is supported.
     #[must_use]
@@ -371,6 +430,34 @@ impl Capabilities {
         self.calendar_rsvp
     }
 
+    /// Whether the **server** performs the scheduling a calendar write implies — sending the
+    /// iTIP `REQUEST` to the invitees, the `REPLY` to the organizer, the `CANCEL` on a delete.
+    ///
+    /// [`calendar_rsvp`](Self::calendar_rsvp) answers *"can this transport express an
+    /// answer?"*. This answers *"will anyone be told?"*, and **they are different questions**.
+    /// Read this before writing, because `false` means the caller owns the delivery: it must
+    /// build the iTIP object and send it as an iMIP message itself (RFC 6047 — see
+    /// [`DraftCalendar`](crate::DraftCalendar)), or the organizer never learns the answer
+    /// while every local copy says it was sent.
+    ///
+    /// Per transport:
+    ///
+    /// - **CalDAV** — **discovered**, not assumed. RFC 4791 is calendar *access*; RFC 6638 adds
+    ///   scheduling on top and §2 makes a conforming server advertise the `calendar-auto-schedule`
+    ///   token in the `DAV:` header of an `OPTIONS` response. So the adapter asks at connect. Both
+    ///   are real: the Stalwart harness advertises it, the SabreDAV one does not (`caldav.md`).
+    /// - **Graph** and **Google** — constant `true`; both schedule server-side, with no opt-out a
+    ///   client could reach.
+    /// - **JMAP** — `true`, but for a different reason: `sendSchedulingMessages` makes it the
+    ///   *request's* choice, and the adapter asks on every write. This says the caller does not
+    ///   send the iMIP itself, which is what a caller needs to know. Note there is nothing here to
+    ///   *detect* — JMAP Calendars leaves scheduling to the implementation and offers no capability
+    ///   to probe, so a server that quietly ignores the argument would look identical (`jmap.md`).
+    #[must_use]
+    pub const fn calendar_scheduling(self) -> bool {
+        self.calendar_scheduling
+    }
+
     /// Whether address-book/contact read and sync is supported.
     #[must_use]
     pub const fn contacts(self) -> bool {
@@ -403,97 +490,5 @@ impl Capabilities {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builder_sets_each_flag_independently() {
-        assert_eq!(Capabilities::none(), Capabilities::default());
-        let caps = Capabilities::none().with_mail().with_calendars();
-        assert!(caps.mail());
-        assert!(caps.calendars());
-        assert!(!caps.submission());
-        assert!(!caps.calendar_writes());
-        assert!(!caps.mail_writes());
-    }
-
-    #[test]
-    fn full_capability_set() {
-        let caps = Capabilities::none()
-            .with_mail()
-            .with_mail_writes()
-            .with_message_source()
-            .with_submission()
-            .with_idle()
-            .with_calendars()
-            .with_calendar_writes(WriteGuard::Enforced)
-            .with_contacts()
-            .with_contact_writes(WriteGuard::Enforced)
-            .with_contact_groups()
-            .with_contact_photos();
-        assert!(caps.mail() && caps.mail_writes() && caps.submission());
-        assert!(caps.message_source() && caps.idle());
-        assert!(caps.calendars() && caps.calendar_writes());
-        assert_eq!(caps.calendar_write_guard(), Some(WriteGuard::Enforced));
-        assert!(caps.contacts() && caps.contact_writes());
-        assert!(caps.contact_groups() && caps.contact_photos());
-        assert_eq!(caps.contact_write_guard(), Some(WriteGuard::Enforced));
-    }
-
-    #[test]
-    fn a_writable_calendar_states_how_strong_its_guard_is() {
-        // "Can write" and "can refuse a stale write" are different promises, and a caller
-        // that conflates them silently clobbers concurrent edits on the transports where
-        // only the first holds. So the write capability *is* the guard strength — a
-        // writable-but-unguarded adapter (JMAP) is representable and says so.
-        let caldav = Capabilities::none()
-            .with_calendars()
-            .with_calendar_writes(WriteGuard::Enforced);
-        let jmap = Capabilities::none()
-            .with_calendars()
-            .with_calendar_writes(WriteGuard::Absent);
-
-        assert!(caldav.calendar_writes() && jmap.calendar_writes());
-        assert_eq!(caldav.calendar_write_guard(), Some(WriteGuard::Enforced));
-        assert_eq!(jmap.calendar_write_guard(), Some(WriteGuard::Absent));
-
-        // And a read-only calendar has no guard to report, because it has no write.
-        let read_only = Capabilities::none().with_calendars();
-        assert_eq!(read_only.calendar_write_guard(), None);
-    }
-
-    #[test]
-    fn idle_is_independent_of_read() {
-        // An adapter can read/sync mail without offering push (a server without IMAP
-        // `IDLE`), exactly as a read-only mailbox advertises `mail` without
-        // `mail_writes`. Push is a latency optimization layered on top of sync.
-        let poll_only = Capabilities::none().with_mail();
-        assert!(poll_only.mail() && !poll_only.idle());
-        let pushable = Capabilities::none().with_mail().with_idle();
-        assert!(pushable.mail() && pushable.idle());
-    }
-
-    #[test]
-    fn message_source_is_independent_of_read() {
-        // An adapter can sync envelope metadata without supporting full-body fetch,
-        // exactly as a read-only mailbox advertises `mail` without `mail_writes`.
-        let metadata_only = Capabilities::none().with_mail();
-        assert!(metadata_only.mail() && !metadata_only.message_source());
-    }
-
-    #[test]
-    fn calendar_writes_is_independent_of_read() {
-        // A read-only calendar advertises `calendars` without `calendar_writes`,
-        // exactly as a no-SMTP mail adapter advertises `mail` without `submission`.
-        let read_only = Capabilities::none().with_calendars();
-        assert!(read_only.calendars() && !read_only.calendar_writes());
-    }
-
-    #[test]
-    fn mail_writes_is_independent_of_read() {
-        // A read-only mailbox advertises `mail` without `mail_writes`, exactly as a
-        // read-only calendar advertises `calendars` without `calendar_writes`.
-        let read_only = Capabilities::none().with_mail();
-        assert!(read_only.mail() && !read_only.mail_writes());
-    }
-}
+#[path = "capability_tests.rs"]
+mod tests;
