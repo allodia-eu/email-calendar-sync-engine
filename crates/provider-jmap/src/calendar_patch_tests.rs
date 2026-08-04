@@ -37,7 +37,13 @@ async fn a_partial_update_sends_only_what_changed() {
     assert_eq!(method, "CalendarEvent/set");
     assert_eq!(
         args,
-        json!({ "accountId": "c", "update": { EVENT: { "title": "Renamed" } } })
+        json!({
+            "accountId": "c",
+            "update": { EVENT: { "title": "Renamed" } },
+            "sendSchedulingMessages": true,
+        }),
+        "rescheduling or renaming a meeting must reach its participants; the server sends \
+         nothing unless asked"
     );
 }
 

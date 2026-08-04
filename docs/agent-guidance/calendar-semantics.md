@@ -159,7 +159,7 @@ implemented**; the precise deferrals are listed at the end of this section.
   | CalDAV | `imip::set_my_partstat` rewrites *my* `PARTSTAT` in the stored raw (every other property survives verbatim), then a conditional `PUT`. An RFC 6638 auto-schedule server emits the `REPLY` itself. |
   | Graph | `POST /events/{id}/accept\|tentativelyAccept\|decline` with `comment` + `sendResponse` |
   | Google | `events.patch` on the attendee's `responseStatus`, with `sendUpdates=all\|none` |
-  | JMAP | `CalendarEvent/set` `update` of `participants/<my id>/participationStatus` |
+  | JMAP | `CalendarEvent/set` `update` of `participants/<my id>/participationStatus`, with `sendSchedulingMessages` carrying `notify_organizer` |
 
   **`Capabilities::calendar_rsvp` is not optional reading.** It is `Option<RsvpControls>`: whether the
   transport can answer at all, whether a `comment` has anywhere to go, whether the user may decline to
@@ -416,21 +416,24 @@ objects is the sync layer's job).
   (`Provider::rsvp_event`) has its own scenario beside it, because a green
   primitive says nothing about the adapter's address resolution, document patching
   and guard assembly.
-- ⚠️ **…but on Stalwart, only over CalDAV.** The same round trip answered over
-  **JMAP** stores the `participationStatus` and the organizer is *never told*
-  (`provider-jmap/tests/live_calendar_rsvp.rs`, which pins that absence). Same two
-  accounts, same invitation, same neutral verb, minutes apart — so it is the
-  transport, not the fixture. A JMAP RSVP against this server is a **silent**
-  non-delivery: the user answers, their own calendar agrees, nobody hears. The
-  adapter is not at fault (the patch lands, it merges, a wrong address is refused);
-  what is missing is server-side scheduling, which JMAP Calendars leaves to the
-  implementation. So treat `Capabilities::calendar_rsvp` on a JMAP account as
-  **unproven per server** until checked the same way — and if Stalwart starts
-  scheduling, that test fails, which is the signal to revisit rather than relax it.
-  Re-confirmed on the pinned **v0.16.15**, checked in all three places a `REPLY`
-  could land (the organizer's calendar copy, their RFC 6638 scheduling inbox, their
-  mailbox): the JMAP answer moves none of them, the CalDAV control moves all three.
-  Tracked in issue #93; do not re-investigate without reading it first.
+- **An RSVP reaches the organizer over JMAP too — but only because the request asks.**
+  On JMAP, scheduling is **opt-in per `/set`**: `sendSchedulingMessages` (default
+  **`false`**) is what makes the server derive the iTIP message from the change.
+  Omit it and the answer is stored and goes nowhere — the user answers, their own
+  calendar agrees, nobody hears, and nothing reports a failure. Pinned from both
+  sides in `provider-jmap/tests/live_calendar_scheduling.rs`
+  (`jmap_rsvp_reaches_the_organizer`, `jmap_a_quiet_answer_reaches_nobody`), plus
+  the write verbs' half (`jmap_cancelling_a_meeting_reaches_the_attendee`).
+- ⚠️ **This doc asserted the opposite for months, and the mistake is instructive.**
+  It said Stalwart did not schedule from a JMAP answer. It does. `provider-jmap`
+  never sent `sendSchedulingMessages`, so the server was correctly told to notify
+  nobody, and a live test recorded our own omission as *server* behaviour — because
+  the only request shape it ever sent was the one the adapter builds. The CalDAV
+  control arm made it worse: it "worked", which looked like proof the difference was
+  server-side, when CalDAV auto-schedules per RFC 6638 and has no equivalent opt-in,
+  so the two arms were never comparable. **The rule:** a live test that asserts an
+  absence must first prove the absence is not caused by something we failed to send.
+  History in #102, which inverts #93.
 - **A real server-authored invitation parses end to end**, with its Windows `TZID`
   quoted and QP-escaped, its calendar part three levels down a `multipart/mixed`
   tree and dispositioned as an attachment, and its `ATTENDEE` folded mid-`mailto:`.

@@ -1,3 +1,5 @@
+use serde_json::json;
+
 use super::*;
 
 const CALENDAR_GET: &str = include_str!("../tests/fixtures/calendar_get.json");
@@ -81,6 +83,47 @@ fn meeting_maps_participants() {
         .expect("alice is a participant");
     assert_eq!(alice.participation_status, ParticipationStatus::Accepted);
     assert!(alice.has_role(&ParticipantRole::Chair));
+}
+
+#[test]
+fn a_jscalendar_1_0_participant_still_has_an_address() {
+    // The fixture above is JSCalendar **2.0** (`calendarAddress`), which is what Stalwart
+    // serves. RFC 8984 — 1.0 — states the same fact as `sendTo`, a map of *method* → URI,
+    // and 2.0 reserves that name, so no server sets both. Reading only 2.0 would leave every
+    // participant on a 1.0 server with `email: None`: they would render nameless, reconcile
+    // against nothing, and no invitation on that server could be answered.
+    let one_zero = json!({
+        "@type": "Event",
+        "id": "z1",
+        "calendarIds": { "b": true },
+        "uid": "onezero@test.local",
+        "title": "Older server",
+        "start": "2026-08-01T09:00:00",
+        "duration": "PT30M",
+        "participants": {
+            "p1": {
+                "@type": "Participant",
+                "name": "Bob Tester",
+                "sendTo": { "imip": "mailto:bob@test.local" },
+                "participationStatus": "accepted",
+            },
+            // Non-mail methods are not addresses. Letting one through would put a `tel:` or
+            // an `https:` URI in a field the whole engine treats as an email address.
+            "p2": { "@type": "Participant", "sendTo": { "other": "https://example.com/rsvp" } },
+        },
+    });
+    let event = event_from_json(&one_zero).unwrap();
+    let bob = event
+        .participants
+        .iter()
+        .find(|p| p.name.as_deref() == Some("Bob Tester"))
+        .expect("the 1.0 participant is projected");
+    assert_eq!(bob.email.as_deref(), Some("bob@test.local"));
+    assert!(
+        event.participants.iter().any(|p| p.email.is_none()),
+        "a participant reachable only by a non-mail method has no email address, and saying \
+         so is better than inventing one"
+    );
 }
 
 #[test]

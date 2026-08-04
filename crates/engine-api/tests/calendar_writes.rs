@@ -45,11 +45,15 @@ const SELF_ADDRESS: &str = "me@test.local";
 /// The address the seeded invitation was actually delivered to.
 const ALIAS_ADDRESS: &str = "info@test.local";
 
-/// What this fake advertises: a **server-scheduled** transport, the shape CalDAV (RFC 6638)
-/// and JMAP both have. The server emits the `REPLY` the moment it sees the status change, so
+/// What this fake advertises: a **server-scheduled** transport, the shape CalDAV's RFC 6638
+/// auto-schedule has. The server emits the `REPLY` the moment it sees the status change, so
 /// there is nowhere to put a note and no way to keep the organizer out of it — and the guard
 /// is enforced, as a `412` would be. Declared once and used to both advertise and enforce, so
 /// the fake cannot drift from what it claims.
+///
+/// JMAP looks server-scheduled but is **not** one of these: it schedules only when the
+/// request asks (`sendSchedulingMessages`), so it honours the quiet toggle. CalDAV is the
+/// only transport this fake still describes.
 const SERVER_SCHEDULED: RsvpControls = RsvpControls {
     comment: false,
     suppress_notification: false,

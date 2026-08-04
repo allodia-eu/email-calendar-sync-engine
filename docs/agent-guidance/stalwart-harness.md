@@ -98,7 +98,11 @@ These were confirmed before/with implementation; do not relitigate without cause
      how v0.16.14's `ifInState` enforcement was caught (see `jmap.md` — it changed the
      evidence but not the decision, because the engine sends no precondition).
   4. Say what the bump did **not** fix, so the next agent does not re-run the same
-     investigation hoping. It did not fix the JMAP RSVP scheduling gap (issue #93).
+     investigation hoping. Be equally careful about what you attribute to the server in the
+     first place: the "JMAP RSVP scheduling gap" this line used to cite (#93) was never
+     Stalwart's — `provider-jmap` had simply never sent `sendSchedulingMessages`, and two
+     version bumps were taken partly in the hope of fixing a defect that did not exist
+     (#102).
 - **Transport:** **plaintext HTTP on 8080** (JMAP + CalDAV + management) and
   **plaintext SMTP on 25**; **IMAP is implicit-TLS on 993**. Stalwart **supports**
   STARTTLS on the standard IMAP (143) and submission (587) ports, but its

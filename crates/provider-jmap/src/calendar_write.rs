@@ -65,6 +65,24 @@ const CREATION_ID: &str = "new";
 /// the event's `locations` map is empty, so it cannot collide with one the server assigned.
 const NEW_LOCATION_ID: &str = "1";
 
+/// Whether a `CalendarEvent/set` asks the server to send the iTIP messages the change
+/// implies (`sendSchedulingMessages`). Always `true` on these three verbs, and the constant
+/// exists so that is one decision rather than three.
+///
+/// **The argument defaults to `false`**, so omitting it is not "leave it to the server" — it
+/// is "tell nobody". Cancelling a meeting you organize would store the deletion and leave
+/// every attendee holding a meeting that is not happening; moving one would leave them at
+/// the old time. The neutral write verbs carry no notify control for a caller to state
+/// instead ([`EventDraft`] cannot even name a participant), and the transports that do
+/// schedule — CalDAV's RFC 6638 auto-schedule, and Graph — do it unconditionally. So the
+/// engine's answer to "does a calendar write reach its participants?" stays the same
+/// whichever transport is under it.
+///
+/// The RSVP is the exception and takes the caller's choice
+/// ([`calendar_rsvp`](crate::calendar_rsvp)), because there the neutral verb *does* carry
+/// one.
+const SCHEDULE: bool = true;
+
 /// Creates an event: one `CalendarEvent/set` `create` of a JSCalendar object.
 ///
 /// The **server** assigns the id, so the receipt is the only place the caller learns it. The
@@ -85,6 +103,7 @@ pub(crate) async fn create_event(
     let args = json!({
         "accountId": calendar_account,
         "create": { CREATION_ID: object },
+        "sendSchedulingMessages": SCHEDULE,
     });
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
@@ -148,7 +167,11 @@ pub(crate) async fn patch_event(
 
     let mut update = Map::new();
     update.insert(target.to_owned(), Value::Object(patch));
-    let args = json!({ "accountId": calendar_account, "update": update });
+    let args = json!({
+        "accountId": calendar_account,
+        "update": update,
+        "sendSchedulingMessages": SCHEDULE,
+    });
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
     let call = req.invoke("CalendarEvent/set", args);
@@ -189,7 +212,11 @@ pub(crate) async fn delete_event(
     deletion: &EventDeletion,
 ) -> Result<(), JmapError> {
     let target = deletion.event.as_str();
-    let args = json!({ "accountId": calendar_account, "destroy": [target] });
+    let args = json!({
+        "accountId": calendar_account,
+        "destroy": [target],
+        "sendSchedulingMessages": SCHEDULE,
+    });
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
     let call = req.invoke("CalendarEvent/set", args);

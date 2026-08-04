@@ -144,6 +144,17 @@ So, concretely, before a provider change is done:
    truth rather than a guess.
 3. **Prove the new check can fail** — revert the fix, watch the test go red, restore. A live test
    that would pass against the broken code is not a live test; it is a slow unit test.
+4. **A live test that asserts an *absence* must first prove the absence is not something we
+   failed to send.** A real server does not rescue you from the fake-request-shape trap above
+   if you only ever send one shape — it just makes the wrong conclusion look authoritative.
+   Before recording "the server does not do X", send the request that *asks* for X and show
+   the difference; then pin **both** directions, so the claim cannot be produced by an adapter
+   that is stuck. Skipping this cost months: #93 recorded "Stalwart schedules no iTIP `REPLY`
+   from a JMAP RSVP" as server behaviour, drafted upstream bug reports, and shaped a
+   capability around it — when `provider-jmap` had simply never sent
+   `sendSchedulingMessages`, whose default is `false`. A cross-protocol control arm is *not*
+   this proof: the CalDAV arm "worked" only because RFC 6638 auto-schedules and has no
+   equivalent opt-in, so the two were never comparable. See #102.
 4. If a live run genuinely cannot be done, say so explicitly in the PR and name what is unverified.
    That is a disclosure, not a default.
 
