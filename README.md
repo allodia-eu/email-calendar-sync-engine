@@ -9,30 +9,46 @@ calendar, and contact sync, search, indexing, and durable writes. Designed to be
 native apps, command-line tools, local daemons, and server-side adapters.
 
 The engine is **provider-agnostic**: it speaks modern and legacy protocols behind normalized
-models, and keeps a local, encrypted source of truth so the host stays useful offline.
+models, and keeps a local source of truth so the host stays useful offline.
 
-> **Status:** The core domain model, sync orchestration, SQLite store, search/index, MIME body extraction, shared TLS stack, and several provider adapters are implemented and tested. The project is still in early product development, so public APIs may evolve as more hosts and language bindings are integrated.
+> **Status:** The core domain model, sync orchestration, SQLite store, search/index, MIME body extraction, iCalendar/RFC 5322 handling, iTIP/iMIP scheduling, the unified people index, the shared TLS stack, and all five provider adapters are implemented and tested against real servers. The project is still in early product development, so public APIs may evolve as more hosts and language bindings are integrated.
 
 ## What the engine gives a host
 
 - **Normalized mail, calendar, and JSContact-shaped contact models** across JMAP, IMAP/SMTP,
   CalDAV/CardDAV, Google, and Microsoft Graph.
-- **Local-first sync** into an encrypted SQLite store with full-text search, so reads and search work offline.
+- **Local-first sync** into a SQLite store with full-text search, so reads and search work offline.
 - **Durable writes** for mail, events, and source-targeted contacts through a crash-safe outbox.
+- **Scheduling that is a first-class verb** — inbound iTIP/iMIP parsing with a trust decision, and
+  an RSVP that answers on every calendar transport, telling the host up front which of the
+  surrounding controls (a note to the organizer, suppressing the notification) it can honour.
+- **A unified people index** across every contact source, plus recipient history for compose
+  autocomplete.
 - **Streaming sync** that commits chunks as they arrive, so a UI can render recent mail and progress before a full mailbox finishes.
 - **Provider-native raw payloads preserved** (MIME, iCalendar, JSCalendar, JSContact, vCard,
   and provider JSON) for lossless re-parsing and writes.
 - **Multi-account** by design, with a shared TLS trust policy per host.
 
+At-rest protection is a *construction* detail, not a fork in the contract: the default is plain
+SQLite over the host OS's file encryption, and SQLCipher is an opt-in build. The store trait is
+encryption-agnostic either way.
+
 ## Implemented providers
 
 | Provider | Crate | Mail | Calendar | Contacts | Push |
 | --- | --- | --- | --- | --- | --- |
-| **JMAP** | `provider-jmap` | read/write/submit | read/write | RFC 9610 read/write | EventSource |
-| **IMAP + SMTP** | `provider-imap` | read/write/submit | — | — | IDLE |
-| **CalDAV + CardDAV** | `provider-caldav` | — | read/write + iMIP RSVP | vCard read/write | — |
-| **Microsoft Graph** | `provider-graph` | read | — | personal read/write + directories | — |
-| **Google** | `provider-google` | read/write/submit | read/write | People read/write + directories | — |
+| **JMAP** | `provider-jmap` | read/write/submit | read/write + RSVP | RFC 9610 read/write | EventSource |
+| **IMAP + SMTP** | `provider-imap` | read/write/submit (incl. iMIP) | — | — | IDLE |
+| **CalDAV + CardDAV** | `provider-caldav` | — | read/write + RSVP | vCard read/write | — |
+| **Microsoft Graph** | `provider-graph` | read/write/submit (incl. iMIP) | read/write + RSVP | personal read/write + directories | — |
+| **Google** | `provider-google` | read/write/submit (incl. iMIP) | read/write + RSVP | People read/write + directories | — |
+
+Every capability above is advertised at runtime on `ConnectionInfo::capabilities`, so a host asks
+what this account can do rather than switching on which provider it is. That includes the parts
+that genuinely differ: whether a write carries an **enforced** guard (CalDAV, Graph and Google for
+calendars; CalDAV/CardDAV and Google for contacts) or none (JMAP, where no per-object precondition
+exists), whether the *server* schedules the iTIP itself, and whether this transport can send an
+iMIP message on the host's behalf.
 
 See [`docs/providers.md`](docs/providers.md) for the full provider matrix, RFC/standard details, and per-provider connection examples.
 
@@ -69,7 +85,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 use engine_tls::TlsClientConfig;
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 
-let tls = TlsClientConfig::bundled(); // or bundled_and_system(), system_only(), etc.
+// The bundled Mozilla roots (the engine default). For bundled ∪ OS store, custom roots, or
+// the platform verifier, build one from a policy: engine_tls::client_config(&TlsPolicy::…)?
+let tls = TlsClientConfig::bundled();
 let config = JmapConfig::new(
     "https://jmap.example.com",
     Credentials::basic("alice@example.com", "app-password"),
@@ -137,6 +155,28 @@ let draft = Draft::new(
 let outcome = engine.submit_mail(&provider, &account, &draft).await?;
 ```
 
+### Sync a calendar and answer an invitation
+
+`sync_calendar` materializes occurrences within a horizon — the window the host actually renders —
+rather than expanding a recurrence forever. An RSVP is its own verb, guarded by the revision the
+event was read at, and reconciles the store before it returns.
+
+```rust
+use engine_api::{EventRsvp, Horizon, RsvpResponse, TimeZoneId};
+
+let horizon = Horizon::new(window_start, window_end)?; // UtcDateTime bounds, half-open
+let host_zone = TimeZoneId::iana("Europe/Amsterdam")?;
+let report = engine
+    .sync_calendar(&provider, &account, horizon, &host_zone)
+    .await?;
+
+let event = &engine.events(&account).await?[0];
+let rsvp = EventRsvp::to(event, "alice@example.com", RsvpResponse::Accepted);
+let write = engine
+    .rsvp_calendar_event(&provider, &account, "rsvp-1", event, &rsvp)
+    .await?;
+```
+
 ## How the pieces fit
 
 Your application talks to **one type** — `Engine`, from `engine-api` — and hands it the provider
@@ -155,7 +195,8 @@ flowchart TD
         API["<b>engine-api</b> — <b>Engine</b><br/>the one stable facade<br/>open · sync · read<br/>search · write"]
         SYNC["<b>engine-sync</b><br/>streaming sync loop +<br/>crash-safe write outbox"]
         SEARCH["<b>engine-search</b><br/>query DSL → ranked,<br/>coverage-aware results"]
-        MODEL["<b>engine-core</b><br/>+ <b>engine-mime</b><br/>+ <b>engine-recurrence</b><br/>normalized domains:<br/>Message · Thread · Mailbox<br/>Event · Calendar<br/>ContactCard · Person"]
+        MODEL["<b>engine-core</b><br/>normalized domains:<br/>Message · Thread · Mailbox<br/>Event · Calendar<br/>ContactCard · Person"]
+        FORMATS["format layers<br/><b>engine-mime</b> · <b>engine-ical</b><br/><b>engine-rfc5322</b> · <b>engine-recurrence</b><br/>parse in · assemble out<br/>expand recurrences"]
         STORE["<b>engine-store</b> trait<br/>→ <b>store-sqlite</b><br/>local-first SQLite<br/>FTS index · raw blobs<br/>offline reads &amp; search"]
 
         API --> SYNC
@@ -164,14 +205,15 @@ flowchart TD
         SYNC -->|normalize + derive| MODEL
         SYNC -->|commit chunks atomically| STORE
         SEARCH --> STORE
+        MODEL --- FORMATS
     end
 
     subgraph ADAPTERS["Provider adapters — pick only the crates you need"]
         TRAIT["<b>engine-provider</b><br/>contracts:<br/>Provider · ContactsProvider · Watch"]
         JMAP["<b>provider-jmap</b><br/>mail + calendar + contacts<br/>EventSource push"]
         IMAP["<b>provider-imap</b><br/>mail + SMTP submit<br/>IDLE push"]
-        CALDAV["<b>provider-caldav</b><br/>calendar + contacts<br/>iMIP RSVP"]
-        GRAPH["<b>provider-graph</b><br/>Microsoft 365 mail + contacts"]
+        CALDAV["<b>provider-caldav</b><br/>calendar + contacts<br/>RFC 6638 scheduling"]
+        GRAPH["<b>provider-graph</b><br/>Microsoft 365 mail<br/>+ calendar + contacts"]
         GOOGLE["<b>provider-google</b><br/>Gmail + Calendar + People"]
 
         TRAIT -.- JMAP
@@ -186,7 +228,7 @@ flowchart TD
     SYNC ==>|"drives"| TRAIT
     STORE ~~~ TRAIT
     ADAPTERS --- TLS
-    JMAP --> SRV["🌐 Mail &amp; calendar servers<br/>JMAP · IMAP/SMTP<br/>CalDAV · Microsoft Graph"]
+    JMAP --> SRV["🌐 Mail &amp; calendar servers<br/>JMAP · IMAP/SMTP · CalDAV/CardDAV<br/>Microsoft Graph · Google"]
     IMAP --> SRV
     CALDAV --> SRV
     GRAPH --> SRV
@@ -201,9 +243,9 @@ flowchart TD
 
     class HOST host
     class API facade
-    class SYNC,SEARCH,MODEL internal
+    class SYNC,SEARCH,MODEL,FORMATS internal
     class STORE,TLS storec
-    class TRAIT,JMAP,IMAP,CALDAV,GRAPH adapter
+    class TRAIT,JMAP,IMAP,CALDAV,GRAPH,GOOGLE adapter
     class SRV external
     style ENGINE fill:none,stroke:#94a3b8,stroke-dasharray: 6 4
     style ADAPTERS fill:none,stroke:#94a3b8,stroke-dasharray: 6 4
@@ -238,20 +280,28 @@ sequenceDiagram
 
 ### Writes are durable — recorded locally before any network I/O
 
-Every UI-visible write (send, flag, move, delete, calendar create/update/delete) becomes a pending
-op in the store's outbox **first**, then a fenced worker performs the provider side effect and
-records the outcome. An ambiguous outcome — an SMTP connection lost after `DATA` — parks as
-`NeedsConfirmation` and is never blind-retried, so the engine cannot double-send mail.
+Every UI-visible write (send, flag, move, delete, calendar create/update/delete/RSVP, contact
+create/patch/delete) becomes a pending op in the store's outbox **first**, then a fenced worker
+performs the provider side effect and records the outcome. An ambiguous outcome — an SMTP
+connection lost after `DATA` — parks as `NeedsConfirmation` and is never blind-retried, so the
+engine cannot double-send mail. The states below are `PendingOpState`, which a host can read back
+for any op via `Engine::pending_op_state`.
 
 ```mermaid
 stateDiagram-v2
     direction LR
-    [*] --> Enqueued: recorded durably first
-    Enqueued --> Claimed: fenced worker picks it up
-    Claimed --> Succeeded: provider confirms
-    Claimed --> Failed: provider rejects
-    Claimed --> NeedsConfirmation: ambiguous (SMTP lost after DATA)
+    [*] --> Pending: recorded durably first
+    Pending --> InFlight: fenced worker claims it
+    InFlight --> Succeeded: provider confirms
+    InFlight --> Failed: provider rejects
+    InFlight --> NeedsConfirmation: ambiguous (SMTP lost after DATA)
     Succeeded --> [*]
+    Failed --> [*]
+    note right of NeedsConfirmation
+        parked, never blind-retried —
+        awaits a sync, a Message-ID
+        lookup, or the host's decision
+    end note
 ```
 
 ## Workspace layout
@@ -268,14 +318,21 @@ stateDiagram-v2
 │   ├── store-sqlite/             # SQLite implementation
 │   ├── engine-search/            # Query DSL and executor
 │   ├── engine-recurrence/        # Recurrence expansion
-│   ├── engine-mime/              # MIME / RFC 5322 body extraction
+│   ├── engine-mime/              # Inbound MIME body extraction
+│   ├── engine-rfc5322/           # Outbound RFC 5322 / MIME assembly
+│   ├── engine-ical/              # iCalendar parse, build, and patch
 │   ├── engine-tls/               # Shared TLS trust policy
 │   ├── provider-jmap/            # JMAP adapter
 │   ├── provider-imap/            # IMAP + SMTP adapter
-│   ├── provider-caldav/          # CalDAV adapter
+│   ├── provider-caldav/          # CalDAV + CardDAV adapter
 │   ├── provider-graph/           # Microsoft Graph adapter
+│   ├── provider-google/          # Gmail + Google Calendar + People adapter
 │   ├── engine-cli/               # Headless debugging / fixture harness
 │   └── stalwart-harness/         # Docker-based protocol test harness
+├── docker/                       # Stalwart and SabreDAV test servers
+├── tools/                        # OAuth helpers for the Graph and Google live tests
+├── fuzz/                         # cargo-fuzz targets for the hostile-input parsers
+├── scripts/ci/                   # The gate CI runs, runnable locally
 └── docs/
     ├── providers.md              # User-facing provider guide
     └── agent-guidance/           # Architecture and modeling specs
@@ -290,6 +347,13 @@ cargo build --workspace --all-features
 cargo test --workspace --all-features
 ```
 
+That suite is fully offline. Every protocol this repo speaks also has a **real** server behind
+env-gated live tests — a Dockerized Stalwart (JMAP, IMAP/SMTP, CalDAV/CardDAV) and a SabreDAV
+fixture as a second CalDAV implementation via [`docker/`](docker/), plus token-gated suites for
+Microsoft Graph and Google. Run the harness with `scripts/ci/stalwart-live.sh`; the offline
+provider fakes answer canned bytes regardless of the request, so they cannot catch a wrong
+request shape and a provider change is not finished until a real server has accepted it.
+
 The full CI gate (format on nightly, clippy, build, test, docs) is documented in [`AGENTS.md`](AGENTS.md).
 
 ## Design and agent documentation
@@ -299,8 +363,10 @@ The full CI gate (format on nightly, clippy, build, test, docs) is documented in
 - [`docs/agent-guidance/engine-api.md`](docs/agent-guidance/engine-api.md) — host facade design
 - [`docs/agent-guidance/providers.md`](docs/agent-guidance/providers.md) — provider contract
 - [`docs/agent-guidance/store-and-sync.md`](docs/agent-guidance/store-and-sync.md) — store and sync model
+- [`docs/agent-guidance/calendar-semantics.md`](docs/agent-guidance/calendar-semantics.md) — timezones, recurrence, and iTIP/iMIP scheduling
+- [`docs/agent-guidance/contacts.md`](docs/agent-guidance/contacts.md) — contact sources and the people index
 - [`docs/agent-guidance/tls.md`](docs/agent-guidance/tls.md) — TLS trust policy
-- [`docs/agent-guidance/jmap.md`](docs/agent-guidance/jmap.md), [`imap-smtp.md`](docs/agent-guidance/imap-smtp.md), [`caldav.md`](docs/agent-guidance/caldav.md), [`graph.md`](docs/agent-guidance/graph.md) — per-provider deep dives
+- [`docs/agent-guidance/jmap.md`](docs/agent-guidance/jmap.md), [`imap-smtp.md`](docs/agent-guidance/imap-smtp.md), [`caldav.md`](docs/agent-guidance/caldav.md), [`graph.md`](docs/agent-guidance/graph.md), [`google.md`](docs/agent-guidance/google.md) — per-provider deep dives
 
 ## License
 

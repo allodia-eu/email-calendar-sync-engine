@@ -59,23 +59,40 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 
 | Provider | Crate | Data domains | Push | Standards |
 | --- | --- | --- | --- | --- |
-| **JMAP** | `provider-jmap` | mail/calendar/contact read/write, mail submit | EventSource (RFC 8620 §7.3) | RFC 8620, RFC 8621, RFC 8984, RFC 9610 |
-| **IMAP + SMTP** | `provider-imap` | mail read/write (SMTP submit optional) | IMAP `IDLE` (RFC 2177) | RFC 9051, RFC 7162, RFC 2177, RFC 6154, RFC 6851, RFC 4315, RFC 5321/5322, RFC 2047 |
-| **CalDAV/CardDAV** | `provider-caldav` | calendar/contact read/write, iMIP inbound RSVP | — | RFC 4791, RFC 6350, RFC 6352, RFC 6578 |
-| **Microsoft Graph** | `provider-graph` | mail read; personal/directory contacts | — | Microsoft Graph v1.0 |
-| **Google** | `provider-google` | Gmail/Calendar/People read; owned writes | — | Gmail, Calendar, People APIs |
+| **JMAP** | `provider-jmap` | mail/calendar/contact read/write, mail submit, RSVP | EventSource (RFC 8620 §7.3) | RFC 8620, RFC 8621, RFC 8984, RFC 9610 |
+| **IMAP + SMTP** | `provider-imap` | mail read/write (SMTP submit optional, incl. iMIP) | IMAP `IDLE` (RFC 2177) | RFC 9051, RFC 7162, RFC 2177, RFC 6154, RFC 6851, RFC 4315, RFC 5321/5322, RFC 2047 |
+| **CalDAV/CardDAV** | `provider-caldav` | calendar/contact read/write, RSVP, iMIP inbound | — | RFC 4791, RFC 6350, RFC 6352, RFC 6578, RFC 6638 |
+| **Microsoft Graph** | `provider-graph` | mail read/write/submit (incl. iMIP), calendar read/write + RSVP, personal/directory contacts | — | Microsoft Graph v1.0 |
+| **Google** | `provider-google` | Gmail read/write/submit (incl. iMIP), Calendar read/write + RSVP, People read; owned writes | — | Gmail, Calendar, People APIs |
 
 ## Capability matrix
 
 | Capability | JMAP | IMAP | DAV | Graph | Google |
 | --- | --- | --- | --- | --- | --- |
-| mail read/write | yes | yes | — | read | yes |
-| submission | yes | optional SMTP | — | — | yes |
+| mail read/write | yes | yes | — | yes | yes |
+| submission | yes | optional SMTP | — | yes | yes |
+| iMIP submission | — | with SMTP | — | yes | yes |
 | push | EventSource | IDLE | — | — | — |
-| calendar read/write | yes | — | yes | — | yes |
+| calendar read/write | yes | — | yes | yes | yes |
+| calendar write guard | absent | — | enforced ETag | enforced ETag | enforced ETag |
+| RSVP | yes | — | yes | yes | yes |
+| server-side scheduling | yes (asked for) | — | discovered (RFC 6638) | yes | yes |
 | contact read | yes | — | yes | personal + directory | owned + suggested + directory |
 | contact write guard | absent | — | enforced ETag | absent | enforced ETag |
 | groups/photos | yes/yes | — | yes/yes | read/yes | read/yes |
+
+Two rows deserve a note, because they are the ones a host is tempted to hard-code:
+
+- **iMIP submission** (`scheduling_submission`) is not "does this account have mail". It is whether
+  the transport lets the adapter own the `method=` `Content-Type` parameter that makes an iTIP
+  object a scheduling message (RFC 6047 §2.4). The three that assemble RFC 5322 bytes themselves
+  can; JMAP, which hands the server a body structure, cannot — see
+  [`jmap.md`](agent-guidance/jmap.md).
+- **Server-side scheduling** (`calendar_scheduling`) means the *server* emits the iTIP, so the
+  caller must not also send one. CalDAV **discovers** it (RFC 6638 §2 gives a probeable answer, and
+  SabreDAV without its scheduling plugin is a real `false`). JMAP advertises it because the adapter
+  *asks* for it on every verb (`sendSchedulingMessages`), with nothing to probe — JMAP Calendars
+  exposes no capability for it.
 
 ## JMAP
 
@@ -199,9 +216,14 @@ share HTTP/TLS/WebDAV transport only; normalization remains domain-specific.
 
 ### Capabilities
 
-CalDAV advertises `calendars` and guarded `calendar_writes`. CardDAV advertises
-`contacts`, contact groups/photos, and guarded writes when the bound address
-book grants write privileges. Mail methods are not supported.
+CalDAV advertises `calendars`, guarded `calendar_writes`, and `calendar_rsvp`, plus
+`calendar_scheduling` **when the server advertises it** — the `calendar-auto-schedule`
+token in the `DAV:` header of an `OPTIONS` response (RFC 6638 §2), which is a real
+`false` on a SabreDAV without its scheduling plugin, so it is discovered rather than
+assumed.
+
+CardDAV advertises `contacts`, contact groups/photos, and guarded writes when the
+bound address book grants write privileges. Mail methods are not supported.
 
 ### Connection example
 
@@ -247,7 +269,7 @@ The `with_calendar` argument is either a name relative to the calendar home (e.g
 - Event identity is the resource href; the iCalendar `UID` is the separate cross-system identifier.
 - Writes use conditional `PUT`/`DELETE` (`If-None-Match: *` for creates, `If-Match: "<etag>"` for updates/deletes) for optimistic concurrency.
 - The body round-trips the preserved `RawIcal`; the engine does not re-serialize from the lossy projection. For simple creates, the crate provides `provider_caldav::build_event_ical`.
-- iMIP inbound parse and the RSVP `PARTSTAT` write primitive are implemented; the full mail-sync wiring and client-side iMIP SMTP delivery are still being integrated.
+- iMIP inbound parse (`Engine::message_scheduling`, with the trust decision) and the RSVP write are implemented. Outbound iMIP delivery rides a submission transport that advertises `scheduling_submission` — SMTP, Graph, or Gmail — via `Draft::calendar`; a CalDAV server that advertises `calendar-auto-schedule` sends the `REPLY` itself, and the adapter says so rather than letting a caller send a second one.
 
 ## Microsoft Graph
 
@@ -258,15 +280,18 @@ personal contacts.
 
 ### Supported standards and extensions
 
-- **Microsoft Graph v1.0** mail API (`/me/mailFolders`, `/me/mailFolders/{id}/messages/delta`).
+- **Microsoft Graph v1.0** mail API (`/me/mailFolders`, `/me/mailFolders/{id}/messages/delta`, `/me/sendMail` in MIME format).
+- Calendar API (`/me/calendars`, `calendarView/delta` with `Prefer: outlook.timezone` so DST resolves server-side), `If-Match` conditional writes, and the RSVP action endpoints.
 - Contact folders/contacts delta, organizational contacts, and directory users.
 - `Prefer: IdType="ImmutableId"` so object ids are stable across folder moves.
 
 ### Capabilities
 
-Mail, message source/submission, calendar, and contact capabilities depend on
-the concrete adapter. Personal Graph contacts are writable with
-`WriteGuard::Absent`; organizational contacts and directory users are read-only.
+Per adapter: `GraphProvider` (mail) advertises `mail`, `mail_writes`, `submission`,
+and `scheduling_submission`; `GraphCalendarProvider` advertises `calendars`, guarded
+`calendar_writes` (`If-Match`), `calendar_rsvp`, and `calendar_scheduling`. Personal
+Graph contacts are writable with `WriteGuard::Absent`; organizational contacts and
+directory users are read-only.
 
 ### Connection example
 
@@ -298,7 +323,10 @@ Shared mailboxes can be accessed with `GraphClient::for_mailbox(token, MailboxPr
 ## Google
 
 `provider-google` covers Gmail, Google Calendar, and Google People through one
-bearer-auth HTTP transport. People sources are independently bound as owned
+bearer-auth HTTP transport. `GoogleProvider` (Gmail) advertises `mail`,
+`mail_writes`, `message_source`, `submission`, and `scheduling_submission`;
+`GoogleCalendarProvider` advertises `calendars`, ETag-guarded `calendar_writes`,
+`calendar_rsvp`, and `calendar_scheduling`. People sources are independently bound as owned
 connections, Other Contacts, Workspace directory people, and contact groups.
 Only owned connections are writable, and People ETags enforce updates.
 Expired People sync tokens restart only their source as a snapshot; contact
@@ -331,9 +359,12 @@ The `engine_provider::Capabilities` bitset tells the engine what a connected acc
 | `mail_writes` | The account can mutate mail: mark-read/flag, move, delete. |
 | `message_source` | The account can fetch a message's raw RFC 5322 source on demand. |
 | `submission` | The account can submit/send new mail. |
+| `scheduling_submission` | Submission can carry an iTIP object as an iMIP scheduling part (RFC 6047), rather than as a plain calendar attachment. |
 | `idle` | The provider can watch for push notifications and emit `WatchEvent`s. |
 | `calendars` | The account can read/sync calendars and events. |
-| `calendar_writes` | The account can create/update/delete calendar events. |
+| `calendar_writes` | The account can create/update/delete calendar events; query its guard strength. |
+| `calendar_rsvp` | The account can answer an invitation, and which surrounding controls (organizer comment, suppressing the notification) it honours. |
+| `calendar_scheduling` | The **server** sends the iTIP itself, so a caller must not also send one. |
 | `contacts` | The adapter can discover/sync address books or contact cards. |
 | `contact_writes` | The source accepts create/patch/delete; query its guard strength. |
 | `contact_groups` | Contact group cards can be read. |
