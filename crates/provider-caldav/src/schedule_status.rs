@@ -35,7 +35,7 @@ const SCHEDULE_STATUS: &str = "SCHEDULE-STATUS";
 /// Returns [`ReplyDelivery::NotReported`] for a document with no `ORGANIZER` or no status on
 /// it, and [`ReplyDelivery::Unrecognized`] for a status whose class RFC 5546 §3.6 does not
 /// define — which keeps the token for a support log rather than guessing a verdict from it.
-pub(crate) fn reply_delivery(raw_ical: &str) -> ReplyDelivery {
+pub fn reply_delivery(raw_ical: &str) -> ReplyDelivery {
     let Some(status) = organizer_status(raw_ical) else {
         return ReplyDelivery::NotReported;
     };

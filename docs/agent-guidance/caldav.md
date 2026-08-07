@@ -439,12 +439,51 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
     at 10 ms resolution. It is gated on `calendar_scheduling`, since a server that schedules
     nothing has nothing to report and the request would be pure latency.
 
-  `scripts/dev/caldav_reply_delivery_probe.py` in the **product-core** repo drives this
-  against any server (`list` is read-only; `answer` stores a real `.eml` and times the
-  verdict). The engine now carries
+  Drive this against any server with **`cargo run -p dav-cli -- -p <profile> …`** (see
+  "Debugging a live server" below). The engine now carries
   that: a `Draft` with a `DraftCalendar` (`engine-rfc5322`, `imap-smtp.md`). It does **not**
   build the `REPLY` object — the caller does, because it owns the `UID`/`SEQUENCE` the
   answer keys to.
+
+### Debugging a live server
+
+**`cargo run -p dav-cli -- …`** talks to a real CalDAV server *through this adapter*. Reach for
+it before writing a script: a throwaway with its own HTTP client and its own iCalendar parser
+answers questions about the throwaway, and will cheerfully report a server behaviour the
+adapter never sees — or miss one it does.
+
+```sh
+cargo run -p dav-cli -- profiles                     # what is configured, and from where
+cargo run -p dav-cli -- -p stalwart info             # capabilities discovery concluded
+cargo run -p dav-cli -- -p soverin list              # events + the reply verdict each carries
+cargo run -p dav-cli -- -p soverin get <uid>         # the stored document, verbatim
+cargo run -p dav-cli -- -p soverin store invite.eml  # guarded create from a real invitation
+cargo run -p dav-cli -- -p soverin rsvp <uid> accept # answer, and print the delivery verdict
+cargo run -p dav-cli -- -p stalwart raw PROPFIND /.well-known/caldav   # outside the adapter
+```
+
+`store` and `rsvp` **write to a real calendar**, and on an auto-scheduling server `rsvp`
+emails the organizer. Point them at a test account.
+
+`raw` is the deliberate exception: it does not go through the adapter, because some questions
+cannot be asked through a typed calendar API — a `.well-known` redirect, a scheduling-inbox
+`PROPFIND`, a property nothing models yet. It prints the bytes unparsed, which is what you
+need when the adapter and the server disagree.
+
+**Servers are named, not retyped.** A profile is a mode-600 file at
+`~/.config/allodia/servers/<name>.env` setting `URL` / `USER` / `PASS` and optionally
+`CALENDAR`. It lives outside every checkout for two reasons: it holds a password, and the
+engine and the product core are worked on in parallel, so a profile written while debugging
+one is usable from the other without being copied. `stalwart`, `stalwart-organizer` and
+`sabredav` need no file — they are this repo's own docker fixtures, and they follow
+`STALWART_HTTP_ADDR` / `SABREDAV_HTTP_ADDR` so the tool always points at the same server the
+live suite does. Nothing else is built in: the product core runs its *own* harness on its own
+ports as a separate compose project, and hard-coding that here would put product knowledge
+into a product-neutral engine.
+
+Set `CALENDAR` for any real account. Its collection is rarely called `default`, and omitting
+it fails as a `404` from inside a sync, which reads like a broken adapter rather than a
+misconfigured URL.
 
 ### What auto-scheduling actually does (observed against Stalwart)
 
