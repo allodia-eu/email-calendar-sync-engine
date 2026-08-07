@@ -56,7 +56,7 @@ fn assemble_message_rejects_header_injection_via_crlf() {
 
     // A Message-ID and an address with CRLF are rejected the same way.
     let mut bad_addr = draft(&["bob@test.local"], "body");
-    bad_addr.from = EmailAddress::new("a@b.com>\r\nRCPT TO:<attacker@evil.example");
+    bad_addr.from = EmailAddress::new("a@example.com>\r\nRCPT TO:<attacker@evil.example");
     assert!(assemble_message(&bad_addr, fixed_date()).is_err());
 }
 

@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn plain_text_body_becomes_a_collapsed_snippet() {
-        let raw = b"From: a@b.com\r\nSubject: Hi\r\n\
+        let raw = b"From: a@example.com\r\nSubject: Hi\r\n\
             Content-Type: text/plain; charset=utf-8\r\n\r\n\
             Hello   there,\r\n\r\nthis is  the body.\r\n"
             .to_vec();
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn html_only_body_is_reduced_to_text() {
-        let raw = b"From: a@b.com\r\nSubject: Hi\r\n\
+        let raw = b"From: a@example.com\r\nSubject: Hi\r\n\
             Content-Type: text/html; charset=utf-8\r\n\r\n\
             <html><body><h1>Sale</h1><p>Big <b>news</b> today</p></body></html>\r\n"
             .to_vec();
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn a_body_with_no_text_yields_no_preview() {
-        let raw = b"From: a@b.com\r\nSubject: Hi\r\n\
+        let raw = b"From: a@example.com\r\nSubject: Hi\r\n\
             Content-Type: text/plain\r\n\r\n   \r\n"
             .to_vec();
         assert_eq!(preview_from_source(raw), None);

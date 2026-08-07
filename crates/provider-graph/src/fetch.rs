@@ -444,12 +444,12 @@ mod tests {
             .filter(|(key, _)| *key != "/mailFolders/msgfolderroot")
             .collect();
         routes.push((
-            "/users/info@company.org/mailFolders/msgfolderroot",
+            "/users/info@example.org/mailFolders/msgfolderroot",
             json(include_str!(
                 "../tests/fixtures/wellknown/msgfolderroot.json"
             )),
         ));
-        let client = fake_client(routes).with_principal(MailboxPrincipal::user("info@company.org"));
+        let client = fake_client(routes).with_principal(MailboxPrincipal::user("info@example.org"));
         assert!(folders(&client).await.is_ok());
     }
 

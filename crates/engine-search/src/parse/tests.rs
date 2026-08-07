@@ -35,12 +35,12 @@ fn empty_quoted_free_text_is_dropped() {
 #[test]
 fn each_mail_operator_parses() {
     let q = MailQuery::parse(
-        "from:alice@x.com to:bob@x.com cc:carol@x.com mailbox:inbox label:work keyword:$flagged",
+        "from:alice@example.com to:bob@example.com cc:carol@example.com mailbox:inbox label:work keyword:$flagged",
     )
     .unwrap();
-    assert_eq!(q.from, vec!["alice@x.com"]);
-    assert_eq!(q.to, vec!["bob@x.com"]);
-    assert_eq!(q.cc, vec!["carol@x.com"]);
+    assert_eq!(q.from, vec!["alice@example.com"]);
+    assert_eq!(q.to, vec!["bob@example.com"]);
+    assert_eq!(q.cc, vec!["carol@example.com"]);
     assert_eq!(q.mailbox, vec!["inbox"]);
     assert_eq!(q.label, vec!["work"]);
     assert_eq!(q.keyword, vec!["$flagged"]);
@@ -98,7 +98,7 @@ fn urls_and_ratios_are_not_operators() {
 
 #[test]
 fn quoted_operator_values_keep_spaces() {
-    let q = MailQuery::parse("subject:\"quarterly report\" from:\"a b@x.com\"").unwrap();
+    let q = MailQuery::parse("subject:\"quarterly report\" from:\"a b@example.com\"").unwrap();
     assert_eq!(
         q.text.scoped,
         vec![ScopedTerm {
@@ -106,7 +106,7 @@ fn quoted_operator_values_keep_spaces() {
             text: "quarterly report".into(),
         }]
     );
-    assert_eq!(q.from, vec!["a b@x.com"]);
+    assert_eq!(q.from, vec!["a b@example.com"]);
 }
 
 #[test]
@@ -125,14 +125,14 @@ fn operator_keywords_are_case_insensitive() {
 
 #[test]
 fn repeated_operators_accumulate() {
-    let q = MailQuery::parse("from:a@x.com from:b@x.com").unwrap();
-    assert_eq!(q.from, vec!["a@x.com", "b@x.com"]);
+    let q = MailQuery::parse("from:a@example.com from:b@example.com").unwrap();
+    assert_eq!(q.from, vec!["a@example.com", "b@example.com"]);
 }
 
 #[test]
 fn from_str_impl_parses() {
-    let q: MailQuery = "from:a@x.com".parse().unwrap();
-    assert_eq!(q.from, vec!["a@x.com"]);
+    let q: MailQuery = "from:a@example.com".parse().unwrap();
+    assert_eq!(q.from, vec!["a@example.com"]);
     let c: CalendarQuery = "calendar:work".parse().unwrap();
     assert_eq!(c.calendar, vec!["work"]);
 }
@@ -168,13 +168,13 @@ fn mail_errors() {
 #[test]
 fn each_calendar_operator_parses() {
     let q = CalendarQuery::parse(
-        "calendar:work attendee:carol@x.com organizer:dave@x.com location:\"room 4\" \
+        "calendar:work attendee:carol@example.com organizer:dave@example.com location:\"room 4\" \
              after:2026-06-01 before:2026-07-01 has_conference:true",
     )
     .unwrap();
     assert_eq!(q.calendar, vec!["work"]);
-    assert_eq!(q.attendee, vec!["carol@x.com"]);
-    assert_eq!(q.organizer, vec!["dave@x.com"]);
+    assert_eq!(q.attendee, vec!["carol@example.com"]);
+    assert_eq!(q.organizer, vec!["dave@example.com"]);
     assert_eq!(
         q.text.scoped,
         vec![ScopedTerm {
