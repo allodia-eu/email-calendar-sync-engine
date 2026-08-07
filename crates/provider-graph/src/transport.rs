@@ -322,16 +322,16 @@ mod tests {
         let me = GraphClient::connect("super-secret-token", crate::test_support::tls()).unwrap();
         assert_eq!(me.url("/messages"), format!("{GRAPH_BASE}/me/messages"));
         // A shared mailbox roots requests at /users/{address} — the documented shape
-        // `…/users/info@company.org/mailFolders('Inbox')/messages`.
+        // `…/users/info@example.org/mailFolders('Inbox')/messages`.
         let shared = GraphClient::for_mailbox(
             "t",
-            MailboxPrincipal::user("info@company.org"),
+            MailboxPrincipal::user("info@example.org"),
             crate::test_support::tls(),
         )
         .unwrap();
         assert_eq!(
             shared.url("/mailFolders('Inbox')/messages"),
-            format!("{GRAPH_BASE}/users/info@company.org/mailFolders('Inbox')/messages")
+            format!("{GRAPH_BASE}/users/info@example.org/mailFolders('Inbox')/messages")
         );
         // The Debug rendering must not leak the bearer token.
         assert!(!format!("{me:?}").contains("super-secret-token"));

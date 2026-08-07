@@ -64,7 +64,7 @@ fn a_server_that_says_nothing_reports_nothing_rather_than_success() {
 fn every_success_class_is_a_delivery() {
     for status in ["1.0", "1.1", "1.2", "2.0"] {
         let ical = format!(
-            "BEGIN:VEVENT\r\nORGANIZER;SCHEDULE-STATUS={status}:mailto:a@b.com\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nORGANIZER;SCHEDULE-STATUS={status}:mailto:a@example.com\r\nEND:VEVENT\r\n"
         );
         assert_eq!(
             reply_delivery(&ical),
@@ -80,7 +80,7 @@ fn every_success_class_is_a_delivery() {
 fn every_failure_class_is_a_failure() {
     for status in ["3.7", "3.8", "5.1", "5.2", "5.3"] {
         let ical = format!(
-            "BEGIN:VEVENT\r\nORGANIZER;SCHEDULE-STATUS={status}:mailto:a@b.com\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nORGANIZER;SCHEDULE-STATUS={status}:mailto:a@example.com\r\nEND:VEVENT\r\n"
         );
         assert!(reply_delivery(&ical).failed(), "{status}");
     }
@@ -92,7 +92,8 @@ fn an_undefined_status_class_keeps_its_token_rather_than_being_discarded() {
     // licence to pick the convenient answer — and it is precisely the value someone
     // debugging an unusual server needs to see, so it survives rather than becoming
     // "nothing was reported".
-    let ical = "BEGIN:VEVENT\r\nORGANIZER;SCHEDULE-STATUS=4.0:mailto:a@b.com\r\nEND:VEVENT\r\n";
+    let ical =
+        "BEGIN:VEVENT\r\nORGANIZER;SCHEDULE-STATUS=4.0:mailto:a@example.com\r\nEND:VEVENT\r\n";
     let verdict = reply_delivery(ical);
     assert_eq!(
         verdict,
@@ -106,7 +107,8 @@ fn an_undefined_status_class_keeps_its_token_rather_than_being_discarded() {
 
 #[test]
 fn a_non_numeric_status_is_kept_rather_than_dropped() {
-    let ical = "BEGIN:VEVENT\r\nORGANIZER;SCHEDULE-STATUS=weird:mailto:a@b.com\r\nEND:VEVENT\r\n";
+    let ical =
+        "BEGIN:VEVENT\r\nORGANIZER;SCHEDULE-STATUS=weird:mailto:a@example.com\r\nEND:VEVENT\r\n";
     assert_eq!(reply_delivery(ical).status(), Some("weird"));
 }
 
@@ -153,14 +155,15 @@ fn a_status_split_across_a_fold_is_still_read() {
 #[test]
 fn a_parameter_name_is_matched_case_insensitively() {
     // RFC 5545 §3.1: parameter names are case-insensitive. Servers do vary.
-    let ical = "BEGIN:VEVENT\r\nORGANIZER;schedule-status=5.2:mailto:a@b.com\r\nEND:VEVENT\r\n";
+    let ical =
+        "BEGIN:VEVENT\r\nORGANIZER;schedule-status=5.2:mailto:a@example.com\r\nEND:VEVENT\r\n";
     assert!(reply_delivery(ical).failed());
 }
 
 #[test]
 fn a_quoted_status_carrying_a_description_keeps_its_class() {
     let ical = "BEGIN:VEVENT\r\n\
-         ORGANIZER;SCHEDULE-STATUS=\"5.2;Could not deliver\":mailto:a@b.com\r\n\
+         ORGANIZER;SCHEDULE-STATUS=\"5.2;Could not deliver\":mailto:a@example.com\r\n\
          END:VEVENT\r\n";
     assert_eq!(
         reply_delivery(ical),
@@ -173,7 +176,7 @@ fn a_quoted_status_carrying_a_description_keeps_its_class() {
 #[test]
 fn a_colon_inside_a_quoted_parameter_does_not_end_the_parameters() {
     let ical = "BEGIN:VEVENT\r\n\
-         ORGANIZER;CN=\"Doe: Jane\";SCHEDULE-STATUS=5.2:mailto:a@b.com\r\n\
+         ORGANIZER;CN=\"Doe: Jane\";SCHEDULE-STATUS=5.2:mailto:a@example.com\r\n\
          END:VEVENT\r\n";
     assert!(reply_delivery(ical).failed());
 }
@@ -181,7 +184,7 @@ fn a_colon_inside_a_quoted_parameter_does_not_end_the_parameters() {
 #[test]
 fn a_semicolon_inside_the_value_is_not_a_parameter() {
     // No parameters at all — everything after the first unquoted colon is the value.
-    let ical = "BEGIN:VEVENT\r\nORGANIZER:mailto:weird;address@b.com\r\nEND:VEVENT\r\n";
+    let ical = "BEGIN:VEVENT\r\nORGANIZER:mailto:weird;address@example.com\r\nEND:VEVENT\r\n";
     assert_eq!(reply_delivery(ical), ReplyDelivery::NotReported);
 }
 
@@ -200,7 +203,7 @@ fn an_empty_document_reports_nothing() {
 fn a_property_merely_starting_with_organizer_is_not_the_organizer() {
     // `X-ORGANIZER-HINT` is not ORGANIZER; a prefix match would read a status off it.
     let ical = "BEGIN:VEVENT\r\n\
-         X-ORGANIZER-HINT;SCHEDULE-STATUS=5.2:mailto:a@b.com\r\n\
+         X-ORGANIZER-HINT;SCHEDULE-STATUS=5.2:mailto:a@example.com\r\n\
          END:VEVENT\r\n";
     assert_eq!(reply_delivery(ical), ReplyDelivery::NotReported);
 }

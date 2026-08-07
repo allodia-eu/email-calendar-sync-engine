@@ -313,7 +313,7 @@ mod tests {
         assert!(OwnerAddresses::new(["   "]).is_empty());
         // A non-owner participant leaves my_partstat unset.
         let mut ev = event();
-        ev.participants = vec![Participant::attendee("someone@else.com")];
+        ev.participants = vec![Participant::attendee("someone@example.com")];
         assert_eq!(project_event(&ev, &owner()).index.my_partstat, None);
     }
 }
