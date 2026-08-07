@@ -31,6 +31,22 @@ Read before relevant work:
 - Files must stay under 500 lines. Split by responsibility before crossing that limit. This is
   CI-enforced by [`scripts/ci/check-file-length.sh`](scripts/ci/check-file-length.sh) (rustfmt and
   clippy have no per-file length lint), which runs in CI and locally from the repo root.
+- **Identifiers in fixtures and docs use reserved names — never a real domain.** Addresses,
+  hostnames and calendar ids in tests, fixtures and documentation must sit under a name reserved
+  for the purpose: `example.com` / `.net` / `.org` (RFC 2606 §3), anything under `.test`,
+  `.example`, `.invalid` or `.localhost` (RFC 2606 §2), or the harness's `test.local` (RFC 6762).
+  CI-enforced by
+  [`scripts/ci/check-fixture-identifiers.sh`](scripts/ci/check-fixture-identifiers.sh).
+
+  This is a rule about **live debugging**, which is when it gets broken. The best fixtures are the
+  *observed bytes* a real server returned — that is why they catch what invented ones miss — and
+  those bytes carry whoever the account belonged to. Pasting them in is one keystroke; a public
+  repository remembers them permanently, because a force-push moves a ref and leaves the old commit
+  served by SHA. Anonymise **as you write the fixture**, keeping the byte *shape* (a fold that
+  splits a parameter name must still split it) and replacing only the identifiers.
+
+  A real domain that is structurally required — a provider's own identifier format, like Google's
+  `<opaque>@google.com` iCalUID — belongs in `exempt()` in that script, with its reason.
 - Prefer small, testable modules over broad abstractions.
 - Do not add speculative features, knobs, or provider shortcuts.
 - Do not refactor unrelated code. Mention unrelated issues in the final answer instead.
@@ -188,6 +204,7 @@ MSRV — that floor is `rust-version` in the root `Cargo.toml` and moves indepen
 
 ```sh
 scripts/ci/check-file-length.sh       # every tracked *.rs must be <= 500 lines
+scripts/ci/check-fixture-identifiers.sh   # no real domains in fixtures or docs
 cargo +nightly fmt --all              # fix formatting first (nightly rustfmt.toml)
 export RUSTFLAGS="-D warnings" RUSTDOCFLAGS="-D warnings"   # match CI: warnings are errors
 cargo +nightly fmt --all --check      # must now be clean
