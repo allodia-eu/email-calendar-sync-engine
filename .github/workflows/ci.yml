@@ -98,6 +98,12 @@ jobs:
       - name: File length (<= 500 lines per *.rs)
         run: scripts/ci/check-file-length.sh
 
+      # A fixture built from live debugging carries the debugged account's identifiers, and a
+      # public repo remembers them past any force-push. Machine enforcement of the AGENTS.md
+      # reserved-names rule; dependency-free, so a leak fails in seconds rather than after a build.
+      - name: Fixture identifiers (reserved names only)
+        run: scripts/ci/check-fixture-identifiers.sh
+
       - name: Format
         run: cargo +nightly-2026-07-07 fmt --all --check
 
