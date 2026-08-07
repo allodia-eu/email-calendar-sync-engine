@@ -1,0 +1,33 @@
+# A dev tool for talking to a real CalDAV server through the engine's own adapter.
+#
+# Unlike `tools/graph-oauth` and `tools/google-oauth` — which are standalone, detached from
+# the workspace, and speak raw HTTP — this one **depends on the engine** and is a workspace
+# member on purpose. Its entire value is that it exercises the shipped code path, so a
+# signature change that broke it must fail the build rather than surface months later at the
+# moment someone reaches for it. `crates/stalwart-harness` is the same shape: dev-only, in the
+# workspace, excluded from the coverage floor (see `COVERAGE_IGNORE` in ci.yml).
+[package]
+name = "dav-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dav"
+path = "src/main.rs"
+
+[dependencies]
+engine-core = { workspace = true }
+engine-ical = { workspace = true }
+engine-mime = { workspace = true }
+engine-provider = { workspace = true }
+engine-tls = { workspace = true, features = ["reqwest"] }
+provider-caldav = { workspace = true }
+tokio = { workspace = true }
+# Only for the `raw` escape hatch, which is deliberately outside the adapter.
+reqwest = { workspace = true }
+
+[lints]
+workspace = true

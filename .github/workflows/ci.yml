@@ -324,7 +324,7 @@ jobs:
     # below. Codecov's own equivalent lives in codecov.yml's `ignore:` — keep the two in
     # sync (different tools: a regex here, globs there).
     env:
-      COVERAGE_IGNORE: 'stalwart-harness/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/|provider-graph/tests/'
+      COVERAGE_IGNORE: 'stalwart-harness/|dav-cli/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/|provider-graph/tests/'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 

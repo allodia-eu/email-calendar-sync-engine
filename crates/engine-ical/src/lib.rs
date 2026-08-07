@@ -55,7 +55,7 @@ use event::{event_from_vevent, vevent_uid};
 // The fold-aware line-surgery engine: the one implementation of "rewrite this content
 // line, leave every other byte alone", shared by the structural patcher and the CalDAV
 // `imip` RSVP primitive.
-pub use lines::{Document, Edit, Edits};
+pub use lines::{Document, Edit, Edits, LineEdit};
 // The structural patcher is an *implementation detail* of `Provider::patch_event`: a
 // host states the neutral `EventPatch`/`PatchTarget` intent (`engine-provider`) and never
 // reaches for the iCalendar surgery itself.

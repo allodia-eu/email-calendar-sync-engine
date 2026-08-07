@@ -147,6 +147,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dav-cli"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "engine-ical",
+ "engine-mime",
+ "engine-provider",
+ "engine-tls",
+ "provider-caldav",
+ "reqwest",
+ "tokio",
+]
+
+[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

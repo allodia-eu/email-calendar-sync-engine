@@ -1,0 +1,35 @@
+dav — talk to a real CalDAV server through the engine's own adapter.
+
+  Every command but `raw` drives the real CalDavProvider: the same discovery, sync and
+  RSVP path the product uses. What it prints is what a host would get.
+
+USAGE
+  dav [--profile NAME] [--url U --user U --pass P] [--calendar C] <command>
+
+CONNECTION
+  --profile, -p NAME   a file in ~/.config/allodia/servers/, or a built-in fixture
+  --url --user --pass  an explicit server; overrides the profile's fields
+  --calendar C         bind one collection (a real account's is rarely `default`)
+
+COMMANDS
+  profiles                  what is configured, and where each came from
+  info                      connect, and print what discovery concluded
+  list                      events, each with the reply verdict its bytes carry
+  get <uid>                 the stored iCalendar document, verbatim
+  store <file.eml|.ics>     put an invitation on the calendar (guarded create)
+  rsvp <uid> <accept|decline|tentative>
+                            answer it, and print the delivery verdict
+  raw <METHOD> <href> [--depth N] [--body FILE|allprop]
+                            one request, outside the adapter, printed unparsed
+
+WRITES REACH REAL SERVERS
+  `store` and `rsvp` change a real calendar. On an auto-scheduling server `rsvp`
+  emails the organizer. Point them at a test account.
+
+EXAMPLES
+  dav profiles
+  dav -p stalwart info
+  dav -p my-server list
+  dav -p my-server store ~/Downloads/invite.eml
+  dav -p my-server rsvp 3f2b9c14-… accept
+  dav -p stalwart raw PROPFIND /dav/cal/carol@test.local/ --depth 1 --body allprop
