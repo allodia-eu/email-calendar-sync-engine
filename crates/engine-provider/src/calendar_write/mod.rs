@@ -60,7 +60,7 @@ use engine_core::{
     version::RevisionTokens,
 };
 pub use patch::{EventEdit, EventPatch, PatchTarget, TextEdit};
-pub use rsvp::{EventRsvp, RsvpResponse};
+pub use rsvp::{EventRsvp, ReplyDelivery, RsvpResponse};
 use serde::{Deserialize, Serialize};
 
 /// A new event to create.
@@ -280,17 +280,37 @@ pub struct EventWriteReceipt {
     /// JMAP supplies none, because a `CalendarEvent` has no per-object revision. An empty
     /// set means the caller learns the new revision from the next sync.
     pub revisions: RevisionTokens,
+    /// For an **RSVP**, what the server said about getting the answer to the organizer.
+    ///
+    /// [`NotReported`](ReplyDelivery::NotReported) on every other verb, and on any transport
+    /// that does not report — which is most of them. Read [`ReplyDelivery`] before acting on
+    /// it; in particular, silence is not success.
+    pub reply_delivery: ReplyDelivery,
 }
 
 impl EventWriteReceipt {
-    /// Records a successful write.
+    /// Records a successful write, with nothing reported about scheduling.
+    ///
+    /// Every verb but an RSVP wants this, and so does an RSVP on a transport that reports
+    /// nothing — which is most of them. That is why a reporting adapter opts *in* via
+    /// [`with_reply_delivery`](Self::with_reply_delivery) rather than every other caller
+    /// opting out: an adapter that has never heard of this says "I don't know", which is
+    /// true, instead of claiming a delivery it never observed.
     #[must_use]
     pub fn new(event: EventId, uid: Uid, revisions: RevisionTokens) -> Self {
         Self {
             event,
             uid,
             revisions,
+            reply_delivery: ReplyDelivery::NotReported,
         }
+    }
+
+    /// Records what the server reported about delivering an RSVP to the organizer.
+    #[must_use]
+    pub fn with_reply_delivery(mut self, delivery: ReplyDelivery) -> Self {
+        self.reply_delivery = delivery;
+        self
     }
 }
 

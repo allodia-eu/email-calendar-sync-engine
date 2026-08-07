@@ -42,7 +42,7 @@ mod watch;
 
 pub use calendar_write::{
     EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
-    PatchTarget, RsvpResponse, TextEdit, WritePrecondition,
+    PatchTarget, ReplyDelivery, RsvpResponse, TextEdit, WritePrecondition,
 };
 pub use capability::{Capabilities, RsvpControls, WriteGuard};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};

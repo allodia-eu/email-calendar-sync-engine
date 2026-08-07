@@ -398,7 +398,13 @@ impl Provider for CalDavProvider {
         rsvp: &EventRsvp,
     ) -> ProviderResult<EventWriteReceipt> {
         CALDAV_RSVP.accept(rsvp)?;
-        Ok(crate::write::rsvp_event(self.executor.as_ref(), base, rsvp).await?)
+        Ok(crate::write::rsvp_event(
+            self.executor.as_ref(),
+            base,
+            rsvp,
+            self.capabilities.calendar_scheduling(),
+        )
+        .await?)
     }
 
     async fn delete_event(

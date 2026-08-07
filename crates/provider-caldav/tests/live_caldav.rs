@@ -383,6 +383,20 @@ async fn caldav_rsvp_through_the_neutral_verb_reaches_the_organizer() {
     scheduling::an_rsvp_through_the_neutral_verb_reaches_the_organizer(&parties).await;
 }
 
+/// The RSVP receipt reports exactly what the server said about delivering the reply — which
+/// on Stalwart is nothing at all, even though the reply demonstrably arrives.
+#[tokio::test]
+async fn caldav_rsvp_receipt_reports_what_the_server_said_about_delivery() {
+    let Some(parties) =
+        scheduling::parties("caldav_rsvp_receipt_reports_what_the_server_said_about_delivery")
+            .await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    scheduling::an_rsvp_receipt_reports_what_the_server_said_about_delivery(&parties).await;
+}
+
 /// An organizer's delete reaches the attendee as `STATUS:CANCELLED` — the attendee's copy
 /// is tombstoned, not removed.
 #[tokio::test]

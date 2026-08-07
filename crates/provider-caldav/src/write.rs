@@ -24,7 +24,7 @@ use engine_core::{
 };
 use engine_ical::{build_event_ical, patch_event_ical};
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
+    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, ReplyDelivery,
     WritePrecondition,
 };
 
@@ -119,6 +119,16 @@ pub(crate) async fn patch_event(
 /// adapter — so a host that reads capabilities never reaches those errors, and one that does
 /// not gets a refusal rather than a silent drop.
 ///
+/// # The `PUT` is the whole *write*, and not the whole story
+///
+/// It stores the answer, and on an auto-scheduling server it is also what makes the reply
+/// leave — but it says nothing about whether the reply *arrived*. That verdict is written
+/// into the stored object as `SCHEDULE-STATUS` (RFC 6638 §3.2.9), so where the server
+/// schedules, the object is read back once and the result rides home on
+/// [`EventWriteReceipt::reply_delivery`]. Most servers report nothing; one real deployment
+/// reports a permanent failure on every reply it ever sends. Neither may be guessed at, which
+/// is why [`ReplyDelivery`] has a third state — see [`reply_delivery`].
+///
 /// # Errors
 ///
 /// Returns [`CalDavError::Ical`] if the base carries no stored `raw_ical` (never synced from
@@ -130,6 +140,7 @@ pub(crate) async fn rsvp_event(
     exec: &dyn DavExecutor,
     base: &Event,
     rsvp: &EventRsvp,
+    scheduling: bool,
 ) -> Result<EventWriteReceipt, CalDavError> {
     let stored = base.raw_ical.as_ref().ok_or_else(|| {
         CalDavError::ical(
@@ -140,7 +151,7 @@ pub(crate) async fn rsvp_event(
         )
     })?;
     let ical = crate::imip::set_my_partstat(stored, &rsvp.attendee, &rsvp.response.status())?;
-    put(
+    let revisions = put(
         exec,
         &rsvp.event,
         &ical,
@@ -148,8 +159,51 @@ pub(crate) async fn rsvp_event(
             .as_ref()
             .map_or(Precondition::None, |tokens| guard(tokens.etag.as_ref())),
     )
-    .await
-    .map(|revisions| EventWriteReceipt::new(rsvp.event.clone(), rsvp.uid.clone(), revisions))
+    .await?;
+    let receipt = EventWriteReceipt::new(rsvp.event.clone(), rsvp.uid.clone(), revisions);
+    Ok(receipt.with_reply_delivery(reply_delivery(exec, rsvp, scheduling).await))
+}
+
+/// Reads back what the server recorded about delivering the reply we just stored.
+///
+/// # Why a second request, and why it is not optional
+///
+/// RFC 6638 §3.2.9 puts the outcome in the *stored object*, not in the `PUT` response — there
+/// is no header and no body to read it from, so the only way to learn it is to fetch the
+/// resource again. Measured against a real Sabre deployment the status is written **during**
+/// the `PUT`: it was present on the very first `GET`, ~140 ms after the write returned, at
+/// 10 ms polling resolution. So one request is enough and no retry loop is warranted.
+///
+/// # Why it never fails the write
+///
+/// The answer is already stored by the time this runs. A read that fails would turn a
+/// successful RSVP into an error the caller might retry — answering twice — so every failure
+/// path here degrades to [`ReplyDelivery::NotReported`], which is the truth: we did not learn
+/// anything. The cost of that silence is a prompt the user does not see, against the cost of
+/// a duplicate reply; the first is recoverable and the second is not.
+///
+/// # Why it is gated
+///
+/// A server that does not advertise `calendar-auto-schedule` performs no scheduling, so it
+/// has nothing to report and the request would be pure latency on every answer.
+async fn reply_delivery(
+    exec: &dyn DavExecutor,
+    rsvp: &EventRsvp,
+    scheduling: bool,
+) -> ReplyDelivery {
+    if !scheduling {
+        return ReplyDelivery::NotReported;
+    }
+    let Ok(response) = exec
+        .send(DavMethod::Get, rsvp.event.as_str(), "0", String::new())
+        .await
+    else {
+        return ReplyDelivery::NotReported;
+    };
+    if !(200..300).contains(&response.status) {
+        return ReplyDelivery::NotReported;
+    }
+    crate::schedule_status::reply_delivery(&response.body)
 }
 
 /// Stores an event's whole document — replacing what is there, or creating where nothing
