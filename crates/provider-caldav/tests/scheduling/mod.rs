@@ -316,8 +316,10 @@ fn participant<'a>(event: &'a Event, address: &str) -> &'a engine_core::calendar
 // parties are, how an invitation is created, waited for, and cleaned up), and `scenarios`
 // is what each one asserts. Splitting there keeps both under the 500-line limit without
 // cutting across a responsibility.
+pub(crate) mod reply_delivery;
 pub(crate) mod scenarios;
 
+pub(crate) use reply_delivery::an_rsvp_receipt_reports_what_the_server_said_about_delivery;
 pub(crate) use scenarios::{
     an_invitation_is_delivered_to_the_attendee, an_invitations_windows_time_zone_resolves_to_iana,
     an_organizer_cancel_marks_the_attendees_copy_cancelled, an_rsvp_reaches_the_organizer,

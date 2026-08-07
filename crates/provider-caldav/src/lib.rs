@@ -49,6 +49,7 @@ mod href;
 pub mod imip;
 mod provider;
 mod request;
+mod schedule_status;
 mod sync;
 #[cfg(test)]
 mod test_support;

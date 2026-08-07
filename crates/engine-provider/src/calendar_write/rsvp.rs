@@ -137,6 +137,84 @@ impl EventRsvp {
     }
 }
 
+/// What the server said about getting the answer **to the organizer** — the half of an RSVP
+/// that is not the write.
+///
+/// Storing a `PARTSTAT` and telling the organizer are two different operations, and only the
+/// first one's success is reported by the write's own status code. A transport that performs
+/// the scheduling itself may also report what became of it; this is that report, if there was
+/// one.
+///
+/// # `NotReported` is not a success
+///
+/// The three variants are deliberately not two. Collapsing "said nothing" into "delivered" is
+/// the bug this type exists to prevent: a server that tried, failed permanently, and said so
+/// then renders to the user as *"You accepted"*, and the organizer is never told by anybody.
+/// Collapsing it into "failed" is just as wrong and noisier — most transports never report,
+/// and prompting every user of them would be crying wolf.
+///
+/// So a caller may act on [`Failed`](Self::Failed), and must treat
+/// [`NotReported`](Self::NotReported) as *no information*: not a reason to warn, not a reason
+/// to reassure. Whether that silence is common is a property of the transport, not of the
+/// answer — measured across three real servers, only one of them reports at all.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ReplyDelivery {
+    /// Nothing was reported, and nothing may be inferred. The default, and the honest answer
+    /// for every transport that has no way to say.
+    #[default]
+    NotReported,
+    /// The server reported that the answer reached the organizer.
+    Delivered {
+        /// The transport's own status token, kept verbatim for diagnostics. Its vocabulary is
+        /// the transport's (CalDAV: an RFC 5546 §3.6 code such as `2.0`); no caller should
+        /// branch on the text — that is what the variant is for.
+        status: String,
+    },
+    /// The server reported that it could **not** deliver the answer. The organizer does not
+    /// know, and will not find out by waiting.
+    Failed {
+        /// The transport's own status token, kept verbatim so a support log can say *why*
+        /// (CalDAV: an RFC 5546 §3.6 code such as `5.2`, "no way to deliver … likely
+        /// permanent").
+        status: String,
+    },
+    /// The server reported *something*, and this engine does not know what it means.
+    ///
+    /// Behaves as [`NotReported`](Self::NotReported) — it is not a failure a caller may act
+    /// on — but keeps the token, which is the whole point. Servers in the wild invent status
+    /// values, and the case where someone needs help is exactly the case where a server said
+    /// something unusual; discarding it leaves a support log reading "nothing was reported"
+    /// about a server that reported plenty.
+    Unrecognized {
+        /// The transport's own status token, verbatim.
+        status: String,
+    },
+}
+
+impl ReplyDelivery {
+    /// Whether the server said, in so many words, that the organizer was not told.
+    ///
+    /// The one question a caller should branch on. Written as a method so that the
+    /// "`NotReported` is not a failure" rule lives in one place rather than at each call site,
+    /// where a `!= Delivered` would be the easy thing to type and would be wrong.
+    #[must_use]
+    pub const fn failed(&self) -> bool {
+        matches!(*self, Self::Failed { .. })
+    }
+
+    /// The transport's raw status token, if it reported one — including a token this engine
+    /// could not classify, which is the one a support log most needs to show.
+    #[must_use]
+    pub fn status(&self) -> Option<&str> {
+        match self {
+            Self::Delivered { status }
+            | Self::Failed { status }
+            | Self::Unrecognized { status } => Some(status),
+            Self::NotReported => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use engine_core::{

@@ -14,7 +14,7 @@ use engine_core::{
 };
 use engine_provider::{
     EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
-    PatchTarget, Provider,
+    PatchTarget, Provider, ReplyDelivery,
 };
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
@@ -41,6 +41,11 @@ pub struct CalendarWriteOutcome {
     /// would guard on a superseded revision and be refused. Chaining writes off this
     /// receipt is what makes "edit, edit again" work.
     pub revisions: RevisionTokens,
+    /// For an **RSVP**, what the server said about getting the answer to the organizer.
+    ///
+    /// [`ReplyDelivery::NotReported`] on every other verb, and on any transport that does
+    /// not report. Silence is not success — see [`ReplyDelivery`].
+    pub reply_delivery: ReplyDelivery,
 }
 
 /// Creates an event through the outbox: durable op → claim → provider create → record.
@@ -271,6 +276,7 @@ async fn resolve<S: Store>(
                 event: receipt.event,
                 uid: receipt.uid,
                 revisions: receipt.revisions,
+                reply_delivery: receipt.reply_delivery,
             })
         }
         Err(err) => {

@@ -43,12 +43,12 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
         version::ETag,
     };
     use engine_ical::parse_calendar_object;
-    use engine_provider::{EventRsvp, RsvpResponse};
+    use engine_provider::{EventRsvp, ReplyDelivery, RsvpResponse};
     use engine_sync::rsvp_calendar_event;
 
     use crate::{
         imip,
-        test_support::{ok, wrote},
+        test_support::{ok, status, wrote},
         transport::{DavMethod, Precondition},
     };
 
@@ -71,10 +71,17 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
     // write response. The probe answers `calendar-auto-schedule`, because this flow is
     // the auto-schedule one: the `PUT` *is* the whole RSVP only where the server turns
     // the changed PARTSTAT into the iTIP `REPLY` itself.
+    //
+    // The fourth response is the RFC 6638 §3.2.9 read-back: on an auto-schedule server the
+    // adapter fetches the object again to learn whether the reply actually reached the
+    // organizer. This one answers with the stored document unchanged — no
+    // `SCHEDULE-STATUS` — which is what Stalwart really does even on a delivered reply, and
+    // must therefore read as "nothing reported" rather than as a success.
     let exec = std::sync::Arc::new(Replay::new(vec![
         ok(PRINCIPAL),
         options(Some("1, 3, calendar-access, calendar-auto-schedule")),
         wrote(204, Some("\"rt-v2\"")),
+        status(200, STORED_INVITE),
     ]));
     let provider = CalDavProvider::with_executor(
         Box::new(exec.clone()),
@@ -117,6 +124,11 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
     assert_eq!(outcome.event, href);
     assert_eq!(outcome.uid, uid);
     assert_eq!(outcome.revisions.etag, Some(ETag::new("\"rt-v2\"")));
+
+    // (4b) The server said nothing about delivering the reply, so the receipt says nothing
+    // — not "delivered". A host reading this as success is the bug the type exists to stop.
+    assert_eq!(outcome.reply_delivery, ReplyDelivery::NotReported);
+    assert!(!outcome.reply_delivery.failed());
 
     // The PUT was guarded by If-Match (optimistic concurrency, never a blind
     // overwrite), carried no transit-only METHOD, and its body sets my accepted
@@ -278,4 +290,145 @@ async fn answering_an_invitation_you_are_not_on_is_refused() {
         .unwrap_err();
     assert_eq!(err.class(), engine_core::error::FailureClass::Permanent);
     assert!(exec.writes().is_empty());
+}
+
+/// A server that **does** report a permanent delivery failure is believed, and the failure
+/// reaches the caller on the receipt.
+///
+/// This is Soverin's real behaviour (SabreDAV + `Schedule`): the `PUT` succeeds, the answer
+/// is stored, and `ORGANIZER;SCHEDULE-STATUS=5.2` says the organizer was never told. Nothing
+/// in the write's own status code carries that, which is why it is read back.
+///
+/// It also pins the two things the live Stalwart scenario structurally cannot, because that
+/// server reports nothing at all: that the read-back **request is actually issued**, and that
+/// a reported failure survives to the receipt rather than being flattened to "not reported".
+#[tokio::test]
+async fn a_reported_delivery_failure_reaches_the_caller_on_the_receipt() {
+    use engine_core::{ids::CalendarId, version::ETag};
+    use engine_ical::parse_calendar_object;
+    use engine_provider::{EventRsvp, Provider, ReplyDelivery, RsvpResponse};
+
+    use crate::{
+        test_support::{ok, status, wrote},
+        transport::DavMethod,
+    };
+
+    // The stored copy as it looks *after* the server processed the answer: my PARTSTAT
+    // applied, and the organizer line carrying the failure it recorded while doing so.
+    const ANSWERED_WITH_FAILURE: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//T//EN\r\nBEGIN:VEVENT\r\nUID:meeting-7@test.local\r\nDTSTAMP:20260501T080000Z\r\nDTSTART;TZID=Europe/Amsterdam:20260601T090000\r\nDTEND;TZID=Europe/Amsterdam:20260601T093000\r\nSUMMARY:Sprint planning\r\nORGANIZER;SCHEDULE-STATUS=5.2;CN=Boss:mailto:boss@test.local\r\nATTENDEE;CN=Me;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:me@test.local\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    let exec = std::sync::Arc::new(Replay::new(vec![
+        ok(PRINCIPAL),
+        options(Some("1, 3, calendar-access, calendar-auto-schedule")),
+        wrote(204, Some("\"v2\"")),
+        status(200, ANSWERED_WITH_FAILURE),
+    ]));
+    let provider = CalDavProvider::with_executor(
+        Box::new(exec.clone()),
+        "/.well-known/caldav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .expect("discovery");
+    let account = AccountId::try_from("caldav-acct").unwrap();
+    let href = provider
+        .event_href(&engine_core::ids::Uid::new("meeting-7@test.local").unwrap())
+        .expect("href");
+    let mut stored = parse_calendar_object(
+        STORED_INVITE,
+        href.clone(),
+        CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap(),
+    )
+    .expect("parse stored invite");
+    stored.revisions = engine_core::version::RevisionTokens::from_etag(ETag::new("\"v1\""));
+
+    let receipt = provider
+        .rsvp_event(
+            &account,
+            &stored,
+            &EventRsvp::to(&stored, "me@test.local", RsvpResponse::Accepted),
+        )
+        .await
+        .expect("the answer itself was stored — the failure is about delivery, not the write");
+
+    assert_eq!(
+        receipt.reply_delivery,
+        ReplyDelivery::Failed {
+            status: "5.2".to_owned()
+        },
+        "a server that says it could not deliver must be believed"
+    );
+    assert!(receipt.reply_delivery.failed());
+    assert_eq!(receipt.reply_delivery.status(), Some("5.2"));
+
+    // The read-back happened, and against the resource we just wrote. Without this the
+    // absence-asserting live scenario would pass over an adapter that never asks.
+    let seen = exec.seen();
+    assert!(
+        seen.iter()
+            .any(|(method, target)| *method == DavMethod::Get && target == href.as_str()),
+        "the adapter must GET the object it just answered; saw {seen:?}"
+    );
+}
+
+/// A server that performs **no** scheduling is not asked, because it has nothing to report.
+///
+/// The gate is what keeps the read-back from being pure latency on every plain RFC 4791
+/// server — the SabreDAV fixture is exactly that shape.
+#[tokio::test]
+async fn a_server_that_does_not_schedule_is_not_asked_about_delivery() {
+    use engine_core::{ids::CalendarId, version::ETag};
+    use engine_ical::parse_calendar_object;
+    use engine_provider::{EventRsvp, Provider, ReplyDelivery, RsvpResponse};
+
+    use crate::{
+        test_support::{ok, wrote},
+        transport::DavMethod,
+    };
+
+    let exec = std::sync::Arc::new(Replay::new(vec![
+        ok(PRINCIPAL),
+        options(Some("1, 3, calendar-access")),
+        wrote(204, Some("\"v2\"")),
+    ]));
+    let provider = CalDavProvider::with_executor(
+        Box::new(exec.clone()),
+        "/.well-known/caldav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .expect("discovery");
+    let account = AccountId::try_from("caldav-acct").unwrap();
+    let href = provider
+        .event_href(&engine_core::ids::Uid::new("meeting-7@test.local").unwrap())
+        .expect("href");
+    let mut stored = parse_calendar_object(
+        STORED_INVITE,
+        href.clone(),
+        CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap(),
+    )
+    .expect("parse stored invite");
+    stored.revisions = engine_core::version::RevisionTokens::from_etag(ETag::new("\"v1\""));
+
+    let receipt = provider
+        .rsvp_event(
+            &account,
+            &stored,
+            &EventRsvp::to(&stored, "me@test.local", RsvpResponse::Accepted),
+        )
+        .await
+        .expect("a plain CalDAV server still stores the answer");
+
+    assert_eq!(receipt.reply_delivery, ReplyDelivery::NotReported);
+    assert!(
+        !exec
+            .seen()
+            .iter()
+            .any(|(method, _)| *method == DavMethod::Get),
+        "no scheduling advertised: asking would be a round trip that cannot answer"
+    );
+    // The replay queue was sized for exactly the requests this flow should make; an extra
+    // GET would have panicked on an empty queue before reaching here.
 }

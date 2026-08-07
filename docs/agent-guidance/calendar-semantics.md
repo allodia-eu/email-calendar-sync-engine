@@ -189,6 +189,25 @@ implemented**; the precise deferrals are listed at the end of this section.
   What the engine still does not do is **build** the `REPLY` object: there is no
   `Event` → iTIP serializer, and the answer keys to a `UID`/`SEQUENCE` the caller holds.
 
+  **And "the server schedules" is still not "the organizer was told".** A capability is
+  discovered once, at connect, and cannot say *…and it works*. Only the server knows that,
+  after the fact, per answer — so an RSVP receipt carries
+  `EventWriteReceipt::reply_delivery`, a neutral `ReplyDelivery` of `Delivered` / `Failed` /
+  `NotReported` / `Unrecognized`. Two rules bind every caller:
+
+  - **`NotReported` is not success.** Most transports never report, and one real CalDAV
+    deployment reports a permanent failure on *every* reply while advertising
+    auto-scheduling. Treating silence as delivery renders that failure to the user as "You
+    accepted"; treating it as failure cries wolf on everyone else. Branch on
+    `ReplyDelivery::failed()`, which is the only actionable state.
+  - **Only CalDAV fills it in**, because only CalDAV has somewhere to put the answer (RFC
+    6638 §3.2.9 `SCHEDULE-STATUS`, read back off the stored object). Graph returns `202
+    Accepted` with no body and Google's `sendUpdates` is fire-and-forget — both confirm the
+    *write*, never the notification — and JMAP cannot send iMIP at all. That is a genuine
+    protocol difference, not an adapter gap: see `providers.md`. Those three own delivery
+    end to end and surface their own failures to the user's mailbox, so there is nothing a
+    host could usefully do with a verdict they cannot give.
+
   **The answer has to read back, too**, and that is a normalization rule, not a write
   concern: a projection holds **one participant per address**, with roles as a *set*
   (JSCalendar's model — `engine-ical`'s `party` module states it for iCalendar's separate

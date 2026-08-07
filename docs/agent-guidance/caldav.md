@@ -415,7 +415,33 @@ decision/trust/apply logic lives in `engine_core::scheduling`, and
   the server turns into the iTIP `REPLY` to the organizer. On a server that does **not**
   auto-schedule (`Capabilities::calendar_scheduling` is `false` — the SabreDAV fixture, and
   any plain RFC 4791 server), the same `PUT` stores the answer and tells nobody, and the
-  caller has to send the iTIP `REPLY` itself as an iMIP message. The engine now carries
+  caller has to send the iTIP `REPLY` itself as an iMIP message.
+
+  **Advertising auto-schedule is not a promise that the reply arrives**, and the server is
+  the only thing that knows. RFC 6638 §3.2.9 has it write the outcome into the stored object
+  as a `SCHEDULE-STATUS` parameter, so on a scheduling server the adapter reads the object
+  back once after the `PUT` and returns the verdict on
+  `EventWriteReceipt::reply_delivery` (`schedule_status.rs`). Three things make that shape
+  the way it is:
+
+  - **The property decides the direction.** The parameter sits on the property naming whoever
+    the message was sent *to*: on our copy of an invitation we answered, that is `ORGANIZER`.
+    An `ATTENDEE;SCHEDULE-STATUS` is a `REQUEST` **we** sent as organizer, and reading it as
+    ours reports a delivered reply on a meeting nobody was told about.
+  - **Absence means nothing, so it is its own state.** Stalwart delivers replies perfectly and
+    writes no status at all; `caldav.soverin.net` (SabreDAV + `Schedule`) writes `5.2` — "no
+    way to deliver … likely permanent" — on *every* reply, having sent none, including to a
+    mailbox on its own server. `ReplyDelivery` is therefore `Delivered`/`Failed`/`NotReported`
+    (plus `Unrecognized`, which keeps an unknown token for a support log). Collapsing
+    `NotReported` into success renders a reported permanent failure as *"You accepted"*.
+  - **One request, no retry.** Measured against the real Sabre deployment, the status is
+    written *during* the `PUT`: present on the first `GET`, ~140 ms after the write returned,
+    at 10 ms resolution. It is gated on `calendar_scheduling`, since a server that schedules
+    nothing has nothing to report and the request would be pure latency.
+
+  `scripts/dev/caldav_reply_delivery_probe.py` in the **product-core** repo drives this
+  against any server (`list` is read-only; `answer` stores a real `.eml` and times the
+  verdict). The engine now carries
   that: a `Draft` with a `DraftCalendar` (`engine-rfc5322`, `imap-smtp.md`). It does **not**
   build the `REPLY` object — the caller does, because it owns the `UID`/`SEQUENCE` the
   answer keys to.
@@ -437,7 +463,17 @@ what a client would assume:
   attendee's copy is enough: the organizer's *separate* resource comes back
   `PARTSTAT=ACCEPTED;SCHEDULE-STATUS=2.0`. Stalwart applies the reply as a **targeted
   patch** — the organizer's own `PRODID` survives — so it does to the organizer's document
-  what our patcher does to ours.
+  what our patcher does to ours. Note **which** property carries that `2.0`: it is the
+  `ATTENDEE` line of the *organizer's* copy, so it reports the `REQUEST` **the organizer
+  sent**, not the reply. The reply's own status would be on `ORGANIZER` in the *attendee's*
+  copy — and Stalwart never writes one (next bullet).
+- **Stalwart reports nothing about the reply it just delivered.** After the RSVP above, the
+  attendee's own copy carries **no `ORGANIZER;SCHEDULE-STATUS`** — not on success, and not
+  with a deliberately unreachable organizer either (`nobody@unreachable.invalid`, polled 45 s
+  at 100 ms). The reply demonstrably arrives, so this is a *reporting* gap, not a delivery
+  one. Locked by `tests/scheduling/reply_delivery.rs`, which asserts the absence **and** the
+  organizer's copy showing `ACCEPTED` — an absence on its own is also what a broken adapter
+  produces.
 - **The organizer's `DELETE` does not remove the attendee's copy.** It arrives as an iTIP
   `CANCEL` and the attendee's resource is rewritten with `STATUS:CANCELLED` (a tombstone in
   the projection). A host listening only for deletions would leave a cancelled meeting
