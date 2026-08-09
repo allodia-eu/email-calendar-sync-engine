@@ -69,6 +69,7 @@ mod mail;
 mod mutate;
 mod parse;
 mod parse_qresync;
+mod pool;
 mod preview;
 mod provider;
 mod qresync;
