@@ -73,6 +73,7 @@ mod parse;
 mod parse_body;
 mod parse_qresync;
 mod place;
+mod pool;
 mod provider;
 mod qresync;
 mod report;
