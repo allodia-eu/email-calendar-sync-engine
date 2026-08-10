@@ -258,7 +258,15 @@ run. Non-negotiable:
   fields the harness controls — subjects, addresses, iCalendar UIDs, mailbox
   counts, append order — or capture generated ids at runtime.
 - **Pin the image by digest** and fix every seed input. Calendar fixtures use
-  fixed absolute 2026 dates so occurrence expansion is stable.
+  fixed absolute 2026 dates so occurrence expansion is stable — with one deliberate
+  exception. The **scheduling** suite's invitation is dated a fixed offset from *today*
+  (`scheduling/mod.rs`, `invitation_date`), because auto-scheduling is the server choosing
+  to deliver an iTIP message and Stalwart does not deliver one for a meeting that has
+  already finished. A fixed date there buys no determinism; it sets a timer. The original
+  passed every run until 11:00 on its own `DTSTART` day and failed eight tests on every run
+  after, with a delivery timeout that reads like a broken server. Fix a date when the
+  *client* is what interprets it; derive it from today when the *server's* behaviour turns
+  on whether it has passed.
 - **Readiness, not sleeps.** The compose healthcheck gates on a post-seed marker
   *and* HTTP liveness; `Harness::wait_until_ready` polls `/healthz/live`. Never a
   fixed sleep.
