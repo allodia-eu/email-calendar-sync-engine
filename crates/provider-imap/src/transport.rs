@@ -39,6 +39,9 @@ pub(crate) struct Connection<S> {
     /// push change notifications; when `false`, the host must fall back to polling.
     /// `pub(crate)` for the same reason as [`qresync`](Self::qresync).
     pub(crate) idle_advertised: bool,
+    /// Whether the server advertised `LIST-STATUS` (RFC 5819) post-auth — read by
+    /// [`crate::unseen`], which then gets every unread count in one round trip.
+    pub(crate) list_status_advertised: bool,
     /// The tag of a streamed `UID FETCH` ([`Connection::uid_fetch_stream_start`]) whose
     /// tagged completion has not yet been read — set while its rows are being pulled
     /// one at a time. If a streaming fetch is **abandoned** mid-response (the caller
@@ -54,6 +57,7 @@ impl<S> core::fmt::Debug for Connection<S> {
             .field("tag", &self.tag)
             .field("qresync", &self.qresync)
             .field("idle_advertised", &self.idle_advertised)
+            .field("list_status_advertised", &self.list_status_advertised)
             .finish_non_exhaustive()
     }
 }
@@ -83,6 +87,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             tag: 0,
             qresync: false,
             idle_advertised: false,
+            list_status_advertised: false,
             pending_tag: None,
         };
         connection.read_greeting().await?;
@@ -240,15 +245,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     pub(crate) async fn negotiate_qresync(&mut self) -> ImapResult<()> {
         let response = self.command("CAPABILITY").await?;
         let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
+        let advertises = |name: &str| {
+            capabilities
+                .iter()
+                .any(|cap| cap.eq_ignore_ascii_case(name))
+        };
         // Record IDLE (RFC 2177) from the same post-auth list so a watcher (and the
-        // provider's advertised `Capabilities::idle`) knows whether push is available.
-        self.idle_advertised = capabilities
-            .iter()
-            .any(|cap| cap.eq_ignore_ascii_case("IDLE"));
-        if capabilities
-            .iter()
-            .any(|cap| cap.eq_ignore_ascii_case("QRESYNC"))
-        {
+        // provider's advertised `Capabilities::idle`) knows whether push is available,
+        // and LIST-STATUS (RFC 5819) so the folder list can carry unread counts.
+        self.idle_advertised = advertises("IDLE");
+        self.list_status_advertised = advertises("LIST-STATUS");
+        if advertises("QRESYNC") {
             match self.command("ENABLE QRESYNC").await {
                 // Trust the enable only if `* ENABLED QRESYNC` confirms it (a bare
                 // `* ENABLED` + OK enables nothing, RFC 5161); otherwise stay baseline.
@@ -482,7 +489,7 @@ pub(crate) fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'
 }
 
 /// Wraps a value as an IMAP quoted string, escaping `\` and `"`.
-fn quote(value: &str) -> String {
+pub(crate) fn quote(value: &str) -> String {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
 }

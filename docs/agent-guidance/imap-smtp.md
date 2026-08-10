@@ -178,6 +178,18 @@ is authoritative for the `provider-caldav` calendar client.
   note a provider may tag its Archive folder `\All`, like Gmail's "All Mail" — the
   normalizer reflects the attribute faithfully). Raw MIME is **not materialized**
   (Tier-1 metadata, like step 4).
+- **Unread counts** (`Mailbox::unread_count`, `unseen.rs`). `LIST` carries none, so the
+  folder-list sync asks for `UNSEEN` too: one round trip via
+  `LIST "" "*" RETURN (STATUS (UNSEEN))` where the server advertised **LIST-STATUS**
+  (RFC 5819), else one `STATUS <mailbox> (UNSEEN)` per selectable mailbox — capped at
+  `MAX_STATUS_PROBES`, so a pathological account cannot turn a folder list into a
+  minutes-long stall. `\Noselect` containers are never probed (`STATUS` on one is an
+  error, not a zero); a mailbox the server refuses (`NO`/`BAD`) is left uncounted
+  rather than failing the whole list; a transport error still propagates, because
+  every later probe would go down a dead connection. A mailbox with no answer keeps
+  `unread_count: None` — **absent is not zero**, and a host must not render it as one.
+  Note `UNSEEN` in a `STATUS` response is a *count*, while the same word in a `SELECT`
+  response code is the first unseen message's sequence number; only the former is read.
 
 ## SMTP submission
 

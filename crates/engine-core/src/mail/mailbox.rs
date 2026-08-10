@@ -9,8 +9,8 @@ use crate::{extended::ExtendedProperties, ids::MailboxId, version::RevisionToken
 ///
 /// Identity ([`MailboxId`]), normalized [`role`](MailboxRole), and display name
 /// are three separate things. Membership of messages in this collection is
-/// modeled on the message side, not here. Per-mailbox access rights and message
-/// counts are provider-specific and, when needed, carried in
+/// modeled on the message side, not here. Per-mailbox access rights remain
+/// provider-specific and, when needed, are carried in
 /// [`extended`](Mailbox::extended) rather than asserted as universal fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mailbox {
@@ -27,6 +27,20 @@ pub struct Mailbox {
     pub sort_order: u32,
     /// Whether the user is subscribed to this collection (IMAP subscription).
     pub subscribed: bool,
+    /// How many messages in this collection are unread, as **the server counts
+    /// them** — not as the synced window does. `None` means the provider did not
+    /// report one, which a host must not read as zero.
+    ///
+    /// Server-side rather than derived because a store holds only the synced
+    /// window (a host may sync three months of a mailbox holding years), so
+    /// counting rows answers a different question than the one a folder badge
+    /// asks. All four mail transports report it: JMAP `unreadEmails`, IMAP
+    /// `STATUS (UNSEEN)`, Gmail `messagesUnread`, Graph `unreadItemCount`.
+    ///
+    /// Counts **messages**, not conversations — JMAP alone offers the
+    /// conversation form (`unreadThreads`), so a portable field cannot mean that.
+    #[serde(default)]
+    pub unread_count: Option<u32>,
     /// Per-object revision tokens, if the provider supplies any.
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
@@ -45,6 +59,7 @@ impl Mailbox {
             role: None,
             sort_order: 0,
             subscribed: true,
+            unread_count: None,
             revisions: RevisionTokens::none(),
             extended: ExtendedProperties::new(),
         }
@@ -66,6 +81,33 @@ mod tests {
         assert!(mailbox.parent.is_none());
         assert!(mailbox.role.is_none());
         assert!(mailbox.subscribed);
+        // Absent, not zero: a mailbox nobody has counted yet is not an empty one.
+        assert!(mailbox.unread_count.is_none());
+    }
+
+    #[test]
+    fn unread_count_roundtrips_and_a_payload_without_it_still_loads() {
+        let mut counted = Mailbox::new(id("inbox"), "Inbox");
+        counted.unread_count = Some(545);
+        let json = serde_json::to_string(&counted).unwrap();
+        assert_eq!(serde_json::from_str::<Mailbox>(&json).unwrap(), counted);
+
+        // A row stored before this field existed deserializes to "not reported"
+        // rather than failing the read — the store is JSON payloads, so this is
+        // what spares the schema a migration.
+        let stored_earlier = serde_json::to_string(&serde_json::json!({
+            "id": "inbox",
+            "name": "Inbox",
+            "parent": null,
+            "role": null,
+            "sort_order": 0,
+            "subscribed": true,
+            "revisions": RevisionTokens::none(),
+            "extended": ExtendedProperties::new(),
+        }))
+        .unwrap();
+        let loaded: Mailbox = serde_json::from_str(&stored_earlier).unwrap();
+        assert!(loaded.unread_count.is_none());
     }
 
     #[test]

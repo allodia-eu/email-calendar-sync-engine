@@ -27,6 +27,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             tag: 0,
             qresync: false,
             idle_advertised: false,
+            list_status_advertised: false,
             pending_tag: None,
         }
     }
