@@ -91,6 +91,13 @@ pub(crate) fn folder_from_json(
         }
         None => None,
     };
+    // `unreadItemCount` rides along on the default `mailFolder` projection — the
+    // list and the delta both carry it, so it costs no extra request. A payload
+    // that omits it leaves the count absent rather than zeroing it.
+    mailbox.unread_count = value
+        .get("unreadItemCount")
+        .and_then(Value::as_u64)
+        .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
     Ok(mailbox)
 }
 
@@ -357,6 +364,29 @@ mod tests {
         let root = MailboxId::try_from(ROOT).unwrap();
         let mailbox = folder_from_json(&child, Some(&root)).unwrap();
         assert_eq!(mailbox.parent.as_ref().unwrap().as_str(), "folder-inbox");
+    }
+
+    #[test]
+    fn folder_carries_the_unread_count_the_default_projection_returns() {
+        let root = MailboxId::try_from(ROOT).unwrap();
+        let counted = folder_from_json(
+            &serde_json::json!({
+                "id": "f", "displayName": "Inbox",
+                "totalItemCount": 1200, "unreadItemCount": 545
+            }),
+            Some(&root),
+        )
+        .unwrap();
+        assert_eq!(counted.unread_count, Some(545));
+
+        // A payload without the property leaves it absent — not zero, which would
+        // claim the folder had been counted and found empty.
+        let uncounted = folder_from_json(
+            &serde_json::json!({ "id": "f", "displayName": "Inbox" }),
+            Some(&root),
+        )
+        .unwrap();
+        assert_eq!(uncounted.unread_count, None);
     }
 
     #[test]

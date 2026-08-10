@@ -73,6 +73,13 @@ pub(crate) fn mailbox_from_json(value: &Value) -> Result<Mailbox, JmapError> {
     if let Some(subscribed) = value.get("isSubscribed").and_then(Value::as_bool) {
         mailbox.subscribed = subscribed;
     }
+    // RFC 8621 §2: `unreadEmails`, deliberately not `unreadThreads` — the engine's
+    // count is of messages, the only form every transport reports. A `Mailbox/get`
+    // with no `properties` returns the whole object, so nothing is asked for here.
+    mailbox.unread_count = value
+        .get("unreadEmails")
+        .and_then(Value::as_u64)
+        .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
     Ok(mailbox)
 }
 
@@ -321,6 +328,30 @@ mod tests {
         assert_eq!(mailbox.role, Some(MailboxRole::Archive));
         assert_eq!(mailbox.sort_order, 5);
         assert!(!mailbox.subscribed);
+    }
+
+    #[test]
+    fn mailbox_unread_count_reads_emails_not_threads() {
+        let counted = mailbox_from_json(&serde_json::json!({
+            "id": "inbox", "name": "Inbox", "role": "inbox",
+            "totalEmails": 1200, "unreadEmails": 545,
+            "totalThreads": 900, "unreadThreads": 401
+        }))
+        .unwrap();
+        assert_eq!(counted.unread_count, Some(545));
+
+        // A server that reports nothing leaves it absent — a host must be able to
+        // tell "nothing unread" from "nobody counted".
+        let silent =
+            mailbox_from_json(&serde_json::json!({ "id": "inbox", "name": "Inbox" })).unwrap();
+        assert_eq!(silent.unread_count, None);
+
+        // Zero is a real answer and survives as one.
+        let read = mailbox_from_json(
+            &serde_json::json!({ "id": "inbox", "name": "Inbox", "unreadEmails": 0 }),
+        )
+        .unwrap();
+        assert_eq!(read.unread_count, Some(0));
     }
 
     #[test]

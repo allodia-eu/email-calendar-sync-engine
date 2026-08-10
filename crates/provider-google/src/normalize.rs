@@ -81,6 +81,14 @@ pub(crate) fn label_from_json(value: &Value) -> Result<Option<Mailbox>, GoogleEr
     let name = opt_str(value, "name").unwrap_or(id).to_owned();
     let mut mailbox = Mailbox::new(wrap_id(MailboxId::try_from(id), "label id")?, name);
     mailbox.role = label_role(id);
+    // `users.labels.list` does not return counts — only `users.labels.get` does,
+    // which would be one request per label on every folder-list sync. So this reads
+    // the field where it is present and leaves it absent otherwise; Gmail folder
+    // counts stay unreported until that fan-out is worth its round trips.
+    mailbox.unread_count = value
+        .get("messagesUnread")
+        .and_then(Value::as_u64)
+        .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
     Ok(Some(mailbox))
 }
 

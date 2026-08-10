@@ -130,7 +130,10 @@ async fn sync_mailboxes_lists_folders_as_a_snapshot() {
                 * LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\n\
                 * LIST (\\HasNoChildren) \"/\" \"Archive\"\r\n\
                 a2 OK LIST done\r\n";
-    let provider = connected_provider(script(&[GREETING, LOGIN_OK, list])).await;
+    // This mock advertised no LIST-STATUS, so the folder list probes each mailbox's
+    // unread count afterwards (`crate::unseen`) — three more round trips to script.
+    let probes = "a3 OK STATUS done\r\na4 OK STATUS done\r\na5 OK STATUS done\r\n";
+    let provider = connected_provider(script(&[GREETING, LOGIN_OK, list, probes])).await;
 
     let sync = provider.sync_mailboxes(&account(), None).await.unwrap();
     assert!(sync.is_snapshot());
