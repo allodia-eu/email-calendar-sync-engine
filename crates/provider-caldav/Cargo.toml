@@ -35,6 +35,10 @@ fuzzing = []
 # `sync` for the live tests' serialization Mutex (held across awaits); `time` for
 # the SabreDAV connect retry's sleep.
 tokio = { workspace = true, features = ["sync", "time"] }
+# The scheduling fixture dates its invitation a fixed offset from today — a server only
+# auto-schedules a meeting that has not already finished — which needs calendar-aware date
+# arithmetic (month/year rollover), not a duration in seconds.
+time = { workspace = true }
 stalwart-harness = { path = "../stalwart-harness" }
 # The gated live integration test drives the full calendar sync loop through the
 # real store, exactly like provider-jmap's live_sync.
