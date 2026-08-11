@@ -254,16 +254,23 @@ is authoritative for the `provider-caldav` calendar client.
   3. When neither attempt files it, the receipt says so: `SentCopy::Unfiled { detail }`,
      carried through `engine_sync::SubmitOutcome` to the host. **Nothing later can
      rediscover this** — there is no copy on the server to reconcile against — so a host
-     that drops the outcome drops the fact for good. That is what a receipt unable to
-     express it cost: a message reached three recipients and left no trace in the sender's
-     Sent folder, with every layer reporting success.
+     that drops the outcome drops the fact for good. A receipt unable to express it means a
+     delivered message leaves no trace in the sender's Sent folder while every layer reports
+     success.
+  4. The host can then ask for the repair: `Provider::file_sent_copy` (→
+     `ImapProvider::refile`, reached through `Engine::file_sent_copy`) files the copy of an
+     already-delivered message and **sends nothing**. It is what a "try again" control calls,
+     so it probes on *every* attempt, standing session and fresh dial alike — a button gets
+     pressed twice. It is deliberately **not** outbox-mediated: the outbox exists so a side
+     effect is neither lost nor repeated across a crash, and this one is idempotent by
+     construction and safe to ask for again.
 
   With UIDPLUS the `APPEND` returns `[APPENDUID validity uid]` → the receipt carries the
   real Sent key (the same key the next Sent sync synthesizes); without it the receipt key
   is `Message-ID`-derived and the copy reconciles when Sent is synced.
 - **Mailbox names: the wire form is the id, the decoded form is the label.** A `LIST` name
-  is modified UTF-7 (RFC 3501 §5.1.3), so `Belmar &- KBL` is one folder called
-  `Belmar & KBL`. `utf7::decode` produces `Mailbox::name` for display **only**;
+  is modified UTF-7 (RFC 3501 §5.1.3), so `Travel &- Expenses` is one folder called
+  `Travel & Expenses`. `utf7::decode` produces `Mailbox::name` for display **only**;
   `MailboxId`, every `imap:v…:u…@folder` key, and every `SELECT`/`APPEND`/`CREATE`
   argument keep the server's own bytes. Decoding an id instead would re-key every message
   in a non-ASCII folder and address the server with a name it never advertised. There is

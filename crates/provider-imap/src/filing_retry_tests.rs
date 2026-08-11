@@ -104,8 +104,13 @@ where
                 "* 3 EXISTS\r\n* OK [UIDVALIDITY 99] valid\r\n{tag} OK [READ-WRITE] SELECT done\r\n"
             ),
             "UID" if upper.contains("SEARCH") => {
+                // A real server answers with what it holds, so anything this fake already
+                // accepted is found by a later probe — including across sessions, which is
+                // what makes "press the repair twice" behave as it does in the field.
                 if script == SessionScript::ServeFilingWithCopyPresent {
                     format!("* SEARCH 12\r\n{tag} OK SEARCH done\r\n")
+                } else if appends.load(Ordering::SeqCst) > 0 {
+                    format!("* SEARCH 5\r\n{tag} OK SEARCH done\r\n")
                 } else {
                     format!("* SEARCH\r\n{tag} OK SEARCH done\r\n")
                 }
@@ -311,6 +316,44 @@ async fn a_retry_never_files_a_second_copy() {
         appends.load(Ordering::SeqCst),
         0,
         "the probe found the copy, so nothing was appended"
+    );
+}
+
+/// The repair a host runs when the user asks to try filing again: it files the copy, and
+/// sends nothing.
+#[tokio::test]
+async fn the_explicit_repair_files_the_copy_without_sending() {
+    let (provider, appends) = provider_over(vec![SessionScript::ServeFiling]).await;
+
+    let key = provider.refile(&draft()).await.expect("the copy is filed");
+
+    assert_eq!(key.as_str(), "imap:v99:u5@Sent");
+    assert_eq!(appends.load(Ordering::SeqCst), 1);
+}
+
+/// The repair sits behind a button, so it will be pressed more than once. Every attempt
+/// probes first, so a second press finds the copy and leaves Sent holding exactly one.
+#[tokio::test]
+async fn pressing_the_repair_twice_leaves_one_copy() {
+    let (provider, appends) = provider_over(vec![SessionScript::ServeFiling]).await;
+    let draft = draft();
+
+    let first = provider
+        .refile(&draft)
+        .await
+        .expect("first repair files it");
+    assert_eq!(appends.load(Ordering::SeqCst), 1);
+
+    let second = provider
+        .refile(&draft)
+        .await
+        .expect("second repair is a no-op");
+
+    assert_eq!(first, second, "both presses name the same one copy");
+    assert_eq!(
+        appends.load(Ordering::SeqCst),
+        1,
+        "the second press appended nothing"
     );
 }
 

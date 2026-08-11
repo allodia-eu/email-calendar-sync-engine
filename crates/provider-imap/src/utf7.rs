@@ -3,8 +3,8 @@
 //! A `LIST` reply carries mailbox names in a 7-bit encoding of its own: printable ASCII
 //! stands for itself except `&`, which is written `&-`; everything else is the modified
 //! BASE64 of the name's UTF-16BE code units between a `&` and a `-`, with `,` in place of
-//! `/` and no `=` padding. Undecoded, a folder called `Belmar & KBL` reads as
-//! `Belmar &- KBL` and `Wichtig` written in Cyrillic reads as `&BBIEMAQ2-`.
+//! `/` and no `=` padding. Undecoded, a folder called `Travel & Expenses` reads as
+//! `Travel &- Expenses`, and one named `日本語` reads as `&ZeVnLIqe-`.
 //!
 //! **Decode only, and only into [`Mailbox::name`](engine_core::mail::Mailbox::name).** The
 //! encoded form is the name the *protocol* uses: it is what `SELECT`, `APPEND` and `LIST`

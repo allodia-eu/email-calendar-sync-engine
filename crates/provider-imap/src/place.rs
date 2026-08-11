@@ -130,6 +130,34 @@ where
         .map(|row| row.name.clone()))
 }
 
+/// Places `message` for `filing` **only if a copy of `message_id` is not already there**.
+///
+/// The idempotent form of [`append_to_role_folder`], for every attempt after the first: a
+/// retry cannot know whether the attempt it is repeating reached the server, and `APPEND`
+/// would happily make a second copy. The first attempt of a send skips the probe, since the
+/// copy definitionally is not there yet and a `SELECT` + `SEARCH` on every send is not free.
+///
+/// # Errors
+///
+/// A classified [`ProviderError`](engine_provider::ProviderError) on a transport failure or
+/// a rejected `LIST`/`SELECT`/`SEARCH`/`APPEND`.
+pub(crate) async fn place_if_absent<S>(
+    connection: &mut Connection<S>,
+    filing: Filing,
+    message_id: &MessageIdHeader,
+    message: &[u8],
+) -> ProviderResult<(String, Option<(u32, u32)>)>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let folder = resolve_filing_folder(connection, filing).await?;
+    if let Some(existing) = find_placed_copy(connection, &folder, message_id).await? {
+        return Ok((folder, Some(existing)));
+    }
+    let append_uid = connection.append(&folder, filing.flags(), message).await?;
+    Ok((folder, append_uid))
+}
+
 /// Looks for an already-placed copy of `message_id` in `folder`, returning its
 /// `(UIDVALIDITY, UID)`.
 ///

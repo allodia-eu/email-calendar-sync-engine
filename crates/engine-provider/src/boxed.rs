@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use engine_core::{
     calendar::{Calendar, Event},
     contact::{AddressBook, ContactCard, ContactDraft, ContactPatch, ContactResource},
-    ids::{AccountId, ContactId},
+    ids::{AccountId, ContactId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{SyncScope, SyncState, SyncWindow},
@@ -85,6 +85,14 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
         (**self).submit_email(account, draft).await
+    }
+
+    async fn file_sent_copy(
+        &self,
+        account: &AccountId,
+        draft: &Draft,
+    ) -> ProviderResult<ProviderKey> {
+        (**self).file_sent_copy(account, draft).await
     }
 
     async fn edit_mail(

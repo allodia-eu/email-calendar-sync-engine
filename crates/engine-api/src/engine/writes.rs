@@ -2,10 +2,13 @@
 //! pending-op state poll every write (mail and calendar alike) is observed through. The
 //! calendar writes live in `calendar_writes`, which additionally reconciles the store.
 
-use engine_core::{ids::AccountId, write::PendingOpId};
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    write::PendingOpId,
+};
 use engine_provider::{Draft, MailEdit, Provider};
 use engine_store::{PendingOpState, StoreRead};
-use engine_sync::{MailEditOutcome, SubmitOutcome, edit_mail, submit_mail};
+use engine_sync::{MailEditOutcome, SubmitOutcome, SyncError, edit_mail, submit_mail};
 
 use super::{LEASE_TTL, map_sync_error, worker};
 use crate::{ApiError, Engine};
@@ -32,6 +35,33 @@ impl Engine {
         submit_mail(provider, &self.store, account, worker(), LEASE_TTL, draft)
             .await
             .map_err(map_sync_error)
+    }
+
+    /// Files the sender's copy of an **already-delivered** message, repairing a submission
+    /// whose [`SubmitOutcome::sent_copy`] came back
+    /// [`SentCopy::Unfiled`](engine_provider::SentCopy::Unfiled). Returns the filed copy's
+    /// key.
+    ///
+    /// **Not outbox-mediated, deliberately.** The outbox exists so a side effect is never
+    /// lost or repeated across a crash; this one sends nothing and the provider makes it
+    /// idempotent by probing for the copy first, so a durable op would buy nothing and would
+    /// add a second op recording the same submission. It is a repair a user asks for, and
+    /// asking again is free.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the copy still could not be filed — the message stays
+    /// sent either way, and the caller may offer the retry again.
+    pub async fn file_sent_copy<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        draft: &Draft,
+    ) -> Result<ProviderKey, ApiError> {
+        provider
+            .file_sent_copy(account, draft)
+            .await
+            .map_err(|err| map_sync_error(SyncError::Provider(err)))
     }
 
     /// Applies a [`MailEdit`] to one of the account's messages through the durable

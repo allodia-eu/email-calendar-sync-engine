@@ -4,15 +4,13 @@
 //! and the root now carries the module docs, the module tree and the re-exports. Nothing
 //! about it changed in the move.
 
-use std::collections::BTreeSet;
-
 use async_trait::async_trait;
 use engine_core::{
     calendar::{Calendar, Event},
-    ids::AccountId,
+    ids::{AccountId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
+    sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 
 // `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
@@ -23,10 +21,10 @@ use engine_core::{
     unused_imports,
     reason = "named by intra-doc links on the trait's methods"
 )]
-use crate::{Capabilities, EmailChunk, PageToken, RsvpControls};
+use crate::{Capabilities, EmailChunk, PageToken, PassMode, RsvpControls};
 use crate::{
     ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, EventDeletion, EventDraft, EventEdit,
-    EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, PassMode, ProviderError,
+    EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, ProviderError,
     ProviderResult, ScopeSync, SubmissionReceipt,
 };
 
@@ -160,41 +158,14 @@ pub trait Provider: Send + Sync {
         account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Message>> {
-        use futures_util::StreamExt;
-
-        let mut changed = Vec::new();
-        let mut removed = Vec::new();
-        let mut present = BTreeSet::new();
-        let mut mode = PassMode::Additive;
-        let mut next_cursor: Option<SyncState> = None;
-        let mut stream = self.stream_email(
+        crate::stream::drain_email(self.stream_email(
             account,
             cursor,
             self.default_sync_window(),
             DEFAULT_DRAIN_PAGE,
             0,
-        );
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            mode = chunk.mode;
-            changed.extend(chunk.changed);
-            removed.extend(chunk.removed);
-            present.extend(chunk.present);
-            if let Some(cursor) = chunk.advance_to {
-                next_cursor = Some(cursor);
-            }
-        }
-        let next_cursor = next_cursor.ok_or_else(|| {
-            ProviderError::invalid_state("email stream ended without a final cursor")
-        })?;
-        // A reconcile pass tombstones against the accumulated present set; an
-        // additive pass (cold backfill or delta) carries only explicit removals.
-        // For a first sync both are equivalent (nothing local to tombstone).
-        let update = match mode {
-            PassMode::Reconcile => SyncUpdate::snapshot(changed, present),
-            PassMode::Additive => SyncUpdate::delta(changed, removed),
-        };
-        Ok(ScopeSync::new(update, next_cursor))
+        ))
+        .await
     }
 
     /// Sends `draft`: creates the message and submits it, filing the sent copy.
@@ -216,6 +187,31 @@ pub trait Provider: Send + Sync {
         let _ = (account, draft);
         Err(ProviderError::invalid_state(
             "provider does not support mail submission",
+        ))
+    }
+
+    /// Files the sender's copy of an **already-delivered** message, repairing a submission
+    /// that came back [`SentCopy::Unfiled`](crate::SentCopy::Unfiled). Sends nothing.
+    ///
+    /// Only a transport that files the copy as a separate operation implements this
+    /// (IMAP/SMTP); one that files it within the send never reports `Unfiled`, so this
+    /// default is unreachable from a correct caller. **Implementations must be idempotent**:
+    /// it sits behind a button on a message that has already gone out, so it will be pressed
+    /// twice — check whether the copy is there before placing another.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`ProviderError`] when the copy could not be filed; the caller may offer
+    /// the retry again. The default returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn file_sent_copy(
+        &self,
+        account: &AccountId,
+        draft: &Draft,
+    ) -> ProviderResult<ProviderKey> {
+        let _ = (account, draft);
+        Err(ProviderError::invalid_state(
+            "provider files the sent copy as part of the send",
         ))
     }
 

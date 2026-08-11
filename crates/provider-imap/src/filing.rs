@@ -9,8 +9,9 @@
 //! **Delivering and filing are two operations, and the second one can fail on its own.**
 //! SMTP dials a fresh connection per send, so a delivery succeeds over a session that has
 //! been idle for an hour; the `APPEND` rides the provider's standing IMAP session, which by
-//! then may be dead. That asymmetry is not hypothetical — it is how a message reached three
-//! recipients and left no trace in Sent. The response is `file_sent_copy`: retry once on a
+//! then may be dead. That asymmetry is not hypothetical: it delivers the mail and loses the
+//! sender's copy, with nothing to reconcile against later. The response is `file_sent_copy`:
+//! retry once on a
 //! freshly dialed session, and when even that cannot file it, say so in the receipt
 //! ([`engine_provider::SentCopy::Unfiled`]) — this crate emits no logs of its own, so the
 //! outcome travelling up *is* the diagnostic. What it must never do is fail the send: the
@@ -31,7 +32,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 use crate::{
     config::{ImapConfig, SmtpSecurity, SmtpSettings},
     error::ImapError,
-    place::{Filing, append_to_role_folder, find_placed_copy, placed_key},
+    place::{Filing, append_to_role_folder, place_if_absent, placed_key},
     provider::{ImapProvider, connect_session},
     smtp::{self, Disposition, SmtpResult},
 };
@@ -353,18 +354,48 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         let (mut connection, _) = connect_session(&redial.config, &redial.connector)
             .await
             .map_err(ProviderError::from)?;
-        let folder = crate::place::resolve_filing_folder(&mut connection, Filing::Sent).await?;
-        // `APPEND` is not idempotent, so ask before placing: a first attempt that committed
-        // and lost its response would otherwise leave the user two copies.
-        if let Some(existing) =
-            find_placed_copy(&mut connection, &folder, &draft.message_id).await?
-        {
-            return Ok((folder, Some(existing)));
-        }
-        let append_uid = connection
-            .append(&folder, Filing::Sent.flags(), filed)
-            .await?;
-        Ok((folder, append_uid))
+        // `APPEND` is not idempotent, so the probe inside asks before placing: a first
+        // attempt that committed and lost its response must not become two copies.
+        place_if_absent(&mut connection, Filing::Sent, &draft.message_id, filed).await
+    }
+
+    /// Files the Sent copy of a message that **has already been delivered** — the repair a
+    /// host runs when a submission came back
+    /// [`SentCopy::Unfiled`](engine_provider::SentCopy::Unfiled) and the user asked to try
+    /// again.
+    ///
+    /// Sends nothing, and is idempotent at every step: **both** attempts probe for the copy
+    /// before placing it, so running this ten times leaves exactly one copy in Sent. That
+    /// matters more here than on the send path — a repair the user can press repeatedly is
+    /// one they *will* press repeatedly.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`ProviderError`] if neither the standing session nor a freshly dialed
+    /// one could file it. The caller may offer the retry again.
+    pub(crate) async fn refile(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
+        // The filed copy keeps the Bcc header, exactly as the original filing would have.
+        let filed = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
+        let first = {
+            let mut connection = self.connection.lock().await;
+            place_if_absent(&mut connection, Filing::Sent, &draft.message_id, &filed).await
+        };
+        let (folder, append_uid) = match first {
+            Ok(placed) => placed,
+            Err(standing) => match self.redial.as_ref() {
+                Some(redial) => {
+                    self.refile_on_a_fresh_session(redial, &filed, draft)
+                        .await?
+                }
+                None => return Err(standing),
+            },
+        };
+        Ok(placed_key(
+            &folder,
+            Filing::Sent.key_prefix(),
+            append_uid,
+            &draft.message_id,
+        ))
     }
 
     /// Saves `draft` as a message in the Drafts folder via IMAP `APPEND` — no SMTP,

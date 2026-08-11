@@ -376,6 +376,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         self.submit(draft).await
     }
 
+    /// Files the Sent copy of an already-delivered message, for a host repairing a
+    /// submission that came back `Unfiled` (`crate::filing`). Idempotent: it probes for the
+    /// copy before placing one, on the standing session and on a freshly dialed retry.
+    async fn file_sent_copy(
+        &self,
+        _account: &AccountId,
+        draft: &Draft,
+    ) -> ProviderResult<ProviderKey> {
+        self.refile(draft).await
+    }
+
     /// Applies a [`MailEdit`] to the bound mailbox: mark-read/flag (`UID STORE`),
     /// move (`UID MOVE`), or permanent delete (`UID STORE \Deleted` + `UID EXPUNGE`).
     ///

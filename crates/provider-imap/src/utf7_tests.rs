@@ -10,11 +10,11 @@ fn a_plain_ascii_name_is_unchanged() {
     assert_eq!(decode(""), "");
 }
 
-/// The reported symptom: a folder named with an ampersand rendered as `&-` in every client
-/// surface, because nothing ever decoded the escape.
+/// The shape a host reports first: a folder named with an ampersand rendered as `&-`
+/// everywhere, because nothing decoded the escape.
 #[test]
 fn an_escaped_ampersand_decodes_to_one_ampersand() {
-    assert_eq!(decode("Belmar &- KBL"), "Belmar & KBL");
+    assert_eq!(decode("Travel &- Expenses"), "Travel & Expenses");
     assert_eq!(decode("&-"), "&");
     assert_eq!(decode("&-&-"), "&&");
 }

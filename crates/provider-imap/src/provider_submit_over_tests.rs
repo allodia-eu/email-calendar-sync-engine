@@ -288,10 +288,10 @@ async fn submit_falls_back_to_a_message_id_key_without_appenduid() {
     assert!(receipt.sent_copy.is_filed());
 }
 
-/// **The regression.** A message was delivered to three recipients and then vanished: the
-/// `APPEND` that files the Sent copy failed on a stale session, the error was discarded, and
-/// the receipt was indistinguishable from a clean send — so the outbox recorded success, the
-/// user was told "Sent", and nothing anywhere held the fact that their copy was gone.
+/// **The regression.** A message was delivered and its copy then vanished: the `APPEND` that
+/// files the Sent copy failed on a stale session, the error was discarded, and the receipt was
+/// indistinguishable from a clean send — so the outbox recorded success, the caller reported
+/// "sent", and nothing anywhere held the fact that the copy was gone.
 ///
 /// The send must still succeed (the mail has left; failing here would re-send it), and the
 /// receipt must say the copy was not filed.
