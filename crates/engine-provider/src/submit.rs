@@ -108,10 +108,13 @@ impl Draft {
         self
     }
 
-    /// Sets the threading linkage for a reply or forward: the `parent` message's
-    /// `Message-ID` (the RFC 5322 §3.6.4 `In-Reply-To`) and the full `references`
-    /// chain (the parent's `References` plus its own `Message-ID`, oldest first).
-    /// The SMTP assembler emits both so the sent message threads with its original.
+    /// Sets the threading linkage for a **reply**: the `parent` message's `Message-ID`
+    /// (the RFC 5322 §3.6.4 `In-Reply-To`) and the full `references` chain (the parent's
+    /// `References` plus its own `Message-ID`, oldest first). The assembler emits both so
+    /// the sent message threads with its original.
+    ///
+    /// A forward is not a reply — use [`with_references`](Self::with_references), which
+    /// threads it without claiming it answers anything.
     #[must_use]
     pub fn in_reply_to(
         mut self,
@@ -119,6 +122,19 @@ impl Draft {
         references: Vec<MessageIdHeader>,
     ) -> Self {
         self.in_reply_to = Some(parent);
+        self.references = references;
+        self
+    }
+
+    /// Sets the `References` chain (RFC 5322 §3.6.4) **without** an `In-Reply-To` — the
+    /// linkage a **forward** carries.
+    ///
+    /// A forward continues a conversation but does not answer a message, so it takes the
+    /// chain and not the reply pointer. That is enough to thread it: RFC 5256 threading,
+    /// this engine's own derivation, and every mainstream client all unite on `References`
+    /// alone.
+    #[must_use]
+    pub fn with_references(mut self, references: Vec<MessageIdHeader>) -> Self {
         self.references = references;
         self
     }

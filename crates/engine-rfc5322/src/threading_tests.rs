@@ -60,6 +60,23 @@ fn assemble_message_emits_only_in_reply_to_when_references_is_empty() {
     assert!(!text.contains("References:"), "{text}");
 }
 
+/// A **forward** carries the chain but no reply pointer: it continues the conversation
+/// without answering a message. `References` alone is what threads it — for RFC 5256
+/// threading, for this engine's own derivation, and for every mainstream client.
+#[test]
+fn assemble_message_emits_references_without_in_reply_to_for_a_forward() {
+    let draft = reply_draft().with_references(vec![mid("root@host"), mid("parent@host")]);
+    let text = assemble(&draft);
+    assert!(
+        text.contains("References: <root@host> <parent@host>\r\n"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("In-Reply-To:"),
+        "a forward is not a reply: {text}"
+    );
+}
+
 #[test]
 fn assemble_message_rejects_a_threading_id_carrying_crlf() {
     // MessageIdHeader::new does not screen control characters, so the header-injection
