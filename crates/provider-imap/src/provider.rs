@@ -31,7 +31,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 use crate::{
     config::{ImapConfig, ImapSecurity},
     error::ImapError,
-    filing::{SmtpSender, resolve_smtp},
+    filing::{Redial, SmtpSender, resolve_smtp},
     mail::mailbox_from_list,
     tls_info,
     transport::Connection,
@@ -51,6 +51,10 @@ pub struct ImapProvider<S> {
     /// The resolved SMTP transport, or `None` when submission is unconfigured.
     /// `pub(crate)` so [`crate::filing`] (which owns the submission dispatch) reads it.
     pub(crate) smtp: Option<SmtpSender>,
+    /// What a fresh IMAP session needs, so a Sent copy that fails to file over the
+    /// standing session above is retried on a new one rather than lost. `None` for a
+    /// provider built over a mock stream, which has no server to re-dial.
+    pub(crate) redial: Option<Redial>,
     /// The sync-depth window floor: when set, a snapshot fetches only mail delivered
     /// on or after this date (`ImapConfig::with_since`). `None` syncs the whole mailbox.
     since: Option<time::Date>,
@@ -92,13 +96,11 @@ impl ImapProvider<TlsStream<TcpStream>> {
             .as_ref()
             .map(|settings| resolve_smtp(settings, &connector, config));
         let (connection, tls_version) = connect_session(config, &connector).await?;
-        Ok(Self::build(
-            connection,
-            mailbox,
-            smtp,
-            config.since,
-            tls_version,
-        ))
+        let mut provider = Self::build(connection, mailbox, smtp, config.since, tls_version);
+        // Only a provider that dialed knows how to dial again — which is what lets a Sent
+        // copy that fails to file over this session be retried on a fresh one.
+        provider.redial = Some(Redial::new(config, &connector));
+        Ok(provider)
     }
 }
 
@@ -242,6 +244,7 @@ impl<S> ImapProvider<S> {
             connection: Mutex::new(connection),
             mailbox,
             smtp,
+            redial: None,
             since,
             connection_info: ConnectionInfo {
                 tls_version,

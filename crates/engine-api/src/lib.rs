@@ -114,8 +114,8 @@ pub use engine_provider::{
     Capabilities, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader, Draft,
     DraftAttachment, DraftAttachmentDisposition, DraftCalendar, EventDeletion, EventDraft,
     EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
-    PatchTarget, Provider, ReplyDelivery, RsvpControls, RsvpResponse, SubmissionReceipt, TextEdit,
-    WriteGuard, WritePrecondition,
+    PatchTarget, Provider, ReplyDelivery, RsvpControls, RsvpResponse, SentCopy, SubmissionReceipt,
+    TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,

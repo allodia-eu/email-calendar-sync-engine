@@ -1,17 +1,24 @@
 //! SMTP submission + IMAP `APPEND` filing of sent copies and drafts.
 //!
-//! The submission *conversation* lives in [`crate::smtp`]; this module is the
-//! `Provider`-side glue that runs it and files the resulting copy into the account's
-//! real Sent/Drafts folder (resolved by SPECIAL-USE role, `imap-smtp.md`). It is the
+//! The submission *conversation* lives in [`crate::smtp`] and the `APPEND` itself in
+//! [`crate::place`]; this module is the `Provider`-side glue that runs the send and then
+//! files the resulting copy into the account's real Sent/Drafts folder. It is the
 //! [`ImapProvider`] half that `submit_email` delegates to, kept out of
 //! [`crate::provider`] so that file stays under the size limit.
+//!
+//! **Delivering and filing are two operations, and the second one can fail on its own.**
+//! SMTP dials a fresh connection per send, so a delivery succeeds over a session that has
+//! been idle for an hour; the `APPEND` rides the provider's standing IMAP session, which by
+//! then may be dead. That asymmetry is not hypothetical — it is how a message reached three
+//! recipients and left no trace in Sent. The response is `file_sent_copy`: retry once on a
+//! freshly dialed session, and when even that cannot file it, say so in the receipt
+//! ([`engine_provider::SentCopy::Unfiled`]) — this crate emits no logs of its own, so the
+//! outcome travelling up *is* the diagnostic. What it must never do is fail the send: the
+//! mail is already gone, and a caller that treated filing as delivery would re-send it.
 
 use std::collections::HashSet;
 
-use engine_core::{
-    ids::{MessageIdHeader, ProviderKey},
-    mail::MailboxRole,
-};
+use engine_core::ids::ProviderKey;
 use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
 use engine_rfc5322::{assemble_filed_message, assemble_message};
 use time::OffsetDateTime;
@@ -23,11 +30,10 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::{ImapConfig, SmtpSecurity, SmtpSettings},
-    error::{ImapError, ImapResult},
-    mail::{mailbox_from_list, message_key},
-    provider::ImapProvider,
+    error::ImapError,
+    place::{Filing, append_to_role_folder, find_placed_copy, placed_key},
+    provider::{ImapProvider, connect_session},
     smtp::{self, Disposition, SmtpResult},
-    transport::Connection,
 };
 
 /// The resolved SMTP transport a provider holds after `connect`: plaintext, implicit
@@ -97,46 +103,27 @@ struct Submission {
     ehlo: String,
 }
 
-/// Where a placed copy is filed. One value ties together the SPECIAL-USE role used
-/// to resolve the server's real folder, the conventional folder name to fall back
-/// to, and the fallback key prefix — so the three can never desync.
-#[derive(Clone, Copy)]
-pub(crate) enum Filing {
-    Sent,
-    Drafts,
+/// What a fresh IMAP session needs, so a failed placement can be retried on a new
+/// connection instead of lost on a dead one.
+///
+/// Held only by a provider built by [`ImapProvider::connect`] — one built over a mock
+/// stream has no server to re-dial, and says so by carrying `None`.
+pub(crate) struct Redial {
+    config: ImapConfig,
+    connector: TlsConnector,
 }
 
-impl Filing {
-    /// The RFC 6154 SPECIAL-USE role identifying this folder on the server.
-    fn role(self) -> MailboxRole {
-        match self {
-            Self::Sent => MailboxRole::Sent,
-            Self::Drafts => MailboxRole::Drafts,
-        }
-    }
-
-    /// The conventional folder name to create and use when the server advertises no
-    /// folder with [`Self::role`].
-    fn default_folder(self) -> &'static str {
-        match self {
-            Self::Sent => "Sent",
-            Self::Drafts => "Drafts",
-        }
-    }
-
-    /// The prefix of the `Message-ID`-derived fallback key (when no UIDPLUS).
-    fn key_prefix(self) -> &'static str {
-        match self {
-            Self::Sent => "sent",
-            Self::Drafts => "draft",
-        }
-    }
-
-    /// The IMAP flags to set on the appended copy.
-    fn flags(self) -> &'static str {
-        match self {
-            Self::Sent => "\\Seen",
-            Self::Drafts => "\\Draft \\Seen",
+impl Redial {
+    /// Captures what [`connect_session`] needs to open another session like this one.
+    pub(crate) fn new(config: &ImapConfig, connector: &TlsConnector) -> Self {
+        let mut config = config.clone();
+        // A retry dial is not an account connecting: reporting `TlsEstablished` /
+        // `Authenticated` through the host's observer would put a second "connected" pair
+        // in its log for what is really one send finishing its filing.
+        config.connect_observer = None;
+        Self {
+            config,
+            connector: connector.clone(),
         }
     }
 }
@@ -289,44 +276,94 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         } else {
             assemble_filed_message(draft, sub.now)?
         };
-        // Best-effort Sent placement; a successful send is never failed for it. The
-        // Sent folder is resolved by its `\Sent` SPECIAL-USE role (falling back to
+        // The Sent folder is resolved by its `\Sent` SPECIAL-USE role (falling back to
         // the conventional "Sent"), so the copy lands in the account's real Sent
         // folder — not a stray one on servers that name it differently.
-        let (folder, append_uid) = self
-            .append_to_role_folder(Filing::Sent, &filed)
-            .await
-            .unwrap_or_else(|_| (Filing::Sent.default_folder().to_owned(), None));
-        let email_key = placed_key(
-            &folder,
-            Filing::Sent.key_prefix(),
-            append_uid,
-            &draft.message_id,
-        );
-        Ok(SubmissionReceipt::new(email_key, draft.message_id.clone()))
+        match self.file_sent_copy(&filed, draft).await {
+            Ok((folder, append_uid)) => Ok(SubmissionReceipt::filed(
+                placed_key(
+                    &folder,
+                    Filing::Sent.key_prefix(),
+                    append_uid,
+                    &draft.message_id,
+                ),
+                draft.message_id.clone(),
+            )),
+            // Delivered, but the copy is not in Sent and no later sync can find it — there
+            // is nothing on the server to reconcile against. Never an `Err`: the message
+            // has reached its recipients, and a caller that saw a failure here would
+            // re-send it.
+            Err(detail) => Ok(SubmissionReceipt::unfiled(
+                placed_key(
+                    Filing::Sent.default_folder(),
+                    Filing::Sent.key_prefix(),
+                    None,
+                    &draft.message_id,
+                ),
+                draft.message_id.clone(),
+                detail,
+            )),
+        }
     }
 
-    /// Resolves the real folder for `filing` — the account's folder carrying the
-    /// matching SPECIAL-USE role, else the conventional name (created if missing) —
-    /// and APPENDs `message` flagged per `filing`, returning the folder used and the
-    /// UIDPLUS `APPENDUID` if the server supports it.
-    async fn append_to_role_folder(
+    /// Files the delivered message's Sent copy: on the provider's standing session, else
+    /// on a freshly dialed one.
+    ///
+    /// The standing session is the one that goes stale — it may have sat unused since the
+    /// last sync while SMTP dialed fresh — so its failure is the *expected* path, not an
+    /// exceptional one. The retry re-dials and, before appending, asks whether the copy is
+    /// already there: the first attempt may have committed server-side and lost only its
+    /// response, and two copies in Sent is its own bug.
+    ///
+    /// # Errors
+    ///
+    /// The detail to record on the receipt when neither attempt filed it.
+    async fn file_sent_copy(
         &self,
-        filing: Filing,
-        message: &[u8],
-    ) -> ProviderResult<(String, Option<(u32, u32)>)> {
-        let mut connection = self.connection.lock().await;
-        let folder = if let Some(name) = resolve_role_folder(&mut connection, filing.role()).await?
-        {
-            name
-        } else {
-            // No folder advertises the role: fall back to the conventional name,
-            // creating it (an "already exists" rejection is ignored).
-            let name = filing.default_folder().to_owned();
-            let _ = connection.create(&name).await;
-            name
+        filed: &[u8],
+        draft: &Draft,
+    ) -> Result<(String, Option<(u32, u32)>), String> {
+        let first = {
+            let mut connection = self.connection.lock().await;
+            append_to_role_folder(&mut connection, Filing::Sent, filed).await
         };
-        let append_uid = connection.append(&folder, filing.flags(), message).await?;
+        let first = match first {
+            Ok(placed) => return Ok(placed),
+            Err(err) => err,
+        };
+        let Some(redial) = self.redial.as_ref() else {
+            return Err(format!("{first}"));
+        };
+        self.refile_on_a_fresh_session(redial, filed, draft)
+            .await
+            .map_err(|retry| format!("{first}; retry on a fresh session: {retry}"))
+    }
+
+    /// The retry: dial a new session, and file the copy there unless it is already filed.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`ProviderError`] on a dial, `SEARCH` or `APPEND` failure.
+    async fn refile_on_a_fresh_session(
+        &self,
+        redial: &Redial,
+        filed: &[u8],
+        draft: &Draft,
+    ) -> ProviderResult<(String, Option<(u32, u32)>)> {
+        let (mut connection, _) = connect_session(&redial.config, &redial.connector)
+            .await
+            .map_err(ProviderError::from)?;
+        let folder = crate::place::resolve_filing_folder(&mut connection, Filing::Sent).await?;
+        // `APPEND` is not idempotent, so ask before placing: a first attempt that committed
+        // and lost its response would otherwise leave the user two copies.
+        if let Some(existing) =
+            find_placed_copy(&mut connection, &folder, &draft.message_id).await?
+        {
+            return Ok((folder, Some(existing)));
+        }
+        let append_uid = connection
+            .append(&folder, Filing::Sent.flags(), filed)
+            .await?;
         Ok((folder, append_uid))
     }
 
@@ -336,8 +373,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     /// and returns its key (the real Drafts key from UIDPLUS `APPENDUID`, or a
     /// `Message-ID`-derived key the next Drafts sync resolves).
     ///
-    /// Unlike Sent placement this is **not** best-effort: a failed `APPEND` is
-    /// surfaced, since saving the draft is the whole operation.
+    /// Unlike a Sent copy this **fails loudly**: saving the draft is the whole operation,
+    /// so there is nothing to report success about if the `APPEND` did not land.
     ///
     /// # Errors
     ///
@@ -346,10 +383,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         // A saved draft retains the Bcc header so resuming it restores every recipient (it is
         // APPENDed locally, never transmitted).
         let message = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
-        // Unlike Sent placement this surfaces an `APPEND` failure (saving the draft is
-        // the whole op). The Drafts folder is resolved by its `\Drafts` SPECIAL-USE
-        // role (falling back to the conventional "Drafts").
-        let (folder, append_uid) = self.append_to_role_folder(Filing::Drafts, &message).await?;
+        // The Drafts folder is resolved by its `\Drafts` SPECIAL-USE role (falling back to
+        // the conventional "Drafts").
+        let (folder, append_uid) = {
+            let mut connection = self.connection.lock().await;
+            append_to_role_folder(&mut connection, Filing::Drafts, &message).await?
+        };
         Ok(placed_key(
             &folder,
             Filing::Drafts.key_prefix(),
@@ -376,39 +415,6 @@ async fn tls_connect(
     Ok(tls)
 }
 
-/// Finds the account's folder carrying `role` (RFC 6154 SPECIAL-USE) via `LIST`;
-/// `None` when the server advertises none.
-async fn resolve_role_folder<S>(
-    connection: &mut Connection<S>,
-    role: MailboxRole,
-) -> ImapResult<Option<String>>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
-{
-    let rows = connection.list().await?;
-    Ok(rows
-        .iter()
-        .filter_map(mailbox_from_list)
-        .find(|mailbox| mailbox.role.as_ref() == Some(&role))
-        .map(|mailbox| mailbox.name))
-}
-
-/// The key for a message just placed in `folder`: the real key from UIDPLUS
-/// `APPENDUID`, else a `Message-ID`-derived `{prefix}:<id>` key the next sync of
-/// that folder resolves.
-fn placed_key(
-    folder: &str,
-    prefix: &str,
-    append_uid: Option<(u32, u32)>,
-    message_id: &MessageIdHeader,
-) -> ProviderKey {
-    match append_uid {
-        Some((validity, uid)) => message_key(folder, validity, uid),
-        None => ProviderKey::new(format!("{prefix}:{}", message_id.as_str()))
-            .expect("a Message-ID-derived placement key is never empty"),
-    }
-}
-
 #[cfg(test)]
 #[path = "filing_tests.rs"]
 mod tests;
@@ -418,3 +424,9 @@ mod tests;
 #[cfg(test)]
 #[path = "filing_smtp_server_tests.rs"]
 mod smtp_server_tests;
+
+// The Sent-copy retry needs a real dial (a mock stream cannot express "this session is dead,
+// open another"), so its in-process IMAP + SMTP servers live in their own file.
+#[cfg(test)]
+#[path = "filing_retry_tests.rs"]
+mod retry_tests;

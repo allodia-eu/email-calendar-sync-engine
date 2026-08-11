@@ -285,4 +285,54 @@ async fn submit_falls_back_to_a_message_id_key_without_appenduid() {
         .await
         .unwrap();
     assert_eq!(receipt.email_key.as_str(), "sent:offline-send@host");
+    assert!(receipt.sent_copy.is_filed());
+}
+
+/// **The regression.** A message was delivered to three recipients and then vanished: the
+/// `APPEND` that files the Sent copy failed on a stale session, the error was discarded, and
+/// the receipt was indistinguishable from a clean send — so the outbox recorded success, the
+/// user was told "Sent", and nothing anywhere held the fact that their copy was gone.
+///
+/// The send must still succeed (the mail has left; failing here would re-send it), and the
+/// receipt must say the copy was not filed.
+#[tokio::test]
+async fn a_delivered_send_whose_sent_copy_cannot_be_filed_says_so() {
+    // The IMAP session is exhausted after login: every further command reads EOF, exactly
+    // as a session dropped while idle behaves. No `redial` is configured on a mock-backed
+    // provider, so there is no second attempt to make.
+    let provider = connected_provider(script(&[GREETING, LOGIN_OK])).await;
+    let smtp = script(&[
+        "220 mail\r\n",
+        "250 OK\r\n",
+        "250 2.1.0 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "354 go ahead\r\n",
+        "250 2.0.0 queued\r\n",
+        "221 bye\r\n",
+    ]);
+    let (smtp_stream, smtp_recorded) = MockStream::new(smtp);
+
+    let receipt = provider
+        .submit_over(smtp_stream, &submit_draft(), None)
+        .await
+        .expect("a delivered send is never failed for a filing error");
+
+    assert!(
+        written(&smtp_recorded).contains("MAIL FROM:<alice@test.local>"),
+        "the message really was delivered: {}",
+        written(&smtp_recorded)
+    );
+    assert!(
+        !receipt.sent_copy.is_filed(),
+        "the copy was not filed, and the receipt has to carry that"
+    );
+    let detail = receipt
+        .sent_copy
+        .unfiled_detail()
+        .expect("an unfiled copy carries why");
+    assert!(
+        !detail.is_empty(),
+        "the detail is the whole diagnostic trail: {detail}"
+    );
+    assert_eq!(receipt.message_id.as_str(), "offline-send@host");
 }

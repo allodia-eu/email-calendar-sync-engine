@@ -322,10 +322,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// after `date` (an IMAP `dd-Mon-yyyy` date, RFC 9051 §6.4.4), used to find the
     /// floor of a sync-depth window so a snapshot fetches only recent mail. `date` is
     /// caller-formatted from a calendar date (digits + a fixed month abbreviation), so
-    /// it carries no quoting or injection risk. Returns the matched UIDs (empty if none
-    /// match), tolerating both the classic `* SEARCH` and extended `* ESEARCH` reply.
+    /// it carries no quoting or injection risk.
     pub(crate) async fn uid_search_since(&mut self, date: &str) -> ImapResult<Vec<u32>> {
-        let response = self.command(&format!("UID SEARCH SINCE {date}")).await?;
+        self.uid_search(&format!("SINCE {date}")).await
+    }
+
+    /// `UID SEARCH <criteria>` in the selected mailbox — the matched UIDs (empty if none
+    /// match), tolerating both the classic `* SEARCH` and the extended `* ESEARCH` reply.
+    /// `criteria` is already-formed search syntax; a caller composing in a non-literal value
+    /// quotes it ([`quote`]) first.
+    pub(crate) async fn uid_search(&mut self, criteria: &str) -> ImapResult<Vec<u32>> {
+        let response = self.command(&format!("UID SEARCH {criteria}")).await?;
         Ok(parse::parse_search(&response.untagged))
     }
 
@@ -482,7 +489,7 @@ pub(crate) fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'
 }
 
 /// Wraps a value as an IMAP quoted string, escaping `\` and `"`.
-fn quote(value: &str) -> String {
+pub(crate) fn quote(value: &str) -> String {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
 }

@@ -344,7 +344,51 @@ impl DraftAttachment {
     }
 }
 
-/// The result of a successful submission.
+/// What became of the sender's own copy of a delivered message.
+///
+/// Delivering and filing are **one step on most transports and two on IMAP**: JMAP files the
+/// copy with the submission's `onSuccessUpdateEmail`, Graph and Gmail file it server-side, and
+/// an IMAP/SMTP account is delivered over SMTP and then filed by us with a separate `APPEND`.
+/// A two-step transport can therefore deliver a message and still fail to file it, and that
+/// outcome belongs to the caller: the mail has reached its recipients and must never be
+/// re-sent, yet the sender's Sent folder is missing it and no later sync will notice — there
+/// is nothing on the server left to reconcile against.
+///
+/// Every adapter states which of the two it achieved, because a receipt that *cannot* express
+/// "delivered but not filed" is what let a lost Sent copy read as a clean send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SentCopy {
+    /// Filed in the account's Sent folder; [`SubmissionReceipt::email_key`] addresses it.
+    Filed,
+    /// Delivered to its recipients, but the sender's copy was **not** filed.
+    Unfiled {
+        /// Why filing failed — a failure class and protocol detail, for a log line and a
+        /// host-visible hint. Never draft content or addresses.
+        detail: String,
+    },
+}
+
+impl SentCopy {
+    /// Whether the sender's copy reached their Sent folder.
+    #[must_use]
+    pub fn is_filed(&self) -> bool {
+        matches!(self, Self::Filed)
+    }
+
+    /// Why filing failed, or `None` when it did not fail.
+    #[must_use]
+    pub fn unfiled_detail(&self) -> Option<&str> {
+        match self {
+            Self::Filed => None,
+            Self::Unfiled { detail } => Some(detail),
+        }
+    }
+}
+
+/// The result of a successful submission — the message reached its recipients.
+///
+/// Whether the *sender's* copy also reached their Sent folder is a separate question with a
+/// separate answer: [`Self::sent_copy`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmissionReceipt {
     /// The provider key of the sent message (filed in Sent), for the outbox to
@@ -352,15 +396,36 @@ pub struct SubmissionReceipt {
     pub email_key: ProviderKey,
     /// The `Message-ID` that was sent, echoed for sync-time reconciliation.
     pub message_id: MessageIdHeader,
+    /// What became of the sender's own copy.
+    pub sent_copy: SentCopy,
 }
 
 impl SubmissionReceipt {
-    /// Records a submission result.
+    /// Records a submission whose sent copy **was** filed in the account's Sent folder.
     #[must_use]
-    pub fn new(email_key: ProviderKey, message_id: MessageIdHeader) -> Self {
+    pub fn filed(email_key: ProviderKey, message_id: MessageIdHeader) -> Self {
         Self {
             email_key,
             message_id,
+            sent_copy: SentCopy::Filed,
+        }
+    }
+
+    /// Records a submission that was **delivered but whose sent copy was not filed**, with
+    /// `detail` explaining why. The message is still sent: a caller surfaces this, and never
+    /// retries the submission.
+    #[must_use]
+    pub fn unfiled(
+        email_key: ProviderKey,
+        message_id: MessageIdHeader,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            email_key,
+            message_id,
+            sent_copy: SentCopy::Unfiled {
+                detail: detail.into(),
+            },
         }
     }
 }

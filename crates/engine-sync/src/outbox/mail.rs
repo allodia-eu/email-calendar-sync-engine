@@ -9,7 +9,7 @@ use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey},
     write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
 };
-use engine_provider::{Draft, MailEdit, Provider};
+use engine_provider::{Draft, MailEdit, Provider, SentCopy};
 use engine_store::{Store, WorkerId};
 
 use super::{enqueue_and_claim, record_failure};
@@ -24,6 +24,14 @@ pub struct SubmitOutcome {
     pub email_key: ProviderKey,
     /// The `Message-ID` that was sent.
     pub message_id: MessageIdHeader,
+    /// What became of the sender's own copy.
+    ///
+    /// A delivered message whose copy was **not** filed still completes the op — the mail
+    /// has gone, and re-sending it would be far worse than a missing copy — so the op state
+    /// cannot carry this and the outcome is the only place the fact survives. A caller that
+    /// ignores it drops it for good: nothing later can rediscover a copy that was never
+    /// written to the server.
+    pub sent_copy: SentCopy,
 }
 
 /// Sends `draft` through the outbox: durable op → claim → provider submit → record.
@@ -80,6 +88,7 @@ where
                 op: leased.id,
                 email_key: receipt.email_key,
                 message_id: receipt.message_id,
+                sent_copy: receipt.sent_copy,
             })
         }
         Err(err) => {

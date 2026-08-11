@@ -279,6 +279,8 @@ impl Provider for GateProvider {
 struct SubmittingProvider {
     inner: FakeProvider,
     fail: bool,
+    /// Deliver, but report the sender's copy as unfiled (the two-step-transport case).
+    unfiled: bool,
 }
 
 #[async_trait::async_trait]
@@ -323,10 +325,13 @@ impl Provider for SubmittingProvider {
         if self.fail {
             return Err(ProviderError::retryable("smtp is offline"));
         }
-        Ok(SubmissionReceipt::new(
-            ProviderKey::new("sent-1").unwrap(),
-            draft.message_id.clone(),
-        ))
+        let key = ProviderKey::new("sent-1").unwrap();
+        let id = draft.message_id.clone();
+        if self.unfiled {
+            let detail = "APPEND failed: connection reset";
+            return Ok(SubmissionReceipt::unfiled(key, id, detail));
+        }
+        Ok(SubmissionReceipt::filed(key, id))
     }
 
     async fn edit_mail(
