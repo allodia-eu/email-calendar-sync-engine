@@ -192,7 +192,7 @@ async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     // incrementally, and record IDLE (RFC 2177) support; a server without either stays
     // on the corresponding baseline. Not a connect step: it negotiates extensions, it
     // does not establish the connection.
-    connection.negotiate_qresync().await?;
+    connection.negotiate().await?;
     Ok(connection)
 }
 
@@ -237,7 +237,7 @@ impl<S> ImapProvider<S> {
         // Push (`IDLE`, RFC 2177) is gated on the server advertising it post-auth, so a
         // host knows whether to offer an "as it comes in" strategy or fall back to
         // polling. The watcher itself opens a *separate* connection (`crate::watch`).
-        if connection.idle_advertised() {
+        if connection.idle_available() {
             capabilities = capabilities.with_idle();
         }
         Self {
@@ -305,20 +305,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         // `LIST` alone carries no unread count, so the folder list either asks for it
         // in the same round trip (LIST-STATUS) or probes each mailbox afterwards —
         // `unseen` owns that choice and its cost.
-        let (rows, unseen) = {
+        let (modified_utf7, rows, unseen) = {
             let mut connection = self.connection.lock().await;
-            if connection.advertised.list_status {
+            // The dialect decides how the names in these rows are encoded, and it is a
+            // property of the session, so it is read under the same lock as the rows.
+            let modified_utf7 = connection.names_are_modified_utf7();
+            let (rows, unseen) = if connection
+                .negotiated
+                .has(crate::capability::Extension::ListStatus)
+            {
                 connection.list_with_unseen().await?
             } else {
                 let rows = connection.list().await?;
                 let unseen = crate::unseen::unseen_by_probing(&mut connection, &rows).await?;
                 (rows, unseen)
-            }
+            };
+            (modified_utf7, rows, unseen)
         };
         let mailboxes: Vec<Mailbox> = rows
             .iter()
             .filter_map(|row| {
-                let mut mailbox = mailbox_from_list(row)?;
+                let mut mailbox = mailbox_from_list(row, modified_utf7)?;
                 // Absent stays absent: a mailbox the server did not count must not
                 // read as one with nothing unread.
                 mailbox.unread_count = unseen.get(&row.name).copied();

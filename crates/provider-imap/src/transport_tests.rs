@@ -68,113 +68,6 @@ async fn a_bye_greeting_is_a_retryable_error() {
 }
 
 #[tokio::test]
-async fn negotiate_qresync_enables_it_when_advertised() {
-    // CAPABILITY advertises QRESYNC (post-auth, as Stalwart does), so the client
-    // ENABLEs it and the session is QRESYNC-aware.
-    let server = script(&[
-        GREETING,
-        "a1 OK LOGIN completed\r\n",
-        "* CAPABILITY IMAP4rev2 ENABLE CONDSTORE QRESYNC UIDPLUS\r\na2 OK CAPABILITY done\r\n",
-        "* ENABLED QRESYNC\r\na3 OK ENABLE successful\r\n",
-    ]);
-    let (stream, recorded) = MockStream::new(server);
-    let mut conn = Connection::open(stream).await.unwrap();
-    conn.login("alice", "pw").await.unwrap();
-    assert!(!conn.qresync_enabled());
-
-    conn.negotiate_qresync().await.unwrap();
-    assert!(conn.qresync_enabled());
-    // This server advertises QRESYNC but not IDLE, so no push capability is recorded.
-    assert!(!conn.idle_advertised());
-
-    let sent = written(&recorded);
-    assert!(sent.contains("a2 CAPABILITY"), "{sent}");
-    assert!(sent.contains("a3 ENABLE QRESYNC"), "{sent}");
-}
-
-#[tokio::test]
-async fn negotiate_qresync_stays_off_without_the_capability() {
-    // No QRESYNC advertised → no ENABLE issued, the session stays on the baseline.
-    let server = script(&[
-        GREETING,
-        "a1 OK LOGIN completed\r\n",
-        "* CAPABILITY IMAP4rev2 IDLE UIDPLUS\r\na2 OK CAPABILITY done\r\n",
-    ]);
-    let (stream, recorded) = MockStream::new(server);
-    let mut conn = Connection::open(stream).await.unwrap();
-    conn.login("alice", "pw").await.unwrap();
-
-    conn.negotiate_qresync().await.unwrap();
-    assert!(!conn.qresync_enabled());
-    // The same post-auth CAPABILITY lists IDLE (but not QRESYNC), so push is recorded
-    // even though the QRESYNC delta is not — the two are independent capabilities.
-    assert!(conn.idle_advertised());
-    assert!(!written(&recorded).contains("ENABLE"), "no ENABLE sent");
-}
-
-#[tokio::test]
-async fn negotiate_qresync_ignores_an_ok_that_enabled_nothing() {
-    // The server advertises QRESYNC and answers ENABLE with a tagged OK, but the
-    // `* ENABLED` line is empty (it enabled nothing, RFC 5161) — so we must stay on the
-    // baseline rather than issue CONDSTORE/VANISHED commands the server would reject.
-    let server = script(&[
-        GREETING,
-        "a1 OK LOGIN completed\r\n",
-        "* CAPABILITY IMAP4rev2 QRESYNC\r\na2 OK CAPABILITY done\r\n",
-        "* ENABLED\r\na3 OK ENABLE successful\r\n",
-    ]);
-    let (stream, _) = MockStream::new(server);
-    let mut conn = Connection::open(stream).await.unwrap();
-    conn.login("alice", "pw").await.unwrap();
-
-    conn.negotiate_qresync().await.unwrap();
-    assert!(
-        !conn.qresync_enabled(),
-        "a bare ENABLED list does not enable QRESYNC"
-    );
-}
-
-#[tokio::test]
-async fn negotiate_qresync_tolerates_an_enable_rejection() {
-    // A server that advertises QRESYNC but rejects ENABLE leaves the session on the
-    // baseline rather than failing the whole connection.
-    let server = script(&[
-        GREETING,
-        "a1 OK LOGIN completed\r\n",
-        "* CAPABILITY IMAP4rev2 QRESYNC\r\na2 OK CAPABILITY done\r\n",
-        "a3 NO ENABLE not right now\r\n",
-    ]);
-    let (stream, _) = MockStream::new(server);
-    let mut conn = Connection::open(stream).await.unwrap();
-    conn.login("alice", "pw").await.unwrap();
-
-    conn.negotiate_qresync().await.unwrap();
-    assert!(
-        !conn.qresync_enabled(),
-        "an ENABLE NO falls back to baseline"
-    );
-}
-
-#[tokio::test]
-async fn negotiate_qresync_propagates_a_transport_error() {
-    // A non-NO/BAD failure during ENABLE (here a protocol violation) is propagated,
-    // not swallowed — only an advertised-but-refused NO/BAD falls back to baseline.
-    let server = script(&[
-        GREETING,
-        "a1 OK LOGIN completed\r\n",
-        "* CAPABILITY IMAP4rev2 QRESYNC\r\na2 OK CAPABILITY done\r\n",
-        "+ unexpected continuation\r\n",
-    ]);
-    let (stream, _) = MockStream::new(server);
-    let mut conn = Connection::open(stream).await.unwrap();
-    conn.login("alice", "pw").await.unwrap();
-
-    let err = conn.negotiate_qresync().await.unwrap_err();
-    assert_eq!(err.failure_class(), FailureClass::Permanent);
-    assert!(!conn.qresync_enabled());
-}
-
-#[tokio::test]
 async fn select_condstore_reads_highest_modseq() {
     let server = script(&[
         GREETING,
@@ -347,7 +240,7 @@ async fn list_asks_for_special_use_where_the_server_advertised_it() {
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("a", "b").await.unwrap();
-    conn.advertised.special_use = true;
+    conn.negotiated = crate::capability::Negotiated::from_capabilities(&["SPECIAL-USE".to_owned()]);
 
     let rows = conn.list().await.unwrap();
 

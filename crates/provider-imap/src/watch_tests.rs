@@ -58,7 +58,7 @@ async fn serve_handshake(server: &mut BufReader<DuplexStream>) {
 async fn start_watcher(client: DuplexStream, keepalive: Duration) -> ImapWatcher<DuplexStream> {
     let mut conn = Connection::open(client).await.unwrap();
     conn.login("u", "p").await.unwrap();
-    conn.negotiate_qresync().await.unwrap();
+    conn.negotiate().await.unwrap();
     ImapWatcher::start(conn, MailboxId::try_from("INBOX").unwrap(), keepalive)
         .await
         .unwrap()
@@ -153,7 +153,7 @@ async fn start_fails_without_idle_capability() {
 
     let mut conn = Connection::open(client).await.unwrap();
     conn.login("u", "p").await.unwrap();
-    conn.negotiate_qresync().await.unwrap();
+    conn.negotiate().await.unwrap();
     let err = ImapWatcher::start(
         conn,
         MailboxId::try_from("INBOX").unwrap(),

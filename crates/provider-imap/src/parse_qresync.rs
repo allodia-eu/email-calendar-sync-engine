@@ -37,20 +37,27 @@ fn capability_atoms(text: &str) -> Option<Vec<String>> {
     Some(list.split_whitespace().map(str::to_owned).collect())
 }
 
-/// Whether an `ENABLE` response's `* ENABLED <caps>` line actually lists QRESYNC
-/// (RFC 5161 §3.2, RFC 7162 §3.1). A server may answer a tagged `OK` to `ENABLE
-/// QRESYNC` while listing nothing (or not QRESYNC) in `* ENABLED`, meaning the
-/// extension was **not** enabled — issuing `CHANGEDSINCE`/`VANISHED` would then be
-/// illegal, so the caller must stay on the non-QRESYNC baseline.
-pub(crate) fn enabled_lists_qresync(lines: &[Vec<u8>]) -> bool {
-    lines.iter().any(|line| {
-        let text = String::from_utf8_lossy(line);
-        let mut tokens = text.split_whitespace();
-        tokens
-            .next()
-            .is_some_and(|head| head.eq_ignore_ascii_case("ENABLED"))
-            && tokens.any(|cap| cap.eq_ignore_ascii_case("QRESYNC"))
-    })
+/// The capabilities an `ENABLE` response confirms, from its untagged `* ENABLED <caps>`
+/// lines (RFC 5161 §3.2).
+///
+/// Reading the response is the whole point: a server may answer a tagged `OK` while
+/// listing nothing — or a subset — in `* ENABLED`, meaning those were **not** enabled.
+/// Trusting the request instead of the confirmation is how a client comes to issue
+/// `CHANGEDSINCE`/`VANISHED` illegally, or to read mailbox names as UTF-8 while they are
+/// still arriving as modified UTF-7.
+pub(crate) fn parse_enabled(lines: &[Vec<u8>]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            let text = String::from_utf8_lossy(line);
+            let mut tokens = text.split_whitespace();
+            tokens
+                .next()
+                .is_some_and(|head| head.eq_ignore_ascii_case("ENABLED"))
+                .then(|| tokens.map(str::to_owned).collect::<Vec<_>>())
+        })
+        .flatten()
+        .collect()
 }
 
 /// Reads `* VANISHED [(EARLIER)] <uid-set>` responses (RFC 7162 §3.2.10) into the
@@ -143,16 +150,17 @@ mod tests {
     }
 
     #[test]
-    fn enabled_is_recognized_only_when_it_actually_lists_qresync() {
-        assert!(enabled_lists_qresync(&lines(&["ENABLED QRESYNC"])));
-        assert!(enabled_lists_qresync(&lines(&[
-            "ENABLED CONDSTORE QRESYNC"
-        ])));
+    fn enabled_lists_only_what_the_server_confirmed() {
+        assert_eq!(parse_enabled(&lines(&["ENABLED QRESYNC"])), ["QRESYNC"]);
+        assert_eq!(
+            parse_enabled(&lines(&["ENABLED CONDSTORE QRESYNC"])),
+            ["CONDSTORE", "QRESYNC"]
+        );
         // A bare `* ENABLED` (server enabled nothing) must NOT be treated as success.
-        assert!(!enabled_lists_qresync(&lines(&["ENABLED"])));
-        assert!(!enabled_lists_qresync(&lines(&["ENABLED CONDSTORE"])));
+        assert!(parse_enabled(&lines(&["ENABLED"])).is_empty());
+        assert_eq!(parse_enabled(&lines(&["ENABLED CONDSTORE"])), ["CONDSTORE"]);
         // A non-ENABLED line is ignored.
-        assert!(!enabled_lists_qresync(&lines(&["OK done"])));
+        assert!(parse_enabled(&lines(&["OK done"])).is_empty());
     }
 
     #[test]

@@ -1,7 +1,8 @@
-//! Modified UTF-7 decoding, including the two shapes that made a real folder list unreadable:
-//! an escaped ampersand and a BASE64 run.
+//! Modified UTF-7 in both directions, including the two shapes that made a real folder list
+//! unreadable — an escaped ampersand and a BASE64 run — and the round-trip property the
+//! dialect-independent mailbox identity rests on.
 
-use super::decode;
+use super::{decode, encode};
 
 #[test]
 fn a_plain_ascii_name_is_unchanged() {
@@ -64,4 +65,49 @@ fn malformed_runs_are_returned_verbatim() {
     assert_eq!(decode("&AAAAA-"), "&AAAAA-");
     // A lone high surrogate is not decodable UTF-16.
     assert_eq!(decode("&2D0-"), "&2D0-");
+}
+
+#[test]
+fn the_rfc_example_encodes() {
+    // RFC 3501 §5.1.3's own example, in reverse.
+    assert_eq!(
+        encode("~peter/mail/台北/日本語"),
+        "~peter/mail/&U,BTFw-/&ZeVnLIqe-"
+    );
+}
+
+#[test]
+fn a_literal_ampersand_becomes_the_empty_shift() {
+    assert_eq!(encode("Travel & Expenses"), "Travel &- Expenses");
+    assert_eq!(encode("&"), "&-");
+}
+
+#[test]
+fn plain_ascii_is_left_alone() {
+    assert_eq!(encode("INBOX"), "INBOX");
+    assert_eq!(encode("Archive/2026"), "Archive/2026");
+}
+
+#[test]
+fn encode_inverts_decode_for_every_name_decode_can_produce() {
+    // The property the identity model rests on: a decoded name addresses the mailbox it
+    // came from, so `encode(decode(wire)) == wire` for well-formed wire names.
+    for wire in [
+        "INBOX",
+        "Archive/2026",
+        "Travel &- Expenses",
+        "&ANw-berweisungen",
+        "&ZeVnLIqe-",
+        "~peter/mail/&U,BTFw-/&ZeVnLIqe-",
+        "&-",
+    ] {
+        assert_eq!(encode(&decode(wire)), wire, "round trip via {wire:?}");
+    }
+}
+
+#[test]
+fn a_surrogate_pair_survives_the_round_trip() {
+    // Outside the basic plane, so the name is two UTF-16 code units in one shift.
+    let name = "Fotos 📷";
+    assert_eq!(decode(&encode(name)), name);
 }

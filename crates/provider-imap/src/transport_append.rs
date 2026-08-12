@@ -10,14 +10,14 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use crate::{
     error::{ImapError, ImapResult},
     transport::{Connection, parse_append_uid, strip_ascii_prefix},
-    transport_command::quote,
 };
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// `CREATE <mailbox>`. Used to ensure the Sent folder exists before filing a
     /// copy; an "already exists" rejection is the caller's to ignore.
     pub(crate) async fn create(&mut self, mailbox: &str) -> ImapResult<()> {
-        self.command(&format!("CREATE {}", quote(mailbox))).await?;
+        self.command(&format!("CREATE {}", self.quoted_name(mailbox)))
+            .await?;
         Ok(())
     }
 
@@ -37,7 +37,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         // the raw bytes.
         let header = format!(
             "{tag} APPEND {} ({flags}) {{{}}}\r\n",
-            quote(mailbox),
+            self.quoted_name(mailbox),
             message.len()
         );
         self.inner.write_all(header.as_bytes()).await?;

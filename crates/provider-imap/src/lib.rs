@@ -57,6 +57,7 @@
 
 mod base64;
 mod bodystructure;
+mod capability;
 mod config;
 mod cursor;
 mod encoded_word;

@@ -10,6 +10,7 @@
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::{
+    capability::{Extension, Negotiated},
     error::{ImapError, ImapResult},
     parse::{self, FetchRow, ListRow, SelectData},
     transport_command::{list_command, quote},
@@ -22,47 +23,17 @@ use crate::{
 const MAX_LITERAL: usize = 64 * 1024 * 1024;
 
 /// A connected IMAP session over a generic async byte stream.
-/// The optional extensions one session may use, read from the post-auth `CAPABILITY`
-/// (servers, Stalwart included, advertise several only after login).
-///
-/// Grouped rather than loose flags because they are read together and mean one thing:
-/// what this server lets us ask for. Every field defaults to `false`, so an extension is
-/// used only where it was actually offered — asking otherwise is a `BAD`.
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct Advertised {
-    /// `IDLE` (RFC 2177). When `true`, a [`crate::watch::ImapWatcher`] can keep a
-    /// standing connection idling to push change notifications; when `false`, the host
-    /// must fall back to polling.
-    pub(crate) idle: bool,
-    /// `LIST-STATUS` (RFC 5819) — read by [`crate::unseen`], which then gets every
-    /// unread count in the same round trip as the folder list.
-    pub(crate) list_status: bool,
-    /// `SPECIAL-USE` (RFC 6154), which decides whether `LIST` may carry the
-    /// `SPECIAL-USE` return option.
-    ///
-    /// A server is only *permitted* to volunteer `\Sent`/`\Drafts`/`\Trash`/`\Junk` on a
-    /// `LIST` that did not ask for them, and one using the **extended** syntax returns
-    /// exactly the extended data the return options name (RFC 5258 §3) — so a `LIST …
-    /// RETURN (STATUS (UNSEEN))` that does not also ask for `SPECIAL-USE` gets unread
-    /// counts and no roles.
-    pub(crate) special_use: bool,
-}
-
 pub(crate) struct Connection<S> {
     pub(crate) inner: BufReader<S>,
     /// The command-tag counter (`a1`, `a2`, …); `pub(crate)` so
     /// [`Connection::resume`](crate::transport_starttls) can reset it on the
     /// post-STARTTLS stream.
     pub(crate) tag: u32,
-    /// Whether QRESYNC (RFC 7162) was negotiated for this session — set by
-    /// [`Connection::negotiate_qresync`]. When `true`, the sync layer opens mailboxes
-    /// with CONDSTORE and reconciles deltas via `CHANGEDSINCE`/`VANISHED`. `pub(crate)`
-    /// so [`Connection::resume`](crate::transport_starttls) can seed the post-STARTTLS
-    /// defaults.
-    pub(crate) qresync: bool,
-    /// The optional extensions the server advertised post-auth, which decide the shape of
-    /// later commands. `pub(crate)` for the same reason as [`qresync`](Self::qresync).
-    pub(crate) advertised: Advertised,
+    /// The dialect and extension set this session negotiated (`CAPABILITY` + `ENABLE`),
+    /// which decides the shape of every later command and how mailbox names are encoded.
+    /// `pub(crate)` so [`Connection::resume`](crate::transport_starttls) can seed the
+    /// post-STARTTLS defaults and tests can pin a server's answer.
+    pub(crate) negotiated: Negotiated,
     /// The tag of a streamed `UID FETCH` ([`Connection::uid_fetch_stream_start`]) whose
     /// tagged completion has not yet been read — set while its rows are being pulled
     /// one at a time. If a streaming fetch is **abandoned** mid-response (the caller
@@ -76,20 +47,50 @@ impl<S> core::fmt::Debug for Connection<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Connection")
             .field("tag", &self.tag)
-            .field("qresync", &self.qresync)
-            .field("advertised", &self.advertised)
+            .field("negotiated", &self.negotiated)
             .finish_non_exhaustive()
     }
 }
 
 impl<S> Connection<S> {
-    /// Whether the server advertised `IDLE` (RFC 2177) post-auth — the precondition a
-    /// [`crate::watch::ImapWatcher`] checks before opening a standing IDLE session, and
-    /// what [`ImapProvider::build`](crate::provider) reads to advertise
-    /// [`Capabilities::idle`](engine_provider::Capabilities::idle). A plain field read,
-    /// so it needs no stream bounds (the unbounded provider builder consults it).
-    pub(crate) fn idle_advertised(&self) -> bool {
-        self.advertised.idle
+    /// Whether this session may keep a standing `IDLE` (RFC 2177) — the precondition a
+    /// [`crate::watch::ImapWatcher`] checks before opening one, and what
+    /// [`ImapProvider::build`](crate::provider) reads to advertise
+    /// [`Capabilities::idle`](engine_provider::Capabilities::idle). A plain field read, so
+    /// it needs no stream bounds (the unbounded provider builder consults it).
+    pub(crate) fn idle_available(&self) -> bool {
+        self.negotiated.has(Extension::Idle)
+    }
+
+    /// Whether this session negotiated QRESYNC (RFC 7162), so a delta can reconcile flag
+    /// changes and expunges with `CHANGEDSINCE`/`VANISHED` instead of re-snapshotting.
+    pub(crate) fn qresync_enabled(&self) -> bool {
+        self.negotiated.has(Extension::Qresync)
+    }
+
+    /// Whether this session's wire encodes mailbox names as modified UTF-7 — what
+    /// [`crate::mail::mailbox_from_list`] needs in order to read a `LIST` row.
+    pub(crate) fn names_are_modified_utf7(&self) -> bool {
+        self.negotiated.names_are_modified_utf7()
+    }
+
+    /// One mailbox name as this session's wire wants it: modified UTF-7 on IMAP4rev1
+    /// (RFC 3501 §5.1.3), UTF-8 as-is on IMAP4rev2 (RFC 9051 §5.1).
+    ///
+    /// Every command that names a mailbox goes through here, so the encoding lives at the
+    /// transport boundary and a [`MailboxId`](engine_core::ids::MailboxId) can be the
+    /// decoded name on both dialects.
+    fn wire_name(&self, mailbox: &str) -> String {
+        if self.names_are_modified_utf7() {
+            crate::utf7::encode(mailbox)
+        } else {
+            mailbox.to_owned()
+        }
+    }
+
+    /// [`wire_name`](Self::wire_name), quoted for inclusion in a command.
+    pub(crate) fn quoted_name(&self, mailbox: &str) -> String {
+        quote(&self.wire_name(mailbox))
     }
 }
 
@@ -105,24 +106,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let mut connection = Self {
             inner: BufReader::new(stream),
             tag: 0,
-            qresync: false,
-            advertised: Advertised::default(),
+            negotiated: Negotiated::default(),
             pending_tag: None,
         };
         connection.read_greeting().await?;
         Ok(connection)
     }
 
-    /// Whether QRESYNC (RFC 7162) is enabled for this session.
-    pub(crate) fn qresync_enabled(&self) -> bool {
-        self.qresync
-    }
-
-    /// Forces the QRESYNC flag on, for tests that drive the sync layer over a mock
-    /// transcript without replaying the live `CAPABILITY`/`ENABLE` negotiation.
+    /// Marks an extension enabled, for tests that drive a path over a mock transcript
+    /// without replaying the live `CAPABILITY`/`ENABLE` negotiation.
     #[cfg(test)]
-    pub(crate) fn force_qresync(&mut self) {
-        self.qresync = true;
+    pub(crate) fn force_enabled(&mut self, atom: &str) {
+        self.negotiated.confirm_enabled(&[atom.to_owned()]);
     }
 
     /// Reads the untagged greeting: `* OK`/`* PREAUTH` is success, `* BYE` is a
@@ -253,43 +248,43 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         }
     }
 
-    /// Detects QRESYNC (RFC 7162) and, when the server advertises it, `ENABLE`s it so
-    /// later deltas can use `CHANGEDSINCE`/`VANISHED` to reconcile flag changes and
-    /// expunges incrementally. Capabilities are queried with an explicit `CAPABILITY`
-    /// **after** login, because servers (Stalwart included) advertise CONDSTORE/QRESYNC
-    /// only post-authentication. Best-effort: a server that lists QRESYNC but rejects
-    /// `ENABLE` (a `NO`/`BAD`), or that answers `OK` without confirming `* ENABLED
-    /// QRESYNC`, leaves the session in the non-QRESYNC baseline rather than failing the
-    /// connection; a transport error still propagates.
-    pub(crate) async fn negotiate_qresync(&mut self) -> ImapResult<()> {
+    /// Reads the post-auth `CAPABILITY` and turns on everything this session can use, in
+    /// one `ENABLE`.
+    ///
+    /// Capabilities are queried explicitly **after** login, because servers (Stalwart
+    /// included) advertise several only post-authentication. What gets enabled is decided
+    /// by [`Negotiated::enable_arguments`]: the IMAP4rev2 dialect where offered, and every
+    /// extension that changes server behaviour on announcement. Enabling the dialect is
+    /// worth the argument on its own — rev2 folds a dozen extensions into the base
+    /// protocol (RFC 9051 Appendix E), so one `ENABLE` buys all of them at once.
+    ///
+    /// Best-effort by design: only what the server confirms in `* ENABLED` takes effect
+    /// (a bare `* ENABLED` enables nothing, RFC 5161 §3.1), and a server that advertises
+    /// something then refuses to enable it (`NO`/`BAD`) leaves the session on the baseline
+    /// rather than failing the connection. A transport error still propagates.
+    ///
+    /// # Errors
+    ///
+    /// [`ImapError::Io`] or another non-refusal failure of `CAPABILITY`/`ENABLE`.
+    pub(crate) async fn negotiate(&mut self) -> ImapResult<()> {
         let response = self.command("CAPABILITY").await?;
         let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
-        let advertises = |name: &str| {
-            capabilities
-                .iter()
-                .any(|cap| cap.eq_ignore_ascii_case(name))
-        };
-        // Record IDLE (RFC 2177) from the same post-auth list so a watcher (and the
-        // provider's advertised `Capabilities::idle`) knows whether push is available,
-        // LIST-STATUS (RFC 5819) so the folder list can carry unread counts, and
-        // SPECIAL-USE (RFC 6154) so it can carry roles.
-        self.advertised = Advertised {
-            idle: advertises("IDLE"),
-            list_status: advertises("LIST-STATUS"),
-            special_use: advertises("SPECIAL-USE"),
-        };
-        if advertises("QRESYNC") {
-            match self.command("ENABLE QRESYNC").await {
-                // Trust the enable only if `* ENABLED QRESYNC` confirms it (a bare
-                // `* ENABLED` + OK enables nothing, RFC 5161); otherwise stay baseline.
-                Ok(response) => {
-                    if crate::parse_qresync::enabled_lists_qresync(&response.untagged) {
-                        self.qresync = true;
-                    }
-                }
-                Err(ImapError::No(_) | ImapError::Bad(_)) => {}
-                Err(other) => return Err(other),
+        self.negotiated = Negotiated::from_capabilities(&capabilities);
+
+        let arguments = self.negotiated.enable_arguments();
+        if arguments.is_empty() {
+            return Ok(());
+        }
+        match self
+            .command(&format!("ENABLE {}", arguments.join(" ")))
+            .await
+        {
+            Ok(response) => {
+                let enabled = crate::parse_qresync::parse_enabled(response.untagged());
+                self.negotiated.confirm_enabled(&enabled);
             }
+            Err(ImapError::No(_) | ImapError::Bad(_)) => {}
+            Err(other) => return Err(other),
         }
         Ok(())
     }
@@ -297,7 +292,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// `SELECT mailbox`, returning its UID space and message count. Response codes
     /// in either an untagged `* OK [..]` or the tagged completion are honored.
     pub(crate) async fn select(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self.command(&format!("SELECT {}", quote(mailbox))).await?;
+        let response = self
+            .command(&format!("SELECT {}", self.quoted_name(mailbox)))
+            .await?;
         parse::parse_select(&response.into_all_lines())
     }
 
@@ -307,7 +304,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// sync path on a QRESYNC session.
     pub(crate) async fn select_condstore(&mut self, mailbox: &str) -> ImapResult<SelectData> {
         let response = self
-            .command(&format!("SELECT {} (CONDSTORE)", quote(mailbox)))
+            .command(&format!("SELECT {} (CONDSTORE)", self.quoted_name(mailbox)))
             .await?;
         parse::parse_select(&response.into_all_lines())
     }
@@ -316,7 +313,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// shape, but opens the mailbox without write intent and does not reset
     /// `\Recent`, so a body peek needs no write access to the folder.
     pub(crate) async fn examine(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self.command(&format!("EXAMINE {}", quote(mailbox))).await?;
+        let response = self
+            .command(&format!("EXAMINE {}", self.quoted_name(mailbox)))
+            .await?;
         parse::parse_select(&response.into_all_lines())
     }
 
@@ -386,7 +385,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// [`crate::place`] resolves the Sent/Drafts folder from them).
     pub(crate) async fn list(&mut self) -> ImapResult<Vec<ListRow>> {
         let response = self
-            .command(&list_command(self.advertised.special_use, false))
+            .command(&list_command(
+                self.negotiated.must_request_special_use(),
+                false,
+            ))
             .await?;
         parse::parse_list(response.untagged())
     }
@@ -404,7 +406,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// the move is atomic server-side (copy + `\Deleted` + expunge in one command,
     /// where supported). The destination is a quoted string.
     pub(crate) async fn uid_move(&mut self, set: &str, dest: &str) -> ImapResult<()> {
-        self.command(&format!("UID MOVE {set} {}", quote(dest)))
+        self.command(&format!("UID MOVE {set} {}", self.quoted_name(dest)))
             .await?;
         Ok(())
     }
@@ -487,3 +489,7 @@ pub(crate) fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transport_negotiate_tests.rs"]
+mod negotiate_tests;

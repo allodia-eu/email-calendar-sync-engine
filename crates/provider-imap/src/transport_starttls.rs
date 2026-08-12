@@ -11,8 +11,9 @@
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 
 use crate::{
+    capability::Negotiated,
     error::{ImapError, ImapResult},
-    transport::{Advertised, Connection},
+    transport::Connection,
 };
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
@@ -25,8 +26,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Self {
             inner: BufReader::new(stream),
             tag: 0,
-            qresync: false,
-            advertised: Advertised::default(),
+            negotiated: Negotiated::default(),
             pending_tag: None,
         }
     }

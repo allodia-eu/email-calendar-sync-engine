@@ -112,9 +112,9 @@ where
 /// Finds the account's folder carrying `role` (RFC 6154 SPECIAL-USE) via `LIST`; `None`
 /// when the server advertises none.
 ///
-/// Returns the **wire** name — the modified-UTF-7 form the server listed, which is what
-/// `SELECT`/`APPEND` take and what a message key embeds — not the decoded display name
-/// (`crate::utf7`).
+/// Returns the **decoded** name, the same form a [`Mailbox`](engine_core::mail::Mailbox)
+/// id carries, so a message key built from it matches the one the folder list produced.
+/// [`crate::transport`] re-encodes it for the `SELECT`/`APPEND` that follow.
 async fn resolve_role_folder<S>(
     connection: &mut Connection<S>,
     role: MailboxRole,
@@ -122,13 +122,21 @@ async fn resolve_role_folder<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    let modified_utf7 = connection.names_are_modified_utf7();
     let rows = connection.list().await?;
     Ok(rows
         .iter()
         .find(|row| {
-            mailbox_from_list(row).is_some_and(|mailbox| mailbox.role.as_ref() == Some(&role))
+            mailbox_from_list(row, modified_utf7)
+                .is_some_and(|mailbox| mailbox.role.as_ref() == Some(&role))
         })
-        .map(|row| row.name.clone()))
+        .map(|row| {
+            if modified_utf7 {
+                crate::utf7::decode(&row.name)
+            } else {
+                row.name.clone()
+            }
+        }))
 }
 
 /// Places `message` for `filing` **only if a copy of `message_id` is not already there**.
