@@ -492,6 +492,34 @@ is authoritative for the `provider-caldav` calendar client.
     `Content-Disposition`. It is a representation of the message, not a file; the shared
     assembly lives in `engine-rfc5322`, so the Graph and Google submit paths get it too.
 
+## Which server proves what — rev1 vs rev2
+
+**The client targets IMAP4rev1 plus whatever it negotiates, and never assumes an extension
+it did not see advertised.** That is the whole rev1/rev2 story in the implementation: there
+is deliberately **no** `if rev2 { … }` branch, because rev2's contribution is to make a set
+of extensions mandatory, and a client that gates on the capability list gets both dialects
+right with one code path. The distinction lives in the **fixtures**, which is where it can
+actually fail.
+
+Two live IMAP servers, and each is the only one that can prove its half:
+
+| | Stalwart (`docker/stalwart/`) | Dovecot (`docker/dovecot/`) |
+| --- | --- | --- |
+| Base protocol | `IMAP4rev2` | `IMAP4rev1` |
+| SPECIAL-USE on an extended `LIST` | volunteered whether asked or not | **only** when the return option asks |
+| Non-ASCII mailbox names | raw UTF-8 (`UTF8=ACCEPT`) | **modified UTF-7** (`utf7.rs`) |
+| Mailbox names in `LIST` rows | always quoted | unquoted atoms where quoting is unnecessary |
+| Tagged completion | `LIST completed` | `List completed (0.028 + 0.000 secs).` |
+
+The asymmetry that matters: **a server which volunteers data cannot show you that you
+forgot to ask for it.** Stalwart returns SPECIAL-USE either way, so an omitted return
+option is green there in perpetuity — while on Dovecot the same omission costs every folder
+its role *and* misplaces the Sent copy (`place.rs` resolves that folder from the same
+attributes). Likewise `utf7.rs` gets no live exercise at all against `UTF8=ACCEPT`, and a
+two-word completion line is too short to be mistaken for a `LIST` row. When adding IMAP
+coverage, ask which of the two servers would notice if the behaviour broke; if the answer
+is neither, the test is not proving what it claims.
+
 ## Testing
 
 - **Offline (always green, no Docker):** the parsers and normalizers are
@@ -517,7 +545,13 @@ is authoritative for the `provider-caldav` calendar client.
   distinctness** (the IMAP identity contrast), streamed paging with progress, an
   **SMTP submission** that delivers and files the Sent copy (found by its generated
   `Message-ID`), and a **`save_draft`** that files a draft and reads it back flagged
-  `\Draft`. Reuses `crates/stalwart-harness`. A third gated file,
+  `\Draft`. Reuses `crates/stalwart-harness`.
+- **Live (gated on `DOVECOT_IMAP_ADDR`, skips otherwise):** `tests/live_dovecot.rs` — the
+  rev1 fixture (`docker/dovecot/`). Deliberately **not** a second copy of `live_imap`'s
+  assertions: it covers only what the two servers answer differently (see "Which server
+  proves what") — the folder list carrying roles *and* counts in one pass, no mailbox
+  invented from the completion line, and a modified-UTF-7 name decoded for display while
+  its id stays the wire form. A third gated file,
   `tests/live_imap_tls.rs`, covers the **TLS transports beyond that baseline** —
   every important IMAP/SMTP port is thus exercised live: an **IMAP STARTTLS** dial
   (`STALWART_IMAP_STARTTLS_ADDR` / 143) that reports a negotiated `tls_version` (proof

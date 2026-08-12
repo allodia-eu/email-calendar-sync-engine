@@ -321,6 +321,51 @@ jobs:
         working-directory: docker/sabredav
         run: docker compose down -v
 
+  # The second IMAP fixture: a Dovecot server, and the **IMAP4rev1** half of the pair
+  # whose other half is Stalwart (IMAP4rev2). It validates `provider-imap` against the
+  # dialect most real accounts speak — optional extensions that must be negotiated rather
+  # than folded into the base protocol, modified-UTF-7 mailbox names, and a prose
+  # completion line. Like `stalwart`, it is the only job that sets `DOVECOT_*`, so its
+  # gated test executes only here; everywhere else it skips.
+  dovecot:
+    name: Dovecot protocol harness
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: ${{ needs.toolchain.outputs.channel }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: dovecot
+          save-if: ${{ github.ref == 'refs/heads/main' }} # main-only; see the `verify` job
+
+      # The image is pinned by digest and the config is a committed drop-in; the
+      # container seeds itself from the shared mail fixtures and reports healthy once the
+      # marker exists, so `--wait` returns only when the mailbox is ready.
+      - name: Start the Dovecot fixture and seed it
+        working-directory: docker/dovecot
+        run: docker compose up -d --wait
+
+      - name: Run the gated Dovecot IMAP integration test (live)
+        env:
+          DOVECOT_IMAP_ADDR: 127.0.0.1:11994
+        run: cargo test -p provider-imap --test live_dovecot -- --nocapture
+
+      - name: Dump Dovecot logs on failure
+        if: failure()
+        working-directory: docker/dovecot
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        working-directory: docker/dovecot
+        run: docker compose down -v
+
   coverage:
     name: Code coverage
     needs: toolchain
