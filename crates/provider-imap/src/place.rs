@@ -17,7 +17,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     error::ImapResult,
     mail::{mailbox_from_list, message_key},
-    transport::{Connection, quote},
+    transport::Connection,
+    transport_command::quote,
 };
 
 /// Where a placed copy is filed. One value ties together the SPECIAL-USE role used

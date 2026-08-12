@@ -178,10 +178,19 @@ is authoritative for the `provider-caldav` calendar client.
   note a provider may tag its Archive folder `\All`, like Gmail's "All Mail" — the
   normalizer reflects the attribute faithfully). Raw MIME is **not materialized**
   (Tier-1 metadata, like step 4).
+- **An extended `LIST` returns only the extended data its return options name**
+  (RFC 5258 §3), including data the same server volunteers on a plain `LIST`. A server
+  is merely *permitted* to offer SPECIAL-USE unasked (RFC 6154 §2), so the moment a
+  `RETURN (…)` clause is added for anything else, `SPECIAL-USE` must be in it too or
+  every folder silently loses its role — which costs the sidebar its icons and ordering
+  *and* misfiles sent copies, since `place.rs` resolves the Sent folder from those same
+  attributes. `list_command` builds the clause, and asks for `SPECIAL-USE` only where the
+  capability was advertised: an unadvertised return option is a `BAD`, which costs the
+  whole folder list rather than only its roles.
 - **Unread counts** (`Mailbox::unread_count`, `unseen.rs`). `LIST` carries none, so the
   folder-list sync asks for `UNSEEN` too: one round trip via
-  `LIST "" "*" RETURN (STATUS (UNSEEN))` where the server advertised **LIST-STATUS**
-  (RFC 5819), else one `STATUS <mailbox> (UNSEEN)` per selectable mailbox — capped at
+  `LIST "" "*" RETURN (SPECIAL-USE STATUS (UNSEEN))` where the server advertised
+  **LIST-STATUS** (RFC 5819), else one `STATUS <mailbox> (UNSEEN)` per selectable mailbox — capped at
   `MAX_STATUS_PROBES`, so a pathological account cannot turn a folder list into a
   minutes-long stall. `\Noselect` containers are never probed (`STATUS` on one is an
   error, not a zero); a mailbox the server refuses (`NO`/`BAD`) is left uncounted
@@ -190,6 +199,10 @@ is authoritative for the `provider-caldav` calendar client.
   `unread_count: None` — **absent is not zero**, and a host must not render it as one.
   Note `UNSEEN` in a `STATUS` response is a *count*, while the same word in a `SELECT`
   response code is the first unseen message's sequence number; only the former is read.
+  Both parsers read **untagged lines only** (`Response::untagged`, never `into_all_lines`,
+  which exists for a response code that may ride the completion line): Dovecot completes a
+  `LIST` with `List completed (0.003 + 0.000 secs).` — four items whose first word is the
+  keyword and whose last is a bare `.`, so read as data it invents a mailbox named `.`.
 
 ## SMTP submission
 

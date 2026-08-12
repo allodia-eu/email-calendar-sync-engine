@@ -118,7 +118,7 @@ async fn streamed_imap_sync_lands_in_the_store_with_progress() {
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    conn.list_status_advertised = true;
+    conn.advertised.list_status = true;
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
 
     let store =
@@ -329,7 +329,7 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    conn.list_status_advertised = true;
+    conn.advertised.list_status = true;
     conn.force_qresync();
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
 

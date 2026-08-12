@@ -329,7 +329,36 @@ async fn list_returns_every_mailbox() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].name, "INBOX");
     assert_eq!(rows[1].name, "Sent");
-    assert!(written(&recorded).contains("a2 LIST \"\" \"*\""));
+    let sent = written(&recorded);
+    assert!(sent.contains("a2 LIST \"\" \"*\""), "{sent}");
+    // Nothing was advertised, so nothing is asked for: a return option a server never
+    // claimed is a `BAD`, and the plain form is what such a server answers.
+    assert!(!sent.contains("RETURN"), "{sent}");
+}
+
+#[tokio::test]
+async fn list_asks_for_special_use_where_the_server_advertised_it() {
+    let server = script(&[
+        GREETING,
+        "a1 OK LOGIN ok\r\n",
+        "* LIST (\\Sent) \"/\" \"Sent\"\r\n\
+         a2 OK LIST done\r\n",
+    ]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("a", "b").await.unwrap();
+    conn.advertised.special_use = true;
+
+    let rows = conn.list().await.unwrap();
+
+    // The Sent folder a filed copy goes to is resolved from these attributes, so a
+    // server that only returns them on request must be asked (RFC 6154 §2).
+    assert!(rows[0].attributes.iter().any(|a| a == r"\Sent"));
+    let sent = written(&recorded);
+    assert!(
+        sent.contains(r#"a2 LIST "" "*" RETURN (SPECIAL-USE)"#),
+        "{sent}"
+    );
 }
 
 #[tokio::test]

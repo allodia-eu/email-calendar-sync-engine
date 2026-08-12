@@ -24,7 +24,8 @@ use crate::{
     error::{ImapError, ImapResult},
     parse::ListRow,
     tokenize::{Item, items_of},
-    transport::{Connection, quote},
+    transport::Connection,
+    transport_command::{list_command, quote},
 };
 
 /// How many mailboxes the per-mailbox fallback will probe in one pass. A server
@@ -35,8 +36,15 @@ use crate::{
 const MAX_STATUS_PROBES: usize = 100;
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
-    /// `LIST "" "*" RETURN (STATUS (UNSEEN))` — every mailbox plus its unread count in
-    /// one round trip. Only valid when the server advertised `LIST-STATUS`.
+    /// `LIST "" "*" RETURN (SPECIAL-USE STATUS (UNSEEN))` — every mailbox, its role and
+    /// its unread count in one round trip. Only valid when the server advertised
+    /// `LIST-STATUS`; the `SPECIAL-USE` option rides along only where that too was
+    /// advertised.
+    ///
+    /// Both options are needed, because an **extended** `LIST` returns exactly the
+    /// extended data its options name (RFC 5258 §3): asking only for the counts is how a
+    /// folder list ends up with every badge and no roles, on the same server whose plain
+    /// `LIST` volunteers them.
     ///
     /// Returns the rows and the counts keyed by mailbox name. A server may answer a
     /// `LIST` row with no `STATUS` line (it does that for `\Noselect` containers, which
@@ -46,11 +54,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         &mut self,
     ) -> ImapResult<(Vec<ListRow>, HashMap<String, u32>)> {
         let response = self
-            .command(r#"LIST "" "*" RETURN (STATUS (UNSEEN))"#)
+            .command(&list_command(self.advertised.special_use, true))
             .await?;
-        let lines = response.into_all_lines();
-        let rows = crate::parse::parse_list(&lines)?;
-        Ok((rows, parse_status_unseen(&lines)))
+        // Untagged only: `LIST` and `STATUS` data never rides the completion line, and
+        // reading it as though it might invents a mailbox out of the server's prose.
+        let lines = response.untagged();
+        let rows = crate::parse::parse_list(lines)?;
+        Ok((rows, parse_status_unseen(lines)))
     }
 
     /// `STATUS <mailbox> (UNSEEN)` — one mailbox's unread count, or `None` if the
@@ -64,7 +74,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let response = self
             .command(&format!("STATUS {} (UNSEEN)", quote(mailbox)))
             .await?;
-        Ok(parse_status_unseen(&response.into_all_lines())
+        Ok(parse_status_unseen(response.untagged())
             .get(mailbox)
             .copied())
     }
