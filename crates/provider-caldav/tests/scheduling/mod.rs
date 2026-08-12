@@ -130,17 +130,47 @@ pub(crate) async fn parties(test: &str) -> Option<Parties> {
     })
 }
 
+/// How far ahead of today the invitation is scheduled. Any comfortably-future offset
+/// does; two months is well clear of a slow CI queue and of a run started just before
+/// midnight.
+const INVITATION_DAYS_AHEAD: i64 = 60;
+
+/// The invitation's date, as `YYYYMMDD`, a fixed offset from **today**.
+///
+/// The one fixture in this harness that is *not* a fixed absolute 2026 date, and
+/// deliberately so. Auto-scheduling is the server deciding to deliver an iTIP message,
+/// and Stalwart does not deliver one for a meeting that has already finished — so a
+/// hard-coded date does not buy determinism here, it schedules a failure. The original
+/// `20260810T100000` passed every run until 11:00 on 10 August 2026 and failed every run
+/// after it, in eight tests at once, with a timeout that reads like a broken server.
+///
+/// Nothing in this module asserts an absolute instant — the scenarios assert delivery,
+/// `PARTSTAT` transitions, and that the start is *zoned and resolvable* — so moving the
+/// day costs no determinism the suite was actually relying on.
+fn invitation_date() -> String {
+    // Fully qualified: `Duration` in this module is `core::time::Duration` (the poll
+    // timeout), and only `time`'s carries a calendar-aware `days`.
+    let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(INVITATION_DAYS_AHEAD);
+    format!(
+        "{:04}{:02}{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    )
+}
+
 /// An organizer's invitation document, naming the attendee with an unanswered `RSVP`.
 ///
 /// Assembled by hand rather than through [`engine_provider::EventDraft`] for the same
 /// reason `common::write::seed` does it: a draft cannot state an `ORGANIZER`/`ATTENDEE`
-/// pair, and this is the *counterparty's* fixture, not the thing under test. Dates are
-/// fixed absolute 2026 values, per the determinism rule.
+/// pair, and this is the *counterparty's* fixture, not the thing under test. The times of
+/// day are fixed; the day itself comes from [`invitation_date`], which explains why.
 fn invitation(uid: &str, summary: &str, tzid: &str, parties: &Parties) -> String {
+    let day = invitation_date();
     format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Harness//Scheduling//EN\r\n\
          BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260701T080000Z\r\nSEQUENCE:0\r\n\
-         DTSTART;TZID={tzid}:20260810T100000\r\nDTEND;TZID={tzid}:20260810T110000\r\n\
+         DTSTART;TZID={tzid}:{day}T100000\r\nDTEND;TZID={tzid}:{day}T110000\r\n\
          SUMMARY:{summary}\r\n\
          ORGANIZER;CN=Bob Tester:mailto:{organizer}\r\n\
          ATTENDEE;CN=Carol;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:\

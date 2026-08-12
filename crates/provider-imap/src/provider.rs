@@ -302,11 +302,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         _account: &AccountId,
         _cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
-        let rows = {
+        // `LIST` alone carries no unread count, so the folder list either asks for it
+        // in the same round trip (LIST-STATUS) or probes each mailbox afterwards —
+        // `unseen` owns that choice and its cost.
+        let (rows, unseen) = {
             let mut connection = self.connection.lock().await;
-            connection.list().await?
+            if connection.list_status_advertised {
+                connection.list_with_unseen().await?
+            } else {
+                let rows = connection.list().await?;
+                let unseen = crate::unseen::unseen_by_probing(&mut connection, &rows).await?;
+                (rows, unseen)
+            }
         };
-        let mailboxes: Vec<Mailbox> = rows.iter().filter_map(mailbox_from_list).collect();
+        let mailboxes: Vec<Mailbox> = rows
+            .iter()
+            .filter_map(|row| {
+                let mut mailbox = mailbox_from_list(row)?;
+                // Absent stays absent: a mailbox the server did not count must not
+                // read as one with nothing unread.
+                mailbox.unread_count = unseen.get(&row.name).copied();
+                Some(mailbox)
+            })
+            .collect();
         // `LIST` is a full snapshot every pass, so every folder is `present`.
         let present: BTreeSet<ProviderKey> = mailboxes.iter().map(|m| m.id.key().clone()).collect();
         Ok(ScopeSync::new(

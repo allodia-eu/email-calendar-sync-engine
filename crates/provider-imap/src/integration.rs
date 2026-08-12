@@ -69,8 +69,14 @@ fn body_frag(tag: &str, uid: u32) -> String {
     )
 }
 
+/// The folder list as a `LIST-STATUS` server answers it (RFC 5819) — the rows and
+/// their unread counts in one round trip. The tests below set
+/// `list_status_advertised` to match, so the folder list stays a single command and
+/// the tags after it keep counting from `a3`.
 const LIST_FRAG: &str = "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n\
+                         * STATUS \"INBOX\" (UNSEEN 2)\r\n\
                          * LIST (\\HasNoChildren) \"/\" \"Archive\"\r\n\
+                         * STATUS \"Archive\" (UNSEEN 0)\r\n\
                          a2 OK LIST done\r\n";
 
 /// A `SELECT (CONDSTORE)` fragment carrying a `HIGHESTMODSEQ` — what a QRESYNC
@@ -112,6 +118,7 @@ async fn streamed_imap_sync_lands_in_the_store_with_progress() {
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
+    conn.list_status_advertised = true;
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
 
     let store =
@@ -322,6 +329,7 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
+    conn.list_status_advertised = true;
     conn.force_qresync();
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
 

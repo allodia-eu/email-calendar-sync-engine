@@ -215,3 +215,23 @@ fn malformed_messages_are_protocol_errors_not_panics() {
 fn label_without_an_id_is_a_protocol_error() {
     assert!(label_from_json(&serde_json::json!({ "name": "x" })).is_err());
 }
+
+#[test]
+fn a_label_carries_an_unread_count_only_where_the_api_returns_one() {
+    // `users.labels.get` returns the counts…
+    let detailed = label_from_json(&serde_json::json!({
+        "id": "Label_1", "name": "Clients", "messagesTotal": 90, "messagesUnread": 7
+    }))
+    .unwrap()
+    .unwrap();
+    assert_eq!(detailed.unread_count, Some(7));
+
+    // …`users.labels.list`, the call the folder sync makes, does not. Absent rather
+    // than zero, so a host shows no badge instead of a wrong one.
+    let listed = label_from_json(&serde_json::json!({
+        "id": "Label_1", "name": "Clients", "type": "user"
+    }))
+    .unwrap()
+    .unwrap();
+    assert_eq!(listed.unread_count, None);
+}
