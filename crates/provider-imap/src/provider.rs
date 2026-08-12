@@ -307,7 +307,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         // `unseen` owns that choice and its cost.
         let (rows, unseen) = {
             let mut connection = self.connection.lock().await;
-            if connection.list_status_advertised {
+            if connection.advertised.list_status {
                 connection.list_with_unseen().await?
             } else {
                 let rows = connection.list().await?;

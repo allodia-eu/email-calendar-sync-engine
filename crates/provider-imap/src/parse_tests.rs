@@ -81,6 +81,22 @@ fn list_unescapes_a_quoted_name() {
 }
 
 #[test]
+fn a_completion_line_is_not_a_list_row() {
+    // A tagged completion's detail begins with the command name and, on Dovecot, ends in
+    // a period: `List completed (0.003 + 0.000 + 0.002 secs).` — four items, whose first
+    // matches the keyword and whose last is a bare `.` sitting where the mailbox name
+    // goes. Only untagged lines carry `LIST` data, but the parser must not be the only
+    // thing standing between the two.
+    let rows = parse_list(&lines(&[
+        r#"LIST (\HasNoChildren) "/" "INBOX""#,
+        "List completed (0.003 + 0.000 + 0.002 secs).",
+    ]))
+    .unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].name, "INBOX");
+}
+
+#[test]
 fn search_collects_matched_uids() {
     assert_eq!(parse_search(&lines(&["SEARCH 3 7 9"])), vec![3, 7, 9]);
 }

@@ -178,9 +178,13 @@ pub(crate) fn parse_list(lines: &[Vec<u8>]) -> ImapResult<Vec<ListRow>> {
         {
             continue;
         }
+        // The attribute list's parentheses are mandatory (RFC 9051 §7.3.1), so a second
+        // item that is not a list means this line is not a `LIST` row however much its
+        // first word looks like one — which is what a completion line's prose looks like.
+        let Some(attrs) = attrs.as_list() else {
+            continue;
+        };
         let attributes = attrs
-            .as_list()
-            .unwrap_or(&[])
             .iter()
             .filter_map(|i| i.as_atom().map(str::to_owned))
             .collect();

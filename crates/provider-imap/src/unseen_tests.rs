@@ -3,6 +3,7 @@
 
 use engine_core::{
     ids::{AccountId, MailboxId},
+    mail::MailboxRole,
     sync::SyncUpdate,
 };
 use engine_provider::Provider;
@@ -98,6 +99,81 @@ async fn list_status_asks_once_and_pairs_every_count_to_its_mailbox() {
     assert_eq!(sent.matches("STATUS").count(), 1, "{sent}");
 }
 
+/// A `LIST-STATUS` answer in the shape a Dovecot server gives it: unquoted mailbox names
+/// where no quoting is needed, `SPECIAL-USE` attributes only because they were asked for,
+/// and a completion detail that is prose ending in a period.
+const DOVECOT_SHAPED_LIST: &str = "* LIST (\\UnMarked \\Sent) \"/\" Sent\r\n\
+                                   * STATUS Sent (UNSEEN 0)\r\n\
+                                   * LIST (\\UnMarked \\Junk) \"/\" Spam\r\n\
+                                   * STATUS Spam (UNSEEN 1)\r\n\
+                                   * LIST () \"/\" INBOX\r\n\
+                                   * STATUS INBOX (UNSEEN 14)\r\n\
+                                   a2 OK List completed (0.003 + 0.000 + 0.002 secs).\r\n";
+
+#[tokio::test]
+async fn the_folder_list_asks_for_roles_and_counts_together() {
+    let (stream, recorded) = MockStream::new(script(&[GREETING, LOGIN_OK, DOVECOT_SHAPED_LIST]));
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    conn.advertised.special_use = true;
+
+    let (rows, counts) = conn.list_with_unseen().await.unwrap();
+
+    // An extended `LIST` returns only the extended data its options name, so both are
+    // asked for in the one round trip the extension exists to buy.
+    let sent = written(&recorded);
+    assert!(
+        sent.contains(r#"a2 LIST "" "*" RETURN (SPECIAL-USE STATUS (UNSEEN))"#),
+        "{sent}"
+    );
+    assert_eq!(sent.matches("STATUS").count(), 1, "{sent}");
+
+    let role_of = |name: &str| {
+        rows.iter()
+            .find(|row| row.name == name)
+            .and_then(crate::mail::mailbox_from_list)
+            .and_then(|mailbox| mailbox.role)
+    };
+    assert_eq!(role_of("Sent"), Some(MailboxRole::Sent));
+    assert_eq!(role_of("Spam"), Some(MailboxRole::Junk));
+    assert_eq!(role_of("INBOX"), Some(MailboxRole::Inbox));
+    assert_eq!(counts.get("Spam"), Some(&1));
+}
+
+#[tokio::test]
+async fn the_completion_line_is_not_a_folder() {
+    let mut conn = connection(script(&[GREETING, LOGIN_OK, DOVECOT_SHAPED_LIST])).await;
+
+    let (rows, _counts) = conn.list_with_unseen().await.unwrap();
+
+    // `List completed (…).` parses as four items whose first word is the keyword and
+    // whose last is a bare `.`; read as a row it puts a folder named "." in the sidebar,
+    // gives it a sync scope, and syncs it.
+    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    assert_eq!(names, ["Sent", "Spam", "INBOX"], "{names:?}");
+}
+
+#[tokio::test]
+async fn a_server_without_special_use_is_not_asked_for_it() {
+    let response = "* LIST () \"/\" INBOX\r\n\
+                    * STATUS INBOX (UNSEEN 14)\r\n\
+                    a2 OK List completed (0.001 secs).\r\n";
+    let (stream, recorded) = MockStream::new(script(&[GREETING, LOGIN_OK, response]));
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+
+    conn.list_with_unseen().await.unwrap();
+
+    // A return option the server never advertised is a `BAD`, which would cost the
+    // folder list entirely rather than only its roles.
+    let sent = written(&recorded);
+    assert!(
+        sent.contains(r#"a2 LIST "" "*" RETURN (STATUS (UNSEEN))"#),
+        "{sent}"
+    );
+    assert!(!sent.contains("SPECIAL-USE"), "{sent}");
+}
+
 #[tokio::test]
 async fn probing_asks_per_mailbox_and_skips_noselect_containers() {
     let responses = "* STATUS \"INBOX\" (UNSEEN 545)\r\n\
@@ -159,7 +235,7 @@ async fn synced_counts(server: Vec<u8>, list_status: bool) -> Vec<(String, Optio
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    conn.list_status_advertised = list_status;
+    conn.advertised.list_status = list_status;
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
 
     let sync = provider

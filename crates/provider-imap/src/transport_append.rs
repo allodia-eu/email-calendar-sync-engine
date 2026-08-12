@@ -9,7 +9,8 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     error::{ImapError, ImapResult},
-    transport::{Connection, parse_append_uid, quote, strip_ascii_prefix},
+    transport::{Connection, parse_append_uid, strip_ascii_prefix},
+    transport_command::quote,
 };
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {

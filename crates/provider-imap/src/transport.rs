@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use crate::{
     error::{ImapError, ImapResult},
     parse::{self, FetchRow, ListRow, SelectData},
+    transport_command::{list_command, quote},
 };
 
 /// The largest `{n}` literal we will read into memory. A hostile or buggy server
@@ -21,6 +22,32 @@ use crate::{
 const MAX_LITERAL: usize = 64 * 1024 * 1024;
 
 /// A connected IMAP session over a generic async byte stream.
+/// The optional extensions one session may use, read from the post-auth `CAPABILITY`
+/// (servers, Stalwart included, advertise several only after login).
+///
+/// Grouped rather than loose flags because they are read together and mean one thing:
+/// what this server lets us ask for. Every field defaults to `false`, so an extension is
+/// used only where it was actually offered — asking otherwise is a `BAD`.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Advertised {
+    /// `IDLE` (RFC 2177). When `true`, a [`crate::watch::ImapWatcher`] can keep a
+    /// standing connection idling to push change notifications; when `false`, the host
+    /// must fall back to polling.
+    pub(crate) idle: bool,
+    /// `LIST-STATUS` (RFC 5819) — read by [`crate::unseen`], which then gets every
+    /// unread count in the same round trip as the folder list.
+    pub(crate) list_status: bool,
+    /// `SPECIAL-USE` (RFC 6154), which decides whether `LIST` may carry the
+    /// `SPECIAL-USE` return option.
+    ///
+    /// A server is only *permitted* to volunteer `\Sent`/`\Drafts`/`\Trash`/`\Junk` on a
+    /// `LIST` that did not ask for them, and one using the **extended** syntax returns
+    /// exactly the extended data the return options name (RFC 5258 §3) — so a `LIST …
+    /// RETURN (STATUS (UNSEEN))` that does not also ask for `SPECIAL-USE` gets unread
+    /// counts and no roles.
+    pub(crate) special_use: bool,
+}
+
 pub(crate) struct Connection<S> {
     pub(crate) inner: BufReader<S>,
     /// The command-tag counter (`a1`, `a2`, …); `pub(crate)` so
@@ -33,15 +60,9 @@ pub(crate) struct Connection<S> {
     /// so [`Connection::resume`](crate::transport_starttls) can seed the post-STARTTLS
     /// defaults.
     pub(crate) qresync: bool,
-    /// Whether the server advertised `IDLE` (RFC 2177) in its post-auth `CAPABILITY` —
-    /// recorded by [`Connection::negotiate_qresync`] from the same response. When
-    /// `true`, a [`crate::watch::ImapWatcher`] can keep a standing connection idling to
-    /// push change notifications; when `false`, the host must fall back to polling.
-    /// `pub(crate)` for the same reason as [`qresync`](Self::qresync).
-    pub(crate) idle_advertised: bool,
-    /// Whether the server advertised `LIST-STATUS` (RFC 5819) post-auth — read by
-    /// [`crate::unseen`], which then gets every unread count in one round trip.
-    pub(crate) list_status_advertised: bool,
+    /// The optional extensions the server advertised post-auth, which decide the shape of
+    /// later commands. `pub(crate)` for the same reason as [`qresync`](Self::qresync).
+    pub(crate) advertised: Advertised,
     /// The tag of a streamed `UID FETCH` ([`Connection::uid_fetch_stream_start`]) whose
     /// tagged completion has not yet been read — set while its rows are being pulled
     /// one at a time. If a streaming fetch is **abandoned** mid-response (the caller
@@ -56,8 +77,7 @@ impl<S> core::fmt::Debug for Connection<S> {
         f.debug_struct("Connection")
             .field("tag", &self.tag)
             .field("qresync", &self.qresync)
-            .field("idle_advertised", &self.idle_advertised)
-            .field("list_status_advertised", &self.list_status_advertised)
+            .field("advertised", &self.advertised)
             .finish_non_exhaustive()
     }
 }
@@ -69,7 +89,7 @@ impl<S> Connection<S> {
     /// [`Capabilities::idle`](engine_provider::Capabilities::idle). A plain field read,
     /// so it needs no stream bounds (the unbounded provider builder consults it).
     pub(crate) fn idle_advertised(&self) -> bool {
-        self.idle_advertised
+        self.advertised.idle
     }
 }
 
@@ -86,8 +106,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             inner: BufReader::new(stream),
             tag: 0,
             qresync: false,
-            idle_advertised: false,
-            list_status_advertised: false,
+            advertised: Advertised::default(),
             pending_tag: None,
         };
         connection.read_greeting().await?;
@@ -252,9 +271,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         };
         // Record IDLE (RFC 2177) from the same post-auth list so a watcher (and the
         // provider's advertised `Capabilities::idle`) knows whether push is available,
-        // and LIST-STATUS (RFC 5819) so the folder list can carry unread counts.
-        self.idle_advertised = advertises("IDLE");
-        self.list_status_advertised = advertises("LIST-STATUS");
+        // LIST-STATUS (RFC 5819) so the folder list can carry unread counts, and
+        // SPECIAL-USE (RFC 6154) so it can carry roles.
+        self.advertised = Advertised {
+            idle: advertises("IDLE"),
+            list_status: advertises("LIST-STATUS"),
+            special_use: advertises("SPECIAL-USE"),
+        };
         if advertises("QRESYNC") {
             match self.command("ENABLE QRESYNC").await {
                 // Trust the enable only if `* ENABLED QRESYNC` confirms it (a bare
@@ -358,10 +381,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Ok(parse::parse_fetch_body(&response.untagged, uid))
     }
 
-    /// `LIST "" "*"`, returning every mailbox.
+    /// `LIST "" "*"`, returning every mailbox — with its SPECIAL-USE attributes where
+    /// the server has the extension (see [`Advertised::special_use`];
+    /// [`crate::place`] resolves the Sent/Drafts folder from them).
     pub(crate) async fn list(&mut self) -> ImapResult<Vec<ListRow>> {
-        let response = self.command(r#"LIST "" "*""#).await?;
-        parse::parse_list(&response.untagged)
+        let response = self
+            .command(&list_command(self.advertised.special_use, false))
+            .await?;
+        parse::parse_list(response.untagged())
     }
 
     /// `UID STORE <set> <item>` — alters the flags of the named UIDs, where `item`
@@ -414,6 +441,17 @@ pub(crate) struct Response {
 }
 
 impl Response {
+    /// Just the untagged lines — the only place *data* ever arrives.
+    ///
+    /// The counterpart to [`into_all_lines`](Self::into_all_lines), which is for reading a
+    /// **response code** that may ride the completion line instead. Handing the completion
+    /// line to a data parser lets a server's prose masquerade as data: Dovecot answers a
+    /// `LIST` with `List completed (0.003 + 0.000 secs).`, whose first word is the keyword
+    /// and whose trailing period lands where the mailbox name goes.
+    pub(crate) fn untagged(&self) -> &[Vec<u8>] {
+        &self.untagged
+    }
+
     /// The untagged lines plus the completion detail, consumed (no clone), so a
     /// `[UIDVALIDITY n]` response code in either place is seen.
     pub(crate) fn into_all_lines(self) -> Vec<Vec<u8>> {
@@ -444,12 +482,6 @@ pub(crate) fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'
     let rest = line.strip_prefix(prefix)?;
     let rest = rest.strip_suffix(b"\n").unwrap_or(rest);
     Some(rest.strip_suffix(b"\r").unwrap_or(rest))
-}
-
-/// Wraps a value as an IMAP quoted string, escaping `\` and `"`.
-pub(crate) fn quote(value: &str) -> String {
-    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
 }
 
 #[cfg(test)]
