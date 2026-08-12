@@ -190,7 +190,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     }
 
     /// Reads untagged responses until this command's tagged completion.
-    async fn read_response(&mut self, tag: &str) -> ImapResult<Response> {
+    pub(crate) async fn read_response(&mut self, tag: &str) -> ImapResult<Response> {
         let mut untagged = Vec::new();
         let prefix = format!("{tag} ");
         loop {
@@ -364,57 +364,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         parse::parse_list(&response.untagged)
     }
 
-    /// `CREATE <mailbox>`. Used to ensure the Sent folder exists before filing a
-    /// copy; an "already exists" rejection is the caller's to ignore.
-    pub(crate) async fn create(&mut self, mailbox: &str) -> ImapResult<()> {
-        self.command(&format!("CREATE {}", quote(mailbox))).await?;
-        Ok(())
-    }
-
-    /// `APPEND <mailbox> (<flags>) {N}` followed by the message literal — used to
-    /// file a sent copy in Sent (`\Seen`) or save a draft in Drafts (`\Draft`).
-    /// Returns the `[APPENDUID validity uid]` when the server supports UIDPLUS, so
-    /// the caller can key the object; `None` otherwise (it then reconciles by
-    /// `Message-ID` on a later sync).
-    pub(crate) async fn append(
-        &mut self,
-        mailbox: &str,
-        flags: &str,
-        message: &[u8],
-    ) -> ImapResult<Option<(u32, u32)>> {
-        let tag = self.next_tag();
-        // A synchronizing literal: send the header, await the `+` continuation, then
-        // the raw bytes.
-        let header = format!(
-            "{tag} APPEND {} ({flags}) {{{}}}\r\n",
-            quote(mailbox),
-            message.len()
-        );
-        self.inner.write_all(header.as_bytes()).await?;
-        self.inner.flush().await?;
-        // The server may emit untagged responses (e.g. `* n EXISTS`) before the `+`
-        // continuation request; skip them and wait for the continuation (RFC 9051
-        // §7 allows unsolicited untagged responses at any point).
-        loop {
-            let line = self.read_line().await?;
-            if strip_ascii_prefix(&line, b"* ").is_some() {
-                continue;
-            }
-            if strip_ascii_prefix(&line, b"+ ").is_some() {
-                break;
-            }
-            return Err(ImapError::protocol(format!(
-                "APPEND expected a continuation, got: {}",
-                String::from_utf8_lossy(&line).trim()
-            )));
-        }
-        self.inner.write_all(message).await?;
-        self.inner.write_all(b"\r\n").await?;
-        self.inner.flush().await?;
-        let response = self.read_response(&tag).await?;
-        Ok(parse_append_uid(&response.detail))
-    }
-
     /// `UID STORE <set> <item>` — alters the flags of the named UIDs, where `item`
     /// is e.g. `+FLAGS.SILENT (\Seen)` or `-FLAGS.SILENT (\Flagged)` (RFC 9051
     /// §6.4.6). The `.SILENT` suffix suppresses the per-message `FETCH` echo, so no
@@ -444,7 +393,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
 /// Extracts `(validity, uid)` from an `[APPENDUID validity uid]` response code
 /// (RFC 4315), if present.
-fn parse_append_uid(detail: &str) -> Option<(u32, u32)> {
+pub(crate) fn parse_append_uid(detail: &str) -> Option<(u32, u32)> {
     let start = detail.find("[APPENDUID ")? + "[APPENDUID ".len();
     let rest = &detail[start..];
     let end = rest.find(']')?;
@@ -459,7 +408,9 @@ fn parse_append_uid(detail: &str) -> Option<(u32, u32)> {
 /// response through the shared [`Connection::command`].
 pub(crate) struct Response {
     untagged: Vec<Vec<u8>>,
-    detail: String,
+    /// `pub(crate)` so the `APPEND` half in [`crate::transport_append`] can read the
+    /// completion line its `[APPENDUID …]` response code rides on.
+    pub(crate) detail: String,
 }
 
 impl Response {
