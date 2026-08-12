@@ -252,11 +252,41 @@ is authoritative for the `provider-caldav` calendar client.
   (`providers.md`). This is the one cross-crate touch the slice added:
   `engine-provider`'s `ProviderError` gained `needs_confirmation`/
   `requires_confirmation`, and `engine-sync`'s outbox honors it.
-- **Sent placement is best-effort.** A successful send is never failed for a
-  Sent-filing hiccup. With UIDPLUS the `APPEND` returns `[APPENDUID validity uid]`
-  → the receipt carries the real Sent key (the same key the next Sent sync
-  synthesizes); without it the receipt key is `Message-ID`-derived and the copy
-  reconciles when Sent is synced.
+- **Sent placement never fails a send, and is never silent.** Delivering and filing are
+  two operations here — SMTP dials fresh per send, the `APPEND` rides the standing IMAP
+  session — so a session that went stale while idle delivers the mail and loses the copy.
+  Three rules follow, and the third is the one that was missing:
+  1. A delivered send is **never** returned as an error for a filing failure. The mail has
+     gone; a caller that saw `Err` would re-send it.
+  2. The placement is **retried once on a freshly dialed session**, because a dead standing
+     session is the expected cause, not an exotic one. The retry first asks whether the copy
+     is already there (`UID SEARCH HEADER Message-ID`, `place::find_placed_copy`) —
+     `APPEND` is not idempotent, and a first attempt that committed but lost its response
+     must not become two copies in Sent.
+  3. When neither attempt files it, the receipt says so: `SentCopy::Unfiled { detail }`,
+     carried through `engine_sync::SubmitOutcome` to the host. **Nothing later can
+     rediscover this** — there is no copy on the server to reconcile against — so a host
+     that drops the outcome drops the fact for good. A receipt unable to express it means a
+     delivered message leaves no trace in the sender's Sent folder while every layer reports
+     success.
+  4. The host can then ask for the repair: `Provider::file_sent_copy` (→
+     `ImapProvider::refile`, reached through `Engine::file_sent_copy`) files the copy of an
+     already-delivered message and **sends nothing**. It is what a "try again" control calls,
+     so it probes on *every* attempt, standing session and fresh dial alike — a button gets
+     pressed twice. It is deliberately **not** outbox-mediated: the outbox exists so a side
+     effect is neither lost nor repeated across a crash, and this one is idempotent by
+     construction and safe to ask for again.
+
+  With UIDPLUS the `APPEND` returns `[APPENDUID validity uid]` → the receipt carries the
+  real Sent key (the same key the next Sent sync synthesizes); without it the receipt key
+  is `Message-ID`-derived and the copy reconciles when Sent is synced.
+- **Mailbox names: the wire form is the id, the decoded form is the label.** A `LIST` name
+  is modified UTF-7 (RFC 3501 §5.1.3), so `Travel &- Expenses` is one folder called
+  `Travel & Expenses`. `utf7::decode` produces `Mailbox::name` for display **only**;
+  `MailboxId`, every `imap:v…:u…@folder` key, and every `SELECT`/`APPEND`/`CREATE`
+  argument keep the server's own bytes. Decoding an id instead would re-key every message
+  in a non-ASCII folder and address the server with a name it never advertised. There is
+  deliberately no encoder: no name this crate sends originates from a decoded one.
 - **`save_draft` (no SMTP).** `ImapProvider::save_draft` files a draft into the
   account's Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating
   `Drafts`), flagged `\Draft`, via `APPEND` — so creating a mail works against any

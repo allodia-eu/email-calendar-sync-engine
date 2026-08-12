@@ -69,6 +69,7 @@ mod mail;
 mod mutate;
 mod parse;
 mod parse_qresync;
+mod place;
 mod preview;
 mod provider;
 mod qresync;
@@ -79,8 +80,10 @@ mod target;
 mod tls_info;
 mod tokenize;
 mod transport;
+mod transport_append;
 mod transport_starttls;
 mod unseen;
+mod utf7;
 mod watch;
 
 #[cfg(test)]

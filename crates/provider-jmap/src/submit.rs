@@ -206,7 +206,14 @@ fn parse_receipt(
     }
     let key = ProviderKey::new(email_id)
         .map_err(|e| JmapError::protocol(format!("bad created email id: {e}")))?;
-    Ok(SubmissionReceipt::new(key, message_id.clone()))
+    // Filing is the server's own `onSuccessUpdateEmail`, in the same request that submitted
+    // — so a submission that succeeded filed the copy. The one shape this does not cover:
+    // the implicit `Email/set` can report the move `notUpdated` on its own, and the copy
+    // then stays in Drafts. That response is a third entry sharing the submission's call id
+    // and is not read here, so it would pass as `Filed`. Unlike a lost IMAP `APPEND` the
+    // message is still in the account and still syncs, which is why it has not forced the
+    // extra plumbing.
+    Ok(SubmissionReceipt::filed(key, message_id.clone()))
 }
 
 /// The id of an object created under `creation_id`, if the create succeeded.

@@ -40,7 +40,7 @@ pub(crate) async fn send(client: &GraphClient, draft: &Draft) -> ProviderResult<
     client
         .post(&client.url("/sendMail"), "text/plain", body)
         .await?;
-    Ok(SubmissionReceipt::new(
+    Ok(SubmissionReceipt::filed(
         sent_placeholder_key(draft),
         draft.message_id.clone(),
     ))

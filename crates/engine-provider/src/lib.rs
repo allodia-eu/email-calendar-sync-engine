@@ -60,7 +60,7 @@ pub use provider::Provider;
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};
 pub use submit::{
     ContentIdError, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,
-    DraftCalendar, SubmissionReceipt,
+    DraftCalendar, SentCopy, SubmissionReceipt,
 };
 pub use sync::ScopeSync;
 pub use watch::{Watch, WatchEvent};

@@ -178,7 +178,7 @@ impl Provider for FakeMail {
         } else if self.fails(Fault::Submit) {
             Err(ProviderError::rate_limited("slow down", None))
         } else {
-            Ok(SubmissionReceipt::new(
+            Ok(SubmissionReceipt::filed(
                 ProviderKey::new("sent-1").unwrap(),
                 draft.message_id.clone(),
             ))

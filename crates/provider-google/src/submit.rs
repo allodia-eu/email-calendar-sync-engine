@@ -45,7 +45,7 @@ pub(crate) async fn send(
         )
         .await?;
     let key = sent_key(response.as_ref(), draft)?;
-    Ok(SubmissionReceipt::new(key, draft.message_id.clone()))
+    Ok(SubmissionReceipt::filed(key, draft.message_id.clone()))
 }
 
 /// The sent copy's provider key: the `id` Gmail returns in the `send` response (Gmail,

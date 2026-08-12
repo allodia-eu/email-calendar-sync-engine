@@ -87,13 +87,19 @@ pub(crate) fn message_from_fetch(
 
 /// Normalizes one `LIST` row into a [`Mailbox`]; `None` for an unusable
 /// (`\NonExistent` or empty-named) entry.
+///
+/// The **id keeps the wire name** and the **display name is decoded** from modified UTF-7
+/// (`crate::utf7`): the id is what `SELECT`/`APPEND` take and what every message key embeds,
+/// while the name is what a person reads. Conventional-name role matching runs on the decoded
+/// name, so a server that spells a role folder in its own script still matches.
 pub(crate) fn mailbox_from_list(row: &ListRow) -> Option<Mailbox> {
     if has_attribute(&row.attributes, "NonExistent") {
         return None;
     }
     let id = MailboxId::try_from(row.name.as_str()).ok()?;
-    let mut mailbox = Mailbox::new(id, row.name.clone());
-    mailbox.role = role_for(&row.name, &row.attributes);
+    let display = crate::utf7::decode(&row.name);
+    let mut mailbox = Mailbox::new(id, display.clone());
+    mailbox.role = role_for(&display, &row.attributes);
     mailbox.parent = parent_of(&row.name, row.delimiter.as_deref());
     Some(mailbox)
 }

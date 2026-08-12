@@ -18,8 +18,16 @@
 //! [`advance_to`](EmailChunk::advance_to) checkpoint cursor — so a killed cold sync
 //! resumes from where it stopped rather than restarting (`store-and-sync.md`).
 
-use engine_core::{ids::ProviderKey, mail::Message, sync::SyncState};
+use std::collections::BTreeSet;
+
+use engine_core::{
+    ids::ProviderKey,
+    mail::Message,
+    sync::{SyncState, SyncUpdate},
+};
 use futures_core::stream::Stream;
+
+use crate::{ProviderError, ProviderResult, ScopeSync};
 
 /// How the orchestrator must apply a pass's chunks — set by the adapter, constant
 /// across every chunk of one pass.
@@ -248,6 +256,46 @@ pub fn split_page(
 /// the stream's life).
 pub type EmailStream<'a> =
     core::pin::Pin<Box<dyn Stream<Item = crate::ProviderResult<EmailChunk>> + Send + 'a>>;
+
+/// Drains an [`EmailStream`] into one combined [`ScopeSync`] — the whole-scope convenience
+/// behind [`Provider::sync_email`](crate::Provider::sync_email)'s default.
+///
+/// It lives here rather than inline in the trait because it is an *implementation* of the
+/// streaming contract this module defines, not part of the seam adapters implement.
+///
+/// # Errors
+///
+/// The first chunk error, or [`ProviderError::invalid_state`] if the stream ended without a
+/// final cursor to advance to.
+pub(crate) async fn drain_email(mut stream: EmailStream<'_>) -> ProviderResult<ScopeSync<Message>> {
+    use futures_util::StreamExt;
+
+    let mut changed = Vec::new();
+    let mut removed = Vec::new();
+    let mut present = BTreeSet::new();
+    let mut mode = PassMode::Additive;
+    let mut next_cursor: Option<SyncState> = None;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        mode = chunk.mode;
+        changed.extend(chunk.changed);
+        removed.extend(chunk.removed);
+        present.extend(chunk.present);
+        if let Some(cursor) = chunk.advance_to {
+            next_cursor = Some(cursor);
+        }
+    }
+    let next_cursor = next_cursor
+        .ok_or_else(|| ProviderError::invalid_state("email stream ended without a final cursor"))?;
+    // A reconcile pass tombstones against the accumulated present set; an additive pass (cold
+    // backfill or delta) carries only explicit removals. For a first sync both are equivalent
+    // (nothing local to tombstone).
+    let update = match mode {
+        PassMode::Reconcile => SyncUpdate::snapshot(changed, present),
+        PassMode::Additive => SyncUpdate::delta(changed, removed),
+    };
+    Ok(ScopeSync::new(update, next_cursor))
+}
 
 #[cfg(test)]
 mod tests {
