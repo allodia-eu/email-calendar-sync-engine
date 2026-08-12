@@ -1,19 +1,20 @@
-//! IMAP modified UTF-7 (RFC 3501 §5.1.3) → UTF-8, for **display names only**.
+//! IMAP modified UTF-7 (RFC 3501 §5.1.3) ⇄ UTF-8: the mailbox-name encoding of the
+//! **IMAP4rev1 wire**, and of nothing above it.
 //!
-//! A `LIST` reply carries mailbox names in a 7-bit encoding of its own: printable ASCII
-//! stands for itself except `&`, which is written `&-`; everything else is the modified
-//! BASE64 of the name's UTF-16BE code units between a `&` and a `-`, with `,` in place of
-//! `/` and no `=` padding. Undecoded, a folder called `Travel & Expenses` reads as
-//! `Travel &- Expenses`, and one named `日本語` reads as `&ZeVnLIqe-`.
+//! A rev1 `LIST` reply carries mailbox names in a 7-bit encoding of its own: printable
+//! ASCII stands for itself except `&`, which is written `&-`; everything else is the
+//! modified BASE64 of the name's UTF-16BE code units between a `&` and a `-`, with `,` in
+//! place of `/` and no `=` padding. Undecoded, a folder called `Travel & Expenses` reads as
+//! `Travel &- Expenses`, and one named `日本語` as `&ZeVnLIqe-`. IMAP4rev2 dispenses with it
+//! entirely: names are UTF-8 (RFC 9051 §5.1, Appendix E item 16).
 //!
-//! **Decode only, and only into [`Mailbox::name`](engine_core::mail::Mailbox::name).** The
-//! encoded form is the name the *protocol* uses: it is what `SELECT`, `APPEND` and `LIST`
-//! take, and it is what a [`MailboxId`](engine_core::ids::MailboxId) and every message key
-//! built from one embed. Decoding it there instead would change the identity of every
-//! message in a non-ASCII folder and hand `SELECT` a name the server never advertised, so
-//! the wire name stays the id and the decoded name is what a human reads. That split is
-//! also why there is no encoder here: no name this crate sends originates from a decoded
-//! one.
+//! **The encoding stops at the transport.** A [`Mailbox`](engine_core::mail::Mailbox)'s id
+//! and name are both the decoded UTF-8 form on either dialect, so a message key built from
+//! one is the same key whichever revision the session negotiated. [`crate::transport`]
+//! encodes on the way out and [`crate::mail`] decodes on the way in, each only when the
+//! session is rev1. Keeping the wire form as the identity instead — as this crate once did
+//! — makes a folder's id, and every message key inside it, change the day its server starts
+//! offering rev2.
 
 /// Decodes an IMAP modified-UTF-7 mailbox name for display.
 ///
@@ -80,6 +81,55 @@ fn decode_base64_run(encoded: &str) -> Option<String> {
     char::decode_utf16(units)
         .collect::<Result<String, _>>()
         .ok()
+}
+
+/// Encodes a UTF-8 mailbox name into IMAP modified UTF-7, for a rev1 wire.
+///
+/// The exact inverse of [`decode`] for every name [`decode`] can produce, which is the
+/// property that lets a `Mailbox`'s decoded id address the mailbox it came from. Only two
+/// things are special: `&` becomes `&-`, and any run of non-printable-ASCII characters
+/// becomes one `&…-` BASE64 shift. Printable ASCII (`0x20`–`0x7e`) is left alone, so an
+/// all-ASCII name allocates nothing beyond the copy.
+pub(crate) fn encode(name: &str) -> String {
+    if name.is_ascii() && !name.contains('&') {
+        return name.to_owned();
+    }
+    let mut out = String::with_capacity(name.len());
+    // The pending run of characters that need a shift, held as UTF-16 code units.
+    let mut shift: Vec<u16> = Vec::new();
+    for ch in name.chars() {
+        if matches!(ch, '\u{20}'..='\u{7e}') {
+            flush_shift(&mut shift, &mut out);
+            out.push(ch);
+            // `&` is the shift introducer, so a literal one is written as the empty shift.
+            if ch == '&' {
+                out.push('-');
+            }
+        } else {
+            let mut buf = [0u16; 2];
+            shift.extend_from_slice(ch.encode_utf16(&mut buf));
+        }
+    }
+    flush_shift(&mut shift, &mut out);
+    out
+}
+
+/// Writes any pending shift run as `&<modified-base64>-` and clears it.
+fn flush_shift(shift: &mut Vec<u16>, out: &mut String) {
+    if shift.is_empty() {
+        return;
+    }
+    let octets: Vec<u8> = shift.drain(..).flat_map(u16::to_be_bytes).collect();
+    out.push('&');
+    // The modified alphabet swaps `,` for `/`, and drops `=` padding entirely.
+    for byte in crate::base64::encode(&octets).bytes() {
+        match byte {
+            b'=' => {}
+            b'/' => out.push(','),
+            other => out.push(char::from(other)),
+        }
+    }
+    out.push('-');
 }
 
 #[cfg(test)]

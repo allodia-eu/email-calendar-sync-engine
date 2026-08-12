@@ -115,7 +115,7 @@ async fn the_folder_list_asks_for_roles_and_counts_together() {
     let (stream, recorded) = MockStream::new(script(&[GREETING, LOGIN_OK, DOVECOT_SHAPED_LIST]));
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    conn.advertised.special_use = true;
+    conn.negotiated = crate::capability::Negotiated::from_capabilities(&["SPECIAL-USE".to_owned()]);
 
     let (rows, counts) = conn.list_with_unseen().await.unwrap();
 
@@ -131,7 +131,7 @@ async fn the_folder_list_asks_for_roles_and_counts_together() {
     let role_of = |name: &str| {
         rows.iter()
             .find(|row| row.name == name)
-            .and_then(crate::mail::mailbox_from_list)
+            .and_then(|row| crate::mail::mailbox_from_list(row, true))
             .and_then(|mailbox| mailbox.role)
     };
     assert_eq!(role_of("Sent"), Some(MailboxRole::Sent));
@@ -235,7 +235,10 @@ async fn synced_counts(server: Vec<u8>, list_status: bool) -> Vec<(String, Optio
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    conn.advertised.list_status = list_status;
+    if list_status {
+        conn.negotiated =
+            crate::capability::Negotiated::from_capabilities(&["LIST-STATUS".to_owned()]);
+    }
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
 
     let sync = provider

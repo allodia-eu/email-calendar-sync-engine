@@ -83,7 +83,7 @@ async fn idle_capability_reflects_a_post_auth_advertisement() {
     ]));
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    conn.negotiate_qresync().await.unwrap();
+    conn.negotiate().await.unwrap();
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
     assert!(
         provider.connection_info().capabilities.idle(),
@@ -409,6 +409,8 @@ async fn connect_reports_the_tls_handshake_then_the_login() {
             GREETING,
             LOGIN_OK,
             "* CAPABILITY IMAP4rev2 IDLE\r\na2 OK done\r\n",
+            // Advertising rev2 makes the session enable it, so the script must answer.
+            "* ENABLED IMAP4rev2\r\na3 OK ENABLE done\r\n",
         ]),
         Some(TlsVersion::Tls1_3),
     )

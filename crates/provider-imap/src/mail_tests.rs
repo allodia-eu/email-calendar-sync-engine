@@ -165,7 +165,10 @@ fn mailbox_from_list_maps_inbox_special_use_and_roleless() {
         br#"LIST (\HasNoChildren) "/" "Archive""#.to_vec(),
     ])
     .unwrap();
-    let mailboxes: Vec<_> = rows.iter().filter_map(mailbox_from_list).collect();
+    let mailboxes: Vec<_> = rows
+        .iter()
+        .filter_map(|row| mailbox_from_list(row, true))
+        .collect();
 
     let inbox = mailboxes.iter().find(|m| m.name == "INBOX").unwrap();
     assert_eq!(inbox.role, Some(MailboxRole::Inbox));
@@ -179,7 +182,7 @@ fn mailbox_from_list_maps_inbox_special_use_and_roleless() {
 #[test]
 fn hierarchy_parent_is_derived_from_the_delimiter() {
     let rows = crate::parse::parse_list(&[br#"LIST () "/" "Work/Clients""#.to_vec()]).unwrap();
-    let mailbox = mailbox_from_list(&rows[0]).unwrap();
+    let mailbox = mailbox_from_list(&rows[0], true).unwrap();
     assert_eq!(mailbox.parent.as_ref().unwrap().as_str(), "Work");
 }
 

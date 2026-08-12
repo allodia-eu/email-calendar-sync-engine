@@ -90,6 +90,12 @@ imap_cmd INBOX "CREATE QResync" >/dev/null 2>&1 || true
 # flag-toggles in isolation, so its mutations never disturb the count-asserted
 # mailboxes either.
 imap_cmd INBOX "CREATE Idle" >/dev/null 2>&1 || true
+# A non-ASCII mailbox name, seeded here *and* on the Dovecot harness under the same
+# display name. The two servers put completely different bytes on the wire for it —
+# modified UTF-7 on rev1, UTF-8 on rev2 — so a mailbox that comes back with one identity
+# on both is the proof that the encoding stops at the transport. The literal below is the
+# modified-UTF-7 form, which is what this rev1-shaped CREATE has to send.
+imap_cmd INBOX "CREATE &ANw-berweisungen" >/dev/null 2>&1 || true
 
 log "clearing managed mailboxes for an idempotent re-seed"
 imap_clear INBOX

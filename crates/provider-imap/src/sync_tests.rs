@@ -397,7 +397,7 @@ async fn a_qresync_delta_reconciles_flag_changes_and_expunges() {
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    conn.force_qresync();
+    conn.force_enabled("QRESYNC");
 
     let cursor = SyncState::new("v1000;n5;m9");
     let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
@@ -426,7 +426,7 @@ async fn a_qresync_snapshot_records_the_modseq_baseline() {
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    conn.force_qresync();
+    conn.force_enabled("QRESYNC");
 
     let page = sync_page(&mut conn, &inbox(), None, None, 50, None)
         .await
@@ -450,7 +450,7 @@ async fn the_first_sync_after_upgrade_re_snapshots_to_establish_the_baseline() {
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    conn.force_qresync();
+    conn.force_enabled("QRESYNC");
 
     let cursor = SyncState::new("v1000;n5"); // pre-QRESYNC: no modseq
     let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)

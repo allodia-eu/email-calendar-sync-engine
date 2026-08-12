@@ -40,11 +40,11 @@ async fn the_role_folder_wins_over_a_conventionally_named_one() {
     assert_eq!(folder, "Verzonden items");
 }
 
-/// A role folder whose name is modified UTF-7 resolves to the **wire** name. Decoding it
-/// here would hand `APPEND` a name the server never advertised, and would put the decoded
-/// form inside every message key built from it.
+/// A role folder whose wire name is modified UTF-7 resolves to the **decoded** name — the
+/// same form its `Mailbox` id carries, so a message key built here matches the one the
+/// folder list produced — while the `APPEND` that follows still goes to the wire name.
 #[tokio::test]
-async fn a_role_folder_resolves_to_its_wire_name_not_its_display_name() {
+async fn a_role_folder_resolves_to_its_decoded_name_and_appends_to_the_wire_name() {
     let (mut conn, recorded) = connection(&[
         "* LIST (\\HasNoChildren \\Sent) \"/\" \"&ZeVnLIqe-\"\r\na2 OK LIST done\r\n",
         "+ OK literal\r\n",
@@ -56,15 +56,15 @@ async fn a_role_folder_resolves_to_its_wire_name_not_its_display_name() {
         .await
         .unwrap();
 
-    assert_eq!(folder, "&ZeVnLIqe-");
+    assert_eq!(folder, "日本語");
     assert_eq!(append_uid, Some((7, 3)));
     assert!(
         written(&recorded).contains("APPEND \"&ZeVnLIqe-\""),
         "the APPEND addresses the wire name: {}",
         written(&recorded)
     );
-    // And the key the caller derives embeds that same wire name, so the message stays
-    // addressable after a restart.
+    // And the key the caller derives embeds the **decoded** name, so it is the key this
+    // message has on either dialect — the same one a rev2 session would build.
     assert_eq!(
         placed_key(
             &folder,
@@ -73,7 +73,7 @@ async fn a_role_folder_resolves_to_its_wire_name_not_its_display_name() {
             &message_id()
         )
         .as_str(),
-        "imap:v7:u3@&ZeVnLIqe-"
+        "imap:v7:u3@日本語"
     );
 }
 

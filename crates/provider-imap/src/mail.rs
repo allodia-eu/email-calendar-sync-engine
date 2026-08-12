@@ -88,19 +88,32 @@ pub(crate) fn message_from_fetch(
 /// Normalizes one `LIST` row into a [`Mailbox`]; `None` for an unusable
 /// (`\NonExistent` or empty-named) entry.
 ///
+/// `modified_utf7` says how this session's wire encodes names — IMAP4rev1 does, IMAP4rev2
+/// does not (RFC 9051 §5.1) — and must come from what the session *negotiated*, never from
+/// a capability the server merely advertised. Decoding unconditionally is not safe on a
+/// rev2 name: `R&AD-` is a mailbox called `R&AD-` there, and a shift sequence in rev1.
+///
+/// The decoded name becomes **both** the id and the display name, so a mailbox keeps one
+/// identity whichever revision a session negotiates, and [`crate::transport`] puts the
+/// wire form back on outgoing commands.
+///
 /// The **id keeps the wire name** and the **display name is decoded** from modified UTF-7
 /// (`crate::utf7`): the id is what `SELECT`/`APPEND` take and what every message key embeds,
 /// while the name is what a person reads. Conventional-name role matching runs on the decoded
 /// name, so a server that spells a role folder in its own script still matches.
-pub(crate) fn mailbox_from_list(row: &ListRow) -> Option<Mailbox> {
+pub(crate) fn mailbox_from_list(row: &ListRow, modified_utf7: bool) -> Option<Mailbox> {
     if has_attribute(&row.attributes, "NonExistent") {
         return None;
     }
-    let id = MailboxId::try_from(row.name.as_str()).ok()?;
-    let display = crate::utf7::decode(&row.name);
-    let mut mailbox = Mailbox::new(id, display.clone());
-    mailbox.role = role_for(&display, &row.attributes);
-    mailbox.parent = parent_of(&row.name, row.delimiter.as_deref());
+    let name = if modified_utf7 {
+        crate::utf7::decode(&row.name)
+    } else {
+        row.name.clone()
+    };
+    let id = MailboxId::try_from(name.as_str()).ok()?;
+    let mut mailbox = Mailbox::new(id, name.clone());
+    mailbox.role = role_for(&name, &row.attributes);
+    mailbox.parent = parent_of(&name, row.delimiter.as_deref());
     Some(mailbox)
 }
 

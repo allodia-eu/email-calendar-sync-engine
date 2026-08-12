@@ -123,7 +123,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
         mailbox: MailboxId,
         keepalive: Duration,
     ) -> ProviderResult<Self> {
-        if !conn.idle_advertised() {
+        if !conn.idle_available() {
             return Err(ProviderError::invalid_state(
                 "server does not advertise IMAP IDLE (RFC 2177); fall back to polling",
             ));

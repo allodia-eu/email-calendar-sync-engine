@@ -25,7 +25,7 @@ use crate::{
     parse::ListRow,
     tokenize::{Item, items_of},
     transport::Connection,
-    transport_command::{list_command, quote},
+    transport_command::list_command,
 };
 
 /// How many mailboxes the per-mailbox fallback will probe in one pass. A server
@@ -54,7 +54,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         &mut self,
     ) -> ImapResult<(Vec<ListRow>, HashMap<String, u32>)> {
         let response = self
-            .command(&list_command(self.advertised.special_use, true))
+            .command(&list_command(
+                self.negotiated.must_request_special_use(),
+                true,
+            ))
             .await?;
         // Untagged only: `LIST` and `STATUS` data never rides the completion line, and
         // reading it as though it might invents a mailbox out of the server's prose.
@@ -72,7 +75,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// here; [`unseen_by_probing`] decides what a refused mailbox means.
     pub(crate) async fn status_unseen(&mut self, mailbox: &str) -> ImapResult<Option<u32>> {
         let response = self
-            .command(&format!("STATUS {} (UNSEEN)", quote(mailbox)))
+            .command(&format!("STATUS {} (UNSEEN)", self.quoted_name(mailbox)))
             .await?;
         Ok(parse_status_unseen(response.untagged())
             .get(mailbox)

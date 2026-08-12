@@ -351,10 +351,15 @@ jobs:
         working-directory: docker/dovecot
         run: docker compose up -d --wait
 
-      - name: Run the gated Dovecot IMAP integration test (live)
+      # The contract suite runs against every configured server; with only DOVECOT_* set,
+      # its Stalwart half skips and its Dovecot half runs. The rev1 suite is the dialect
+      # half this server proves.
+      - name: Run the gated Dovecot IMAP integration tests (live)
         env:
           DOVECOT_IMAP_ADDR: 127.0.0.1:11994
-        run: cargo test -p provider-imap --test live_dovecot -- --nocapture
+        run: |
+          cargo test -p provider-imap --test live_imap_contract -- --nocapture
+          cargo test -p provider-imap --test live_imap_rev1 -- --nocapture
 
       - name: Dump Dovecot logs on failure
         if: failure()

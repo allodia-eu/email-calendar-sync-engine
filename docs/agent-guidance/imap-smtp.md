@@ -494,31 +494,56 @@ is authoritative for the `provider-caldav` calendar client.
 
 ## Which server proves what — rev1 vs rev2
 
-**The client targets IMAP4rev1 plus whatever it negotiates, and never assumes an extension
-it did not see advertised.** That is the whole rev1/rev2 story in the implementation: there
-is deliberately **no** `if rev2 { … }` branch, because rev2's contribution is to make a set
-of extensions mandatory, and a client that gates on the capability list gets both dialects
-right with one code path. The distinction lives in the **fixtures**, which is where it can
-actually fail.
+**The client speaks IMAP4rev2 where a server offers it, and IMAP4rev1 everywhere else —
+one code path, chosen by negotiation rather than branched on.** `capability.rs` holds the
+whole rule:
 
-Two live IMAP servers, and each is the only one that can prove its half:
+- **Advertised is not enabled.** A dual-revision server announces `IMAP4rev2` in its
+  greeting and keeps behaving as rev1 until the client sends `ENABLE IMAP4rev2` *and it
+  answers* `* ENABLED IMAP4rev2` (RFC 5161 §3.1). Only the confirmation counts. Reading the
+  capability as the dialect leaves the client parsing modified UTF-7 as though it were
+  UTF-8.
+- **One `ENABLE` buys the whole set.** rev2 is largely rev1 with a dozen extensions folded
+  into the base protocol (RFC 9051 Appendix E items 2–3: NAMESPACE, UNSELECT, UIDPLUS,
+  ESEARCH, SEARCHRES, ENABLE, IDLE, SASL-IR, LIST-EXTENDED, LIST-STATUS, MOVE, LITERAL-,
+  the FETCH side of BINARY, SPECIAL-USE's mailbox attributes, STATUS=SIZE), so
+  `Extension::folded_into_rev2` lets a rev2 session rely on them without the server naming
+  any of them. `enable_arguments` therefore sends the dialect plus only the extensions that
+  need announcing, in a single command.
+- **QRESYNC is not folded in.** rev2 took only its `CLOSED` response code (item 9), so
+  CONDSTORE/QRESYNC keeps its own capability and its own `ENABLE`.
+- **Folded in ≠ askable.** rev2 folds in SPECIAL-USE's *attributes* and makes them base
+  `LIST` data (§7.3.1) — it defines **no** `RETURN (SPECIAL-USE)` option. So rev2 removes
+  the need to ask rather than granting the request, and `must_request_special_use` is
+  `false` there. Sending the option anyway would put an undefined return option on the wire.
+- **The dialect reaches the data in exactly one place: mailbox names.** rev1 encodes them
+  as modified UTF-7, rev2 as UTF-8 (§5.1, item 16). `utf7` handles both directions and the
+  transport owns the conversion, so a `Mailbox` id is the decoded name on either dialect and
+  a message key built from it does not change the day a server starts offering rev2. Never
+  decode unconditionally: `R&AD-` is a mailbox name on rev2 and a shift sequence on rev1.
+
+Two live servers hold this up, and each is the only one that can prove its half:
 
 | | Stalwart (`docker/stalwart/`) | Dovecot (`docker/dovecot/`) |
 | --- | --- | --- |
-| Base protocol | `IMAP4rev2` | `IMAP4rev1` |
+| Dialect the client negotiates | **IMAP4rev2** (advertised, enabled, confirmed) | **IMAP4rev1** |
+| Mailbox names on the wire | UTF-8 | modified UTF-7 |
 | SPECIAL-USE on an extended `LIST` | volunteered whether asked or not | **only** when the return option asks |
-| Non-ASCII mailbox names | raw UTF-8 (`UTF8=ACCEPT`) | **modified UTF-7** (`utf7.rs`) |
 | Mailbox names in `LIST` rows | always quoted | unquoted atoms where quoting is unnecessary |
 | Tagged completion | `LIST completed` | `List completed (0.028 + 0.000 secs).` |
 
-The asymmetry that matters: **a server which volunteers data cannot show you that you
-forgot to ask for it.** Stalwart returns SPECIAL-USE either way, so an omitted return
-option is green there in perpetuity — while on Dovecot the same omission costs every folder
-its role *and* misplaces the Sent copy (`place.rs` resolves that folder from the same
-attributes). Likewise `utf7.rs` gets no live exercise at all against `UTF8=ACCEPT`, and a
-two-word completion line is too short to be mistaken for a `LIST` row. When adding IMAP
-coverage, ask which of the two servers would notice if the behaviour broke; if the answer
-is neither, the test is not proving what it claims.
+Two asymmetries decide where a new test belongs. **A server that volunteers data cannot
+show you that you forgot to ask for it** — Stalwart returns SPECIAL-USE either way, so an
+omitted return option is green there in perpetuity, while on Dovecot it costs every folder
+its role *and* misplaces the sent copy (`place.rs` resolves that folder from the same
+attributes). And **a dialect only proves its own half**: the rev1 encode/decode round trip
+has no live coverage on a rev2 server, and rev2's unasked-for role attributes have none on
+a rev1 one. So: contract assertions go in `live_imap_contract.rs` and run against *every*
+configured server; dialect-specific ones go in `live_imap_rev1.rs` / `live_imap_rev2.rs`,
+which are keyed on the dialect and not on the vendor — a server moves between them when it
+changes dialect, with no test rewritten. When adding coverage, ask which server would
+notice if the behaviour broke; if the answer is neither, the test is not proving what it
+claims.
 
 ## Testing
 
@@ -546,12 +571,20 @@ is neither, the test is not proving what it claims.
   **SMTP submission** that delivers and files the Sent copy (found by its generated
   `Message-ID`), and a **`save_draft`** that files a draft and reads it back flagged
   `\Draft`. Reuses `crates/stalwart-harness`.
-- **Live (gated on `DOVECOT_IMAP_ADDR`, skips otherwise):** `tests/live_dovecot.rs` — the
-  rev1 fixture (`docker/dovecot/`). Deliberately **not** a second copy of `live_imap`'s
-  assertions: it covers only what the two servers answer differently (see "Which server
-  proves what") — the folder list carrying roles *and* counts in one pass, no mailbox
-  invented from the completion line, and a modified-UTF-7 name decoded for display while
-  its id stays the wire form. A third gated file,
+- **Live, dialect-independent (`tests/live_imap_contract.rs`):** the folder-list contract,
+  looped over every configured server and skipping those whose `*_IMAP_ADDR` is unset.
+  Asserts special folders by **role** (the harnesses name them differently), that every
+  listed mailbox carries a count, that no mailbox is invented from a completion line, that
+  a mailbox id equals its name, and — the identity model's own claim — that one non-ASCII
+  folder reaches the model under the same identity on both dialects despite completely
+  different bytes on the wire.
+- **Live, per dialect (`tests/live_imap_rev1.rs`, `tests/live_imap_rev2.rs`):** only what
+  one dialect can show. rev1: a modified-UTF-7 name decoded into the identity, and a
+  `SELECT` by that decoded identity reaching the mailbox (which is the encode half). rev2:
+  a UTF-8 name needing no decoding, a `SELECT` sending it unencoded, and the role
+  attributes arriving with **no** `RETURN (SPECIAL-USE)` asked for.
+
+  A third gated file,A third gated file,
   `tests/live_imap_tls.rs`, covers the **TLS transports beyond that baseline** —
   every important IMAP/SMTP port is thus exercised live: an **IMAP STARTTLS** dial
   (`STALWART_IMAP_STARTTLS_ADDR` / 143) that reports a negotiated `tls_version` (proof

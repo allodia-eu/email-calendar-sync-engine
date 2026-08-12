@@ -10,9 +10,9 @@ different protocol *dialect* from Stalwart rather than merely a different implem
 
 | | Stalwart | Dovecot (this fixture) |
 | --- | --- | --- |
-| Base protocol | `IMAP4rev2` | `IMAP4rev1` |
+| Dialect the client negotiates | `IMAP4rev2` (advertised, enabled, confirmed) | `IMAP4rev1` |
 | SPECIAL-USE on an extended `LIST` | volunteered whether asked or not | **only** when the return option asks |
-| Non-ASCII mailbox names | raw UTF-8 (`UTF8=ACCEPT`) | **modified UTF-7** (`&ANw-berweisungen`) |
+| Non-ASCII mailbox names | UTF-8, once rev2 is enabled | **modified UTF-7** (`&ANw-berweisungen`) |
 | Mailbox names in `LIST` rows | always quoted | unquoted atoms where quoting is unnecessary |
 | Tagged completion | `LIST completed` | `List completed (0.028 + 0.000 + 0.027 secs).` |
 
@@ -23,8 +23,11 @@ Three things it proves that **Stalwart cannot** (see "Which server proves what" 
   protocol and Stalwart volunteers the attributes regardless, so a client that forgets to
   ask is green there forever. Here, forgetting costs every folder its role — and with it
   the Sent folder a filed copy is placed in ([`place.rs`](../../crates/provider-imap/src/place.rs)).
-- **Modified UTF-7 decoding.** [`utf7`](../../crates/provider-imap/src/utf7.rs) has no live
-  coverage at all against a `UTF8=ACCEPT` server, because one never emits it.
+- **Modified UTF-7, in both directions.** Once the client enables rev2 on Stalwart, that
+  server stops emitting modified UTF-7 altogether, so
+  [`utf7`](../../crates/provider-imap/src/utf7.rs) — decoding a `LIST` name *and* encoding
+  one back for a `SELECT` — has no live coverage anywhere else. This fixture has no rev2 to
+  switch to, so it pins that path permanently.
 - **That only untagged lines are data.** Dovecot's completion detail is prose whose first
   word is the command name and whose last character is a period, so a parser that reads
   the completion line as data invents a mailbox named `.` from it.
@@ -77,8 +80,10 @@ touch a host trust store. Do not wire this to real accounts.
 
 `INBOX` holds the nine shared `.eml` fixtures (all unread) and `Sent` holds one. The
 special-use set — `Drafts`, `Sent`, `Trash`, `Junk`, `Archive` — is declared in
-`harness.conf` and created at first login, plus `Überweisungen`, an ordinary folder whose
-only job is to have a name that must survive modified-UTF-7 decoding.
+`harness.conf` and created at first login, plus `Überweisungen` — an ordinary folder whose
+only job is to have a name that must survive the encoding. The Stalwart harness seeds the
+same folder under the same display name, so a test can assert that one mailbox reaches the
+model with one identity from two servers that put entirely different bytes on the wire.
 
 ## Determinism
 
