@@ -71,8 +71,8 @@ async fn a_reply_synced_after_derivation_joins_its_existing_thread() {
     assert_eq!(thread_of(&after, "t4"), thread_of(&after, "t1"));
     assert_eq!(thread_of(&after, "t4").unwrap().as_str(), "a@h");
 
-    // The mail index was re-projected too, so the thread read returns all three members.
-    let members = engine.thread_messages(&account(), "a@h").await.unwrap();
+    // The message rows were re-projected too, so the thread read returns all three members.
+    let members = engine.mail_on_threads(&[account()], ["a@h"]).await.unwrap();
     assert_eq!(members.len(), 3);
 }
 
@@ -100,9 +100,9 @@ async fn a_late_message_owning_a_smaller_id_rekeys_the_whole_thread() {
     for key in ["t1", "t2", "t4"] {
         assert_eq!(thread_of(&after, key).unwrap().as_str(), "0@h");
     }
-    let rekeyed = engine.thread_messages(&account(), "0@h").await.unwrap();
+    let rekeyed = engine.mail_on_threads(&[account()], ["0@h"]).await.unwrap();
     assert_eq!(rekeyed.len(), 3);
-    let old = engine.thread_messages(&account(), "a@h").await.unwrap();
+    let old = engine.mail_on_threads(&[account()], ["a@h"]).await.unwrap();
     assert!(old.is_empty(), "the old thread id no longer resolves");
 }
 

@@ -110,6 +110,7 @@ pub use engine_core::{
     },
     write::PendingOpId,
 };
+pub use engine_core::{mail::MailFlags, search_index::MailRow};
 pub use engine_provider::{
     Capabilities, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader, Draft,
     DraftAttachment, DraftAttachmentDisposition, DraftCalendar, EventDeletion, EventDraft,
@@ -123,7 +124,9 @@ pub use engine_recurrence::{
 };
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
-pub use engine_store::{OccurrenceRow, PendingOpState, PruneReport, SyncApplied, TzdataVersion};
+pub use engine_store::{
+    MailListRow, OccurrenceRow, PendingOpState, PruneReport, SyncApplied, TzdataVersion,
+};
 use engine_sync::SyncError;
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,

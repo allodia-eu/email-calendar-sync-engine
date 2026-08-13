@@ -402,3 +402,61 @@ CREATE TABLE recipient_index_state (
 pub(crate) const V8: &str = "\
 CREATE INDEX mail_index_thread ON mail_index (scope_key, thread_id);
 ";
+
+/// Migration v9: `message` — the row a mailbox list is built from.
+///
+/// `mail_index` carried the keys a *filter* needs and nothing a row *shows*, so a list read
+/// ranked every message in the account by date and then opened the surviving payloads one JSON
+/// document at a time. This table carries what the row shows, so the first page costs the size of
+/// the page. `object` stays the canonical normalized record and leaves the list path entirely;
+/// opening a message still reads it.
+///
+/// `account` is denormalized onto the row — derivable from `scope_key` through `sync_scope`, and
+/// kept here anyway — because "all inboxes" is then a predicate over one ordered index instead of
+/// a query per account merged in the caller. It is filled from `sync_scope` on every write, so it
+/// cannot disagree with the scope.
+///
+/// The four indices each answer one read and no more: `message_date` the unified newest-first
+/// window (with `account` in the key so the filter is answered from the index rather than by
+/// reading each candidate row), `message_account_date` one account's, `message_account_thread` a
+/// conversation's members, `message_account_key` a named message. The primary key stays
+/// `(scope_key, provider_key)`, matching every other derived table, so the tombstone cascade in
+/// `derived_ops::delete_derived_rows` reaches this table the same way as the rest.
+///
+/// `flags` is the system-keyword bitfield ([`engine_core::mail::MailFlags`]): the only keywords a
+/// row's appearance depends on, where a sort or a filter must not pay a junction join for them.
+/// Every keyword, system and user alike, still lands in `membership` — that is where a set of
+/// arbitrary cardinality belongs, and it is what `keyword:` searches.
+///
+/// [`crate::migrations`] backfills this table from `object` through the engine's own projection
+/// before v10 drops `mail_index`, so an existing database keeps its mail and re-downloads nothing.
+pub(crate) const V9: &str = "\
+CREATE TABLE message (
+    scope_key      TEXT    NOT NULL,
+    provider_key   TEXT    NOT NULL,
+    account        TEXT    NOT NULL,
+    thread_id      TEXT,
+    message_id     TEXT,
+    date_utc       TEXT,
+    flags          INTEGER NOT NULL,
+    has_attachment INTEGER NOT NULL,
+    from_name      TEXT,
+    from_addr      TEXT,
+    subject        TEXT,
+    preview        TEXT,
+    PRIMARY KEY (scope_key, provider_key)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX message_date           ON message (date_utc, account);
+CREATE INDEX message_account_date   ON message (account, date_utc);
+CREATE INDEX message_account_thread ON message (account, thread_id);
+CREATE INDEX message_account_key    ON message (account, provider_key);
+";
+
+/// Migration v10: retire `mail_index`.
+///
+/// Its rows are in `message` by now (v9's backfill), which supersedes it: every column it had is
+/// there, beside the ones a list row actually renders. Its indices go with the table.
+pub(crate) const V10: &str = "\
+DROP TABLE mail_index;
+";

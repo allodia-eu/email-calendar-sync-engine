@@ -1,24 +1,25 @@
 //! The [`StoreRead`](crate::StoreRead) query path for `MemStore`: scope and
-//! object reads, the mail index, op state, and index-row counts.
+//! object reads, the mail list, op state, and index-row counts.
 
-use std::collections::BTreeSet;
+use std::{cmp::Reverse, collections::BTreeSet};
 
 use async_trait::async_trait;
 use engine_core::{
-    ids::{AccountId, ProviderKey, ThreadId},
+    ids::{AccountId, MailboxId, ProviderKey, ThreadId},
+    search_index::MembershipKind,
     sync::SyncScope,
     time::{ExpansionWindow, Horizon},
     write::PendingOpId,
 };
 use serde_json::Value;
 
-use super::MemStore;
+use super::{MemStore, ScopeCell};
 use crate::{
     apply::OccurrenceRow,
     error::Result,
     lease::Clock,
     outbox::PendingOpState,
-    store::{IndexRowCounts, MailIndexEntry, StoreRead},
+    store::{IndexRowCounts, MailListRow, MailSelector, StoreRead},
 };
 
 #[async_trait]
@@ -78,52 +79,44 @@ impl<C: Clock> StoreRead for MemStore<C> {
         Ok(objects)
     }
 
-    async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>> {
-        let inner = self.lock();
-        // The mail index is cleared on tombstone (`remove_derived`), so its entries are
-        // exactly the scope's live mail objects — no separate liveness join needed.
-        Ok(inner
-            .scopes
-            .get(scope)
-            .map(|c| {
-                c.mail_index
-                    .iter()
-                    .map(|(key, row)| (key.clone(), row.date_utc, row.thread_id.clone()))
-                    .collect()
-            })
-            .unwrap_or_default())
-    }
-
-    async fn scope_thread_keys(
+    async fn list_mail(
         &self,
-        scope: &SyncScope,
-        threads: &[ThreadId],
-    ) -> Result<Vec<ProviderKey>> {
-        if threads.is_empty() {
-            return Ok(Vec::new());
-        }
-        let wanted: BTreeSet<&ThreadId> = threads.iter().collect();
+        accounts: &[AccountId],
+        select: MailSelector<'_>,
+        limit: usize,
+    ) -> Result<Vec<MailListRow>> {
+        let wanted: BTreeSet<&AccountId> = accounts.iter().collect();
         let inner = self.lock();
-        // The reference store has no index to seek into, so it scans. What it pins is
-        // the *answer*; a backend that stores an index on the thread column seeks.
-        let mut keys: Vec<ProviderKey> = inner
-            .scopes
-            .get(scope)
-            .map(|c| {
-                c.mail_index
-                    .iter()
-                    .filter(|(_, row)| {
-                        row.thread_id
-                            .as_ref()
-                            .is_some_and(|thread| wanted.contains(thread))
-                    })
-                    .map(|(key, _)| key.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        keys.sort();
-        keys.dedup();
-        Ok(keys)
+        // The reference store has no index to seek into, so it scans every scope of every named
+        // account and orders in memory. What it pins is the *answer*; a backend that stores an
+        // ordered index on the date column reads only the rows it returns.
+        let mut rows: Vec<MailListRow> = Vec::new();
+        for (scope, cell) in &inner.scopes {
+            if !wanted.contains(scope.account()) {
+                continue;
+            }
+            // Mail rows are cleared on tombstone (`remove_derived`), so the stored ones are
+            // exactly the scope's live mail objects — no separate liveness join needed.
+            for (key, mail) in &cell.messages {
+                if !selects(select, key, mail.thread_id.as_ref()) {
+                    continue;
+                }
+                rows.push(MailListRow {
+                    account: scope.account().clone(),
+                    mailboxes: mailboxes_of(cell, key),
+                    mail: mail.clone(),
+                });
+            }
+        }
+        // Newest first, undated last, ties broken on the row's own identity so the sequence — and
+        // so the window `limit` cuts — is the same on every read of an unchanged store.
+        rows.sort_by(|a, b| {
+            Reverse(a.mail.date_utc)
+                .cmp(&Reverse(b.mail.date_utc))
+                .then_with(|| (&a.account, &a.mail.key).cmp(&(&b.account, &b.mail.key)))
+        });
+        rows.truncate(limit);
+        Ok(rows)
     }
 
     async fn scope_occurrences(
@@ -171,11 +164,32 @@ impl<C: Clock> StoreRead for MemStore<C> {
         Ok(IndexRowCounts {
             fts: usize::from(cell.fts.contains_key(key)),
             occurrences: cell.occurrences.get(key).map_or(0, Vec::len),
-            mail_index: usize::from(cell.mail_index.contains_key(key)),
+            message: usize::from(cell.messages.contains_key(key)),
             addresses: cell.addresses.get(key).map_or(0, Vec::len),
             memberships: cell.memberships.get(key).map_or(0, Vec::len),
             event_index: usize::from(cell.event_index.contains_key(key)),
             participants: cell.participants.get(key).map_or(0, Vec::len),
         })
     }
+}
+
+/// Whether one stored row is named by `select`. An empty `Threads`/`Keys` slice names nothing,
+/// which is what makes "complete these conversations" with no conversations a no-op.
+fn selects(select: MailSelector<'_>, key: &ProviderKey, thread: Option<&ThreadId>) -> bool {
+    match select {
+        MailSelector::Newest => true,
+        MailSelector::Threads(threads) => thread.is_some_and(|id| threads.contains(id)),
+        MailSelector::Keys(keys) => keys.contains(key),
+    }
+}
+
+/// One message's mailbox membership, out of the junction rows that hold every axis.
+fn mailboxes_of(cell: &ScopeCell, key: &ProviderKey) -> Vec<MailboxId> {
+    cell.memberships
+        .get(key)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.kind == MembershipKind::Mailbox)
+        .filter_map(|row| MailboxId::try_from(row.value.as_str()).ok())
+        .collect()
 }

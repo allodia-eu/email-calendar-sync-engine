@@ -15,13 +15,15 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   ([`SystemClock`]), and exposes high-level operations over it.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
   (or `sync_mail_streamed` — or the per-folder `sync_mailbox_list` +
-  `sync_folder_email_streamed` — for live progress and change events); read with
-  `mailboxes` / `messages` /
+  `sync_folder_email_streamed` — for live progress and change events); build a mailbox
+  list with `mail_window` (the projected rows a list renders, across any set of accounts
+  in one ordered answer), complete its conversations with `mail_on_threads` and resolve
+  a named message with `mail_by_keys`; read `mailboxes` / `messages` /
   `calendars` / `events` and `search_mail` / `search_calendar` (which now also
   matches fetched **body** text); open a message with `message_body` (fetch-on-demand;
   caches the raw bytes on disk and the extracted text in SQLite, so reopen is a fast
   SQLite read and the body becomes searchable), plan a bulk body-warming pass with
-  `messages_missing_body` (the newest synced messages whose body text is not yet
+  `mail_missing_body` (the newest synced messages whose body text is not yet
   cached — a host feeds each through `message_body` to make its window readable
   offline), resolve inline CID resources with
   `message_inline_parts`, list ordinary downloadable attachments with

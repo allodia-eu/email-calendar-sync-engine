@@ -23,9 +23,7 @@ use engine_core::{
     ids::{AccountId, ContactId, MessageId, ProviderKey},
     people::{CanonicalEmail, PeopleSnapshot},
     recipient::{RecipientCoverage, RecipientObservation},
-    search_index::{
-        EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow, MembershipRow,
-    },
+    search_index::{EventIndexRow, EventParticipantRow, MailAddressRow, MailRow, MembershipRow},
     sync::{SyncScope, SyncState},
     time::{ExpansionWindow, UtcDateTime},
     write::{IdempotencyKey, PendingOp, PendingOpId},
@@ -72,7 +70,7 @@ fn group_by_key<R: Clone>(
 
 /// Per-scope state: the fencing generation, lease expiry, cursor, objects, and
 /// derived rows.
-struct ScopeCell {
+pub(super) struct ScopeCell {
     token: FenceToken,
     lease_expiry: Option<UtcDateTime>,
     state: Option<SyncState>,
@@ -81,9 +79,9 @@ struct ScopeCell {
     objects: HashMap<ProviderKey, Value>,
     fts: HashMap<ProviderKey, Vec<FtsField>>,
     occurrences: HashMap<ProviderKey, Vec<OccurrenceRow>>,
-    mail_index: HashMap<ProviderKey, MailIndexRow>,
+    pub(super) messages: HashMap<ProviderKey, MailRow>,
     addresses: HashMap<ProviderKey, Vec<MailAddressRow>>,
-    memberships: HashMap<ProviderKey, Vec<MembershipRow>>,
+    pub(super) memberships: HashMap<ProviderKey, Vec<MembershipRow>>,
     event_index: HashMap<ProviderKey, EventIndexRow>,
     participants: HashMap<ProviderKey, Vec<EventParticipantRow>>,
 }
@@ -98,7 +96,7 @@ impl ScopeCell {
             objects: HashMap::new(),
             fts: HashMap::new(),
             occurrences: HashMap::new(),
-            mail_index: HashMap::new(),
+            messages: HashMap::new(),
             addresses: HashMap::new(),
             memberships: HashMap::new(),
             event_index: HashMap::new(),
@@ -119,7 +117,7 @@ impl ScopeCell {
     fn remove_derived(&mut self, key: &ProviderKey) {
         self.fts.remove(key);
         self.occurrences.remove(key);
-        self.mail_index.remove(key);
+        self.messages.remove(key);
         self.addresses.remove(key);
         self.memberships.remove(key);
         self.event_index.remove(key);
@@ -159,8 +157,8 @@ impl ScopeCell {
                 .or_default()
                 .push(occ.clone());
         }
-        for row in &derived.mail_index {
-            self.mail_index.insert(row.key.clone(), row.clone());
+        for row in &derived.messages {
+            self.messages.insert(row.key.clone(), row.clone());
         }
         for row in &derived.event_index {
             self.event_index.insert(row.key.clone(), row.clone());

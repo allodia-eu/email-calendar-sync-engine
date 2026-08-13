@@ -28,11 +28,13 @@
 //! blob area (`blob.rs`) — never in SQLite — while the extracted body text and its
 //! own lease-free FTS index live in `message_body`/`message_body_fts` (`source_ops.rs`).
 
+mod backfill;
 mod blob;
 mod contact_ops;
 mod contact_store;
 mod convert;
 mod derived_ops;
+mod mail_ops;
 mod migrations;
 mod outbox_ops;
 mod photo_ops;

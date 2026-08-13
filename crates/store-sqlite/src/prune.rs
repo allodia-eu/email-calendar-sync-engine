@@ -8,7 +8,7 @@
 //! the *same* end state offline, tombstoning exactly the mail a narrower-window
 //! snapshot would have.
 //!
-//! It filters on `mail_index.date_utc`, which is the message's `received_at` (falling
+//! It filters on `message.date_utc`, which is the message's `received_at` (falling
 //! back to `sent_at`) — the very field a provider window maps to (IMAP `SINCE`, JMAP
 //! `after` on `receivedAt`, Graph `receivedDateTime ge`). Comparison is on the UTC
 //! **date** prefix against the window's inclusive floor date, so a message *on* the
@@ -100,7 +100,7 @@ fn prune_account_mail(
 fn out_of_window_keys(tx: &Transaction<'_>, scope_key: &str, floor: &str) -> Result<Vec<String>> {
     let mut stmt = tx
         .prepare(
-            "SELECT provider_key FROM mail_index
+            "SELECT provider_key FROM message
              WHERE scope_key = ?1 AND date_utc IS NOT NULL AND substr(date_utc, 1, 10) < ?2",
         )
         .map_err(convert::backend)?;

@@ -310,11 +310,7 @@ async fn cold_add_streams_newest_first_and_resumes_after_a_kill() {
     // All nine are now present in the store and the client's view.
     assert_eq!(view.lock().unwrap().len(), 9);
     assert_eq!(
-        engine
-            .messages_windowed(&account(), 100)
-            .await
-            .unwrap()
-            .len(),
+        engine.mail_window(&[account()], 100).await.unwrap().len(),
         9
     );
 }
@@ -332,7 +328,7 @@ async fn warm_start_paints_cached_mail_offline_then_syncs() {
     // Now offline. The warm-start read still paints the cached mail with no provider
     // call — the instant, offline-first list.
     provider.set_offline(true);
-    let cached = engine.messages_windowed(&account(), 50).await.unwrap();
+    let cached = engine.mail_window(&[account()], 50).await.unwrap();
     assert_eq!(cached.len(), 5, "cached mail renders offline");
     assert_eq!(engine.mailboxes(&account()).await.unwrap().len(), 1);
 
@@ -345,14 +341,7 @@ async fn warm_start_paints_cached_mail_offline_then_syncs() {
         offline_sync.is_err(),
         "an offline sync fails, it does not corrupt state"
     );
-    assert_eq!(
-        engine
-            .messages_windowed(&account(), 50)
-            .await
-            .unwrap()
-            .len(),
-        5
-    );
+    assert_eq!(engine.mail_window(&[account()], 50).await.unwrap().len(), 5);
 
     // Back online, a sync reconciles without disturbing the cache count.
     provider.set_offline(false);
@@ -360,14 +349,7 @@ async fn warm_start_paints_cached_mail_offline_then_syncs() {
         .sync_mail_streamed(&provider, &account(), responsive(), &no_observer())
         .await
         .unwrap();
-    assert_eq!(
-        engine
-            .messages_windowed(&account(), 50)
-            .await
-            .unwrap()
-            .len(),
-        5
-    );
+    assert_eq!(engine.mail_window(&[account()], 50).await.unwrap().len(), 5);
 }
 
 #[tokio::test]
@@ -416,7 +398,7 @@ async fn startup_loads_the_initial_page_well_under_500ms() {
         .unwrap();
 
     let started = Instant::now();
-    let page = engine.messages_windowed(&account(), 50).await.unwrap();
+    let page = engine.mail_window(&[account()], 50).await.unwrap();
     let elapsed = started.elapsed();
     assert_eq!(page.len(), 50, "the initial page of 50 loaded");
     assert!(
@@ -436,40 +418,45 @@ async fn missing_body_work_list_shrinks_as_a_warm_pass_fetches() {
 
     // A metadata-only sync leaves every body unwarmed — the work list is the whole
     // window, newest first (m0), same ranking as the windowed read.
-    let missing = engine.messages_missing_body(&account(), 50).await.unwrap();
+    let missing = engine.mail_missing_body(&[account()], 50).await.unwrap();
     assert_eq!(missing.len(), 5);
-    assert_eq!(missing[0].envelope.subject.as_deref(), Some("Subject 0"));
+    assert_eq!(missing[0].mail.subject.as_deref(), Some("Subject 0"));
 
     // Warm the two newest — the work list drops exactly those and keeps ranking.
-    for message in &missing[..2] {
-        engine
-            .message_body(&provider, &account(), message)
-            .await
-            .unwrap();
-    }
-    let rest = engine.messages_missing_body(&account(), 50).await.unwrap();
+    warm(&engine, &provider, &missing[..2]).await;
+    let rest = engine.mail_missing_body(&[account()], 50).await.unwrap();
     assert_eq!(rest.len(), 3);
-    assert_eq!(rest[0].envelope.subject.as_deref(), Some("Subject 2"));
+    assert_eq!(rest[0].mail.subject.as_deref(), Some("Subject 2"));
 
     // The cap keeps the newest *missing*, not just the newest.
-    let capped = engine.messages_missing_body(&account(), 1).await.unwrap();
+    let capped = engine.mail_missing_body(&[account()], 1).await.unwrap();
     assert_eq!(capped.len(), 1);
-    assert_eq!(capped[0].envelope.subject.as_deref(), Some("Subject 2"));
+    assert_eq!(capped[0].mail.subject.as_deref(), Some("Subject 2"));
 
     // A fully-warm window returns an empty work list.
-    for message in &rest {
-        engine
-            .message_body(&provider, &account(), message)
-            .await
-            .unwrap();
-    }
+    warm(&engine, &provider, &rest).await;
     assert!(
         engine
-            .messages_missing_body(&account(), 50)
+            .mail_missing_body(&[account()], 50)
             .await
             .unwrap()
             .is_empty()
     );
+}
+
+/// Fetches each row's body, resolving the whole message the fetch needs from its key — the shape
+/// a host's warming pass has, now that the work list is rows rather than objects.
+async fn warm(engine: &Engine, provider: &SimProvider, rows: &[engine_api::MailListRow]) {
+    for row in rows {
+        let message = engine
+            .messages_by_keys(&account(), core::slice::from_ref(&row.mail.key))
+            .await
+            .unwrap();
+        engine
+            .message_body(provider, &account(), &message[0])
+            .await
+            .unwrap();
+    }
 }
 
 fn key(value: &str) -> ProviderKey {

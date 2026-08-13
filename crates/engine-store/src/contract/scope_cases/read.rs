@@ -1,12 +1,12 @@
-//! Read-surface cases: structured index rows, account scope enumeration, and
-//! the mail-index and batch-object scans.
+//! Read-surface cases: structured index rows, account scope enumeration, and the
+//! batch-object scan. The mail list read has its own file.
 
 use engine_core::{
     calendar::ParticipationStatus,
-    ids::ThreadId,
+    mail::MailFlags,
     search_index::{
-        AddressField, EventIndexRow, EventParticipantRow, MailAddressRow, MailIndexRow,
-        MembershipKind, MembershipRow, ParticipantField,
+        AddressField, EventIndexRow, EventParticipantRow, MailAddressRow, MailRow, MembershipKind,
+        MembershipRow, ParticipantField,
     },
     sync::{SyncState, SyncUpdate},
 };
@@ -29,11 +29,17 @@ fn structured_index_fixture() -> DerivedWrite {
         mail.clone(),
         vec![FtsField::new("subject", "hello")],
     ));
-    derived.mail_index.push(MailIndexRow {
+    derived.messages.push(MailRow {
         key: mail.clone(),
-        date_utc: Some("2026-01-01T00:00:00Z".parse().unwrap()),
-        has_attachment: true,
         thread_id: None,
+        message_id: None,
+        date_utc: Some("2026-01-01T00:00:00Z".parse().unwrap()),
+        flags: MailFlags::default(),
+        has_attachment: true,
+        from_name: Some("Alice".into()),
+        from_addr: Some("alice@example.com".into()),
+        subject: Some("hello".into()),
+        preview: None,
     });
     derived.addresses.push(MailAddressRow {
         key: mail.clone(),
@@ -104,7 +110,7 @@ pub(in crate::contract) async fn structured_index_rows_replace_and_clear<S: Stor
 
     let mail_counts = IndexRowCounts {
         fts: 1,
-        mail_index: 1,
+        message: 1,
         addresses: 2,
         memberships: 1,
         ..IndexRowCounts::default()
@@ -201,213 +207,6 @@ pub(in crate::contract) async fn account_scopes_enumerates_an_accounts_scopes<
             .await
             .unwrap()
             .is_empty()
-    );
-}
-
-/// `scope_mail_index` returns each live mail object's `(key, date, thread)` — the scalar
-/// sort/group keys backing the windowed and threaded reads — with dates and thread ids
-/// intact, undated/unthreaded messages reported as `None`, and a tombstoned object excluded
-/// (its index row is cleared with it).
-pub(in crate::contract) async fn scope_mail_index_reports_dates_threads_and_excludes_tombstones<
-    S: Store + StoreRead,
->(
-    store: &S,
-    _clock: &ManualClock,
-) {
-    let account = acct("acct-mailidx");
-    let scope = email_scope(&account);
-    let claim = store
-        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
-        .await
-        .unwrap();
-
-    // Three messages: two share a thread with distinct dates, one is undated + unthreaded.
-    let thread = ThreadId::try_from("t-shared").unwrap();
-    let mut derived = DerivedWrite::empty();
-    derived.mail_index.push(MailIndexRow {
-        key: pk("m1"),
-        date_utc: Some("2026-01-03T00:00:00Z".parse().unwrap()),
-        has_attachment: false,
-        thread_id: Some(thread.clone()),
-    });
-    derived.mail_index.push(MailIndexRow {
-        key: pk("m2"),
-        date_utc: Some("2026-01-01T00:00:00Z".parse().unwrap()),
-        has_attachment: false,
-        thread_id: Some(thread.clone()),
-    });
-    derived.mail_index.push(MailIndexRow {
-        key: pk("m3"),
-        date_utc: None,
-        has_attachment: false,
-        thread_id: None,
-    });
-    let update = SyncUpdate::delta(
-        vec![
-            TestObject::new("m1", "A"),
-            TestObject::new("m2", "B"),
-            TestObject::new("m3", "C"),
-        ],
-        vec![],
-    );
-    store
-        .apply_sync_update(
-            &claim.lease,
-            ApplyBatch::new(&update, &derived, &[], &SyncState::new("mi-1")),
-        )
-        .await
-        .unwrap();
-
-    let mut entries = store.scope_mail_index(&scope).await.unwrap();
-    entries.sort_by(|a, b| a.0.cmp(&b.0)); // order is unspecified; sort by key to assert.
-    assert_eq!(
-        entries,
-        vec![
-            (
-                pk("m1"),
-                Some("2026-01-03T00:00:00Z".parse().unwrap()),
-                Some(thread.clone()),
-            ),
-            (
-                pk("m2"),
-                Some("2026-01-01T00:00:00Z".parse().unwrap()),
-                Some(thread.clone()),
-            ),
-            (pk("m3"), None, None),
-        ]
-    );
-
-    // Tombstoning m2 clears its index row too, so it drops out of the scan.
-    let drop_m2: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![pk("m2")]);
-    store
-        .apply_sync_update(
-            &claim.lease,
-            ApplyBatch::new(
-                &drop_m2,
-                &DerivedWrite::empty(),
-                &[],
-                &SyncState::new("mi-2"),
-            ),
-        )
-        .await
-        .unwrap();
-    let keys: Vec<_> = store
-        .scope_mail_index(&scope)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|(key, ..)| key)
-        .collect();
-    assert_eq!(keys.len(), 2);
-    assert!(!keys.contains(&pk("m2")));
-}
-
-/// `scope_thread_keys` answers "which messages are on these threads" directly: every
-/// member of every named thread, once each, in key order — and nothing from a thread
-/// that was not asked for, from an unthreaded message, or from an object that has been
-/// tombstoned since.
-///
-/// A backend is free to seek an index for this; what it may not do is disagree with the
-/// full scan of `scope_mail_index`, which is what this case pins.
-pub(in crate::contract) async fn scope_thread_keys_gathers_only_the_named_threads<
-    S: Store + StoreRead,
->(
-    store: &S,
-    _clock: &ManualClock,
-) {
-    let account = acct("acct-threadkeys");
-    let scope = email_scope(&account);
-    let claim = store
-        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
-        .await
-        .unwrap();
-
-    let alpha = ThreadId::try_from("t-alpha").unwrap();
-    let beta = ThreadId::try_from("t-beta").unwrap();
-    let absent = ThreadId::try_from("t-absent").unwrap();
-    let rows = [
-        ("m1", Some(alpha.clone())),
-        ("m2", Some(alpha.clone())),
-        ("m3", Some(beta.clone())),
-        ("m4", None),
-    ];
-    let mut derived = DerivedWrite::empty();
-    for (key, thread) in &rows {
-        derived.mail_index.push(MailIndexRow {
-            key: pk(key),
-            date_utc: Some("2026-01-01T00:00:00Z".parse().unwrap()),
-            has_attachment: false,
-            thread_id: thread.clone(),
-        });
-    }
-    let update = SyncUpdate::delta(
-        rows.iter()
-            .map(|(key, _)| TestObject::new(key, "body"))
-            .collect(),
-        vec![],
-    );
-    store
-        .apply_sync_update(
-            &claim.lease,
-            ApplyBatch::new(&update, &derived, &[], &SyncState::new("tk-1")),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        store
-            .scope_thread_keys(&scope, std::slice::from_ref(&alpha))
-            .await
-            .unwrap(),
-        vec![pk("m1"), pk("m2")],
-        "both members of one thread, ascending"
-    );
-    assert_eq!(
-        store
-            .scope_thread_keys(&scope, &[alpha.clone(), beta.clone(), absent.clone()])
-            .await
-            .unwrap(),
-        vec![pk("m1"), pk("m2"), pk("m3")],
-        "several threads merge into one deduped, ordered answer; an unknown thread adds nothing"
-    );
-    assert!(
-        store
-            .scope_thread_keys(&scope, &[])
-            .await
-            .unwrap()
-            .is_empty(),
-        "no threads asked for, no keys returned"
-    );
-    assert!(
-        store
-            .scope_thread_keys(&scope, std::slice::from_ref(&absent))
-            .await
-            .unwrap()
-            .is_empty(),
-        "an unthreaded message is not a member of anything"
-    );
-
-    // Tombstoning clears the index row, so the message leaves its thread with it — the
-    // same liveness `scope_mail_index` has, reached by a different path.
-    let drop_m1: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![pk("m1")]);
-    store
-        .apply_sync_update(
-            &claim.lease,
-            ApplyBatch::new(
-                &drop_m1,
-                &DerivedWrite::empty(),
-                &[],
-                &SyncState::new("tk-2"),
-            ),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        store
-            .scope_thread_keys(&scope, std::slice::from_ref(&alpha))
-            .await
-            .unwrap(),
-        vec![pk("m2")]
     );
 }
 

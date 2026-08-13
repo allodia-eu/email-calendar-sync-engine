@@ -13,6 +13,7 @@
 mod address;
 mod body;
 mod content;
+mod flags;
 mod header;
 mod keyword;
 mod mailbox;
@@ -25,6 +26,7 @@ pub use body::EmailBodyPart;
 pub use content::{
     AttachmentPartId, InlinePart, MessageAttachment, MessageAttachmentContent, MessageBody,
 };
+pub use flags::MailFlags;
 pub use header::{EmailHeader, Envelope};
 pub use keyword::{Keyword, KeywordError, SystemKeyword};
 pub use mailbox::Mailbox;

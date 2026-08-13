@@ -36,7 +36,7 @@ pub use calendar::{
     EventIndexRow, EventParticipantRow, EventProjection, OwnerAddresses, ParticipantField,
     project_event,
 };
-pub use mail::{AddressField, MailAddressRow, MailIndexRow, MailProjection, project_message};
+pub use mail::{AddressField, MailAddressRow, MailProjection, MailRow, project_message};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::ProviderKey;

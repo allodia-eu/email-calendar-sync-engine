@@ -3,6 +3,7 @@
 
 mod apply;
 mod lease;
+mod mail;
 mod occurrences;
 mod read;
 
@@ -17,14 +18,17 @@ pub(super) use self::{
         release_with_stale_token_is_noop, scope_lease_is_exclusive_until_released,
         stale_lease_is_rejected,
     },
+    mail::{
+        list_mail_by_keys_resolves_named_messages, list_mail_merges_accounts_into_one_order,
+        list_mail_on_threads_gathers_only_the_named_threads,
+        list_mail_orders_by_date_and_excludes_tombstones,
+    },
     occurrences::{
         scope_occurrences_keep_overrides_and_drop_with_the_event,
         scope_occurrences_reads_the_overlapping_window,
     },
     read::{
-        account_scopes_enumerates_an_accounts_scopes,
-        scope_mail_index_reports_dates_threads_and_excludes_tombstones,
-        scope_objects_batch_reads_live_objects, scope_thread_keys_gathers_only_the_named_threads,
+        account_scopes_enumerates_an_accounts_scopes, scope_objects_batch_reads_live_objects,
         structured_index_rows_replace_and_clear,
     },
 };

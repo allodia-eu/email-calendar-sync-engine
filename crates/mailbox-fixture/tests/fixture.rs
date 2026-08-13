@@ -161,40 +161,40 @@ async fn a_populated_engine_answers_the_reads_the_benchmarks_measure() {
     assert_eq!(mailboxes.len(), fixture.folders.len());
 
     // The windowed read returns the newest N, in the generator's own order.
-    let page = engine
-        .messages_windowed(&account(), 25)
-        .await
-        .expect("window");
+    let page = engine.mail_window(&[account()], 25).await.expect("window");
     let expected: Vec<&str> = fixture
         .newest_first()
         .iter()
         .take(25)
         .map(|m| m.id.key().as_str())
         .collect();
-    let actual: Vec<&str> = page.iter().map(|m| m.id.key().as_str()).collect();
+    let actual: Vec<&str> = page.iter().map(|m| m.mail.key.as_str()).collect();
     assert_eq!(actual, expected);
 
     // Every message landed, not just the window.
     assert_eq!(engine.messages(&account()).await.expect("all").len(), 400);
 
-    // A thread read reaches the members the window left out — including the ones the
-    // generator filed in a different folder.
-    let threads: HashSet<String> = page
+    // A thread read returns every member of the conversations it is asked for — whatever folder
+    // the generator filed them in, and however far outside the window they fall. That is what
+    // lets a windowed list expand one conversation into its whole history; the read returns the
+    // conversations themselves and the host drops the rows it already holds.
+    let threads: Vec<String> = page
         .iter()
-        .filter_map(|m| m.thread_id().map(|id| id.as_str().to_owned()))
+        .filter_map(|m| m.mail.thread_id.as_ref().map(|id| id.as_str().to_owned()))
         .collect();
-    let shown: HashSet<String> = page
+    let wanted: HashSet<&str> = threads.iter().map(String::as_str).collect();
+    let expected: HashSet<&str> = fixture
+        .newest_first()
         .iter()
-        .map(|m| m.id.key().as_str().to_owned())
+        .filter(|m| m.thread_id().is_some_and(|id| wanted.contains(id.as_str())))
+        .map(|m| m.id.key().as_str())
         .collect();
-    let extra = engine
-        .thread_members(&account(), &threads, &shown)
+    let members = engine
+        .mail_on_threads(&[account()], threads.iter().map(String::as_str))
         .await
         .expect("thread members");
-    assert!(
-        extra.iter().all(|m| !shown.contains(m.id.key().as_str())),
-        "the excluded window is not re-read"
-    );
+    let got: HashSet<&str> = members.iter().map(|m| m.mail.key.as_str()).collect();
+    assert_eq!(got, expected);
 }
 
 #[tokio::test]

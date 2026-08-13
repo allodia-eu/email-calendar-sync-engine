@@ -14,9 +14,10 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    ids::{AccountId, ProviderKey, ThreadId},
+    ids::{AccountId, MailboxId, ProviderKey, ThreadId},
+    search_index::MailRow,
     sync::{SyncScope, SyncState},
-    time::{ExpansionWindow, Horizon, UtcDateTime},
+    time::{ExpansionWindow, Horizon},
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use serde::Serialize;
@@ -170,7 +171,7 @@ pub trait Store: Send + Sync {
 ///
 /// Returned by [`StoreRead::index_row_counts`] for contract verification and
 /// diagnostics — the searchable query path is the per-store executor, not this
-/// surface. `fts`, `mail_index`, and `event_index` are 0 or 1 (one row per
+/// surface. `fts`, `message`, and `event_index` are 0 or 1 (one row per
 /// object); the junction counts are unbounded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexRowCounts {
@@ -178,8 +179,8 @@ pub struct IndexRowCounts {
     pub fts: usize,
     /// Materialized occurrences.
     pub occurrences: usize,
-    /// Mail scalar-index rows (0 or 1).
-    pub mail_index: usize,
+    /// Stored mail rows (0 or 1).
+    pub message: usize,
     /// Mail address-junction rows.
     pub addresses: usize,
     /// Membership rows.
@@ -196,7 +197,7 @@ impl IndexRowCounts {
     pub fn is_empty(&self) -> bool {
         self.fts == 0
             && self.occurrences == 0
-            && self.mail_index == 0
+            && self.message == 0
             && self.addresses == 0
             && self.memberships == 0
             && self.event_index == 0
@@ -204,11 +205,54 @@ impl IndexRowCounts {
     }
 }
 
-/// One mail object's scalar index entry — its `(provider key, date, thread)`, the sort/group
-/// keys [`StoreRead::scope_mail_index`] returns without the payload. `date` is the message's
-/// `received_at`/`sent_at` (`None` when neither is known); `thread` is its resolved [`ThreadId`],
-/// if threading ran.
-pub type MailIndexEntry = (ProviderKey, Option<UtcDateTime>, Option<ThreadId>);
+/// One row of a mail list read: the stored [`MailRow`], the account it belongs to, and the
+/// collections it is filed in.
+///
+/// The account is carried per row because one read spans several of them — an "all inboxes" view
+/// is one query, not a loop with a merge in the caller. The mailboxes are carried because a host
+/// decides what is in the *viewed* folder, and a message's placement is a separate axis from its
+/// identity (JMAP objects hold several memberships; two IMAP copies are distinct objects with one
+/// each).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailListRow {
+    /// The account the message belongs to.
+    pub account: AccountId,
+    /// The mailboxes/labels the message is filed in.
+    pub mailboxes: Vec<MailboxId>,
+    /// The stored row.
+    pub mail: MailRow,
+}
+
+impl MailListRow {
+    /// Projects a normalized message into the list row the store would have written for it.
+    ///
+    /// A host that watches a sync stream sees whole [`Message`](engine_core::mail::Message)s go by
+    /// and has to place them in a list it is already holding. Doing that means projecting them the
+    /// way the store does — so it happens here, through the same
+    /// [`project_message`](engine_core::search_index::project_message), rather than a second time
+    /// in each host with its own idea of what a row's sender or preview is.
+    #[must_use]
+    pub fn project(account: &AccountId, message: &engine_core::mail::Message) -> Self {
+        Self {
+            account: account.clone(),
+            mailboxes: message.mailboxes.iter().cloned().collect(),
+            mail: engine_core::search_index::project_message(message).row,
+        }
+    }
+}
+
+/// Which mail a [`StoreRead::list_mail`] call selects, within the accounts it is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailSelector<'a> {
+    /// Everything, newest first — the windowed list a host renders.
+    Newest,
+    /// Every message on any of these threads, regardless of date, so a windowed list can expand a
+    /// conversation into its full history. An empty slice selects nothing.
+    Threads(&'a [ThreadId]),
+    /// The messages named by these provider keys. Keys not found (moved, tombstoned) are simply
+    /// absent; an empty slice selects nothing.
+    Keys(&'a [ProviderKey]),
+}
 
 /// A minimal lease-free read/inspection surface.
 ///
@@ -264,35 +308,34 @@ pub trait StoreRead: Send + Sync {
     /// Returns `StoreError::Backend` on a backend failure.
     async fn scope_objects(&self, scope: &SyncScope) -> Result<Vec<(ProviderKey, Value)>>;
 
-    /// The scalar mail-index entries for a scope's live mail objects: each object's
-    /// [`MailIndexEntry`] — the sort/group keys **without** the payload, so a caller can rank by
-    /// date (a newest-N window) and then deserialize only the chosen few, instead of reading and
-    /// decoding the whole mailbox. Empty for a non-mail scope (only mail objects carry a mail
-    /// index). Order is unspecified — callers sort.
+    /// The mail rows `select` names across `accounts`, newest first and capped at `limit`
+    /// (`usize::MAX` for no cap).
+    ///
+    /// **This is the read a mailbox list is built from, and no other.** It returns the projected
+    /// row — sender, subject, date, flags, preview — so a list costs the rows it shows, not the
+    /// mail it is drawn from: a backend answers the first page from an ordered index rather than
+    /// by ranking every message in the account and then opening the survivors' payloads. Reading
+    /// a body or an attachment list still goes to the normalized object, on demand, for the one
+    /// message being opened.
+    ///
+    /// Several accounts in one call is the point, not a convenience: a unified inbox is a
+    /// predicate over one table, so the ordering across accounts is the backend's and not a merge
+    /// the caller re-derives. An empty `accounts` selects nothing.
+    ///
+    /// Rows sort newest first with undated messages last — they enter a window only if dated ones
+    /// leave room — and the order is **total**: ties break on the row's own identity, so two
+    /// reads of an unchanged store return the same sequence and a host reconciling by row id sees
+    /// no movement.
     ///
     /// # Errors
     ///
     /// Returns `StoreError::Backend` on a backend failure.
-    async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>>;
-
-    /// The provider keys in a scope whose mail-index entry names one of `threads`, in
-    /// ascending key order and without repeats.
-    ///
-    /// The targeted counterpart of [`scope_mail_index`](StoreRead::scope_mail_index).
-    /// Expanding a conversation is a question about a handful of messages, and
-    /// answering it by reading every row of every folder makes opening one thread cost
-    /// a function of how much mail the account holds; a backend answers this from an
-    /// index on the thread column instead. Empty `threads` returns nothing without
-    /// touching the store, and a thread nothing is filed under contributes no keys.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StoreError::Backend` on a backend failure.
-    async fn scope_thread_keys(
+    async fn list_mail(
         &self,
-        scope: &SyncScope,
-        threads: &[ThreadId],
-    ) -> Result<Vec<ProviderKey>>;
+        accounts: &[AccountId],
+        select: MailSelector<'_>,
+        limit: usize,
+    ) -> Result<Vec<MailListRow>>;
 
     /// The materialized occurrences in a scope that overlap `window`, ascending by
     /// `(start, end, event)`.
@@ -305,7 +348,7 @@ pub trait StoreRead: Send + Sync {
     /// multi-day event that merely *covers* the window is still returned — it has to
     /// render on every day it spans.
     ///
-    /// Order is **specified**, unlike [`scope_mail_index`](StoreRead::scope_mail_index),
+    /// Order is **specified**, unlike a mail list read's tie-breaking,
     /// because a host lays these rows out geometrically: two hosts given the same window
     /// must place an overlapping event in the same column, and an unstable order would
     /// silently make them disagree. Empty for a non-calendar scope (only events expand)

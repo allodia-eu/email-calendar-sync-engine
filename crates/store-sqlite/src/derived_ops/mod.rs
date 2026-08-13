@@ -11,12 +11,12 @@ use std::collections::HashSet;
 
 use engine_core::{
     calendar::ParticipationStatus,
-    ids::{ProviderKey, ThreadId},
-    search_index::{EventParticipantRow, FtsField, MailAddressRow, MembershipRow},
+    ids::{MessageIdHeader, ProviderKey, ThreadId},
+    search_index::{EventParticipantRow, FtsField, MailAddressRow, MailRow, MembershipRow},
     time::Horizon,
 };
 use engine_store::{
-    DerivedWrite, IndexRowCounts, MailIndexEntry, OccurrenceRow, Result, TzdataVersion,
+    DerivedWrite, IndexRowCounts, OccurrenceRow, Result, StoreError, TzdataVersion,
 };
 use rusqlite::{Connection, Transaction};
 
@@ -72,23 +72,13 @@ pub(crate) fn apply_derived(
             ),
         )?;
     }
-    for row in &derived.mail_index {
-        sql::execute(
-            tx,
-            "INSERT INTO mail_index (scope_key, provider_key, date_utc, has_attachment, thread_id)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(scope_key, provider_key) DO UPDATE SET
-                 date_utc = excluded.date_utc,
-                 has_attachment = excluded.has_attachment,
-                 thread_id = excluded.thread_id",
-            (
-                scope_key,
-                row.key.as_str(),
-                row.date_utc.map(convert::instant_to_text),
-                i64::from(row.has_attachment),
-                row.thread_id.as_ref().map(ThreadId::as_str),
-            ),
-        )?;
+    if !derived.messages.is_empty() {
+        // Resolved once per batch, not once per row: the account is a property of the scope, and
+        // the scope is lease-held for the whole apply.
+        let account = scope_account(tx, scope_key)?;
+        for row in &derived.messages {
+            upsert_message(tx, scope_key, &account, row)?;
+        }
     }
     for row in &derived.event_index {
         sql::execute(
@@ -109,6 +99,63 @@ pub(crate) fn apply_derived(
     replace_addresses(tx, scope_key, &derived.addresses)?;
     replace_memberships(tx, scope_key, &derived.memberships)?;
     replace_participants(tx, scope_key, &derived.participants)?;
+    Ok(())
+}
+
+/// The account a scope belongs to.
+///
+/// Every mail row carries its account, so a cross-account list is one ordered read rather than one
+/// read per account merged in the caller. It is taken from `sync_scope` rather than from the
+/// caller so it cannot disagree with the scope the row is filed under.
+pub(crate) fn scope_account(tx: &Transaction<'_>, scope_key: &str) -> Result<String> {
+    sql::query_opt(
+        tx,
+        "SELECT account FROM sync_scope WHERE scope_key = ?1",
+        [scope_key],
+        |r| r.get::<_, String>(0),
+    )?
+    .ok_or_else(|| StoreError::Backend("no sync scope for the applied mail rows".to_owned()))
+}
+
+/// Upserts one message row. Shared by the apply path and the v9 backfill, so a migrated store and
+/// a freshly synced one hold the same columns.
+pub(crate) fn upsert_message(
+    tx: &Transaction<'_>,
+    scope_key: &str,
+    account: &str,
+    row: &MailRow,
+) -> Result<()> {
+    sql::execute(
+        tx,
+        "INSERT INTO message (scope_key, provider_key, account, thread_id, message_id, date_utc,
+                              flags, has_attachment, from_name, from_addr, subject, preview)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(scope_key, provider_key) DO UPDATE SET
+             account = excluded.account,
+             thread_id = excluded.thread_id,
+             message_id = excluded.message_id,
+             date_utc = excluded.date_utc,
+             flags = excluded.flags,
+             has_attachment = excluded.has_attachment,
+             from_name = excluded.from_name,
+             from_addr = excluded.from_addr,
+             subject = excluded.subject,
+             preview = excluded.preview",
+        rusqlite::params![
+            scope_key,
+            row.key.as_str(),
+            account,
+            row.thread_id.as_ref().map(ThreadId::as_str),
+            row.message_id.as_ref().map(MessageIdHeader::as_str),
+            row.date_utc.map(convert::instant_to_text),
+            i64::from(row.flags.bits()),
+            i64::from(row.has_attachment),
+            row.from_name.as_deref(),
+            row.from_addr.as_deref(),
+            row.subject.as_deref(),
+            row.preview.as_deref(),
+        ],
+    )?;
     Ok(())
 }
 
@@ -135,7 +182,7 @@ pub(crate) fn delete_derived_rows(tx: &Transaction<'_>, scope_key: &str, key: &s
     )?;
     for table in [
         "fts_doc",
-        "mail_index",
+        "message",
         "mail_address",
         "membership",
         "event_index",
@@ -166,76 +213,12 @@ pub(crate) fn index_row_counts(
     Ok(IndexRowCounts {
         fts: count_for_key(conn, "fts_doc", "provider_key", scope_key, key)?,
         occurrences: count_for_key(conn, "event_occurrence", "event", scope_key, key)?,
-        mail_index: count_for_key(conn, "mail_index", "provider_key", scope_key, key)?,
+        message: count_for_key(conn, "message", "provider_key", scope_key, key)?,
         addresses: count_for_key(conn, "mail_address", "provider_key", scope_key, key)?,
         memberships: count_for_key(conn, "membership", "provider_key", scope_key, key)?,
         event_index: count_for_key(conn, "event_index", "provider_key", scope_key, key)?,
         participants: count_for_key(conn, "event_participant", "provider_key", scope_key, key)?,
     })
-}
-
-/// The scalar mail-index entries for a scope's live mail objects — each object's
-/// `(provider key, date, thread)`, without the payload. Backs `StoreRead::scope_mail_index`:
-/// a caller ranks by date (a newest-N window) or gathers a thread's members, then decodes
-/// only the chosen few. `mail_index` is cleared on tombstone by [`delete_derived_rows`], so
-/// its rows are exactly the live mail objects — no join with `object` is needed.
-///
-/// # Errors
-///
-/// Returns [`StoreError::Backend`](engine_store::StoreError::Backend) on a backend failure or
-/// a corrupt stored key/date.
-pub(crate) fn scope_mail_index(conn: &Connection, scope_key: &str) -> Result<Vec<MailIndexEntry>> {
-    let rows: Vec<(String, Option<String>, Option<String>)> = sql::query_all(
-        conn,
-        "SELECT provider_key, date_utc, thread_id FROM mail_index WHERE scope_key = ?1",
-        [scope_key],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )?;
-    let mut entries = Vec::with_capacity(rows.len());
-    for (key, date, thread) in rows {
-        let key = ProviderKey::new(key).map_err(convert::backend)?;
-        let date = convert::parse_opt_instant(date)?;
-        let thread = thread
-            .map(|raw| ThreadId::try_from(raw.as_str()))
-            .transpose()
-            .map_err(convert::backend)?;
-        entries.push((key, date, thread));
-    }
-    Ok(entries)
-}
-
-/// The provider keys in a scope filed under any of `threads`, ascending and without
-/// repeats. Backs `StoreRead::scope_thread_keys` — expanding a conversation.
-///
-/// One seek per thread rather than a single statement with an `IN` list: the list's
-/// length changes with the window, so one statement would compile a new SQL string per
-/// call and defeat the statement cache. Each seek here is the same cached statement
-/// against `mail_index_thread`, which carries `provider_key` alongside the thread and
-/// so answers without reading the table.
-///
-/// # Errors
-///
-/// Returns [`StoreError::Backend`](engine_store::StoreError::Backend) on a backend
-/// failure or a corrupt stored key.
-pub(crate) fn scope_thread_keys(
-    conn: &Connection,
-    scope_key: &str,
-    threads: &[ThreadId],
-) -> Result<Vec<ProviderKey>> {
-    let mut raw: Vec<String> = Vec::new();
-    for thread in threads {
-        raw.extend(sql::query_all(
-            conn,
-            "SELECT provider_key FROM mail_index WHERE scope_key = ?1 AND thread_id = ?2",
-            (scope_key, thread.as_str()),
-            |r| r.get::<_, String>(0),
-        )?);
-    }
-    raw.sort_unstable();
-    raw.dedup();
-    raw.into_iter()
-        .map(|key| ProviderKey::new(key).map_err(convert::backend))
-        .collect()
 }
 
 /// The occurrences in a scope that overlap `window`, ascending by `(start, end, event)`.

@@ -56,7 +56,7 @@ derivation pass (`engine-sync` `threading.rs`), or `Engine::derive_mail_threads`
   header graph is the safe baseline. A guarded subject fallback is a possible future
   refinement.
 - **Persistence.** `derive_mail_threads` re-applies only the messages whose id changed,
-  per scope (the object payload **and** the re-projected `mail_index.thread_id`)
+  per scope (the object payload **and** the re-projected `message.thread_id`)
   **without advancing the scope cursor** — it is a derivation, not a sync, so the next
   sync still resumes correctly. A pass over unchanged mail writes nothing.
 - IMAP must fetch the `References` header for this to work — it is **not** in the IMAP

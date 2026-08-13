@@ -135,10 +135,13 @@ where
     let (store, clock) = make();
     scope_cases::scope_objects_batch_reads_live_objects(&store, &clock).await;
     let (store, clock) = make();
-    scope_cases::scope_mail_index_reports_dates_threads_and_excludes_tombstones(&store, &clock)
-        .await;
+    scope_cases::list_mail_orders_by_date_and_excludes_tombstones(&store, &clock).await;
     let (store, clock) = make();
-    scope_cases::scope_thread_keys_gathers_only_the_named_threads(&store, &clock).await;
+    scope_cases::list_mail_merges_accounts_into_one_order(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::list_mail_on_threads_gathers_only_the_named_threads(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::list_mail_by_keys_resolves_named_messages(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::scope_occurrences_reads_the_overlapping_window(&store, &clock).await;
     let (store, clock) = make();

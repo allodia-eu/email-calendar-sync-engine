@@ -1,22 +1,23 @@
 //! The [`StoreRead`] query path for [`SqliteStore`]: scope and object reads, the mail
-//! index, the calendar occurrence range read, op state, and index-row counts.
+//! list, the calendar occurrence range read, op state, and index-row counts.
 //!
 //! Split from the writer/lease/outbox half in `lib.rs` (which is at the 500-line limit),
 //! mirroring how the in-memory reference store separates `mem/read.rs` from `mem/write.rs`.
 
 use async_trait::async_trait;
 use engine_core::{
-    ids::{AccountId, ProviderKey, ThreadId},
+    ids::{AccountId, ProviderKey},
     sync::SyncScope,
     time::{ExpansionWindow, Horizon},
     write::PendingOpId,
 };
 use engine_store::{
-    Clock, IndexRowCounts, MailIndexEntry, OccurrenceRow, PendingOpState, Result, StoreRead,
+    Clock, IndexRowCounts, MailListRow, MailSelector, OccurrenceRow, PendingOpState, Result,
+    StoreRead,
 };
 use serde_json::Value;
 
-use crate::{SqliteStore, convert::scope_key, derived_ops, outbox_ops, scope_ops};
+use crate::{SqliteStore, convert::scope_key, derived_ops, mail_ops, outbox_ops, scope_ops};
 
 #[async_trait]
 impl<C: Clock> StoreRead for SqliteStore<C> {
@@ -50,23 +51,19 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
             .await
     }
 
-    async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>> {
-        let key = scope_key(scope);
-        self.read(move |conn| derived_ops::scope_mail_index(conn, &key))
-            .await
-    }
-
-    async fn scope_thread_keys(
+    async fn list_mail(
         &self,
-        scope: &SyncScope,
-        threads: &[ThreadId],
-    ) -> Result<Vec<ProviderKey>> {
-        if threads.is_empty() {
+        accounts: &[AccountId],
+        select: MailSelector<'_>,
+        limit: usize,
+    ) -> Result<Vec<MailListRow>> {
+        let Some(select) = mail_ops::own(select) else {
+            // An empty thread or key list names nothing, so the read is skipped rather than
+            // compiled into a statement that cannot match.
             return Ok(Vec::new());
-        }
-        let key = scope_key(scope);
-        let threads = threads.to_vec();
-        self.read(move |conn| derived_ops::scope_thread_keys(conn, &key, &threads))
+        };
+        let accounts = accounts.to_vec();
+        self.read(move |conn| mail_ops::list_mail(conn, &accounts, &select, limit))
             .await
     }
 

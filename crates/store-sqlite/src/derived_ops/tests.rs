@@ -279,30 +279,3 @@ fn re_expansion_updates_version_and_keeps_instants_byte_stable() {
     assert_eq!(end, "2026-03-01T09:15:00Z");
     assert_eq!(version, "2025b");
 }
-
-#[test]
-fn the_thread_lookup_seeks_its_index_rather_than_scanning() {
-    // The index and the query that uses it are one change: an index nothing plans
-    // through is write cost for no read benefit, and nothing else in the suite can
-    // tell the two apart — `scope_thread_keys` returns the same rows either way.
-    let mut conn = Connection::open_in_memory().expect("open");
-    crate::migrations::migrate(&mut conn).expect("migrate");
-
-    let plan: Vec<String> = crate::sql::query_all(
-        &conn,
-        "EXPLAIN QUERY PLAN
-         SELECT provider_key FROM mail_index WHERE scope_key = ?1 AND thread_id = ?2",
-        ("s", "t"),
-        |row| row.get::<_, String>(3),
-    )
-    .expect("explain");
-    let plan = plan.join(" | ");
-    assert!(
-        plan.contains("mail_index_thread"),
-        "the thread lookup must plan through mail_index_thread, not {plan}"
-    );
-    assert!(
-        !plan.contains("SCAN"),
-        "a scan means the index is not being used: {plan}"
-    );
-}

@@ -14,7 +14,7 @@ use engine_core::{
     raw::RawMime,
 };
 
-use crate::error::Result;
+use crate::{error::Result, store::MailListRow};
 
 /// A content cache for raw message sources — the Tier-3 *bytes* a host fetches on
 /// demand (the whole RFC 5322 message, which carries its attachments).
@@ -86,13 +86,22 @@ pub trait MessageBodyStore {
         key: &ProviderKey,
     ) -> Result<Option<MessageBody>>;
 
-    /// Returns the provider key of every message with a cached body text for
-    /// `account` — the already-warm set. A host's background body-warming pass diffs
-    /// this against its synced window to fetch only the bodies still missing, one key
-    /// scan instead of probing each message individually.
+    /// The newest `limit` messages across `accounts` that have **no** cached body text — the
+    /// work list a host's background body-warming pass feeds back through
+    /// [`put_message_body`](MessageBodyStore::put_message_body) so the synced window becomes
+    /// readable (and searchable) offline.
+    ///
+    /// Asked of the store rather than answered in the caller because the warm set is the larger
+    /// half: a mailbox whose bodies are all cached would otherwise have every key read out and
+    /// diffed against a window, every pass, to conclude there is nothing to do. Rows are ordered
+    /// exactly as [`StoreRead::list_mail`](crate::StoreRead::list_mail) orders them.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError`](crate::StoreError) on a backend failure.
-    async fn message_body_keys(&self, account: &AccountId) -> Result<Vec<ProviderKey>>;
+    async fn mail_missing_body(
+        &self,
+        accounts: &[AccountId],
+        limit: usize,
+    ) -> Result<Vec<MailListRow>>;
 }
