@@ -85,6 +85,48 @@ true of one box, not of a contributor's or a runner's): link with `lld-link.exe`
 `.cargo/config.toml` in a parent directory of the checkout, and give worktrees a shared
 `CARGO_TARGET_DIR`. Both are described in the product core's `docs/debugging.md`.
 
+## Measuring at scale
+
+The test suite's mailboxes hold single digits of messages, so every claim it makes about
+correctness it makes about none of the costs. A read that scans the whole mailbox and a read that
+seeks an index are indistinguishable at four messages; at four hundred thousand they are the
+difference between an app that opens and one that does not. `crates/mailbox-fixture` is the
+mailbox that tells them apart.
+
+```sh
+cargo bench -p mailbox-fixture                          # 10k messages — while iterating
+ENGINE_BENCH_SCALE=100k cargo bench -p mailbox-fixture  # what CI runs
+ENGINE_BENCH_SCALE=400k cargo bench -p mailbox-fixture  # the ~20 GB mailbox, opt-in (minutes)
+```
+
+Seven operations, each on a path a user waits on: the first page of the list, the deep window
+behind it, completing the shown conversations, a flag-only apply, a page of a sync, a cold open,
+and the thread-derivation pass that runs after **every** account sync. Beside criterion's own
+statistics the run prints one table — `n / p50 / p90 / p99 / max` — because the numbers that decide
+whether a mail list feels broken are the tail ones, and a mean hides them.
+
+Three properties make those numbers mean something, and all three stop being true the moment
+somebody "optimizes" the fixture:
+
+- **It is deterministic.** A seed fixes the mailbox byte for byte, so a baseline captured today is
+  comparable with one captured after a refactor. Two runs measuring two different mailboxes would
+  report the difference between them as a regression.
+- **It reaches the store through the ordinary sync path** — one provider per folder, then claim,
+  project, apply, release. Inserting rows behind the engine's back would make the store look faster
+  than any sync could ever be.
+- **It is conversation-shaped and IMAP-shaped.** Real reference graphs across six folders, so a
+  thread read is a thread read; one scope per folder, so the per-scope loop a windowed read pays
+  for is actually paid. A JMAP-shaped fixture is a single `Email` scope and would hide it.
+
+Reading the table needs one habit: **compare across sizes, not against a number you remember.** An
+operation whose p50 grows tenfold from 10k to 100k is linear in mailbox size; one that does not
+move is not. That ratio is the finding — the absolute milliseconds belong to whichever machine
+happened to run it. The `n` column says how far to trust the p99 beside it.
+
+A host reduces its own logged durations to this same table, against whatever mail a user actually
+has. A change that improves the fixture and not the host's log has optimized something nobody
+waits on.
+
 ## Linting
 
 Code should be clean under:

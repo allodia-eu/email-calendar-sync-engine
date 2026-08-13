@@ -84,7 +84,7 @@ pub use engine_core::{
         ProviderKey, ThreadId, Uid,
     },
     mail::{
-        AttachmentPartId, EmailAddress, InlinePart, Mailbox, MailboxRole, Message,
+        AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxRole, Message,
         MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword, ThreadProvenance,
         ThreadRef,
     },

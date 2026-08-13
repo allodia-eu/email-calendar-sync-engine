@@ -1,0 +1,35 @@
+[package]
+name = "mailbox-fixture"
+description = "A deterministic synthetic mailbox at real scale (10k–400k messages, conversation-shaped with real reference graphs), pushed into a store through the ordinary sync path, plus the percentile table its benchmarks report."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The facade the fixture populates through: a fixture that reached the store any
+# other way would measure a path no sync takes.
+engine-api = { workspace = true }
+engine-core = { workspace = true }
+engine-provider = { workspace = true }
+async-trait = { workspace = true }
+# `FolderProvider::stream_email` returns its chunks as a `futures_util::stream::iter`.
+futures-util = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.7.0", default-features = false, features = ["cargo_bench_support"] }
+tokio = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "mailbox"
+harness = false
+# `cargo test` runs bench targets in test mode by default, which would build a fixture
+# on every workspace test run. The benches are compiled by `cargo clippy --all-targets`
+# and exercised by `tests/`, so nothing goes unchecked; they are just not part of the
+# test gate's runtime.
+test = false
+
+[lints]
+workspace = true
