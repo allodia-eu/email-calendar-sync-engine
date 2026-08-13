@@ -83,6 +83,7 @@ mod tokenize;
 mod transport;
 mod transport_append;
 mod transport_command;
+mod transport_session;
 mod transport_starttls;
 mod unseen;
 mod utf7;

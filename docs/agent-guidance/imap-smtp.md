@@ -1,6 +1,6 @@
 # IMAP/SMTP Client Guidance
 
-This document is authoritative for the **IMAP (RFC 9051) read/sync + SMTP
+This document is authoritative for the **IMAP (RFC 9051 / RFC 3501, negotiated) read/sync + SMTP
 (RFC 5321) submission provider** — the mail half of build-order step 5
 (`north-star.md`). It covers the `provider-imap` crate and the IMAP/SMTP
 specifics it implements against the Stalwart fixture. Read it before touching
@@ -516,6 +516,11 @@ whole rule:
   `LIST` data (§7.3.1) — it defines **no** `RETURN (SPECIAL-USE)` option. So rev2 removes
   the need to ask rather than granting the request, and `must_request_special_use` is
   `false` there. Sending the option anyway would put an undefined return option on the wire.
+- **The outcome is reported, not inferred.** `finish_session` emits a `ConnectStep::Negotiated`
+  carrying the dialect and the extensions the session may use, so a diagnostic log says which of
+  the two dialects an account settled on and what came with it. It reports *usable*, not
+  advertised — on rev2 that includes everything folded in, which is the distinction a support
+  report turns on.
 - **The dialect reaches the data in exactly one place: mailbox names.** rev1 encodes them
   as modified UTF-7, rev2 as UTF-8 (§5.1, item 16). `utf7` handles both directions and the
   transport owns the conversion, so a `Mailbox` id is the decoded name on either dialect and

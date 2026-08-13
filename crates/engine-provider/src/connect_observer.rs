@@ -33,7 +33,7 @@
 //!
 //! | Adapter | Steps |
 //! |---|---|
-//! | `provider-imap` | [`TlsEstablished`](ConnectStep::TlsEstablished) after the handshake, [`Authenticated`](ConnectStep::Authenticated) after `LOGIN` |
+//! | `provider-imap` | [`TlsEstablished`](ConnectStep::TlsEstablished) after the handshake, [`Authenticated`](ConnectStep::Authenticated) after `LOGIN`, [`Negotiated`](ConnectStep::Negotiated) after `CAPABILITY`/`ENABLE` |
 //! | `provider-jmap` | [`Redirected`](ConnectStep::Redirected) per well-known hop, [`Authenticated`](ConnectStep::Authenticated) on the session `2xx`, [`Discovered`](ConnectStep::Discovered) with the `apiUrl` |
 //! | `provider-caldav` | [`Redirected`](ConnectStep::Redirected) per hop, [`Discovered`](ConnectStep::Discovered) with the calendar-home href |
 //! | `provider-graph` | nothing — `GraphClient::connect` performs no I/O |
@@ -94,9 +94,34 @@ pub enum ConnectStep<'a> {
         /// The resolved endpoint.
         endpoint: Cow<'a, str>,
     },
+    /// The session settled on a protocol dialect and the optional features it may use —
+    /// an IMAP `CAPABILITY` + `ENABLE` handshake, or any adapter with an equivalent
+    /// negotiation.
+    ///
+    /// Reported because it is the fact that most often explains a support report: two
+    /// accounts on the same build behave differently because their servers agreed to
+    /// different things, and nothing else in the connect trace says which. Both payloads
+    /// name **server software**, never the account, so no scrubbing applies and none is
+    /// needed.
+    ///
+    /// Build with [`ConnectStep::negotiated`].
+    #[non_exhaustive]
+    Negotiated {
+        /// The dialect, named as its own protocol names it (`IMAP4rev1`, `IMAP4rev2`).
+        dialect: &'a str,
+        /// The optional features this session may use, named as the protocol names them
+        /// and ordered stably, so two logs can be compared.
+        features: &'a [&'a str],
+    },
 }
 
 impl<'a> ConnectStep<'a> {
+    /// The dialect and optional features a session negotiated.
+    #[must_use]
+    pub fn negotiated(dialect: &'a str, features: &'a [&'a str]) -> Self {
+        Self::Negotiated { dialect, features }
+    }
+
     /// A resolved redirect hop, with any credentials scrubbed from both URLs.
     #[must_use]
     pub fn redirected(from: &'a str, to: &'a str) -> Self {
@@ -190,6 +215,9 @@ mod tests {
             ConnectStep::TlsEstablished(version) => format!("tls {version:?}"),
             ConnectStep::Authenticated => "authenticated".to_owned(),
             ConnectStep::Discovered { endpoint, .. } => format!("discovered {endpoint}"),
+            ConnectStep::Negotiated {
+                dialect, features, ..
+            } => format!("negotiated {dialect} [{}]", features.join(" ")),
         }
     }
 
@@ -203,6 +231,7 @@ mod tests {
         observer.step(&ConnectStep::TlsEstablished(TlsVersion::Tls1_3));
         observer.step(&ConnectStep::Authenticated);
         observer.step(&ConnectStep::discovered("https://h/jmap/"));
+        observer.step(&ConnectStep::negotiated("IMAP4rev2", &["IDLE", "QRESYNC"]));
 
         assert_eq!(
             *seen.lock().unwrap(),
@@ -211,6 +240,7 @@ mod tests {
                 "tls Tls1_3",
                 "authenticated",
                 "discovered https://h/jmap/",
+                "negotiated IMAP4rev2 [IDLE QRESYNC]",
             ]
         );
     }
