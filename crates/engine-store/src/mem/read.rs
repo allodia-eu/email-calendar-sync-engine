@@ -1,9 +1,11 @@
 //! The [`StoreRead`](crate::StoreRead) query path for `MemStore`: scope and
 //! object reads, the mail index, op state, and index-row counts.
 
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use engine_core::{
-    ids::{AccountId, ProviderKey},
+    ids::{AccountId, ProviderKey, ThreadId},
     sync::SyncScope,
     time::{ExpansionWindow, Horizon},
     write::PendingOpId,
@@ -90,6 +92,38 @@ impl<C: Clock> StoreRead for MemStore<C> {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    async fn scope_thread_keys(
+        &self,
+        scope: &SyncScope,
+        threads: &[ThreadId],
+    ) -> Result<Vec<ProviderKey>> {
+        if threads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let wanted: BTreeSet<&ThreadId> = threads.iter().collect();
+        let inner = self.lock();
+        // The reference store has no index to seek into, so it scans. What it pins is
+        // the *answer*; a backend that stores an index on the thread column seeks.
+        let mut keys: Vec<ProviderKey> = inner
+            .scopes
+            .get(scope)
+            .map(|c| {
+                c.mail_index
+                    .iter()
+                    .filter(|(_, row)| {
+                        row.thread_id
+                            .as_ref()
+                            .is_some_and(|thread| wanted.contains(thread))
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        keys.sort();
+        keys.dedup();
+        Ok(keys)
     }
 
     async fn scope_occurrences(

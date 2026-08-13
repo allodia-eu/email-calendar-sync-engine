@@ -99,11 +99,18 @@ ENGINE_BENCH_SCALE=100k cargo bench -p mailbox-fixture  # what CI runs
 ENGINE_BENCH_SCALE=400k cargo bench -p mailbox-fixture  # the ~20 GB mailbox, opt-in (minutes)
 ```
 
-Seven operations, each on a path a user waits on: the first page of the list, the deep window
+Eight operations, each on a path a user waits on: the first page of the list, the deep window
 behind it, completing the shown conversations, a flag-only apply, a page of a sync, a cold open,
-and the thread-derivation pass that runs after **every** account sync. Beside criterion's own
-statistics the run prints one table — `n / p50 / p90 / p99 / max` — because the numbers that decide
-whether a mail list feels broken are the tail ones, and a mean hides them.
+the thread-derivation pass that runs after **every** account sync, and the list read a user takes
+*while* that page is committing. Beside criterion's own statistics the run prints one table —
+`n / p50 / p90 / p99 / max` — because the numbers that decide whether a mail list feels broken are
+the tail ones, and a mean hides them.
+
+That last one is there because the other seven each have the store to themselves, which is the one
+condition a mail client is never in. A change that lets reads and writes overlap does not move a
+single uncontended number, so without `mixed/read_under_apply` it would be unmeasurable — and an
+improvement nothing can measure is one nothing can keep. Any concurrency work belongs beside a
+bench that would notice it going away.
 
 Three properties make those numbers mean something, and all three stop being true the moment
 somebody "optimizes" the fixture:

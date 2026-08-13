@@ -171,18 +171,9 @@ impl Engine {
         account: &AccountId,
         thread_id: &str,
     ) -> Result<Vec<Message>, ApiError> {
-        let mut messages = Vec::new();
-        for scope in self.mail_scopes(account).await? {
-            for (key, _date, thread) in self.store.scope_mail_index(&scope).await? {
-                if thread.as_ref().map(ThreadId::as_str) == Some(thread_id)
-                    && let Some(payload) = self.store.object_payload(&scope, &key).await?
-                {
-                    messages
-                        .push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
-                }
-            }
-        }
-        Ok(messages)
+        let threads = thread_ids(core::iter::once(thread_id));
+        self.messages_on_threads(account, &threads, &HashSet::new())
+            .await
     }
 
     /// Every message that belongs to **any** of the given `threads` within an account, except the
@@ -202,17 +193,28 @@ impl Engine {
         threads: &HashSet<String>,
         exclude: &HashSet<String>,
     ) -> Result<Vec<Message>, ApiError> {
+        let threads = thread_ids(threads.iter().map(String::as_str));
+        self.messages_on_threads(account, &threads, exclude).await
+    }
+
+    /// The shared thread read: every message in `threads` across the account's mail
+    /// scopes, minus the keys in `exclude`.
+    ///
+    /// The store resolves membership from its thread index, so the cost is the size of
+    /// the conversations asked for — not the size of the mailbox they sit in.
+    async fn messages_on_threads(
+        &self,
+        account: &AccountId,
+        threads: &[ThreadId],
+        exclude: &HashSet<String>,
+    ) -> Result<Vec<Message>, ApiError> {
         if threads.is_empty() {
             return Ok(Vec::new());
         }
         let mut messages = Vec::new();
         for scope in self.mail_scopes(account).await? {
-            for (key, _date, thread) in self.store.scope_mail_index(&scope).await? {
-                let in_thread = thread
-                    .as_ref()
-                    .is_some_and(|thread| threads.contains(thread.as_str()));
-                if in_thread
-                    && !exclude.contains(key.as_str())
+            for key in self.store.scope_thread_keys(&scope, threads).await? {
+                if !exclude.contains(key.as_str())
                     && let Some(payload) = self.store.object_payload(&scope, &key).await?
                 {
                     messages
@@ -414,4 +416,17 @@ impl Engine {
             .filter(|scope| scope.object_kind() == Some(kind))
             .collect())
     }
+}
+
+/// Parses caller-supplied thread ids, dropping any that are not well-formed.
+///
+/// Hosts hold these as plain strings — they came out of a `Message` and go straight
+/// back in — so validation belongs here rather than in every caller. A malformed id
+/// is dropped rather than raised: it names no thread, so it can only ever contribute
+/// nothing, and failing the whole read would turn one bad id into an empty list.
+fn thread_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Vec<ThreadId> {
+    let mut parsed: Vec<ThreadId> = ids.filter_map(|id| ThreadId::try_from(id).ok()).collect();
+    parsed.sort();
+    parsed.dedup();
+    parsed
 }

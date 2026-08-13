@@ -387,3 +387,18 @@ CREATE TABLE recipient_index_state (
     version INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 ";
+
+/// Migration v8: the thread lookup `mail_index` never had.
+///
+/// The table carried a date index and nothing on `thread_id`, so gathering a
+/// conversation's members meant reading every row of every folder and comparing in
+/// the caller — a whole-mailbox scan to answer a question about a handful of
+/// messages. `mail_index` is `WITHOUT ROWID` keyed on `(scope_key, provider_key)`, so
+/// this index carries the provider key alongside and answers
+/// `derived_ops::scope_thread_keys` without touching the table at all.
+///
+/// It is created on an existing database, so the first open after an upgrade builds
+/// it over the mail already stored.
+pub(crate) const V8: &str = "\
+CREATE INDEX mail_index_thread ON mail_index (scope_key, thread_id);
+";
