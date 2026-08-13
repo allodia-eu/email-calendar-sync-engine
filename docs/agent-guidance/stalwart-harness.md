@@ -259,14 +259,17 @@ run. Non-negotiable:
   counts, append order — or capture generated ids at runtime.
 - **Pin the image by digest** and fix every seed input. Calendar fixtures use
   fixed absolute 2026 dates so occurrence expansion is stable — with one deliberate
-  exception. The **scheduling** suite's invitation is dated a fixed offset from *today*
-  (`scheduling/mod.rs`, `invitation_date`), because auto-scheduling is the server choosing
+  class of exception. **Every scheduling suite** dates its invitation a fixed offset from
+  *today* (`invitation_date`, in both `provider-caldav/tests/scheduling/mod.rs` and
+  `provider-jmap/tests/scheduling/mod.rs`), because auto-scheduling is the server choosing
   to deliver an iTIP message and Stalwart does not deliver one for a meeting that has
-  already finished. A fixed date there buys no determinism; it sets a timer. The original
-  passed every run until 11:00 on its own `DTSTART` day and failed eight tests on every run
-  after, with a delivery timeout that reads like a broken server. Fix a date when the
-  *client* is what interprets it; derive it from today when the *server's* behaviour turns
-  on whether it has passed.
+  already finished. A fixed date there buys no determinism; it sets a timer. It has now
+  fired twice: the CalDAV suite passed every run until 11:00 on its own `DTSTART` day and
+  then failed eight tests on every run after, and the JMAP suite — written before that fix
+  and never swept into it — did the same two days later with all four of its scenarios.
+  Both read like a broken server. Fix a date when the *client* is what interprets it;
+  derive it from today when the *server's* behaviour turns on whether it has passed, and
+  when you fix one suite's fixture, grep the others for the same shape.
 - **Readiness, not sleeps.** The compose healthcheck gates on a post-seed marker
   *and* HTTP liveness; `Harness::wait_until_ready` polls `/healthz/live`. Never a
   fixed sleep.

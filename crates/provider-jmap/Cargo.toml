@@ -30,6 +30,10 @@ fuzzing = []
 [dev-dependencies]
 # `time` (workspace default omits it) powers the live watch test's bounded wait.
 tokio = { workspace = true, features = ["time"] }
+# The scheduling fixture dates its invitation a fixed offset from today — a server only
+# auto-schedules a meeting that has not already finished — which needs calendar-aware date
+# arithmetic (month/year rollover), not a duration in seconds.
+time = { workspace = true }
 # `StreamExt` to drain the email chunk stream in the offline sync tests.
 futures-util = { workspace = true }
 stalwart-harness = { path = "../stalwart-harness" }

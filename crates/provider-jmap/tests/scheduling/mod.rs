@@ -119,15 +119,45 @@ async fn connect_jmap(base: &str, account: &ScratchAccount) -> JmapProvider {
     .expect("connects over JMAP")
 }
 
+/// How far ahead of today the invitation is scheduled. Any comfortably-future offset does;
+/// two months is well clear of a slow CI queue and of a run started just before midnight.
+const INVITATION_DAYS_AHEAD: i64 = 60;
+
+/// The invitation's date, as `YYYYMMDD`, a fixed offset from **today**.
+///
+/// Deliberately not a fixed absolute 2026 date, unlike every other fixture in this harness.
+/// The invitation reaches the attendee only because the server decides to auto-schedule it,
+/// and Stalwart does not deliver an iTIP message for a meeting that has already finished —
+/// so a hard-coded date here buys no determinism, it sets a timer. The original
+/// `20260812T140000` passed every run until 15:00 on 12 August 2026 and failed all four
+/// scenarios on every run after, with a delivery timeout that reads like a broken server.
+/// `provider-caldav`'s scheduling fixture was written the same way and burned the same way
+/// two days earlier; this suite predates that fix and never received it.
+///
+/// Nothing here asserts an absolute instant — the scenarios assert delivery, `PARTSTAT`
+/// transitions and cancellation — so moving the day costs no determinism the suite relied on.
+fn invitation_date() -> String {
+    // Fully qualified: `Duration` in this module is `core::time::Duration` (the poll
+    // timeouts), and only `time`'s carries a calendar-aware `days`.
+    let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(INVITATION_DAYS_AHEAD);
+    format!(
+        "{:04}{:02}{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    )
+}
+
 /// The organizer's invitation document. Assembled by hand for the same reason the CalDAV
-/// fixture does it: a draft cannot state an `ORGANIZER`/`ATTENDEE` pair. Fixed 2026 dates,
-/// per the determinism rule.
+/// fixture does it: a draft cannot state an `ORGANIZER`/`ATTENDEE` pair. The times of day
+/// are fixed; the day itself comes from [`invitation_date`], which explains why.
 fn invitation(parties: &Parties) -> String {
+    let day = invitation_date();
     format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Harness//JMAP scheduling//EN\r\n\
          BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260701T080000Z\r\nSEQUENCE:0\r\n\
-         DTSTART;TZID=Europe/Amsterdam:20260812T140000\r\n\
-         DTEND;TZID=Europe/Amsterdam:20260812T150000\r\n\
+         DTSTART;TZID=Europe/Amsterdam:{day}T140000\r\n\
+         DTEND;TZID=Europe/Amsterdam:{day}T150000\r\n\
          SUMMARY:Scheduling over JMAP\r\n\
          ORGANIZER;CN=Bob Tester:mailto:{organizer}\r\n\
          ATTENDEE;CN=Carol;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:\
