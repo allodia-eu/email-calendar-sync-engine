@@ -1,53 +1,84 @@
-# Deterministic Dovecot IMAP fixture for provider-imap tests — the second IMAP server
-# beside the Stalwart one (docker/stalwart/), and the **IMAP4rev1** half of the pair.
+# Deterministic Dovecot IMAP fixtures for provider-imap tests — **two servers from one
+# image**, differing only in the IMAP revision they speak.
 #
-# Stalwart is IMAP4rev2, where several extensions are folded into the base protocol and
-# mailbox names are raw UTF-8. Dovecot is rev1: extensions are optional and must be
-# negotiated, and mailbox names travel as modified UTF-7. Most IMAP accounts in the world
-# terminate on a rev1 server, so the client's rev1 path is the one that must not rot.
+# `dovecot-rev1` is IMAP4rev1: extensions are optional and must be negotiated, and mailbox
+# names travel as modified UTF-7. Most IMAP accounts in the world terminate on a rev1
+# server, so the client's rev1 path is the one that must not rot.
+#
+# `dovecot-rev2` is IMAP4rev2 (experimental in Dovecot 2.4), which makes it a **second rev2
+# implementation** beside Stalwart. One server's reading of a spec is an implementation, not
+# the protocol: these two already disagree about whether an extended `LIST` must still ask
+# for the SPECIAL-USE attributes, and a single rev2 server could never have shown that.
+#
+# One server cannot be both: the client `ENABLE`s rev2 wherever it is offered (see
+# `capability.rs`), so the dialect a session settles on is the server's to decide. Hence two.
 # See docs/agent-guidance/imap-smtp.md → "Which server proves what".
 #
-# Host ports 11994/11144 avoid Stalwart's 11993/11143, so both can run at once.
-# Determinism: the image is pinned by digest, the config is a committed drop-in, and the
+# Host ports 11994/11995/11144 avoid Stalwart's 11993/11143, so all of them can run at once.
+# Determinism: the image is pinned by digest, the configs are committed drop-ins, and the
 # mail seed is the shared one. Start clean with `docker compose down -v` (CI always does).
 
 name: dovecot-harness
 
+# Everything the two servers share. What they do *not* share is one drop-in file each, and
+# that is deliberately the entire difference between them.
+x-dovecot: &dovecot
+  # dovecot/dovecot 2.4.4, pinned by multi-arch digest (linux/amd64 + linux/arm64). 2.4.4 is
+  # the floor for the rev2 half: the `imap4rev2_enable` setting first appears in 2.4.2, and
+  # this is the first image whose build has the experimental dialect compiled in.
+  # Bump deliberately: re-resolve the digest and re-run both gated suites. The image's own
+  # default mailbox set is deliberately not relied on (see harness.conf), and its
+  # `dovecot.conf` now turns rev2 on for everyone (see rev1.conf).
+  image: dovecot/dovecot:2.4.4@sha256:723e3392fe16c6fad8ddc605ea767cc01b4bad9cd9f13eb1dbac15e79c89b2d4
+  # Keep the image's `tini` so the backgrounded server still reaps and forwards signals.
+  entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "/harness/entrypoint.sh"]
+  environment:
+    # The image's stock passdb is `static`: any username authenticates with this one
+    # password. Throwaway, committed on purpose — this server never holds real data.
+    USER_PASSWORD: "dovecot-alice-pw"
+    HARNESS_ACCOUNT: "alice@test.local"
+  # Healthy once seeding wrote its marker AND the TLS port accepts a connection —
+  # real readiness, not a sleep.
+  healthcheck:
+    test:
+      - CMD-SHELL
+      - test -f /srv/vmail/.dovecot-harness-ready && nc -z 127.0.0.1 31993
+    interval: 3s
+    timeout: 5s
+    retries: 40
+    start_period: 5s
+
 services:
-  dovecot:
-    # dovecot/dovecot 2.4.1, pinned by multi-arch digest (linux/amd64 + linux/arm64).
-    # Bump deliberately: re-resolve the digest and re-run the gated suite. The image's
-    # own default mailbox set is deliberately not relied on (see harness.conf).
-    image: dovecot/dovecot:2.4.1@sha256:1296e0f1029cdd95e6849fb82f5d142a6e2a46218451773316cea678de75254b
-    # Keep the image's `tini` so the backgrounded server still reaps and forwards signals.
-    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "/harness/entrypoint.sh"]
-    environment:
-      # The image's stock passdb is `static`: any username authenticates with this one
-      # password. Throwaway, committed on purpose — this server never holds real data.
-      USER_PASSWORD: "dovecot-alice-pw"
-      HARNESS_ACCOUNT: "alice@test.local"
+  dovecot-rev1:
+    <<: *dovecot
     volumes:
       - ./entrypoint.sh:/harness/entrypoint.sh:ro
-      # A drop-in beside the image's own config, so the vendor rootless setup stays intact.
+      # Drop-ins beside the image's own config, so the vendor rootless setup stays intact:
+      # the shared shape, then the one file that decides the dialect.
       - ./harness.conf:/etc/dovecot/conf.d/harness.conf:ro
-      # The same messages the Stalwart harness seeds, so one dataset validates both.
+      - ./rev1.conf:/etc/dovecot/conf.d/rev1.conf:ro
+      # The same messages the Stalwart harness seeds, so one dataset validates every server.
       - ../stalwart/seed/mail:/harness/seed/mail:ro
-      - dovecot-mail:/srv/vmail
+      - dovecot-rev1-mail:/srv/vmail
     ports:
       # host:container, loopback only — never expose a test mail server on all
       # interfaces. The container ports are the image's rootless defaults.
       - "127.0.0.1:11994:31993" # IMAP (implicit TLS)
       - "127.0.0.1:11144:31143" # IMAP (STARTTLS)
-    # Healthy once seeding wrote its marker AND the TLS port accepts a connection —
-    # real readiness, not a sleep.
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - test -f /srv/vmail/.dovecot-harness-ready && nc -z 127.0.0.1 31993
-      interval: 3s
-      timeout: 5s
-      retries: 40
-      start_period: 5s
+
+  dovecot-rev2:
+    <<: *dovecot
+    volumes:
+      - ./entrypoint.sh:/harness/entrypoint.sh:ro
+      - ./harness.conf:/etc/dovecot/conf.d/harness.conf:ro
+      - ./rev2.conf:/etc/dovecot/conf.d/rev2.conf:ro
+      - ../stalwart/seed/mail:/harness/seed/mail:ro
+      - dovecot-rev2-mail:/srv/vmail
+    ports:
+      # TLS only. STARTTLS is a transport concern with nothing dialect-specific about it, so
+      # the rev1 service proves it once; a second listener here would be surface no test uses.
+      - "127.0.0.1:11995:31993" # IMAP (implicit TLS)
 
 volumes:
-  dovecot-mail:
+  dovecot-rev1-mail:
+  dovecot-rev2-mail:

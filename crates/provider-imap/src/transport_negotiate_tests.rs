@@ -171,3 +171,52 @@ async fn negotiation_propagates_a_transport_error() {
     assert_eq!(err.failure_class(), FailureClass::Permanent);
     assert!(!conn.qresync_enabled());
 }
+
+#[tokio::test]
+async fn a_rev2_session_still_asks_for_special_use_where_the_server_advertised_it() {
+    // The wire shape the decision exists for, and the one an offline fake cannot judge for
+    // itself: this server answers the same bytes whatever it is sent, so the assertion is on
+    // what went *out*. Dovecot's rev2 advertises RFC 6154 and keeps RFC 6154's rule, so an
+    // extended `LIST` that omits the option comes back with every role stripped.
+    let server = script(&[
+        GREETING,
+        "a1 OK LOGIN completed\r\n",
+        "* CAPABILITY IMAP4rev2 IMAP4rev1 SPECIAL-USE\r\na2 OK CAPABILITY done\r\n",
+        "* ENABLED IMAP4rev2\r\na3 OK ENABLE successful\r\n",
+        "* LIST (\\Sent) \"/\" \"Sent\"\r\na4 OK LIST completed\r\n",
+    ]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    conn.negotiate().await.unwrap();
+    conn.list().await.unwrap();
+
+    let sent = written(&recorded);
+    assert!(
+        sent.contains(r#"a4 LIST "" "*" RETURN (SPECIAL-USE)"#),
+        "rev2 must still ask where RFC 6154 was advertised: {sent}"
+    );
+}
+
+#[tokio::test]
+async fn a_rev2_session_never_asks_for_what_the_server_did_not_advertise() {
+    // The other half: rev2 folded the attributes in, so the session may *use* them — but
+    // the server never named RFC 6154, and an unadvertised return option is a `BAD`
+    // (RFC 9051 §6.3.9) that costs the whole folder list rather than only its roles.
+    let server = script(&[
+        GREETING,
+        "a1 OK LOGIN completed\r\n",
+        "* CAPABILITY IMAP4rev2 IMAP4rev1\r\na2 OK CAPABILITY done\r\n",
+        "* ENABLED IMAP4rev2\r\na3 OK ENABLE successful\r\n",
+        "* LIST (\\Sent) \"/\" \"Sent\"\r\na4 OK LIST completed\r\n",
+    ]);
+    let (stream, recorded) = MockStream::new(server);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    conn.negotiate().await.unwrap();
+    conn.list().await.unwrap();
+
+    let sent = written(&recorded);
+    assert!(sent.contains(r#"a4 LIST "" "*""#), "{sent}");
+    assert!(!sent.contains("RETURN"), "nothing to ask with: {sent}");
+}

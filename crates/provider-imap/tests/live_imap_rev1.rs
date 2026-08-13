@@ -5,21 +5,22 @@
 //! `live_imap_rev2.rs` when it starts offering rev2 and the client enables it, without
 //! either file being rewritten.
 //!
-//! Today that is the Dovecot harness. Stalwart advertises rev2 and the client enables it,
-//! so it belongs to the rev2 file; if Dovecot's early-access rev2 is turned on in
-//! `docker/dovecot/harness.conf`, it moves too.
+//! Today that is the rev1 half of the Dovecot harness, which exists to *stay* rev1: the
+//! same image runs a rev2 service beside it (`docker/dovecot/rev1.conf` vs `rev2.conf`),
+//! and the client `ENABLE`s rev2 wherever it is offered, so nothing that advertises the
+//! dialect can hold this half up.
 //!
-//! Skips when `DOVECOT_IMAP_ADDR` is unset, so the offline `cargo test --workspace` stays
-//! green.
+//! Skips when `DOVECOT_REV1_IMAP_ADDR` is unset, so the offline `cargo test --workspace`
+//! stays green.
 
 #[path = "common/imap_live.rs"]
 mod imap_live;
 
 use engine_provider::Provider;
-use imap_live::{DOVECOT, connect, connect_to, find, folders};
+use imap_live::{DOVECOT_REV1, connect, connect_to, find, folders};
 
 /// The rev1 servers this suite runs against.
-const REV1_SERVERS: [imap_live::Server; 1] = [DOVECOT];
+const REV1_SERVERS: [imap_live::Server; 1] = [DOVECOT_REV1];
 
 #[tokio::test]
 async fn a_modified_utf7_name_is_decoded_into_the_mailbox_identity() {

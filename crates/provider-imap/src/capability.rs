@@ -14,12 +14,14 @@
 //!   its greeting and then behaves as rev1 until the client sends `ENABLE IMAP4rev2` and it answers
 //!   `* ENABLED IMAP4rev2` (RFC 9051 §6.3.1). Reading the capability as the session's dialect makes
 //!   the client decode UTF-8 names that are still arriving as modified UTF-7.
-//! - **Folded in is not the same as asked for.** rev2 folds in SPECIAL-USE's *mailbox attributes*
-//!   (Appendix E item 2) and makes them base attributes of every `LIST` response (§7.3.1) — it does
-//!   **not** define a `RETURN (SPECIAL-USE)` option to request them with. So rev2 removes the need
-//!   to ask rather than granting the request, and a client that "enables everything rev2 folds in"
-//!   by sending that option would put an undefined return option on the wire. See
-//!   [`Negotiated::must_request_special_use`].
+//! - **Folded in is not the same as will arrive.** rev2 folds in SPECIAL-USE's *mailbox attributes*
+//!   (Appendix E item 2) and makes them base attributes of every `LIST` response (§7.3.1), which
+//!   reads like a rev2 session never has to ask for them. A rev2 server that also advertises RFC
+//!   6154 may keep RFC 6154's rule anyway — Dovecot's rev2 does, and strips every role from an
+//!   extended `LIST` that did not ask. So what a session may *use* and what it must still *request*
+//!   are two questions, answered by [`Negotiated::has`] and
+//!   [`Negotiated::must_request_special_use`] respectively. Neither is a question about the
+//!   dialect.
 
 use std::collections::BTreeSet;
 
@@ -150,11 +152,21 @@ impl Negotiated {
 
     /// Whether a `LIST` has to ask for the SPECIAL-USE attributes with a return option.
     ///
-    /// Only on rev1, and only where RFC 6154 is advertised. rev2 makes those attributes
-    /// base `LIST` data (RFC 9051 §7.3.1) and defines no return option to request them, so
-    /// on a rev2 session asking is both unnecessary and unspecified.
+    /// Gated on what the server **advertised**, not on the dialect and not on
+    /// [`has`](Self::has):
+    ///
+    /// - **Advertised, so ask — on either dialect.** rev2 makes those attributes base `LIST` data
+    ///   (RFC 9051 §7.3.1) and defines no return option for them, which reads like a rev2 session
+    ///   need never ask. A rev2 server that *also* advertises RFC 6154 may keep RFC 6154's rule
+    ///   instead, and Dovecot's rev2 does: an extended `LIST` that does not ask comes back with
+    ///   every role attribute stripped, so the sent copy has no folder to go to (`place.rs`).
+    ///   Asking costs nothing where the attributes were coming anyway.
+    /// - **Not advertised, so never ask.** On rev2 `has` is true for a server that never named RFC
+    ///   6154, because rev2 folded the attributes in — but a client MUST NOT send a return option
+    ///   the server has not advertised, and the server MUST answer `BAD` (RFC 9051 §6.3.9). Those
+    ///   attributes arrive as base data or not at all.
     pub(crate) fn must_request_special_use(&self) -> bool {
-        !self.rev2() && self.has(Extension::SpecialUse)
+        self.advertises(Extension::SpecialUse.atom())
     }
 
     /// The dialect this session settled on, named as the protocol names it — for the

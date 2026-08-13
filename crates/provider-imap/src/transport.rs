@@ -338,9 +338,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Ok(parse::parse_fetch_body(&response.untagged, uid))
     }
 
-    /// `LIST "" "*"`, returning every mailbox — with its SPECIAL-USE attributes where
-    /// the server has the extension (see [`Advertised::special_use`];
-    /// [`crate::place`] resolves the Sent/Drafts folder from them).
+    /// `LIST "" "*"`, returning every mailbox — asking for its SPECIAL-USE attributes
+    /// wherever the server advertised RFC 6154, on either dialect (see
+    /// [`Negotiated::must_request_special_use`]; [`crate::place`] resolves the Sent/Drafts
+    /// folder from them).
     pub(crate) async fn list(&mut self) -> ImapResult<Vec<ListRow>> {
         let response = self
             .command(&list_command(

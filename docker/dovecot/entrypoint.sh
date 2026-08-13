@@ -1,5 +1,6 @@
 #!/bin/sh
-# Seed the Dovecot harness, then hold the server in the foreground.
+# Seed a Dovecot harness service, then hold the server in the foreground. Both services run
+# this same script against their own volume, so the two dialects start from one dataset.
 #
 # Seeding runs through `doveadm`, which needs the server's auth socket, so the server
 # starts first and the seed waits for it. The messages are the same ones the Stalwart

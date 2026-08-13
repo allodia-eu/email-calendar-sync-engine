@@ -95,7 +95,7 @@ fn one_enable_carries_the_dialect_and_every_extension_that_needs_one() {
 }
 
 #[test]
-fn rev2_removes_the_need_to_ask_for_special_use_rather_than_granting_the_request() {
+fn special_use_is_asked_for_wherever_it_is_advertised_whatever_the_dialect() {
     // rev1 + the extension: the attributes come only when a return option asks (RFC 5258 §3).
     let rev1 = caps(&["IMAP4rev1", "SPECIAL-USE"]);
     assert!(rev1.must_request_special_use());
@@ -103,10 +103,21 @@ fn rev2_removes_the_need_to_ask_for_special_use_rather_than_granting_the_request
     // rev1 without it: nothing to ask with, and nothing that would answer.
     assert!(!caps(&["IMAP4rev1"]).must_request_special_use());
 
-    // rev2: the attributes are base LIST data (RFC 9051 §7.3.1) and no `RETURN
-    // (SPECIAL-USE)` option is defined, so asking would put an undefined option on the wire.
+    // rev2 **still asks**, because the dialect is not what decides this. rev2 folds the
+    // attributes into base `LIST` data (RFC 9051 §7.3.1) and defines no return option — but
+    // a rev2 server that also advertises RFC 6154 keeps RFC 6154's rule, and Dovecot's rev2
+    // does exactly that: it strips every role from an extended `LIST` that did not ask.
+    // Reading "folded in" as "will arrive unbidden" costs every folder its role there.
     let mut rev2 = caps(&["IMAP4rev2", "SPECIAL-USE"]);
     rev2.confirm_enabled(&["IMAP4rev2".to_owned()]);
-    assert!(rev2.has(Extension::SpecialUse));
-    assert!(!rev2.must_request_special_use());
+    assert!(rev2.must_request_special_use());
+
+    // rev2 that never advertised RFC 6154: `has` is true (rev2 folded the attributes in),
+    // yet the return option must **not** be sent — a client may not send an option the
+    // server has not advertised, and the server must answer `BAD` (RFC 9051 §6.3.9). So the
+    // gate is what was advertised, never what the session may use.
+    let mut folded_only = caps(&["IMAP4rev2"]);
+    folded_only.confirm_enabled(&["IMAP4rev2".to_owned()]);
+    assert!(folded_only.has(Extension::SpecialUse));
+    assert!(!folded_only.must_request_special_use());
 }

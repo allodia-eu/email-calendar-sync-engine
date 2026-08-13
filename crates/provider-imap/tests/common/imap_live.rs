@@ -2,8 +2,9 @@
 //! against every server configured for them.
 //!
 //! Each suite reads one `*_IMAP_ADDR` variable per server and skips when it is unset, so
-//! the offline `cargo test --workspace` stays green. CI sets one per harness job; locally,
-//! set whichever harness is up.
+//! the offline `cargo test --workspace` stays green. CI sets the ones its harness job
+//! started — the Dovecot job starts two servers and so sets two; locally, set whichever
+//! harness is up.
 
 // `#[path]`-included into each gated suite, so every one of them compiles the whole module
 // and uses only the part it needs — the contract suite reads `SERVERS`, the dialect suites
@@ -42,16 +43,25 @@ pub const STALWART: Server = Server {
     password: "harness-alice-pw",
 };
 
-/// The Dovecot harness (`docker/dovecot/`) — IMAP4rev1.
-pub const DOVECOT: Server = Server {
-    label: "dovecot",
-    addr_var: "DOVECOT_IMAP_ADDR",
+/// The rev1 half of the Dovecot harness (`docker/dovecot/`) — IMAP4rev1.
+pub const DOVECOT_REV1: Server = Server {
+    label: "dovecot-rev1",
+    addr_var: "DOVECOT_REV1_IMAP_ADDR",
+    account: "alice@test.local",
+    password: "dovecot-alice-pw",
+};
+
+/// The rev2 half of the same harness — IMAP4rev2, and a second implementation of it beside
+/// Stalwart. Same image, same seed, same shared config: one drop-in file apart.
+pub const DOVECOT_REV2: Server = Server {
+    label: "dovecot-rev2",
+    addr_var: "DOVECOT_REV2_IMAP_ADDR",
     account: "alice@test.local",
     password: "dovecot-alice-pw",
 };
 
 /// Every server a suite should run against, skipping those whose variable is unset.
-pub const SERVERS: [Server; 2] = [STALWART, DOVECOT];
+pub const SERVERS: [Server; 3] = [STALWART, DOVECOT_REV1, DOVECOT_REV2];
 
 /// Accepts a harness's self-signed certificate. Test-only and deliberately insecure; it
 /// never touches a host trust store.

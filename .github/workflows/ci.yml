@@ -321,12 +321,14 @@ jobs:
         working-directory: docker/sabredav
         run: docker compose down -v
 
-  # The second IMAP fixture: a Dovecot server, and the **IMAP4rev1** half of the pair
-  # whose other half is Stalwart (IMAP4rev2). It validates `provider-imap` against the
-  # dialect most real accounts speak — optional extensions that must be negotiated rather
-  # than folded into the base protocol, modified-UTF-7 mailbox names, and a prose
-  # completion line. Like `stalwart`, it is the only job that sets `DOVECOT_*`, so its
-  # gated test executes only here; everywhere else it skips.
+  # The second IMAP fixture: **two** Dovecot servers from one image, one per dialect. The
+  # rev1 half is the dialect most real accounts speak — optional extensions that must be
+  # negotiated rather than folded into the base protocol, modified-UTF-7 mailbox names, and
+  # a prose completion line. The rev2 half is a second implementation of the dialect beside
+  # Stalwart, which is what turns a claim about "rev2" into something two servers agree on
+  # (they already disagree about asking for SPECIAL-USE). One server cannot be both: the
+  # client enables rev2 wherever it is offered. Like `stalwart`, this is the only job that
+  # sets `DOVECOT_*`, so its gated tests execute only here; everywhere else they skip.
   dovecot:
     name: Dovecot protocol harness
     needs: toolchain
@@ -344,22 +346,25 @@ jobs:
           key: dovecot
           save-if: ${{ github.ref == 'refs/heads/main' }} # main-only; see the `verify` job
 
-      # The image is pinned by digest and the config is a committed drop-in; the
-      # container seeds itself from the shared mail fixtures and reports healthy once the
-      # marker exists, so `--wait` returns only when the mailbox is ready.
-      - name: Start the Dovecot fixture and seed it
+      # The image is pinned by digest and the configs are committed drop-ins; each
+      # container seeds itself from the shared mail fixtures and reports healthy once its
+      # marker exists, so `--wait` returns only when both mailboxes are ready.
+      - name: Start the Dovecot fixtures and seed them
         working-directory: docker/dovecot
         run: docker compose up -d --wait
 
       # The contract suite runs against every configured server; with only DOVECOT_* set,
-      # its Stalwart half skips and its Dovecot half runs. The rev1 suite is the dialect
-      # half this server proves.
+      # its Stalwart half skips and both Dovecot halves run. Each dialect suite then runs
+      # against the server that speaks its dialect — which is why both variables are set
+      # here and why neither suite hard-codes a vendor.
       - name: Run the gated Dovecot IMAP integration tests (live)
         env:
-          DOVECOT_IMAP_ADDR: 127.0.0.1:11994
+          DOVECOT_REV1_IMAP_ADDR: 127.0.0.1:11994
+          DOVECOT_REV2_IMAP_ADDR: 127.0.0.1:11995
         run: |
           cargo test -p provider-imap --test live_imap_contract -- --nocapture
           cargo test -p provider-imap --test live_imap_rev1 -- --nocapture
+          cargo test -p provider-imap --test live_imap_rev2 -- --nocapture
 
       - name: Dump Dovecot logs on failure
         if: failure()
