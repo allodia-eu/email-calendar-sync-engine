@@ -376,6 +376,45 @@ jobs:
         working-directory: docker/dovecot
         run: docker compose down -v
 
+  # The scale baseline. Correctness is settled by the suites above, on mailboxes of a few
+  # messages — where a full scan and an indexed seek measure the same, so none of them can
+  # tell whether a read path is O(mailbox) or O(page). This job builds 100,000 messages
+  # through the ordinary sync path and prints what each operation costs, so the shape of the
+  # answer is on the record for every change rather than reconstructed after a complaint.
+  #
+  # Deliberately **not** a pass/fail gate. A shared runner's timings vary by more than most
+  # real regressions, so a threshold here would either be so loose it catches nothing or so
+  # tight it fails on noise — and a flaky perf gate is one people learn to re-run. The table
+  # in the log is the artifact; read it against the previous run's, and against the same
+  # table a host prints for its own logged durations. What matters is the ratio across
+  # sizes, not the absolute milliseconds this runner happened to produce.
+  bench:
+    name: Scale benchmarks (100k messages)
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: ${{ needs.toolchain.outputs.channel }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: bench
+          save-if: ${{ github.ref == 'refs/heads/main' }} # main-only; see the `verify` job
+
+      # `--no-run` first so a compile failure reads as one, rather than as a benchmark that
+      # never printed a number.
+      - name: Build the benchmarks
+        run: cargo bench -p mailbox-fixture --no-run
+
+      - name: Run them and print the table
+        env:
+          ENGINE_BENCH_SCALE: 100k
+        run: cargo bench -p mailbox-fixture
+
   coverage:
     name: Code coverage
     needs: toolchain

@@ -16,6 +16,12 @@ Out of scope (owned elsewhere): object identity and membership
 (`providers.md`), and the search/index data model (`north-star.md` Search
 Contract). This document only constrains *when and under what lock* those land.
 
+What it does **not** constrain is what any of it costs. The suite's mailboxes hold
+single digits of messages, where a full scan and an indexed seek measure the same.
+Before changing a read path, an apply, or the derivation pass, take a baseline against a
+mailbox that can tell them apart: `cargo bench -p mailbox-fixture` (`rust.md` →
+"Measuring at scale").
+
 ## Principles
 
 - **At most one effective writer per scope, and per in-flight op, at a time.**
