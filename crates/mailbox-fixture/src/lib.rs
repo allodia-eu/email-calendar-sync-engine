@@ -16,7 +16,7 @@
 //! let engine = Engine::open("/tmp/scale.sqlite")?;
 //! let fixture = populate(&engine, &FixtureSpec::new(account.clone(), 100_000)).await?;
 //!
-//! let first_page = engine.messages_windowed(&account, 100).await?;
+//! let first_page = engine.mail_window(&[account], 100).await?;
 //! assert_eq!(first_page.len(), 100);
 //! assert_eq!(fixture.len(), 100_000);
 //! # Ok(())

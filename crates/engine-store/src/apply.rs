@@ -25,8 +25,8 @@ use engine_core::{
     ids::ProviderKey,
     recipient::RecipientObservation,
     search_index::{
-        EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailIndexRow,
-        MailProjection, MembershipRow,
+        EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailProjection,
+        MailRow, MembershipRow,
     },
     sync::{SyncState, SyncUpdate},
     time::UtcDateTime,
@@ -154,8 +154,8 @@ pub struct DerivedWrite {
     pub fts: Vec<FtsRow>,
     /// Expanded calendar occurrences to upsert.
     pub occurrences: Vec<OccurrenceRow>,
-    /// Mail scalar-index rows to upsert.
-    pub mail_index: Vec<MailIndexRow>,
+    /// Mail rows to upsert.
+    pub messages: Vec<MailRow>,
     /// Mail address-junction rows to replace (per object).
     pub addresses: Vec<MailAddressRow>,
     /// Mailbox/keyword/calendar membership rows to replace (per object).
@@ -193,7 +193,7 @@ impl DerivedWrite {
     pub fn is_empty(&self) -> bool {
         self.fts.is_empty()
             && self.occurrences.is_empty()
-            && self.mail_index.is_empty()
+            && self.messages.is_empty()
             && self.addresses.is_empty()
             && self.memberships.is_empty()
             && self.event_index.is_empty()
@@ -202,16 +202,16 @@ impl DerivedWrite {
     }
 
     /// Adds the rows of a mail projection ([`engine_core::search_index::project_message`]):
-    /// its full-text document, scalar row, address junctions, and memberships.
+    /// its full-text document, message row, address junctions, and memberships.
     pub fn push_mail(&mut self, projection: MailProjection) {
         let MailProjection {
             fts,
-            index,
+            row,
             addresses,
             memberships,
         } = projection;
         self.fts.push(fts);
-        self.mail_index.push(index);
+        self.messages.push(row);
         self.addresses.extend(addresses);
         self.memberships.extend(memberships);
     }
@@ -396,7 +396,7 @@ mod tests {
         let mut d = DerivedWrite::empty();
         d.push_mail(project_message(&msg));
         assert_eq!(d.fts.len(), 1);
-        assert_eq!(d.mail_index.len(), 1);
+        assert_eq!(d.messages.len(), 1);
         assert_eq!(d.addresses.len(), 1);
         assert_eq!(d.memberships.len(), 1);
         assert_eq!(d.memberships[0].kind, MembershipKind::Mailbox);

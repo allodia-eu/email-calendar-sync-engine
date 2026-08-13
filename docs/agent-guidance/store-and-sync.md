@@ -63,9 +63,38 @@ Three things hold that split honest, and each is load-bearing:
 
 An index is part of the query that uses it. Adding one without the read that plans
 through it is write cost for no read benefit, and no test can tell the difference —
-`scope_thread_keys` returns the same rows scanned or seeked. Assert the plan
+a list read returns the same rows scanned or seeked. Assert the plan
 (`EXPLAIN QUERY PLAN`) when you add an index, and add it in the same change as its
-reader.
+reader. Where the planner's choice decides whether a read costs the page or the
+mailbox, **name the index** (`INDEXED BY`) rather than hoping: SQLite plans this schema
+unanalysed, and the failure mode is a correct answer arrived at by sorting everything.
+
+## The mail list is a table, not a scan
+
+`message` holds one row per stored mail object carrying exactly what a list row, a sort,
+a conversation group and a date filter need — `(account, scope_key, provider_key)`,
+`thread_id`, `message_id`, `date_utc`, the `flags` bitfield, `has_attachment`, and the
+row's visible text (`from_name`, `from_addr`, `subject`, `preview`). `object.payload`
+stays the canonical normalized record and is off the list path entirely: opening a
+message reads it, showing a message in a list does not.
+
+`StoreRead::list_mail(accounts, selector, limit)` is that read, and the only one a
+mailbox list is built from. Three selectors, one projection:
+
+- `Newest` — one ordered statement over every account named. **A unified inbox is a
+  predicate, not a loop with a merge above it**: the ordering across accounts is the
+  backend's, so two accounts cannot be interleaved differently by two callers.
+- `Threads(&[ThreadId])` and `Keys(&[ProviderKey])` — targeted seeks, one cached
+  statement per value, against `message_account_thread` / `message_account_key`.
+
+Order is `date_utc DESC` with undated mail last, ties broken on the row's own identity
+so the window a `LIMIT` cuts is the same on every read of an unchanged store — a host
+reconciling by row id must not see movement a data change did not cause.
+
+`flags` carries the four RFC 8621 system keywords a row's appearance depends on
+(`$seen`, `$flagged`, `$draft`, `$answered`), because a sort or a filter must not pay a
+join for them. Every keyword, system and user alike, still lands in `membership`, which
+is what `keyword:` searches and where a set of arbitrary cardinality belongs.
 
 ## SyncScope
 
@@ -403,7 +432,7 @@ through **separate, lease-free** traits in `engine-store` (beside `Store`), keye
   path (no disk read, no re-parse), and the **search** source. A trigger maintains
   `message_body_fts` (FTS5 over the plain text). Because this index is lease-free and
   sync never touches it, an IMAP re-snapshot cannot wipe it; `search_mail` matches it
-  alongside the scope FTS (RRF-fused) and joins to the live `mail_index` so stale rows
+  alongside the scope FTS (RRF-fused) and joins to the live `message` rows so stale rows
   for deleted messages drop out, and to `message_body.account` so IMAP keys that
   collide across accounts cannot cross over (`search.md`).
 - The fetch-throughs are `engine_sync::fetch_message_body` (text in SQLite → on-disk
@@ -414,13 +443,13 @@ through **separate, lease-free** traits in `engine-store` (beside `Store`), keye
   `message_attachment` (`engine-api.md`). Durable per-attachment blob entities, quota
   eviction, and embeddings/RAG over the indexed text are later slices.
 - A host warming the cache in bulk (an offline-first client fetching every body in its
-  synced window) plans its work with `Engine::messages_missing_body(account, limit)` —
-  the windowed read's ranking (newest first) filtered against
-  `MessageBodyStore::message_body_keys(account)`, the cached-body key set — then pulls
-  each result through `Engine::message_body` as usual. The diff runs up front on keys
-  alone, so a pass over an already-warm window deserializes nothing and fetches
-  nothing; the warming loop itself (pacing, retry, when to run) is host policy, not
-  engine state.
+  synced window) plans its work with `Engine::mail_missing_body(accounts, limit)` —
+  the list read's ranking (newest first) with the already-warm rows filtered out **in the
+  query**, then pulls each result through `Engine::message_body` as usual. The absence
+  test belongs in the store because the warm set is the larger half: answered in the
+  caller, an already-warm mailbox has every cached key read out and diffed, every pass,
+  to conclude there is nothing to do. The warming loop itself (pacing, retry, when to
+  run) is host policy, not engine state.
 
 ## Re-normalization on a normalizer-version change
 
@@ -455,7 +484,7 @@ that re-snapshot — so the engine owns a local cleanup that reproduces the *sam
 offline: `SqliteStore::prune_account_mail_outside_window` (`Engine::prune_account_mail_outside_window`),
 returning a `PruneReport { messages_removed }` (`engine-store`).
 
-- It filters `mail_index.date_utc` — the message's `received_at` falling back to `sent_at`,
+- It filters `message.date_utc` — the message's `received_at` falling back to `sent_at`,
   which is exactly the field a provider window maps to (IMAP `SINCE`, JMAP `after` on
   `receivedAt`, Graph `receivedDateTime ge`) — so it tombstones precisely the mail a
   narrower-window snapshot would. Comparison is on the UTC **date** prefix against the window's
@@ -591,9 +620,9 @@ trait is **encryption-agnostic** — at-rest encryption is a `store-sqlite`
 construction detail (plain SQLite over OS file encryption by default, SQLCipher
 opt-in), so the same contract holds either way. A small `StoreRead` companion
 (lease-free object/key inspection, plus `account_scopes` to enumerate an account's
-claimed scopes, `scope_objects` to batch-read a scope's objects, and
-`scope_thread_keys` to gather a conversation's members without reading the mailbox
-around them) backs the contract suite and early reads.
+claimed scopes, `scope_objects` to batch-read a scope's objects, and `list_mail` to read
+a mailbox list — a window, a conversation, or named messages — without reading the mail
+around it) backs the contract suite and the read path.
 
 Supporting types (abbreviated):
 

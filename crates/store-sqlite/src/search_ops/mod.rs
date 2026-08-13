@@ -95,7 +95,7 @@ struct Source {
 }
 
 const MAIL: Source = Source {
-    from: "mail_index mi",
+    from: "message mi",
     alias: "mi",
 };
 const CALENDAR: Source = Source {
@@ -109,7 +109,7 @@ const CALENDAR: Source = Source {
 /// Free text is matched against two FTS sources and fused with RRF: the
 /// scope-derived `fts_index` (subject + sender/recipient text), and the lease-free
 /// `message_body_fts` over the on-demand-fetched body text. The body source is joined
-/// to `mail_index` so only **live, in-scope** keys count (a stale body row for a
+/// to `message` so only **live, in-scope** keys count (a stale body row for a
 /// since-deleted message is dropped), and to `message_body.account` so IMAP keys that
 /// collide across accounts cannot cross over.
 pub(crate) fn search_mail(
@@ -386,7 +386,7 @@ fn fts_candidates(
 
 /// Runs the lease-free body-text FTS, returning the candidate keys in rank order, or
 /// empty when the query has no free-text terms (a purely `subject:`-scoped query does
-/// not search the body). The body `message_body_fts` is joined to `mail_index` (live,
+/// not search the body). The body `message_body_fts` is joined to `message` (live,
 /// in-scope keys only) and filtered by `account`, and the same structured `filter`
 /// applies (it correlates to the joined `mi`).
 fn body_candidates(
@@ -404,7 +404,7 @@ fn body_candidates(
         "SELECT mb.provider_key, bm25(message_body_fts) AS rank \
          FROM message_body mb \
          JOIN message_body_fts ON message_body_fts.rowid = mb.rowid \
-         JOIN mail_index mi ON mi.provider_key = mb.provider_key AND mi.scope_key IN ({}) \
+         JOIN message mi ON mi.provider_key = mb.provider_key AND mi.scope_key IN ({}) \
          WHERE mb.account = ? AND message_body_fts MATCH ?{} \
          ORDER BY rank LIMIT ?",
         in_list(scope_keys.len()),

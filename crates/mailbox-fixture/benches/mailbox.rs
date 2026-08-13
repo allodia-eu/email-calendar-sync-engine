@@ -30,7 +30,7 @@
 //! ```
 
 use core::time::Duration;
-use std::{cell::Cell, collections::HashSet, hint::black_box, path::Path, time::Instant};
+use std::{cell::Cell, hint::black_box, path::Path, time::Instant};
 
 use criterion::{BenchmarkGroup, Criterion, measurement::WallTime};
 use engine_api::{AccountId, Engine, Keyword, Message, SystemKeyword};
@@ -158,23 +158,21 @@ fn reads(
     engine: &Engine,
     account: &AccountId,
 ) {
+    // Every list read takes the accounts it spans, so one account is a one-element slice.
+    let accounts = core::slice::from_ref(account);
     let page = runtime
-        .block_on(engine.messages_windowed(account, FIRST_PAGE))
+        .block_on(engine.mail_window(accounts, FIRST_PAGE))
         .expect("read the first page");
-    let threads: HashSet<String> = page
+    let threads: Vec<String> = page
         .iter()
-        .filter_map(|message| message.thread_id().map(|id| id.as_str().to_owned()))
-        .collect();
-    let shown: HashSet<String> = page
-        .iter()
-        .map(|message| message.id.key().as_str().to_owned())
+        .filter_map(|row| row.mail.thread_id.as_ref().map(|id| id.as_str().to_owned()))
         .collect();
 
     let mut fast = group(criterion, "read", FAST_SAMPLES);
     measure(&mut fast, recorder, "read/first_page", "first_page", || {
         black_box(
             runtime
-                .block_on(engine.messages_windowed(account, FIRST_PAGE))
+                .block_on(engine.mail_window(accounts, FIRST_PAGE))
                 .expect("read the first page"),
         );
     });
@@ -189,7 +187,7 @@ fn reads(
         || {
             black_box(
                 runtime
-                    .block_on(engine.messages_windowed(account, DEEP_WINDOW))
+                    .block_on(engine.mail_window(accounts, DEEP_WINDOW))
                     .expect("read the deep window"),
             );
         },
@@ -202,7 +200,7 @@ fn reads(
         || {
             black_box(
                 runtime
-                    .block_on(engine.thread_members(account, &threads, &shown))
+                    .block_on(engine.mail_on_threads(accounts, threads.iter().map(String::as_str)))
                     .expect("complete the shown conversations"),
             );
         },
@@ -283,6 +281,7 @@ fn contended(
     fixture: &Fixture,
     account: &AccountId,
 ) {
+    let accounts = core::slice::from_ref(account);
     let folder = busiest(fixture);
     let page: Vec<Message> = fixture.folders[folder]
         .messages
@@ -301,7 +300,7 @@ fn contended(
             runtime.block_on(async {
                 let apply = sync_folder(engine, spec, fixture, folder, Pass::Delta(page.clone()));
                 let reads = futures_util::future::join_all(
-                    (0..CONCURRENT_READS).map(|_| engine.messages_windowed(account, FIRST_PAGE)),
+                    (0..CONCURRENT_READS).map(|_| engine.mail_window(accounts, FIRST_PAGE)),
                 );
                 let (applied, read) = futures_util::future::join(apply, reads).await;
                 black_box(applied.expect("apply a page while reading"));
@@ -326,12 +325,13 @@ fn cold_open(
     path: &Path,
     account: &AccountId,
 ) {
+    let accounts = core::slice::from_ref(account);
     let mut slow = group(criterion, "open", SLOW_SAMPLES);
     measure(&mut slow, recorder, "open/cold", "cold", || {
         let engine = Engine::open(path).expect("re-open the fixture store");
         black_box(
             runtime
-                .block_on(engine.messages_windowed(account, FIRST_PAGE))
+                .block_on(engine.mail_window(accounts, FIRST_PAGE))
                 .expect("paint the first page"),
         );
     });

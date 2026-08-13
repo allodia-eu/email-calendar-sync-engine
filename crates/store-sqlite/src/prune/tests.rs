@@ -53,7 +53,7 @@ fn seed_scope(conn: &Connection, scope: &SyncScope) -> String {
 }
 
 /// Seeds one mail object into `scope_key` with its object payload, a full-text row
-/// (subject term probeable via `fts_index MATCH`), a `mail_index` row carrying
+/// (subject term probeable via `fts_index MATCH`), a `message` row carrying
 /// `date` (or `NULL`), and one address + membership junction row — so a tombstone
 /// can be verified to clear *every* derived kind, not just the object.
 fn seed_mail(conn: &Connection, scope_key: &str, key: &str, date: Option<&str>, subject: &str) {
@@ -69,8 +69,8 @@ fn seed_mail(conn: &Connection, scope_key: &str, key: &str, date: Option<&str>, 
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO mail_index (scope_key, provider_key, date_utc, has_attachment)
-         VALUES (?1, ?2, ?3, 0)",
+        "INSERT INTO message (scope_key, provider_key, account, date_utc, flags, has_attachment)
+         VALUES (?1, ?2, (SELECT account FROM sync_scope WHERE scope_key = ?1), ?3, 0, 0)",
         (scope_key, key, date),
     )
     .unwrap();
@@ -182,7 +182,7 @@ fn removes_only_mail_dated_before_the_floor() {
     for kept in ["edge", "new", "undated"] {
         assert_eq!(count(&conn, "object", &a_mail, kept), 1, "{kept} dropped");
         assert_eq!(
-            count(&conn, "mail_index", &a_mail, kept),
+            count(&conn, "message", &a_mail, kept),
             1,
             "{kept} index dropped"
         );
@@ -205,13 +205,7 @@ fn tombstone_clears_every_derived_kind_for_the_pruned_mail() {
 
     // The pruned message's object and each derived kind are gone; its neighbours keep
     // theirs, so the delete was surgical.
-    for table in [
-        "object",
-        "fts_doc",
-        "mail_index",
-        "mail_address",
-        "membership",
-    ] {
+    for table in ["object", "fts_doc", "message", "mail_address", "membership"] {
         assert_eq!(count(&conn, table, &a_mail, "old"), 0, "{table} kept old");
         assert_eq!(count(&conn, table, &a_mail, "new"), 1, "{table} lost new");
     }
@@ -227,7 +221,7 @@ fn leaves_other_accounts_untouched() {
 
     // b-old is out of window but belongs to account b, so pruning a must keep it.
     assert_eq!(count(&conn, "object", &b_mail, "b-old"), 1);
-    assert_eq!(count(&conn, "mail_index", &b_mail, "b-old"), 1);
+    assert_eq!(count(&conn, "message", &b_mail, "b-old"), 1);
     assert_eq!(fts_matches(&conn, "beta"), 1);
 }
 

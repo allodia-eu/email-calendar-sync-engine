@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{FtsField, FtsRow, MembershipKind, MembershipRow, normalize_addr};
 use crate::{
-    ids::{ProviderKey, ThreadId},
-    mail::{EmailAddress, Message},
+    ids::{MessageIdHeader, ProviderKey, ThreadId},
+    mail::{EmailAddress, MailFlags, Message},
     time::UtcDateTime,
 };
 
@@ -35,21 +35,39 @@ pub struct MailAddressRow {
     pub name: Option<String>,
 }
 
-/// The scalar index row for one mail object (the `mail_index` table).
+/// The stored row for one mail object (the `message` table): everything a list row, a sort, a
+/// thread group and a date filter need, and nothing that has to be parsed out of a payload.
 ///
-/// `date_utc` is the message's `received_at`, falling back to `sent_at` (the JMAP
-/// `Email/query` convention), and `None` when neither is known — the executor
-/// excludes such a message from `before:`/`after:` filtering.
+/// This is the *whole* of what a mailbox list reads. A store answers a windowed list from these
+/// columns alone, so the cost of the first page is the size of the page rather than the size of
+/// the mailbox. Opening a message still reads its normalized object; showing it in a list does
+/// not.
+///
+/// `date_utc` is the message's `received_at`, falling back to `sent_at` (the JMAP `Email/query`
+/// convention), and `None` when neither is known — the executor excludes such a message from
+/// `before:`/`after:` filtering, and a list sinks it below every dated message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MailIndexRow {
+pub struct MailRow {
     /// The message.
     pub key: ProviderKey,
-    /// The date used for `before:`/`after:`.
-    pub date_utc: Option<UtcDateTime>,
-    /// Whether the message has a non-inline attachment.
-    pub has_attachment: bool,
     /// The thread the message belongs to, if threading is resolved.
     pub thread_id: Option<ThreadId>,
+    /// The first `Message-ID` header value, which collapses one message's copies across folders.
+    pub message_id: Option<MessageIdHeader>,
+    /// The date used for ordering and for `before:`/`after:`.
+    pub date_utc: Option<UtcDateTime>,
+    /// The system keywords the row's appearance depends on.
+    pub flags: MailFlags,
+    /// Whether the message has a non-inline attachment.
+    pub has_attachment: bool,
+    /// The first sender's display name, if the header carried one.
+    pub from_name: Option<String>,
+    /// The first sender's address, as the header spelled it.
+    pub from_addr: Option<String>,
+    /// The `Subject`, if present.
+    pub subject: Option<String>,
+    /// The list snippet (JMAP `preview`).
+    pub preview: Option<String>,
 }
 
 /// All search-index rows derived from one mail object.
@@ -57,8 +75,8 @@ pub struct MailIndexRow {
 pub struct MailProjection {
     /// The full-text document (`subject`, `body`).
     pub fts: FtsRow,
-    /// The scalar filter row.
-    pub index: MailIndexRow,
+    /// The stored message row.
+    pub row: MailRow,
     /// The `from`/`to`/`cc` address-junction rows.
     pub addresses: Vec<MailAddressRow>,
     /// The mailbox and keyword membership rows.
@@ -119,13 +137,20 @@ pub fn project_message(message: &Message) -> MailProjection {
         });
     }
 
+    let sender = message.envelope.from.first();
     MailProjection {
         fts: FtsRow::new(key.clone(), fields),
-        index: MailIndexRow {
+        row: MailRow {
             key: key.clone(),
-            date_utc: message.received_at.or(message.sent_at),
-            has_attachment: message.has_attachment,
             thread_id: message.thread_id().cloned(),
+            message_id: message.envelope.message_id.first().cloned(),
+            date_utc: message.received_at.or(message.sent_at),
+            flags: MailFlags::from_keywords(&message.keywords),
+            has_attachment: message.has_attachment,
+            from_name: sender.and_then(|address| address.name.clone()),
+            from_addr: sender.map(|address| address.email.as_str().to_owned()),
+            subject: message.envelope.subject.clone(),
+            preview: message.preview.clone(),
         },
         addresses,
         memberships,
@@ -265,8 +290,36 @@ mod tests {
             kind: MembershipKind::Keyword,
             value: "$flagged".into(),
         }));
-        // Scalars.
-        assert!(p.index.has_attachment);
+        // Scalars: the whole of what a list row renders, with no payload to open.
+        assert!(p.row.has_attachment);
+        assert_eq!(p.row.subject.as_deref(), Some("Quarterly Report"));
+        assert_eq!(p.row.from_name.as_deref(), Some("Alice"));
+        assert_eq!(p.row.from_addr.as_deref(), Some("Alice@Example.com"));
+        assert_eq!(p.row.preview.as_deref(), Some("see attached"));
+        assert!(p.row.flags.flagged());
+        assert!(p.row.flags.is_unread());
+    }
+
+    #[test]
+    fn the_row_carries_the_first_message_id_for_cross_folder_dedup() {
+        let mut msg = message();
+        msg.envelope.message_id = vec![
+            MessageIdHeader::new("first@example.com").unwrap(),
+            MessageIdHeader::new("second@example.com").unwrap(),
+        ];
+        assert_eq!(
+            project_message(&msg).row.message_id.map(String::from),
+            Some("first@example.com".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_sender_without_a_display_name_still_yields_its_address() {
+        let mut msg = message();
+        msg.envelope.from = vec![EmailAddress::new("bob@example.com")];
+        let row = project_message(&msg).row;
+        assert_eq!(row.from_name, None);
+        assert_eq!(row.from_addr.as_deref(), Some("bob@example.com"));
     }
 
     #[test]
@@ -274,12 +327,12 @@ mod tests {
         let mut msg = message();
         msg.sent_at = Some("2026-01-01T00:00:00Z".parse().unwrap());
         assert_eq!(
-            project_message(&msg).index.date_utc,
+            project_message(&msg).row.date_utc,
             Some("2026-01-01T00:00:00Z".parse().unwrap())
         );
         msg.received_at = Some("2026-02-02T00:00:00Z".parse().unwrap());
         assert_eq!(
-            project_message(&msg).index.date_utc,
+            project_message(&msg).row.date_utc,
             Some("2026-02-02T00:00:00Z".parse().unwrap())
         );
     }
@@ -288,8 +341,8 @@ mod tests {
     fn empty_subject_and_body_produce_no_fts_fields() {
         let p = project_message(&message());
         assert!(p.fts.fields.is_empty());
-        assert_eq!(p.index.date_utc, None);
-        assert!(!p.index.has_attachment);
+        assert_eq!(p.row.date_utc, None);
+        assert!(!p.row.has_attachment);
     }
 
     #[test]

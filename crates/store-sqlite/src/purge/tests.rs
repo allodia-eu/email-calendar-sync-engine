@@ -35,7 +35,8 @@ fn seed_two_accounts() -> Connection {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO mail_index (scope_key, provider_key, has_attachment) VALUES (?1, ?2, 0)",
+            "INSERT INTO message (scope_key, provider_key, account, flags, has_attachment)
+             VALUES (?1, ?2, (SELECT account FROM sync_scope WHERE scope_key = ?1), 0, 0)",
             (scope, key),
         )
         .unwrap();

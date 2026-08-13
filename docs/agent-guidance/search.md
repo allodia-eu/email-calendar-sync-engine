@@ -48,15 +48,15 @@ into the V2 schema (`store-sqlite::schema::V2`). The mapping:
 |---|---|
 | `from: to: cc:` / `attendee: organizer:` | `mail_address(field, addr)` / `event_participant(role, addr)` junctions |
 | `mailbox: label: keyword:` / `calendar:` | `membership(kind, value)` junction |
-| `before: after:` (mail) | `mail_index.date_utc` |
+| `before: after:` (mail) | `message.date_utc` |
 | `before: after:` (calendar) | `event_occurrence` time range |
 | `subject:`/`location:` + free text | FTS5 external-content (`fts_doc` → `fts_index`) |
-| `has_attachment:`/`has_conference:` | `mail_index`/`event_index` scalar |
+| `has_attachment:`/`has_conference:` | `message`/`event_index` scalar |
 | `rsvp:` | `event_index.my_partstat` |
 
 Projection decisions (settled with the user):
 
-- **`mail_index.date_utc` = `received_at` ?? `sent_at`** (JMAP `Email/query`
+- **`message.date_utc` = `received_at` ?? `sent_at`** (JMAP `Email/query`
   convention); `NULL` excludes a message from date filters.
 - **Mailbox and label are one membership kind.** The model unifies folders and
   labels (`modeling.md`), so projection emits `kind = mailbox`, and the executor
@@ -118,7 +118,7 @@ text matches **two** FTS sources fused together: the scope-derived `fts_index`
 (subject + folded address text) and the lease-free **`message_body_fts`** over the
 on-demand-fetched body text (`store-and-sync.md`). The body source is mail-only,
 matches the *unscoped* terms (its single `plain` column has no `subject:`/`location:`
-qualifier), and is joined to `mail_index` (live, in-scope keys only) and
+qualifier), and is joined to `message` (live, in-scope keys only) and
 `message_body.account` (IMAP keys can collide across accounts) — so a body row for a
 deleted message or another account never surfaces. A purely `subject:`-scoped query
 does not search the body. Calendar has the single FTS source. A query with no text

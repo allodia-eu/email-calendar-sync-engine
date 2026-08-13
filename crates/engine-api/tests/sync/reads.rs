@@ -28,9 +28,16 @@ async fn windowed_read_returns_the_newest_and_thread_read_is_age_independent() {
     engine.derive_mail_threads(&account()).await.unwrap();
 
     // A window of 2 keeps only the two newest by date, newest first — `old` is outside it.
-    let windowed = engine.messages_windowed(&account(), 2).await.unwrap();
-    let keys: Vec<&str> = windowed.iter().map(|m| m.id.key().as_str()).collect();
+    let windowed = engine.mail_window(&[account()], 2).await.unwrap();
+    let keys: Vec<&str> = windowed.iter().map(|m| m.mail.key.as_str()).collect();
     assert_eq!(keys, vec!["new", "f3"], "newest two, newest first");
+    // The row carries what the list renders, so no payload is opened to draw it.
+    assert_eq!(windowed[0].mail.subject.as_deref(), Some("subject"));
+    assert!(windowed[0].mail.flags.is_unread());
+    assert!(
+        !windowed[0].mailboxes.is_empty(),
+        "and which folder it is in"
+    );
 
     // `old` and `new` share the derived thread; reading it returns BOTH, even though `old` is
     // far outside the window — the whole point of the design.
@@ -43,40 +50,45 @@ async fn windowed_read_returns_the_newest_and_thread_read_is_age_independent() {
         .and_then(|m| m.thread_id().cloned())
         .expect("the reply is threaded");
     let mut members: Vec<String> = engine
-        .thread_messages(&account(), thread.as_str())
+        .mail_on_threads(&[account()], [thread.as_str()])
         .await
         .unwrap()
         .into_iter()
-        .map(|m| m.id.key().as_str().to_owned())
+        .map(|m| m.mail.key.as_str().to_owned())
         .collect();
     members.sort();
     assert_eq!(members, vec!["new".to_owned(), "old".to_owned()]);
 
-    // Batched completion: over the window (`new`, `f3`), `thread_members` pulls the thread's
-    // out-of-window member `old` in ONE pass, and `exclude` keeps `new` (already in the window)
-    // from being re-read. Unrelated threads (f1/f2/f3) aren't asked for, so they don't come back.
-    let window_threads: std::collections::HashSet<String> = [thread.as_str().to_owned()].into();
-    let window_keys: std::collections::HashSet<String> = ["new".to_owned(), "f3".to_owned()].into();
-    let extra: Vec<String> = engine
-        .thread_members(&account(), &window_threads, &window_keys)
+    // Batched completion: over the window (`new`, `f3`), one call pulls every shown
+    // conversation's members. Unrelated threads (f1/f2/f3) aren't asked for, so they don't come
+    // back, and the host drops the keys it already holds.
+    let completed: Vec<String> = engine
+        .mail_on_threads(&[account()], [thread.as_str()])
         .await
         .unwrap()
         .into_iter()
-        .map(|m| m.id.key().as_str().to_owned())
+        .map(|m| m.mail.key.as_str().to_owned())
+        .filter(|key| key != "new" && key != "f3")
         .collect();
     assert_eq!(
-        extra,
+        completed,
         vec!["old".to_owned()],
-        "only the out-of-window member, excluding `new`"
+        "only the out-of-window member of the shown conversation"
     );
 
     // A specific out-of-window key still resolves directly (open/reply/search-hit resolution).
     let resolved = engine
-        .messages_by_keys(&account(), &[ProviderKey::new("old").unwrap()])
+        .mail_by_keys(&account(), &[ProviderKey::new("old").unwrap()])
         .await
         .unwrap();
     assert_eq!(resolved.len(), 1);
-    assert_eq!(resolved[0].id.key().as_str(), "old");
+    assert_eq!(resolved[0].mail.key.as_str(), "old");
+    // …and so does the whole normalized object, which is what opening a message reads.
+    let opened = engine
+        .messages_by_keys(&account(), &[ProviderKey::new("old").unwrap()])
+        .await
+        .unwrap();
+    assert_eq!(opened[0].id.key().as_str(), "old");
 }
 
 #[tokio::test]

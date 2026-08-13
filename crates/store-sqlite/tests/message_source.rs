@@ -214,39 +214,34 @@ async fn body_text_round_trips_through_sqlite() {
 }
 
 #[tokio::test]
-async fn body_keys_list_one_accounts_warm_set_only() {
+async fn a_cached_body_belongs_to_exactly_one_account() {
+    // IMAP keys are synthesized from `(mailbox, UIDVALIDITY, UID)`, so two accounts routinely hold
+    // the same key. The cache is keyed by account precisely so one account's body can never be
+    // served for the other's message.
     let store = SqliteStore::open_in_memory(clock()).expect("open store");
     let other = AccountId::try_from("other-acct").expect("valid account");
-    let body = MessageBody::new(Some("text".to_owned()), None);
+    let shared = key("imap:v1:u1@INBOX");
 
-    assert!(
-        store
-            .message_body_keys(&account())
-            .await
-            .expect("keys")
-            .is_empty(),
-        "no keys before any body is cached"
-    );
-
-    // Two bodies for this account, one for another — the same IMAP-style key on both
-    // accounts must not cross over (the cache is keyed by account).
-    for k in ["imap:v1:u1@INBOX", "imap:v1:u2@INBOX"] {
-        store
-            .put_message_body(&account(), &key(k), &body)
-            .await
-            .expect("put body");
-    }
+    let mine = MessageBody::new(Some("mine".to_owned()), None);
+    let theirs = MessageBody::new(Some("theirs".to_owned()), None);
     store
-        .put_message_body(&other, &key("imap:v1:u1@INBOX"), &body)
+        .put_message_body(&account(), &shared, &mine)
+        .await
+        .expect("put body");
+    store
+        .put_message_body(&other, &shared, &theirs)
         .await
         .expect("put other-account body");
 
-    let mut keys = store.message_body_keys(&account()).await.expect("keys");
-    keys.sort();
-    assert_eq!(keys, vec![key("imap:v1:u1@INBOX"), key("imap:v1:u2@INBOX")]);
     assert_eq!(
-        store.message_body_keys(&other).await.expect("other keys"),
-        vec![key("imap:v1:u1@INBOX")],
-        "the other account sees only its own warm set"
+        store
+            .get_message_body(&account(), &shared)
+            .await
+            .expect("get"),
+        Some(mine)
+    );
+    assert_eq!(
+        store.get_message_body(&other, &shared).await.expect("get"),
+        Some(theirs)
     );
 }

@@ -39,7 +39,7 @@ fn flag_only() -> Message {
     message
 }
 
-/// The stored message, and the thread its index row names.
+/// The stored message, and the thread its list row names.
 async fn stored(
     store: &SqliteStore<ManualClock>,
     scope: &SyncScope,
@@ -49,15 +49,19 @@ async fn stored(
         .await
         .unwrap()
         .expect("the message is stored");
-    let indexed = store
-        .scope_mail_index(scope)
+    let listed = store
+        .list_mail(
+            core::slice::from_ref(scope.account()),
+            engine_store::MailSelector::Keys(&[key("m1")]),
+            usize::MAX,
+        )
         .await
         .unwrap()
-        .into_iter()
-        .find(|(entry, ..)| entry == &key("m1"))
-        .expect("the message has an index row")
-        .2;
-    (serde_json::from_value(payload).unwrap(), indexed)
+        .pop()
+        .expect("the message has a list row")
+        .mail
+        .thread_id;
+    (serde_json::from_value(payload).unwrap(), listed)
 }
 
 /// Asserts a flag-only delta left the derived fields — and the index row that groups

@@ -1,17 +1,17 @@
 //! The read and search surface on `Engine`: per-account search, the mailbox/message
 //! and calendar/event lists, and the windowed and thread-oriented message reads.
 
-use std::{cmp::Reverse, collections::HashSet};
+use std::collections::HashSet;
 
 use engine_core::{
     calendar::{Calendar, Event},
     ids::{AccountId, ProviderKey, ThreadId},
     mail::{Mailbox, Message},
     sync::{ObjectKind, SearchDomain, SyncScope},
-    time::{Horizon, UtcDateTime},
+    time::Horizon,
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
-use engine_store::{MessageBodyStore, OccurrenceRow, StoreRead};
+use engine_store::{MailListRow, MailSelector, MessageBodyStore, OccurrenceRow, StoreRead};
 use serde_json::Value;
 
 use super::decode_error;
@@ -86,143 +86,96 @@ impl Engine {
         Ok(messages)
     }
 
-    /// One account's newest `limit` messages by date — the windowed message list a host
-    /// renders, ranked by `received_at`/`sent_at` (newest first) via the scalar mail index so
-    /// **only the chosen `limit` payloads are deserialized**, not the whole mailbox. Messages
-    /// with no known date sort last (entering the window only if dated ones don't fill it).
-    /// Pair with [`Engine::thread_messages`] to pull a shown conversation's older members and
-    /// [`Engine::messages_by_keys`] to resolve a specific message the window omits.
+    /// The newest `limit` mail rows across `accounts`, newest first — **the read a mailbox list
+    /// is built from**.
+    ///
+    /// It returns the projected [`MailListRow`], not the normalized object: sender, subject, date,
+    /// flags, preview and folder membership, straight out of an ordered index. So a list costs the
+    /// rows it shows rather than the mail it is drawn from, whether the account holds seven
+    /// thousand messages or four hundred thousand. Reading a body or an attachment list still goes
+    /// to the object, on demand, for the one message being opened.
+    ///
+    /// Several accounts in one call is the point: a unified inbox is one ordered answer, not one
+    /// answer per account merged by the host. Messages with no known date sort last, entering the
+    /// window only if dated ones do not fill it. Pair with [`Engine::mail_on_threads`] to pull a
+    /// shown conversation's older members and [`Engine::mail_by_keys`] to resolve a specific
+    /// message the window omits.
     ///
     /// # Errors
     ///
     /// Returns [`ApiError::Store`] on a backend failure.
-    pub async fn messages_windowed(
+    pub async fn mail_window(
         &self,
-        account: &AccountId,
+        accounts: &[AccountId],
         limit: usize,
-    ) -> Result<Vec<Message>, ApiError> {
-        self.newest_mail(account, limit, &HashSet::new()).await
-    }
-
-    /// One account's newest messages **without a cached body text** — the work list a
-    /// host's background body-warming pass feeds through [`Engine::message_body`] so
-    /// the synced window becomes readable (and searchable) offline. Ranked exactly
-    /// like [`Engine::messages_windowed`] (newest first, undated last) and capped at
-    /// `limit`, but filtered against the body cache up front — so an already-warm
-    /// window costs one key scan and deserializes nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError::Store`] on a backend failure.
-    pub async fn messages_missing_body(
-        &self,
-        account: &AccountId,
-        limit: usize,
-    ) -> Result<Vec<Message>, ApiError> {
-        let warmed: HashSet<ProviderKey> = self
+    ) -> Result<Vec<MailListRow>, ApiError> {
+        Ok(self
             .store
-            .message_body_keys(account)
-            .await?
-            .into_iter()
-            .collect();
-        self.newest_mail(account, limit, &warmed).await
+            .list_mail(accounts, MailSelector::Newest, limit)
+            .await?)
     }
 
-    /// The shared windowed-read core: rank every mail scope's index entries by date
-    /// (cheap — keys + dates, no payloads), drop keys in `skip`, keep the newest
-    /// `limit`, then deserialize just those.
-    async fn newest_mail(
+    /// The newest `limit` messages across `accounts` **without a cached body text** — the work
+    /// list a host's background body-warming pass feeds through [`Engine::message_body`] so the
+    /// synced window becomes readable (and searchable) offline. Ordered exactly like
+    /// [`Engine::mail_window`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn mail_missing_body(
         &self,
-        account: &AccountId,
+        accounts: &[AccountId],
         limit: usize,
-        skip: &HashSet<ProviderKey>,
-    ) -> Result<Vec<Message>, ApiError> {
-        let mut ranked: Vec<(SyncScope, ProviderKey, Option<UtcDateTime>)> = Vec::new();
-        for scope in self.mail_scopes(account).await? {
-            for (key, date, _thread) in self.store.scope_mail_index(&scope).await? {
-                if !skip.contains(&key) {
-                    ranked.push((scope.clone(), key, date));
-                }
-            }
-        }
-        // Newest first. `Option<UtcDateTime>` orders `None` below any `Some`, so `Reverse` sinks
-        // undated messages to the end — they enter the window only if dated ones leave room.
-        ranked.sort_by_key(|(_, _, date)| Reverse(*date));
-        ranked.truncate(limit);
-        let mut messages = Vec::with_capacity(ranked.len());
-        for (scope, key, _) in &ranked {
-            if let Some(payload) = self.store.object_payload(scope, key).await? {
-                messages.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
-            }
-        }
-        Ok(messages)
+    ) -> Result<Vec<MailListRow>, ApiError> {
+        Ok(self.store.mail_missing_body(accounts, limit).await?)
     }
 
-    /// Every message on one thread within an account — **all** of its members regardless of
-    /// any date window, so a windowed list can still expand a conversation into its full
-    /// history (a years-old reply included). Resolved through the mail index's `thread_id`, so
-    /// only the thread's own members are read and decoded.
+    /// Every mail row on any of `threads` across `accounts` — **all** of each conversation's
+    /// members regardless of any date window, so a windowed list can expand one into its full
+    /// history (a years-old reply included).
+    ///
+    /// Resolved through the store's thread index, so the cost is the size of the conversations
+    /// asked for and not the size of the mailbox they sit in. A malformed thread id is dropped
+    /// rather than raised: it names no conversation, so it can only ever contribute nothing, and
+    /// failing the whole read would turn one bad id into an empty list. Empty `threads` returns
+    /// nothing without touching the store.
     ///
     /// # Errors
     ///
     /// Returns [`ApiError::Store`] on a backend failure.
-    pub async fn thread_messages(
+    pub async fn mail_on_threads<'a>(
         &self,
-        account: &AccountId,
-        thread_id: &str,
-    ) -> Result<Vec<Message>, ApiError> {
-        let threads = thread_ids(core::iter::once(thread_id));
-        self.messages_on_threads(account, &threads, &HashSet::new())
-            .await
+        accounts: &[AccountId],
+        threads: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Vec<MailListRow>, ApiError> {
+        let threads = thread_ids(threads.into_iter());
+        Ok(self
+            .store
+            .list_mail(accounts, MailSelector::Threads(&threads), usize::MAX)
+            .await?)
     }
 
-    /// Every message that belongs to **any** of the given `threads` within an account, except the
-    /// ones whose key is in `exclude` — the batched counterpart of [`Engine::thread_messages`] for
-    /// completing a **whole windowed list's** conversations in one pass. It scans the mail index
-    /// **once**, not once per thread (which would be `O(threads × mailbox)` — pathological for a
-    /// large mailbox), so a host pulls every shown conversation's out-of-window members
-    /// (`exclude` = the keys already in the window, so they aren't re-read and re-decoded) in a
-    /// single pass. Empty `threads` returns nothing without touching the store.
+    /// The mail rows named by provider `keys` within an account — a targeted resolve for actions
+    /// and search hits that reference messages a date window may not hold. Keys not found (moved,
+    /// tombstoned) are simply absent.
     ///
     /// # Errors
     ///
     /// Returns [`ApiError::Store`] on a backend failure.
-    pub async fn thread_members(
+    pub async fn mail_by_keys(
         &self,
         account: &AccountId,
-        threads: &HashSet<String>,
-        exclude: &HashSet<String>,
-    ) -> Result<Vec<Message>, ApiError> {
-        let threads = thread_ids(threads.iter().map(String::as_str));
-        self.messages_on_threads(account, &threads, exclude).await
-    }
-
-    /// The shared thread read: every message in `threads` across the account's mail
-    /// scopes, minus the keys in `exclude`.
-    ///
-    /// The store resolves membership from its thread index, so the cost is the size of
-    /// the conversations asked for — not the size of the mailbox they sit in.
-    async fn messages_on_threads(
-        &self,
-        account: &AccountId,
-        threads: &[ThreadId],
-        exclude: &HashSet<String>,
-    ) -> Result<Vec<Message>, ApiError> {
-        if threads.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut messages = Vec::new();
-        for scope in self.mail_scopes(account).await? {
-            for key in self.store.scope_thread_keys(&scope, threads).await? {
-                if !exclude.contains(key.as_str())
-                    && let Some(payload) = self.store.object_payload(&scope, &key).await?
-                {
-                    messages
-                        .push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
-                }
-            }
-        }
-        Ok(messages)
+        keys: &[ProviderKey],
+    ) -> Result<Vec<MailListRow>, ApiError> {
+        Ok(self
+            .store
+            .list_mail(
+                core::slice::from_ref(account),
+                MailSelector::Keys(keys),
+                usize::MAX,
+            )
+            .await?)
     }
 
     /// The messages named by provider `keys` within an account — a targeted resolve for
@@ -420,10 +373,8 @@ impl Engine {
 
 /// Parses caller-supplied thread ids, dropping any that are not well-formed.
 ///
-/// Hosts hold these as plain strings — they came out of a `Message` and go straight
-/// back in — so validation belongs here rather than in every caller. A malformed id
-/// is dropped rather than raised: it names no thread, so it can only ever contribute
-/// nothing, and failing the whole read would turn one bad id into an empty list.
+/// Hosts hold these as plain strings — they came out of a list row and go straight back in — so
+/// validation belongs here rather than in every caller.
 fn thread_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Vec<ThreadId> {
     let mut parsed: Vec<ThreadId> = ids.filter_map(|id| ThreadId::try_from(id).ok()).collect();
     parsed.sort();

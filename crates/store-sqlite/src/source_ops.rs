@@ -14,14 +14,10 @@ use engine_core::{
     mail::MessageBody,
     raw::RawMime,
 };
-use engine_store::{Clock, MessageBodyStore, MessageSourceCache, Result};
+use engine_store::{Clock, MailListRow, MessageBodyStore, MessageSourceCache, Result};
 use rusqlite::Connection;
 
-use crate::{
-    SqliteStore, blob,
-    convert::{backend, instant_to_text},
-    sql,
-};
+use crate::{SqliteStore, blob, convert::instant_to_text, mail_ops, sql};
 
 #[async_trait]
 impl<C: Clock> MessageSourceCache for SqliteStore<C> {
@@ -96,9 +92,13 @@ impl<C: Clock> MessageBodyStore for SqliteStore<C> {
             .await
     }
 
-    async fn message_body_keys(&self, account: &AccountId) -> Result<Vec<ProviderKey>> {
-        let account = account.as_str().to_owned();
-        self.read(move |conn| select_body_keys(conn, &account))
+    async fn mail_missing_body(
+        &self,
+        accounts: &[AccountId],
+        limit: usize,
+    ) -> Result<Vec<MailListRow>> {
+        let accounts = accounts.to_vec();
+        self.read(move |conn| mail_ops::mail_missing_body(conn, &accounts, limit))
             .await
     }
 }
@@ -152,19 +152,6 @@ fn upsert_body(
         (account, key, plain, html, fetched_at),
     )?;
     Ok(())
-}
-
-/// Reads every provider key with a cached body text for `account`.
-fn select_body_keys(conn: &Connection, account: &str) -> Result<Vec<ProviderKey>> {
-    let raw: Vec<String> = sql::query_all(
-        conn,
-        "SELECT provider_key FROM message_body WHERE account = ?1",
-        [account],
-        |row| row.get(0),
-    )?;
-    raw.into_iter()
-        .map(|key| ProviderKey::new(key).map_err(backend))
-        .collect()
 }
 
 /// Reads the cached body text for `(account, key)`, if any. An empty stored `plain`

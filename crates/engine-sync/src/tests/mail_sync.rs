@@ -45,7 +45,7 @@ async fn sync_mail_persists_containers_members_and_index() {
         .await
         .unwrap();
     assert!(counts.fts >= 1, "expected a full-text row");
-    assert!(counts.mail_index >= 1, "expected a scalar index row");
+    assert!(counts.message >= 1, "expected a stored mail row");
     assert!(counts.memberships >= 1, "expected a membership row");
 
     // The cursor advanced.
