@@ -381,6 +381,11 @@ impl engine_provider::ConnectObserver for Recorder {
         let line = match step {
             ConnectStep::TlsEstablished(version) => format!("tls {version:?}"),
             ConnectStep::Authenticated => "authenticated".to_owned(),
+            ConnectStep::Negotiated {
+                dialect, features, ..
+            } => {
+                format!("negotiated {dialect} [{}]", features.join(" "))
+            }
             other => format!("unexpected {other:?}"),
         };
         self.0.lock().unwrap().push(line);
@@ -415,7 +420,18 @@ async fn connect_reports_the_tls_handshake_then_the_login() {
         Some(TlsVersion::Tls1_3),
     )
     .await;
-    assert_eq!(steps, ["tls Tls1_3", "authenticated"]);
+    // The dialect step closes the trace, and shows what one ENABLE bought: this server
+    // advertised only IDLE, but rev2 folds LIST-STATUS and SPECIAL-USE in too. QRESYNC is
+    // absent because it is *not* folded in and this server never offered it — which is
+    // exactly the distinction a support session needs the line to make.
+    assert_eq!(
+        steps,
+        [
+            "tls Tls1_3",
+            "authenticated",
+            "negotiated IMAP4rev2 [IDLE LIST-STATUS SPECIAL-USE]"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -423,7 +439,8 @@ async fn a_stream_that_is_not_tls_reports_only_the_login() {
     // `tls_version` is `None` when the stream is not TLS — the fact is not applicable,
     // not merely unobserved, so no step is invented for it.
     let steps = observed_open_session(script(&[GREETING, LOGIN_OK, "a2 OK done\r\n"]), None).await;
-    assert_eq!(steps, ["authenticated"]);
+    // No capability list at all: rev1 baseline, nothing usable, and nothing to enable.
+    assert_eq!(steps, ["authenticated", "negotiated IMAP4rev1 []"]);
 }
 
 #[tokio::test]

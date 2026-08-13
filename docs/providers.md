@@ -60,7 +60,7 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 | Provider | Crate | Data domains | Push | Standards |
 | --- | --- | --- | --- | --- |
 | **JMAP** | `provider-jmap` | mail/calendar/contact read/write, mail submit, RSVP | EventSource (RFC 8620 §7.3) | RFC 8620, RFC 8621, RFC 8984, RFC 9610 |
-| **IMAP + SMTP** | `provider-imap` | mail read/write (SMTP submit optional, incl. iMIP) | IMAP `IDLE` (RFC 2177) | RFC 9051, RFC 7162, RFC 2177, RFC 6154, RFC 6851, RFC 4315, RFC 5321/5322, RFC 2047 |
+| **IMAP + SMTP** | `provider-imap` | mail read/write (SMTP submit optional, incl. iMIP) | IMAP `IDLE` (RFC 2177) | RFC 9051 / RFC 3501 (negotiated), RFC 5161, RFC 7162, RFC 2177, RFC 6154, RFC 5258/5819, RFC 6851, RFC 4315, RFC 5321/5322, RFC 2047 |
 | **CalDAV/CardDAV** | `provider-caldav` | calendar/contact read/write, RSVP, iMIP inbound | — | RFC 4791, RFC 6350, RFC 6352, RFC 6578, RFC 6638 |
 | **Microsoft Graph** | `provider-graph` | mail read/write/submit (incl. iMIP), calendar read/write + RSVP, personal/directory contacts | — | Microsoft Graph v1.0 |
 | **Google** | `provider-google` | Gmail read/write/submit (incl. iMIP), Calendar read/write + RSVP, People read; owned writes | — | Gmail, Calendar, People APIs |
@@ -143,11 +143,16 @@ For OAuth providers, use `Credentials::bearer("access-token")`. Servers that gen
 
 ## IMAP + SMTP
 
-Implements a hand-rolled **IMAP4rev2** client (RFC 9051) over a generic async stream, with optional **SMTP** submission (RFC 5321). The crate is intentionally dependency-free for the protocol itself so the transport and parsing can be fully offline-tested.
+Implements a hand-rolled IMAP client over a generic async stream, with optional **SMTP** submission (RFC 5321). The crate is intentionally dependency-free for the protocol itself so the transport and parsing can be fully offline-tested.
+
+It speaks **IMAP4rev2** (RFC 9051) where a server offers it and **IMAP4rev1** (RFC 3501) everywhere else, chosen by negotiation rather than by configuration: the post-auth `CAPABILITY` decides what a single `ENABLE` asks for, and only what the server confirms in `* ENABLED` takes effect. Because rev2 folds a dozen previously separate extensions into the base protocol, enabling the dialect makes all of them available at once without the server advertising any of them individually. The dialect reaches the data model in exactly one place — mailbox names are modified UTF-7 on rev1 and UTF-8 on rev2 — and the transport owns that conversion, so a mailbox has the same identity on either dialect.
 
 ### Supported standards and extensions
 
-- **RFC 9051** — IMAP4rev2 (the base protocol; the client also works with RFC 3501 servers).
+- **RFC 9051** — IMAP4rev2, negotiated where the server offers it.
+- **RFC 3501** — IMAP4rev1, the baseline everywhere else, including its modified-UTF-7 mailbox names.
+- **RFC 5161** — `ENABLE`, which is how the dialect and `QRESYNC` are turned on and confirmed.
+- **RFC 5258** / **RFC 5819** — `LIST-EXTENDED` and `LIST-STATUS`: the folder list and its unread counts in one round trip.
 - **RFC 7162** — `CONDSTORE`/`QRESYNC` for incremental flag/expunge deltas.
 - **RFC 2177** — IMAP `IDLE` push notifications via `ImapWatcher`.
 - **RFC 6154** — `SPECIAL-USE` mailbox roles (`\Inbox`, `\Sent`, `\Drafts`, etc.).

@@ -38,7 +38,7 @@ encryption-agnostic either way.
 | Provider | Crate | Mail | Calendar | Contacts | Push |
 | --- | --- | --- | --- | --- | --- |
 | **JMAP** | `provider-jmap` | read/write/submit | read/write + RSVP | RFC 9610 read/write | EventSource |
-| **IMAP + SMTP** | `provider-imap` | read/write/submit (incl. iMIP) | — | — | IDLE |
+| **IMAP + SMTP** | `provider-imap` | read/write/submit (incl. iMIP), IMAP4rev2 or rev1 | — | — | IDLE |
 | **CalDAV + CardDAV** | `provider-caldav` | — | read/write + RSVP | vCard read/write | — |
 | **Microsoft Graph** | `provider-graph` | read/write/submit (incl. iMIP) | read/write + RSVP | personal read/write + directories | — |
 | **Google** | `provider-google` | read/write/submit (incl. iMIP) | read/write + RSVP | People read/write + directories | — |

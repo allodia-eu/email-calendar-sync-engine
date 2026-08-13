@@ -169,10 +169,11 @@ pub(crate) async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     finish_session(Connection::open(stream).await?, tls_version, config).await
 }
 
-/// Logs in and negotiates capabilities over an already-greeted `connection`, reporting
-/// [`ConnectStep::TlsEstablished`] (when the handshake agreed a version) then
-/// [`ConnectStep::Authenticated`] to the config's observer. Shared by the implicit-TLS
-/// path ([`open_session`]) and the STARTTLS resume, so both emit the same step order.
+/// Logs in and negotiates the dialect over an already-greeted `connection`, reporting
+/// [`ConnectStep::TlsEstablished`] (when the handshake agreed a version), then
+/// [`ConnectStep::Authenticated`], then [`ConnectStep::Negotiated`] to the config's
+/// observer. Shared by the implicit-TLS path ([`open_session`]) and the STARTTLS resume,
+/// so both emit the same step order.
 ///
 /// # Errors
 ///
@@ -188,11 +189,15 @@ async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     }
     connection.login(&config.username, &config.password).await?;
     observer.step(&ConnectStep::Authenticated);
-    // Detect + ENABLE QRESYNC (RFC 7162) so deltas reconcile flag/expunge changes
-    // incrementally, and record IDLE (RFC 2177) support; a server without either stays
-    // on the corresponding baseline. Not a connect step: it negotiates extensions, it
-    // does not establish the connection.
+    // Settle the dialect and the extension set: `CAPABILITY`, then one `ENABLE` for
+    // IMAP4rev2 where offered and for anything else that needs announcing. A server that
+    // offers or confirms neither stays on the rev1 baseline.
     connection.negotiate().await?;
+    // …and report what it agreed to. Two accounts on one build behave differently
+    // because their servers agreed to different things, and this is the only line in the
+    // trace that says which — the first thing to read on a support report.
+    let (dialect, extensions) = connection.negotiated_summary();
+    observer.step(&ConnectStep::negotiated(dialect, &extensions));
     Ok(connection)
 }
 

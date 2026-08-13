@@ -157,6 +157,35 @@ impl Negotiated {
         !self.rev2() && self.has(Extension::SpecialUse)
     }
 
+    /// The dialect this session settled on, named as the protocol names it — for the
+    /// connect trace a support session reads, never for a behavioural decision (those go
+    /// through [`has`](Self::has), so a new dialect cannot silently change one).
+    pub(crate) fn dialect(&self) -> &'static str {
+        if self.rev2() {
+            "IMAP4rev2"
+        } else {
+            "IMAP4rev1"
+        }
+    }
+
+    /// Every extension this session may use, in declaration order so two logs compare.
+    ///
+    /// Reports what is **usable**, not what was advertised: on rev2 that includes the
+    /// extensions folded into the base protocol, which is exactly the difference a
+    /// support session is trying to see.
+    pub(crate) fn available_extensions(&self) -> Vec<&'static str> {
+        [
+            Extension::Idle,
+            Extension::ListStatus,
+            Extension::SpecialUse,
+            Extension::Qresync,
+        ]
+        .into_iter()
+        .filter(|ext| self.has(*ext))
+        .map(Extension::atom)
+        .collect()
+    }
+
     /// Whether mailbox names on this session's wire are modified UTF-7 (RFC 3501 §5.1.3)
     /// rather than UTF-8 (RFC 9051 §5.1) — the one place the dialect reaches the data.
     pub(crate) fn names_are_modified_utf7(&self) -> bool {
