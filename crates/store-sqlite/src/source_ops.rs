@@ -15,11 +15,12 @@ use engine_core::{
     raw::RawMime,
 };
 use engine_store::{Clock, MessageBodyStore, MessageSourceCache, Result};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 use crate::{
     SqliteStore, blob,
     convert::{backend, instant_to_text},
+    sql,
 };
 
 #[async_trait]
@@ -51,7 +52,7 @@ impl<C: Clock> MessageSourceCache for SqliteStore<C> {
         let account = account.as_str().to_owned();
         let key = key.as_str().to_owned();
         let Some(hash) = self
-            .call(move |conn| select_hash(conn, &account, &key))
+            .read(move |conn| select_hash(conn, &account, &key))
             .await?
         else {
             return Ok(None);
@@ -91,13 +92,13 @@ impl<C: Clock> MessageBodyStore for SqliteStore<C> {
     ) -> Result<Option<MessageBody>> {
         let account = account.as_str().to_owned();
         let key = key.as_str().to_owned();
-        self.call(move |conn| select_body(conn, &account, &key))
+        self.read(move |conn| select_body(conn, &account, &key))
             .await
     }
 
     async fn message_body_keys(&self, account: &AccountId) -> Result<Vec<ProviderKey>> {
         let account = account.as_str().to_owned();
-        self.call(move |conn| select_body_keys(conn, &account))
+        self.read(move |conn| select_body_keys(conn, &account))
             .await
     }
 }
@@ -110,27 +111,26 @@ fn upsert_source(
     hash: &str,
     fetched_at: &str,
 ) -> Result<()> {
-    conn.execute(
+    sql::execute(
+        conn,
         "INSERT INTO message_source (account, provider_key, content_hash, fetched_at)
          VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(account, provider_key) DO UPDATE SET
              content_hash = excluded.content_hash,
              fetched_at   = excluded.fetched_at",
         (account, key, hash, fetched_at),
-    )
-    .map_err(backend)?;
+    )?;
     Ok(())
 }
 
 /// Reads the blob content hash recorded for `(account, key)`, if any.
 fn select_hash(conn: &Connection, account: &str, key: &str) -> Result<Option<String>> {
-    conn.query_row(
+    sql::query_opt(
+        conn,
         "SELECT content_hash FROM message_source WHERE account = ?1 AND provider_key = ?2",
         (account, key),
         |row| row.get(0),
     )
-    .optional()
-    .map_err(backend)
 }
 
 /// Upserts the extracted body text for `(account, key)`; the `message_body_au`
@@ -143,44 +143,39 @@ fn upsert_body(
     html: Option<&str>,
     fetched_at: &str,
 ) -> Result<()> {
-    conn.execute(
+    sql::execute(
+        conn,
         "INSERT INTO message_body (account, provider_key, plain, html, fetched_at)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(account, provider_key) DO UPDATE SET
              plain = excluded.plain, html = excluded.html, fetched_at = excluded.fetched_at",
         (account, key, plain, html, fetched_at),
-    )
-    .map_err(backend)?;
+    )?;
     Ok(())
 }
 
 /// Reads every provider key with a cached body text for `account`.
 fn select_body_keys(conn: &Connection, account: &str) -> Result<Vec<ProviderKey>> {
-    let mut stmt = conn
-        .prepare("SELECT provider_key FROM message_body WHERE account = ?1")
-        .map_err(backend)?;
-    let rows = stmt
-        .query_map([account], |row| row.get::<_, String>(0))
-        .map_err(backend)?;
-    let mut keys = Vec::new();
-    for row in rows {
-        let raw = row.map_err(backend)?;
-        keys.push(ProviderKey::new(raw).map_err(backend)?);
-    }
-    Ok(keys)
+    let raw: Vec<String> = sql::query_all(
+        conn,
+        "SELECT provider_key FROM message_body WHERE account = ?1",
+        [account],
+        |row| row.get(0),
+    )?;
+    raw.into_iter()
+        .map(|key| ProviderKey::new(key).map_err(backend))
+        .collect()
 }
 
 /// Reads the cached body text for `(account, key)`, if any. An empty stored `plain`
 /// maps back to "no plain part".
 fn select_body(conn: &Connection, account: &str, key: &str) -> Result<Option<MessageBody>> {
-    let row: Option<(String, Option<String>)> = conn
-        .query_row(
-            "SELECT plain, html FROM message_body WHERE account = ?1 AND provider_key = ?2",
-            (account, key),
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(backend)?;
+    let row: Option<(String, Option<String>)> = sql::query_opt(
+        conn,
+        "SELECT plain, html FROM message_body WHERE account = ?1 AND provider_key = ?2",
+        (account, key),
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     Ok(row.map(|(plain, html)| {
         let plain = (!plain.is_empty()).then_some(plain);
         MessageBody::new(plain, html)

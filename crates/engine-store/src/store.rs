@@ -266,14 +266,33 @@ pub trait StoreRead: Send + Sync {
 
     /// The scalar mail-index entries for a scope's live mail objects: each object's
     /// [`MailIndexEntry`] — the sort/group keys **without** the payload, so a caller can rank by
-    /// date (a newest-N window) or gather a thread's members and then deserialize only the chosen
-    /// few, instead of reading and decoding the whole mailbox. Empty for a non-mail scope (only
-    /// mail objects carry a mail index). Order is unspecified — callers sort.
+    /// date (a newest-N window) and then deserialize only the chosen few, instead of reading and
+    /// decoding the whole mailbox. Empty for a non-mail scope (only mail objects carry a mail
+    /// index). Order is unspecified — callers sort.
     ///
     /// # Errors
     ///
     /// Returns `StoreError::Backend` on a backend failure.
     async fn scope_mail_index(&self, scope: &SyncScope) -> Result<Vec<MailIndexEntry>>;
+
+    /// The provider keys in a scope whose mail-index entry names one of `threads`, in
+    /// ascending key order and without repeats.
+    ///
+    /// The targeted counterpart of [`scope_mail_index`](StoreRead::scope_mail_index).
+    /// Expanding a conversation is a question about a handful of messages, and
+    /// answering it by reading every row of every folder makes opening one thread cost
+    /// a function of how much mail the account holds; a backend answers this from an
+    /// index on the thread column instead. Empty `threads` returns nothing without
+    /// touching the store, and a thread nothing is filed under contributes no keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn scope_thread_keys(
+        &self,
+        scope: &SyncScope,
+        threads: &[ThreadId],
+    ) -> Result<Vec<ProviderKey>>;
 
     /// The materialized occurrences in a scope that overlap `window`, ascending by
     /// `(start, end, event)`.

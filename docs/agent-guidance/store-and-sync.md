@@ -38,6 +38,35 @@ mailbox that can tell them apart: `cargo bench -p mailbox-fixture` (`rust.md` �
 - `engine-core` stays I/O-free and async-free. Async and I/O live only in store
   implementations and provider crates.
 
+## One writer, a pool of readers
+
+WAL admits one writer and many readers at once, so a store that funnels both
+through a single connection makes a committing sync block the list read a user is
+waiting on. `store-sqlite` therefore opens a writer plus a small pool of readers
+for a file database (`pool.rs`), and each call site picks: transactions and
+pragmas take `call`, everything else takes `read`.
+
+Three things hold that split honest, and each is load-bearing:
+
+- **Readers are `query_only`.** A write handed to `read` fails outright rather
+  than quietly taking a reader's lock and serializing again. Routing is a
+  judgement per call site; a judgement nothing checks is one that drifts.
+- **The contract suite runs on disk as well as in memory.** An in-memory database
+  is a single connection — one connection *is* the database, so a second would be
+  a different, empty one — which means `:memory:` alone exercises no routing at
+  all.
+- **Every statement goes through `sql::execute` / `query_opt` / `query_all`**, so
+  it is compiled once per connection instead of on every call. The point queries
+  behind a windowed read and the upserts behind a sync page are the same dozen
+  statements run thousands of times, and re-parsing them was most of what they
+  cost.
+
+An index is part of the query that uses it. Adding one without the read that plans
+through it is write cost for no read benefit, and no test can tell the difference —
+`scope_thread_keys` returns the same rows scanned or seeked. Assert the plan
+(`EXPLAIN QUERY PLAN`) when you add an index, and add it in the same change as its
+reader.
+
 ## SyncScope
 
 A scope is the unit of sync state, leasing, and serialization. Its granularity
@@ -191,6 +220,18 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObje
   duplicate suppression then falls back to presentation-layer dedup
   (consistent with "UI/search dedup is presentation policy, not storage
   identity").
+- **Engine-derived fields are restored before the batch is built.** An apply
+  replaces a message's whole payload with the one the provider sent, and two of
+  its fields are not the provider's to send: `thread` (derived from the reference
+  graph; only JMAP has a server-side equivalent) and `preview` (IMAP has no server
+  snippet). Left alone, marking one message read dropped it out of its
+  conversation until the next derivation pass and blanked its list row. So the
+  sync path refills them from the stored copy first, for exactly the messages that
+  arrived without them (`engine-sync/src/derived.rs`) — a provider that *does*
+  supply a thread stays authoritative. **Any new field the engine derives onto a
+  stored object belongs in that restore**, or the next flag change erases it. This
+  is a stopgap for the whole-payload write: an apply that touches only the columns
+  the provider supplied has nothing to restore.
 - **Idempotent replay.** Re-applying the same batch after a crash is a no-op:
   object writes are upserts keyed by provider key, the cursor advance is
   conditional on the prior state, and a resurrected stale-token worker is
@@ -550,8 +591,9 @@ trait is **encryption-agnostic** — at-rest encryption is a `store-sqlite`
 construction detail (plain SQLite over OS file encryption by default, SQLCipher
 opt-in), so the same contract holds either way. A small `StoreRead` companion
 (lease-free object/key inspection, plus `account_scopes` to enumerate an account's
-claimed scopes and `scope_objects` to batch-read a scope's objects — for per-account
-search and views) backs the contract suite and early reads.
+claimed scopes, `scope_objects` to batch-read a scope's objects, and
+`scope_thread_keys` to gather a conversation's members without reading the mailbox
+around them) backs the contract suite and early reads.
 
 Supporting types (abbreviated):
 

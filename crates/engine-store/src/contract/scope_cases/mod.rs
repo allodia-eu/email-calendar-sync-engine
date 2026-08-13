@@ -24,6 +24,7 @@ pub(super) use self::{
     read::{
         account_scopes_enumerates_an_accounts_scopes,
         scope_mail_index_reports_dates_threads_and_excludes_tombstones,
-        scope_objects_batch_reads_live_objects, structured_index_rows_replace_and_clear,
+        scope_objects_batch_reads_live_objects, scope_thread_keys_gathers_only_the_named_threads,
+        structured_index_rows_replace_and_clear,
     },
 };

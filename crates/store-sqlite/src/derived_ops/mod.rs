@@ -20,7 +20,7 @@ use engine_store::{
 };
 use rusqlite::{Connection, Transaction};
 
-use crate::convert;
+use crate::{convert, sql};
 
 /// Applies the precomputed derived rows for one scope inside the apply/maintenance
 /// transaction.
@@ -41,21 +41,22 @@ pub(crate) fn apply_derived(
     }
     for row in &derived.fts {
         let (subject, body, location) = fts_columns(&row.fields);
-        tx.execute(
+        sql::execute(
+            tx,
             "INSERT INTO fts_doc (scope_key, provider_key, subject, body, location)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(scope_key, provider_key) DO UPDATE SET
                  subject = excluded.subject, body = excluded.body, location = excluded.location",
             (scope_key, row.key.as_str(), subject, body, location),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     for occ in &derived.occurrences {
         let recurrence_id = occ
             .recurrence_id
             .map(convert::instant_to_text)
             .unwrap_or_default();
-        tx.execute(
+        sql::execute(
+            tx,
             "INSERT INTO event_occurrence
                  (scope_key, event, start_utc, end_utc, recurrence_id, tzdata_version)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -69,11 +70,11 @@ pub(crate) fn apply_derived(
                 recurrence_id,
                 occ.tzdata_version.as_str(),
             ),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     for row in &derived.mail_index {
-        tx.execute(
+        sql::execute(
+            tx,
             "INSERT INTO mail_index (scope_key, provider_key, date_utc, has_attachment, thread_id)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(scope_key, provider_key) DO UPDATE SET
@@ -87,11 +88,11 @@ pub(crate) fn apply_derived(
                 i64::from(row.has_attachment),
                 row.thread_id.as_ref().map(ThreadId::as_str),
             ),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     for row in &derived.event_index {
-        tx.execute(
+        sql::execute(
+            tx,
             "INSERT INTO event_index (scope_key, provider_key, has_conference, my_partstat)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(scope_key, provider_key) DO UPDATE SET
@@ -103,8 +104,7 @@ pub(crate) fn apply_derived(
                 i64::from(row.has_conference),
                 row.my_partstat.as_ref().map(ParticipationStatus::as_str),
             ),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     replace_addresses(tx, scope_key, &derived.addresses)?;
     replace_memberships(tx, scope_key, &derived.memberships)?;
@@ -115,11 +115,11 @@ pub(crate) fn apply_derived(
 /// Clears one event's occurrence rows, leaving its other derived rows alone — the targeted
 /// reset a re-derived event needs (`DerivedWrite::reset_occurrences`).
 pub(crate) fn delete_occurrences(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<()> {
-    tx.execute(
+    sql::execute(
+        tx,
         "DELETE FROM event_occurrence WHERE scope_key = ?1 AND event = ?2",
         (scope_key, key),
-    )
-    .map_err(convert::backend)?;
+    )?;
     Ok(())
 }
 
@@ -128,11 +128,11 @@ pub(crate) fn delete_occurrences(tx: &Transaction<'_>, scope_key: &str, key: &st
 pub(crate) fn delete_derived_rows(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<()> {
     // `event_occurrence` keys the object as `event`; every other table as
     // `provider_key`.
-    tx.execute(
+    sql::execute(
+        tx,
         "DELETE FROM event_occurrence WHERE scope_key = ?1 AND event = ?2",
         (scope_key, key),
-    )
-    .map_err(convert::backend)?;
+    )?;
     for table in [
         "fts_doc",
         "mail_index",
@@ -144,11 +144,11 @@ pub(crate) fn delete_derived_rows(tx: &Transaction<'_>, scope_key: &str, key: &s
         // tombstone/re-index never leaves orphan vectors once it does.
         "embedding",
     ] {
-        tx.execute(
+        sql::execute(
+            tx,
             &format!("DELETE FROM {table} WHERE scope_key = ?1 AND provider_key = ?2"),
             (scope_key, key),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     Ok(())
 }
@@ -185,21 +185,14 @@ pub(crate) fn index_row_counts(
 /// Returns [`StoreError::Backend`](engine_store::StoreError::Backend) on a backend failure or
 /// a corrupt stored key/date.
 pub(crate) fn scope_mail_index(conn: &Connection, scope_key: &str) -> Result<Vec<MailIndexEntry>> {
-    let mut stmt = conn
-        .prepare("SELECT provider_key, date_utc, thread_id FROM mail_index WHERE scope_key = ?1")
-        .map_err(convert::backend)?;
-    let rows = stmt
-        .query_map([scope_key], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-            ))
-        })
-        .map_err(convert::backend)?;
-    let mut entries = Vec::new();
-    for row in rows {
-        let (key, date, thread) = row.map_err(convert::backend)?;
+    let rows: Vec<(String, Option<String>, Option<String>)> = sql::query_all(
+        conn,
+        "SELECT provider_key, date_utc, thread_id FROM mail_index WHERE scope_key = ?1",
+        [scope_key],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let mut entries = Vec::with_capacity(rows.len());
+    for (key, date, thread) in rows {
         let key = ProviderKey::new(key).map_err(convert::backend)?;
         let date = convert::parse_opt_instant(date)?;
         let thread = thread
@@ -209,6 +202,40 @@ pub(crate) fn scope_mail_index(conn: &Connection, scope_key: &str) -> Result<Vec
         entries.push((key, date, thread));
     }
     Ok(entries)
+}
+
+/// The provider keys in a scope filed under any of `threads`, ascending and without
+/// repeats. Backs `StoreRead::scope_thread_keys` — expanding a conversation.
+///
+/// One seek per thread rather than a single statement with an `IN` list: the list's
+/// length changes with the window, so one statement would compile a new SQL string per
+/// call and defeat the statement cache. Each seek here is the same cached statement
+/// against `mail_index_thread`, which carries `provider_key` alongside the thread and
+/// so answers without reading the table.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`](engine_store::StoreError::Backend) on a backend
+/// failure or a corrupt stored key.
+pub(crate) fn scope_thread_keys(
+    conn: &Connection,
+    scope_key: &str,
+    threads: &[ThreadId],
+) -> Result<Vec<ProviderKey>> {
+    let mut raw: Vec<String> = Vec::new();
+    for thread in threads {
+        raw.extend(sql::query_all(
+            conn,
+            "SELECT provider_key FROM mail_index WHERE scope_key = ?1 AND thread_id = ?2",
+            (scope_key, thread.as_str()),
+            |r| r.get::<_, String>(0),
+        )?);
+    }
+    raw.sort_unstable();
+    raw.dedup();
+    raw.into_iter()
+        .map(|key| ProviderKey::new(key).map_err(convert::backend))
+        .collect()
 }
 
 /// The occurrences in a scope that overlap `window`, ascending by `(start, end, event)`.
@@ -235,37 +262,23 @@ pub(crate) fn scope_occurrences(
     scope_key: &str,
     window: Horizon,
 ) -> Result<Vec<OccurrenceRow>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT event, start_utc, end_utc, recurrence_id, tzdata_version
+    let rows: Vec<(String, String, String, String, String)> = sql::query_all(
+        conn,
+        "SELECT event, start_utc, end_utc, recurrence_id, tzdata_version
              FROM event_occurrence
              WHERE scope_key = ?1
                AND start_utc < ?3
                AND (end_utc > ?2 OR (end_utc = start_utc AND start_utc >= ?2))
              ORDER BY start_utc, end_utc, event, recurrence_id",
-        )
-        .map_err(convert::backend)?;
-    let rows = stmt
-        .query_map(
-            (
-                scope_key,
-                convert::instant_to_text(window.start()),
-                convert::instant_to_text(window.end()),
-            ),
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                ))
-            },
-        )
-        .map_err(convert::backend)?;
-    let mut occurrences = Vec::new();
-    for row in rows {
-        let (event, start, end, recurrence_id, tzdata) = row.map_err(convert::backend)?;
+        (
+            scope_key,
+            convert::instant_to_text(window.start()),
+            convert::instant_to_text(window.end()),
+        ),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )?;
+    let mut occurrences = Vec::with_capacity(rows.len());
+    for (event, start, end, recurrence_id, tzdata) in rows {
         occurrences.push(OccurrenceRow {
             event: ProviderKey::new(event).map_err(convert::backend)?,
             start: convert::parse_instant(&start)?,
@@ -310,7 +323,8 @@ fn replace_addresses(tx: &Transaction<'_>, scope_key: &str, rows: &[MailAddressR
     let keys = rows.iter().map(|r| r.key.as_str());
     delete_junction_keys(tx, scope_key, "mail_address", keys)?;
     for row in rows {
-        tx.execute(
+        sql::execute(
+            tx,
             "INSERT INTO mail_address (scope_key, provider_key, field, addr, name)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(scope_key, provider_key, field, addr) DO UPDATE SET name = excluded.name",
@@ -321,8 +335,7 @@ fn replace_addresses(tx: &Transaction<'_>, scope_key: &str, rows: &[MailAddressR
                 row.addr.as_str(),
                 row.name.as_deref(),
             ),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     Ok(())
 }
@@ -336,7 +349,8 @@ fn replace_memberships(
     let keys = rows.iter().map(|r| r.key.as_str());
     delete_junction_keys(tx, scope_key, "membership", keys)?;
     for row in rows {
-        tx.execute(
+        sql::execute(
+            tx,
             "INSERT INTO membership (scope_key, provider_key, kind, value)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(scope_key, provider_key, kind, value) DO NOTHING",
@@ -346,8 +360,7 @@ fn replace_memberships(
                 convert::membership_kind_text(row.kind),
                 row.value.as_str(),
             ),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     Ok(())
 }
@@ -361,7 +374,8 @@ fn replace_participants(
     let keys = rows.iter().map(|r| r.key.as_str());
     delete_junction_keys(tx, scope_key, "event_participant", keys)?;
     for row in rows {
-        tx.execute(
+        sql::execute(
+            tx,
             "INSERT INTO event_participant (scope_key, provider_key, role, addr, partstat)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(scope_key, provider_key, role, addr) DO UPDATE SET partstat = excluded.partstat",
@@ -372,8 +386,7 @@ fn replace_participants(
                 row.addr.as_str(),
                 row.partstat.as_str(),
             ),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     Ok(())
 }
@@ -388,11 +401,11 @@ fn delete_junction_keys<'a>(
 ) -> Result<()> {
     let unique: HashSet<&str> = keys.collect();
     for key in unique {
-        tx.execute(
+        sql::execute(
+            tx,
             &format!("DELETE FROM {table} WHERE scope_key = ?1 AND provider_key = ?2"),
             (scope_key, key),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     Ok(())
 }
@@ -405,13 +418,13 @@ fn count_for_key(
     scope_key: &str,
     key: &str,
 ) -> Result<usize> {
-    let count: i64 = conn
-        .query_row(
-            &format!("SELECT count(*) FROM {table} WHERE scope_key = ?1 AND {column} = ?2"),
-            (scope_key, key),
-            |r| r.get(0),
-        )
-        .map_err(convert::backend)?;
+    let count: i64 = sql::query_opt(
+        conn,
+        &format!("SELECT count(*) FROM {table} WHERE scope_key = ?1 AND {column} = ?2"),
+        (scope_key, key),
+        |r| r.get(0),
+    )?
+    .unwrap_or_default();
     usize::try_from(count).map_err(convert::backend)
 }
 

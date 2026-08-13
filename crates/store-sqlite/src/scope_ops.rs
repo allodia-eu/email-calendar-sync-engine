@@ -20,11 +20,11 @@ use engine_store::{
     DerivedWrite, FenceToken, PendingReconciliation, Result, StorableObject, StoreError,
     SyncApplied, SyncClaim, SyncLease, WorkerId,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, Transaction};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{contact_ops, convert, derived_ops};
+use crate::{contact_ops, convert, derived_ops, sql};
 
 /// An owned, type-erased projection of a [`SyncUpdate`], built before the work is
 /// offloaded to the blocking thread (where the generic object type `T` is gone).
@@ -101,20 +101,18 @@ pub(crate) fn claim(
     expiry: UtcDateTime,
 ) -> Result<SyncClaim> {
     let tx = conn.transaction().map_err(convert::backend)?;
-    let row = tx
-        .query_row(
-            "SELECT token, lease_expiry, cursor FROM sync_scope WHERE scope_key = ?1",
-            [scope_key],
-            |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(convert::backend)?;
+    let row = sql::query_opt(
+        &tx,
+        "SELECT token, lease_expiry, cursor FROM sync_scope WHERE scope_key = ?1",
+        [scope_key],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        },
+    )?;
     let (current, lease_expiry, cursor) = match row {
         Some((token, expiry, cursor)) => (convert::generation_from_i64(token)?, expiry, cursor),
         None => (0, None, None),
@@ -124,7 +122,8 @@ pub(crate) fn claim(
     }
 
     let token = FenceToken::from_generation(current).bump();
-    tx.execute(
+    sql::execute(
+        &tx,
         "INSERT INTO sync_scope (scope_key, account, token, lease_expiry, cursor)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(scope_key)
@@ -136,8 +135,7 @@ pub(crate) fn claim(
             convert::instant_to_text(expiry),
             cursor.as_deref(),
         ),
-    )
-    .map_err(convert::backend)?;
+    )?;
     tx.commit().map_err(convert::backend)?;
 
     let state = cursor.map(SyncState::new);
@@ -153,14 +151,12 @@ pub(crate) fn claim(
 ///
 /// Returns [`StoreError::Backend`] on a backend failure.
 pub(crate) fn load_state(conn: &Connection, scope_key: &str) -> Result<Option<SyncState>> {
-    let cursor: Option<Option<String>> = conn
-        .query_row(
-            "SELECT cursor FROM sync_scope WHERE scope_key = ?1",
-            [scope_key],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .map_err(convert::backend)?;
+    let cursor: Option<Option<String>> = sql::query_opt(
+        conn,
+        "SELECT cursor FROM sync_scope WHERE scope_key = ?1",
+        [scope_key],
+        |r| r.get::<_, Option<String>>(0),
+    )?;
     Ok(cursor.flatten().map(SyncState::new))
 }
 
@@ -232,11 +228,11 @@ pub(crate) fn apply(
     // A streaming page (`next_state == None`) leaves the cursor unchanged so a
     // crash mid-stream re-syncs from the prior cursor rather than skipping pages.
     if let Some(next_state) = next_state {
-        tx.execute(
+        sql::execute(
+            &tx,
             "UPDATE sync_scope SET cursor = ?1 WHERE scope_key = ?2",
             (next_state, scope_key),
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     tx.commit().map_err(convert::backend)?;
     Ok(applied)
@@ -268,20 +264,18 @@ pub(crate) fn maintenance(
 /// Returns [`StoreError::Backend`] on a backend failure.
 pub(crate) fn release(conn: &mut Connection, scope_key: &str, token: u64) -> Result<()> {
     let tx = conn.transaction().map_err(convert::backend)?;
-    let current: Option<i64> = tx
-        .query_row(
-            "SELECT token FROM sync_scope WHERE scope_key = ?1",
-            [scope_key],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(convert::backend)?;
+    let current: Option<i64> = sql::query_opt(
+        &tx,
+        "SELECT token FROM sync_scope WHERE scope_key = ?1",
+        [scope_key],
+        |r| r.get(0),
+    )?;
     if current.is_some_and(|t| convert::generation_from_i64(t).is_ok_and(|g| g == token)) {
-        tx.execute(
+        sql::execute(
+            &tx,
             "UPDATE sync_scope SET lease_expiry = NULL WHERE scope_key = ?1",
             [scope_key],
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     tx.commit().map_err(convert::backend)?;
     Ok(())
@@ -311,18 +305,15 @@ pub(crate) fn abandon_leases(conn: &mut Connection) -> Result<usize> {
 ///
 /// Returns [`StoreError::Backend`] on a backend failure.
 pub(crate) fn object_keys(conn: &Connection, scope_key: &str) -> Result<Vec<ProviderKey>> {
-    let mut stmt = conn
-        .prepare("SELECT provider_key FROM object WHERE scope_key = ?1 ORDER BY provider_key")
-        .map_err(convert::backend)?;
-    let rows = stmt
-        .query_map([scope_key], |r| r.get::<_, String>(0))
-        .map_err(convert::backend)?;
-    let mut keys = Vec::new();
-    for row in rows {
-        let raw = row.map_err(convert::backend)?;
-        keys.push(ProviderKey::new(raw).map_err(convert::backend)?);
-    }
-    Ok(keys)
+    let raw: Vec<String> = sql::query_all(
+        conn,
+        "SELECT provider_key FROM object WHERE scope_key = ?1 ORDER BY provider_key",
+        [scope_key],
+        |r| r.get(0),
+    )?;
+    raw.into_iter()
+        .map(|key| ProviderKey::new(key).map_err(convert::backend))
+        .collect()
 }
 
 /// Every scope the store knows for `account`, decoded from its stored JSON
@@ -334,17 +325,16 @@ pub(crate) fn object_keys(conn: &Connection, scope_key: &str) -> Result<Vec<Prov
 ///
 /// Returns [`StoreError::Backend`] on a backend failure or a corrupt scope key.
 pub(crate) fn account_scopes(conn: &Connection, account: &AccountId) -> Result<Vec<SyncScope>> {
-    let mut stmt = conn
-        .prepare("SELECT scope_key FROM sync_scope WHERE account = ?1")
-        .map_err(convert::backend)?;
-    let rows = stmt
-        .query_map([account.as_str()], |r| r.get::<_, String>(0))
-        .map_err(convert::backend)?;
-    let mut scopes = Vec::new();
-    for row in rows {
-        let key = row.map_err(convert::backend)?;
-        scopes.push(serde_json::from_str::<SyncScope>(&key).map_err(convert::backend)?);
-    }
+    let keys: Vec<String> = sql::query_all(
+        conn,
+        "SELECT scope_key FROM sync_scope WHERE account = ?1",
+        [account.as_str()],
+        |r| r.get(0),
+    )?;
+    let mut scopes: Vec<SyncScope> = keys
+        .iter()
+        .map(|key| serde_json::from_str::<SyncScope>(key).map_err(convert::backend))
+        .collect::<Result<_>>()?;
     scopes.sort();
     Ok(scopes)
 }
@@ -359,14 +349,12 @@ pub(crate) fn object_payload(
     scope_key: &str,
     provider_key: &str,
 ) -> Result<Option<Value>> {
-    let payload: Option<String> = conn
-        .query_row(
-            "SELECT payload FROM object WHERE scope_key = ?1 AND provider_key = ?2",
-            (scope_key, provider_key),
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(convert::backend)?;
+    let payload: Option<String> = sql::query_opt(
+        conn,
+        "SELECT payload FROM object WHERE scope_key = ?1 AND provider_key = ?2",
+        (scope_key, provider_key),
+        |r| r.get(0),
+    )?;
     match payload {
         Some(text) => Ok(Some(serde_json::from_str(&text).map_err(convert::backend)?)),
         None => Ok(None),
@@ -384,19 +372,14 @@ pub(crate) fn scope_objects(
     conn: &Connection,
     scope_key: &str,
 ) -> Result<Vec<(ProviderKey, Value)>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT provider_key, payload FROM object WHERE scope_key = ?1 ORDER BY provider_key",
-        )
-        .map_err(convert::backend)?;
-    let rows = stmt
-        .query_map([scope_key], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
-        .map_err(convert::backend)?;
-    let mut objects = Vec::new();
-    for row in rows {
-        let (key, payload) = row.map_err(convert::backend)?;
+    let rows: Vec<(String, String)> = sql::query_all(
+        conn,
+        "SELECT provider_key, payload FROM object WHERE scope_key = ?1 ORDER BY provider_key",
+        [scope_key],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let mut objects = Vec::with_capacity(rows.len());
+    for (key, payload) in rows {
         let value = serde_json::from_str(&payload).map_err(convert::backend)?;
         objects.push((ProviderKey::new(key).map_err(convert::backend)?, value));
     }
@@ -406,14 +389,12 @@ pub(crate) fn scope_objects(
 /// Fails with [`StoreError::StaleLease`] unless the scope's stored generation
 /// equals `token` (the fencing check, inside the write transaction).
 pub(crate) fn check_token(tx: &Transaction<'_>, scope_key: &str, token: u64) -> Result<()> {
-    let current: Option<i64> = tx
-        .query_row(
-            "SELECT token FROM sync_scope WHERE scope_key = ?1",
-            [scope_key],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(convert::backend)?;
+    let current: Option<i64> = sql::query_opt(
+        tx,
+        "SELECT token FROM sync_scope WHERE scope_key = ?1",
+        [scope_key],
+        |r| r.get(0),
+    )?;
     match current {
         Some(stored) if convert::generation_from_i64(stored)? == token => Ok(()),
         _ => Err(StoreError::StaleLease),
@@ -422,12 +403,12 @@ pub(crate) fn check_token(tx: &Transaction<'_>, scope_key: &str, token: u64) -> 
 
 /// Upserts one object's payload, keyed by its provider key.
 fn upsert_object(tx: &Transaction<'_>, scope_key: &str, key: &str, payload: &str) -> Result<()> {
-    tx.execute(
+    sql::execute(
+        tx,
         "INSERT INTO object (scope_key, provider_key, payload) VALUES (?1, ?2, ?3)
          ON CONFLICT(scope_key, provider_key) DO UPDATE SET payload = excluded.payload",
         (scope_key, key, payload),
-    )
-    .map_err(convert::backend)?;
+    )?;
     Ok(())
 }
 
@@ -437,27 +418,23 @@ fn upsert_object(tx: &Transaction<'_>, scope_key: &str, key: &str, payload: &str
 /// Shared with the local-prune path (`crate::prune`), which tombstones an account's
 /// out-of-window mail exactly as a snapshot reconciliation would.
 pub(crate) fn tombstone(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<bool> {
-    let existed = tx
-        .execute(
-            "DELETE FROM object WHERE scope_key = ?1 AND provider_key = ?2",
-            (scope_key, key),
-        )
-        .map_err(convert::backend)?
-        > 0;
+    let existed = sql::execute(
+        tx,
+        "DELETE FROM object WHERE scope_key = ?1 AND provider_key = ?2",
+        (scope_key, key),
+    )? > 0;
     derived_ops::delete_derived_rows(tx, scope_key, key)?;
     Ok(existed)
 }
 
 /// All live object keys in a scope (used to compute snapshot tombstones).
 fn existing_keys(tx: &Transaction<'_>, scope_key: &str) -> Result<Vec<String>> {
-    let mut stmt = tx
-        .prepare("SELECT provider_key FROM object WHERE scope_key = ?1")
-        .map_err(convert::backend)?;
-    let rows = stmt
-        .query_map([scope_key], |r| r.get::<_, String>(0))
-        .map_err(convert::backend)?;
-    rows.collect::<rusqlite::Result<Vec<String>>>()
-        .map_err(convert::backend)
+    sql::query_all(
+        tx,
+        "SELECT provider_key FROM object WHERE scope_key = ?1",
+        [scope_key],
+        |r| r.get(0),
+    )
 }
 
 /// Re-validates a planned reconciliation inside the transaction: if the op is
@@ -465,22 +442,22 @@ fn existing_keys(tx: &Transaction<'_>, scope_key: &str) -> Result<Vec<String>> {
 /// incoming object is stored normally regardless). Returns whether it applied.
 fn reconcile_op(tx: &Transaction<'_>, rec: &PendingReconciliation) -> Result<bool> {
     let id = convert::op_id_to_i64(rec.op)?;
-    let current: Option<String> = tx
-        .query_row("SELECT state FROM pending_op WHERE id = ?1", [id], |r| {
-            r.get(0)
-        })
-        .optional()
-        .map_err(convert::backend)?;
+    let current: Option<String> = sql::query_opt(
+        tx,
+        "SELECT state FROM pending_op WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
     let matches = match current {
         Some(state) => convert::parse_state(&state)? == rec.expected,
         None => false,
     };
     if matches {
-        tx.execute(
+        sql::execute(
+            tx,
             "UPDATE pending_op SET state = 'Succeeded', lease_expiry = NULL WHERE id = ?1",
             [id],
-        )
-        .map_err(convert::backend)?;
+        )?;
     }
     Ok(matches)
 }

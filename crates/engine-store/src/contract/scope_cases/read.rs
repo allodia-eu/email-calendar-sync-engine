@@ -302,6 +302,115 @@ pub(in crate::contract) async fn scope_mail_index_reports_dates_threads_and_excl
     assert!(!keys.contains(&pk("m2")));
 }
 
+/// `scope_thread_keys` answers "which messages are on these threads" directly: every
+/// member of every named thread, once each, in key order — and nothing from a thread
+/// that was not asked for, from an unthreaded message, or from an object that has been
+/// tombstoned since.
+///
+/// A backend is free to seek an index for this; what it may not do is disagree with the
+/// full scan of `scope_mail_index`, which is what this case pins.
+pub(in crate::contract) async fn scope_thread_keys_gathers_only_the_named_threads<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-threadkeys");
+    let scope = email_scope(&account);
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+
+    let alpha = ThreadId::try_from("t-alpha").unwrap();
+    let beta = ThreadId::try_from("t-beta").unwrap();
+    let absent = ThreadId::try_from("t-absent").unwrap();
+    let rows = [
+        ("m1", Some(alpha.clone())),
+        ("m2", Some(alpha.clone())),
+        ("m3", Some(beta.clone())),
+        ("m4", None),
+    ];
+    let mut derived = DerivedWrite::empty();
+    for (key, thread) in &rows {
+        derived.mail_index.push(MailIndexRow {
+            key: pk(key),
+            date_utc: Some("2026-01-01T00:00:00Z".parse().unwrap()),
+            has_attachment: false,
+            thread_id: thread.clone(),
+        });
+    }
+    let update = SyncUpdate::delta(
+        rows.iter()
+            .map(|(key, _)| TestObject::new(key, "body"))
+            .collect(),
+        vec![],
+    );
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&update, &derived, &[], &SyncState::new("tk-1")),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .scope_thread_keys(&scope, std::slice::from_ref(&alpha))
+            .await
+            .unwrap(),
+        vec![pk("m1"), pk("m2")],
+        "both members of one thread, ascending"
+    );
+    assert_eq!(
+        store
+            .scope_thread_keys(&scope, &[alpha.clone(), beta.clone(), absent.clone()])
+            .await
+            .unwrap(),
+        vec![pk("m1"), pk("m2"), pk("m3")],
+        "several threads merge into one deduped, ordered answer; an unknown thread adds nothing"
+    );
+    assert!(
+        store
+            .scope_thread_keys(&scope, &[])
+            .await
+            .unwrap()
+            .is_empty(),
+        "no threads asked for, no keys returned"
+    );
+    assert!(
+        store
+            .scope_thread_keys(&scope, std::slice::from_ref(&absent))
+            .await
+            .unwrap()
+            .is_empty(),
+        "an unthreaded message is not a member of anything"
+    );
+
+    // Tombstoning clears the index row, so the message leaves its thread with it — the
+    // same liveness `scope_mail_index` has, reached by a different path.
+    let drop_m1: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![pk("m1")]);
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(
+                &drop_m1,
+                &DerivedWrite::empty(),
+                &[],
+                &SyncState::new("tk-2"),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .scope_thread_keys(&scope, std::slice::from_ref(&alpha))
+            .await
+            .unwrap(),
+        vec![pk("m2")]
+    );
+}
+
 /// `scope_objects` batch-reads a scope's live objects as `(key, payload)` pairs in key
 /// order — the read backing per-account views — matching `object_payload` per key and
 /// excluding tombstoned objects.

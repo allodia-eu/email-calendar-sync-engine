@@ -152,3 +152,41 @@ async fn the_expansion_window_round_trips_and_is_lease_gated() {
         Err(StoreError::StaleLease)
     ));
 }
+
+#[tokio::test]
+async fn a_file_store_reads_through_a_connection_that_cannot_write() {
+    // `query_only` on the readers is what makes the read/write routing checkable at
+    // all: without it a write handed to `read` would quietly take a reader's lock,
+    // succeed, and leave the split looking correct while it silently serialized
+    // again. The on-disk contract run is the gate this pragma arms.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = SqliteStore::open(
+        dir.path().join("readers.sqlite"),
+        ManualClock::new("2026-01-01T00:00:00Z".parse().expect("valid instant")),
+    )
+    .expect("open file store");
+
+    let insert = "INSERT INTO meta (key, value) VALUES ('probe', '1')";
+    let refused = store
+        .read(move |conn| conn.execute(insert, []).map_err(|err| err.to_string()))
+        .await;
+    assert!(
+        refused.is_err_and(|err| err.contains("readonly")),
+        "a reader must refuse a write outright"
+    );
+
+    // The same statement on the writer succeeds, so the refusal above is the routing
+    // and not a broken schema.
+    store
+        .call(move |conn| conn.execute(insert, []).expect("the writer accepts it"))
+        .await;
+    let stored = store
+        .read(|conn| {
+            conn.query_row("SELECT value FROM meta WHERE key = 'probe'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("read it back")
+        })
+        .await;
+    assert_eq!(stored, "1", "a reader sees the writer's committed row");
+}

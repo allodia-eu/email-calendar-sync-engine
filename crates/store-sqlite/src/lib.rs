@@ -17,8 +17,10 @@
 //!   file encryption by default; SQLCipher is an opt-in build), so the contract holds either way.
 //!   Credentials never enter this store.
 //! - **Async over sync.** rusqlite is synchronous; every call runs on a blocking thread via
-//!   [`tokio::task::spawn_blocking`] against one mutex-guarded connection (one connection per
-//!   database — required for `:memory:`, where each connection is its own database).
+//!   [`tokio::task::spawn_blocking`]. A file database splits into one writer connection and a pool
+//!   of `query_only` readers (`pool.rs`), so a committing sync and a list read no longer queue
+//!   behind each other; an in-memory database keeps a single connection, because there each
+//!   connection is its own database.
 //!
 //! The FTS5 search index and the normalized structured-filter tables layer over
 //! this base in migration `V2` (`schema.rs`). On-demand message content (`V5`) splits
@@ -34,6 +36,7 @@ mod derived_ops;
 mod migrations;
 mod outbox_ops;
 mod photo_ops;
+mod pool;
 mod prune;
 mod purge;
 mod read;
@@ -41,13 +44,11 @@ mod schema;
 mod scope_ops;
 mod search_ops;
 mod source_ops;
+mod sql;
 mod window_ops;
 
 use core::fmt;
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use engine_core::{
@@ -67,22 +68,20 @@ use serde::Serialize;
 use crate::{
     blob::BlobArea,
     convert::{backend, expiry_after, scope_key},
+    pool::Pool,
     scope_ops::OwnedUpdate,
 };
-
-/// The default mmap window for file-backed databases (256 MiB): fewer read
-/// syscalls on the hot search path, so query cost tracks index size.
-const MMAP_BYTES: i64 = 256 * 1024 * 1024;
 
 /// A SQLite-backed [`Store`] + [`StoreRead`](engine_store::StoreRead), parameterized by an injected
 /// [`Clock`] for lease-expiry control (a [`engine_store::ManualClock`] in tests,
 /// a host clock in production).
 ///
-/// All access goes through one connection behind a mutex; rusqlite work is
-/// offloaded to a blocking thread so the async runtime is never blocked.
+/// Writes take the pool's single writer connection; reads take a free reader (the
+/// writer itself, for an in-memory database). rusqlite work is offloaded to a
+/// blocking thread so the async runtime is never blocked.
 pub struct SqliteStore<C> {
     clock: C,
-    conn: Arc<Mutex<Connection>>,
+    pool: Arc<Pool>,
     /// The content-addressed blob area holding raw message sources beside (or, for
     /// in-memory stores, instead of) the database — large bytes never enter SQLite.
     blobs: Arc<BlobArea>,
@@ -105,7 +104,7 @@ impl<C: Clock> SqliteStore<C> {
     /// opened or the schema cannot be created.
     pub fn open_in_memory(clock: C) -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(backend)?;
-        Self::configure(conn, clock, false, BlobArea::temporary()?)
+        Self::configure(conn, clock, None, BlobArea::temporary()?)
     }
 
     /// Opens (creating if absent) a file-backed store at `path`, driven by
@@ -122,47 +121,62 @@ impl<C: Clock> SqliteStore<C> {
         // bad path by materializing its missing parent).
         let conn = Connection::open(path).map_err(backend)?;
         let blobs = BlobArea::beside_db(path)?;
-        Self::configure(conn, clock, true, blobs)
+        Self::configure(conn, clock, Some(path), blobs)
     }
 
-    /// Applies the pragmas, migrates the schema to the latest version, and wraps
-    /// the connection alongside its blob area.
-    fn configure(mut conn: Connection, clock: C, on_disk: bool, blobs: BlobArea) -> Result<Self> {
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
-            .map_err(backend)?;
-        if on_disk {
-            // execute_batch tolerates the rows journal_mode/mmap_size echo back.
-            conn.execute_batch(&format!(
-                "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA mmap_size = {MMAP_BYTES};"
-            ))
-            .map_err(backend)?;
-        }
+    /// Applies the pragmas, migrates the schema to the latest version, opens the
+    /// reader pool, and wraps them alongside the blob area.
+    ///
+    /// `path` is `Some` exactly when the database is file-backed — which is what
+    /// decides both the WAL pragmas and whether readers can be opened at all.
+    fn configure(
+        mut conn: Connection,
+        clock: C,
+        path: Option<&Path>,
+        blobs: BlobArea,
+    ) -> Result<Self> {
+        pool::tune(&conn, path.is_some())?;
         migrations::migrate(&mut conn)?;
         reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;
+        // After the migration, so a reader never sees a schema mid-step.
+        let readers = match path {
+            Some(path) => pool::open_readers(path)?,
+            None => Vec::new(),
+        };
         Ok(Self {
             clock,
-            conn: Arc::new(Mutex::new(conn)),
+            pool: Arc::new(Pool::new(conn, readers)),
             blobs: Arc::new(blobs),
         })
     }
 
-    /// Runs `f` against the connection on a blocking thread.
-    ///
-    /// Serializes access through the mutex (a single connection is required for
-    /// `:memory:` anyway); WAL concurrency for file databases is a later
-    /// read-pool concern, not a contract concern.
+    /// Runs `f` against the **writer** on a blocking thread. Every transaction and
+    /// every pragma that changes the database goes here.
     async fn call<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut Connection) -> R + Send + 'static,
         R: Send + 'static,
     {
-        let conn = Arc::clone(&self.conn);
-        tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().expect("sqlite connection mutex poisoned");
-            f(&mut guard)
-        })
-        .await
-        .expect("sqlite blocking task panicked")
+        let pool = Arc::clone(&self.pool);
+        tokio::task::spawn_blocking(move || f(&mut pool.writer()))
+            .await
+            .expect("sqlite blocking task panicked")
+    }
+
+    /// Runs `f` against a free **reader** on a blocking thread, so it does not wait
+    /// on a sync that is committing.
+    ///
+    /// Readers are `query_only`: routing a write here fails rather than silently
+    /// falling back to the writer's lock.
+    async fn read<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Connection) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let pool = Arc::clone(&self.pool);
+        tokio::task::spawn_blocking(move || f(&pool.reader()))
+            .await
+            .expect("sqlite blocking task panicked")
     }
 
     /// Runs `f` on a blocking thread **without** holding the connection lock — for
@@ -201,7 +215,7 @@ impl<C: Clock> SqliteStore<C> {
             .unwrap_or_default();
         let query = query.clone();
         let ranked = self
-            .call(move |conn| search_ops::search_mail(conn, &account, &scope_keys, &query, limit))
+            .read(move |conn| search_ops::search_mail(conn, &account, &scope_keys, &query, limit))
             .await?;
         search_ops::assemble_results(ranked, scope_count)
     }
@@ -223,7 +237,7 @@ impl<C: Clock> SqliteStore<C> {
         let scope_count = scopes.len();
         let query = query.clone();
         let ranked = self
-            .call(move |conn| search_ops::search_calendar(conn, &scope_keys, &query, limit))
+            .read(move |conn| search_ops::search_calendar(conn, &scope_keys, &query, limit))
             .await?;
         search_ops::assemble_results(ranked, scope_count)
     }
@@ -351,7 +365,7 @@ impl<C: Clock> Store for SqliteStore<C> {
         scope: &SyncScope,
     ) -> Result<Option<SyncState>> {
         let key = scope_key(scope);
-        self.call(move |conn| scope_ops::load_state(conn, &key))
+        self.read(move |conn| scope_ops::load_state(conn, &key))
             .await
     }
 

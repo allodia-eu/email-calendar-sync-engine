@@ -33,6 +33,7 @@ const MIGRATIONS: &[&str] = &[
     schema::V5,
     schema::V6,
     schema::V7,
+    schema::V8,
 ];
 
 /// Brings `conn` up to the latest schema version.

@@ -9,6 +9,7 @@
 //! | `read/thread_expansion` | completing every shown conversation |
 //! | `apply/flag_only` | marking one message read |
 //! | `apply/page` | a page of a sync landing |
+//! | `mixed/read_under_apply` | the list, read while a sync commits |
 //! | `open/cold` | opening the store and painting the first rows |
 //! | `threads/derive` | the pass that runs after **every** account sync |
 //!
@@ -44,6 +45,9 @@ const DEEP_WINDOW: usize = 2_000;
 
 /// Messages in the page an incremental sync commits.
 const PAGE: usize = 500;
+
+/// List reads issued at once against the page that is committing.
+const CONCURRENT_READS: usize = 4;
 
 /// Samples for an operation that costs milliseconds — enough for the p99 to mean
 /// something.
@@ -84,6 +88,15 @@ fn main() {
         &engine,
         &spec,
         &fixture,
+    );
+    contended(
+        &mut criterion,
+        &recorder,
+        &runtime,
+        &engine,
+        &spec,
+        &fixture,
+        &account,
     );
     cold_open(&mut criterion, &recorder, &runtime, &path, &account);
     derive(&mut criterion, &recorder, &runtime, &engine, &account);
@@ -247,6 +260,57 @@ fn applies(
                 .expect("apply a page"),
         );
     });
+    slow.finish();
+}
+
+/// Reads issued while a sync page commits — what a user actually meets.
+///
+/// The other read benches have the store to themselves, which is the one condition a
+/// mail client is never in: a list is painted *while* mail is arriving. This times one
+/// page apply and [`CONCURRENT_READS`] first-page reads started together, so the number
+/// says whether they overlapped or queued. Serialized behind one connection it is the
+/// sum; over a writer plus a reader pool it is close to the slower of the two.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the contended case needs both halves of the store's workload"
+)]
+fn contended(
+    criterion: &mut Criterion,
+    recorder: &Recorder,
+    runtime: &Runtime,
+    engine: &Engine,
+    spec: &FixtureSpec,
+    fixture: &Fixture,
+    account: &AccountId,
+) {
+    let folder = busiest(fixture);
+    let page: Vec<Message> = fixture.folders[folder]
+        .messages
+        .iter()
+        .take(PAGE)
+        .cloned()
+        .collect();
+
+    let mut slow = group(criterion, "mixed", SLOW_SAMPLES);
+    measure(
+        &mut slow,
+        recorder,
+        "mixed/read_under_apply",
+        "read_under_apply",
+        || {
+            runtime.block_on(async {
+                let apply = sync_folder(engine, spec, fixture, folder, Pass::Delta(page.clone()));
+                let reads = futures_util::future::join_all(
+                    (0..CONCURRENT_READS).map(|_| engine.messages_windowed(account, FIRST_PAGE)),
+                );
+                let (applied, read) = futures_util::future::join(apply, reads).await;
+                black_box(applied.expect("apply a page while reading"));
+                for rows in read {
+                    black_box(rows.expect("read the first page under load"));
+                }
+            });
+        },
+    );
     slow.finish();
 }
 

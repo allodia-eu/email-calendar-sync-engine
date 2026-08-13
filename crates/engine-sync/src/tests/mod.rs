@@ -43,6 +43,7 @@ use super::{
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
+mod derived_carry;
 mod mail_edit;
 mod mail_sync;
 mod streaming;
@@ -74,6 +75,9 @@ struct FakeMail {
     events: Vec<Event>,
     cursor: SyncState,
     faults: Vec<Fault>,
+    /// Emitted once, as an additive delta, on the first pass that finds a cursor —
+    /// the shape a flag change arrives in. Empty means "nothing changed".
+    delta: Mutex<Vec<Message>>,
 }
 
 impl FakeMail {
@@ -90,7 +94,14 @@ impl FakeMail {
             events: Vec::new(),
             cursor: SyncState::new("cursor-1"),
             faults: Vec::new(),
+            delta: Mutex::default(),
         }
+    }
+
+    /// Arms the delta this provider emits after its first (snapshot) pass.
+    fn then_changing(self, messages: Vec<Message>) -> Self {
+        *self.delta.lock().expect("delta mutex poisoned") = messages;
+        self
     }
 
     fn failing(mut self, fault: Fault) -> Self {
@@ -161,7 +172,8 @@ impl Provider for FakeMail {
                 self.cursor.clone(),
             )
         } else {
-            EmailChunk::additive(Vec::new(), Vec::new(), None, self.cursor.clone())
+            let changed = core::mem::take(&mut *self.delta.lock().expect("delta mutex poisoned"));
+            EmailChunk::additive(changed, Vec::new(), None, self.cursor.clone())
         };
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
