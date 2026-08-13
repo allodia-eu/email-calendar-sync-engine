@@ -214,6 +214,11 @@ cargo test --workspace --all-features
 cargo doc --workspace --all-features --no-deps
 ```
 
+**`--all-features` is not decoration on the test line.** A plain `cargo test --workspace` builds 32
+test binaries here; with `--all-features` it builds 91. The difference is whole suites — the scale
+fixture's among them — that simply do not run, and a suite that does not run reads exactly like a
+suite that passed. Run the block as written.
+
 ### Coverage (catch a dip before the PR)
 
 The enforced **line-coverage floor** and the per-diff **patch target** live in one
