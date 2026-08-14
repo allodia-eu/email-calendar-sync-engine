@@ -24,6 +24,7 @@ use std::collections::BTreeSet;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
     mail::Message,
+    search_index::project_keyword_change,
     sync::{SyncState, SyncUpdate, SyncWindow},
 };
 use engine_provider::{EmailChunk, PassMode, Provider};
@@ -34,7 +35,7 @@ use futures_util::StreamExt;
 
 use crate::{
     MAX_STALE_RECLAIMS, MailSyncReport, MailboxScope, SyncCommit, SyncError, SyncObserver,
-    changed_objects_mut, derive_messages, recipients, run_scope,
+    derive_messages, recipients, run_scope,
 };
 
 /// How a streaming sync runs: the depth window, plus how it separates network
@@ -229,7 +230,7 @@ where
                 store.release_sync_scope(lease).await?;
                 return Ok(totals.into_applied());
             };
-            let chunk = match item {
+            let mut chunk = match item {
                 Ok(chunk) => chunk,
                 Err(other) => {
                     let _ = store.release_sync_scope(lease).await;
@@ -239,11 +240,12 @@ where
             let count = chunk.changed.len();
             let total = chunk.total;
             let is_reconcile_final = chunk.is_reconcile_final();
-            let (mut update, advance_to) = build_update(chunk, &mut present);
-            // Before the projection and the apply, so what lands carries the thread and
-            // preview the provider had no way to send (`derived.rs`).
-            crate::derived::restore(store, &scope, changed_objects_mut(&mut update)).await?;
-            let derived = derive_messages(changed_of(&update));
+            let patched = core::mem::take(&mut chunk.patched);
+            let (update, advance_to) = build_update(chunk, &mut present);
+            let mut derived = derive_messages(changed_of(&update));
+            for change in &patched {
+                derived.push_keyword_change(project_keyword_change(change));
+            }
             let observations = recipients::observations(account, &update, sent);
             let batch = ApplyBatch::with_cursor(&update, &derived, &[], advance_to.as_ref())
                 .with_recipient_observations(&observations);

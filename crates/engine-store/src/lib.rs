@@ -24,7 +24,7 @@ mod store;
 
 pub use apply::{
     ApplyBatch, DerivedWrite, FtsField, FtsRow, OccurrenceRow, PendingReconciliation, PruneReport,
-    StorableObject, SyncApplied, TzdataVersion,
+    SyncApplied, TzdataVersion,
 };
 pub use contact::{
     CachedContactPhoto, ContactSourceAvailability, ContactSourceSnapshot, ContactStore,

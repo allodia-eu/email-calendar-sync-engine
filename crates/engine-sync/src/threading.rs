@@ -39,11 +39,14 @@ use std::collections::{BTreeSet, HashMap};
 use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey, ThreadId},
     mail::{Message, ThreadRef},
+    search_index::MailThreadRow,
     sync::{ObjectKind, SyncScope, SyncUpdate},
 };
-use engine_store::{ApplyBatch, LeaseRequest, Store, StoreRead, WorkerId};
+use engine_store::{
+    ApplyBatch, DerivedWrite, LeaseRequest, MailSelector, Store, StoreRead, WorkerId,
+};
 
-use crate::{SyncError, derive_messages};
+use crate::SyncError;
 
 /// What one [`derive_mail_threads`] pass changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,19 +112,29 @@ where
         .collect::<BTreeSet<ThreadId>>()
         .len();
 
-    // Persist per scope: re-apply only the messages whose id changed, re-projecting
-    // their derived rows, leaving the cursor untouched.
+    // What each message's thread id *is* comes from the stored row, not from the payload the
+    // graph was rebuilt out of. The row is where a thread id lives; a payload carries the one
+    // it held when it was last written, so comparing against it would re-assign every message
+    // on every pass.
+    let stored = stored_thread_ids(store, account).await?;
+
+    // Persist per scope: write the thread id of the messages whose id changed, and nothing
+    // else about them, leaving the cursor untouched.
     let mut messages_assigned = 0usize;
     for (scope, messages) in per_scope {
-        let updated: Vec<Message> = messages
+        let updated: Vec<MailThreadRow> = messages
             .into_iter()
-            .filter_map(|mut message| {
+            .filter_map(|message| {
                 let thread_id = assignments.get(message.id.key())?;
-                if message.thread_id() == Some(thread_id) {
+                // A provider-threaded message is not in `assignments` at all, so only the
+                // engine's own ids are compared here.
+                if stored.get(message.id.key()) == Some(thread_id) {
                     return None;
                 }
-                message.thread = Some(ThreadRef::derived(thread_id.clone()));
-                Some(message)
+                Some(MailThreadRow {
+                    key: message.id.key().clone(),
+                    thread_id: thread_id.clone(),
+                })
             })
             .collect();
         if updated.is_empty() {
@@ -136,8 +149,14 @@ where
                 LeaseRequest::new(worker.clone(), ttl),
             )
             .await?;
-        let update = SyncUpdate::delta(updated.clone(), Vec::new());
-        let derived = derive_messages(&updated);
+        // No objects: a derivation decides a thread id, and rewriting the payloads it read to
+        // deliver one would carry every other column along with it — including the flags a
+        // keyword change had just moved.
+        let update: SyncUpdate<Message> = SyncUpdate::delta(Vec::new(), Vec::new());
+        let derived = DerivedWrite {
+            thread_assignments: updated,
+            ..DerivedWrite::empty()
+        };
         let batch = ApplyBatch::with_cursor(&update, &derived, &[], None);
         match store.apply_sync_update(&claim.lease, batch).await {
             Ok(_) => store.release_sync_scope(claim.lease).await?,
@@ -152,6 +171,26 @@ where
         messages_assigned,
         threads,
     })
+}
+
+/// Each of the account's messages mapped to the thread id its **stored row** carries.
+///
+/// An indexed read of the row table, which is where a thread id lives — cheap beside the
+/// payload scan above, and the only source that reflects what the last pass actually wrote.
+async fn stored_thread_ids<S: StoreRead>(
+    store: &S,
+    account: &AccountId,
+) -> Result<HashMap<ProviderKey, ThreadId>, SyncError> {
+    Ok(store
+        .list_mail(
+            core::slice::from_ref(account),
+            MailSelector::Newest,
+            usize::MAX,
+        )
+        .await?
+        .into_iter()
+        .filter_map(|row| Some((row.mail.key, row.mail.thread_id?)))
+        .collect())
 }
 
 /// Assigns a derived [`ThreadId`] to each message lacking a provider-assigned one,

@@ -38,6 +38,12 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
 - JMAP/Gmail-style objects may have multiple mailbox/label memberships.
 - UI/search deduplication is presentation policy, not storage identity.
 - Events may have multiple calendar memberships where a provider supports it; one-calendar membership remains the common case.
+- Keywords and membership have one home each, and it is not the payload. A message's stored
+  payload (`MailRecord`) is what the provider said about its **content**; its keywords are not in
+  it, and its thread is there only when the *provider* assigned it. Both of those move without
+  the provider re-sending the object, so they live in the `message` row and the `membership`
+  junction, and a `Message` read back out of storage is completed from there
+  (`store-and-sync.md`). A second copy in the payload could only ever be a copy that disagrees.
 - Keywords (user-settable state such as read/flagged) and membership (collection placement) are distinct axes. A provider's flag/label namespace partitions across both, plus role: JMAP keywords and IMAP flags are keywords; mailboxes/folders and most labels are membership; some Gmail system labels are keywords (`UNREAD`, `STARRED`, `IMPORTANT`), not membership.
 - Collections carry a normalized role (inbox, sent, drafts, trash, junk, archive, all) mapped from provider roles — JMAP `role`, IMAP SPECIAL-USE, Gmail system labels, Graph well-known names — distinct from id and display name.
 - A mail collection carries the **server's** unread count (`Mailbox::unread_count`), not a derived one: the store holds only the synced window, so counting stored rows answers a different question than a folder badge asks. It is a first-class field rather than an extended property because all four mail transports report it — JMAP `unreadEmails`, IMAP `STATUS (UNSEEN)`, Gmail `messagesUnread`, Graph `unreadItemCount`. It counts **messages**; only JMAP offers the conversation form, so that one cannot be modelled portably. `None` means unreported and must never be read as zero.

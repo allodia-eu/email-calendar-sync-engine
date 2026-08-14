@@ -16,6 +16,7 @@ mod content;
 mod flags;
 mod header;
 mod keyword;
+mod keyword_change;
 mod mailbox;
 mod message;
 mod role;
@@ -29,7 +30,8 @@ pub use content::{
 pub use flags::MailFlags;
 pub use header::{EmailHeader, Envelope};
 pub use keyword::{Keyword, KeywordError, SystemKeyword};
+pub use keyword_change::MailKeywordChange;
 pub use mailbox::Mailbox;
-pub use message::Message;
+pub use message::{MailRecord, Message};
 pub use role::MailboxRole;
 pub use thread::{Thread, ThreadProvenance, ThreadRef};

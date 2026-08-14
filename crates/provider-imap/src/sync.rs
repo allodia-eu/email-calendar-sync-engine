@@ -219,6 +219,7 @@ where
     Ok(SyncPage {
         kind,
         changed: messages,
+        patched: Vec::new(),
         removed: Vec::new(),
         present,
         next_page,
@@ -320,6 +321,7 @@ where
     Ok(SyncPage {
         kind: SyncKind::Snapshot,
         changed: messages,
+        patched: Vec::new(),
         removed: Vec::new(),
         present,
         next_page,
@@ -358,6 +360,7 @@ fn empty_page(kind: SyncKind, next_cursor: SyncState, total: Option<usize>) -> S
     SyncPage {
         kind,
         changed: Vec::new(),
+        patched: Vec::new(),
         removed: Vec::new(),
         present: Vec::new(),
         next_page: None,

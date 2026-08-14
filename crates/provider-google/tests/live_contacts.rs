@@ -243,7 +243,10 @@ async fn live_empty_delta_advances_the_cursor() {
     else {
         panic!("owned connections are never Unavailable");
     };
-    let SyncUpdate::Delta { changed, removed } = &delta.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = &delta.update
+    else {
         panic!("expected a delta");
     };
     assert!(changed.is_empty() && removed.is_empty());

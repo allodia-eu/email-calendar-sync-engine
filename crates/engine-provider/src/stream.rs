@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 
 use engine_core::{
     ids::ProviderKey,
-    mail::Message,
+    mail::{MailKeywordChange, Message},
     sync::{SyncState, SyncUpdate},
 };
 use futures_core::stream::Stream;
@@ -76,6 +76,16 @@ pub struct EmailChunk {
     pub mode: PassMode,
     /// Messages created or updated in this chunk (upserts).
     pub changed: Vec<Message>,
+    /// Messages whose provider reported a **keyword change and nothing else**.
+    ///
+    /// Kept out of [`changed`](EmailChunk::changed) because these are partial: the store
+    /// writes the flags and the keyword memberships and leaves every other column — and the
+    /// normalized payload — alone. So a mark-read costs a row update rather than a re-fetch
+    /// and a whole-object rewrite, and cannot destroy a field the provider never sent.
+    ///
+    /// An adapter that cannot tell a keyword change from a content change leaves this empty;
+    /// its messages ride in `changed` as whole objects.
+    pub patched: Vec<MailKeywordChange>,
     /// Keys explicitly removed in this chunk — a delta's destroyed ids, or a
     /// QRESYNC `VANISHED` set. Applied inline in either mode; empty when removals
     /// come only from [`PassMode::Reconcile`] tombstoning.
@@ -109,6 +119,7 @@ impl EmailChunk {
         Self {
             mode: PassMode::Additive,
             changed,
+            patched: Vec::new(),
             removed,
             present: Vec::new(),
             total,
@@ -129,6 +140,7 @@ impl EmailChunk {
         Self {
             mode: PassMode::Additive,
             changed,
+            patched: Vec::new(),
             removed,
             present: Vec::new(),
             total,
@@ -147,6 +159,7 @@ impl EmailChunk {
         Self {
             mode: PassMode::Reconcile,
             changed,
+            patched: Vec::new(),
             removed: Vec::new(),
             present,
             total,
@@ -167,11 +180,19 @@ impl EmailChunk {
         Self {
             mode: PassMode::Reconcile,
             changed,
+            patched: Vec::new(),
             present,
             removed: Vec::new(),
             total,
             advance_to: Some(cursor),
         }
+    }
+
+    /// Attaches the keyword-only changes this chunk carries.
+    #[must_use]
+    pub fn with_patched(mut self, patched: Vec<MailKeywordChange>) -> Self {
+        self.patched = patched;
+        self
     }
 
     /// Whether this is the final chunk of a [`PassMode::Reconcile`] pass (the one
@@ -209,6 +230,7 @@ pub fn split_page(
             PassMode::Reconcile => EmailChunk {
                 mode: PassMode::Reconcile,
                 changed: batch,
+                patched: Vec::new(),
                 removed,
                 present,
                 total,
@@ -271,6 +293,7 @@ pub(crate) async fn drain_email(mut stream: EmailStream<'_>) -> ProviderResult<S
     use futures_util::StreamExt;
 
     let mut changed = Vec::new();
+    let mut patched = Vec::new();
     let mut removed = Vec::new();
     let mut present = BTreeSet::new();
     let mut mode = PassMode::Additive;
@@ -279,6 +302,7 @@ pub(crate) async fn drain_email(mut stream: EmailStream<'_>) -> ProviderResult<S
         let chunk = chunk?;
         mode = chunk.mode;
         changed.extend(chunk.changed);
+        patched.extend(chunk.patched);
         removed.extend(chunk.removed);
         present.extend(chunk.present);
         if let Some(cursor) = chunk.advance_to {
@@ -291,8 +315,10 @@ pub(crate) async fn drain_email(mut stream: EmailStream<'_>) -> ProviderResult<S
     // backfill or delta) carries only explicit removals. For a first sync both are equivalent
     // (nothing local to tombstone).
     let update = match mode {
+        // A reconcile pass is the scope's whole current state, so it carries no partials —
+        // anything a chunk reported as one is superseded by the objects beside it.
         PassMode::Reconcile => SyncUpdate::snapshot(changed, present),
-        PassMode::Additive => SyncUpdate::delta(changed, removed),
+        PassMode::Additive => SyncUpdate::delta(changed, removed).with_patched(patched),
     };
     Ok(ScopeSync::new(update, next_cursor))
 }

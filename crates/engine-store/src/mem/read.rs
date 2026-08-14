@@ -6,6 +6,7 @@ use std::{cmp::Reverse, collections::BTreeSet};
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey, ThreadId},
+    mail::Keyword,
     search_index::MembershipKind,
     sync::SyncScope,
     time::{ExpansionWindow, Horizon},
@@ -104,6 +105,7 @@ impl<C: Clock> StoreRead for MemStore<C> {
                 rows.push(MailListRow {
                     account: scope.account().clone(),
                     mailboxes: mailboxes_of(cell, key),
+                    keywords: keywords_of(cell, key),
                     mail: mail.clone(),
                 });
             }
@@ -184,6 +186,16 @@ fn selects(select: MailSelector<'_>, key: &ProviderKey, thread: Option<&ThreadId
 }
 
 /// One message's mailbox membership, out of the junction rows that hold every axis.
+fn keywords_of(cell: &ScopeCell, key: &ProviderKey) -> Vec<Keyword> {
+    cell.memberships
+        .get(key)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.kind == MembershipKind::Keyword)
+        .filter_map(|row| Keyword::new(row.value.as_str()).ok())
+        .collect()
+}
+
 fn mailboxes_of(cell: &ScopeCell, key: &ProviderKey) -> Vec<MailboxId> {
     cell.memberships
         .get(key)

@@ -12,7 +12,10 @@ use std::collections::HashSet;
 use engine_core::{
     calendar::ParticipationStatus,
     ids::{MessageIdHeader, ProviderKey, ThreadId},
-    search_index::{EventParticipantRow, FtsField, MailAddressRow, MailRow, MembershipRow},
+    search_index::{
+        EventParticipantRow, FtsField, MailAddressRow, MailKeywordRow, MailRow, MembershipKind,
+        MembershipRow,
+    },
     time::Horizon,
 };
 use engine_store::{
@@ -79,6 +82,18 @@ pub(crate) fn apply_derived(
         for row in &derived.messages {
             upsert_message(tx, scope_key, &account, row)?;
         }
+    }
+    for row in &derived.keyword_changes {
+        apply_keyword_change(tx, scope_key, row)?;
+    }
+    for row in &derived.thread_assignments {
+        // An `UPDATE` for the same reason as a keyword change: an assignment names a thread,
+        // not a message, so it cannot file a row for one the store does not hold.
+        sql::execute(
+            tx,
+            "UPDATE message SET thread_id = ?3 WHERE scope_key = ?1 AND provider_key = ?2",
+            (scope_key, row.key.as_str(), row.thread_id.as_str()),
+        )?;
     }
     for row in &derived.event_index {
         sql::execute(
@@ -156,6 +171,50 @@ pub(crate) fn upsert_message(
             row.preview.as_deref(),
         ],
     )?;
+    Ok(())
+}
+
+/// Writes one keyword-only change: the message row's `flags` column, and that message's
+/// `keyword`-kind memberships.
+///
+/// Deliberately an `UPDATE`, not an upsert — a keyword change carries no subject, sender or
+/// date, so an insert would file a blank row for a message the store has never seen. A change
+/// for an unknown key is a no-op: the message is out of the synced window, and the pass that
+/// admits it will bring its keywords with it.
+///
+/// The membership replace is scoped to `kind = 'keyword'`, so the message keeps the mailbox
+/// memberships that decide which folders it appears in. Clearing every kind here — the shape
+/// [`replace_memberships`] uses, where the batch carries a whole projection — would drop a
+/// message out of its folder on a mark-read.
+fn apply_keyword_change(tx: &Transaction<'_>, scope_key: &str, row: &MailKeywordRow) -> Result<()> {
+    sql::execute(
+        tx,
+        "UPDATE message SET flags = ?3 WHERE scope_key = ?1 AND provider_key = ?2",
+        (scope_key, row.key.as_str(), i64::from(row.flags.bits())),
+    )?;
+    sql::execute(
+        tx,
+        "DELETE FROM membership WHERE scope_key = ?1 AND provider_key = ?2 AND kind = ?3",
+        (
+            scope_key,
+            row.key.as_str(),
+            convert::membership_kind_text(MembershipKind::Keyword),
+        ),
+    )?;
+    for keyword in &row.keywords {
+        sql::execute(
+            tx,
+            "INSERT INTO membership (scope_key, provider_key, kind, value)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(scope_key, provider_key, kind, value) DO NOTHING",
+            (
+                scope_key,
+                row.key.as_str(),
+                convert::membership_kind_text(MembershipKind::Keyword),
+                keyword.as_str(),
+            ),
+        )?;
+    }
     Ok(())
 }
 

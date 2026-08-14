@@ -21,7 +21,7 @@
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey, ThreadId},
-    mail::MailFlags,
+    mail::{Keyword, MailFlags},
     search_index::MailRow,
     time::UtcDateTime,
 };
@@ -30,13 +30,20 @@ use rusqlite::{Connection, Row, types::Value};
 
 use crate::{convert, sql};
 
-/// The columns of one list row, and the correlated mailbox membership that says which folders it
-/// is in. The membership subquery runs per **emitted** row, so it costs the page, not the table.
+/// The columns of one list row, plus the correlated memberships that say which folders it is in
+/// and which keywords it carries. Both subqueries run per **emitted** row, so they cost the page,
+/// not the table.
+///
+/// The keywords are read even though a list paints only the four system flags (already in
+/// `m.flags`): this read is the message's whole mutable state, because the stored payload
+/// deliberately holds none of it.
 const COLUMNS: &str = "\
 m.account, m.provider_key, m.thread_id, m.message_id, m.date_utc, m.flags, m.has_attachment, \
 m.from_name, m.from_addr, m.subject, m.preview, \
 (SELECT group_concat(b.value, char(10)) FROM membership b \
-   WHERE b.scope_key = m.scope_key AND b.provider_key = m.provider_key AND b.kind = 'mailbox')";
+   WHERE b.scope_key = m.scope_key AND b.provider_key = m.provider_key AND b.kind = 'mailbox'), \
+(SELECT group_concat(k.value, char(10)) FROM membership k \
+   WHERE k.scope_key = m.scope_key AND k.provider_key = m.provider_key AND k.kind = 'keyword')";
 
 /// Newest first, undated last, ties broken on the row's own identity — the key order of
 /// `message_date`, so no sort runs.
@@ -229,6 +236,7 @@ struct RawRow {
     subject: Option<String>,
     preview: Option<String>,
     mailboxes: Option<String>,
+    keywords: Option<String>,
 }
 
 fn read_row(row: &Row<'_>) -> rusqlite::Result<RawRow> {
@@ -245,6 +253,7 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<RawRow> {
         subject: row.get(9)?,
         preview: row.get(10)?,
         mailboxes: row.get(11)?,
+        keywords: row.get(12)?,
     })
 }
 
@@ -255,6 +264,7 @@ impl TryFrom<RawRow> for MailListRow {
         Ok(Self {
             account: AccountId::try_from(raw.account.as_str()).map_err(convert::backend)?,
             mailboxes: mailboxes(raw.mailboxes.as_deref()),
+            keywords: keywords(raw.keywords.as_deref()),
             mail: MailRow {
                 key: ProviderKey::new(raw.key).map_err(convert::backend)?,
                 thread_id: raw
@@ -292,6 +302,17 @@ fn mailboxes(joined: Option<&str>) -> Vec<MailboxId> {
         .split('\n')
         .filter(|value| !value.is_empty())
         .filter_map(|value| MailboxId::try_from(value).ok())
+        .collect()
+}
+
+/// Splits the joined keyword membership values. Same separator argument as [`mailboxes`]: a
+/// keyword is an RFC 8621 atom or a provider label, and neither can contain a newline.
+fn keywords(joined: Option<&str>) -> Vec<Keyword> {
+    joined
+        .unwrap_or_default()
+        .split('\n')
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| Keyword::new(value).ok())
         .collect()
 }
 

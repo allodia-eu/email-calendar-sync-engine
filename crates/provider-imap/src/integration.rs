@@ -389,18 +389,28 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
         "the expunged message is tombstoned, not lingering"
     );
 
-    // UID 1 carries its new \Flagged keyword in the store.
-    let payload = store
-        .object_payload(
-            &email_scope,
-            &ProviderKey::new("imap:v100:u1@INBOX").unwrap(),
+    // UID 1 carries its new \Flagged keyword in the store — read from the message row, which is
+    // where a keyword lives. The stored payload is the provider's word on the message's content
+    // and deliberately carries no keywords at all, so asserting against it would pass only while
+    // the flag happened not to have moved.
+    let row = store
+        .list_mail(
+            core::slice::from_ref(&account),
+            engine_store::MailSelector::Keys(&[ProviderKey::new("imap:v100:u1@INBOX").unwrap()]),
+            usize::MAX,
         )
         .await
         .unwrap()
+        .pop()
         .expect("UID 1 present");
-    let message: Message = serde_json::from_value(payload).expect("deserialize message");
     assert!(
-        message.has_system_keyword(SystemKeyword::Flagged),
+        row.mail.flags.flagged(),
         "the delta applied the flag change"
+    );
+    assert!(
+        row.keywords
+            .iter()
+            .any(|k| k.as_system() == Some(SystemKeyword::Flagged)),
+        "and the keyword membership moved with it"
     );
 }

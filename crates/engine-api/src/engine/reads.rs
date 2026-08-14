@@ -1,12 +1,12 @@
 //! The read and search surface on `Engine`: per-account search, the mailbox/message
 //! and calendar/event lists, and the windowed and thread-oriented message reads.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use engine_core::{
     calendar::{Calendar, Event},
     ids::{AccountId, ProviderKey, ThreadId},
-    mail::{Mailbox, Message},
+    mail::{Mailbox, Message, ThreadRef},
     sync::{ObjectKind, SearchDomain, SyncScope},
     time::Horizon,
 };
@@ -83,7 +83,56 @@ impl Engine {
         for payload in self.objects_of(account, ObjectKind::Message).await? {
             messages.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
         }
+        self.compose(account, &mut messages).await?;
         Ok(messages)
+    }
+
+    /// Rebuilds each message's mutable state from its stored row.
+    ///
+    /// The stored payload is the provider's word on the message's **content** and carries no
+    /// thread and no keywords ([`MailRecord`](engine_core::mail::MailRecord)): those move
+    /// without the provider ever re-sending the object — a derivation pass assigns a thread, a
+    /// mark-read moves a keyword — so their home is the `message` row and the membership
+    /// junction. A `Message` decoded from a payload alone is therefore incomplete by
+    /// construction, and this is what completes it.
+    ///
+    /// **Every path that turns stored mail back into a `Message` goes through here.** That is
+    /// the guarantee: not that readers remember to refresh, but that a decoded payload is
+    /// visibly missing the state until this has run.
+    ///
+    /// A message with no row — out of the synced window, or tombstoned between the two reads —
+    /// keeps the empty state the payload gave it rather than being dropped, so a caller asking
+    /// for specific keys still gets its content back.
+    async fn compose(&self, account: &AccountId, messages: &mut [Message]) -> Result<(), ApiError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let keys: Vec<ProviderKey> = messages.iter().map(|m| m.id.key().clone()).collect();
+        let rows: HashMap<ProviderKey, MailListRow> = self
+            .store
+            .list_mail(
+                core::slice::from_ref(account),
+                MailSelector::Keys(&keys),
+                usize::MAX,
+            )
+            .await?
+            .into_iter()
+            .map(|row| (row.mail.key.clone(), row))
+            .collect();
+        for message in messages {
+            let Some(row) = rows.get(message.id.key()) else {
+                continue;
+            };
+            // A provider-assigned thread came back with the payload and stays as it is —
+            // relabelling it derived would tell the derivation pass it may re-thread mail the
+            // provider threaded. Only an absent one is filled from the row, and the row's can
+            // only be the engine's own.
+            if message.thread.is_none() {
+                message.thread = row.mail.thread_id.clone().map(ThreadRef::derived);
+            }
+            message.keywords = row.keywords.iter().cloned().collect();
+        }
+        Ok(())
     }
 
     /// The newest `limit` mail rows across `accounts`, newest first — **the read a mailbox list
@@ -207,6 +256,7 @@ impl Engine {
                 }
             }
         }
+        self.compose(account, &mut messages).await?;
         Ok(messages)
     }
 

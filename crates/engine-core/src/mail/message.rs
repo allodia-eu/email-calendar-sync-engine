@@ -37,10 +37,21 @@ pub struct Message {
     pub blob_id: Option<BlobId>,
     /// The thread this message belongs to, if threading is resolved, and whether
     /// the provider assigned that id or the engine derived it.
+    ///
+    /// **Not carried by the stored payload** ([`MailRecord`]): a thread id is mutable state the
+    /// message row owns, so a payload that carried one could disagree with it. Absent when
+    /// decoded straight from storage, and filled by whatever composes a `Message` back out of
+    /// the row.
+    #[serde(default)]
     pub thread: Option<ThreadRef>,
     /// The mailboxes/labels this message belongs to (always at least one).
     pub mailboxes: Memberships<MailboxId>,
     /// The keywords applied to this message.
+    ///
+    /// **Not carried by the stored payload** ([`MailRecord`]), for the same reason as
+    /// [`thread`](Message::thread): keywords move without the provider ever re-sending the
+    /// object, and their home is the message row plus the membership junction.
+    #[serde(default)]
     pub keywords: BTreeSet<Keyword>,
     /// The size of the raw message in octets, if known.
     pub size: Option<u64>,
@@ -68,6 +79,92 @@ pub struct Message {
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
     pub extended: ExtendedProperties,
+}
+
+/// The mail payload the store persists: what the provider said about the message's **content**.
+///
+/// [`Message::keywords`] is absent by construction, and [`Message::thread`] is present only when
+/// the provider assigned it. Those are the axes that move *without* the provider re-sending the
+/// object — a derivation pass assigns a thread, a mark-read moves a keyword — and their home is
+/// the `message` row and the membership junction. A payload that carried a copy could disagree
+/// with that home, and the disagreement would be invisible until someone read the wrong one.
+/// There is no copy, so there is nothing to reconcile.
+///
+/// Borrowed and serialize-only: a sync page writes hundreds of these, and the JSON is the cost,
+/// not another owned message beside it.
+#[derive(Debug, Serialize)]
+pub struct MailRecord<'a> {
+    id: &'a MessageId,
+    /// Present only when the **provider** assigned the thread, because then it is the provider's
+    /// word about the message and belongs with the rest of what it said.
+    ///
+    /// A locally-derived id is not: the engine computed it from the reference graph and rewrites
+    /// it whenever new mail joins the conversation, so it lives in the `message` row alone. The
+    /// distinction is load-bearing — the derivation pass reads this back to know which messages
+    /// it must leave alone, and a stray `References` header must never merge two threads a
+    /// provider kept apart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thread: Option<&'a ThreadRef>,
+    blob_id: &'a Option<BlobId>,
+    mailboxes: &'a Memberships<MailboxId>,
+    size: &'a Option<u64>,
+    received_at: &'a Option<UtcDateTime>,
+    sent_at: &'a Option<UtcDateTime>,
+    last_modified: &'a Option<UtcDateTime>,
+    envelope: &'a Envelope,
+    preview: &'a Option<String>,
+    has_attachment: &'a bool,
+    mime_structure: &'a Option<EmailBodyPart>,
+    attachments: &'a Vec<Attachment>,
+    reply_unique_text: &'a Option<String>,
+    revisions: &'a RevisionTokens,
+    extended: &'a ExtendedProperties,
+}
+
+impl<'a> From<&'a Message> for MailRecord<'a> {
+    /// Destructured rather than field-by-field: a new field on [`Message`] stops this compiling
+    /// until someone decides whether it belongs in the payload or in the row. A silent default
+    /// is exactly the failure this type exists to prevent.
+    fn from(message: &'a Message) -> Self {
+        let Message {
+            id,
+            blob_id,
+            thread,
+            // Mutable state whose only home is the message row and the membership junction.
+            keywords: _,
+            mailboxes,
+            size,
+            received_at,
+            sent_at,
+            last_modified,
+            envelope,
+            preview,
+            has_attachment,
+            mime_structure,
+            attachments,
+            reply_unique_text,
+            revisions,
+            extended,
+        } = message;
+        Self {
+            id,
+            thread: thread.as_ref().filter(|t| !t.is_derived()),
+            blob_id,
+            mailboxes,
+            size,
+            received_at,
+            sent_at,
+            last_modified,
+            envelope,
+            preview,
+            has_attachment,
+            mime_structure,
+            attachments,
+            reply_unique_text,
+            revisions,
+            extended,
+        }
+    }
 }
 
 impl Message {
@@ -132,6 +229,65 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_stored_record_carries_no_keywords_and_no_derived_thread() {
+        // The contract this type exists for. Asserted on the *rendered JSON keys* rather than on
+        // the struct, because the payload is what a store writes and what a later reader decodes.
+        let mut message = message("m1", "inbox");
+        message
+            .keywords
+            .insert(Keyword::system(SystemKeyword::Seen));
+        message.thread = Some(ThreadRef::derived(ThreadId::try_from("t1").unwrap()));
+
+        let payload = serde_json::to_value(MailRecord::from(&message)).unwrap();
+        let keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
+        assert!(
+            !keys.iter().any(|k| *k == "keywords"),
+            "keywords live in the message row and the membership junction, got: {keys:?}"
+        );
+        assert!(
+            !keys.iter().any(|k| *k == "thread"),
+            "a derived thread lives in the message row, got: {keys:?}"
+        );
+        // The content the provider did send is all still there.
+        assert!(keys.iter().any(|k| *k == "envelope"));
+        assert!(keys.iter().any(|k| *k == "mailboxes"));
+    }
+
+    #[test]
+    fn the_stored_record_keeps_a_provider_assigned_thread() {
+        // The provider said it, so it is part of what the provider said. The derivation pass
+        // reads it back to know which mail it must not re-thread; dropping it would let a stray
+        // `References` header merge two threads a provider kept apart.
+        let mut message = message("m1", "inbox");
+        message.thread = Some(ThreadRef::provider_assigned(
+            ThreadId::try_from("T42").unwrap(),
+        ));
+
+        let payload = serde_json::to_value(MailRecord::from(&message)).unwrap();
+        let decoded: Message = serde_json::from_value(payload).unwrap();
+        assert_eq!(decoded.thread_id().map(ThreadId::as_str), Some("T42"));
+        assert!(!decoded.thread.unwrap().is_derived());
+    }
+
+    #[test]
+    fn a_payload_written_before_the_split_still_decodes() {
+        // Both fields are `#[serde(default)]`, so a store written when the payload carried them
+        // opens without a migration — it simply has state the row will supersede.
+        let decoded: Message = serde_json::from_value(serde_json::json!({
+            "id": "m1",
+            "mailboxes": ["inbox"],
+            "envelope": Envelope::default(),
+            "has_attachment": false,
+            "attachments": [],
+            "revisions": RevisionTokens::default(),
+            "extended": ExtendedProperties::default(),
+        }))
+        .expect("a payload with neither field decodes");
+        assert!(decoded.keywords.is_empty());
+        assert!(decoded.thread.is_none());
+    }
+
     use super::*;
 
     fn message(id: &str, mailbox: &str) -> Message {

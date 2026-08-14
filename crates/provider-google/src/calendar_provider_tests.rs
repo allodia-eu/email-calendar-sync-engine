@@ -75,7 +75,10 @@ async fn sync_events_delta_is_additive_with_a_tombstone() {
         .await
         .unwrap();
     assert!(!sync.is_snapshot());
-    let SyncUpdate::Delta { changed, removed } = &sync.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = &sync.update
+    else {
         panic!("expected a delta");
     };
     assert_eq!(changed.len(), 1);

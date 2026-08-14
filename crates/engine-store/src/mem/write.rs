@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    sync::{ObjectKind, SyncScope, SyncState, SyncUpdate},
+    sync::{ObjectKind, SyncObject, SyncScope, SyncState, SyncUpdate},
     time::ExpansionWindow,
     write::{PendingOp, PendingOpId, PendingOutcome, ResourceKey},
 };
@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use super::{Inner, MemStore, ObservationCell, OpCell, ScopeCell, expiry_after, is_live};
 use crate::{
-    apply::{ApplyBatch, DerivedWrite, StorableObject, SyncApplied},
+    apply::{ApplyBatch, DerivedWrite, SyncApplied},
     error::{Result, StoreError},
     lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease},
     outbox::{LeasedPendingOp, PendingOpState},
@@ -59,7 +59,7 @@ impl<C: Clock> Store for MemStore<C> {
         batch: ApplyBatch<'_, T>,
     ) -> Result<SyncApplied>
     where
-        T: StorableObject + Serialize + Send + Sync,
+        T: SyncObject + Serialize + Send + Sync,
     {
         let mut inner = self.lock();
         let is_contact = lease.scope().object_kind() == Some(ObjectKind::ContactCard);
@@ -79,7 +79,12 @@ impl<C: Clock> Store for MemStore<C> {
 
         let mut applied = SyncApplied::default();
         match batch.update {
-            SyncUpdate::Delta { changed, removed } => {
+            // `patched` is deliberately not read here: the partials were projected into
+            // `batch.derived` before the call, which is how a store receives them. Nothing in a
+            // patch belongs in a payload.
+            SyncUpdate::Delta {
+                changed, removed, ..
+            } => {
                 for obj in changed {
                     cell.upsert_object(obj)?;
                     applied.upserted += 1;

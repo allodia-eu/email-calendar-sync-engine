@@ -1,6 +1,6 @@
 //! The per-scope sync result an adapter returns.
 
-use engine_core::sync::{SyncState, SyncUpdate};
+use engine_core::sync::{SyncObject, SyncState, SyncUpdate};
 
 /// One scope's worth of fetched changes plus the cursor to persist after applying
 /// them.
@@ -14,14 +14,14 @@ use engine_core::sync::{SyncState, SyncUpdate};
 /// `T` is the scope's normalized object type (a `Mailbox`, `Message`, `Calendar`,
 /// or `Event`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScopeSync<T> {
+pub struct ScopeSync<T: SyncObject> {
     /// The normalized changes for the scope (delta or snapshot).
     pub update: SyncUpdate<T>,
     /// The provider cursor to persist once `update` is applied.
     pub next_cursor: SyncState,
 }
 
-impl<T> ScopeSync<T> {
+impl<T: SyncObject> ScopeSync<T> {
     /// Pairs an update with the cursor to advance to after applying it.
     #[must_use]
     pub fn new(update: SyncUpdate<T>, next_cursor: SyncState) -> Self {
@@ -43,19 +43,32 @@ impl<T> ScopeSync<T> {
 mod tests {
     use std::collections::BTreeSet;
 
+    use engine_core::{
+        ids::{MailboxId, MessageId},
+        mail::Message,
+        membership::Memberships,
+    };
+
     use super::*;
+
+    fn message(id: &str) -> Message {
+        Message::new(
+            MessageId::try_from(id).unwrap(),
+            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
+        )
+    }
 
     #[test]
     fn snapshot_flag_follows_the_update() {
-        let delta: ScopeSync<String> = ScopeSync::new(
-            SyncUpdate::delta(vec!["a".to_owned()], vec![]),
+        let delta: ScopeSync<Message> = ScopeSync::new(
+            SyncUpdate::delta(vec![message("m1")], vec![]),
             SyncState::new("s1"),
         );
         assert!(!delta.is_snapshot());
         assert_eq!(delta.next_cursor.as_str(), "s1");
 
-        let snapshot: ScopeSync<String> = ScopeSync::new(
-            SyncUpdate::snapshot(vec!["a".to_owned()], BTreeSet::new()),
+        let snapshot: ScopeSync<Message> = ScopeSync::new(
+            SyncUpdate::snapshot(vec![message("m1")], BTreeSet::new()),
             SyncState::new("s2"),
         );
         assert!(snapshot.is_snapshot());

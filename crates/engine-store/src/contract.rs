@@ -17,14 +17,13 @@ use core::time::Duration;
 
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    sync::{JmapDataType, SyncScope},
+    sync::{JmapDataType, Keyed, NoPatch, SyncObject, SyncScope},
     write::{IdempotencyKey, PendingOp, ResourceKey},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    apply::StorableObject,
     lease::{LeaseRequest, ManualClock, WorkerId},
     store::{Store, StoreRead},
 };
@@ -34,7 +33,7 @@ mod outbox_cases;
 mod scope_cases;
 
 /// A trivial storable object the suite applies and reads back. Real domain types
-/// (`Message`, `CalendarEvent`, …) implement [`StorableObject`] the same way.
+/// (`Message`, `CalendarEvent`, …) implement [`Keyed`] the same way.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct TestObject {
     key: ProviderKey,
@@ -50,10 +49,16 @@ impl TestObject {
     }
 }
 
-impl StorableObject for TestObject {
+impl Keyed for TestObject {
     fn provider_key(&self) -> &ProviderKey {
         &self.key
     }
+}
+
+impl SyncObject for TestObject {
+    // The suite drives partial writes through `DerivedWrite` directly, which is where a store
+    // receives them; nothing here needs a partial *update* form.
+    type Patch = NoPatch;
 }
 
 fn acct(name: &str) -> AccountId {
@@ -142,6 +147,10 @@ where
     scope_cases::list_mail_on_threads_gathers_only_the_named_threads(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::list_mail_by_keys_resolves_named_messages(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::keyword_change_moves_flags_and_leaves_the_rest(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::keyword_change_for_an_unknown_message_writes_nothing(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::scope_occurrences_reads_the_overlapping_window(&store, &clock).await;
     let (store, clock) = make();

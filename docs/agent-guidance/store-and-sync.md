@@ -215,7 +215,7 @@ the batch; the store does not compute them. This keeps the transaction short
 the atomic set is self-documenting:
 
 ```rust
-pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObject
+pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
     pub update: &'a SyncUpdate<T>,              // provider-normalized objects, raw, membership
     pub derived: &'a DerivedWrite,              // FTS + structured-filter + occurrence rows, pure engine fns
     pub reconcile: &'a [PendingReconciliation],
@@ -249,18 +249,40 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObje
   duplicate suppression then falls back to presentation-layer dedup
   (consistent with "UI/search dedup is presentation policy, not storage
   identity").
-- **Engine-derived fields are restored before the batch is built.** An apply
-  replaces a message's whole payload with the one the provider sent, and two of
-  its fields are not the provider's to send: `thread` (derived from the reference
-  graph; only JMAP has a server-side equivalent) and `preview` (IMAP has no server
-  snippet). Left alone, marking one message read dropped it out of its
-  conversation until the next derivation pass and blanked its list row. So the
-  sync path refills them from the stored copy first, for exactly the messages that
-  arrived without them (`engine-sync/src/derived.rs`) — a provider that *does*
-  supply a thread stays authoritative. **Any new field the engine derives onto a
-  stored object belongs in that restore**, or the next flag change erases it. This
-  is a stopgap for the whole-payload write: an apply that touches only the columns
-  the provider supplied has nothing to restore.
+- **A change is whole, partial, or a removal.** `SyncUpdate::Delta` carries all three:
+  `changed` (whole objects), `patched` (partials), `removed`. A partial names the fields that
+  moved and nothing else, so the store writes those columns and leaves the rest — including the
+  normalized payload — alone. The partial form is per object type, `SyncObject::Patch`; it is
+  `MailKeywordChange` for a message and the uninhabited `NoPatch` for everything else, so
+  `Vec<NoPatch>` makes "a calendar pass carries no partials" a fact the compiler checks.
+
+  A key present in both `changed` and `patched` is resolved **in favour of `changed`**, inside
+  `with_patched`: a whole object is strictly more information, and an adapter fetches it after
+  learning of the change, so it is the later word. Gmail's history API produces both for one id
+  in a single page, so this is a real case. Resolving it centrally means no adapter has to
+  remember to and no store has to guess.
+
+  A snapshot has no partials by construction — it is the scope's whole current state.
+
+- **The stored mail payload holds content, not state.** A message's payload is
+  `MailRecord`: what the provider said about the message's *content*. Its keywords are not
+  there, and its thread is there only when the **provider** assigned it. Those are the axes that
+  move without the provider re-sending the object — a derivation pass assigns a thread, a
+  mark-read moves a keyword — so their home is the `message` row and the `membership` junction.
+
+  This is why a mark-read can no longer destroy anything: there is no second copy to overwrite.
+  It replaces the old carry-forward, which refilled `thread` and `preview` from the stored copy
+  before every apply because the apply was about to replace the whole payload.
+
+  `MailRecord` is built by **destructuring** `Message`, so a new field on `Message` stops the
+  conversion compiling until someone decides whether it belongs in the payload or in the row. A
+  silent default is exactly the failure the type exists to prevent.
+
+  Reading is the mirror: a `Message` decoded from a payload alone is incomplete by construction,
+  and `Engine::compose` rebuilds its thread and keywords from the row and the junction. Every
+  path from storage back to a `Message` goes through it. A provider-assigned thread that came
+  back with the payload is left as it is — relabelling it derived would tell the derivation pass
+  it may re-thread mail the provider threaded.
 - **Idempotent replay.** Re-applying the same batch after a crash is a no-op:
   object writes are upserts keyed by provider key, the cursor advance is
   conditional on the prior state, and a resurrected stale-token worker is
@@ -581,7 +603,7 @@ pub trait Store: Send + Sync {
         batch: ApplyBatch<'_, T>,
     ) -> Result<SyncApplied>
     where
-        T: StorableObject + Serialize + Send + Sync;
+        T: SyncObject + Serialize + Send + Sync;
 
     async fn apply_maintenance(
         &self,
@@ -628,7 +650,8 @@ Supporting types (abbreviated):
 
 - `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailboxList { account }` (the IMAP folder-list container), `ImapMailbox { account, mailbox }`, `DavCollectionList { account }` (the CalDAV/CardDAV collection-list container), `DavCollection { account, collection }`.
 - `SyncLease` / `OpLease` — opaque, store-issued; expose fencing token, bound identity, and expiry.
-- `StorableObject` — the trait domain objects implement so the store keys and persists them mechanically; `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
+- `Keyed` — one accessor (`provider_key`) for anything a sync carries, whole object or partial, so a carrier can key what it holds without knowing which it is.
+- `SyncObject: Keyed` — what a sync pass reports changes to. Names the object's partial form (`Patch`) and how it is persisted (`to_payload`, which mail overrides to write a `MailRecord`). `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
 - `DerivedWrite` — precomputed FTS rows, structured-filter rows (scalar index rows
   plus the address/participant/membership junctions), and bounded
   `event_occurrence` rows, plus their tombstones; the store writes them, never

@@ -55,14 +55,14 @@ use std::{path::Path, sync::Arc};
 use async_trait::async_trait;
 use engine_core::{
     ids::AccountId,
-    sync::{ObjectKind, SyncScope, SyncState},
+    sync::{ObjectKind, SyncObject, SyncScope, SyncState},
     time::ExpansionWindow,
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{
-    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, Result,
-    StorableObject, Store, SyncApplied, SyncClaim, SyncLease,
+    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, Result, Store,
+    SyncApplied, SyncClaim, SyncLease,
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -392,7 +392,7 @@ impl<C: Clock> Store for SqliteStore<C> {
         batch: ApplyBatch<'_, T>,
     ) -> Result<SyncApplied>
     where
-        T: StorableObject + Serialize + Send + Sync,
+        T: SyncObject + Serialize + Send + Sync,
     {
         let key = scope_key(lease.scope());
         let token = lease.token().get();

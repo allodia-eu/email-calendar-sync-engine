@@ -203,7 +203,10 @@ async fn captured_tombstone_becomes_a_removal_not_a_card() {
     else {
         panic!("expected available");
     };
-    let SyncUpdate::Delta { changed, removed } = sync.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = sync.update
+    else {
         panic!("expected delta");
     };
     assert!(changed.is_empty());

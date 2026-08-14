@@ -7,7 +7,7 @@
 //! (and, later, query execution) needs; the full search read path is a separate
 //! sub-step.
 //!
-//! The trait is generic over the object type via [`StorableObject`], so the store
+//! The trait is generic over the object type via [`Keyed`], so the store
 //! stays mechanical and type-erased at the row level and the contract suite can
 //! run on any object. It is consumed as `S: Store` (not `dyn Store`), since the
 //! store sits behind `engine-api`.
@@ -15,8 +15,9 @@
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey, ThreadId},
+    mail::Keyword,
     search_index::MailRow,
-    sync::{SyncScope, SyncState},
+    sync::{SyncObject, SyncScope, SyncState},
     time::{ExpansionWindow, Horizon},
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
@@ -24,7 +25,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
-    apply::{ApplyBatch, DerivedWrite, OccurrenceRow, StorableObject, SyncApplied},
+    apply::{ApplyBatch, DerivedWrite, OccurrenceRow, SyncApplied},
     error::Result,
     lease::{LeaseRequest, OpLease, SyncClaim, SyncLease},
     outbox::{LeasedPendingOp, PendingOpState},
@@ -80,7 +81,7 @@ pub trait Store: Send + Sync {
         batch: ApplyBatch<'_, T>,
     ) -> Result<SyncApplied>
     where
-        T: StorableObject + Serialize + Send + Sync;
+        T: SyncObject + Serialize + Send + Sync;
 
     /// Writes only derived rows (FTS/occurrences) under the **same** scope lease
     /// as sync, so maintenance and sync of one scope cannot race. Used for
@@ -219,6 +220,14 @@ pub struct MailListRow {
     pub account: AccountId,
     /// The mailboxes/labels the message is filed in.
     pub mailboxes: Vec<MailboxId>,
+    /// Every keyword on the message — the system ones the row's `flags` also carries as a
+    /// bitfield, plus any user keyword or provider label.
+    ///
+    /// Carried because this read is the message's **whole mutable state**, not only the part a
+    /// list paints: the stored payload deliberately holds none of it, so anything rebuilding a
+    /// `Message` from storage gets the complete set here rather than from a second read that
+    /// could be forgotten.
+    pub keywords: Vec<Keyword>,
     /// The stored row.
     pub mail: MailRow,
 }
@@ -236,6 +245,7 @@ impl MailListRow {
         Self {
             account: account.clone(),
             mailboxes: message.mailboxes.iter().cloned().collect(),
+            keywords: message.keywords.iter().cloned().collect(),
             mail: engine_core::search_index::project_message(message).row,
         }
     }
