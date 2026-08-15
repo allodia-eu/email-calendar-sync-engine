@@ -19,13 +19,13 @@
 //! serialized run if a flake ever slips through.
 
 use engine_core::{
-    ids::{AccountId, CalendarId, MailboxId, MessageId, MessageIdHeader},
-    mail::{EmailAddress, MailboxRole, Message},
+    ids::{AccountId, MailboxId, MessageId, MessageIdHeader},
+    mail::{EmailAddress, MailboxRole, Message, SystemKeyword},
     membership::Memberships,
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, MailEdit, Provider};
-use provider_google::{GmailProvider, GoogleCalendarProvider, GoogleClient};
+use provider_google::{GmailProvider, GoogleClient};
 
 fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
@@ -328,127 +328,82 @@ async fn labels_of(provider: &GmailProvider, key: &engine_core::ids::ProviderKey
         .collect()
 }
 
-// --- Google Calendar (Phase D) ---
-
-fn calendar_provider(token: String) -> GoogleCalendarProvider {
-    let client =
-        GoogleClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client");
-    // "primary" is Google's alias for the account's default calendar.
-    GoogleCalendarProvider::new(client, CalendarId::try_from("primary").unwrap())
-}
-
 #[tokio::test]
-async fn live_calendars_list() {
+async fn live_a_label_change_comes_back_as_state_not_a_whole_message() {
+    // Gmail's history record carries the message's *resulting* `labelIds`, and in Gmail that
+    // set is the whole of a message's mutable half — labels are both its keywords (`UNREAD`,
+    // `STARRED`) and its filing (`INBOX`, and every folder-like label). So a label change is
+    // answered by the delta page itself: it arrives as a state change, and nothing re-fetches
+    // the message to move a flag.
+    //
+    // Only a live call proves the *shape* Gmail actually returns. The offline fakes answer
+    // canned bytes whatever we send, so a history record that stopped carrying `labelIds`
+    // would pass there and fail here.
     let Some(token) = token() else {
-        eprintln!("skipping live_calendars_list: GOOGLE_ACCESS_TOKEN unset");
+        eprintln!("skipping live_a_label_change_...: GOOGLE_ACCESS_TOKEN unset");
         return;
     };
-    let sync = calendar_provider(token)
-        .sync_calendars(&account(), None)
+    let provider = provider(token);
+    let marker = format!("state-p{}", std::process::id());
+    let receipt = provider
+        .submit_email(&account(), &live_draft(&marker))
         .await
-        .expect("sync calendars");
-    assert!(sync.is_snapshot());
-    let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
-        panic!("expected a calendar snapshot");
-    };
-    // The account has at least its own primary calendar.
-    assert!(objects.iter().any(|c| c.is_default), "a primary calendar");
-}
+        .expect("send");
+    let key = receipt.email_key;
 
-#[tokio::test]
-async fn live_calendar_snapshot_then_delta_cycle() {
-    let Some(token) = token() else {
-        eprintln!("skipping live_calendar_snapshot_then_delta_cycle: GOOGLE_ACCESS_TOKEN unset");
-        return;
-    };
-    let provider = calendar_provider(token);
-    // A first sync is a reconciling snapshot; capture the per-calendar syncToken.
-    let snapshot = provider
-        .sync_events(&account(), None)
+    // Take the cursor *after* the send, so the delta below carries the label change and not
+    // the arrival — an id in `messagesAdded` is a new message and is fetched whole, which is
+    // the other branch.
+    let cursor = provider
+        .sync_email(&account(), None)
         .await
-        .expect("snapshot");
-    assert!(snapshot.is_snapshot());
-    let cursor = snapshot.next_cursor.clone();
-    assert!(!cursor.as_str().is_empty());
+        .expect("snapshot")
+        .next_cursor;
 
-    // An immediate delta from that syncToken must not error and must not be a snapshot —
-    // proving the real events.list?syncToken request shape is accepted.
-    let delta = provider
-        .sync_events(&account(), Some(&cursor))
-        .await
-        .expect("delta");
-    assert!(!delta.is_snapshot(), "a delta from a live syncToken");
-    assert!(!delta.next_cursor.as_str().is_empty());
-}
-
-#[tokio::test]
-async fn live_calendar_create_patch_delete() {
-    use engine_core::{
-        calendar::Event,
-        ids::Uid,
-        time::{CalendarDateTime, LocalDateTime, TimeZoneId, UtcDateTime},
-    };
-    use engine_provider::{EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget};
-
-    let Some(token) = token() else {
-        eprintln!("skipping live_calendar_create_patch_delete: GOOGLE_ACCESS_TOKEN unset");
-        return;
-    };
-    let provider = calendar_provider(token);
-    let cal = CalendarId::try_from("primary").unwrap();
-    let stamp: UtcDateTime = "2026-07-18T10:00:00Z".parse().unwrap();
-    let zoned = |s: &str| CalendarDateTime::Zoned {
-        local: s.parse::<LocalDateTime>().unwrap(),
-        zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
-    };
-
-    // Create a throwaway event.
-    let draft = EventDraft::new(
-        cal.clone(),
-        Uid::new(format!("live-cal-{}@example.test", std::process::id())).unwrap(),
-        "Live create/patch/delete",
-        zoned("2026-09-01T10:00:00"),
-        zoned("2026-09-01T10:30:00"),
-        stamp,
-    )
-    .location("Room Live");
-    let created = provider
-        .create_event(&account(), &draft)
-        .await
-        .expect("create");
-    let first_etag = created.revisions.etag.clone();
-    assert!(first_etag.is_some(), "the created event carries an ETag");
-
-    // Build the base event as read, then patch it (rename) — the ETag must advance.
-    let mut base = Event::new(
-        created.event.clone(),
-        created.uid.clone(),
-        engine_core::membership::Memberships::of_one(cal.clone()),
-        zoned("2026-09-01T10:00:00"),
-    );
-    base.revisions = created.revisions.clone();
-    let edit = EventEdit::new(
-        &base,
-        PatchTarget::Series,
-        EventPatch::new(stamp).summary("Live create/patch/delete (renamed)"),
-    );
-    let patched = provider
-        .patch_event(&account(), &base, &edit)
-        .await
-        .expect("patch");
-    assert!(
-        patched.revisions.etag.is_some() && patched.revisions.etag != first_etag,
-        "the ETag advances on patch"
-    );
-
-    // Delete it, guarded by the fresh ETag.
-    base.revisions = patched.revisions.clone();
     provider
-        .delete_event(&account(), &EventDeletion::of(&base))
+        .edit_mail(&account(), &MailEdit::mark_seen(key.clone(), true))
         .await
-        .expect("delete");
-    // NOTE: a *guarded* re-delete here returns 412 (conditionNotMet), not 404/410 — the
-    // deleted event is left cancelled with a new ETag, so the stale If-Match fails the
-    // precondition (a real Google finding; see tests/fixtures/README.md). The
-    // 404/410-gone idempotency is covered offline (`cal_write` tests).
+        .expect("mark read");
+
+    let delta = provider
+        .sync_email(&account(), Some(&cursor))
+        .await
+        .expect("delta after the label change");
+    let SyncUpdate::Delta {
+        changed, patched, ..
+    } = &delta.update
+    else {
+        panic!("expected a delta");
+    };
+
+    assert!(
+        !changed.iter().any(|m| m.id.key() == &key),
+        "a label change is not a whole object: it would rewrite the stored payload"
+    );
+    let state = patched
+        .iter()
+        .find(|c| c.key == key)
+        .expect("the label change came back as a state change");
+    assert!(
+        state
+            .state
+            .keywords
+            .iter()
+            .any(|k| k.as_system() == Some(SystemKeyword::Seen)),
+        "and it carries the resulting keywords, got {:?}",
+        state.state.keywords
+    );
+    // Gmail files by label, so a state change must carry the filing too — otherwise an
+    // archive, which is the same kind of event, would be silently lost.
+    let filing = state
+        .state
+        .mailboxes
+        .as_ref()
+        .expect("Gmail files in place, so the change says where");
+    assert!(
+        filing.contains(&MailboxId::try_from("INBOX").unwrap()),
+        "the self-addressed send is still in the inbox, got {filing:?}"
+    );
+
+    cleanup(&provider, key).await;
 }
