@@ -18,7 +18,7 @@ use std::time::Duration as StdDuration;
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, MailboxRole, Message},
+    mail::{EmailAddress, MailboxRole, StoredContent},
     sync::{SyncScope, SyncUpdate},
 };
 use engine_provider::{Draft, Provider};
@@ -125,10 +125,15 @@ async fn load<T: DeserializeOwned>(store: &Store, scope: &SyncScope, key: &Provi
     serde_json::from_value(payload).expect("deserialize stored object")
 }
 
-async fn messages_in(store: &Store, scope: &SyncScope) -> Vec<Message> {
+/// The account's stored payloads, decoded.
+///
+/// [`StoredContent`], not `Message`: a payload is a message's immutable half, and the mutable
+/// half — keywords, filing, revision tokens — lives in the `message` row and the `membership`
+/// junction. Assert state against the rows, never against these.
+async fn messages_in(store: &Store, scope: &SyncScope) -> Vec<StoredContent> {
     let mut out = Vec::new();
     for key in store.object_keys(scope).await.unwrap() {
-        out.push(load::<Message>(store, scope, &key).await);
+        out.push(load::<StoredContent>(store, scope, &key).await);
     }
     out
 }

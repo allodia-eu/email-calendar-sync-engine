@@ -17,7 +17,7 @@ use std::{sync::Mutex, time::Duration as StdDuration};
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword},
+    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, StoredContent, SystemKeyword},
     sync::{SyncScope, SyncUpdate},
 };
 use engine_provider::{Draft, Provider};
@@ -95,10 +95,15 @@ async fn load<T: DeserializeOwned>(store: &Store, scope: &SyncScope, key: &Provi
     serde_json::from_value(payload).expect("deserialize stored object")
 }
 
-async fn messages_in(store: &Store, scope: &SyncScope) -> Vec<Message> {
+/// The account's stored payloads, decoded.
+///
+/// [`StoredContent`], not `Message`: a payload is a message's immutable half, and the mutable
+/// half — keywords, filing, revision tokens — lives in the `message` row and the `membership`
+/// junction. Assert state against the rows, never against these.
+async fn messages_in(store: &Store, scope: &SyncScope) -> Vec<StoredContent> {
     let mut out = Vec::new();
     for key in store.object_keys(scope).await.unwrap() {
-        out.push(load::<Message>(store, scope, &key).await);
+        out.push(load::<StoredContent>(store, scope, &key).await);
     }
     out
 }
@@ -214,7 +219,7 @@ async fn live_imap_sync_loads_the_inbox_seed() {
     }
 
     // The duplicate Message-ID is two distinct stored objects sharing the hint.
-    let dup: Vec<&Message> = inbox_messages
+    let dup: Vec<&StoredContent> = inbox_messages
         .iter()
         .filter(|m| {
             m.envelope
@@ -275,7 +280,19 @@ async fn live_imap_sync_loads_the_inbox_seed() {
         "an IMAP copy in another folder is a distinct object"
     );
     assert!(archive_baseline.id.as_str().contains("@Archive"));
-    assert_eq!(archive_baseline.mailboxes.len().get(), 1);
+    // An IMAP object's filing is its identity — the key embeds the mailbox — so the copy is in
+    // exactly the one folder, read from the junction where filing lives.
+    let archive_filing = store
+        .list_mail(
+            core::slice::from_ref(&account),
+            MailSelector::Keys(core::slice::from_ref(archive_baseline.id.key())),
+            usize::MAX,
+        )
+        .await
+        .unwrap()
+        .pop()
+        .expect("the archived copy has a row");
+    assert_eq!(archive_filing.mailboxes.len(), 1);
 }
 
 #[tokio::test]

@@ -16,7 +16,7 @@ use std::{sync::Mutex, time::Duration as StdDuration};
 
 use engine_core::{
     ids::AccountId,
-    mail::{Keyword, Mailbox, MailboxRole, Message},
+    mail::{Keyword, Mailbox, MailboxRole, StoredContent},
     sync::SyncScope,
     time::TimeZoneId,
 };
@@ -103,51 +103,10 @@ async fn full_mail_and_calendar_sync_loop() {
     let archive = archive.expect("Archive mailbox");
     let projects = projects.expect("Projects mailbox");
 
-    let mut messages = Vec::new();
-    for key in store.object_keys(&email_scope).await.unwrap() {
-        messages.push(load::<Message>(&store, &email_scope, &key).await);
-    }
-
-    // 8 messages in the inbox.
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|m| m.mailboxes.contains(&inbox))
-            .count(),
-        8
-    );
-    // The COPY: exactly one object in both inbox and Archive.
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|m| m.mailboxes.contains(&inbox) && m.mailboxes.contains(&archive))
-            .count(),
-        1
-    );
-    // The MOVE: exactly one object in Projects and not the inbox.
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|m| m.mailboxes.contains(&projects) && !m.mailboxes.contains(&inbox))
-            .count(),
-        1
-    );
-    // The duplicate Message-ID is two distinct stored objects.
-    let dup: Vec<&Message> = messages
-        .iter()
-        .filter(|m| {
-            m.envelope
-                .message_id
-                .iter()
-                .any(|id| id.as_str() == "shared-dup-msgid@example.com")
-        })
-        .collect();
-    assert_eq!(dup.len(), 2);
-    assert_ne!(dup[0].id, dup[1].id);
-    // The custom keyword survived the full loop — read from the message rows, which is
-    // where a keyword lives. The stored payload is the provider's word on the message's
-    // *content* and deliberately carries no keywords at all, so asserting against it
-    // would pass only while the keyword happened not to have moved.
+    // Filing and keywords are read from the message **rows**: both are mutable state whose home
+    // is the `membership` junction, and JMAP moves a message between mailboxes under a stable
+    // id, so the payload carries neither. Content — the `Message-ID` below — comes from the
+    // payload, which is the only thing it does carry.
     let rows = store
         .list_mail(
             core::slice::from_ref(&account),
@@ -156,6 +115,43 @@ async fn full_mail_and_calendar_sync_loop() {
         )
         .await
         .unwrap();
+
+    // 8 messages in the inbox.
+    assert_eq!(
+        rows.iter().filter(|r| r.mailboxes.contains(&inbox)).count(),
+        8
+    );
+    // The COPY: exactly one object in both inbox and Archive.
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.mailboxes.contains(&inbox) && r.mailboxes.contains(&archive))
+            .count(),
+        1
+    );
+    // The MOVE: exactly one object in Projects and not the inbox.
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.mailboxes.contains(&projects) && !r.mailboxes.contains(&inbox))
+            .count(),
+        1
+    );
+    // The duplicate Message-ID is two distinct stored objects.
+    let mut contents = Vec::new();
+    for key in store.object_keys(&email_scope).await.unwrap() {
+        contents.push(load::<StoredContent>(&store, &email_scope, &key).await);
+    }
+    let dup: Vec<&StoredContent> = contents
+        .iter()
+        .filter(|c| {
+            c.envelope
+                .message_id
+                .iter()
+                .any(|id| id.as_str() == "shared-dup-msgid@example.com")
+        })
+        .collect();
+    assert_eq!(dup.len(), 2);
+    assert_ne!(dup[0].id, dup[1].id);
+    // The custom keyword survived the full loop.
     assert!(
         rows.iter()
             .any(|r| r.keywords.contains(&Keyword::new("harness").unwrap()))

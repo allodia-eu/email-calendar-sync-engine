@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{EmailBodyPart, Envelope, Keyword, SystemKeyword, ThreadRef};
+use super::{EmailBodyPart, Envelope, Keyword, StoredState, SystemKeyword, ThreadRef};
 use crate::{
     attachment::Attachment,
     extended::ExtendedProperties,
@@ -28,7 +28,14 @@ use crate::{
 ///
 /// UI/search deduplication across copies is presentation policy, applied above
 /// this type; it never collapses two provider objects into one here.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// **Serialize-only, deliberately.** A whole `Message` is never what storage holds: the store
+/// keeps its immutable half as a [`MailContent`] payload and its mutable half in the `message`
+/// row and the `membership` junction. Deriving `Deserialize` here would let a caller decode a
+/// payload straight into a `Message` and get one whose keywords, filing and revision tokens are
+/// silently empty — which is how four live assertions came to test that a flag had *not* moved.
+/// Storage decodes into [`StoredContent`] and rebuilds through [`Message::from_parts`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Message {
     /// The provider object id.
     pub id: MessageId,
@@ -98,14 +105,17 @@ pub struct Message {
 /// and never reconciled.
 ///
 /// Its mutable counterpart is [`MailState`](super::MailState), whose home is the `message` row
-/// and the `membership` junction. [`Message::keywords`] is therefore absent here by
-/// construction, and [`Message::thread`] is present only when the **provider** assigned it — a
-/// derived thread is the engine's, and it re-keys whenever new mail joins the conversation. A
-/// payload carrying a copy of either could disagree with its home, and the disagreement would be
-/// invisible until someone read the wrong one. There is no copy.
+/// and the `membership` junction. [`Message::keywords`] and [`Message::mailboxes`] are therefore
+/// absent here by construction, and [`Message::thread`] is present only when the **provider**
+/// assigned it — a derived thread is the engine's, and it re-keys whenever new mail joins the
+/// conversation. A payload carrying a copy of any of them could disagree with its home, and the
+/// disagreement would be invisible until someone read the wrong one. There is no copy.
 ///
-/// Borrowed and serialize-only: a sync page writes hundreds of these, and the JSON is the cost,
-/// not another owned message beside it.
+/// Filing is the axis that most looks like content and is not: JMAP and Gmail move a message
+/// between mailboxes under a stable id, so a payload copy would go stale on any archive.
+///
+/// Borrowed and serialize-only, because a sync page writes hundreds of these and the JSON is the
+/// cost. [`StoredContent`] is the owned counterpart it decodes back into.
 #[derive(Debug, Serialize)]
 pub struct MailContent<'a> {
     id: &'a MessageId,
@@ -120,7 +130,6 @@ pub struct MailContent<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     thread: Option<&'a ThreadRef>,
     blob_id: &'a Option<BlobId>,
-    mailboxes: &'a Memberships<MailboxId>,
     size: &'a Option<u64>,
     received_at: &'a Option<UtcDateTime>,
     sent_at: &'a Option<UtcDateTime>,
@@ -144,7 +153,7 @@ impl<'a> From<&'a Message> for MailContent<'a> {
             thread,
             // Mutable state whose home is the message row and the membership junction.
             keywords: _,
-            mailboxes,
+            mailboxes: _,
             size,
             received_at,
             sent_at,
@@ -164,7 +173,6 @@ impl<'a> From<&'a Message> for MailContent<'a> {
             id,
             thread: thread.as_ref().filter(|t| !t.is_derived()),
             blob_id,
-            mailboxes,
             size,
             received_at,
             sent_at,
@@ -174,6 +182,105 @@ impl<'a> From<&'a Message> for MailContent<'a> {
             mime_structure,
             attachments,
             reply_unique_text,
+            extended,
+        }
+    }
+}
+
+/// A stored payload decoded back — the owned, read counterpart of [`MailContent`].
+///
+/// **This, not [`Message`], is what a stored payload deserializes into.** A `Message` needs its
+/// mutable half too, and the only way to get one out of storage is [`Message::from_parts`]. That
+/// is the guarantee: not that a reader remembers to overlay the state, but that a payload alone
+/// cannot be mistaken for a whole message. Four live assertions once read a keyword off a
+/// payload-decoded `Message` and passed by asserting a flag had not moved; this type is what
+/// makes that unwritable.
+///
+/// Unknown fields are ignored, so a payload written before a field moved into the row still
+/// decodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredContent {
+    /// The provider object id.
+    pub id: MessageId,
+    /// The thread the **provider** assigned, if it assigned one. Absent for a message the engine
+    /// threads itself, whose derived id lives in the message row.
+    #[serde(default)]
+    pub thread: Option<ThreadRef>,
+    /// The blob holding the raw RFC 5322 bytes.
+    pub blob_id: Option<BlobId>,
+    /// The size of the raw message in octets, if known.
+    pub size: Option<u64>,
+    /// The delivery/internal date.
+    pub received_at: Option<UtcDateTime>,
+    /// The instant from the `Date` header.
+    pub sent_at: Option<UtcDateTime>,
+    /// The parsed addressing/threading headers.
+    pub envelope: Envelope,
+    /// A short snippet for list views.
+    pub preview: Option<String>,
+    /// Whether the message has a non-inline attachment.
+    pub has_attachment: bool,
+    /// The full normalized MIME tree, when synced.
+    pub mime_structure: Option<EmailBodyPart>,
+    /// The normalized attachments.
+    pub attachments: Vec<Attachment>,
+    /// The reply-unique body text, when available.
+    pub reply_unique_text: Option<String>,
+    /// Preserved provider-defined extended properties.
+    pub extended: ExtendedProperties,
+}
+
+impl Message {
+    /// Rebuilds a whole message from the two halves the store keeps apart.
+    ///
+    /// **The only way to turn stored mail back into a `Message`.** Written as a struct literal on
+    /// purpose — a new field on `Message` stops this compiling until someone says which half it
+    /// comes from, the same guard [`MailContent::from`] applies on the way out.
+    ///
+    /// A provider-assigned thread comes back with the payload and wins; only when the provider
+    /// assigned none does the engine's derived id apply. Relabelling a provider's thread as
+    /// derived would tell the derivation pass it may re-thread mail the provider threaded.
+    #[must_use]
+    pub fn from_parts(content: StoredContent, state: StoredState) -> Self {
+        let StoredContent {
+            id,
+            thread,
+            blob_id,
+            size,
+            received_at,
+            sent_at,
+            envelope,
+            preview,
+            has_attachment,
+            mime_structure,
+            attachments,
+            reply_unique_text,
+            extended,
+        } = content;
+        let StoredState {
+            mailboxes,
+            keywords,
+            thread: derived_thread,
+            revisions,
+            last_modified,
+        } = state;
+        Self {
+            id,
+            blob_id,
+            thread: thread.or(derived_thread),
+            mailboxes,
+            keywords,
+            size,
+            received_at,
+            sent_at,
+            last_modified,
+            envelope,
+            preview,
+            has_attachment,
+            mime_structure,
+            attachments,
+            reply_unique_text,
+            revisions,
             extended,
         }
     }
@@ -261,9 +368,13 @@ mod tests {
             !keys.iter().any(|k| *k == "thread"),
             "a derived thread lives in the message row, got: {keys:?}"
         );
+        assert!(
+            !keys.iter().any(|k| *k == "mailboxes"),
+            "filing lives in the membership junction: JMAP and Gmail move a message under a \
+             stable id, so a payload copy goes stale on any archive, got: {keys:?}"
+        );
         // The content the provider did send is all still there.
         assert!(keys.iter().any(|k| *k == "envelope"));
-        assert!(keys.iter().any(|k| *k == "mailboxes"));
     }
 
     #[test]
@@ -277,28 +388,44 @@ mod tests {
         ));
 
         let payload = serde_json::to_value(MailContent::from(&message)).unwrap();
-        let decoded: Message = serde_json::from_value(payload).unwrap();
-        assert_eq!(decoded.thread_id().map(ThreadId::as_str), Some("T42"));
-        assert!(!decoded.thread.unwrap().is_derived());
+        let decoded: StoredContent = serde_json::from_value(payload).unwrap();
+        let thread = decoded.thread.expect("the provider's thread survives");
+        assert_eq!(thread.id.as_str(), "T42");
+        assert!(!thread.is_derived());
     }
 
     #[test]
-    fn a_stored_payload_decodes_without_the_state_it_no_longer_carries() {
-        // The mirror of the two tests above: `MailContent` omits these keys, so every payload
-        // this build writes lacks them and `#[serde(default)]` is what lets one decode at all.
-        // Without it, reading back a message the store had just written would fail.
-        let decoded: Message = serde_json::from_value(serde_json::json!({
+    fn a_payload_carrying_no_state_at_all_still_decodes() {
+        // What `MailContent` actually writes: none of the state keys. `StoredContent` is shaped
+        // to that, so a stored payload decodes on its own — and is visibly not a whole message,
+        // which is the point. Only `from_parts` can make one.
+        let decoded: StoredContent = serde_json::from_value(serde_json::json!({
             "id": "m1",
-            "mailboxes": ["inbox"],
             "envelope": Envelope::default(),
             "has_attachment": false,
             "attachments": [],
-            "revisions": RevisionTokens::default(),
             "extended": ExtendedProperties::default(),
         }))
-        .expect("a payload with neither field decodes");
-        assert!(decoded.keywords.is_empty());
+        .expect("a payload with no state decodes");
+        assert_eq!(decoded.id.as_str(), "m1");
         assert!(decoded.thread.is_none());
+    }
+
+    #[test]
+    fn a_payload_from_an_older_build_still_decodes() {
+        // Filing used to ride the payload. A store written before it moved to the junction still
+        // has the key; an unknown field is ignored rather than fatal, so no migration is owed.
+        let decoded: StoredContent = serde_json::from_value(serde_json::json!({
+            "id": "m1",
+            "mailboxes": ["inbox"],
+            "keywords": ["$seen"],
+            "envelope": Envelope::default(),
+            "has_attachment": false,
+            "attachments": [],
+            "extended": ExtendedProperties::default(),
+        }))
+        .expect("a payload from before the split decodes");
+        assert_eq!(decoded.id.as_str(), "m1");
     }
 
     use super::*;
@@ -338,12 +465,30 @@ mod tests {
     }
 
     #[test]
-    fn roundtrips_through_json() {
+    fn a_message_survives_the_split_and_the_rejoin() {
+        // The whole contract in one pass: split a message into the two halves the store keeps
+        // apart, write and read the payload exactly as the store does, and rebuild. Anything
+        // that stops being carried by *either* half stops surviving this.
         let mut msg = message("m1", "inbox");
         msg.keywords.insert(Keyword::system(SystemKeyword::Flagged));
+        msg.thread = Some(ThreadRef::derived(ThreadId::try_from("t1").unwrap()));
         msg.size = Some(2048);
         msg.received_at = Some("2021-01-01T12:00:00Z".parse().unwrap());
-        let json = serde_json::to_string(&msg).unwrap();
-        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), msg);
+        msg.envelope.subject = Some("a subject".to_owned());
+        msg.last_modified = Some("2021-01-02T00:00:00Z".parse().unwrap());
+
+        let payload = serde_json::to_string(&MailContent::from(&msg)).unwrap();
+        let content: StoredContent = serde_json::from_str(&payload).unwrap();
+        let rebuilt = Message::from_parts(
+            content,
+            StoredState {
+                mailboxes: msg.mailboxes.clone(),
+                keywords: msg.keywords.clone(),
+                thread: msg.thread.clone(),
+                revisions: msg.revisions.clone(),
+                last_modified: msg.last_modified,
+            },
+        );
+        assert_eq!(rebuilt, msg);
     }
 }

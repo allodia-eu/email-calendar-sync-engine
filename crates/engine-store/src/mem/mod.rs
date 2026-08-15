@@ -174,8 +174,10 @@ impl ScopeCell {
                 existing.revisions = row.revisions.clone();
                 existing.last_modified = row.last_modified;
             }
-            // The keyword memberships are replaced; the mailbox ones decide which folders
-            // the message appears in and are left alone.
+            // Each kind is replaced on its own. The keyword memberships always; the mailbox
+            // ones only when the change carries filing — `None` means the provider files
+            // through identity and has nothing to say about which folder this is in, so
+            // clearing them would drop the message out of it (matches `store-sqlite`).
             let memberships = self.memberships.entry(row.key.clone()).or_default();
             memberships.retain(|m| m.kind != MembershipKind::Keyword);
             memberships.extend(row.keywords.iter().map(|value| MembershipRow {
@@ -183,6 +185,14 @@ impl ScopeCell {
                 kind: MembershipKind::Keyword,
                 value: value.clone(),
             }));
+            if let Some(mailboxes) = &row.mailboxes {
+                memberships.retain(|m| m.kind != MembershipKind::Mailbox);
+                memberships.extend(mailboxes.iter().map(|value| MembershipRow {
+                    key: row.key.clone(),
+                    kind: MembershipKind::Mailbox,
+                    value: value.clone(),
+                }));
+            }
         }
         for row in &derived.thread_assignments {
             if let Some(existing) = self.messages.get_mut(&row.key) {

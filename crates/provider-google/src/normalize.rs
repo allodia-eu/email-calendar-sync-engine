@@ -186,7 +186,7 @@ pub(crate) fn label_ids(value: &Value) -> Vec<String> {
 /// The membership mailboxes for a label set: every label that is not keyword-only,
 /// falling back to the synthetic All Mail when none remain (an archived, uncategorized
 /// message) so the non-empty [`Memberships`] invariant holds.
-fn memberships_of(labels: &[String]) -> Result<Memberships<MailboxId>, GoogleError> {
+pub(crate) fn memberships_of(labels: &[String]) -> Result<Memberships<MailboxId>, GoogleError> {
     let mut ids = Vec::new();
     for label in labels {
         if KEYWORD_LABELS.contains(&label.as_str()) {

@@ -24,7 +24,7 @@ use engine_recurrence::{Horizon, expand};
 use engine_store::{ApplyBatch, Clock, DerivedWrite, LeaseRequest, Store, StoreRead, WorkerId};
 use store_sqlite::SqliteStore;
 
-use crate::{CURSOR, CliError, Fixture, WORKER, calendar_scope, mail_scope};
+use crate::{CURSOR, CliError, Fixture, FixtureMessage, WORKER, calendar_scope, mail_scope};
 
 /// How long each harness lease is held; the fixed clock keeps it live for the run.
 const LEASE_TTL: Duration = Duration::from_mins(5);
@@ -60,7 +60,12 @@ pub async fn ingest<C: Clock>(
 ) -> Result<IngestReport, CliError> {
     let mut report = IngestReport::default();
     if !fixture.messages.is_empty() {
-        report.messages = ingest_mail(store, account.clone(), &fixture.messages).await?;
+        let messages: Vec<_> = fixture
+            .messages
+            .iter()
+            .map(FixtureMessage::to_message)
+            .collect();
+        report.messages = ingest_mail(store, account.clone(), &messages).await?;
     }
     if !fixture.events.is_empty() {
         let (events, occurrences) =

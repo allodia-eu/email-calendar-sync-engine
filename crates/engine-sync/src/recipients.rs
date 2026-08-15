@@ -1,14 +1,14 @@
 //! Sent-role resolution, one-time backfill, and coverage recording.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use engine_core::{
-    ids::{AccountId, MailboxId},
-    mail::{Mailbox, MailboxRole, Message},
+    ids::{AccountId, MailboxId, ProviderKey},
+    mail::{Mailbox, MailboxRole, Message, StoredContent},
     recipient::{RecipientCoverage, RecipientObservation, observe_sent_recipients},
     sync::{ObjectKind, SyncUpdate, SyncWindow},
 };
-use engine_store::{ContactStore, StoreRead};
+use engine_store::{ContactStore, MailSelector, StoreRead};
 
 use crate::{SyncError, changed_objects};
 
@@ -47,7 +47,9 @@ pub(crate) fn observations(
 ) -> Vec<RecipientObservation> {
     changed_objects(update)
         .iter()
-        .flat_map(|message| observe_sent_recipients(account, message, sent))
+        .flat_map(|message| {
+            observe_sent_recipients(account, message.into(), message.mailboxes.iter(), sent)
+        })
         .collect()
 }
 
@@ -71,15 +73,39 @@ where
     {
         return Ok(false);
     }
+    // Which mailboxes a stored message is filed in lives in the `membership` junction, not in
+    // its payload — JMAP and Gmail move a message between mailboxes under a stable id, so a
+    // payload copy would go stale on any archive. The rows are the only place that is current.
+    let filing: HashMap<ProviderKey, Vec<MailboxId>> = store
+        .list_mail(
+            core::slice::from_ref(account),
+            MailSelector::Newest,
+            usize::MAX,
+        )
+        .await?
+        .into_iter()
+        .map(|row| (row.mail.key, row.mailboxes))
+        .collect();
+
     let mut observations = Vec::new();
     for scope in store.account_scopes(account.clone()).await? {
         if scope.object_kind() != Some(ObjectKind::Message) {
             continue;
         }
-        for (_, payload) in store.scope_objects(&scope).await? {
-            let message: Message = serde_json::from_value(payload)
+        for (key, payload) in store.scope_objects(&scope).await? {
+            let Some(mailboxes) = filing.get(&key) else {
+                // No row means the store does not consider this message present; a payload
+                // without one is mid-tombstone, not something to observe recipients from.
+                continue;
+            };
+            let content: StoredContent = serde_json::from_value(payload)
                 .map_err(|error| SyncError::Decode(error.to_string()))?;
-            observations.extend(observe_sent_recipients(account, &message, sent));
+            observations.extend(observe_sent_recipients(
+                account,
+                (&content).into(),
+                mailboxes,
+                sent,
+            ));
         }
     }
     store

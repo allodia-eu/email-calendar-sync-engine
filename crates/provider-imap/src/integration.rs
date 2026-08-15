@@ -54,21 +54,6 @@ fn fetch_frag(tag: &str, uids: &[u32]) -> String {
     out
 }
 
-/// A `UID FETCH <uid> (BODY.PEEK[])` reply: the server echoes `BODY[]` with a small
-/// text body, so preview hydration (which the provider runs after each metadata page)
-/// has a message to extract a snippet from. Preview hydration is capped and newest-first,
-/// so a metadata page's messages are each followed by one of these, newest UID first.
-fn body_frag(tag: &str, uid: u32) -> String {
-    let body = format!(
-        "From: alice@test.local\r\nSubject: report {uid}\r\n\
-         Content-Type: text/plain\r\n\r\nPreview body for report {uid}.\r\n"
-    );
-    format!(
-        "* {uid} FETCH (UID {uid} BODY[] {{{}}}\r\n{body})\r\n{tag} OK FETCH done\r\n",
-        body.len()
-    )
-}
-
 /// The folder list as a `LIST-STATUS` server answers it (RFC 5819) — the rows and
 /// their unread counts in one round trip. The tests below set
 /// `list_status_advertised` to match, so the folder list stays a single command and

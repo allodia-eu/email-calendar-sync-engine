@@ -92,8 +92,12 @@ pub struct MailStateRow {
     /// The system keywords, as the bitfield the `message` row sorts and filters on.
     pub flags: MailFlags,
     /// The complete keyword set, as the membership values `keyword:` searches. Replaces the
-    /// message's existing keyword memberships; its mailbox memberships are left alone.
+    /// message's existing keyword memberships.
     pub keywords: Vec<String>,
+    /// The complete set of mailboxes the message is filed in, when the provider files **in
+    /// place** — `None` when it files through identity and the mailbox memberships are not this
+    /// change's to touch. See [`MailState::mailboxes`](crate::mail::MailState::mailboxes).
+    pub mailboxes: Option<Vec<String>>,
     /// The revision tokens a conditional write quotes. State, not content: they bump when the
     /// message's state moves, so a copy in the payload would go stale on a mark-read.
     pub revisions: RevisionTokens,
@@ -129,6 +133,12 @@ pub fn project_state_change(change: &MailStateChange) -> MailStateRow {
             .iter()
             .map(|keyword| keyword.as_str().to_owned())
             .collect(),
+        mailboxes: change.state.mailboxes.as_ref().map(|mailboxes| {
+            mailboxes
+                .iter()
+                .map(|mailbox| mailbox.as_str().to_owned())
+                .collect()
+        }),
     }
 }
 

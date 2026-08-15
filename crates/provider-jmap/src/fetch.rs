@@ -241,6 +241,23 @@ pub(crate) struct MemberFetch<'a> {
     pub(crate) properties: Option<&'static [&'static str]>,
 }
 
+/// How a delta resolves its **`updated`** ids.
+///
+/// `Foo/changes` splits its answer into created, updated and destroyed, and the third of those is
+/// the one worth being careful about. An updated id is *not* a new object: for `Email` it cannot
+/// even be a changed one, because RFC 8621 §4.1 makes `keywords` and `mailboxIds` the only
+/// mutable properties. So it is read through a narrow property list and becomes a state change,
+/// and the payload holding the message's content is never rewritten to move a flag.
+///
+/// Carried as a parameter rather than assumed, because it is a fact about the *type* being
+/// paged, not about JMAP.
+pub(crate) struct UpdatedAsState<P> {
+    /// The narrow `Foo/get` property list — the type's whole mutable half.
+    pub(crate) properties: &'static [&'static str],
+    /// Builds the state change one returned object describes.
+    pub(crate) normalize: fn(&Value) -> Result<P, JmapError>,
+}
+
 /// Fetches **one page** of a member type — the paged primitive behind
 /// [`engine_provider::Provider::stream_email`].
 ///
@@ -251,6 +268,10 @@ pub(crate) struct MemberFetch<'a> {
 /// `cannotCalculateChanges` recovers to a snapshot; the chosen mode and offset
 /// then travel inside the opaque [`PageToken`], so the engine never parses it and
 /// a recovered pass stays a snapshot to its end.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the page inputs are all distinct and none has a sensible default"
+)]
 pub(crate) async fn member_page<T: SyncObject>(
     fetch: &MemberFetch<'_>,
     sort: Value,
@@ -259,6 +280,7 @@ pub(crate) async fn member_page<T: SyncObject>(
     limit: usize,
     filter: Option<&Value>,
     normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
+    updated: &UpdatedAsState<T::Patch>,
 ) -> Result<SyncPage<T>, JmapError> {
     let limit = clamp_limit(limit, fetch.executor.session().limits().max_objects_in_get);
     match page {
@@ -267,13 +289,13 @@ pub(crate) async fn member_page<T: SyncObject>(
             PageCursor::Snapshot(position) => {
                 snapshot_page(fetch, sort, position, limit, filter, normalize).await
             }
-            PageCursor::Delta(since) => delta_page(fetch, &since, limit, normalize).await,
+            PageCursor::Delta(since) => delta_page(fetch, &since, limit, normalize, updated).await,
         },
         // The first page: a snapshot when there is no cursor, otherwise a delta
         // that recovers to a snapshot on `cannotCalculateChanges`.
         None => match cursor {
             None => snapshot_page(fetch, sort, 0, limit, filter, normalize).await,
-            Some(since) => match delta_page(fetch, since, limit, normalize).await {
+            Some(since) => match delta_page(fetch, since, limit, normalize, updated).await {
                 Err(e) if e.failure_class() == FailureClass::NeedsResync => {
                     snapshot_page(fetch, sort, 0, limit, filter, normalize).await
                 }
@@ -348,6 +370,7 @@ async fn delta_page<T: SyncObject>(
     since: &SyncState,
     limit: usize,
     normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
+    updated_handling: &UpdatedAsState<T::Patch>,
 ) -> Result<SyncPage<T>, JmapError> {
     let mut req = Request::new(fetch.using.iter().copied());
     let changes_method = format!("{}/changes", fetch.type_name);
@@ -365,6 +388,7 @@ async fn delta_page<T: SyncObject>(
             fetch.properties,
         ),
     );
+    // An updated id costs only the type's mutable half.
     let updated = req.invoke(
         format!("{}/get", fetch.type_name),
         back_ref_get(
@@ -372,20 +396,20 @@ async fn delta_page<T: SyncObject>(
             &changes_id,
             &changes_method,
             "/updated",
-            fetch.properties,
+            Some(updated_handling.properties),
         ),
     );
     let resp = fetch.executor.execute(&req).await?;
     let diff = Changes::parse(resp.result(&changes_id)?)?;
-    let mut changed = objects(resp.result(&created)?, normalize)?;
-    changed.extend(objects(resp.result(&updated)?, normalize)?);
+    let changed = objects(resp.result(&created)?, normalize)?;
+    let patched = objects(resp.result(&updated)?, updated_handling.normalize)?;
     let next_page = diff
         .has_more
         .then(|| PageCursor::Delta(diff.new_state.clone()).to_token());
     Ok(SyncPage {
         kind: SyncKind::Delta,
         changed,
-        patched: Vec::new(),
+        patched,
         removed: diff.destroyed,
         present: Vec::new(),
         next_page,
@@ -447,31 +471,5 @@ fn back_ref_get(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn page_cursor_round_trips_through_its_opaque_token() {
-        // Snapshot offsets and delta states survive encode → decode unchanged.
-        let snap = PageCursor::Snapshot(42).to_token();
-        assert_eq!(snap.as_str(), "s:42");
-        assert!(matches!(
-            PageCursor::parse(&snap).unwrap(),
-            PageCursor::Snapshot(42)
-        ));
-
-        let delta = PageCursor::Delta(SyncState::new("changes-state")).to_token();
-        assert_eq!(delta.as_str(), "d:changes-state");
-        match PageCursor::parse(&delta).unwrap() {
-            PageCursor::Delta(state) => assert_eq!(state.as_str(), "changes-state"),
-            PageCursor::Snapshot(_) => panic!("expected a delta cursor"),
-        }
-    }
-
-    #[test]
-    fn malformed_page_tokens_are_protocol_errors_not_panics() {
-        // A non-numeric snapshot offset and an unknown prefix both error cleanly.
-        assert!(PageCursor::parse(&PageToken::new("s:not-a-number")).is_err());
-        assert!(PageCursor::parse(&PageToken::new("garbage")).is_err());
-    }
-}
+#[path = "fetch_tests.rs"]
+mod tests;

@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 use engine_core::{
     calendar::{Calendar, Event},
     ids::{AccountId, ProviderKey, ThreadId},
-    mail::{Mailbox, Message, ThreadRef},
+    mail::{Mailbox, Message, StoredContent, StoredState, ThreadRef},
+    membership::Memberships,
     sync::{ObjectKind, SearchDomain, SyncScope},
     time::Horizon,
 };
@@ -96,37 +97,41 @@ impl Engine {
     ///
     /// Returns [`ApiError::Store`] on a backend failure.
     pub async fn messages(&self, account: &AccountId) -> Result<Vec<Message>, ApiError> {
-        let mut messages = Vec::new();
+        let mut content = Vec::new();
         for payload in self.objects_of(account, ObjectKind::Message).await? {
-            messages.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
+            content.push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
         }
-        self.compose(account, &mut messages).await?;
-        Ok(messages)
+        self.compose(account, content).await
     }
 
-    /// Rebuilds each message's mutable state from its stored row.
+    /// Joins stored payloads with their rows into whole messages.
     ///
     /// The stored payload is the message's **immutable half**
     /// ([`MailContent`](engine_core::mail::MailContent)) and carries none of its
-    /// [`MailState`](engine_core::mail::MailState): not its keywords, not a derived thread, not
-    /// the revision tokens that bump when that state moves. All of those change without the
-    /// message's bytes changing, so their home is the `message` row and the membership junction.
-    /// A `Message` decoded from a payload alone is therefore incomplete by construction, and this
-    /// is what completes it.
+    /// [`MailState`](engine_core::mail::MailState): not its keywords, not its filing, not a
+    /// derived thread, not the revision tokens that bump when that state moves. All of those
+    /// change without the message's bytes changing, so their home is the `message` row and the
+    /// membership junction.
     ///
-    /// **Every path that turns stored mail back into a `Message` goes through here.** That is
-    /// the guarantee: not that readers remember to refresh, but that a decoded payload is
-    /// visibly missing the state until this has run.
+    /// **Every path that turns stored mail back into a `Message` goes through here**, and it is
+    /// the type system that says so: a payload decodes into
+    /// [`StoredContent`](engine_core::mail::StoredContent), and the only way to get a `Message`
+    /// out of one is [`Message::from_parts`], which demands the state alongside it.
     ///
-    /// A message with no row — out of the synced window, or tombstoned between the two reads —
-    /// keeps the empty state the payload gave it rather than being dropped, so a caller asking
-    /// for specific keys still gets its content back.
-    async fn compose(&self, account: &AccountId, messages: &mut [Message]) -> Result<(), ApiError> {
-        if messages.is_empty() {
-            return Ok(());
+    /// A payload with **no row is dropped**. The `message` row is the store's record of what it
+    /// holds; a payload without one is mid-tombstone, and the alternative — returning content
+    /// with empty filing and no keywords — is a message that claims to be in no folder and
+    /// unread, which is worse than not returning it.
+    async fn compose(
+        &self,
+        account: &AccountId,
+        content: Vec<StoredContent>,
+    ) -> Result<Vec<Message>, ApiError> {
+        if content.is_empty() {
+            return Ok(Vec::new());
         }
-        let keys: Vec<ProviderKey> = messages.iter().map(|m| m.id.key().clone()).collect();
-        let rows: HashMap<ProviderKey, MailListRow> = self
+        let keys: Vec<ProviderKey> = content.iter().map(|c| c.id.key().clone()).collect();
+        let mut rows: HashMap<ProviderKey, MailListRow> = self
             .store
             .list_mail(
                 core::slice::from_ref(account),
@@ -137,22 +142,30 @@ impl Engine {
             .into_iter()
             .map(|row| (row.mail.key.clone(), row))
             .collect();
-        for message in messages {
-            let Some(row) = rows.get(message.id.key()) else {
+        let mut messages = Vec::with_capacity(content.len());
+        for content in content {
+            let Some(row) = rows.remove(content.id.key()) else {
                 continue;
             };
-            // A provider-assigned thread came back with the payload and stays as it is —
-            // relabelling it derived would tell the derivation pass it may re-thread mail the
-            // provider threaded. Only an absent one is filled from the row, and the row's can
-            // only be the engine's own.
-            if message.thread.is_none() {
-                message.thread = row.mail.thread_id.clone().map(ThreadRef::derived);
-            }
-            message.keywords = row.keywords.iter().cloned().collect();
-            message.revisions = row.mail.revisions.clone();
-            message.last_modified = row.mail.last_modified;
+            let Ok(mailboxes) = Memberships::new(row.mailboxes) else {
+                // Every write path files a message in at least one mailbox, so no rows at all
+                // is a store inconsistency rather than a message in no folder.
+                continue;
+            };
+            messages.push(Message::from_parts(
+                content,
+                StoredState {
+                    mailboxes,
+                    keywords: row.keywords.into_iter().collect(),
+                    // The row's thread id can only be the engine's own — a provider-assigned one
+                    // rides the payload, and `from_parts` prefers it.
+                    thread: row.mail.thread_id.map(ThreadRef::derived),
+                    revisions: row.mail.revisions,
+                    last_modified: row.mail.last_modified,
+                },
+            ));
         }
-        Ok(())
+        Ok(messages)
     }
 
     /// The newest `limit` mail rows across `accounts`, newest first — **the read a mailbox list
@@ -261,7 +274,7 @@ impl Engine {
         keys: &[ProviderKey],
     ) -> Result<Vec<Message>, ApiError> {
         let mut wanted: HashSet<ProviderKey> = keys.iter().cloned().collect();
-        let mut messages = Vec::new();
+        let mut content = Vec::new();
         for scope in self.mail_scopes(account).await? {
             if wanted.is_empty() {
                 break;
@@ -270,14 +283,13 @@ impl Engine {
             // resolved key is dropped from `wanted` and never probed in a later scope.
             for key in wanted.iter().cloned().collect::<Vec<_>>() {
                 if let Some(payload) = self.store.object_payload(&scope, &key).await? {
-                    messages
+                    content
                         .push(serde_json::from_value(payload).map_err(|err| decode_error(&err))?);
                     wanted.remove(&key);
                 }
             }
         }
-        self.compose(account, &mut messages).await?;
-        Ok(messages)
+        self.compose(account, content).await
     }
 
     /// The account's `Message`-kind sync scopes (its mail folders/labels), for the windowed and

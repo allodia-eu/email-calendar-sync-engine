@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use engine_core::{
     ids::ProviderKey,
-    mail::{MailStateChange, Mailbox, Message},
+    mail::{MailState, MailStateChange, Mailbox, Message},
     raw::RawMime,
     sync::SyncState,
     time::CalendarDate,
@@ -35,7 +35,7 @@ use crate::{
     error::GoogleError,
     json::{opt_str, req_str},
     normalize::{
-        KEYWORD_LABELS, METADATA_HEADERS, all_mail_mailbox, keywords_from_labels, label_from_json,
+        METADATA_HEADERS, all_mail_mailbox, keywords_from_labels, label_from_json, memberships_of,
         message_from_json,
     },
     transport::{GoogleClient, encode_query_value},
@@ -216,12 +216,12 @@ struct HistoryPage {
 
 /// Sorts a history page into the three.
 ///
-/// A `labelsAdded`/`labelsRemoved` record carries both the labels it *moved* and the
-/// message's resulting `labelIds` in full, which is enough to answer a mark-read without
-/// asking Gmail anything further. What it is not enough for is a **move**: Gmail files by
-/// label, so removing `INBOX` is an archive, and that is membership, which a state change
-/// does not carry. So a record whose moved labels are all keyword labels becomes a state
-/// change, and anything else re-fetches — the conservative half, unchanged from before.
+/// A `labelsAdded`/`labelsRemoved` record carries the message's **resulting** `labelIds` in
+/// full, and in Gmail that set is the whole of a message's mutable state: labels are both its
+/// keywords (`UNREAD`, `STARRED`) and its filing (`INBOX`, and every folder-like label). So any
+/// label change — a mark-read, a star, an archive — is answered by the page itself, with no
+/// further request. Only `messagesAdded` needs a fetch, because nothing here carries a subject,
+/// a sender or a body.
 ///
 /// A message added-then-deleted in the same window is only tombstoned.
 fn collect_history(doc: &Value) -> Result<HistoryPage, GoogleError> {
@@ -264,19 +264,12 @@ fn collect_history(doc: &Value) -> Result<HistoryPage, GoogleError> {
                     whole.insert(id);
                     continue;
                 }
-                // The labels this record moved, and the set they left behind. Either
-                // being absent means the page cannot answer the change on its own.
-                let (Some(moved), Some(result)) = (moved_labels(entry), resulting_labels(entry))
-                else {
+                // The set the change left behind. Absent means the page cannot answer the
+                // change on its own.
+                let Some(result) = resulting_labels(entry) else {
                     whole.insert(id);
                     continue;
                 };
-                if moved
-                    .iter()
-                    .any(|label| !KEYWORD_LABELS.contains(&label.as_str()))
-                {
-                    whole.insert(id.clone());
-                }
                 // Records arrive in ascending historyId order, so a later one is the
                 // more recent word on the same message.
                 resulting.insert(id, result);
@@ -294,8 +287,9 @@ fn collect_history(doc: &Value) -> Result<HistoryPage, GoogleError> {
             Some(labels) if !whole.contains(&id) => {
                 let key = ProviderKey::new(&id)
                     .map_err(|e| GoogleError::protocol(format!("bad changed id: {e}")))?;
-                page.patched
-                    .push(MailStateChange::keywords(key, keywords_from_labels(labels)));
+                let state = MailState::with_keywords(keywords_from_labels(labels))
+                    .filed_in(memberships_of(labels)?);
+                page.patched.push(MailStateChange::new(key, state));
             }
             _ => page.refetch.push(id),
         }
@@ -318,11 +312,6 @@ fn message_ids(record: &Value, group: &str) -> Vec<String> {
         .filter_map(|entry| entry.get("message").and_then(|m| opt_str(m, "id")))
         .map(str::to_owned)
         .collect()
-}
-
-/// A `labelsAdded`/`labelsRemoved` entry's own `labelIds` — the labels that moved.
-fn moved_labels(entry: &Value) -> Option<Vec<String>> {
-    string_array(entry.get("labelIds"))
 }
 
 /// The resulting label set carried on the entry's `message`.

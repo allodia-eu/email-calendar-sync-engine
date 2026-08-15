@@ -13,9 +13,13 @@
 //! on-demand fetch) but not materialized here — durable raw-MIME blob storage is a
 //! later store sub-step (`docs/agent-guidance/jmap.md`).
 
+use std::collections::BTreeSet;
+
 use engine_core::{
     ids::{BlobId, MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, ThreadRef},
+    mail::{
+        EmailAddress, Keyword, MailState, MailStateChange, Mailbox, MailboxRole, Message, ThreadRef,
+    },
     membership::Memberships,
 };
 use serde_json::Value;
@@ -89,6 +93,47 @@ pub(crate) fn mailbox_from_json(value: &Value) -> Result<Mailbox, JmapError> {
 ///
 /// Returns [`JmapError::Protocol`] if `id` is missing, `mailboxIds` is empty
 /// (RFC 8621 §4.1.1 requires at least one), or a keyword/Message-ID is malformed.
+/// The `Email` properties a **state-only** read needs.
+///
+/// RFC 8621 §4.1 makes `keywords` and `mailboxIds` the only mutable `Email` properties, so these
+/// two plus the id are the whole of what an `Email/changes` `updated` id can be reporting.
+pub(crate) const EMAIL_STATE_PROPERTIES: &[&str] = &["id", "keywords", "mailboxIds"];
+
+/// Reads one `Email`'s complete mutable state, as returned for [`EMAIL_STATE_PROPERTIES`].
+///
+/// JMAP objects carry no per-message revision token and no modification time — the account-wide
+/// `state` string is the cursor, not a per-object version — so those stay empty, which is what a
+/// JMAP message's row already holds.
+///
+/// # Errors
+///
+/// Returns [`JmapError::Protocol`] if `id` is missing, `mailboxIds` is empty (RFC 8621 §4.1.1
+/// requires at least one), or a keyword is malformed.
+pub(crate) fn state_from_json(value: &Value) -> Result<MailStateChange, JmapError> {
+    let id_str = req_str(value, "id")?;
+    let mailbox_ids = true_keys(value, "mailboxIds")
+        .map(|key| wrap_id(MailboxId::try_from(key), "mailbox id"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mailboxes = Memberships::new(mailbox_ids)
+        .map_err(|_| JmapError::protocol(format!("email {id_str:?} has empty mailboxIds")))?;
+
+    let mut keywords = BTreeSet::new();
+    for keyword in true_keys(value, "keywords") {
+        keywords.insert(
+            Keyword::new(keyword)
+                .map_err(|e| JmapError::protocol(format!("bad keyword {keyword:?}: {e}")))?,
+        );
+    }
+
+    let key = wrap_id(MessageId::try_from(id_str), "message id")?
+        .key()
+        .clone();
+    Ok(MailStateChange::new(
+        key,
+        MailState::with_keywords(keywords).filed_in(mailboxes),
+    ))
+}
+
 pub(crate) fn message_from_json(value: &Value) -> Result<Message, JmapError> {
     let id_str = req_str(value, "id")?;
 

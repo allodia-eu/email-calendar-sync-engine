@@ -38,7 +38,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey, ThreadId},
-    mail::{Message, ThreadRef},
+    mail::{Message, StoredContent, ThreadRef},
     search_index::MailThreadRow,
     sync::{ObjectKind, SyncScope, SyncUpdate},
 };
@@ -92,14 +92,17 @@ where
         .into_iter()
         .filter(|scope| scope.object_kind() == Some(ObjectKind::Message))
         .collect();
-    let mut per_scope: Vec<(SyncScope, Vec<Message>)> = Vec::with_capacity(scopes.len());
-    let mut all: Vec<Message> = Vec::new();
+    // The payload alone, deliberately: threading reads the reference graph and the provider's
+    // own thread id, both of which are content. The engine's *derived* ids come from the rows
+    // below, which is the only place they live.
+    let mut per_scope: Vec<(SyncScope, Vec<StoredContent>)> = Vec::with_capacity(scopes.len());
+    let mut all: Vec<StoredContent> = Vec::new();
     for scope in scopes {
         let mut messages = Vec::new();
         for (_key, payload) in store.scope_objects(&scope).await? {
-            if let Ok(message) = serde_json::from_value::<Message>(payload) {
-                all.push(message.clone());
-                messages.push(message);
+            if let Ok(content) = serde_json::from_value::<StoredContent>(payload) {
+                all.push(content.clone());
+                messages.push(content);
             }
         }
         per_scope.push((scope, messages));
@@ -204,8 +207,10 @@ async fn stored_thread_ids<S: StoreRead>(
 /// messages in instead would let a `References` header merge threads the provider
 /// separated.
 #[must_use]
-pub(crate) fn derive_thread_assignments(messages: &[Message]) -> HashMap<ProviderKey, ThreadId> {
-    let derivable: Vec<&Message> = messages
+pub(crate) fn derive_thread_assignments(
+    messages: &[StoredContent],
+) -> HashMap<ProviderKey, ThreadId> {
+    let derivable: Vec<&StoredContent> = messages
         .iter()
         .filter(|message| message.thread.as_ref().is_none_or(ThreadRef::is_derived))
         .collect();
@@ -267,7 +272,7 @@ pub(crate) fn derive_thread_assignments(messages: &[Message]) -> HashMap<Provide
 }
 
 /// Every `Message-ID`/`In-Reply-To`/`References` value the message touches.
-fn touched_ids(message: &Message) -> impl Iterator<Item = &str> {
+fn touched_ids(message: &StoredContent) -> impl Iterator<Item = &str> {
     message
         .envelope
         .message_id
@@ -315,10 +320,17 @@ impl UnionFind {
 mod tests {
     use engine_core::{
         ids::{MailboxId, MessageId},
+        mail::MailContent,
         membership::Memberships,
     };
 
     use super::*;
+
+    /// The stored payload of a message, decoded — the round trip storage performs, so a field
+    /// that stops being serialized stops reaching the threading pass here too.
+    fn stored(message: &Message) -> StoredContent {
+        serde_json::from_value(serde_json::to_value(MailContent::from(message)).unwrap()).unwrap()
+    }
 
     /// Builds a message with the given owned id and referenced ids, in a mailbox.
     fn message(id: &str, mailbox: &str, owned: &[&str], references: &[&str]) -> Message {
@@ -346,7 +358,8 @@ mod tests {
         let reply = message("sent-1", "sent", &["b-reply@h"], &["a-orig@h"]);
         let unrelated = message("inbox-2", "inbox", &["c-other@h"], &[]);
 
-        let assignments = derive_thread_assignments(&[original, reply, unrelated]);
+        let assignments =
+            derive_thread_assignments(&[stored(&original), stored(&reply), stored(&unrelated)]);
 
         let inbox1 = ProviderKey::new("inbox-1").unwrap();
         let sent1 = ProviderKey::new("sent-1").unwrap();
@@ -364,7 +377,7 @@ mod tests {
         let inbox = message("inbox-1", "inbox", &["dup@h"], &[]);
         let archive = message("archive-1", "archive", &["dup@h"], &[]);
 
-        let assignments = derive_thread_assignments(&[inbox, archive]);
+        let assignments = derive_thread_assignments(&[stored(&inbox), stored(&archive)]);
         assert_eq!(
             assignments[&ProviderKey::new("inbox-1").unwrap()],
             assignments[&ProviderKey::new("archive-1").unwrap()]
@@ -378,7 +391,7 @@ mod tests {
             ThreadId::try_from("T-provider").unwrap(),
         ));
 
-        let assignments = derive_thread_assignments(&[native]);
+        let assignments = derive_thread_assignments(&[stored(&native)]);
         // It already has a thread id, so derivation does not reassign it.
         assert!(assignments.is_empty());
     }
@@ -390,13 +403,13 @@ mod tests {
         // thread it references, not become a singleton — so an already-derived message
         // has to re-enter the graph.
         let mut original = message("k1", "inbox", &["a@h"], &[]);
-        let first = derive_thread_assignments(std::slice::from_ref(&original));
+        let first = derive_thread_assignments(&[stored(&original)]);
         let derived = first[&ProviderKey::new("k1").unwrap()].clone();
         assert_eq!(derived.as_str(), "a@h");
         original.thread = Some(ThreadRef::derived(derived.clone()));
 
         let reply = message("k2", "inbox", &["b@h"], &["a@h"]);
-        let second = derive_thread_assignments(&[original, reply]);
+        let second = derive_thread_assignments(&[stored(&original), stored(&reply)]);
         assert_eq!(second[&ProviderKey::new("k1").unwrap()], derived);
         assert_eq!(second[&ProviderKey::new("k2").unwrap()], derived);
     }
@@ -410,7 +423,7 @@ mod tests {
         incumbent.thread = Some(ThreadRef::derived(ThreadId::try_from("z@h").unwrap()));
         let joining = message("k2", "inbox", &["a@h"], &["z@h"]);
 
-        let assignments = derive_thread_assignments(&[incumbent, joining]);
+        let assignments = derive_thread_assignments(&[stored(&incumbent), stored(&joining)]);
         assert_eq!(
             assignments[&ProviderKey::new("k1").unwrap()].as_str(),
             "a@h"
@@ -432,7 +445,7 @@ mod tests {
         ));
         let reply = message("imap-1", "inbox", &["b@h"], &["a@h"]);
 
-        let assignments = derive_thread_assignments(&[native, reply]);
+        let assignments = derive_thread_assignments(&[stored(&native), stored(&reply)]);
         assert_eq!(assignments.len(), 1);
         assert_eq!(
             assignments[&ProviderKey::new("imap-1").unwrap()].as_str(),
@@ -444,7 +457,7 @@ mod tests {
     fn a_message_with_no_headers_still_gets_a_singleton_thread() {
         // No Message-ID at all: the provider key is the stable fallback id.
         let bare = message("bare-1", "inbox", &[], &[]);
-        let assignments = derive_thread_assignments(&[bare]);
+        let assignments = derive_thread_assignments(&[stored(&bare)]);
         assert_eq!(
             assignments[&ProviderKey::new("bare-1").unwrap()].as_str(),
             "bare-1"
@@ -458,7 +471,7 @@ mod tests {
         let m1 = message("k1", "inbox", &["a@h"], &[]);
         let m2 = message("k2", "inbox", &["b@h"], &[]);
         let m3 = message("k3", "inbox", &["c@h"], &["a@h", "b@h"]);
-        let assignments = derive_thread_assignments(&[m1, m2, m3]);
+        let assignments = derive_thread_assignments(&[stored(&m1), stored(&m2), stored(&m3)]);
         let t1 = assignments[&ProviderKey::new("k1").unwrap()].clone();
         assert_eq!(assignments[&ProviderKey::new("k2").unwrap()], t1);
         assert_eq!(assignments[&ProviderKey::new("k3").unwrap()], t1);
@@ -471,7 +484,7 @@ mod tests {
         // reference) owns the smaller — the smaller wins, independent of order.
         let first = message("k1", "inbox", &["z@h"], &[]);
         let second = message("k2", "inbox", &["a@h"], &["z@h"]);
-        let assignments = derive_thread_assignments(&[first, second]);
+        let assignments = derive_thread_assignments(&[stored(&first), stored(&second)]);
         assert_eq!(
             assignments[&ProviderKey::new("k1").unwrap()].as_str(),
             "a@h"

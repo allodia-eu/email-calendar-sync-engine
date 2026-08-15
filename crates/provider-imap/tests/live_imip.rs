@@ -31,13 +31,15 @@
 //! Skips with no `STALWART_IMAP_ADDR`.
 
 use core::time::Duration;
-use std::time::Duration as StdDuration;
+use std::{collections::BTreeSet, time::Duration as StdDuration};
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader},
-    mail::{EmailAddress, MailboxRole, Message},
+    mail::{EmailAddress, MailboxRole, Message, StoredContent, StoredState},
+    membership::Memberships,
     scheduling::ScheduleMethod,
     sync::SyncUpdate,
+    version::RevisionTokens,
 };
 use engine_provider::{Draft, DraftCalendar, MailEdit, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
@@ -119,7 +121,7 @@ async fn filed_copies(
     provider: &ImapProvider<TlsStream<tokio::net::TcpStream>>,
     store: &SqliteStore<ManualClock>,
     account: &AccountId,
-) -> Vec<Message> {
+) -> Vec<StoredContent> {
     sync_mail(
         provider,
         store,
@@ -137,14 +139,15 @@ async fn filed_copies(
             .await
             .expect("payload")
             .expect("present");
-        let message: Message = serde_json::from_value(payload).expect("a Message");
-        if message
+        // The payload, which is the half that carries the envelope this looks for.
+        let content: StoredContent = serde_json::from_value(payload).expect("stored content");
+        if content
             .envelope
             .message_id
             .iter()
             .any(|id| id.as_str() == REPLY_MESSAGE_ID)
         {
-            found.push(message);
+            found.push(content);
         }
     }
     found
@@ -175,7 +178,8 @@ async fn live_smtp_sends_a_processable_imip_reply() {
         .wait_until_ready(StdDuration::from_secs(30))
         .expect("harness ready");
 
-    let provider = connect(&harness, &sent_folder(&harness).await, true).await;
+    let sent = sent_folder(&harness).await;
+    let provider = connect(&harness, &sent, true).await;
     let store =
         SqliteStore::open_in_memory(ManualClock::new("2026-06-08T00:00:00Z".parse().unwrap()))
             .expect("store");
@@ -219,7 +223,19 @@ async fn live_smtp_sends_a_processable_imip_reply() {
     // …and a real IMAP server stored and returned it unchanged.
     let mut copies = filed_copies(&provider, &store, &account).await;
     assert_eq!(copies.len(), 1, "exactly the copy this run filed");
-    let filed = copies.remove(0);
+    // Rebuilt into a whole message because that is what the provider port takes. An IMAP
+    // object's filing is its identity — the key embeds the mailbox — so the one this was
+    // filed into is the whole of its membership.
+    let filed = Message::from_parts(
+        copies.remove(0),
+        StoredState {
+            mailboxes: Memberships::of_one(MailboxId::try_from(sent.as_str()).unwrap()),
+            keywords: BTreeSet::new(),
+            thread: None,
+            revisions: RevisionTokens::none(),
+            last_modified: None,
+        },
+    );
     let raw = provider
         .fetch_message_source(&account, &filed)
         .await

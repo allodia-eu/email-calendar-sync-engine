@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ids::{AccountId, MailboxId, MessageId, PersonId},
-    mail::{EmailAddress, Message},
+    mail::{EmailAddress, Envelope, Message, StoredContent},
     people::{CanonicalEmail, Person, PersonSourceId},
     sync::SyncWindow,
     time::UtcDateTime,
@@ -88,21 +88,60 @@ pub struct RecipientCoverage {
     pub sent_collection_identified: bool,
 }
 
-/// Extracts recipients when `message` currently belongs to a normalized Sent
-/// mailbox.
+/// The three things a recipient observation reads off its source message.
+///
+/// Both a live [`Message`] and a decoded [`StoredContent`] can supply
+/// them, which is the point: the backfill walks stored payloads and the sync path walks fresh
+/// provider objects, and neither should need the other's shape.
+#[derive(Debug, Clone, Copy)]
+pub struct SentSource<'a> {
+    /// The message the recipients were observed on.
+    pub id: &'a MessageId,
+    /// Its addressing headers.
+    pub envelope: &'a Envelope,
+    /// The `Date` header instant, recorded on each observation.
+    pub sent_at: Option<UtcDateTime>,
+}
+
+impl<'a> From<&'a Message> for SentSource<'a> {
+    fn from(message: &'a Message) -> Self {
+        Self {
+            id: &message.id,
+            envelope: &message.envelope,
+            sent_at: message.sent_at,
+        }
+    }
+}
+
+impl<'a> From<&'a StoredContent> for SentSource<'a> {
+    fn from(content: &'a StoredContent) -> Self {
+        Self {
+            id: &content.id,
+            envelope: &content.envelope,
+            sent_at: content.sent_at,
+        }
+    }
+}
+
+/// Extracts recipients when the message is currently filed in a normalized Sent mailbox.
+///
+/// Filing is passed in rather than read off `message`, because it is mutable state whose home is
+/// the `membership` junction: a message decoded from its stored payload
+/// ([`StoredContent`]) does not carry it, and the caller with the
+/// rows is the one that knows.
 ///
 /// Invalid addresses are skipped. To/Cc/Bcc are deduplicated by conservative
 /// canonical email for this source message. Self-addresses are intentionally
 /// retained.
 #[must_use]
-pub fn observe_sent_recipients(
+pub fn observe_sent_recipients<'a>(
     account: &AccountId,
-    message: &Message,
+    message: SentSource<'_>,
+    mailboxes: impl IntoIterator<Item = &'a MailboxId>,
     sent_mailboxes: &BTreeSet<MailboxId>,
 ) -> Vec<RecipientObservation> {
-    if !message
-        .mailboxes
-        .iter()
+    if !mailboxes
+        .into_iter()
         .any(|mailbox| sent_mailboxes.contains(mailbox))
     {
         return Vec::new();

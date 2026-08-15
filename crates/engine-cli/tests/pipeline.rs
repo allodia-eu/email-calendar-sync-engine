@@ -2,7 +2,8 @@
 //! (horizon-advance / re-expansion) path through the CLI library.
 
 use engine_cli::{
-    Fixture, Horizon, ingest, open_in_memory, reexpand_calendar, search_calendar, search_mail,
+    Fixture, FixtureMessage, Horizon, ingest, open_in_memory, reexpand_calendar, search_calendar,
+    search_mail,
 };
 use engine_core::{
     calendar::{Event, Frequency, Recurrence, RecurrenceRule},
@@ -41,14 +42,16 @@ fn daily_standup() -> Event {
     event
 }
 
-fn message(id: &str, subject: &str, from: &str) -> Message {
+/// Builds one fixture entry, through the fixture *file* shape rather than around it — a
+/// `Message` serializes to a superset of it, so this also pins that the two agree.
+fn message(id: &str, subject: &str, from: &str) -> FixtureMessage {
     let mut m = Message::new(
         MessageId::try_from(id).unwrap(),
         Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
     );
     m.envelope.subject = Some(subject.to_owned());
     m.envelope.from = vec![EmailAddress::new(from)];
-    m
+    serde_json::from_value(serde_json::to_value(&m).unwrap()).expect("fixture shape")
 }
 
 #[tokio::test]

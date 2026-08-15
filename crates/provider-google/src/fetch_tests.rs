@@ -2,7 +2,7 @@
 //! raw-source fetch driven against the captured fixtures through the fixture-routing
 //! fake and the reqwest replay server.
 
-use engine_core::mail::MailboxRole;
+use engine_core::{ids::MailboxId, mail::MailboxRole};
 
 use super::*;
 use crate::test_support::{fake_client, fake_client_fallible, json, replay_server, tls};
@@ -131,8 +131,10 @@ async fn delta_page_refetches_changed_and_advances_the_cursor() {
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Delta);
-    // The delta touches message-1 (added) and message-2 (label changes) → both refetched.
-    assert_eq!(page.changed.len(), 2);
+    // message-1 was added, so it is fetched whole; message-2 only changed labels, which the
+    // history page already answered in full.
+    assert_eq!(page.changed.len(), 1);
+    assert_eq!(page.patched.len(), 1);
     assert!(page.present.is_empty()); // a delta carries no present set
     assert!(page.removed.is_empty());
     // The cursor advances to the response's latest historyId.
@@ -194,29 +196,44 @@ async fn a_mark_read_is_answered_by_the_history_page_itself() {
 }
 
 #[tokio::test]
-async fn an_archive_is_a_move_and_still_refetches() {
-    // Gmail files by label, so removing `INBOX` is an archive — a membership change,
-    // which a state change does not carry. It must stay a whole object.
-    let client = fake_client(vec![
-        (
-            "/history?startHistoryId",
-            labels_removed(&["INBOX"], &["UNREAD"]),
-        ),
-        (
-            "/messages/message-9",
-            serde_json::json!({ "id": "message-9", "threadId": "t9", "labelIds": ["UNREAD"] }),
-        ),
-    ]);
+async fn an_archive_is_a_state_change_that_carries_the_new_filing() {
+    // Gmail files by label, so removing `INBOX` is an archive — a membership change. A state
+    // change carries filing, so this needs no re-fetch either; what it must not do is lose the
+    // move. No message route is registered, so a re-fetch would error.
+    let client = fake_client(vec![(
+        "/history?startHistoryId",
+        labels_removed(&["INBOX"], &["UNREAD", "CATEGORY_PERSONAL"]),
+    )]);
     let page = delta_page(&client, &SyncState::new("1681"), None)
         .await
         .unwrap();
 
-    assert!(
-        page.patched.is_empty(),
-        "a move is not a state change: it would lose the archive"
-    );
-    assert_eq!(page.changed.len(), 1);
-    assert_eq!(page.changed[0].id.as_str(), "message-9");
+    assert!(page.changed.is_empty(), "an archive rewrites no message");
+    assert_eq!(page.patched.len(), 1);
+    let filing = page.patched[0]
+        .state
+        .mailboxes
+        .as_ref()
+        .expect("Gmail files in place, so the change says where");
+    assert!(!filing.contains(&MailboxId::try_from("INBOX").unwrap()));
+    assert!(filing.contains(&MailboxId::try_from("CATEGORY_PERSONAL").unwrap()));
+    // `UNREAD` is keyword state, never a place.
+    assert!(!filing.contains(&MailboxId::try_from("UNREAD").unwrap()));
+}
+
+#[tokio::test]
+async fn a_message_left_with_no_folder_label_is_filed_in_all_mail() {
+    // An archived, uncategorized message carries no folder-like label at all, and the engine's
+    // membership set may not be empty — the same synthetic home the whole-object path uses.
+    let client = fake_client(vec![(
+        "/history?startHistoryId",
+        labels_removed(&["INBOX"], &[]),
+    )]);
+    let page = delta_page(&client, &SyncState::new("1681"), None)
+        .await
+        .unwrap();
+    let filing = page.patched[0].state.mailboxes.as_ref().expect("filing");
+    assert!(filing.contains(&MailboxId::try_from("ALL_MAIL").unwrap()));
 }
 
 #[tokio::test]

@@ -91,18 +91,23 @@ pub(super) fn assign_thread(
     Ok(())
 }
 
-/// Writes one state-only change: the message row's state columns, and that message's
-/// `keyword`-kind memberships.
+/// Writes one state-only change: the message row's state columns, that message's
+/// `keyword`-kind memberships, and — only when the provider files in place — its
+/// `mailbox`-kind ones.
 ///
-/// Deliberately an `UPDATE`, not an upsert — a keyword change carries no subject, sender or
+/// Deliberately an `UPDATE`, not an upsert — a state change carries no subject, sender or
 /// date, so an insert would file a blank row for a message the store has never seen. A change
 /// for an unknown key is a no-op: the message is out of the synced window, and the pass that
-/// admits it will bring its keywords with it.
+/// admits it will bring its state with it.
 ///
-/// The membership replace is scoped to `kind = 'keyword'`, so the message keeps the mailbox
-/// memberships that decide which folders it appears in. Clearing every kind here — the shape
-/// [`replace_memberships`] uses, where the batch carries a whole projection — would drop a
-/// message out of its folder on a mark-read.
+/// Each membership replace is scoped to its own `kind`, which is what makes a partial write
+/// safe. Clearing every kind here — the shape [`replace_memberships`] uses, where the batch
+/// carries a whole projection — would drop a message out of its folder on a mark-read.
+///
+/// **Filing is written only when `mailboxes` is `Some`.** `None` is not "no mailboxes"; it means
+/// the provider files through identity (an IMAP move mints a new UID, a Graph move a new id), so
+/// it has nothing to say about this axis and the rows it would otherwise clear are the only
+/// record of which folder the message is in.
 ///
 /// `schedule_tag` has no column: it is CalDAV scheduling state, which a message can never carry.
 pub(super) fn apply_state_change(
@@ -130,27 +135,46 @@ pub(super) fn apply_state_change(
                 .and_then(|m| i64::try_from(m.get()).ok()),
         ],
     )?;
+    replace_kind(
+        tx,
+        scope_key,
+        row.key.as_str(),
+        MembershipKind::Keyword,
+        &row.keywords,
+    )?;
+    if let Some(mailboxes) = &row.mailboxes {
+        replace_kind(
+            tx,
+            scope_key,
+            row.key.as_str(),
+            MembershipKind::Mailbox,
+            mailboxes,
+        )?;
+    }
+    Ok(())
+}
+
+/// Replaces one message's memberships **of a single kind**, leaving every other kind standing.
+fn replace_kind(
+    tx: &Transaction<'_>,
+    scope_key: &str,
+    provider_key: &str,
+    kind: MembershipKind,
+    values: &[String],
+) -> Result<()> {
+    let kind = convert::membership_kind_text(kind);
     sql::execute(
         tx,
         "DELETE FROM membership WHERE scope_key = ?1 AND provider_key = ?2 AND kind = ?3",
-        (
-            scope_key,
-            row.key.as_str(),
-            convert::membership_kind_text(MembershipKind::Keyword),
-        ),
+        (scope_key, provider_key, kind),
     )?;
-    for keyword in &row.keywords {
+    for value in values {
         sql::execute(
             tx,
             "INSERT INTO membership (scope_key, provider_key, kind, value)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(scope_key, provider_key, kind, value) DO NOTHING",
-            (
-                scope_key,
-                row.key.as_str(),
-                convert::membership_kind_text(MembershipKind::Keyword),
-                keyword.as_str(),
-            ),
+            (scope_key, provider_key, kind, value.as_str()),
         )?;
     }
     Ok(())
