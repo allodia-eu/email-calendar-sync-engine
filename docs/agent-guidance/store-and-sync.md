@@ -722,10 +722,11 @@ Lock these as failing tests before implementing the store:
   scopes independent; the cross-scope *apply order* itself is an orchestrator
   invariant, locked in `engine-sync` rather than in the store.)
 
-### A backfill is pinned to its own schema version
+### A migration that moves data pins its SQL to its own version
 
-A migration's backfill runs against the schema **as of its own step**, and the live write path
-moves on. So a backfill writes its own SQL and does not borrow `derived_ops` — sharing the live
-upsert means a later migration silently breaks an earlier migration's backfill, which is exactly
-how v9's was found broken by v11 (`insert_v9_row` in `backfill.rs`). The migration tests run each
-step against a store built only up to the step before it, which is what catches this.
+No step needs this today — `Migration` is DDL only — but the rule is why. A step's data move runs
+against the schema **as of that step**, and the live write path moves on, so a backfill must write
+its own SQL rather than borrow `derived_ops`. Sharing the live upsert means a later migration
+silently breaks an earlier one's backfill: adding columns in one step broke the backfill written
+two steps earlier, against a store that had none of them. The migration tests catch it because
+they build each step against the schema as of the step before.

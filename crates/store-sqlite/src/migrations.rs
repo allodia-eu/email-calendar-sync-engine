@@ -23,40 +23,25 @@
 //! dialects differ, while the portable query layer lives in `engine-search`.
 
 use engine_store::{Result, StoreError};
-use rusqlite::{Connection, Transaction};
+use rusqlite::Connection;
 
-use crate::{backfill, convert::backend, schema};
+use crate::{convert::backend, schema};
 
-/// One migration step: its DDL, and optionally a data move that must commit with it.
+/// One migration step: its DDL.
 ///
-/// A backfill exists for one reason — a new table whose contents are a *function* of what the
-/// store already holds. Expressing that function twice (once in the engine, once as SQL over the
-/// stored JSON) is how the copy and the original drift, so the step runs the engine's own
-/// projection over the rows instead. It sees the same transaction as the DDL, so a database is
-/// never at the new version with the new table empty.
+/// A step that must also *move data* — a new table whose contents are a function of what the
+/// store already holds — needs the move to commit in the same transaction as the DDL, so a
+/// database is never at the new version with the new table empty. Nothing needs that today; add
+/// the hook back when something does, and pin its SQL to its own version rather than borrowing
+/// the live write path, which moves on.
 struct Migration {
     sql: &'static str,
-    backfill: Option<fn(&Transaction<'_>) -> Result<()>>,
 }
 
 impl Migration {
     /// A step that is only DDL.
     const fn sql(sql: &'static str) -> Self {
-        Self {
-            sql,
-            backfill: None,
-        }
-    }
-
-    /// A step whose DDL is followed, in the same transaction, by a data move.
-    const fn with_backfill(
-        sql: &'static str,
-        backfill: fn(&Transaction<'_>) -> Result<()>,
-    ) -> Self {
-        Self {
-            sql,
-            backfill: Some(backfill),
-        }
+        Self { sql }
     }
 }
 
@@ -72,9 +57,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(schema::V6),
     Migration::sql(schema::V7),
     Migration::sql(schema::V8),
-    Migration::with_backfill(schema::V9, backfill::messages_from_objects),
-    Migration::sql(schema::V10),
-    Migration::with_backfill(schema::V11, backfill::message_state_from_objects),
+    Migration::sql(schema::V9),
 ];
 
 /// Brings `conn` up to the latest schema version.
@@ -103,9 +86,6 @@ fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<()> {
         let version = i64::try_from(index + 1).map_err(backend)?;
         let tx = conn.transaction().map_err(backend)?;
         tx.execute_batch(step.sql).map_err(backend)?;
-        if let Some(backfill) = step.backfill {
-            backfill(&tx)?;
-        }
         // `user_version` is a transaction-safe header write, so the step and the
         // version bump commit together; it cannot be bound, so format the checked
         // integer in directly.
@@ -202,117 +182,6 @@ mod tests {
         assert_eq!(version(&conn), 2);
     }
 
-    /// The v9 backfill is what keeps a reshaping step from costing the user a re-download, so what
-    /// it must do is carry the mail already stored into the new table with the fields a list row
-    /// renders — the ones `mail_index` never held and only the payload knew.
-    #[test]
-    fn the_message_table_is_filled_from_the_mail_already_stored() {
-        use engine_core::{
-            ids::{MailboxId, MessageId, MessageIdHeader},
-            mail::{EmailAddress, Keyword, Message, SystemKeyword},
-            membership::Memberships,
-        };
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        // A store as it stood before this step: everything up to v8, and no `message` table.
-        run(&mut conn, &MIGRATIONS[..8]).unwrap();
-
-        let mut message = Message::new(
-            MessageId::try_from("m1").unwrap(),
-            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
-        );
-        message.envelope.subject = Some("Quarterly report".into());
-        message.envelope.from = vec![EmailAddress::named("Alice", "alice@example.com")];
-        message.envelope.message_id = vec![MessageIdHeader::new("m1@example.com").unwrap()];
-        message.received_at = Some("2026-01-02T03:04:05Z".parse().unwrap());
-        message.preview = Some("see attached".into());
-        message
-            .keywords
-            .insert(Keyword::system(SystemKeyword::Seen));
-        let payload = serde_json::to_string(&message).unwrap();
-
-        conn.execute(
-            "INSERT INTO sync_scope (scope_key, account, token) VALUES ('s1', 'acct', 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO object (scope_key, provider_key, payload) VALUES ('s1', 'm1', ?1)",
-            [&payload],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO mail_index (scope_key, provider_key, date_utc, has_attachment)
-             VALUES ('s1', 'm1', '2026-01-02T03:04:05Z', 0)",
-            [],
-        )
-        .unwrap();
-        // An object with no mail-index row is not mail (a calendar event, a mailbox): it must not
-        // be dragged into the mail table.
-        conn.execute(
-            "INSERT INTO object (scope_key, provider_key, payload) VALUES ('s1', 'e1', '{}')",
-            [],
-        )
-        .unwrap();
-
-        migrate(&mut conn).unwrap();
-
-        assert_eq!(version(&conn), i64::try_from(MIGRATIONS.len()).unwrap());
-        assert_eq!(table_count(&conn, "mail_index"), 0, "v10 retires it");
-        let row: (
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            i64,
-            Option<String>,
-        ) = conn
-            .query_row(
-                "SELECT account, provider_key, subject, from_name, flags, message_id
-                   FROM message",
-                [],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                    ))
-                },
-            )
-            .unwrap();
-        assert_eq!(row.0, "acct", "the account comes from the row's scope");
-        assert_eq!(row.1, "m1");
-        assert_eq!(row.2.as_deref(), Some("Quarterly report"));
-        assert_eq!(row.3.as_deref(), Some("Alice"));
-        assert_eq!(row.4, 1, "$seen, through the engine's own projection");
-        assert_eq!(row.5.as_deref(), Some("m1@example.com"));
-    }
-
-    #[test]
-    fn a_failing_backfill_takes_its_own_ddl_with_it() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        let failing = run(
-            &mut conn,
-            &[Migration::with_backfill(
-                "CREATE TABLE a (x TEXT) STRICT;",
-                |tx| {
-                    tx.execute_batch("NOT VALID SQL;").map_err(backend)?;
-                    Ok(())
-                },
-            )],
-        );
-        assert!(failing.is_err());
-        assert_eq!(version(&conn), 0);
-        assert_eq!(
-            table_count(&conn, "a"),
-            0,
-            "a version whose data move failed must not be recorded as applied"
-        );
-    }
-
     #[test]
     fn a_failing_step_rolls_back_and_leaves_the_version_unchanged() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -334,73 +203,46 @@ mod tests {
         assert_eq!(table_count(&conn, "a"), 1);
     }
 
-    /// v11 lifts a message's revision tokens and modification time out of the payload and into
-    /// the row, from the payloads that still carry them — so an existing store gains the columns
-    /// without re-downloading anything.
+    /// v9 leaves a message row carrying both halves of what a list and a write need, and takes
+    /// `mail_index` with it. Asserted on the schema a *fresh* store ends up with, because that is
+    /// now the only way any store reaches this version.
     #[test]
-    fn the_state_columns_are_filled_from_the_payloads_that_still_carry_them() {
-        use engine_core::{
-            ids::{MailboxId, MessageId},
-            mail::Message,
-            membership::Memberships,
-            version::{ETag, ModSeq, RevisionTokens},
-        };
-
+    fn the_message_table_carries_a_messages_whole_mutable_state() {
         let mut conn = Connection::open_in_memory().unwrap();
-        run(&mut conn, &MIGRATIONS[..8]).unwrap();
-
-        // A payload as written *before* the split: the whole `Message`, state included. That is
-        // what an existing store holds, and what the backfill has to read.
-        let mut message = Message::new(
-            MessageId::try_from("m1").unwrap(),
-            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
-        );
-        message.received_at = Some("2026-01-02T03:04:05Z".parse().unwrap());
-        message.last_modified = Some("2026-02-03T04:05:06Z".parse().unwrap());
-        message.revisions = RevisionTokens {
-            etag: Some(ETag::new("W/\"abc\"")),
-            schedule_tag: None,
-            change_key: None,
-            mod_seq: Some(ModSeq::new(4321)),
-        };
-        let payload = serde_json::to_string(&message).unwrap();
-
-        conn.execute(
-            "INSERT INTO sync_scope (scope_key, account, token) VALUES ('s1', 'acct', 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO object (scope_key, provider_key, payload) VALUES ('s1', 'm1', ?1)",
-            [&payload],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO mail_index (scope_key, provider_key, date_utc, has_attachment)
-             VALUES ('s1', 'm1', '2026-01-02T03:04:05Z', 0)",
-            [],
-        )
-        .unwrap();
-
         migrate(&mut conn).unwrap();
 
-        let (last_modified, etag, change_key, mod_seq): (
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-        ) = conn
-            .query_row(
-                "SELECT last_modified, etag, change_key, mod_seq FROM message
-                 WHERE scope_key = 's1' AND provider_key = 'm1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(last_modified.as_deref(), Some("2026-02-03T04:05:06Z"));
-        assert_eq!(etag.as_deref(), Some("W/\"abc\""));
-        assert_eq!(mod_seq, Some(4321));
-        // Graph's token; this message carried none, and a backfill must not invent one.
-        assert_eq!(change_key, None);
+        assert_eq!(table_count(&conn, "mail_index"), 0, "v9 retires it");
+
+        let mut columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('message')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(std::result::Result::unwrap)
+            .collect();
+        columns.sort();
+        assert_eq!(
+            columns,
+            vec![
+                "account",
+                "change_key",
+                "date_utc",
+                "etag",
+                "flags",
+                "from_addr",
+                "from_name",
+                "has_attachment",
+                "last_modified",
+                "message_id",
+                "mod_seq",
+                "preview",
+                "provider_key",
+                "scope_key",
+                "subject",
+                "thread_id",
+            ],
+            "the row is what a list shows plus the state that moves without the message's bytes; \
+             `schedule_tag` is CalDAV scheduling state and has no place on a message"
+        );
     }
 }

@@ -403,13 +403,19 @@ pub(crate) const V8: &str = "\
 CREATE INDEX mail_index_thread ON mail_index (scope_key, thread_id);
 ";
 
-/// Migration v9: `message` — the row a mailbox list is built from.
+/// Migration v9: `message` — a mail row, and the retirement of `mail_index`.
 ///
 /// `mail_index` carried the keys a *filter* needs and nothing a row *shows*, so a list read
 /// ranked every message in the account by date and then opened the surviving payloads one JSON
 /// document at a time. This table carries what the row shows, so the first page costs the size of
 /// the page. `object` stays the canonical normalized record and leaves the list path entirely;
 /// opening a message still reads it.
+///
+/// **This table is a message's mutable half.** Its immutable half — headers, MIME tree, body —
+/// never changes once the server holds it and lives in `object` as `MailContent`. Everything
+/// here moves without those bytes moving: the keyword bitfield, the derived thread, the revision
+/// tokens and `last_modified` that bump whenever any of it does. One home per fact, so there is
+/// no second copy to disagree (`store-and-sync.md`).
 ///
 /// `account` is denormalized onto the row — derivable from `scope_key` through `sync_scope`, and
 /// kept here anyway — because "all inboxes" is then a predicate over one ordered index instead of
@@ -428,8 +434,11 @@ CREATE INDEX mail_index_thread ON mail_index (scope_key, thread_id);
 /// Every keyword, system and user alike, still lands in `membership` — that is where a set of
 /// arbitrary cardinality belongs, and it is what `keyword:` searches.
 ///
-/// [`crate::migrations`] backfills this table from `object` through the engine's own projection
-/// before v10 drops `mail_index`, so an existing database keeps its mail and re-downloads nothing.
+/// `RevisionTokens` also carries a `schedule_tag`; that is CalDAV scheduling state, which a
+/// message can never have, so it gets no column.
+///
+/// No backfill: `mail_index` is dropped in the same step, and no store carrying rows in it
+/// survives to reach this version.
 pub(crate) const V9: &str = "\
 CREATE TABLE message (
     scope_key      TEXT    NOT NULL,
@@ -444,6 +453,10 @@ CREATE TABLE message (
     from_addr      TEXT,
     subject        TEXT,
     preview        TEXT,
+    last_modified  TEXT,
+    etag           TEXT,
+    change_key     TEXT,
+    mod_seq        INTEGER,
     PRIMARY KEY (scope_key, provider_key)
 ) STRICT, WITHOUT ROWID;
 
@@ -451,37 +464,6 @@ CREATE INDEX message_date           ON message (date_utc, account);
 CREATE INDEX message_account_date   ON message (account, date_utc);
 CREATE INDEX message_account_thread ON message (account, thread_id);
 CREATE INDEX message_account_key    ON message (account, provider_key);
-";
 
-/// Migration v10: retire `mail_index`.
-///
-/// Its rows are in `message` by now (v9's backfill), which supersedes it: every column it had is
-/// there, beside the ones a list row actually renders. Its indices go with the table.
-pub(crate) const V10: &str = "\
 DROP TABLE mail_index;
-";
-
-/// Migration v11: the message row gains the last of a message's mutable state.
-///
-/// A message's content is immutable once the server holds it, and its *state* is everything that
-/// moves without those bytes moving. Keywords already lived here (as `flags` plus the
-/// `membership` junction); these are the rest:
-///
-/// - `last_modified` — when the provider last changed the object.
-/// - `etag` / `change_key` / `mod_seq` — the revision tokens a conditional write quotes. An IMAP
-///   `MODSEQ` bumps on a *flag* change and a Graph `ChangeKey` bumps on an `isRead` edit, so a copy
-///   of these in the normalized payload went stale the moment a state-only change landed. Harmless
-///   only for as long as mail writes stay unguarded; a stale token quoted in an `If-Match` is a
-///   spurious `412` that reads like a server fault.
-///
-/// `RevisionTokens` also carries a `schedule_tag`, which is CalDAV scheduling state — a message
-/// can never have one, so there is no column for it.
-///
-/// Backfilled out of the stored payloads, which still carry these fields today, so nothing is
-/// re-downloaded. Columns are nullable because most providers set only one of the three.
-pub(crate) const V11: &str = "\
-ALTER TABLE message ADD COLUMN last_modified TEXT;
-ALTER TABLE message ADD COLUMN etag          TEXT;
-ALTER TABLE message ADD COLUMN change_key    TEXT;
-ALTER TABLE message ADD COLUMN mod_seq       INTEGER;
 ";
