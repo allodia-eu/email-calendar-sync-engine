@@ -3,21 +3,23 @@
 //!
 //! Split from the generic derived-row machinery in [`super`] because these are the mail table's
 //! own shape, and because a message row is written three ways — a whole object, a state-only
-//! change, a thread assignment — that must agree on their columns.
+//! change, a thread assignment — that must agree on their columns. All three live here, so that
+//! agreement is visible in one file rather than asserted across two.
 
 use engine_core::{
     ids::{MessageIdHeader, ThreadId},
-    search_index::{MailRow, MailStateRow, MembershipKind},
-    time::UtcDateTime,
-    version::{ChangeKey, ETag, RevisionTokens},
+    search_index::{MailRow, MailStateRow, MailThreadRow, MembershipKind},
+    version::{ChangeKey, ETag},
 };
 use engine_store::Result;
 use rusqlite::Transaction;
 
 use crate::{convert, sql};
 
-/// Upserts one message row. Shared by the apply path and the v9 backfill, so a migrated store and
-/// a freshly synced one hold the same columns.
+/// Upserts one message row: everything a whole object knows, both halves in one statement.
+///
+/// The provider sent the object, so it is authoritative about the content columns *and* the state
+/// ones. A state-only change writes the narrower [`apply_state_change`] instead.
 pub(crate) fn upsert_message(
     tx: &Transaction<'_>,
     scope_key: &str,
@@ -70,33 +72,21 @@ pub(crate) fn upsert_message(
     Ok(())
 }
 
-/// Writes a message row's revision tokens and modification time.
+/// Writes one thread assignment: the message row's `thread_id`, and nothing else.
 ///
-/// Shared by the state-only apply, the whole-object upsert and the v11 backfill, so a migrated
-/// store and a freshly synced one hold the same columns. `schedule_tag` has no column: it is
-/// CalDAV scheduling state, which a message can never carry.
-fn write_message_state(
+/// An `UPDATE` for the same reason as a state change: an assignment names a thread, not a
+/// message, so it cannot file a row for one the store does not hold. The derivation pass reads
+/// payloads to rebuild the reference graph, and rewriting those would carry every other column
+/// along with the one column it decided.
+pub(super) fn assign_thread(
     tx: &Transaction<'_>,
     scope_key: &str,
-    provider_key: &str,
-    revisions: &RevisionTokens,
-    last_modified: Option<UtcDateTime>,
+    row: &MailThreadRow,
 ) -> Result<()> {
     sql::execute(
         tx,
-        "UPDATE message SET last_modified = ?3, etag = ?4, change_key = ?5, mod_seq = ?6
-         WHERE scope_key = ?1 AND provider_key = ?2",
-        rusqlite::params![
-            scope_key,
-            provider_key,
-            last_modified.map(convert::instant_to_text),
-            revisions.etag.as_ref().map(ETag::as_str),
-            revisions.change_key.as_ref().map(ChangeKey::as_str),
-            revisions
-                .mod_seq
-                .as_ref()
-                .and_then(|m| i64::try_from(m.get()).ok()),
-        ],
+        "UPDATE message SET thread_id = ?3 WHERE scope_key = ?1 AND provider_key = ?2",
+        (scope_key, row.key.as_str(), row.thread_id.as_str()),
     )?;
     Ok(())
 }
@@ -113,22 +103,32 @@ fn write_message_state(
 /// memberships that decide which folders it appears in. Clearing every kind here — the shape
 /// [`replace_memberships`] uses, where the batch carries a whole projection — would drop a
 /// message out of its folder on a mark-read.
+///
+/// `schedule_tag` has no column: it is CalDAV scheduling state, which a message can never carry.
 pub(super) fn apply_state_change(
     tx: &Transaction<'_>,
     scope_key: &str,
     row: &MailStateRow,
 ) -> Result<()> {
+    // One statement: the flags and the revision tokens are the same message's state, and they
+    // move together whenever a provider reports one.
     sql::execute(
         tx,
-        "UPDATE message SET flags = ?3 WHERE scope_key = ?1 AND provider_key = ?2",
-        (scope_key, row.key.as_str(), i64::from(row.flags.bits())),
-    )?;
-    write_message_state(
-        tx,
-        scope_key,
-        row.key.as_str(),
-        &row.revisions,
-        row.last_modified,
+        "UPDATE message
+            SET flags = ?3, last_modified = ?4, etag = ?5, change_key = ?6, mod_seq = ?7
+          WHERE scope_key = ?1 AND provider_key = ?2",
+        rusqlite::params![
+            scope_key,
+            row.key.as_str(),
+            i64::from(row.flags.bits()),
+            row.last_modified.map(convert::instant_to_text),
+            row.revisions.etag.as_ref().map(ETag::as_str),
+            row.revisions.change_key.as_ref().map(ChangeKey::as_str),
+            row.revisions
+                .mod_seq
+                .as_ref()
+                .and_then(|m| i64::try_from(m.get()).ok()),
+        ],
     )?;
     sql::execute(
         tx,

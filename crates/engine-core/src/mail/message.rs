@@ -283,9 +283,10 @@ mod tests {
     }
 
     #[test]
-    fn a_payload_written_before_the_split_still_decodes() {
-        // Both fields are `#[serde(default)]`, so a store written when the payload carried them
-        // opens without a migration — it simply has state the row will supersede.
+    fn a_stored_payload_decodes_without_the_state_it_no_longer_carries() {
+        // The mirror of the two tests above: `MailContent` omits these keys, so every payload
+        // this build writes lacks them and `#[serde(default)]` is what lets one decode at all.
+        // Without it, reading back a message the store had just written would fail.
         let decoded: Message = serde_json::from_value(serde_json::json!({
             "id": "m1",
             "mailboxes": ["inbox"],

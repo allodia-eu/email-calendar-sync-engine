@@ -84,13 +84,7 @@ pub(crate) fn apply_derived(
         apply_state_change(tx, scope_key, row)?;
     }
     for row in &derived.thread_assignments {
-        // An `UPDATE` for the same reason as a keyword change: an assignment names a thread,
-        // not a message, so it cannot file a row for one the store does not hold.
-        sql::execute(
-            tx,
-            "UPDATE message SET thread_id = ?3 WHERE scope_key = ?1 AND provider_key = ?2",
-            (scope_key, row.key.as_str(), row.thread_id.as_str()),
-        )?;
+        mail::assign_thread(tx, scope_key, row)?;
     }
     for row in &derived.event_index {
         sql::execute(
