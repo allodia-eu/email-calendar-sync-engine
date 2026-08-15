@@ -60,8 +60,8 @@ use engine_core::{
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{
-    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, Result, Store,
-    SyncApplied, SyncClaim, SyncLease,
+    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, Result, SchemaStatus,
+    Store, SyncApplied, SyncClaim, SyncLease,
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -82,6 +82,9 @@ use crate::{
 /// blocking thread so the async runtime is never blocked.
 pub struct SqliteStore<C> {
     clock: C,
+    /// Where the schema stood after this store was opened, including what opening moved it
+    /// from. Captured at open because that is the only moment the *previous* version exists.
+    schema: SchemaStatus,
     pool: Arc<Pool>,
     /// The content-addressed blob area holding raw message sources beside (or, for
     /// in-memory stores, instead of) the database — large bytes never enter SQLite.
@@ -137,7 +140,7 @@ impl<C: Clock> SqliteStore<C> {
         blobs: BlobArea,
     ) -> Result<Self> {
         pool::tune(&conn, path.is_some())?;
-        migrations::migrate(&mut conn)?;
+        let schema = migrations::migrate(&mut conn)?;
         reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;
         // After the migration, so a reader never sees a schema mid-step.
         let readers = match path {
@@ -146,6 +149,7 @@ impl<C: Clock> SqliteStore<C> {
         };
         Ok(Self {
             clock,
+            schema,
             pool: Arc::new(Pool::new(conn, readers)),
             blobs: Arc::new(blobs),
         })

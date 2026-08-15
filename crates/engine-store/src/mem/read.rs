@@ -20,11 +20,19 @@ use crate::{
     error::Result,
     lease::Clock,
     outbox::PendingOpState,
-    store::{IndexRowCounts, MailListRow, MailSelector, StoreRead},
+    store::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead},
 };
 
 #[async_trait]
 impl<C: Clock> StoreRead for MemStore<C> {
+    async fn schema_status(&self) -> Result<SchemaStatus> {
+        // The reference store keeps its rows in memory and reshapes with the code that reads
+        // them, so it has no persisted schema to be behind: it is current by construction and
+        // never migrates. Reported rather than refused so a host's diagnostics need no special
+        // case for which backend it is talking to.
+        Ok(SchemaStatus::current(0))
+    }
+
     async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>> {
         let inner = self.lock();
         let mut scopes: Vec<SyncScope> = inner

@@ -722,6 +722,21 @@ Lock these as failing tests before implementing the store:
   scopes independent; the cross-scope *apply order* itself is an orchestrator
   invariant, locked in `engine-sync` rather than in the store.)
 
+### A store says where its schema stands
+
+`StoreRead::schema_status` is part of the contract, not one backend's extra: `SchemaStatus`
+carries the version the data is at, the version the build expects, and — when opening upgraded it
+— the version it moved *from*. A future `store-postgres` answers the same question, and a host
+asking it never branches on which backend it is talking to. A backend with no persistent schema
+(the in-memory reference store) reports `version == expected` and never migrates.
+
+`migrated_from` is captured **at open**, because that is the only moment the previous version
+exists; re-reading afterwards would report the current version as though nothing had moved. It is
+`None` for a fresh store as well as an already-current one, so a host that logs the pair says
+nothing on an ordinary launch and prints `7 → 9` exactly when that is the answer to a support
+question. A store found *ahead* of the build is refused at open rather than reported, since
+reading it could misinterpret a shape this build does not know.
+
 ### A migration that moves data pins its SQL to its own version
 
 No step needs this today — `Migration` is DDL only — but the rule is why. A step's data move runs

@@ -29,7 +29,8 @@ pub(super) use self::{
         scope_occurrences_reads_the_overlapping_window,
     },
     read::{
-        account_scopes_enumerates_an_accounts_scopes, scope_objects_batch_reads_live_objects,
+        account_scopes_enumerates_an_accounts_scopes,
+        schema_status_reports_a_store_this_build_can_use, scope_objects_batch_reads_live_objects,
         structured_index_rows_replace_and_clear,
     },
     state_change::{

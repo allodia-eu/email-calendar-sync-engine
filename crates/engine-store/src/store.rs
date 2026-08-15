@@ -21,7 +21,7 @@ use engine_core::{
     time::{ExpansionWindow, Horizon},
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -251,6 +251,48 @@ impl MailListRow {
     }
 }
 
+/// Where a store's schema stands — what the data is at, what this build expects, and whether
+/// opening it moved.
+///
+/// A support answer, deliberately in the neutral layer rather than in one backend: "which schema
+/// is this user's store on, and did this launch upgrade it" is the same question whether the rows
+/// live in SQLite, in Postgres, or nowhere at all. A backend with no persistent schema reports
+/// `version == expected` and never migrates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaStatus {
+    /// The schema version the stored data is at now.
+    pub version: u32,
+    /// The version this build of the engine expects.
+    ///
+    /// Equal to [`version`](SchemaStatus::version) on a store this build can use. A store left
+    /// *ahead* of it — written by a newer build — is refused at open rather than reported here,
+    /// because reading it could misinterpret a shape this build does not know.
+    pub expected: u32,
+    /// The version the store was at when this process opened it, if opening upgraded it.
+    ///
+    /// `None` when nothing moved: an already-current store, or a freshly created one. A host logs
+    /// this once at startup, which is what turns "it broke after the update" into a version pair.
+    pub migrated_from: Option<u32>,
+}
+
+impl SchemaStatus {
+    /// A store that is at the version this build expects and did not migrate on open.
+    #[must_use]
+    pub fn current(version: u32) -> Self {
+        Self {
+            version,
+            expected: version,
+            migrated_from: None,
+        }
+    }
+
+    /// Whether opening this store upgraded it.
+    #[must_use]
+    pub fn migrated(&self) -> bool {
+        self.migrated_from.is_some()
+    }
+}
+
 /// Which mail a [`StoreRead::list_mail`] call selects, within the accounts it is given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailSelector<'a> {
@@ -270,6 +312,17 @@ pub enum MailSelector<'a> {
 /// diagnostics; the structured/full-text query path is a separate sub-step.
 #[async_trait]
 pub trait StoreRead: Send + Sync {
+    /// Where this store's schema stands: the version the data is at, the version this build
+    /// expects, and what it was upgraded from if opening moved it.
+    ///
+    /// Lease-free and cheap — a host calls it at startup to log the store's version, and again
+    /// when assembling a diagnostic report.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn schema_status(&self) -> Result<SchemaStatus>;
+
     /// Every sync scope the store currently knows for `account` (every scope it
     /// has claimed), in ascending [`SyncScope`] order. A per-account search
     /// enumerates these instead of hard-coding which scopes a provider uses, then

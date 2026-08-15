@@ -11,7 +11,9 @@ use engine_core::{
     time::Horizon,
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
-use engine_store::{MailListRow, MailSelector, MessageBodyStore, OccurrenceRow, StoreRead};
+use engine_store::{
+    MailListRow, MailSelector, MessageBodyStore, OccurrenceRow, SchemaStatus, StoreRead,
+};
 use serde_json::Value;
 
 use super::decode_error;
@@ -55,6 +57,21 @@ impl Engine {
         let query = CalendarQuery::parse(query)?;
         let scopes = self.scopes_in(account, SearchDomain::Calendar).await?;
         Ok(self.store.search_calendar(&scopes, &query, limit).await?)
+    }
+
+    /// Where the store's schema stands: the version its data is at, the version this build
+    /// expects, and what opening it upgraded from, if anything.
+    ///
+    /// For a host's startup log and its diagnostic report. "Which schema is this user on, and did
+    /// this launch upgrade it" is the first question a store-shaped support request turns into,
+    /// and the version it migrated *from* exists only in the moment it opened — so a host that
+    /// wants it has to read it, not reconstruct it later.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn schema_status(&self) -> Result<SchemaStatus, ApiError> {
+        Ok(self.store.schema_status().await?)
     }
 
     /// Lists one account's mailboxes (folders/labels) — the synced mail collections

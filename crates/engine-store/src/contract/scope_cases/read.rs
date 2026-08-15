@@ -280,3 +280,31 @@ pub(in crate::contract) async fn scope_objects_batch_reads_live_objects<S: Store
             .is_empty()
     );
 }
+
+/// Every backend answers where its schema stands, and an opened store is at the version its
+/// build expects.
+///
+/// The contract, not the number: a SQLite store reports its `user_version` and an in-memory one
+/// reports that it has no persistent schema, but a host asking "which schema is this user on"
+/// gets an answer either way, without branching on which backend it is talking to.
+pub(in crate::contract) async fn schema_status_reports_a_store_this_build_can_use<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let status = store.schema_status().await.unwrap();
+    assert_eq!(
+        status.version, status.expected,
+        "an opened store is at the version its build expects — one that is behind was migrated \
+         on the way in, and one that is ahead is refused at open rather than reported here"
+    );
+    // A store the suite just created had no earlier version to move from, so nothing migrated.
+    // The `Some` case needs a store written by an older build, which is a backend-specific
+    // fixture rather than a contract every backend can construct.
+    assert!(
+        !status.migrated(),
+        "a freshly created store reports no migration, so a host's startup log stays quiet on \
+         first launch"
+    );
+}

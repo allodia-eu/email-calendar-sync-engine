@@ -138,6 +138,8 @@ where
     let (store, clock) = make();
     scope_cases::account_scopes_enumerates_an_accounts_scopes(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::schema_status_reports_a_store_this_build_can_use(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::scope_objects_batch_reads_live_objects(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::list_mail_orders_by_date_and_excludes_tombstones(&store, &clock).await;

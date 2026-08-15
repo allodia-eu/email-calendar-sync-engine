@@ -22,7 +22,7 @@
 //! (it has no `user_version`); the migration SQL stays per-store because the
 //! dialects differ, while the portable query layer lives in `engine-search`.
 
-use engine_store::{Result, StoreError};
+use engine_store::{Result, SchemaStatus, StoreError};
 use rusqlite::Connection;
 
 use crate::{convert::backend, schema};
@@ -66,12 +66,12 @@ const MIGRATIONS: &[Migration] = &[
 ///
 /// Returns [`StoreError::Backend`] if a step fails or the database is newer than
 /// this build understands.
-pub(crate) fn migrate(conn: &mut Connection) -> Result<()> {
+pub(crate) fn migrate(conn: &mut Connection) -> Result<SchemaStatus> {
     run(conn, MIGRATIONS)
 }
 
 /// The version-driven runner, parameterized over the step list for testing.
-fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<()> {
+fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<SchemaStatus> {
     let current: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(backend)?;
@@ -93,12 +93,26 @@ fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<()> {
             .map_err(backend)?;
         tx.commit().map_err(backend)?;
     }
-    Ok(())
+    let expected = u32::try_from(migrations.len()).map_err(backend)?;
+    Ok(SchemaStatus {
+        version: expected,
+        expected,
+        // `None` when nothing moved — an already-current store, or a fresh one that had no
+        // version to move *from*. A host logs the pair, so "0 → 9" would be noise on every
+        // first launch while "7 → 9" is the answer to a support question.
+        migrated_from: (applied > 0 && applied < migrations.len())
+            .then(|| u32::try_from(applied).unwrap_or(u32::MAX)),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The version this build expects — the number of steps it knows.
+    fn expected_version() -> u32 {
+        u32::try_from(MIGRATIONS.len()).unwrap()
+    }
 
     fn version(conn: &Connection) -> i64 {
         conn.pragma_query_value(None, "user_version", |r| r.get(0))
@@ -244,5 +258,38 @@ mod tests {
             "the row is what a list shows plus the state that moves without the message's bytes; \
              `schedule_tag` is CalDAV scheduling state and has no place on a message"
         );
+    }
+
+    /// Opening a store that is behind reports the pair a support answer needs: what it was, and
+    /// what it is now.
+    #[test]
+    fn migrating_reports_the_version_it_moved_from() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        // A store as an older build left it.
+        run(&mut conn, &MIGRATIONS[..4]).unwrap();
+
+        let status = migrate(&mut conn).unwrap();
+
+        assert_eq!(status.migrated_from, Some(4), "where it came from");
+        assert_eq!(status.version, expected_version(), "where it landed");
+        assert_eq!(status.expected, expected_version());
+        assert!(status.migrated());
+    }
+
+    /// A fresh store had no version to move from, and an already-current one did not move.
+    ///
+    /// Both report no migration, so a host that logs the pair says nothing on an ordinary
+    /// launch — which is what keeps the line meaningful when it does appear.
+    #[test]
+    fn a_fresh_or_current_store_reports_no_migration() {
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        let fresh = migrate(&mut conn).unwrap();
+        assert_eq!(fresh.migrated_from, None, "nothing to migrate from");
+        assert_eq!(fresh.version, expected_version());
+
+        let reopened = migrate(&mut conn).unwrap();
+        assert_eq!(reopened.migrated_from, None, "already current");
+        assert_eq!(reopened.version, expected_version());
     }
 }

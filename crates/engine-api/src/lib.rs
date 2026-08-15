@@ -125,7 +125,8 @@ pub use engine_recurrence::{
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
 pub use engine_store::{
-    MailListRow, OccurrenceRow, PendingOpState, PruneReport, SyncApplied, TzdataVersion,
+    MailListRow, OccurrenceRow, PendingOpState, PruneReport, SchemaStatus, SyncApplied,
+    TzdataVersion,
 };
 use engine_sync::SyncError;
 pub use engine_sync::{
