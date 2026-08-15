@@ -17,9 +17,7 @@ use engine_api::{AccountId, Horizon};
 use engine_core::{
     calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
-    mail::{
-        EmailAddress, Keyword, MailKeywordChange, Mailbox, MailboxRole, Message, SystemKeyword,
-    },
+    mail::{EmailAddress, Keyword, MailStateChange, Mailbox, MailboxRole, Message, SystemKeyword},
     membership::Memberships,
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::{CalendarDateTime, LocalDateTime},
@@ -57,7 +55,7 @@ struct FakeProvider {
     fail: bool,
     removed_on_resync: Vec<ProviderKey>,
     added_on_resync: Vec<Message>,
-    marked_on_resync: Vec<MailKeywordChange>,
+    state_on_resync: Vec<MailStateChange>,
 }
 
 impl FakeProvider {
@@ -77,7 +75,7 @@ impl FakeProvider {
             fail: false,
             removed_on_resync: Vec::new(),
             added_on_resync: Vec::new(),
-            marked_on_resync: Vec::new(),
+            state_on_resync: Vec::new(),
         }
     }
 
@@ -103,8 +101,8 @@ impl FakeProvider {
 
     /// On the next cursored resync, the email scope reports these keyword-only changes — the
     /// shape a mark-read arrives in, carrying no object at all.
-    fn marking_on_resync(mut self, changes: Vec<MailKeywordChange>) -> Self {
-        self.marked_on_resync = changes;
+    fn changing_state_on_resync(mut self, changes: Vec<MailStateChange>) -> Self {
+        self.state_on_resync = changes;
         self
     }
 
@@ -181,7 +179,7 @@ impl Provider for FakeProvider {
                 None,
                 SyncState::new("email-2"),
             )
-            .with_patched(self.marked_on_resync.clone())
+            .with_patched(self.state_on_resync.clone())
         } else {
             let present: Vec<ProviderKey> =
                 self.messages.iter().map(|m| m.id.key().clone()).collect();

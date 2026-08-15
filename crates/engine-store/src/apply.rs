@@ -24,8 +24,8 @@ use engine_core::{
     ids::ProviderKey,
     recipient::RecipientObservation,
     search_index::{
-        EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailKeywordRow,
-        MailProjection, MailRow, MailThreadRow, MembershipRow,
+        EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailProjection,
+        MailRow, MailStateRow, MailThreadRow, MembershipRow,
     },
     sync::{SyncObject, SyncState, SyncUpdate},
     time::UtcDateTime,
@@ -113,7 +113,7 @@ pub struct DerivedWrite {
     /// This is what a provider reporting a mark-read produces, so the write is a row update
     /// rather than a re-fetch and a whole-object replace, and a field the provider never sent
     /// cannot be destroyed by a change that never claimed to carry it.
-    pub keyword_changes: Vec<MailKeywordRow>,
+    pub state_changes: Vec<MailStateRow>,
     /// Thread assignments: each rewrites its message row's `thread_id` and nothing else.
     ///
     /// The derivation pass produces these. It reads payloads to rebuild the reference graph but
@@ -157,7 +157,7 @@ impl DerivedWrite {
         self.fts.is_empty()
             && self.occurrences.is_empty()
             && self.messages.is_empty()
-            && self.keyword_changes.is_empty()
+            && self.state_changes.is_empty()
             && self.thread_assignments.is_empty()
             && self.addresses.is_empty()
             && self.memberships.is_empty()
@@ -181,9 +181,9 @@ impl DerivedWrite {
         self.memberships.extend(memberships);
     }
 
-    /// Adds a keyword-only change ([`engine_core::search_index::project_keyword_change`]).
-    pub fn push_keyword_change(&mut self, row: MailKeywordRow) {
-        self.keyword_changes.push(row);
+    /// Adds a keyword-only change ([`engine_core::search_index::project_state_change`]).
+    pub fn push_state_change(&mut self, row: MailStateRow) {
+        self.state_changes.push(row);
     }
 
     /// Adds the rows of an event projection ([`engine_core::search_index::project_event`]):

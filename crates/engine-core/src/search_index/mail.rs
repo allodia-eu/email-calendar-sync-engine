@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use super::{FtsField, FtsRow, MembershipKind, MembershipRow, normalize_addr};
 use crate::{
     ids::{MessageIdHeader, ProviderKey, ThreadId},
-    mail::{EmailAddress, MailFlags, MailKeywordChange, Message},
+    mail::{EmailAddress, MailFlags, MailStateChange, Message},
     time::UtcDateTime,
+    version::RevisionTokens,
 };
 
 /// Which address header an address-junction row came from.
@@ -68,23 +69,36 @@ pub struct MailRow {
     pub subject: Option<String>,
     /// The list snippet (JMAP `preview`).
     pub preview: Option<String>,
+    /// The revision tokens a conditional write quotes. State, not content: they bump when the
+    /// message's state moves, so a copy in the payload would go stale on a mark-read.
+    pub revisions: RevisionTokens,
+    /// When the provider last changed the object.
+    pub last_modified: Option<UtcDateTime>,
 }
 
-/// The rows a [`MailKeywordChange`] rewrites: the `message` row's `flags` column, and the
+/// The rows a [`MailStateChange`] rewrites: the `message` row's state columns, and the
 /// message's `keyword`-kind memberships.
 ///
-/// Deliberately not a [`MailRow`]: a keyword change carries no subject, no sender and no date,
-/// so a whole-row upsert built from one would blank every column the provider did not send.
-/// This names the two things that moved, and a store writes exactly those.
+/// Deliberately not a [`MailRow`]: a state change carries no subject, no sender and no date, so
+/// a whole-row upsert built from one would blank every column the provider did not send. This
+/// names what moved, and a store writes exactly that.
+///
+/// A new state axis becomes a field here and a `membership` kind beside `keywords` — Graph's
+/// `categories` is the next one — so the store gains an axis without gaining a mechanism.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MailKeywordRow {
-    /// The message whose keywords moved.
+pub struct MailStateRow {
+    /// The message whose state moved.
     pub key: ProviderKey,
     /// The system keywords, as the bitfield the `message` row sorts and filters on.
     pub flags: MailFlags,
     /// The complete keyword set, as the membership values `keyword:` searches. Replaces the
     /// message's existing keyword memberships; its mailbox memberships are left alone.
     pub keywords: Vec<String>,
+    /// The revision tokens a conditional write quotes. State, not content: they bump when the
+    /// message's state moves, so a copy in the payload would go stale on a mark-read.
+    pub revisions: RevisionTokens,
+    /// When the provider last changed the object.
+    pub last_modified: Option<UtcDateTime>,
 }
 
 /// The row a thread assignment rewrites: the `message` row's `thread_id` column, alone.
@@ -101,13 +115,16 @@ pub struct MailThreadRow {
     pub thread_id: ThreadId,
 }
 
-/// Projects a [`MailKeywordChange`] into the two things a keyword-only write touches.
+/// Projects a [`MailStateChange`] into the rows a state-only write touches.
 #[must_use]
-pub fn project_keyword_change(change: &MailKeywordChange) -> MailKeywordRow {
-    MailKeywordRow {
+pub fn project_state_change(change: &MailStateChange) -> MailStateRow {
+    MailStateRow {
         key: change.key.clone(),
-        flags: MailFlags::from_keywords(&change.keywords),
+        flags: MailFlags::from_keywords(&change.state.keywords),
+        revisions: change.state.revisions.clone(),
+        last_modified: change.state.last_modified,
         keywords: change
+            .state
             .keywords
             .iter()
             .map(|keyword| keyword.as_str().to_owned())
@@ -196,6 +213,8 @@ pub fn project_message(message: &Message) -> MailProjection {
             from_addr: sender.map(|address| address.email.as_str().to_owned()),
             subject: message.envelope.subject.clone(),
             preview: message.preview.clone(),
+            revisions: message.revisions.clone(),
+            last_modified: message.last_modified,
         },
         addresses,
         memberships,
@@ -289,8 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn keyword_change_projects_the_bitfield_and_the_membership_values() {
-        let change = MailKeywordChange::new(
+    fn state_change_projects_the_bitfield_and_the_membership_values() {
+        let change = MailStateChange::keywords(
             ProviderKey::new("m1").unwrap(),
             [
                 Keyword::system(SystemKeyword::Seen),
@@ -299,7 +318,7 @@ mod tests {
             .into_iter()
             .collect(),
         );
-        let row = project_keyword_change(&change);
+        let row = project_state_change(&change);
         assert_eq!(row.key.as_str(), "m1");
         assert!(row.flags.seen());
         assert!(!row.flags.flagged());
@@ -312,7 +331,7 @@ mod tests {
     fn clearing_every_keyword_projects_an_empty_row_rather_than_nothing() {
         // Marking a read message unread empties the set. The row must still be produced —
         // a store that skipped it would leave the message `$seen` forever.
-        let row = project_keyword_change(&MailKeywordChange::new(
+        let row = project_state_change(&MailStateChange::keywords(
             ProviderKey::new("m1").unwrap(),
             std::collections::BTreeSet::new(),
         ));

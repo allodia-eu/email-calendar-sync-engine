@@ -74,6 +74,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(schema::V8),
     Migration::with_backfill(schema::V9, backfill::messages_from_objects),
     Migration::sql(schema::V10),
+    Migration::with_backfill(schema::V11, backfill::message_state_from_objects),
 ];
 
 /// Brings `conn` up to the latest schema version.
@@ -331,5 +332,75 @@ mod tests {
         assert!(failed.is_err());
         assert_eq!(version(&conn), 1);
         assert_eq!(table_count(&conn, "a"), 1);
+    }
+
+    /// v11 lifts a message's revision tokens and modification time out of the payload and into
+    /// the row, from the payloads that still carry them — so an existing store gains the columns
+    /// without re-downloading anything.
+    #[test]
+    fn the_state_columns_are_filled_from_the_payloads_that_still_carry_them() {
+        use engine_core::{
+            ids::{MailboxId, MessageId},
+            mail::Message,
+            membership::Memberships,
+            version::{ETag, ModSeq, RevisionTokens},
+        };
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        run(&mut conn, &MIGRATIONS[..8]).unwrap();
+
+        // A payload as written *before* the split: the whole `Message`, state included. That is
+        // what an existing store holds, and what the backfill has to read.
+        let mut message = Message::new(
+            MessageId::try_from("m1").unwrap(),
+            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
+        );
+        message.received_at = Some("2026-01-02T03:04:05Z".parse().unwrap());
+        message.last_modified = Some("2026-02-03T04:05:06Z".parse().unwrap());
+        message.revisions = RevisionTokens {
+            etag: Some(ETag::new("W/\"abc\"")),
+            schedule_tag: None,
+            change_key: None,
+            mod_seq: Some(ModSeq::new(4321)),
+        };
+        let payload = serde_json::to_string(&message).unwrap();
+
+        conn.execute(
+            "INSERT INTO sync_scope (scope_key, account, token) VALUES ('s1', 'acct', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO object (scope_key, provider_key, payload) VALUES ('s1', 'm1', ?1)",
+            [&payload],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mail_index (scope_key, provider_key, date_utc, has_attachment)
+             VALUES ('s1', 'm1', '2026-01-02T03:04:05Z', 0)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let (last_modified, etag, change_key, mod_seq): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        ) = conn
+            .query_row(
+                "SELECT last_modified, etag, change_key, mod_seq FROM message
+                 WHERE scope_key = 's1' AND provider_key = 'm1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(last_modified.as_deref(), Some("2026-02-03T04:05:06Z"));
+        assert_eq!(etag.as_deref(), Some("W/\"abc\""));
+        assert_eq!(mod_seq, Some(4321));
+        // Graph's token; this message carried none, and a backfill must not invent one.
+        assert_eq!(change_key, None);
     }
 }

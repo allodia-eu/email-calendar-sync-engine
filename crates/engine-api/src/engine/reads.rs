@@ -89,12 +89,13 @@ impl Engine {
 
     /// Rebuilds each message's mutable state from its stored row.
     ///
-    /// The stored payload is the provider's word on the message's **content** and carries no
-    /// thread and no keywords ([`MailRecord`](engine_core::mail::MailRecord)): those move
-    /// without the provider ever re-sending the object — a derivation pass assigns a thread, a
-    /// mark-read moves a keyword — so their home is the `message` row and the membership
-    /// junction. A `Message` decoded from a payload alone is therefore incomplete by
-    /// construction, and this is what completes it.
+    /// The stored payload is the message's **immutable half**
+    /// ([`MailContent`](engine_core::mail::MailContent)) and carries none of its
+    /// [`MailState`](engine_core::mail::MailState): not its keywords, not a derived thread, not
+    /// the revision tokens that bump when that state moves. All of those change without the
+    /// message's bytes changing, so their home is the `message` row and the membership junction.
+    /// A `Message` decoded from a payload alone is therefore incomplete by construction, and this
+    /// is what completes it.
     ///
     /// **Every path that turns stored mail back into a `Message` goes through here.** That is
     /// the guarantee: not that readers remember to refresh, but that a decoded payload is
@@ -131,6 +132,8 @@ impl Engine {
                 message.thread = row.mail.thread_id.clone().map(ThreadRef::derived);
             }
             message.keywords = row.keywords.iter().cloned().collect();
+            message.revisions = row.mail.revisions.clone();
+            message.last_modified = row.mail.last_modified;
         }
         Ok(())
     }

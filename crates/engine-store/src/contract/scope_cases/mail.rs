@@ -6,6 +6,7 @@ use engine_core::{
     search_index::{MailRow, MembershipKind, MembershipRow},
     sync::{SyncState, SyncUpdate},
     time::UtcDateTime,
+    version::RevisionTokens,
 };
 
 use super::super::{TestObject, acct, email_scope, lease_request, pk};
@@ -28,6 +29,8 @@ fn row(key: &str, date: Option<&str>, thread: Option<&ThreadId>) -> MailRow {
         from_addr: None,
         subject: None,
         preview: None,
+        revisions: RevisionTokens::default(),
+        last_modified: None,
     }
 }
 

@@ -38,7 +38,7 @@ pub struct Message {
     /// The thread this message belongs to, if threading is resolved, and whether
     /// the provider assigned that id or the engine derived it.
     ///
-    /// **Not carried by the stored payload** ([`MailRecord`]): a thread id is mutable state the
+    /// **Not carried by the stored payload** ([`MailContent`]): a thread id is mutable state the
     /// message row owns, so a payload that carried one could disagree with it. Absent when
     /// decoded straight from storage, and filled by whatever composes a `Message` back out of
     /// the row.
@@ -48,7 +48,7 @@ pub struct Message {
     pub mailboxes: Memberships<MailboxId>,
     /// The keywords applied to this message.
     ///
-    /// **Not carried by the stored payload** ([`MailRecord`]), for the same reason as
+    /// **Not carried by the stored payload** ([`MailContent`]), for the same reason as
     /// [`thread`](Message::thread): keywords move without the provider ever re-sending the
     /// object, and their home is the message row plus the membership junction.
     #[serde(default)]
@@ -60,6 +60,10 @@ pub struct Message {
     /// The instant from the `Date` header (JMAP `sentAt`), normalized to UTC.
     pub sent_at: Option<UtcDateTime>,
     /// When the object was last modified at the provider.
+    ///
+    /// **Not carried by the stored payload** — it moves when the message's *state* moves, so its
+    /// home is the message row ([`MailState`](super::MailState)).
+    #[serde(default)]
     pub last_modified: Option<UtcDateTime>,
     /// The parsed addressing/threading headers.
     pub envelope: Envelope,
@@ -76,24 +80,34 @@ pub struct Message {
     /// snippets and indexing, when available (e.g. Graph `uniqueBody`).
     pub reply_unique_text: Option<String>,
     /// Per-object revision tokens, if the provider supplies any.
+    ///
+    /// **Not carried by the stored payload**: an IMAP `MODSEQ` bumps on a flag change and a
+    /// Graph `ChangeKey` on an `isRead` edit, so these move with the message's state, not with
+    /// its bytes. Their home is the message row ([`MailState`](super::MailState)).
+    #[serde(default)]
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
     pub extended: ExtendedProperties,
 }
 
-/// The mail payload the store persists: what the provider said about the message's **content**.
+/// The mail payload the store persists: a message's **immutable half**.
 ///
-/// [`Message::keywords`] is absent by construction, and [`Message::thread`] is present only when
-/// the provider assigned it. Those are the axes that move *without* the provider re-sending the
-/// object — a derivation pass assigns a thread, a mark-read moves a keyword — and their home is
-/// the `message` row and the membership junction. A payload that carried a copy could disagree
-/// with that home, and the disagreement would be invisible until someone read the wrong one.
-/// There is no copy, so there is nothing to reconcile.
+/// A message's content never changes once the server holds it. Editing a draft is not a
+/// counterexample — it mints a *new* provider object on every protocol we speak (a JMAP `Email`
+/// is immutable, IMAP does APPEND + EXPUNGE and the UID changes). So this can be written once
+/// and never reconciled.
+///
+/// Its mutable counterpart is [`MailState`](super::MailState), whose home is the `message` row
+/// and the `membership` junction. [`Message::keywords`] is therefore absent here by
+/// construction, and [`Message::thread`] is present only when the **provider** assigned it — a
+/// derived thread is the engine's, and it re-keys whenever new mail joins the conversation. A
+/// payload carrying a copy of either could disagree with its home, and the disagreement would be
+/// invisible until someone read the wrong one. There is no copy.
 ///
 /// Borrowed and serialize-only: a sync page writes hundreds of these, and the JSON is the cost,
 /// not another owned message beside it.
 #[derive(Debug, Serialize)]
-pub struct MailRecord<'a> {
+pub struct MailContent<'a> {
     id: &'a MessageId,
     /// Present only when the **provider** assigned the thread, because then it is the provider's
     /// word about the message and belongs with the rest of what it said.
@@ -110,18 +124,16 @@ pub struct MailRecord<'a> {
     size: &'a Option<u64>,
     received_at: &'a Option<UtcDateTime>,
     sent_at: &'a Option<UtcDateTime>,
-    last_modified: &'a Option<UtcDateTime>,
     envelope: &'a Envelope,
     preview: &'a Option<String>,
     has_attachment: &'a bool,
     mime_structure: &'a Option<EmailBodyPart>,
     attachments: &'a Vec<Attachment>,
     reply_unique_text: &'a Option<String>,
-    revisions: &'a RevisionTokens,
     extended: &'a ExtendedProperties,
 }
 
-impl<'a> From<&'a Message> for MailRecord<'a> {
+impl<'a> From<&'a Message> for MailContent<'a> {
     /// Destructured rather than field-by-field: a new field on [`Message`] stops this compiling
     /// until someone decides whether it belongs in the payload or in the row. A silent default
     /// is exactly the failure this type exists to prevent.
@@ -130,20 +142,22 @@ impl<'a> From<&'a Message> for MailRecord<'a> {
             id,
             blob_id,
             thread,
-            // Mutable state whose only home is the message row and the membership junction.
+            // Mutable state whose home is the message row and the membership junction.
             keywords: _,
             mailboxes,
             size,
             received_at,
             sent_at,
-            last_modified,
             envelope,
             preview,
             has_attachment,
             mime_structure,
             attachments,
             reply_unique_text,
-            revisions,
+            // Mutable state: revision tokens bump on a state-only change, and the modification
+            // time is when that state moved. Both live in the message row.
+            revisions: _,
+            last_modified: _,
             extended,
         } = message;
         Self {
@@ -154,14 +168,12 @@ impl<'a> From<&'a Message> for MailRecord<'a> {
             size,
             received_at,
             sent_at,
-            last_modified,
             envelope,
             preview,
             has_attachment,
             mime_structure,
             attachments,
             reply_unique_text,
-            revisions,
             extended,
         }
     }
@@ -239,7 +251,7 @@ mod tests {
             .insert(Keyword::system(SystemKeyword::Seen));
         message.thread = Some(ThreadRef::derived(ThreadId::try_from("t1").unwrap()));
 
-        let payload = serde_json::to_value(MailRecord::from(&message)).unwrap();
+        let payload = serde_json::to_value(MailContent::from(&message)).unwrap();
         let keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
         assert!(
             !keys.iter().any(|k| *k == "keywords"),
@@ -264,7 +276,7 @@ mod tests {
             ThreadId::try_from("T42").unwrap(),
         ));
 
-        let payload = serde_json::to_value(MailRecord::from(&message)).unwrap();
+        let payload = serde_json::to_value(MailContent::from(&message)).unwrap();
         let decoded: Message = serde_json::from_value(payload).unwrap();
         assert_eq!(decoded.thread_id().map(ThreadId::as_str), Some("T42"));
         assert!(!decoded.thread.unwrap().is_derived());

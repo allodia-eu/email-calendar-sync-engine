@@ -9,6 +9,7 @@ use engine_core::{
         MembershipRow, ParticipantField,
     },
     sync::{SyncState, SyncUpdate},
+    version::RevisionTokens,
 };
 
 use super::super::{TestObject, acct, email_scope, lease_request, mailbox_scope, pk};
@@ -40,6 +41,8 @@ fn structured_index_fixture() -> DerivedWrite {
         from_addr: Some("alice@example.com".into()),
         subject: Some("hello".into()),
         preview: None,
+        revisions: RevisionTokens::default(),
+        last_modified: None,
     });
     derived.addresses.push(MailAddressRow {
         key: mail.clone(),

@@ -460,3 +460,28 @@ CREATE INDEX message_account_key    ON message (account, provider_key);
 pub(crate) const V10: &str = "\
 DROP TABLE mail_index;
 ";
+
+/// Migration v11: the message row gains the last of a message's mutable state.
+///
+/// A message's content is immutable once the server holds it, and its *state* is everything that
+/// moves without those bytes moving. Keywords already lived here (as `flags` plus the
+/// `membership` junction); these are the rest:
+///
+/// - `last_modified` — when the provider last changed the object.
+/// - `etag` / `change_key` / `mod_seq` — the revision tokens a conditional write quotes. An IMAP
+///   `MODSEQ` bumps on a *flag* change and a Graph `ChangeKey` bumps on an `isRead` edit, so a copy
+///   of these in the normalized payload went stale the moment a state-only change landed. Harmless
+///   only for as long as mail writes stay unguarded; a stale token quoted in an `If-Match` is a
+///   spurious `412` that reads like a server fault.
+///
+/// `RevisionTokens` also carries a `schedule_tag`, which is CalDAV scheduling state — a message
+/// can never have one, so there is no column for it.
+///
+/// Backfilled out of the stored payloads, which still carry these fields today, so nothing is
+/// re-downloaded. Columns are nullable because most providers set only one of the three.
+pub(crate) const V11: &str = "\
+ALTER TABLE message ADD COLUMN last_modified TEXT;
+ALTER TABLE message ADD COLUMN etag          TEXT;
+ALTER TABLE message ADD COLUMN change_key    TEXT;
+ALTER TABLE message ADD COLUMN mod_seq       INTEGER;
+";

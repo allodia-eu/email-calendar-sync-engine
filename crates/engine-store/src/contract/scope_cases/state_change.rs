@@ -1,11 +1,12 @@
-//! The keyword-only write: what it moves, and — more to the point — what it leaves alone.
+//! The state-only write: what it moves, and — more to the point — what it leaves alone.
 
 use engine_core::{
     ids::ProviderKey,
-    mail::{Keyword, MailFlags, MailKeywordChange, SystemKeyword},
-    search_index::{MailRow, MembershipKind, MembershipRow, project_keyword_change},
+    mail::{Keyword, MailFlags, MailState, MailStateChange, SystemKeyword},
+    search_index::{MailRow, MembershipKind, MembershipRow, project_state_change},
     sync::{SyncState, SyncUpdate},
     time::UtcDateTime,
+    version::{ModSeq, RevisionTokens},
 };
 
 use super::super::{TestObject, acct, email_scope, lease_request, pk};
@@ -28,6 +29,8 @@ fn seeded_row(key: &str) -> MailRow {
         from_addr: Some("alice@example.com".to_owned()),
         subject: Some("Quarterly report".to_owned()),
         preview: Some("The numbers you asked for are attached.".to_owned()),
+        revisions: RevisionTokens::default(),
+        last_modified: None,
     }
 }
 
@@ -46,7 +49,7 @@ fn keyword_membership(key: &ProviderKey, value: &str) -> MembershipRow {
 /// This is the write a mark-read produces. Before it existed the provider re-sent the whole
 /// message and the store replaced the whole payload, which is how a flag change could destroy a
 /// field the provider had no way to supply.
-pub(in crate::contract) async fn keyword_change_moves_flags_and_leaves_the_rest<
+pub(in crate::contract) async fn state_change_moves_flags_and_leaves_the_rest<
     S: Store + StoreRead,
 >(
     store: &S,
@@ -88,9 +91,20 @@ pub(in crate::contract) async fn keyword_change_moves_flags_and_leaves_the_rest<
         .await
         .unwrap();
     let mut derived = DerivedWrite::empty();
-    derived.push_keyword_change(project_keyword_change(&MailKeywordChange::new(
+    // The provider reports a fresh revision token with the change — an IMAP `MODSEQ` bumps on a
+    // flag change — and it must land, or a later conditional write quotes a stale one.
+    let state =
+        MailState::with_keywords([Keyword::system(SystemKeyword::Seen)].into_iter().collect())
+            .revised(
+                RevisionTokens {
+                    mod_seq: Some(ModSeq::new(77)),
+                    ..RevisionTokens::default()
+                },
+                Some("2026-02-03T04:05:06Z".parse::<UtcDateTime>().unwrap()),
+            );
+    derived.push_state_change(project_state_change(&MailStateChange::new(
         key.clone(),
-        [Keyword::system(SystemKeyword::Seen)].into_iter().collect(),
+        state,
     )));
     let empty: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![]);
     store
@@ -133,6 +147,15 @@ pub(in crate::contract) async fn keyword_change_moves_flags_and_leaves_the_rest<
     );
     assert!(listed.mail.has_attachment);
     assert_eq!(
+        listed.mail.revisions.mod_seq.map(ModSeq::get),
+        Some(77),
+        "the revision token moved with the state it belongs to"
+    );
+    assert_eq!(
+        listed.mail.last_modified,
+        Some("2026-02-03T04:05:06Z".parse::<UtcDateTime>().unwrap())
+    );
+    assert_eq!(
         listed
             .mailboxes
             .iter()
@@ -157,7 +180,7 @@ pub(in crate::contract) async fn keyword_change_moves_flags_and_leaves_the_rest<
 /// It is an `UPDATE`, not an upsert, because the change carries no subject, sender or date: an
 /// insert would file a blank row for a message out of the synced window, and that row would
 /// then appear in a list with nothing in it.
-pub(in crate::contract) async fn keyword_change_for_an_unknown_message_writes_nothing<
+pub(in crate::contract) async fn state_change_for_an_unknown_message_writes_nothing<
     S: Store + StoreRead,
 >(
     store: &S,
@@ -170,7 +193,7 @@ pub(in crate::contract) async fn keyword_change_for_an_unknown_message_writes_no
         .await
         .unwrap();
     let mut derived = DerivedWrite::empty();
-    derived.push_keyword_change(project_keyword_change(&MailKeywordChange::new(
+    derived.push_state_change(project_state_change(&MailStateChange::keywords(
         pk("never-synced"),
         [Keyword::system(SystemKeyword::Seen)].into_iter().collect(),
     )));

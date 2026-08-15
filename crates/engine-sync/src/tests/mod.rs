@@ -12,7 +12,7 @@ use std::sync::{
 use engine_core::{
     calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
-    mail::{EmailAddress, MailKeywordChange, Mailbox, MailboxRole, Message},
+    mail::{EmailAddress, MailStateChange, Mailbox, MailboxRole, Message},
     membership::Memberships,
     raw::RawIcal,
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
@@ -43,9 +43,9 @@ use super::{
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
-mod keyword_change;
 mod mail_edit;
 mod mail_sync;
+mod state_change;
 mod streaming;
 mod streaming_resume;
 mod submit;
@@ -80,7 +80,7 @@ struct FakeMail {
     delta: Mutex<Vec<Message>>,
     /// Keyword-only changes emitted once alongside `delta` — what a provider that can tell a
     /// mark-read from a content change sends.
-    keyword_delta: Mutex<Vec<MailKeywordChange>>,
+    state_delta: Mutex<Vec<MailStateChange>>,
 }
 
 impl FakeMail {
@@ -98,15 +98,15 @@ impl FakeMail {
             cursor: SyncState::new("cursor-1"),
             faults: Vec::new(),
             delta: Mutex::default(),
-            keyword_delta: Mutex::default(),
+            state_delta: Mutex::default(),
         }
     }
 
     /// Arms the keyword-only changes this provider emits after its first (snapshot) pass —
     /// the shape a mark-read arrives in once the adapter can recognise one.
-    fn then_marking(self, changes: Vec<MailKeywordChange>) -> Self {
+    fn then_changing_state(self, changes: Vec<MailStateChange>) -> Self {
         *self
-            .keyword_delta
+            .state_delta
             .lock()
             .expect("keyword delta mutex poisoned") = changes;
         self
@@ -183,7 +183,7 @@ impl Provider for FakeMail {
             let changed = core::mem::take(&mut *self.delta.lock().expect("delta mutex poisoned"));
             let keywords = core::mem::take(
                 &mut *self
-                    .keyword_delta
+                    .state_delta
                     .lock()
                     .expect("keyword delta mutex poisoned"),
             );

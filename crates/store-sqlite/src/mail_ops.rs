@@ -24,6 +24,7 @@ use engine_core::{
     mail::{Keyword, MailFlags},
     search_index::MailRow,
     time::UtcDateTime,
+    version::{ChangeKey, ETag, ModSeq, RevisionTokens},
 };
 use engine_store::{MailListRow, MailSelector, Result};
 use rusqlite::{Connection, Row, types::Value};
@@ -40,6 +41,7 @@ use crate::{convert, sql};
 const COLUMNS: &str = "\
 m.account, m.provider_key, m.thread_id, m.message_id, m.date_utc, m.flags, m.has_attachment, \
 m.from_name, m.from_addr, m.subject, m.preview, \
+m.last_modified, m.etag, m.change_key, m.mod_seq, \
 (SELECT group_concat(b.value, char(10)) FROM membership b \
    WHERE b.scope_key = m.scope_key AND b.provider_key = m.provider_key AND b.kind = 'mailbox'), \
 (SELECT group_concat(k.value, char(10)) FROM membership k \
@@ -235,6 +237,10 @@ struct RawRow {
     from_addr: Option<String>,
     subject: Option<String>,
     preview: Option<String>,
+    last_modified: Option<String>,
+    etag: Option<String>,
+    change_key: Option<String>,
+    mod_seq: Option<i64>,
     mailboxes: Option<String>,
     keywords: Option<String>,
 }
@@ -252,8 +258,12 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<RawRow> {
         from_addr: row.get(8)?,
         subject: row.get(9)?,
         preview: row.get(10)?,
-        mailboxes: row.get(11)?,
-        keywords: row.get(12)?,
+        last_modified: row.get(11)?,
+        etag: row.get(12)?,
+        change_key: row.get(13)?,
+        mod_seq: row.get(14)?,
+        mailboxes: row.get(15)?,
+        keywords: row.get(16)?,
     })
 }
 
@@ -285,6 +295,16 @@ impl TryFrom<RawRow> for MailListRow {
                 from_addr: raw.from_addr,
                 subject: raw.subject,
                 preview: raw.preview,
+                revisions: RevisionTokens {
+                    etag: raw.etag.map(ETag::new),
+                    schedule_tag: None,
+                    change_key: raw.change_key.map(ChangeKey::new),
+                    mod_seq: raw
+                        .mod_seq
+                        .and_then(|v| u64::try_from(v).ok())
+                        .map(ModSeq::new),
+                },
+                last_modified: convert::parse_opt_instant(raw.last_modified)?,
             },
         })
     }

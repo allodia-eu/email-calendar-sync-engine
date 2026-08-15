@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 
 use engine_core::{
     ids::ProviderKey,
-    mail::{MailKeywordChange, Message},
+    mail::{MailStateChange, Message},
     sync::{SyncState, SyncUpdate},
 };
 use futures_core::stream::Stream;
@@ -85,7 +85,7 @@ pub struct EmailChunk {
     ///
     /// An adapter that cannot tell a keyword change from a content change leaves this empty;
     /// its messages ride in `changed` as whole objects.
-    pub patched: Vec<MailKeywordChange>,
+    pub patched: Vec<MailStateChange>,
     /// Keys explicitly removed in this chunk — a delta's destroyed ids, or a
     /// QRESYNC `VANISHED` set. Applied inline in either mode; empty when removals
     /// come only from [`PassMode::Reconcile`] tombstoning.
@@ -190,7 +190,7 @@ impl EmailChunk {
 
     /// Attaches the keyword-only changes this chunk carries.
     #[must_use]
-    pub fn with_patched(mut self, patched: Vec<MailKeywordChange>) -> Self {
+    pub fn with_patched(mut self, patched: Vec<MailStateChange>) -> Self {
         self.patched = patched;
         self
     }

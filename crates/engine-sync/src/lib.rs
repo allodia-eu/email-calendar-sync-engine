@@ -36,7 +36,7 @@ use engine_core::{
     ids::{AccountId, MailboxId},
     mail::{Mailbox, Message},
     recipient::RecipientObservation,
-    search_index::{project_keyword_change, project_message},
+    search_index::{project_message, project_state_change},
     sync::{SyncObject, SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{Provider, ProviderError, ScopeSync};
@@ -376,7 +376,7 @@ impl<P: Provider> ScopeSyncer for EmailScope<'_, P> {
     fn derive(&self, sync: &ScopeSync<Message>) -> DerivedWrite {
         let mut derived = derive_messages(changed_objects(&sync.update));
         for change in sync.update.patched() {
-            derived.push_keyword_change(project_keyword_change(change));
+            derived.push_state_change(project_state_change(change));
         }
         derived
     }

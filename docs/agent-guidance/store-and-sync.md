@@ -253,7 +253,7 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
   `changed` (whole objects), `patched` (partials), `removed`. A partial names the fields that
   moved and nothing else, so the store writes those columns and leaves the rest — including the
   normalized payload — alone. The partial form is per object type, `SyncObject::Patch`; it is
-  `MailKeywordChange` for a message and the uninhabited `NoPatch` for everything else, so
+  `MailStateChange` for a message and the uninhabited `NoPatch` for everything else, so
   `Vec<NoPatch>` makes "a calendar pass carries no partials" a fact the compiler checks.
 
   A key present in both `changed` and `patched` is resolved **in favour of `changed`**, inside
@@ -264,22 +264,32 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
 
   A snapshot has no partials by construction — it is the scope's whole current state.
 
-- **The stored mail payload holds content, not state.** A message's payload is
-  `MailRecord`: what the provider said about the message's *content*. Its keywords are not
-  there, and its thread is there only when the **provider** assigned it. Those are the axes that
-  move without the provider re-sending the object — a derivation pass assigns a thread, a
-  mark-read moves a keyword — so their home is the `message` row and the `membership` junction.
+- **A message is an immutable half and a mutable half, and they are stored apart.** The content
+  never changes once the server holds it — editing a draft mints a *new* provider object on every
+  protocol we speak (a JMAP `Email` is immutable; IMAP does APPEND + EXPUNGE and the UID changes),
+  so that half can be written once and never reconciled. It is `MailContent`, and it is the
+  normalized payload.
+
+  Everything that moves *without* those bytes moving is `MailState`: keywords, a derived thread,
+  and the revision tokens plus `last_modified` that bump when any of it changes. Its home is the
+  `message` row and the `membership` junction. A payload carrying a copy could only ever be a copy
+  that disagrees.
+
+  **Adding a state axis is adding a field to `MailState`**, not a new mechanism — Graph's
+  `categories` is the next one, and it needs that field plus a `membership` kind. A thread is
+  present in the payload only when the **provider** assigned it, because then it is the provider's
+  word; a derived one is the engine's and lives in the row alone.
 
   This is why a mark-read can no longer destroy anything: there is no second copy to overwrite.
   It replaces the old carry-forward, which refilled `thread` and `preview` from the stored copy
   before every apply because the apply was about to replace the whole payload.
 
-  `MailRecord` is built by **destructuring** `Message`, so a new field on `Message` stops the
+  `MailContent` is built by **destructuring** `Message`, so a new field on `Message` stops the
   conversion compiling until someone decides whether it belongs in the payload or in the row. A
   silent default is exactly the failure the type exists to prevent.
 
   Reading is the mirror: a `Message` decoded from a payload alone is incomplete by construction,
-  and `Engine::compose` rebuilds its thread and keywords from the row and the junction. Every
+  and `Engine::compose` rebuilds its state from the row and the junction. Every
   path from storage back to a `Message` goes through it. A provider-assigned thread that came
   back with the payload is left as it is — relabelling it derived would tell the derivation pass
   it may re-thread mail the provider threaded.
@@ -651,7 +661,7 @@ Supporting types (abbreviated):
 - `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailboxList { account }` (the IMAP folder-list container), `ImapMailbox { account, mailbox }`, `DavCollectionList { account }` (the CalDAV/CardDAV collection-list container), `DavCollection { account, collection }`.
 - `SyncLease` / `OpLease` — opaque, store-issued; expose fencing token, bound identity, and expiry.
 - `Keyed` — one accessor (`provider_key`) for anything a sync carries, whole object or partial, so a carrier can key what it holds without knowing which it is.
-- `SyncObject: Keyed` — what a sync pass reports changes to. Names the object's partial form (`Patch`) and how it is persisted (`to_payload`, which mail overrides to write a `MailRecord`). `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
+- `SyncObject: Keyed` — what a sync pass reports changes to. Names the object's partial form (`Patch`) and how it is persisted (`to_payload`, which mail overrides to write a `MailContent`). `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
 - `DerivedWrite` — precomputed FTS rows, structured-filter rows (scalar index rows
   plus the address/participant/membership junctions), and bounded
   `event_occurrence` rows, plus their tombstones; the store writes them, never
@@ -711,3 +721,11 @@ Lock these as failing tests before implementing the store:
   tombstoning. (The store enforces per-scope snapshot tombstoning and keeps
   scopes independent; the cross-scope *apply order* itself is an orchestrator
   invariant, locked in `engine-sync` rather than in the store.)
+
+### A backfill is pinned to its own schema version
+
+A migration's backfill runs against the schema **as of its own step**, and the live write path
+moves on. So a backfill writes its own SQL and does not borrow `derived_ops` — sharing the live
+upsert means a later migration silently breaks an earlier migration's backfill, which is exactly
+how v9's was found broken by v11 (`insert_v9_row` in `backfill.rs`). The migration tests run each
+step against a store built only up to the step before it, which is what catches this.

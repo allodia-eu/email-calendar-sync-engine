@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
     mail::Message,
-    search_index::project_keyword_change,
+    search_index::project_state_change,
     sync::{SyncState, SyncUpdate, SyncWindow},
 };
 use engine_provider::{EmailChunk, PassMode, Provider};
@@ -244,7 +244,7 @@ where
             let (update, advance_to) = build_update(chunk, &mut present);
             let mut derived = derive_messages(changed_of(&update));
             for change in &patched {
-                derived.push_keyword_change(project_keyword_change(change));
+                derived.push_state_change(project_state_change(change));
             }
             let observations = recipients::observations(account, &update, sent);
             let batch = ApplyBatch::with_cursor(&update, &derived, &[], advance_to.as_ref())

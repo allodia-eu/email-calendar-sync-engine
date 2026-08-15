@@ -9,7 +9,7 @@ use crate::{
     calendar::{Calendar, Event},
     contact::{AddressBook, ContactCard},
     ids::ProviderKey,
-    mail::{MailKeywordChange, MailRecord, Mailbox, Message},
+    mail::{MailContent, MailStateChange, Mailbox, Message},
 };
 
 /// An object — or a change to one — identified by the provider key it concerns.
@@ -57,7 +57,7 @@ impl Keyed for AddressBook {
     }
 }
 
-impl Keyed for MailKeywordChange {
+impl Keyed for MailStateChange {
     fn provider_key(&self) -> &ProviderKey {
         &self.key
     }
@@ -94,7 +94,7 @@ pub trait SyncObject: Keyed + Serialize {
 
     /// The JSON a store persists for this object.
     ///
-    /// Defaults to the whole object. [`Message`] overrides it to persist a [`MailRecord`] —
+    /// Defaults to the whole object. [`Message`] overrides it to persist a [`MailContent`] —
     /// everything the provider said about the message's content, and none of the state whose
     /// home is the message row — so a stored payload cannot disagree with that row.
     ///
@@ -115,10 +115,10 @@ pub trait SyncObject: Keyed + Serialize {
 pub enum NoPatch {}
 
 impl SyncObject for Message {
-    type Patch = MailKeywordChange;
+    type Patch = MailStateChange;
 
     fn to_payload(&self) -> Result<Value, serde_json::Error> {
-        serde_json::to_value(MailRecord::from(self))
+        serde_json::to_value(MailContent::from(self))
     }
 }
 
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn a_delta_carries_partial_changes_beside_whole_objects() {
-        let patch = MailKeywordChange::new(
+        let patch = MailStateChange::keywords(
             key("c"),
             [Keyword::system(SystemKeyword::Seen)].into_iter().collect(),
         );
@@ -311,8 +311,8 @@ mod tests {
         // would write keywords the object had already superseded.
         let update: SyncUpdate<Message> = SyncUpdate::delta(vec![message("a")], vec![])
             .with_patched(vec![
-                MailKeywordChange::new(key("a"), BTreeSet::new()),
-                MailKeywordChange::new(key("b"), BTreeSet::new()),
+                MailStateChange::keywords(key("a"), BTreeSet::new()),
+                MailStateChange::keywords(key("b"), BTreeSet::new()),
             ]);
         assert_eq!(
             update
@@ -331,7 +331,7 @@ mod tests {
         // there is nothing a partial could mean. `with_patched` cannot smuggle one in.
         let present: BTreeSet<ProviderKey> = [key("x")].into_iter().collect();
         let update: SyncUpdate<Message> = SyncUpdate::snapshot(vec![message("x")], present)
-            .with_patched(vec![MailKeywordChange::new(key("x"), BTreeSet::new())]);
+            .with_patched(vec![MailStateChange::keywords(key("x"), BTreeSet::new())]);
         assert!(update.is_snapshot());
         assert!(update.patched().is_empty());
     }
@@ -365,7 +365,7 @@ mod tests {
             "work"
         );
         // A patch keys itself the same way, which is what lets one carrier hold both.
-        let patch = MailKeywordChange::new(
+        let patch = MailStateChange::keywords(
             key("m1"),
             [Keyword::system(SystemKeyword::Seen)].into_iter().collect(),
         );
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn roundtrips_through_json() {
         let update: SyncUpdate<Message> = SyncUpdate::delta(vec![message("a")], vec![key("b")])
-            .with_patched(vec![MailKeywordChange::new(key("c"), BTreeSet::new())]);
+            .with_patched(vec![MailStateChange::keywords(key("c"), BTreeSet::new())]);
         let json = serde_json::to_string(&update).unwrap();
         assert_eq!(
             serde_json::from_str::<SyncUpdate<Message>>(&json).unwrap(),

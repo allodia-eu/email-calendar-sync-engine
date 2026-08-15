@@ -25,8 +25,8 @@
 //! - [`FtsField`]/[`FtsRow`] — the field-tagged full-text document for one object.
 //! - [`MembershipRow`]/[`MembershipKind`] — collection/keyword membership, shared by mail and
 //!   calendar.
-//! - [`mail`] — [`project_message`] and the mail filter rows, plus [`project_keyword_change`] for a
-//!   change that moved a message's keywords alone.
+//! - [`mail`] — [`project_message`] and the mail filter rows, plus [`project_state_change`] for a
+//!   change that moved a message's mutable state alone.
 //! - [`calendar`] — [`project_event`] (which needs the account's [`OwnerAddresses`] to resolve "my"
 //!   RSVP) and the calendar filter rows.
 
@@ -38,8 +38,8 @@ pub use calendar::{
     project_event,
 };
 pub use mail::{
-    AddressField, MailAddressRow, MailKeywordRow, MailProjection, MailRow, MailThreadRow,
-    project_keyword_change, project_message,
+    AddressField, MailAddressRow, MailProjection, MailRow, MailStateRow, MailThreadRow,
+    project_message, project_state_change,
 };
 use serde::{Deserialize, Serialize};
 

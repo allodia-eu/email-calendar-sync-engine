@@ -165,12 +165,14 @@ impl ScopeCell {
         for row in &derived.messages {
             self.messages.insert(row.key.clone(), row.clone());
         }
-        for row in &derived.keyword_changes {
+        for row in &derived.state_changes {
             // An update, not an insert: a keyword change carries no subject, sender or date,
             // so a message the store has never seen gets no row from one (matches
             // `store-sqlite`).
             if let Some(existing) = self.messages.get_mut(&row.key) {
                 existing.flags = row.flags;
+                existing.revisions = row.revisions.clone();
+                existing.last_modified = row.last_modified;
             }
             // The keyword memberships are replaced; the mailbox ones decide which folders
             // the message appears in and are left alone.

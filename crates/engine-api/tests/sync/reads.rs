@@ -293,7 +293,7 @@ async fn events_by_keys_resolves_only_the_named_events() {
 #[tokio::test]
 async fn a_keyword_only_change_is_visible_through_the_read_api() {
     let engine = Engine::open_in_memory().unwrap();
-    let provider = FakeProvider::new().marking_on_resync(vec![MailKeywordChange::new(
+    let provider = FakeProvider::new().changing_state_on_resync(vec![MailStateChange::keywords(
         ProviderKey::new("m1").unwrap(),
         [Keyword::system(SystemKeyword::Seen)].into_iter().collect(),
     )]);

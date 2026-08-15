@@ -31,8 +31,8 @@ fn threaded(subject: &str) -> Message {
 }
 
 /// The change a mark-read produces: `$seen`, and no claim about anything else.
-fn marked_seen() -> MailKeywordChange {
-    MailKeywordChange::new(
+fn marked_seen() -> MailStateChange {
+    MailStateChange::keywords(
         key("m1"),
         [Keyword::system(SystemKeyword::Seen)].into_iter().collect(),
     )
@@ -74,7 +74,7 @@ async fn a_keyword_change_keeps_the_thread_and_preview_whole_scope() {
         vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
         vec![threaded("Quarterly report")],
     )
-    .then_marking(vec![marked_seen()]);
+    .then_changing_state(vec![marked_seen()]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     sync_mail(
@@ -107,7 +107,7 @@ async fn a_keyword_change_keeps_the_thread_and_preview_streamed() {
         vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
         vec![threaded("Quarterly report")],
     )
-    .then_marking(vec![marked_seen()]);
+    .then_changing_state(vec![marked_seen()]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     for _ in 0..2 {
@@ -137,7 +137,7 @@ async fn the_derivation_pass_does_not_hand_back_a_flag_a_keyword_change_moved() 
         vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
         vec![threaded("Quarterly report")],
     )
-    .then_marking(vec![marked_seen()]);
+    .then_changing_state(vec![marked_seen()]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     sync_mail(
