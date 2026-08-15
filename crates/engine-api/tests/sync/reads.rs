@@ -283,3 +283,44 @@ async fn events_by_keys_resolves_only_the_named_events() {
             .is_empty()
     );
 }
+
+/// A mark-read is visible through the read API, not just in the row.
+///
+/// The stored payload carries no keywords at all now, so this passes only because
+/// `messages_by_keys` composes the message back from its row. A reader that skipped that step
+/// would report the message unread forever — which is the bug the split would otherwise trade
+/// for the one it fixed.
+#[tokio::test]
+async fn a_keyword_only_change_is_visible_through_the_read_api() {
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = FakeProvider::new().changing_state_on_resync(vec![MailStateChange::keywords(
+        ProviderKey::new("m1").unwrap(),
+        [Keyword::system(SystemKeyword::Seen)].into_iter().collect(),
+    )]);
+
+    engine.sync_mail(&provider, &account()).await.unwrap();
+    let before = engine
+        .messages_by_keys(&account(), &[ProviderKey::new("m1").unwrap()])
+        .await
+        .unwrap();
+    assert!(
+        !before[0].has_system_keyword(SystemKeyword::Seen),
+        "starts unread"
+    );
+
+    // The resync reports the keyword change and no object.
+    engine.sync_mail(&provider, &account()).await.unwrap();
+    let after = engine
+        .messages_by_keys(&account(), &[ProviderKey::new("m1").unwrap()])
+        .await
+        .unwrap();
+    assert!(
+        after[0].has_system_keyword(SystemKeyword::Seen),
+        "the mark-read reaches a reader that asks for the message"
+    );
+    assert_eq!(
+        after[0].envelope.subject.as_deref(),
+        Some("Quarterly report"),
+        "and the content the change never mentioned is still there"
+    );
+}

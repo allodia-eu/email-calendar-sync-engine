@@ -125,6 +125,7 @@ pub(crate) async fn events_page(
     Ok(SyncPage {
         kind,
         changed,
+        patched: Vec::new(),
         removed,
         present,
         next_page,

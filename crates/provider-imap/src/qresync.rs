@@ -82,6 +82,7 @@ where
     Ok(SyncPage {
         kind: SyncKind::Delta,
         changed,
+        patched: Vec::new(),
         removed,
         present: Vec::new(),
         next_page: None,

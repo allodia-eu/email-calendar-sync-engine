@@ -55,10 +55,18 @@ derivation pass (`engine-sync` `threading.rs`), or `Engine::derive_mail_threads`
 - **No subject linking.** JWZ-style subject merging over-merges unrelated mail; the
   header graph is the safe baseline. A guarded subject fallback is a possible future
   refinement.
-- **Persistence.** `derive_mail_threads` re-applies only the messages whose id changed,
-  per scope (the object payload **and** the re-projected `message.thread_id`)
-  **without advancing the scope cursor** — it is a derivation, not a sync, so the next
-  sync still resumes correctly. A pass over unchanged mail writes nothing.
+- **Persistence.** `derive_mail_threads` writes `message.thread_id` for the messages whose id
+  changed, **and nothing else about them** — no payload, no re-projected row. The pass decided a
+  thread id; carrying every other column along with it is how it used to hand back the flags a
+  mark-read had just moved, since it re-projects from payloads that no longer carry keywords at
+  all. It writes **without advancing the scope cursor** — it is a derivation, not a sync — so
+  the next sync still resumes correctly.
+
+  It compares its computed assignment against the **stored row**, not against the payload it
+  rebuilt the graph from. The payload's thread is the *provider's* (present only when the
+  provider assigned it); the derived id lives in the row, so comparing against the payload would
+  re-assign every message on every pass and never converge. A pass over unchanged mail writes
+  nothing, and there is a test that says so.
 - IMAP must fetch the `References` header for this to work — it is **not** in the IMAP
   `ENVELOPE`, so `provider-imap` fetches `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` alongside
   `ENVELOPE` (`imap-smtp.md`).

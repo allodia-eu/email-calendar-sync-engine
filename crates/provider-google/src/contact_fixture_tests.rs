@@ -51,7 +51,10 @@ async fn captured_empty_delta_advances_the_cursor_instead_of_failing() {
     else {
         panic!("expected available");
     };
-    let SyncUpdate::Delta { changed, removed } = sync.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = sync.update
+    else {
         panic!("expected a delta");
     };
     assert!(changed.is_empty());
@@ -126,7 +129,10 @@ async fn captured_delta_reports_the_changed_person() {
     else {
         panic!("expected available");
     };
-    let SyncUpdate::Delta { changed, removed } = sync.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = sync.update
+    else {
         panic!("expected a delta");
     };
     assert_eq!(changed.len(), 1);
@@ -153,7 +159,10 @@ async fn captured_tombstone_becomes_a_removal_not_a_card() {
     else {
         panic!("expected available");
     };
-    let SyncUpdate::Delta { changed, removed } = sync.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = sync.update
+    else {
         panic!("expected a delta");
     };
     assert!(changed.is_empty(), "a tombstone is never a card");

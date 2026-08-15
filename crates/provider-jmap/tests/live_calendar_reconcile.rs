@@ -61,7 +61,10 @@ async fn delta(
         .sync_events(&account(), Some(cursor))
         .await
         .expect("delta");
-    let SyncUpdate::Delta { changed, removed } = synced.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = synced.update
+    else {
         panic!("a cursored sync must be a delta, not a re-snapshot");
     };
     (changed, removed, synced.next_cursor)

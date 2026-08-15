@@ -9,7 +9,7 @@ use engine_core::{
         ContactSourceClass,
     },
     ids::{AccountId, AddressBookId, ContactId},
-    sync::{JmapDataType, SyncScope, SyncState},
+    sync::{JmapDataType, SyncObject, SyncScope, SyncState},
 };
 
 use crate::{Provider, ProviderError, ProviderResult, ScopeSync, WriteGuard};
@@ -38,7 +38,7 @@ pub struct ContactUnavailable {
 
 /// A successful source sync or an independently unavailable optional source.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ContactSourceSync<T> {
+pub enum ContactSourceSync<T: SyncObject> {
     /// Changes and cursor are available.
     Available {
         /// Normalized source update.

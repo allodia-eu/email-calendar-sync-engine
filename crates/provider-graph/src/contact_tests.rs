@@ -201,7 +201,7 @@ async fn contact_delta_tombstone_cursor_recovery_and_permission_degradation() {
     };
     assert!(matches!(
         sync.update,
-        SyncUpdate::Delta { changed, removed }
+        SyncUpdate::Delta { changed, removed, .. }
             if changed.len() == 1 && removed.len() == 1
     ));
 

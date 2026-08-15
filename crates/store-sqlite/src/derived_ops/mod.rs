@@ -11,8 +11,8 @@ use std::collections::HashSet;
 
 use engine_core::{
     calendar::ParticipationStatus,
-    ids::{MessageIdHeader, ProviderKey, ThreadId},
-    search_index::{EventParticipantRow, FtsField, MailAddressRow, MailRow, MembershipRow},
+    ids::ProviderKey,
+    search_index::{EventParticipantRow, FtsField, MailAddressRow, MembershipRow},
     time::Horizon,
 };
 use engine_store::{
@@ -80,6 +80,12 @@ pub(crate) fn apply_derived(
             upsert_message(tx, scope_key, &account, row)?;
         }
     }
+    for row in &derived.state_changes {
+        apply_state_change(tx, scope_key, row)?;
+    }
+    for row in &derived.thread_assignments {
+        mail::assign_thread(tx, scope_key, row)?;
+    }
     for row in &derived.event_index {
         sql::execute(
             tx,
@@ -115,48 +121,6 @@ pub(crate) fn scope_account(tx: &Transaction<'_>, scope_key: &str) -> Result<Str
         |r| r.get::<_, String>(0),
     )?
     .ok_or_else(|| StoreError::Backend("no sync scope for the applied mail rows".to_owned()))
-}
-
-/// Upserts one message row. Shared by the apply path and the v9 backfill, so a migrated store and
-/// a freshly synced one hold the same columns.
-pub(crate) fn upsert_message(
-    tx: &Transaction<'_>,
-    scope_key: &str,
-    account: &str,
-    row: &MailRow,
-) -> Result<()> {
-    sql::execute(
-        tx,
-        "INSERT INTO message (scope_key, provider_key, account, thread_id, message_id, date_utc,
-                              flags, has_attachment, from_name, from_addr, subject, preview)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-         ON CONFLICT(scope_key, provider_key) DO UPDATE SET
-             account = excluded.account,
-             thread_id = excluded.thread_id,
-             message_id = excluded.message_id,
-             date_utc = excluded.date_utc,
-             flags = excluded.flags,
-             has_attachment = excluded.has_attachment,
-             from_name = excluded.from_name,
-             from_addr = excluded.from_addr,
-             subject = excluded.subject,
-             preview = excluded.preview",
-        rusqlite::params![
-            scope_key,
-            row.key.as_str(),
-            account,
-            row.thread_id.as_ref().map(ThreadId::as_str),
-            row.message_id.as_ref().map(MessageIdHeader::as_str),
-            row.date_utc.map(convert::instant_to_text),
-            i64::from(row.flags.bits()),
-            i64::from(row.has_attachment),
-            row.from_name.as_deref(),
-            row.from_addr.as_deref(),
-            row.subject.as_deref(),
-            row.preview.as_deref(),
-        ],
-    )?;
-    Ok(())
 }
 
 /// Clears one event's occurrence rows, leaving its other derived rows alone — the targeted
@@ -410,6 +374,11 @@ fn count_for_key(
     .unwrap_or_default();
     usize::try_from(count).map_err(convert::backend)
 }
+
+mod mail;
+
+use mail::apply_state_change;
+pub(crate) use mail::upsert_message;
 
 #[cfg(test)]
 mod tests;

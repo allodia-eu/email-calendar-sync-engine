@@ -200,7 +200,10 @@ async fn email_delta_with_cursor_uses_changes_then_get() {
         .unwrap();
     // An empty delta still exercises the changes→get back-reference path.
     assert!(!sync.is_snapshot());
-    let SyncUpdate::Delta { changed, removed } = &sync.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = &sync.update
+    else {
         panic!("expected delta");
     };
     assert!(changed.is_empty());
@@ -270,7 +273,10 @@ async fn mailbox_delta_with_cursor_uses_changes_then_get() {
         .await
         .unwrap();
     assert!(!sync.is_snapshot());
-    let SyncUpdate::Delta { changed, removed } = &sync.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = &sync.update
+    else {
         panic!("expected delta");
     };
     assert_eq!(changed.len(), 1);

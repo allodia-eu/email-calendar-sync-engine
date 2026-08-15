@@ -141,6 +141,7 @@ pub(crate) async fn snapshot_page(
     Ok(SyncPage {
         kind: SyncKind::Snapshot,
         changed,
+        patched: Vec::new(),
         removed: Vec::new(),
         present,
         next_page: opt_str(&doc, "nextPageToken").map(PageToken::new),
@@ -184,6 +185,7 @@ pub(crate) async fn delta_page(
     Ok(SyncPage {
         kind: SyncKind::Delta,
         changed,
+        patched: Vec::new(),
         removed,
         present: Vec::new(),
         next_page: opt_str(&doc, "nextPageToken").map(PageToken::new),

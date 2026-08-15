@@ -36,10 +36,10 @@ use engine_core::{
     calendar::{Calendar, Event},
     ids::AccountId,
     search_index::{OwnerAddresses, project_event},
-    sync::{SyncScope, SyncState, SyncUpdate},
+    sync::{SyncScope, SyncState},
     time::{ExpansionWindow, TimeZoneId},
 };
-use engine_provider::{Provider, ProviderError};
+use engine_provider::{Provider, ProviderError, ScopeSync};
 use engine_recurrence::{Horizon, expand};
 use engine_store::{DerivedWrite, LeaseRequest, Store, StoreRead, SyncApplied, WorkerId};
 
@@ -243,7 +243,7 @@ impl<P: Provider> ScopeSyncer for CalendarScope<'_, P> {
             .map(|sync| crate::ScopeFetch::Proceed { sync, meta: () })
     }
 
-    fn derive(&self, _update: &SyncUpdate<Calendar>) -> DerivedWrite {
+    fn derive(&self, _sync: &ScopeSync<Calendar>) -> DerivedWrite {
         DerivedWrite::empty()
     }
 }
@@ -283,10 +283,10 @@ impl<P: Provider> ScopeSyncer for EventScope<'_, P> {
             .map(|sync| crate::ScopeFetch::Proceed { sync, meta: () })
     }
 
-    fn derive(&self, update: &SyncUpdate<Event>) -> DerivedWrite {
+    fn derive(&self, sync: &ScopeSync<Event>) -> DerivedWrite {
         let mut derived = DerivedWrite::empty();
         let mut unexpandable = Vec::new();
-        for event in changed_objects(update) {
+        for event in changed_objects(&sync.update) {
             // Clear this event's occurrence rows before rewriting them. They are keyed by
             // `(scope, event, start, recurrence-id)` and *upserted*, so an event whose start
             // moved — or whose recurrence shrank — would otherwise keep its old rows beside

@@ -6,6 +6,7 @@ mod lease;
 mod mail;
 mod occurrences;
 mod read;
+mod state_change;
 
 pub(super) use self::{
     apply::{
@@ -28,7 +29,12 @@ pub(super) use self::{
         scope_occurrences_reads_the_overlapping_window,
     },
     read::{
-        account_scopes_enumerates_an_accounts_scopes, scope_objects_batch_reads_live_objects,
+        account_scopes_enumerates_an_accounts_scopes,
+        schema_status_reports_a_store_this_build_can_use, scope_objects_batch_reads_live_objects,
         structured_index_rows_replace_and_clear,
+    },
+    state_change::{
+        state_change_for_an_unknown_message_writes_nothing,
+        state_change_moves_flags_and_leaves_the_rest,
     },
 };

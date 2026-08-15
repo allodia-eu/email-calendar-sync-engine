@@ -23,17 +23,18 @@ use engine_core::{
     ids::{AccountId, ContactId, MessageId, ProviderKey},
     people::{CanonicalEmail, PeopleSnapshot},
     recipient::{RecipientCoverage, RecipientObservation},
-    search_index::{EventIndexRow, EventParticipantRow, MailAddressRow, MailRow, MembershipRow},
-    sync::{SyncScope, SyncState},
+    search_index::{
+        EventIndexRow, EventParticipantRow, MailAddressRow, MailRow, MembershipKind, MembershipRow,
+    },
+    sync::{SyncObject, SyncScope, SyncState},
     time::{ExpansionWindow, UtcDateTime},
     write::{IdempotencyKey, PendingOp, PendingOpId},
 };
-use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
     CachedContactPhoto, ContactSourceAvailability,
-    apply::{DerivedWrite, FtsField, OccurrenceRow, StorableObject},
+    apply::{DerivedWrite, FtsField, OccurrenceRow},
     error::{Result, StoreError},
     lease::{Clock, FenceToken, LeaseRequest},
     outbox::PendingOpState,
@@ -126,8 +127,12 @@ impl ScopeCell {
 
     /// Serializes and upserts an object's normalized payload, keyed by its
     /// provider key.
-    fn upsert_object<T: StorableObject + Serialize>(&mut self, obj: &T) -> Result<()> {
-        let value = serde_json::to_value(obj).map_err(|e| StoreError::Backend(e.to_string()))?;
+    fn upsert_object<T: SyncObject>(&mut self, obj: &T) -> Result<()> {
+        // Matches `store-sqlite`: the object decides its stored record, so the reference store
+        // cannot hold a field the real one drops.
+        let value = obj
+            .to_payload()
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
         self.objects.insert(obj.provider_key().clone(), value);
         Ok(())
     }
@@ -159,6 +164,30 @@ impl ScopeCell {
         }
         for row in &derived.messages {
             self.messages.insert(row.key.clone(), row.clone());
+        }
+        for row in &derived.state_changes {
+            // An update, not an insert: a keyword change carries no subject, sender or date,
+            // so a message the store has never seen gets no row from one (matches
+            // `store-sqlite`).
+            if let Some(existing) = self.messages.get_mut(&row.key) {
+                existing.flags = row.flags;
+                existing.revisions = row.revisions.clone();
+                existing.last_modified = row.last_modified;
+            }
+            // The keyword memberships are replaced; the mailbox ones decide which folders
+            // the message appears in and are left alone.
+            let memberships = self.memberships.entry(row.key.clone()).or_default();
+            memberships.retain(|m| m.kind != MembershipKind::Keyword);
+            memberships.extend(row.keywords.iter().map(|value| MembershipRow {
+                key: row.key.clone(),
+                kind: MembershipKind::Keyword,
+                value: value.clone(),
+            }));
+        }
+        for row in &derived.thread_assignments {
+            if let Some(existing) = self.messages.get_mut(&row.key) {
+                existing.thread_id = Some(row.thread_id.clone());
+            }
         }
         for row in &derived.event_index {
             self.event_index.insert(row.key.clone(), row.clone());

@@ -7,7 +7,7 @@
 //! (and, later, query execution) needs; the full search read path is a separate
 //! sub-step.
 //!
-//! The trait is generic over the object type via [`StorableObject`], so the store
+//! The trait is generic over the object type via [`Keyed`], so the store
 //! stays mechanical and type-erased at the row level and the contract suite can
 //! run on any object. It is consumed as `S: Store` (not `dyn Store`), since the
 //! store sits behind `engine-api`.
@@ -15,16 +15,17 @@
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey, ThreadId},
+    mail::Keyword,
     search_index::MailRow,
-    sync::{SyncScope, SyncState},
+    sync::{SyncObject, SyncScope, SyncState},
     time::{ExpansionWindow, Horizon},
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    apply::{ApplyBatch, DerivedWrite, OccurrenceRow, StorableObject, SyncApplied},
+    apply::{ApplyBatch, DerivedWrite, OccurrenceRow, SyncApplied},
     error::Result,
     lease::{LeaseRequest, OpLease, SyncClaim, SyncLease},
     outbox::{LeasedPendingOp, PendingOpState},
@@ -80,7 +81,7 @@ pub trait Store: Send + Sync {
         batch: ApplyBatch<'_, T>,
     ) -> Result<SyncApplied>
     where
-        T: StorableObject + Serialize + Send + Sync;
+        T: SyncObject + Serialize + Send + Sync;
 
     /// Writes only derived rows (FTS/occurrences) under the **same** scope lease
     /// as sync, so maintenance and sync of one scope cannot race. Used for
@@ -219,6 +220,14 @@ pub struct MailListRow {
     pub account: AccountId,
     /// The mailboxes/labels the message is filed in.
     pub mailboxes: Vec<MailboxId>,
+    /// Every keyword on the message — the system ones the row's `flags` also carries as a
+    /// bitfield, plus any user keyword or provider label.
+    ///
+    /// Carried because this read is the message's **whole mutable state**, not only the part a
+    /// list paints: the stored payload deliberately holds none of it, so anything rebuilding a
+    /// `Message` from storage gets the complete set here rather than from a second read that
+    /// could be forgotten.
+    pub keywords: Vec<Keyword>,
     /// The stored row.
     pub mail: MailRow,
 }
@@ -236,8 +245,51 @@ impl MailListRow {
         Self {
             account: account.clone(),
             mailboxes: message.mailboxes.iter().cloned().collect(),
+            keywords: message.keywords.iter().cloned().collect(),
             mail: engine_core::search_index::project_message(message).row,
         }
+    }
+}
+
+/// Where a store's schema stands — what the data is at, what this build expects, and whether
+/// opening it moved.
+///
+/// A support answer, deliberately in the neutral layer rather than in one backend: "which schema
+/// is this user's store on, and did this launch upgrade it" is the same question whether the rows
+/// live in SQLite, in Postgres, or nowhere at all. A backend with no persistent schema reports
+/// `version == expected` and never migrates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaStatus {
+    /// The schema version the stored data is at now.
+    pub version: u32,
+    /// The version this build of the engine expects.
+    ///
+    /// Equal to [`version`](SchemaStatus::version) on a store this build can use. A store left
+    /// *ahead* of it — written by a newer build — is refused at open rather than reported here,
+    /// because reading it could misinterpret a shape this build does not know.
+    pub expected: u32,
+    /// The version the store was at when this process opened it, if opening upgraded it.
+    ///
+    /// `None` when nothing moved: an already-current store, or a freshly created one. A host logs
+    /// this once at startup, which is what turns "it broke after the update" into a version pair.
+    pub migrated_from: Option<u32>,
+}
+
+impl SchemaStatus {
+    /// A store that is at the version this build expects and did not migrate on open.
+    #[must_use]
+    pub fn current(version: u32) -> Self {
+        Self {
+            version,
+            expected: version,
+            migrated_from: None,
+        }
+    }
+
+    /// Whether opening this store upgraded it.
+    #[must_use]
+    pub fn migrated(&self) -> bool {
+        self.migrated_from.is_some()
     }
 }
 
@@ -260,6 +312,17 @@ pub enum MailSelector<'a> {
 /// diagnostics; the structured/full-text query path is a separate sub-step.
 #[async_trait]
 pub trait StoreRead: Send + Sync {
+    /// Where this store's schema stands: the version the data is at, the version this build
+    /// expects, and what it was upgraded from if opening moved it.
+    ///
+    /// Lease-free and cheap — a host calls it at startup to log the store's version, and again
+    /// when assembling a diagnostic report.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn schema_status(&self) -> Result<SchemaStatus>;
+
     /// Every sync scope the store currently knows for `account` (every scope it
     /// has claimed), in ascending [`SyncScope`] order. A per-account search
     /// enumerates these instead of hard-coding which scopes a provider uses, then

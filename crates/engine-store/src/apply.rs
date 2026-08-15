@@ -21,69 +21,19 @@ use core::fmt;
 // vocabulary stays discoverable in one place.
 pub use engine_core::search_index::{FtsField, FtsRow};
 use engine_core::{
-    contact::{AddressBook, ContactCard},
     ids::ProviderKey,
     recipient::RecipientObservation,
     search_index::{
         EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailProjection,
-        MailRow, MembershipRow,
+        MailRow, MailStateRow, MailThreadRow, MembershipRow,
     },
-    sync::{SyncState, SyncUpdate},
+    sync::{SyncObject, SyncState, SyncUpdate},
     time::UtcDateTime,
     write::PendingOpId,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::outbox::PendingOpState;
-
-/// An object the store can persist mechanically.
-///
-/// The store performs no normalization: it keys rows by the object's
-/// [`ProviderKey`] and writes the serialized projection verbatim. Structured and
-/// full-text projections are precomputed separately into [`DerivedWrite`]. The
-/// normalized domain types (`Message`, `CalendarEvent`, `Mailbox`, `Calendar`)
-/// implement this. The serialization bound is required at the `Store` method, not
-/// here, so this trait stays minimal and serde-agnostic.
-pub trait StorableObject {
-    /// The provider key the store keys this object's rows by.
-    fn provider_key(&self) -> &ProviderKey;
-}
-
-impl StorableObject for engine_core::mail::Message {
-    fn provider_key(&self) -> &ProviderKey {
-        self.id.key()
-    }
-}
-
-impl StorableObject for engine_core::calendar::Event {
-    fn provider_key(&self) -> &ProviderKey {
-        self.id.key()
-    }
-}
-
-impl StorableObject for engine_core::mail::Mailbox {
-    fn provider_key(&self) -> &ProviderKey {
-        self.id.key()
-    }
-}
-
-impl StorableObject for engine_core::calendar::Calendar {
-    fn provider_key(&self) -> &ProviderKey {
-        self.id.key()
-    }
-}
-
-impl StorableObject for ContactCard {
-    fn provider_key(&self) -> &ProviderKey {
-        self.id.key()
-    }
-}
-
-impl StorableObject for AddressBook {
-    fn provider_key(&self) -> &ProviderKey {
-        self.id.key()
-    }
-}
 
 /// The bundled IANA tzdata release an occurrence was expanded under.
 ///
@@ -156,6 +106,19 @@ pub struct DerivedWrite {
     pub occurrences: Vec<OccurrenceRow>,
     /// Mail rows to upsert.
     pub messages: Vec<MailRow>,
+    /// Keyword-only mail changes: each rewrites its message row's `flags` and replaces that
+    /// message's `keyword`-kind memberships, and touches nothing else — no other column, no
+    /// full-text document, no address junction, and **not the normalized payload**.
+    ///
+    /// This is what a provider reporting a mark-read produces, so the write is a row update
+    /// rather than a re-fetch and a whole-object replace, and a field the provider never sent
+    /// cannot be destroyed by a change that never claimed to carry it.
+    pub state_changes: Vec<MailStateRow>,
+    /// Thread assignments: each rewrites its message row's `thread_id` and nothing else.
+    ///
+    /// The derivation pass produces these. It reads payloads to rebuild the reference graph but
+    /// has no business rewriting them — the thread id is the only thing it decided.
+    pub thread_assignments: Vec<MailThreadRow>,
     /// Mail address-junction rows to replace (per object).
     pub addresses: Vec<MailAddressRow>,
     /// Mailbox/keyword/calendar membership rows to replace (per object).
@@ -194,6 +157,8 @@ impl DerivedWrite {
         self.fts.is_empty()
             && self.occurrences.is_empty()
             && self.messages.is_empty()
+            && self.state_changes.is_empty()
+            && self.thread_assignments.is_empty()
             && self.addresses.is_empty()
             && self.memberships.is_empty()
             && self.event_index.is_empty()
@@ -214,6 +179,11 @@ impl DerivedWrite {
         self.messages.push(row);
         self.addresses.extend(addresses);
         self.memberships.extend(memberships);
+    }
+
+    /// Adds a keyword-only change ([`engine_core::search_index::project_state_change`]).
+    pub fn push_state_change(&mut self, row: MailStateRow) {
+        self.state_changes.push(row);
     }
 
     /// Adds the rows of an event projection ([`engine_core::search_index::project_event`]):
@@ -297,7 +267,7 @@ impl PendingReconciliation {
 /// Bundled as one struct so the atomic set is self-documenting. The derived rows
 /// and reconciliations are precomputed by pure engine code before the call.
 #[derive(Debug)]
-pub struct ApplyBatch<'a, T> {
+pub struct ApplyBatch<'a, T: SyncObject> {
     /// Provider-normalized objects for the scope, as a delta or a snapshot.
     pub update: &'a SyncUpdate<T>,
     /// Precomputed full-text, structured, and occurrence rows for the same objects.
@@ -318,7 +288,7 @@ pub struct ApplyBatch<'a, T> {
     pub next_state: Option<&'a SyncState>,
 }
 
-impl<'a, T> ApplyBatch<'a, T> {
+impl<'a, T: SyncObject> ApplyBatch<'a, T> {
     /// Assembles an apply batch that advances the cursor to `next_state` on commit.
     #[must_use]
     pub fn new(
@@ -372,6 +342,13 @@ mod tests {
         ProviderKey::new(value).unwrap()
     }
 
+    fn message(id: &str) -> Message {
+        Message::new(
+            MessageId::try_from(id).unwrap(),
+            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
+        )
+    }
+
     #[test]
     fn derived_write_emptiness_tracks_every_row_kind() {
         let mut d = DerivedWrite::empty();
@@ -421,16 +398,6 @@ mod tests {
     }
 
     #[test]
-    fn container_objects_are_storable_by_their_id() {
-        use engine_core::{calendar::Calendar, ids::CalendarId, mail::Mailbox};
-
-        let mailbox = Mailbox::new(MailboxId::try_from("inbox").unwrap(), "Inbox");
-        assert_eq!(mailbox.provider_key().as_str(), "inbox");
-        let calendar = Calendar::new(CalendarId::try_from("work").unwrap(), "Work");
-        assert_eq!(calendar.provider_key().as_str(), "work");
-    }
-
-    #[test]
     fn occurrence_row_roundtrips_with_optional_override() {
         let occ = OccurrenceRow {
             event: key("evt-1"),
@@ -460,7 +427,7 @@ mod tests {
 
     #[test]
     fn apply_batch_borrows_its_parts() {
-        let update: SyncUpdate<String> = SyncUpdate::delta(vec!["a".to_owned()], vec![]);
+        let update: SyncUpdate<Message> = SyncUpdate::delta(vec![message("m1")], vec![]);
         let derived = DerivedWrite::empty();
         let recs: Vec<PendingReconciliation> = Vec::new();
         let next = SyncState::new("cursor-2");

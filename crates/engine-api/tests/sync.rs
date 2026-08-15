@@ -17,7 +17,7 @@ use engine_api::{AccountId, Horizon};
 use engine_core::{
     calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
-    mail::{EmailAddress, Mailbox, MailboxRole, Message},
+    mail::{EmailAddress, Keyword, MailStateChange, Mailbox, MailboxRole, Message, SystemKeyword},
     membership::Memberships,
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::{CalendarDateTime, LocalDateTime},
@@ -27,6 +27,10 @@ use engine_provider::{
     Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt,
 };
 use tokio::sync::oneshot;
+
+#[path = "sync/fixtures.rs"]
+mod fixtures;
+use fixtures::*;
 
 #[path = "sync/expansion.rs"]
 mod expansion;
@@ -51,6 +55,7 @@ struct FakeProvider {
     fail: bool,
     removed_on_resync: Vec<ProviderKey>,
     added_on_resync: Vec<Message>,
+    state_on_resync: Vec<MailStateChange>,
 }
 
 impl FakeProvider {
@@ -70,6 +75,7 @@ impl FakeProvider {
             fail: false,
             removed_on_resync: Vec::new(),
             added_on_resync: Vec::new(),
+            state_on_resync: Vec::new(),
         }
     }
 
@@ -90,6 +96,13 @@ impl FakeProvider {
     /// arriving after the first sync already stored (and threaded) the rest.
     fn adding_on_resync(mut self, messages: Vec<Message>) -> Self {
         self.added_on_resync = messages;
+        self
+    }
+
+    /// On the next cursored resync, the email scope reports these keyword-only changes — the
+    /// shape a mark-read arrives in, carrying no object at all.
+    fn changing_state_on_resync(mut self, changes: Vec<MailStateChange>) -> Self {
+        self.state_on_resync = changes;
         self
     }
 
@@ -166,6 +179,7 @@ impl Provider for FakeProvider {
                 None,
                 SyncState::new("email-2"),
             )
+            .with_patched(self.state_on_resync.clone())
         } else {
             let present: Vec<ProviderKey> =
                 self.messages.iter().map(|m| m.id.key().clone()).collect();
@@ -411,87 +425,4 @@ impl Provider for ReconcilingProvider {
         };
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
-}
-
-fn account() -> AccountId {
-    AccountId::try_from("acct-1").expect("valid account")
-}
-
-fn mailbox(id: &str, name: &str, role: Option<MailboxRole>) -> Mailbox {
-    let mut mailbox = Mailbox::new(MailboxId::try_from(id).unwrap(), name);
-    mailbox.role = role;
-    mailbox
-}
-
-fn message(id: &str, mailbox: &str, subject: &str) -> Message {
-    let mut message = Message::new(
-        MessageId::try_from(id).unwrap(),
-        Memberships::of_one(MailboxId::try_from(mailbox).unwrap()),
-    );
-    message.envelope.subject = Some(subject.to_owned());
-    message
-}
-
-fn threaded_message(id: &str, mailbox: &str, own: &str, references: &[&str]) -> Message {
-    let mut message = message(id, mailbox, "subject");
-    message.envelope.message_id = vec![MessageIdHeader::new(own).unwrap()];
-    message.envelope.references = references
-        .iter()
-        .map(|value| MessageIdHeader::new(*value).unwrap())
-        .collect();
-    message
-}
-
-/// An inbox message with a delivery date and threading headers, for the windowed and thread
-/// reads (its `received_at` becomes the mail index's sort date).
-fn dated_message(id: &str, own: &str, references: &[&str], received: &str) -> Message {
-    let mut message = threaded_message(id, "a", own, references);
-    message.received_at = Some(received.parse().unwrap());
-    message
-}
-
-fn calendar(id: &str, name: &str) -> Calendar {
-    Calendar::new(CalendarId::try_from(id).unwrap(), name)
-}
-
-fn event(id: &str, uid: &str, calendar: &str) -> Event {
-    Event::new(
-        EventId::try_from(id).unwrap(),
-        Uid::new(uid).unwrap(),
-        Memberships::of_one(CalendarId::try_from(calendar).unwrap()),
-        CalendarDateTime::utc(LocalDateTime::new(2026, 6, 1, 9, 0, 0).unwrap()),
-    )
-}
-
-/// A weekly standup recurring `count` times from `start` (a UTC wall clock) — the
-/// event whose instances only exist in the occurrence rows, never in `events()`.
-fn weekly_event(id: &str, uid: &str, start: LocalDateTime, count: u32) -> Event {
-    let mut event = Event::new(
-        EventId::try_from(id).unwrap(),
-        Uid::new(uid).unwrap(),
-        Memberships::of_one(CalendarId::try_from("work").unwrap()),
-        CalendarDateTime::utc(start),
-    );
-    let mut rule = RecurrenceRule::new(Frequency::Weekly);
-    rule.bound = RecurrenceBound::Count(NonZeroU32::new(count).unwrap());
-    event.recurrence = Some(Recurrence::from_rule(rule));
-    event
-}
-
-fn horizon() -> Horizon {
-    Horizon::new(
-        "2020-01-01T00:00:00Z".parse().unwrap(),
-        "2030-01-01T00:00:00Z".parse().unwrap(),
-    )
-    .unwrap()
-}
-
-fn draft(message_id: &str, subject: &str) -> Draft {
-    Draft::new(
-        MessageIdHeader::new(message_id).unwrap(),
-        EmailAddress::new("alice@test.local"),
-        vec![EmailAddress::new("bob@test.local")],
-        subject,
-        "see attached",
-    )
 }

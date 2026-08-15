@@ -31,7 +31,11 @@
 
 use std::env;
 
-use engine_core::{ids::AccountId, sync::SyncUpdate, time::CalendarDateTime};
+use engine_core::{
+    ids::AccountId,
+    sync::{SyncObject, SyncUpdate},
+    time::CalendarDateTime,
+};
 use engine_provider::Provider;
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 
@@ -193,7 +197,7 @@ async fn write_demo(
 }
 
 /// The created-or-updated objects an update carries.
-fn objects<T>(update: &SyncUpdate<T>) -> &[T] {
+fn objects<T: SyncObject>(update: &SyncUpdate<T>) -> &[T] {
     match update {
         SyncUpdate::Delta { changed, .. } => changed,
         SyncUpdate::Snapshot { objects, .. } => objects,

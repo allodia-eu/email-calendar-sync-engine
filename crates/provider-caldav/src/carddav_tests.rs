@@ -255,7 +255,7 @@ async fn delta_tombstones_and_expired_tokens_report_their_actual_mode() {
         } if sync.next_cursor.as_str() == "token-2"
             && matches!(
                 &sync.update,
-                SyncUpdate::Delta { changed, removed }
+                SyncUpdate::Delta { changed, removed, .. }
                     if changed.len() == 1 && removed.len() == 1
             )
     ));
@@ -302,7 +302,7 @@ async fn an_unchanged_ctag_cursor_skips_the_addressbook_query() {
         ContactSourceSync::Available {
             cursor_recovered: false,
             sync,
-        } if matches!(&sync.update, SyncUpdate::Delta { changed, removed }
+        } if matches!(&sync.update, SyncUpdate::Delta { changed, removed, .. }
             if changed.is_empty() && removed.is_empty())
     ));
     let reads = replay.reads();

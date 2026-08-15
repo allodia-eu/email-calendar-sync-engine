@@ -19,6 +19,7 @@ mod keyword;
 mod mailbox;
 mod message;
 mod role;
+mod state;
 mod thread;
 
 pub use address::{EmailAddress, EmailAddressGroup};
@@ -30,6 +31,7 @@ pub use flags::MailFlags;
 pub use header::{EmailHeader, Envelope};
 pub use keyword::{Keyword, KeywordError, SystemKeyword};
 pub use mailbox::Mailbox;
-pub use message::Message;
+pub use message::{MailContent, Message};
 pub use role::MailboxRole;
+pub use state::{MailState, MailStateChange};
 pub use thread::{Thread, ThreadProvenance, ThreadRef};

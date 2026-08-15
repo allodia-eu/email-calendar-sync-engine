@@ -13,12 +13,12 @@ use std::collections::HashSet;
 use engine_core::{
     ids::{AccountId, ProviderKey},
     recipient::RecipientObservation,
-    sync::{SyncScope, SyncState, SyncUpdate},
+    sync::{SyncObject, SyncScope, SyncState, SyncUpdate},
     time::UtcDateTime,
 };
 use engine_store::{
-    DerivedWrite, FenceToken, PendingReconciliation, Result, StorableObject, StoreError,
-    SyncApplied, SyncClaim, SyncLease, WorkerId,
+    DerivedWrite, FenceToken, PendingReconciliation, Result, StoreError, SyncApplied, SyncClaim,
+    SyncLease, WorkerId,
 };
 use rusqlite::{Connection, Transaction};
 use serde::Serialize;
@@ -55,10 +55,14 @@ impl OwnedUpdate {
     /// Returns [`StoreError::Backend`] if an object cannot be serialized.
     pub(crate) fn from_update<T>(update: &SyncUpdate<T>) -> Result<Self>
     where
-        T: StorableObject + Serialize,
+        T: SyncObject + Serialize,
     {
         Ok(match update {
-            SyncUpdate::Delta { changed, removed } => Self::Delta {
+            // `patched` is not read here: partials reach a store as derived rows, projected
+            // before the call. Nothing in a patch belongs in a payload.
+            SyncUpdate::Delta {
+                changed, removed, ..
+            } => Self::Delta {
                 changed: serialize_objects(changed)?,
                 removed: removed.iter().map(|k| k.as_str().to_owned()).collect(),
             },
@@ -73,12 +77,17 @@ impl OwnedUpdate {
 /// Serializes each object to `(provider_key, payload_json)`.
 fn serialize_objects<T>(objects: &[T]) -> Result<Vec<(String, String)>>
 where
-    T: StorableObject + Serialize,
+    T: SyncObject + Serialize,
 {
     objects
         .iter()
         .map(|obj| {
-            let payload = serde_json::to_string(obj).map_err(convert::backend)?;
+            // `to_payload`, not a direct serialize: an object decides what its stored record
+            // is, and mail's deliberately omits the state the message row owns.
+            let payload = obj
+                .to_payload()
+                .and_then(|value| serde_json::to_string(&value))
+                .map_err(convert::backend)?;
             Ok((obj.provider_key().as_str().to_owned(), payload))
         })
         .collect()

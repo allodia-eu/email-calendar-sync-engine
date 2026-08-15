@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use engine_core::{
     error::FailureClass,
     ids::ProviderKey,
-    sync::{SyncState, SyncUpdate},
+    sync::{SyncObject, SyncState, SyncUpdate},
 };
 use engine_provider::{PageToken, ScopeSync, SyncKind, SyncPage};
 use serde_json::{Map, Value, json};
@@ -28,7 +28,7 @@ use crate::{
     },
 };
 
-pub(crate) async fn container_sync<T>(
+pub(crate) async fn container_sync<T: SyncObject>(
     executor: &dyn Executor,
     account: &str,
     using: &[&'static str],
@@ -45,7 +45,7 @@ pub(crate) async fn container_sync<T>(
 }
 
 /// Container sync plus whether an expired changes state forced a snapshot.
-pub(crate) async fn container_sync_with_status<T>(
+pub(crate) async fn container_sync_with_status<T: SyncObject>(
     executor: &dyn Executor,
     account: &str,
     using: &[&'static str],
@@ -70,7 +70,7 @@ pub(crate) async fn container_sync_with_status<T>(
     }
 }
 
-async fn container_snapshot<T>(
+async fn container_snapshot<T: SyncObject>(
     executor: &dyn Executor,
     account: &str,
     using: &[&'static str],
@@ -90,7 +90,7 @@ async fn container_snapshot<T>(
     ))
 }
 
-async fn container_delta<T>(
+async fn container_delta<T: SyncObject>(
     executor: &dyn Executor,
     account: &str,
     using: &[&'static str],
@@ -124,7 +124,7 @@ async fn container_delta<T>(
 
 /// Syncs a member type (`Foo/query`+`Foo/get` snapshot; `Foo/changes`+`Foo/get`
 /// delta), recovering to a snapshot on `cannotCalculateChanges`.
-pub(crate) async fn member_sync<T>(
+pub(crate) async fn member_sync<T: SyncObject>(
     executor: &dyn Executor,
     account: &str,
     using: &[&'static str],
@@ -148,7 +148,7 @@ pub(crate) async fn member_sync<T>(
     }
 }
 
-async fn member_snapshot<T>(
+async fn member_snapshot<T: SyncObject>(
     executor: &dyn Executor,
     account: &str,
     using: &[&'static str],
@@ -180,7 +180,7 @@ async fn member_snapshot<T>(
     ))
 }
 
-async fn member_delta<T>(
+async fn member_delta<T: SyncObject>(
     executor: &dyn Executor,
     account: &str,
     using: &[&'static str],
@@ -251,7 +251,7 @@ pub(crate) struct MemberFetch<'a> {
 /// `cannotCalculateChanges` recovers to a snapshot; the chosen mode and offset
 /// then travel inside the opaque [`PageToken`], so the engine never parses it and
 /// a recovered pass stays a snapshot to its end.
-pub(crate) async fn member_page<T>(
+pub(crate) async fn member_page<T: SyncObject>(
     fetch: &MemberFetch<'_>,
     sort: Value,
     cursor: Option<&SyncState>,
@@ -286,7 +286,7 @@ pub(crate) async fn member_page<T>(
 /// One snapshot page: `Foo/query` (sorted, at `position`, bounded by `limit`) plus
 /// a `Foo/get` over the resulting ids. The query ids are the page's `present` set;
 /// [`next_position`] decides whether another page follows.
-async fn snapshot_page<T>(
+async fn snapshot_page<T: SyncObject>(
     fetch: &MemberFetch<'_>,
     sort: Value,
     position: usize,
@@ -331,6 +331,7 @@ async fn snapshot_page<T>(
     Ok(SyncPage {
         kind: SyncKind::Snapshot,
         changed,
+        patched: Vec::new(),
         removed: Vec::new(),
         present,
         next_page,
@@ -342,7 +343,7 @@ async fn snapshot_page<T>(
 /// One delta page: `Foo/changes` (bounded by `maxChanges`) resolved into created/
 /// updated objects via two `Foo/get` back-references. `hasMoreChanges` decides
 /// whether another page follows, resuming from the page's `newState`.
-async fn delta_page<T>(
+async fn delta_page<T: SyncObject>(
     fetch: &MemberFetch<'_>,
     since: &SyncState,
     limit: usize,
@@ -384,6 +385,7 @@ async fn delta_page<T>(
     Ok(SyncPage {
         kind: SyncKind::Delta,
         changed,
+        patched: Vec::new(),
         removed: diff.destroyed,
         present: Vec::new(),
         next_page,

@@ -270,7 +270,7 @@ async fn deltas_tombstones_token_recovery_and_permissions_are_source_local() {
             sync,
         } if matches!(
             &sync.update,
-            SyncUpdate::Delta { changed, removed }
+            SyncUpdate::Delta { changed, removed, .. }
                 if changed.len() == 1 && removed.len() == 1
         )
     ));

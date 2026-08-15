@@ -13,7 +13,7 @@ use engine_core::{
 };
 use engine_store::{
     Clock, IndexRowCounts, MailListRow, MailSelector, OccurrenceRow, PendingOpState, Result,
-    StoreRead,
+    SchemaStatus, StoreRead,
 };
 use serde_json::Value;
 
@@ -21,6 +21,13 @@ use crate::{SqliteStore, convert::scope_key, derived_ops, mail_ops, outbox_ops, 
 
 #[async_trait]
 impl<C: Clock> StoreRead for SqliteStore<C> {
+    async fn schema_status(&self) -> Result<SchemaStatus> {
+        // Answered from what `open` recorded rather than by re-reading `user_version`: the
+        // version this build *migrated from* exists only in that moment, and re-reading would
+        // report the current version as though nothing had moved.
+        Ok(self.schema)
+    }
+
     async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>> {
         self.read(move |conn| scope_ops::account_scopes(conn, &account))
             .await

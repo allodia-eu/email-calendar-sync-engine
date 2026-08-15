@@ -188,7 +188,10 @@ mod tests {
         .await
         .unwrap();
         assert!(!result.is_snapshot());
-        let SyncUpdate::Delta { changed, removed } = &result.update else {
+        let SyncUpdate::Delta {
+            changed, removed, ..
+        } = &result.update
+        else {
             panic!("expected a delta");
         };
         assert!(changed.is_empty());
@@ -208,7 +211,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let SyncUpdate::Delta { changed, removed } = &result.update else {
+        let SyncUpdate::Delta {
+            changed, removed, ..
+        } = &result.update
+        else {
             panic!("expected a delta");
         };
         assert_eq!(changed.len(), 1);

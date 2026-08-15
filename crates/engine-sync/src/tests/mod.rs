@@ -12,7 +12,7 @@ use std::sync::{
 use engine_core::{
     calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
-    mail::{EmailAddress, Mailbox, MailboxRole, Message},
+    mail::{EmailAddress, MailStateChange, Mailbox, MailboxRole, Message},
     membership::Memberships,
     raw::RawIcal,
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
@@ -43,9 +43,9 @@ use super::{
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
-mod derived_carry;
 mod mail_edit;
 mod mail_sync;
+mod state_change;
 mod streaming;
 mod streaming_resume;
 mod submit;
@@ -78,6 +78,9 @@ struct FakeMail {
     /// Emitted once, as an additive delta, on the first pass that finds a cursor —
     /// the shape a flag change arrives in. Empty means "nothing changed".
     delta: Mutex<Vec<Message>>,
+    /// Keyword-only changes emitted once alongside `delta` — what a provider that can tell a
+    /// mark-read from a content change sends.
+    state_delta: Mutex<Vec<MailStateChange>>,
 }
 
 impl FakeMail {
@@ -95,12 +98,17 @@ impl FakeMail {
             cursor: SyncState::new("cursor-1"),
             faults: Vec::new(),
             delta: Mutex::default(),
+            state_delta: Mutex::default(),
         }
     }
 
-    /// Arms the delta this provider emits after its first (snapshot) pass.
-    fn then_changing(self, messages: Vec<Message>) -> Self {
-        *self.delta.lock().expect("delta mutex poisoned") = messages;
+    /// Arms the keyword-only changes this provider emits after its first (snapshot) pass —
+    /// the shape a mark-read arrives in once the adapter can recognise one.
+    fn then_changing_state(self, changes: Vec<MailStateChange>) -> Self {
+        *self
+            .state_delta
+            .lock()
+            .expect("keyword delta mutex poisoned") = changes;
         self
     }
 
@@ -173,7 +181,14 @@ impl Provider for FakeMail {
             )
         } else {
             let changed = core::mem::take(&mut *self.delta.lock().expect("delta mutex poisoned"));
+            let keywords = core::mem::take(
+                &mut *self
+                    .state_delta
+                    .lock()
+                    .expect("keyword delta mutex poisoned"),
+            );
             EmailChunk::additive(changed, Vec::new(), None, self.cursor.clone())
+                .with_patched(keywords)
         };
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }

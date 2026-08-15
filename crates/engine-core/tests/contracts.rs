@@ -6,7 +6,9 @@ use std::collections::BTreeSet;
 use engine_core::{
     coverage::{LocalCoverage, RemoteCoverage, SearchCoverage, TemporalCoverage},
     error::FailureClass,
-    ids::{AccountId, DavCollectionId, MailboxId, ProviderKey, Uid},
+    ids::{AccountId, DavCollectionId, MailboxId, MessageId, ProviderKey, Uid},
+    mail::Message,
+    membership::Memberships,
     patch::PatchObject,
     scheduling::{
         ImipTrust, ImipUntrusted, InstanceKey, Revision, ScheduleMethod, SchedulingMode,
@@ -62,16 +64,23 @@ fn sync_state_is_opaque() {
     assert_eq!(state, SyncState::new("cursor-123"));
 }
 
+fn message(id: &str) -> Message {
+    Message::new(
+        MessageId::try_from(id).unwrap(),
+        Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
+    )
+}
+
 #[test]
 fn sync_update_delta_and_snapshot() {
-    let delta: SyncUpdate<String> = SyncUpdate::delta(
-        vec!["changed".to_owned()],
+    let delta: SyncUpdate<Message> = SyncUpdate::delta(
+        vec![message("changed")],
         vec![ProviderKey::new("gone").unwrap()],
     );
     assert!(!delta.is_snapshot());
 
     let present: BTreeSet<ProviderKey> = [ProviderKey::new("x").unwrap()].into_iter().collect();
-    let snapshot: SyncUpdate<String> = SyncUpdate::snapshot(vec!["x".to_owned()], present);
+    let snapshot: SyncUpdate<Message> = SyncUpdate::snapshot(vec![message("x")], present);
     assert!(snapshot.is_snapshot());
 }
 

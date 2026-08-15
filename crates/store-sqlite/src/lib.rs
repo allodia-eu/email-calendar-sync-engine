@@ -28,7 +28,6 @@
 //! blob area (`blob.rs`) — never in SQLite — while the extracted body text and its
 //! own lease-free FTS index live in `message_body`/`message_body_fts` (`source_ops.rs`).
 
-mod backfill;
 mod blob;
 mod contact_ops;
 mod contact_store;
@@ -55,14 +54,14 @@ use std::{path::Path, sync::Arc};
 use async_trait::async_trait;
 use engine_core::{
     ids::AccountId,
-    sync::{ObjectKind, SyncScope, SyncState},
+    sync::{ObjectKind, SyncObject, SyncScope, SyncState},
     time::ExpansionWindow,
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{
-    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, Result,
-    StorableObject, Store, SyncApplied, SyncClaim, SyncLease,
+    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, Result, SchemaStatus,
+    Store, SyncApplied, SyncClaim, SyncLease,
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -83,6 +82,9 @@ use crate::{
 /// blocking thread so the async runtime is never blocked.
 pub struct SqliteStore<C> {
     clock: C,
+    /// Where the schema stood after this store was opened, including what opening moved it
+    /// from. Captured at open because that is the only moment the *previous* version exists.
+    schema: SchemaStatus,
     pool: Arc<Pool>,
     /// The content-addressed blob area holding raw message sources beside (or, for
     /// in-memory stores, instead of) the database — large bytes never enter SQLite.
@@ -138,7 +140,7 @@ impl<C: Clock> SqliteStore<C> {
         blobs: BlobArea,
     ) -> Result<Self> {
         pool::tune(&conn, path.is_some())?;
-        migrations::migrate(&mut conn)?;
+        let schema = migrations::migrate(&mut conn)?;
         reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;
         // After the migration, so a reader never sees a schema mid-step.
         let readers = match path {
@@ -147,6 +149,7 @@ impl<C: Clock> SqliteStore<C> {
         };
         Ok(Self {
             clock,
+            schema,
             pool: Arc::new(Pool::new(conn, readers)),
             blobs: Arc::new(blobs),
         })
@@ -392,7 +395,7 @@ impl<C: Clock> Store for SqliteStore<C> {
         batch: ApplyBatch<'_, T>,
     ) -> Result<SyncApplied>
     where
-        T: StorableObject + Serialize + Send + Sync,
+        T: SyncObject + Serialize + Send + Sync,
     {
         let key = scope_key(lease.scope());
         let token = lease.token().get();

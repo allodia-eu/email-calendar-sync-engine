@@ -7,9 +7,11 @@ use engine_core::{
     contact::{AddressBook, ContactCard},
     ids::{AccountId, ContactId},
     people::{PeopleError, rebuild_people},
-    sync::{SyncScope, SyncState, SyncUpdate},
+    sync::{SyncObject, SyncScope, SyncState, SyncUpdate},
 };
-use engine_provider::{ContactSourceSync, ContactUnavailable, ContactsProvider, ProviderError};
+use engine_provider::{
+    ContactSourceSync, ContactUnavailable, ContactsProvider, ProviderError, ScopeSync,
+};
 use engine_store::{
     ApplyBatch, ContactSourceAvailability, ContactStore, DerivedWrite, LeaseRequest, Store,
     SyncApplied, WorkerId,
@@ -292,7 +294,7 @@ impl<P: ContactsProvider> ScopeSyncer for AddressBookScope<'_, P> {
             .map(contact_fetch)
     }
 
-    fn derive(&self, _update: &SyncUpdate<AddressBook>) -> DerivedWrite {
+    fn derive(&self, _sync: &ScopeSync<AddressBook>) -> DerivedWrite {
         DerivedWrite::empty()
     }
 }
@@ -320,14 +322,16 @@ impl<P: ContactsProvider> ScopeSyncer for CardScope<'_, P> {
             .map(contact_fetch)
     }
 
-    fn derive(&self, _update: &SyncUpdate<ContactCard>) -> DerivedWrite {
+    fn derive(&self, _sync: &ScopeSync<ContactCard>) -> DerivedWrite {
         DerivedWrite::empty()
     }
 }
 
 /// Maps a contact source's availability answer onto the shared driver's fetch
 /// outcome: an unavailable source halts instead of applying an empty batch.
-fn contact_fetch<T>(sync: ContactSourceSync<T>) -> ScopeFetch<T, bool, ContactUnavailable> {
+fn contact_fetch<T: SyncObject>(
+    sync: ContactSourceSync<T>,
+) -> ScopeFetch<T, bool, ContactUnavailable> {
     match sync {
         ContactSourceSync::Available {
             sync,

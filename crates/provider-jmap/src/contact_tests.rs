@@ -225,7 +225,7 @@ async fn address_book_snapshot_and_contact_delta_use_contacts_capability() {
     assert_eq!(sync.next_cursor.as_str(), "contacts-2");
     assert!(matches!(
         sync.update,
-        SyncUpdate::Delta { changed, removed }
+        SyncUpdate::Delta { changed, removed, .. }
             if changed.len() == 2 && removed.len() == 1
     ));
 }

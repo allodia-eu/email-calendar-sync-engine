@@ -107,7 +107,10 @@ async fn sync_email_delta_is_additive_and_advances_the_cursor() {
         .unwrap();
     // A delta is additive: changed messages + explicit removals, no present set.
     assert!(!sync.is_snapshot());
-    let SyncUpdate::Delta { changed, removed } = &sync.update else {
+    let SyncUpdate::Delta {
+        changed, removed, ..
+    } = &sync.update
+    else {
         panic!("expected a delta");
     };
     assert_eq!(changed.len(), 2); // message-1 (added) + message-2 (labels)

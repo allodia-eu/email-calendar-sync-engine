@@ -6,6 +6,7 @@ use std::{cmp::Reverse, collections::BTreeSet};
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey, ThreadId},
+    mail::Keyword,
     search_index::MembershipKind,
     sync::SyncScope,
     time::{ExpansionWindow, Horizon},
@@ -19,11 +20,19 @@ use crate::{
     error::Result,
     lease::Clock,
     outbox::PendingOpState,
-    store::{IndexRowCounts, MailListRow, MailSelector, StoreRead},
+    store::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead},
 };
 
 #[async_trait]
 impl<C: Clock> StoreRead for MemStore<C> {
+    async fn schema_status(&self) -> Result<SchemaStatus> {
+        // The reference store keeps its rows in memory and reshapes with the code that reads
+        // them, so it has no persisted schema to be behind: it is current by construction and
+        // never migrates. Reported rather than refused so a host's diagnostics need no special
+        // case for which backend it is talking to.
+        Ok(SchemaStatus::current(0))
+    }
+
     async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>> {
         let inner = self.lock();
         let mut scopes: Vec<SyncScope> = inner
@@ -104,6 +113,7 @@ impl<C: Clock> StoreRead for MemStore<C> {
                 rows.push(MailListRow {
                     account: scope.account().clone(),
                     mailboxes: mailboxes_of(cell, key),
+                    keywords: keywords_of(cell, key),
                     mail: mail.clone(),
                 });
             }
@@ -184,6 +194,16 @@ fn selects(select: MailSelector<'_>, key: &ProviderKey, thread: Option<&ThreadId
 }
 
 /// One message's mailbox membership, out of the junction rows that hold every axis.
+fn keywords_of(cell: &ScopeCell, key: &ProviderKey) -> Vec<Keyword> {
+    cell.memberships
+        .get(key)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.kind == MembershipKind::Keyword)
+        .filter_map(|row| Keyword::new(row.value.as_str()).ok())
+        .collect()
+}
+
 fn mailboxes_of(cell: &ScopeCell, key: &ProviderKey) -> Vec<MailboxId> {
     cell.memberships
         .get(key)

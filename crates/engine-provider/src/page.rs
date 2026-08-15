@@ -6,7 +6,10 @@
 //! continue; the orchestrator commits each page additively for a responsive UI,
 //! reports progress, and persists the cursor only once the pass completes.
 
-use engine_core::{ids::ProviderKey, sync::SyncState};
+use engine_core::{
+    ids::ProviderKey,
+    sync::{SyncObject, SyncState},
+};
 
 /// Whether a sync pass is a full/bounded snapshot or an incremental delta.
 ///
@@ -50,11 +53,17 @@ impl PageToken {
 /// [`next_cursor`](SyncPage::next_cursor) is only meaningful once the last page
 /// applies.
 #[derive(Debug, Clone)]
-pub struct SyncPage<T> {
+pub struct SyncPage<T: SyncObject> {
     /// Whether the whole pass is a snapshot or a delta.
     pub kind: SyncKind,
-    /// Objects created or updated in this page.
+    /// Objects created or updated **in full** in this page.
     pub changed: Vec<T>,
+    /// Objects this page reported a **partial** change for — only the fields the patch names
+    /// moved, so the store writes those columns and leaves the rest, and the normalized
+    /// payload, alone.
+    ///
+    /// Uninhabited for an object with no partial form, so a calendar page cannot carry one.
+    pub patched: Vec<T::Patch>,
     /// Keys removed in this page (delta passes only; empty for a snapshot).
     pub removed: Vec<ProviderKey>,
     /// For a snapshot pass, the complete id set **this page covers**, so the
@@ -73,7 +82,20 @@ pub struct SyncPage<T> {
 
 #[cfg(test)]
 mod tests {
+    use engine_core::{
+        ids::{MailboxId, MessageId},
+        mail::Message,
+        membership::Memberships,
+    };
+
     use super::*;
+
+    fn message(id: &str) -> Message {
+        Message::new(
+            MessageId::try_from(id).unwrap(),
+            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
+        )
+    }
 
     #[test]
     fn page_token_is_opaque() {
@@ -84,9 +106,10 @@ mod tests {
 
     #[test]
     fn a_single_complete_page_has_no_continuation() {
-        let page: SyncPage<String> = SyncPage {
+        let page: SyncPage<Message> = SyncPage {
             kind: SyncKind::Snapshot,
-            changed: vec!["a".to_owned()],
+            changed: vec![message("a")],
+            patched: vec![],
             removed: vec![],
             present: vec![ProviderKey::new("a").unwrap()],
             next_page: None,

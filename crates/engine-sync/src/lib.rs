@@ -36,8 +36,8 @@ use engine_core::{
     ids::{AccountId, MailboxId},
     mail::{Mailbox, Message},
     recipient::RecipientObservation,
-    search_index::project_message,
-    sync::{SyncScope, SyncState, SyncUpdate},
+    search_index::{project_message, project_state_change},
+    sync::{SyncObject, SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{Provider, ProviderError, ScopeSync};
 use engine_store::{
@@ -128,7 +128,7 @@ where
     if !sent.is_empty() {
         recipients::backfill(store, account, &sent).await?;
     }
-    let (email, ()) = run_scope(store, account, &EmailScope(provider, &sent, store), &req)
+    let (email, ()) = run_scope(store, account, &EmailScope(provider, &sent), &req)
         .await?
         .into_applied();
     recipients::record_coverage(
@@ -179,7 +179,7 @@ where
 /// (a CardDAV address book the server stopped serving) rather than failing. The
 /// driver releases the lease and hands the reason back; any bookkeeping that
 /// implies belongs to the caller, not to the shared loop.
-pub(crate) enum ScopeFetch<T, M, H> {
+pub(crate) enum ScopeFetch<T: SyncObject, M, H> {
     /// Apply this batch, carrying `meta` through to the caller.
     Proceed { sync: ScopeSync<T>, meta: M },
     /// Do not apply; return `H` to the caller.
@@ -215,7 +215,7 @@ impl<M> ScopeRun<M, core::convert::Infallible> {
 #[async_trait::async_trait]
 pub(crate) trait ScopeSyncer: Sync {
     /// The normalized object type stored under this scope.
-    type Object: engine_store::StorableObject + serde::Serialize + Send + Sync;
+    type Object: SyncObject + serde::Serialize + Send + Sync;
 
     /// Extra per-fetch information carried through to the caller (contact sync uses
     /// it for "the cursor was rebuilt"). `()` when there is none.
@@ -235,24 +235,11 @@ pub(crate) trait ScopeSyncer: Sync {
         cursor: Option<&SyncState>,
     ) -> Result<ScopeFetch<Self::Object, Self::Meta, Self::Halt>, ProviderError>;
 
-    /// Restores the engine-derived fields the provider could not supply, from what
-    /// the store already holds — before [`derive`](ScopeSyncer::derive) projects the
-    /// update and before it is applied over the stored payload.
+    /// Precomputes the derived (FTS/structured) rows the fetch implies.
     ///
-    /// A no-op for every scope but email, which is the only one whose objects carry
-    /// fields the engine owns (`derived.rs`). The store reaches this through the
-    /// syncer rather than through the driver, so scopes that need nothing restored do
-    /// not have to carry a read handle they never use.
-    async fn restore_derived(
-        &self,
-        _account: &AccountId,
-        _update: &mut SyncUpdate<Self::Object>,
-    ) -> Result<(), SyncError> {
-        Ok(())
-    }
-
-    /// Precomputes the derived (FTS/structured) rows for the changed objects.
-    fn derive(&self, update: &SyncUpdate<Self::Object>) -> DerivedWrite;
+    /// Takes the whole [`ScopeSync`], not just its update: a mail pass also carries
+    /// keyword-only changes, which project to rows without being objects.
+    fn derive(&self, sync: &ScopeSync<Self::Object>) -> DerivedWrite;
 
     /// Recipient observations to write in the *same* transaction as the batch.
     /// Empty for every scope but email.
@@ -297,18 +284,14 @@ where
                 return Err(err.into());
             }
         };
-        let (mut sync, meta) = match fetched {
+        let (sync, meta) = match fetched {
             ScopeFetch::Proceed { sync, meta } => (sync, meta),
             ScopeFetch::Halt(halt) => {
                 store.release_sync_scope(claim.lease).await?;
                 return Ok(ScopeRun::Halted(halt));
             }
         };
-        // Before the projection, so the derived rows describe the restored objects and
-        // not the gaps the provider sent; re-run on a stale-lease reclaim, since the
-        // store may have moved under us.
-        syncer.restore_derived(account, &mut sync.update).await?;
-        let derived = syncer.derive(&sync.update);
+        let derived = syncer.derive(&sync);
         let observations = syncer.observations(account, &sync.update);
         let batch = ApplyBatch::new(&sync.update, &derived, &[], &sync.next_cursor)
             .with_recipient_observations(&observations);
@@ -355,7 +338,7 @@ impl<P: Provider> ScopeSyncer for MailboxScope<'_, P> {
             .map(|sync| ScopeFetch::Proceed { sync, meta: () })
     }
 
-    fn derive(&self, _update: &SyncUpdate<Mailbox>) -> DerivedWrite {
+    fn derive(&self, _sync: &ScopeSync<Mailbox>) -> DerivedWrite {
         // Containers carry no full-text/structured index rows; only their object
         // payload (name, role, hierarchy) is stored.
         DerivedWrite::empty()
@@ -367,10 +350,10 @@ impl<P: Provider> ScopeSyncer for MailboxScope<'_, P> {
 /// Carries the account's Sent mailboxes so the recipient observations they imply are
 /// written in the *same* transaction as the batch — via the shared driver's
 /// `observations` hook rather than a copy of the whole lease loop.
-struct EmailScope<'p, P, S>(&'p P, &'p BTreeSet<MailboxId>, &'p S);
+struct EmailScope<'p, P>(&'p P, &'p BTreeSet<MailboxId>);
 
 #[async_trait::async_trait]
-impl<P: Provider, S: StoreRead> ScopeSyncer for EmailScope<'_, P, S> {
+impl<P: Provider> ScopeSyncer for EmailScope<'_, P> {
     type Halt = core::convert::Infallible;
     type Meta = ();
     type Object = Message;
@@ -390,17 +373,12 @@ impl<P: Provider, S: StoreRead> ScopeSyncer for EmailScope<'_, P, S> {
             .map(|sync| ScopeFetch::Proceed { sync, meta: () })
     }
 
-    async fn restore_derived(
-        &self,
-        account: &AccountId,
-        update: &mut SyncUpdate<Message>,
-    ) -> Result<(), SyncError> {
-        let scope = self.0.email_scope(account);
-        derived::restore(self.2, &scope, changed_objects_mut(update)).await
-    }
-
-    fn derive(&self, update: &SyncUpdate<Message>) -> DerivedWrite {
-        derive_messages(changed_objects(update))
+    fn derive(&self, sync: &ScopeSync<Message>) -> DerivedWrite {
+        let mut derived = derive_messages(changed_objects(&sync.update));
+        for change in sync.update.patched() {
+            derived.push_state_change(project_state_change(change));
+        }
+        derived
     }
 
     fn observations(
@@ -422,19 +400,10 @@ pub(crate) fn derive_messages(messages: &[Message]) -> DerivedWrite {
     derived
 }
 
-/// The created-or-updated objects an update carries, mutably — for the restore pass
-/// that fills their engine-derived fields back in before projection.
-pub(crate) fn changed_objects_mut<T>(update: &mut SyncUpdate<T>) -> &mut [T] {
-    match update {
-        SyncUpdate::Delta { changed, .. } => changed,
-        SyncUpdate::Snapshot { objects, .. } => objects,
-    }
-}
-
 /// The created-or-updated objects an update carries (a delta's `changed` or a
 /// snapshot's `objects`) — what gets projected. Tombstoned/removed keys are the
 /// store's job, not the projection's.
-pub(crate) fn changed_objects<T>(update: &SyncUpdate<T>) -> &[T] {
+pub(crate) fn changed_objects<T: SyncObject>(update: &SyncUpdate<T>) -> &[T] {
     match update {
         SyncUpdate::Delta { changed, .. } => changed,
         SyncUpdate::Snapshot { objects, .. } => objects,
@@ -445,7 +414,6 @@ mod attachment;
 mod body;
 mod calendar;
 mod contact;
-mod derived;
 mod horizon;
 mod observer;
 mod outbox;

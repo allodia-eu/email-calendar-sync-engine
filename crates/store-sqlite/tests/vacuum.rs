@@ -8,11 +8,9 @@ use core::time::Duration;
 
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
+    sync::{JmapDataType, Keyed, NoPatch, SyncObject, SyncScope, SyncState, SyncUpdate},
 };
-use engine_store::{
-    ApplyBatch, DerivedWrite, LeaseRequest, ManualClock, StorableObject, Store, WorkerId,
-};
+use engine_store::{ApplyBatch, DerivedWrite, LeaseRequest, ManualClock, Store, WorkerId};
 use serde::{Deserialize, Serialize};
 use store_sqlite::SqliteStore;
 
@@ -22,10 +20,14 @@ struct TestObject {
     data: String,
 }
 
-impl StorableObject for TestObject {
+impl Keyed for TestObject {
     fn provider_key(&self) -> &ProviderKey {
         &self.key
     }
+}
+
+impl SyncObject for TestObject {
+    type Patch = NoPatch;
 }
 
 /// The database's logical page count, free-page count, and on-disk file size. Read with no

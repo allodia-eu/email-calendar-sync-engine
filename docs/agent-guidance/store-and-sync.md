@@ -215,7 +215,7 @@ the batch; the store does not compute them. This keeps the transaction short
 the atomic set is self-documenting:
 
 ```rust
-pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObject
+pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
     pub update: &'a SyncUpdate<T>,              // provider-normalized objects, raw, membership
     pub derived: &'a DerivedWrite,              // FTS + structured-filter + occurrence rows, pure engine fns
     pub reconcile: &'a [PendingReconciliation],
@@ -249,18 +249,50 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's StorableObje
   duplicate suppression then falls back to presentation-layer dedup
   (consistent with "UI/search dedup is presentation policy, not storage
   identity").
-- **Engine-derived fields are restored before the batch is built.** An apply
-  replaces a message's whole payload with the one the provider sent, and two of
-  its fields are not the provider's to send: `thread` (derived from the reference
-  graph; only JMAP has a server-side equivalent) and `preview` (IMAP has no server
-  snippet). Left alone, marking one message read dropped it out of its
-  conversation until the next derivation pass and blanked its list row. So the
-  sync path refills them from the stored copy first, for exactly the messages that
-  arrived without them (`engine-sync/src/derived.rs`) — a provider that *does*
-  supply a thread stays authoritative. **Any new field the engine derives onto a
-  stored object belongs in that restore**, or the next flag change erases it. This
-  is a stopgap for the whole-payload write: an apply that touches only the columns
-  the provider supplied has nothing to restore.
+- **A change is whole, partial, or a removal.** `SyncUpdate::Delta` carries all three:
+  `changed` (whole objects), `patched` (partials), `removed`. A partial names the fields that
+  moved and nothing else, so the store writes those columns and leaves the rest — including the
+  normalized payload — alone. The partial form is per object type, `SyncObject::Patch`; it is
+  `MailStateChange` for a message and the uninhabited `NoPatch` for everything else, so
+  `Vec<NoPatch>` makes "a calendar pass carries no partials" a fact the compiler checks.
+
+  A key present in both `changed` and `patched` is resolved **in favour of `changed`**, inside
+  `with_patched`: a whole object is strictly more information, and an adapter fetches it after
+  learning of the change, so it is the later word. Gmail's history API produces both for one id
+  in a single page, so this is a real case. Resolving it centrally means no adapter has to
+  remember to and no store has to guess.
+
+  A snapshot has no partials by construction — it is the scope's whole current state.
+
+- **A message is an immutable half and a mutable half, and they are stored apart.** The content
+  never changes once the server holds it — editing a draft mints a *new* provider object on every
+  protocol we speak (a JMAP `Email` is immutable; IMAP does APPEND + EXPUNGE and the UID changes),
+  so that half can be written once and never reconciled. It is `MailContent`, and it is the
+  normalized payload.
+
+  Everything that moves *without* those bytes moving is `MailState`: keywords, a derived thread,
+  and the revision tokens plus `last_modified` that bump when any of it changes. Its home is the
+  `message` row and the `membership` junction. A payload carrying a copy could only ever be a copy
+  that disagrees.
+
+  **Adding a state axis is adding a field to `MailState`**, not a new mechanism — Graph's
+  `categories` is the next one, and it needs that field plus a `membership` kind. A thread is
+  present in the payload only when the **provider** assigned it, because then it is the provider's
+  word; a derived one is the engine's and lives in the row alone.
+
+  This is why a mark-read can no longer destroy anything: there is no second copy to overwrite.
+  It replaces the old carry-forward, which refilled `thread` and `preview` from the stored copy
+  before every apply because the apply was about to replace the whole payload.
+
+  `MailContent` is built by **destructuring** `Message`, so a new field on `Message` stops the
+  conversion compiling until someone decides whether it belongs in the payload or in the row. A
+  silent default is exactly the failure the type exists to prevent.
+
+  Reading is the mirror: a `Message` decoded from a payload alone is incomplete by construction,
+  and `Engine::compose` rebuilds its state from the row and the junction. Every
+  path from storage back to a `Message` goes through it. A provider-assigned thread that came
+  back with the payload is left as it is — relabelling it derived would tell the derivation pass
+  it may re-thread mail the provider threaded.
 - **Idempotent replay.** Re-applying the same batch after a crash is a no-op:
   object writes are upserts keyed by provider key, the cursor advance is
   conditional on the prior state, and a resurrected stale-token worker is
@@ -581,7 +613,7 @@ pub trait Store: Send + Sync {
         batch: ApplyBatch<'_, T>,
     ) -> Result<SyncApplied>
     where
-        T: StorableObject + Serialize + Send + Sync;
+        T: SyncObject + Serialize + Send + Sync;
 
     async fn apply_maintenance(
         &self,
@@ -628,7 +660,8 @@ Supporting types (abbreviated):
 
 - `SyncScope` — enum over `JmapType { account, ty }`, `ImapMailboxList { account }` (the IMAP folder-list container), `ImapMailbox { account, mailbox }`, `DavCollectionList { account }` (the CalDAV/CardDAV collection-list container), `DavCollection { account, collection }`.
 - `SyncLease` / `OpLease` — opaque, store-issued; expose fencing token, bound identity, and expiry.
-- `StorableObject` — the trait domain objects implement so the store keys and persists them mechanically; `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
+- `Keyed` — one accessor (`provider_key`) for anything a sync carries, whole object or partial, so a carrier can key what it holds without knowing which it is.
+- `SyncObject: Keyed` — what a sync pass reports changes to. Names the object's partial form (`Patch`) and how it is persisted (`to_payload`, which mail overrides to write a `MailContent`). `ApplyBatch<'a, T>` and `apply_sync_update` are generic over it.
 - `DerivedWrite` — precomputed FTS rows, structured-filter rows (scalar index rows
   plus the address/participant/membership junctions), and bounded
   `event_occurrence` rows, plus their tombstones; the store writes them, never
@@ -688,3 +721,27 @@ Lock these as failing tests before implementing the store:
   tombstoning. (The store enforces per-scope snapshot tombstoning and keeps
   scopes independent; the cross-scope *apply order* itself is an orchestrator
   invariant, locked in `engine-sync` rather than in the store.)
+
+### A store says where its schema stands
+
+`StoreRead::schema_status` is part of the contract, not one backend's extra: `SchemaStatus`
+carries the version the data is at, the version the build expects, and — when opening upgraded it
+— the version it moved *from*. A future `store-postgres` answers the same question, and a host
+asking it never branches on which backend it is talking to. A backend with no persistent schema
+(the in-memory reference store) reports `version == expected` and never migrates.
+
+`migrated_from` is captured **at open**, because that is the only moment the previous version
+exists; re-reading afterwards would report the current version as though nothing had moved. It is
+`None` for a fresh store as well as an already-current one, so a host that logs the pair says
+nothing on an ordinary launch and prints `7 → 9` exactly when that is the answer to a support
+question. A store found *ahead* of the build is refused at open rather than reported, since
+reading it could misinterpret a shape this build does not know.
+
+### A migration that moves data pins its SQL to its own version
+
+No step needs this today — `Migration` is DDL only — but the rule is why. A step's data move runs
+against the schema **as of that step**, and the live write path moves on, so a backfill must write
+its own SQL rather than borrow `derived_ops`. Sharing the live upsert means a later migration
+silently breaks an earlier one's backfill: adding columns in one step broke the backfill written
+two steps earlier, against a store that had none of them. The migration tests catch it because
+they build each step against the schema as of the step before.
