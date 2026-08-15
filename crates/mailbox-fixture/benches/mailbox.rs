@@ -7,7 +7,8 @@
 //! | `read/first_page` | the message list painting after launch |
 //! | `read/deep_window` | the list a host keeps behind the visible rows |
 //! | `read/thread_expansion` | completing every shown conversation |
-//! | `apply/flag_only` | marking one message read |
+//! | `apply/flag_only` | marking one message read, as a whole object |
+//! | `apply/state_only` | marking one message read, as the state change it is |
 //! | `apply/page` | a page of a sync landing |
 //! | `mixed/read_under_apply` | the list, read while a sync commits |
 //! | `open/cold` | opening the store and painting the first rows |
@@ -30,10 +31,11 @@
 //! ```
 
 use core::time::Duration;
-use std::{cell::Cell, hint::black_box, path::Path, time::Instant};
+use std::{cell::Cell, collections::BTreeSet, hint::black_box, path::Path, time::Instant};
 
 use criterion::{BenchmarkGroup, Criterion, measurement::WallTime};
 use engine_api::{AccountId, Engine, Keyword, Message, SystemKeyword};
+use engine_core::mail::MailStateChange;
 use mailbox_fixture::{Fixture, FixtureSpec, Pass, Recorder, Scale, populate, sync_folder};
 use tokio::runtime::Runtime;
 
@@ -242,6 +244,37 @@ fn applies(
                 .expect("apply a flag-only delta"),
         );
     });
+    // The same user action — one message marked read — as the state change every adapter
+    // emits now. Beside `apply/flag_only` on purpose: that is what the same action cost when
+    // it had to arrive as a whole object, and the pair is the measurement.
+    let key = source[0].id.key().clone();
+    let seen: BTreeSet<Keyword> = [Keyword::system(SystemKeyword::Seen)].into_iter().collect();
+    let state_toggle = Cell::new(false);
+    measure(
+        &mut fast,
+        recorder,
+        "apply/state_only",
+        "state_only",
+        || {
+            state_toggle.set(!state_toggle.get());
+            let keywords = if state_toggle.get() {
+                seen.clone()
+            } else {
+                BTreeSet::new()
+            };
+            black_box(
+                runtime
+                    .block_on(sync_folder(
+                        engine,
+                        spec,
+                        fixture,
+                        folder,
+                        Pass::State(vec![MailStateChange::keywords(key.clone(), keywords)]),
+                    ))
+                    .expect("apply a state-only delta"),
+            );
+        },
+    );
     fast.finish();
 
     let mut slow = group(criterion, "apply_page", SLOW_SAMPLES);
