@@ -121,7 +121,7 @@ pub(crate) fn mailbox_from_list(row: &ListRow, modified_utf7: bool) -> Option<Ma
 /// their `$`-keywords; `\Deleted` and `\Recent` are deliberately **not** keywords
 /// (they belong to IMAP's expunge/session model, per `engine_core::mail::keyword`);
 /// other backslash flags are unmapped; a custom keyword passes through if valid.
-fn flags_to_keywords(flags: &[String]) -> BTreeSet<Keyword> {
+pub(crate) fn flags_to_keywords(flags: &[String]) -> BTreeSet<Keyword> {
     let mut set = BTreeSet::new();
     for flag in flags {
         if let Some(name) = flag.strip_prefix('\\') {

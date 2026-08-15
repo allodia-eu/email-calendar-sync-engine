@@ -212,13 +212,14 @@ impl EmailChunk {
 /// Every returned chunk **holds** the cursor (`advance_to == None`); the caller emits
 /// a final marker chunk carrying the cursor after the last page. Metadata rides on
 /// the **first** sub-chunk so the orchestrator accumulates it exactly once: the
-/// page's `removed` keys and (for `Reconcile`) its `present` ids ride there. `total`
-/// (constant across the pass) rides on every chunk so a determinate progress bar
-/// shows from the first commit.
+/// page's `removed` keys, its `patched` state changes and (for `Reconcile`) its
+/// `present` ids ride there. `total` (constant across the pass) rides on every chunk
+/// so a determinate progress bar shows from the first commit.
 #[must_use]
 pub fn split_page(
     mode: PassMode,
     changed: Vec<Message>,
+    patched: Vec<MailStateChange>,
     removed: Vec<ProviderKey>,
     present: Vec<ProviderKey>,
     total: Option<usize>,
@@ -238,14 +239,16 @@ pub fn split_page(
             },
         };
     if changed.is_empty() {
-        // A page with only removals/present (e.g. an empty-arrivals delta that still
-        // destroyed keys) still needs one chunk to carry them.
-        return if removed.is_empty() && present.is_empty() {
+        // A page with no whole objects still needs one chunk to carry what it does
+        // have — the state changes of a flag-only delta, or the destroyed keys of an
+        // empty-arrivals one. Returning none here would drop them silently.
+        return if patched.is_empty() && removed.is_empty() && present.is_empty() {
             Vec::new()
         } else {
-            vec![make(Vec::new(), removed, present)]
+            vec![make(Vec::new(), removed, present).with_patched(patched)]
         };
     }
+    let mut patched = Some(patched);
     let step = if chunk_size == 0 {
         changed.len()
     } else {
@@ -258,11 +261,14 @@ pub fn split_page(
     while iter.peek().is_some() {
         let batch: Vec<Message> = iter.by_ref().take(step.max(1)).collect();
         // The metadata rides on the first sub-chunk only.
-        chunks.push(make(
-            batch,
-            removed.take().unwrap_or_default(),
-            present.take().unwrap_or_default(),
-        ));
+        chunks.push(
+            make(
+                batch,
+                removed.take().unwrap_or_default(),
+                present.take().unwrap_or_default(),
+            )
+            .with_patched(patched.take().unwrap_or_default()),
+        );
     }
     chunks
 }

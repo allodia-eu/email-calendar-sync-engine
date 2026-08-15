@@ -124,14 +124,24 @@ where
 
     // QRESYNC incremental delta (RFC 7162): an enabled session with a prior
     // HIGHESTMODSEQ baseline reconciles flag changes AND expunges of already-synced
-    // mail in one round trip — not just new arrivals. Without QRESYNC, or on the
-    // first delta after an upgrade (a prior cursor with no modseq), this falls
-    // through to the new-arrivals window below, which still records the fresh modseq
-    // so the *next* delta is incremental.
+    // mail — not just new arrivals. Without QRESYNC, or on the first delta after an
+    // upgrade (a prior cursor with no modseq), this falls through to the new-arrivals
+    // window below, which still records the fresh modseq so the *next* delta is
+    // incremental. `low_bound` is the prior UIDNEXT, which splits the already-synced
+    // mail from the arrivals.
     if let (SyncKind::Delta, true, Some(modseq)) =
         (kind, qresync, prior.and_then(|p| p.highest_modseq))
     {
-        return crate::qresync::delta_page(conn, mailbox, uid_validity, next_cursor, modseq).await;
+        return crate::qresync::delta_page(
+            conn,
+            mailbox,
+            uid_validity,
+            next_cursor,
+            modseq,
+            low_bound,
+            uid_next,
+        )
+        .await;
     }
     let total = match kind {
         SyncKind::Snapshot => Some(usize::try_from(select.exists).unwrap_or(usize::MAX)),

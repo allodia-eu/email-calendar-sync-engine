@@ -22,6 +22,8 @@
 //!
 //! [`ThreadProvenance::ProviderAssigned`]: engine_core::mail::ThreadProvenance::ProviderAssigned
 
+use std::collections::BTreeSet;
+
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
     mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword, ThreadRef},
@@ -122,22 +124,7 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GoogleError> {
         "thread id",
     )?));
 
-    // Gmail models read/star/draft as labels; the engine models them as keywords.
-    if !labels.iter().any(|l| l == "UNREAD") {
-        message
-            .keywords
-            .insert(Keyword::system(SystemKeyword::Seen));
-    }
-    if labels.iter().any(|l| l == "STARRED") {
-        message
-            .keywords
-            .insert(Keyword::system(SystemKeyword::Flagged));
-    }
-    if labels.iter().any(|l| l == "DRAFT") {
-        message
-            .keywords
-            .insert(Keyword::system(SystemKeyword::Draft));
-    }
+    message.keywords = keywords_from_labels(&labels);
 
     message.received_at = internal_date(value)?;
     message.preview = opt_str(value, "snippet").map(snippet);
@@ -162,8 +149,30 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GoogleError> {
     Ok(message)
 }
 
+/// The keywords a label set implies. Gmail models read/star/draft as labels; the engine
+/// models them as keywords.
+///
+/// Shared by the whole-object normalize and the history delta's state changes
+/// ([`crate::fetch`]), so the two cannot disagree about what "read" means. Note `UNREAD`
+/// is *inverted*: its absence is `$seen`, which is why a state change must be built from
+/// the complete label set and never from the labels that changed.
+pub(crate) fn keywords_from_labels(labels: &[String]) -> BTreeSet<Keyword> {
+    let has = |name: &str| labels.iter().any(|l| l == name);
+    let mut keywords = BTreeSet::new();
+    if !has("UNREAD") {
+        keywords.insert(Keyword::system(SystemKeyword::Seen));
+    }
+    if has("STARRED") {
+        keywords.insert(Keyword::system(SystemKeyword::Flagged));
+    }
+    if has("DRAFT") {
+        keywords.insert(Keyword::system(SystemKeyword::Draft));
+    }
+    keywords
+}
+
 /// The `labelIds` array as owned strings (empty when absent).
-fn label_ids(value: &Value) -> Vec<String> {
+pub(crate) fn label_ids(value: &Value) -> Vec<String> {
     value
         .get("labelIds")
         .and_then(Value::as_array)
