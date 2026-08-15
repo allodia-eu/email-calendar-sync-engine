@@ -23,7 +23,7 @@ use engine_core::{
 use engine_provider::Provider;
 use engine_recurrence::Horizon;
 use engine_search::MailQuery;
-use engine_store::{ManualClock, StoreRead, WorkerId};
+use engine_store::{MailSelector, ManualClock, StoreRead, WorkerId};
 use engine_sync::{StreamTuning, SyncCommit, sync_calendar, sync_mail, sync_mail_streamed};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use serde::de::DeserializeOwned;
@@ -144,11 +144,21 @@ async fn full_mail_and_calendar_sync_loop() {
         .collect();
     assert_eq!(dup.len(), 2);
     assert_ne!(dup[0].id, dup[1].id);
-    // The custom keyword survived the full loop.
+    // The custom keyword survived the full loop — read from the message rows, which is
+    // where a keyword lives. The stored payload is the provider's word on the message's
+    // *content* and deliberately carries no keywords at all, so asserting against it
+    // would pass only while the keyword happened not to have moved.
+    let rows = store
+        .list_mail(
+            core::slice::from_ref(&account),
+            MailSelector::Newest,
+            usize::MAX,
+        )
+        .await
+        .unwrap();
     assert!(
-        messages
-            .iter()
-            .any(|m| m.has_keyword(&Keyword::new("harness").unwrap()))
+        rows.iter()
+            .any(|r| r.keywords.contains(&Keyword::new("harness").unwrap()))
     );
 
     // Search end-to-end: the derived FTS rows make the baseline subject findable.

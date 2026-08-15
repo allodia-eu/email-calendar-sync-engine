@@ -21,7 +21,7 @@ use engine_core::{
     sync::{SyncScope, SyncUpdate},
 };
 use engine_provider::{Draft, Provider};
-use engine_store::{ManualClock, StoreRead, WorkerId};
+use engine_store::{MailSelector, ManualClock, StoreRead, WorkerId};
 use engine_sync::{StreamTuning, SyncCommit, submit_mail, sync_mail, sync_mail_streamed};
 use provider_imap::{ImapConfig, ImapProvider};
 use serde::de::DeserializeOwned;
@@ -101,6 +101,26 @@ async fn messages_in(store: &Store, scope: &SyncScope) -> Vec<Message> {
         out.push(load::<Message>(store, scope, &key).await);
     }
     out
+}
+
+/// One message's stored keywords.
+///
+/// A keyword's home is the `message` row and its `keyword` memberships; the stored
+/// payload is the provider's word on the message's *content* and deliberately carries
+/// none of it. Asserting keywords on a payload-decoded [`Message`] passes only while the
+/// keyword happens not to have moved, which is never the interesting case.
+async fn keywords_of(store: &Store, account: &AccountId, key: &ProviderKey) -> Vec<Keyword> {
+    store
+        .list_mail(
+            core::slice::from_ref(account),
+            MailSelector::Keys(core::slice::from_ref(key)),
+            usize::MAX,
+        )
+        .await
+        .unwrap()
+        .pop()
+        .expect("the message has a row")
+        .keywords
 }
 
 /// Discovers the account's folder carrying `role` (its SPECIAL-USE name — Stalwart
@@ -211,8 +231,17 @@ async fn live_imap_sync_loads_the_inbox_seed() {
         .iter()
         .find(|m| m.envelope.subject.as_deref() == Some("Message with flags and a custom keyword"))
         .expect("flagged seed message");
-    assert!(flagged.has_system_keyword(SystemKeyword::Flagged));
-    assert!(flagged.has_keyword(&Keyword::new("harness").unwrap()));
+    let flagged_keywords = keywords_of(&store, &account, flagged.id.key()).await;
+    assert!(
+        flagged_keywords
+            .iter()
+            .any(|k| k.as_system() == Some(SystemKeyword::Flagged))
+    );
+    assert!(
+        flagged_keywords
+            .iter()
+            .any(|k| k == &Keyword::new("harness").unwrap())
+    );
 
     // ---- The IMAP identity contrast: the COPY in Archive is a SEPARATE object. ----
     let archive_provider = connect(&harness, "Archive").await;
@@ -420,7 +449,13 @@ async fn live_imap_saves_a_draft() {
                 .any(|id| id.as_str() == message_id)
         })
         .expect("the saved draft is in Drafts");
-    assert!(saved.is_draft(), "the saved message is flagged \\Draft");
+    assert!(
+        keywords_of(&store, &account, saved.id.key())
+            .await
+            .iter()
+            .any(|k| k.as_system() == Some(SystemKeyword::Draft)),
+        "the saved message is flagged \\Draft"
+    );
 }
 
 // The self-signed harness cert is trusted via `engine_tls`'s test-only

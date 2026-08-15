@@ -18,15 +18,13 @@ use core::time::Duration;
 use std::time::Duration as StdDuration;
 
 use engine_core::{
-    ids::{AccountId, MailboxId, ProviderKey},
-    mail::{Message, SystemKeyword},
-    sync::SyncScope,
+    ids::{AccountId, MailboxId},
+    mail::SystemKeyword,
 };
 use engine_provider::{MailEdit, Provider};
-use engine_store::{ManualClock, StoreRead, WorkerId};
+use engine_store::{MailListRow, MailSelector, ManualClock, StoreRead, WorkerId};
 use engine_sync::sync_mail;
 use provider_imap::{ImapConfig, ImapProvider};
-use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
 use tokio_rustls::{TlsConnector, client::TlsStream};
@@ -63,27 +61,26 @@ async fn connect(
     .expect("connect IMAP")
 }
 
-async fn load<T: DeserializeOwned>(store: &Store, scope: &SyncScope, key: &ProviderKey) -> T {
-    let payload = store
-        .object_payload(scope, key)
+/// The account's stored mail as **rows**, not payloads.
+///
+/// A keyword's home is the `message` row and its `keyword` memberships; the stored
+/// payload is the provider's word on the message's *content* and deliberately carries
+/// none of it. Reading a decoded payload here would assert that a flag never moved and
+/// call it a pass.
+async fn rows_in(store: &Store, account: &AccountId) -> Vec<MailListRow> {
+    store
+        .list_mail(
+            core::slice::from_ref(account),
+            MailSelector::Newest,
+            usize::MAX,
+        )
         .await
         .unwrap()
-        .expect("object present");
-    serde_json::from_value(payload).expect("deserialize stored object")
 }
 
-async fn messages_in(store: &Store, scope: &SyncScope) -> Vec<Message> {
-    let mut out = Vec::new();
-    for key in store.object_keys(scope).await.unwrap() {
-        out.push(load::<Message>(store, scope, &key).await);
-    }
-    out
-}
-
-fn by_subject<'a>(messages: &'a [Message], subject: &str) -> &'a Message {
-    messages
-        .iter()
-        .find(|m| m.envelope.subject.as_deref() == Some(subject))
+fn by_subject<'a>(rows: &'a [MailListRow], subject: &str) -> &'a MailListRow {
+    rows.iter()
+        .find(|r| r.mail.subject.as_deref() == Some(subject))
         .unwrap_or_else(|| panic!("no seeded message with subject {subject:?}"))
 }
 
@@ -116,19 +113,18 @@ async fn live_qresync_delta_reconciles_flag_changes_and_expunges() {
     .await
     .expect("snapshot sync");
 
-    let scope = provider.email_scope(&account);
-    let before = messages_in(&store, &scope).await;
+    let before = rows_in(&store, &account).await;
     assert_eq!(before.len(), 3, "QResync was seeded with three messages");
 
     // Targets by harness-controlled subject (never by server UID).
     let to_flag = by_subject(&before, "Harness baseline message");
     let to_delete = by_subject(&before, "Duplicate Message-ID (copy A)");
     assert!(
-        !to_flag.has_system_keyword(SystemKeyword::Flagged),
+        !to_flag.mail.flags.flagged(),
         "the baseline starts unflagged"
     );
-    let flagged_key = to_flag.id.key().clone();
-    let deleted_key = to_delete.id.key().clone();
+    let flagged_key = to_flag.mail.key.clone();
+    let deleted_key = to_delete.mail.key.clone();
 
     // ---- Mutate on the server: flag one message, permanently expunge another. ----
     provider
@@ -151,7 +147,7 @@ async fn live_qresync_delta_reconciles_flag_changes_and_expunges() {
     .await
     .expect("qresync delta sync");
 
-    let after = messages_in(&store, &scope).await;
+    let after = rows_in(&store, &account).await;
 
     // The expunged copy A is gone — a delta tombstone, which only QRESYNC's VANISHED
     // can deliver without a full re-snapshot.
@@ -161,24 +157,37 @@ async fn live_qresync_delta_reconciles_flag_changes_and_expunges() {
         "the expunged message was tombstoned by the delta"
     );
     assert!(
-        !after.iter().any(|m| m.id.key() == &deleted_key),
+        !after.iter().any(|r| r.mail.key == deleted_key),
         "the expunged message must not linger in the store"
     );
     // The other duplicate (copy B) is untouched.
     assert!(
         after
             .iter()
-            .any(|m| m.envelope.subject.as_deref() == Some("Duplicate Message-ID (copy B)")),
+            .any(|r| r.mail.subject.as_deref() == Some("Duplicate Message-ID (copy B)")),
         "copy B is unaffected"
     );
     // The baseline now carries \Flagged — the delta applied the flag change.
     let reflagged = after
         .iter()
-        .find(|m| m.id.key() == &flagged_key)
+        .find(|r| r.mail.key == flagged_key)
         .expect("the flagged message is still present");
     assert!(
-        reflagged.has_system_keyword(SystemKeyword::Flagged),
+        reflagged.mail.flags.flagged(),
         "the delta applied the server-side flag change"
+    );
+    assert!(
+        reflagged
+            .keywords
+            .iter()
+            .any(|k| k.as_system() == Some(SystemKeyword::Flagged)),
+        "and the keyword membership moved with it"
+    );
+    // The delta reported state only, so the content it never sent is untouched.
+    assert_eq!(
+        reflagged.mail.subject.as_deref(),
+        Some("Harness baseline message"),
+        "a flag change must not rewrite the message"
     );
 }
 
