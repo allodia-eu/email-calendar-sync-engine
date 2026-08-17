@@ -412,9 +412,18 @@ mod tests {
     }
 
     #[test]
-    fn a_payload_from_an_older_build_still_decodes() {
-        // Filing used to ride the payload. A store written before it moved to the junction still
-        // has the key; an unknown field is ignored rather than fatal, so no migration is owed.
+    fn a_key_the_payload_no_longer_writes_is_ignored_rather_than_fatal() {
+        // Filing and keywords used to ride the payload, and a store written by a build that wrote
+        // them still has those keys.
+        //
+        // **Nothing will ever remove them.** A migration is DDL — none has rewritten
+        // `object.payload` and none can — and changing the payload's *shape* moves no schema
+        // version, so opening such a store runs no migration at all. The keys stay until that
+        // message is next re-synced, which nothing forces.
+        //
+        // So the decode has to tolerate them. `deny_unknown_fields` on `StoredContent` would read
+        // as hardening and would instead fail every read of a store an earlier build wrote. That
+        // is what this pins.
         let decoded: StoredContent = serde_json::from_value(serde_json::json!({
             "id": "m1",
             "mailboxes": ["inbox"],
@@ -424,7 +433,7 @@ mod tests {
             "attachments": [],
             "extended": ExtendedProperties::default(),
         }))
-        .expect("a payload from before the split decodes");
+        .expect("a payload carrying keys the current shape omits still decodes");
         assert_eq!(decoded.id.as_str(), "m1");
     }
 
