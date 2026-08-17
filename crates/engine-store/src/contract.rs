@@ -150,6 +150,8 @@ where
     let (store, clock) = make();
     scope_cases::list_mail_by_keys_resolves_named_messages(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::a_resent_object_keeps_the_columns_no_provider_supplies(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::state_change_moves_flags_and_leaves_the_rest(&store, &clock).await;
     scope_cases::state_change_carrying_filing_moves_the_message(&store, &clock).await;
     let (store, clock) = make();

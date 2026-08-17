@@ -20,6 +20,7 @@ pub(super) use self::{
         stale_lease_is_rejected,
     },
     mail::{
+        a_resent_object_keeps_the_columns_no_provider_supplies,
         list_mail_by_keys_resolves_named_messages, list_mail_merges_accounts_into_one_order,
         list_mail_on_threads_gathers_only_the_named_threads,
         list_mail_orders_by_date_and_excludes_tombstones,
