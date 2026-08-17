@@ -21,7 +21,7 @@ Read before relevant work:
 - `docs/agent-guidance/search.md` before touching the query AST/DSL, the search executor, or projection→index rows.
 - `docs/agent-guidance/search-coverage.md` before touching search result completeness or provider-search fallback.
 - `docs/agent-guidance/mime.md` before touching MIME body extraction (`engine-mime`, the `MessageBody` type, or message-body fetch/caching in `engine-provider`/`engine-sync`/`store-sqlite`).
-- `docs/agent-guidance/threading.md` before touching email threading (`Message.thread_id`, the `Thread` model, the derivation pass, or `Engine::derive_mail_threads`).
+- `docs/agent-guidance/threading.md` before touching email threading (`Message.thread_id`, the `Thread` model, the message-id graph, the assignment inside the apply, or `Engine::rebuild_thread_index`).
 - `docs/agent-guidance/calendar-semantics.md` before touching timezone handling, recurrence, or scheduling (iTIP/iMIP).
 - `docs/agent-guidance/stalwart-harness.md` before touching the Stalwart Docker harness, the seed fixtures, or the protocol smoke tests (`docker/stalwart/`, `crates/stalwart-harness`).
 - `docs/agent-guidance/engine-api.md` before touching the host facade (`engine-api`) or the bindings/reference-host seams (UniFFI, C ABI, CLI host).

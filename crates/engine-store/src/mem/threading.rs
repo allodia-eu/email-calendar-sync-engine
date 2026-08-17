@@ -11,7 +11,7 @@
 //! Inbox are distinct objects in distinct scopes and one conversation, so a per-scope pass could
 //! never join them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use engine_core::{
     ids::{AccountId, ProviderKey, ThreadId},
@@ -71,7 +71,7 @@ pub(super) fn assign_threads(
     }
 
     for component in components(&graphed, &by_key) {
-        let ids: Vec<&str> = component
+        let ids: HashSet<&str> = component
             .iter()
             .flat_map(|row| by_key[row.key.as_str()].iter().map(|r| r.msgid.as_str()))
             .collect();
@@ -81,7 +81,7 @@ pub(super) fn assign_threads(
                 member
                     .ids
                     .iter()
-                    .any(|row| ids.contains(&row.msgid.as_str()))
+                    .any(|row| ids.contains(row.msgid.as_str()))
             })
             .filter_map(|member| member.thread.clone())
             .collect();

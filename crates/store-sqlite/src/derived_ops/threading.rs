@@ -31,8 +31,16 @@ use rusqlite::Transaction;
 
 use crate::sql;
 
-/// Replaces one message's `msgid_ref` rows — the same per-object replace the junctions use, so a
-/// re-projection drops ids the message no longer carries and a replay is idempotent.
+/// Replaces the `msgid_ref` rows of every message **named in `rows`** — the per-object replace the
+/// junctions use, so a re-projection drops ids the message no longer carries and a replay is
+/// idempotent.
+///
+/// A message whose projection is *empty* is therefore not cleared, because nothing names it. That
+/// is deliberate rather than overlooked: the empty projection a re-fetch produces is overwhelmingly
+/// an envelope that arrived without headers, not a message that has genuinely lost its ids, and
+/// clearing on it would drop a conversation apart on a bad page. The case it leaves behind — a
+/// message that becomes provider-threaded and keeps stale rows — cannot arise while an account has
+/// one provider, which is the only shape the engine syncs.
 pub(super) fn replace_refs(
     tx: &Transaction<'_>,
     scope_key: &str,
@@ -111,10 +119,15 @@ pub(super) fn assign_threads(
     }
 
     for component in components(&graphed, &by_key) {
-        let ids: Vec<&str> = component
+        // Deduplicated, because every id is bound as its own parameter: a thread's members
+        // repeat each other's ancestors in `References`, so a long conversation landing in one
+        // page reaches the connection's variable limit on the duplicates alone.
+        let mut ids: Vec<&str> = component
             .iter()
             .flat_map(|row| by_key[row.key.as_str()].iter().map(|r| r.msgid.as_str()))
             .collect();
+        ids.sort_unstable();
+        ids.dedup();
         let reached = threads_touching(tx, account, &ids)?;
 
         // The thread is the smallest **owned** id in the merged component: the ids this batch

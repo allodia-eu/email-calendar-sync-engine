@@ -41,6 +41,12 @@ fn seed_two_accounts() -> Connection {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO msgid_ref (scope_key, provider_key, account, msgid, owned)
+             VALUES (?1, ?2, (SELECT account FROM sync_scope WHERE scope_key = ?1), 'm@h', 1)",
+            (scope, key),
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO mail_address (scope_key, provider_key, field, addr)
              VALUES (?1, ?2, 'from', 'x@example.test')",
             (scope, key),
@@ -180,6 +186,52 @@ fn purge_account_drops_every_table_for_the_account() {
     // The FTS5 shadows followed the base-table deletes via their triggers.
     assert_eq!(fts_matches(&conn, "fts_index", "alpha"), 0);
     assert_eq!(fts_matches(&conn, "message_body_fts", "gamma"), 0);
+}
+
+/// Every table the schema keys on a scope or an account is named in one of the two lists.
+///
+/// The two tests above iterate those lists, so they say nothing about a table that is missing
+/// from them — a new derived table is purged by nobody and reads as a pass. This reads the
+/// schema instead: a table with a `scope_key` or `account` column and no entry here keeps the
+/// user's mail after they remove the account.
+#[test]
+fn every_scope_or_account_keyed_table_is_purged() {
+    let conn = seed_two_accounts();
+    // Views, FTS5 shadows and the singleton state tables are not per-account row stores.
+    let exempt = [
+        "sync_scope",
+        "contact_state",
+        "person",
+        "person_email",
+        "person_source",
+        "person_alias",
+    ];
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    for table in tables {
+        if exempt.contains(&table.as_str()) {
+            continue;
+        }
+        let columns: Vec<String> = conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let named = super::SCOPE_TABLES.contains(&table.as_str())
+            || super::ACCOUNT_TABLES.contains(&table.as_str());
+        if columns.iter().any(|c| c == "scope_key") {
+            assert!(named, "{table} is scope-keyed but no purge list names it");
+        } else if columns.iter().any(|c| c == "account") {
+            assert!(named, "{table} is account-keyed but no purge list names it");
+        }
+    }
 }
 
 #[test]
