@@ -20,6 +20,7 @@ const SCOPE_TABLES: &[&str] = &[
     "fts_doc",
     "event_occurrence",
     "message",
+    "msgid_ref",
     "mail_address",
     "membership",
     "event_index",

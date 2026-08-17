@@ -43,7 +43,7 @@
 //! `Message-ID` joins, the component's id changes and every member is re-applied. Hosts
 //! that key list rows on `thread_id` must tolerate that (`threading.md`).
 
-use core::time::Duration;
+use core::{ops::Range, time::Duration};
 use std::collections::{BTreeSet, HashMap};
 
 use engine_core::{
@@ -109,17 +109,22 @@ where
     // The payload alone, deliberately: threading reads the reference graph and the provider's
     // own thread id, both of which are content. The engine's *derived* ids come from the rows
     // below, which is the only place they live.
-    let mut per_scope: Vec<(SyncScope, Vec<StoredContent>)> = Vec::with_capacity(scopes.len());
+    //
+    // One flat buffer with a range per scope, rather than a per-scope `Vec` *and* a copy of every
+    // message in an account-wide one. This is the pass a migration or a repair runs, on a device
+    // that has just updated, so holding a large mailbox's payloads twice is the difference that
+    // matters here — the grouping needs them all at once, and the persist below needs them
+    // grouped, and a range gives both from one copy.
     let mut all: Vec<StoredContent> = Vec::new();
+    let mut per_scope: Vec<(SyncScope, Range<usize>)> = Vec::with_capacity(scopes.len());
     for scope in scopes {
-        let mut messages = Vec::new();
+        let start = all.len();
         for (_key, payload) in store.scope_objects(&scope).await? {
             if let Ok(content) = serde_json::from_value::<StoredContent>(payload) {
-                all.push(content.clone());
-                messages.push(content);
+                all.push(content);
             }
         }
-        per_scope.push((scope, messages));
+        per_scope.push((scope, start..all.len()));
     }
 
     let assignments = derive_thread_assignments(&all);
@@ -138,7 +143,8 @@ where
     // Persist per scope: write the thread id of the messages whose id changed, and nothing
     // else about them, leaving the cursor untouched.
     let mut messages_assigned = 0usize;
-    for (scope, messages) in per_scope {
+    for (scope, range) in per_scope {
+        let messages = &all[range];
         // The graph is rewritten for **every** message, not only the re-keyed ones. A repair is
         // reached for because the index is suspect, and the rows the next incremental assignment
         // reads are half of that index — repairing only what they decided would leave it reading
@@ -150,7 +156,7 @@ where
             })
             .collect();
         let updated: Vec<MailThreadRow> = messages
-            .into_iter()
+            .iter()
             .filter_map(|message| {
                 let thread_id = assignments.get(message.id.key())?;
                 // A provider-threaded message is not in `assignments` at all, so only the

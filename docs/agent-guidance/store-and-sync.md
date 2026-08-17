@@ -35,6 +35,14 @@ mailbox that can tell them apart: `cargo bench -p mailbox-fixture` (`rust.md` â†
   `engine-recurrence` functions *before* the store call; the store writes the
   result. (Occurrence expansion is `engine_recurrence::expand`; text/structured
   projection is `engine_core::search_index`.)
+
+  **One exception, and it is the only one: the derived thread id** (`threading.md`). It is a
+  function of the incoming object *and* of what is already stored across every scope of the
+  account, so it cannot be precomputed: reading the components, releasing, then writing leaves a
+  window in which a concurrent scope of the same account merges into the same component, and the
+  per-scope sync lease cannot fence that. The apply's transaction can. Every backend therefore
+  implements the same incremental rule, and the shared contract suite is what holds them to one
+  answer.
 - `engine-core` stays I/O-free and async-free. Async and I/O live only in store
   implementations and provider crates.
 
