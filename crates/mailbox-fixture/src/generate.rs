@@ -12,7 +12,7 @@
 //! reference graph has the shape a real one does rather than a star.
 //!
 //! Message-ids are minted so a conversation's root owns the lexicographically smallest
-//! one in its component. That is exactly the id `engine_sync::derive_mail_threads`
+//! one in its component. That is exactly the id `engine_sync::rebuild_thread_index`
 //! computes, so the generator stamps [`ThreadRef::derived`] up front and a fixture is
 //! usable without a derivation pass — `tests/fixture.rs` holds the two to each other.
 

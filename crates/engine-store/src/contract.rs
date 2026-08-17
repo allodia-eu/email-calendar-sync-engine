@@ -152,6 +152,12 @@ where
     let (store, clock) = make();
     scope_cases::a_resent_object_keeps_the_columns_no_provider_supplies(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::a_reply_joins_its_original_across_scopes(&store, &clock).await;
+    scope_cases::a_smaller_owned_id_rekeys_every_member(&store, &clock).await;
+    scope_cases::one_page_that_shares_an_id_is_one_thread(&store, &clock).await;
+    scope_cases::a_provider_thread_is_never_joined_or_moved(&store, &clock).await;
+    scope_cases::a_bare_message_threads_alone_and_stays(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::state_change_moves_flags_and_leaves_the_rest(&store, &clock).await;
     scope_cases::state_change_carrying_filing_moves_the_message(&store, &clock).await;
     let (store, clock) = make();

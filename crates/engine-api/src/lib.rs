@@ -133,7 +133,7 @@ pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
     ContactSourceReport, ContactSyncReport, ContactWriteOutcome, EventSyncReport, HorizonExpansion,
     IgnoreCommits, MailEditOutcome, MailSyncReport, PeopleRebuildReport, ProgressSnapshot,
-    StreamTuning, SubmitOutcome, SyncCommit, SyncObserver, ThreadDeriveReport, UnexpandableEvent,
+    StreamTuning, SubmitOutcome, SyncCommit, SyncObserver, ThreadRebuildReport, UnexpandableEvent,
 };
 pub use scheduling::InboundScheduling;
 

@@ -135,7 +135,7 @@ async fn thread_ids_match_what_derivation_computes() {
         .collect();
 
     let report = engine
-        .derive_mail_threads(&account())
+        .rebuild_thread_index(&account())
         .await
         .expect("derive");
     assert_eq!(
