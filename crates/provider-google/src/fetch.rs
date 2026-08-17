@@ -12,11 +12,13 @@
 //! - **Delta** ([`delta_page`], `cursor` `Some`): `users.history.list?startHistoryId=…` returns
 //!   `messagesAdded`/`labelsAdded`/`labelsRemoved` (whose message objects are *partials* — id +
 //!   labelIds only) and `messagesDeleted`. Deleted ids tombstone. A partial's `labelIds` is the
-//!   message's **resulting** label set, so a change that moved only keyword labels is already
-//!   answered by the page and becomes a state change costing no further request; anything else — a
-//!   new arrival, or a move, which in Gmail is a label change like any other — is re-fetched full.
-//!   A `404` (the `startHistoryId` aged out of the window) becomes [`GoogleError::HistoryExpired`]
-//!   → the stream restarts as a snapshot.
+//!   message's **resulting** label set, and in Gmail that set is the whole of a message's mutable
+//!   state — its keywords *and* its filing — so any label change (a mark-read, a star, an archive,
+//!   which in Gmail is a label change like any other) is already answered by the page and becomes a
+//!   state change costing no further request. Only `messagesAdded` is re-fetched full, because
+//!   nothing in a history record carries a subject, a sender or a body. A `404` (the
+//!   `startHistoryId` aged out of the window) becomes [`GoogleError::HistoryExpired`] → the stream
+//!   restarts as a snapshot.
 
 use std::collections::{BTreeMap, BTreeSet};
 

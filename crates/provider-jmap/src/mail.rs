@@ -87,12 +87,6 @@ pub(crate) fn mailbox_from_json(value: &Value) -> Result<Mailbox, JmapError> {
     Ok(mailbox)
 }
 
-/// Normalizes one JMAP `Email` object into a [`Message`].
-///
-/// # Errors
-///
-/// Returns [`JmapError::Protocol`] if `id` is missing, `mailboxIds` is empty
-/// (RFC 8621 §4.1.1 requires at least one), or a keyword/Message-ID is malformed.
 /// The `Email` properties a **state-only** read needs.
 ///
 /// RFC 8621 §4.1 makes `keywords` and `mailboxIds` the only mutable `Email` properties, so these
@@ -134,6 +128,12 @@ pub(crate) fn state_from_json(value: &Value) -> Result<MailStateChange, JmapErro
     ))
 }
 
+/// Normalizes one JMAP `Email` object into a [`Message`].
+///
+/// # Errors
+///
+/// Returns [`JmapError::Protocol`] if `id` is missing, `mailboxIds` is empty
+/// (RFC 8621 §4.1.1 requires at least one), or a keyword/Message-ID is malformed.
 pub(crate) fn message_from_json(value: &Value) -> Result<Message, JmapError> {
     let id_str = req_str(value, "id")?;
 
