@@ -16,9 +16,9 @@ use crate::{
 /// The rows a [`MailStateChange`] rewrites: the `message` row's state columns, and the
 /// message's `keyword`-kind memberships.
 ///
-/// Deliberately not a [`MailRow`](super::MailRow): a state change carries no subject, no sender and no date, so
-/// a whole-row upsert built from one would blank every column the provider did not send. This
-/// names what moved, and a store writes exactly that.
+/// Deliberately not a [`MailRow`](super::MailRow): a state change carries no subject, no sender and
+/// no date, so a whole-row upsert built from one would blank every column the provider did not
+/// send. This names what moved, and a store writes exactly that.
 ///
 /// A new state axis becomes a field here and a `membership` kind beside `keywords` — Graph's
 /// `categories` is the next one — so the store gains an axis without gaining a mechanism.
