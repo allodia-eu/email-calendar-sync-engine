@@ -14,7 +14,7 @@ use engine_provider::{
 };
 use engine_store::{
     ApplyBatch, ContactSourceAvailability, ContactStore, DerivedWrite, LeaseRequest, Store,
-    SyncApplied, WorkerId,
+    StoreRead, SyncApplied, WorkerId,
 };
 
 use crate::{ScopeFetch, ScopeRun, ScopeSyncer, SyncError, run_scope};
@@ -81,7 +81,7 @@ pub async fn sync_address_books<P, S>(
 ) -> Result<ContactSourceReport, SyncError>
 where
     P: ContactsProvider,
-    S: Store + ContactStore,
+    S: Store + StoreRead + ContactStore,
 {
     run_contact_scope(
         store,
@@ -107,7 +107,7 @@ pub async fn sync_contact_cards<P, S>(
 ) -> Result<(ContactSourceReport, PeopleRebuildReport), SyncError>
 where
     P: ContactsProvider,
-    S: Store + ContactStore,
+    S: Store + StoreRead + ContactStore,
 {
     let cards = run_contact_scope(
         store,
@@ -134,7 +134,7 @@ pub async fn sync_contacts<P, S>(
 ) -> Result<ContactSyncReport, SyncError>
 where
     P: ContactsProvider,
-    S: Store + ContactStore,
+    S: Store + StoreRead + ContactStore,
 {
     let request = LeaseRequest::new(worker, ttl);
     let address_books =
@@ -191,7 +191,7 @@ pub async fn reconcile_contact_card<P, S>(
 ) -> Result<ContactReconcileReport, SyncError>
 where
     P: ContactsProvider,
-    S: Store + ContactStore,
+    S: Store + StoreRead + ContactStore,
 {
     let card = provider.fetch_contact(account, contact).await?;
     reconcile_contact_update(
@@ -220,7 +220,7 @@ pub async fn reconcile_contact_deletion<P, S>(
 ) -> Result<ContactReconcileReport, SyncError>
 where
     P: ContactsProvider,
-    S: Store + ContactStore,
+    S: Store + StoreRead + ContactStore,
 {
     reconcile_contact_update(
         provider,
@@ -243,7 +243,7 @@ async fn reconcile_contact_update<P, S>(
 ) -> Result<ContactReconcileReport, SyncError>
 where
     P: ContactsProvider,
-    S: Store + ContactStore,
+    S: Store + StoreRead + ContactStore,
 {
     let scope = provider.contact_scope(account);
     let claim = store
@@ -356,7 +356,7 @@ async fn run_contact_scope<S, Y>(
     request: &LeaseRequest,
 ) -> Result<ContactSourceReport, SyncError>
 where
-    S: Store + ContactStore,
+    S: Store + StoreRead + ContactStore,
     Y: ScopeSyncer<Meta = bool, Halt = ContactUnavailable>,
 {
     let scope = syncer.scope(account);

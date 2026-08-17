@@ -13,6 +13,8 @@
 //! Both drivers are exercised: `sync_mail` (whole scope) and `sync_mail_streamed` (per chunk).
 //! They build their batches in different places, so a fix applied to one is not a fix.
 
+use std::collections::BTreeSet;
+
 use engine_core::{
     ids::ThreadId,
     mail::{Keyword, SystemKeyword, ThreadRef},
@@ -216,5 +218,216 @@ async fn a_repeat_derivation_pass_writes_nothing() {
     assert_eq!(
         second.messages_assigned, 0,
         "nothing moved, so the pass converges instead of rewriting every message"
+    );
+}
+
+/// The draft that lands in Drafts, addressed to someone worth suggesting later.
+fn addressed_draft() -> Message {
+    let mut draft = message("m1", "drafts", "Quarterly report");
+    draft.envelope.to = vec![EmailAddress::named("Friend", "friend@example.test")];
+    draft
+}
+
+/// The state change a send produces on a provider that files in place: the same object, now in
+/// Sent. JMAP's `EmailSubmission/set` moves the draft with `onSuccessUpdateEmail` and Gmail's
+/// `drafts.send` adds `SENT` to the message the draft already had — neither mints a new id, so
+/// this never arrives as a whole object.
+fn moved_to_sent() -> MailStateChange {
+    MailStateChange::new(
+        key("m1"),
+        engine_core::mail::MailState::with_keywords(BTreeSet::new())
+            .filed_in(Memberships::of_one(MailboxId::try_from("sent").unwrap())),
+    )
+}
+
+/// The two mailboxes such a send moves between.
+fn drafts_and_sent() -> Vec<Mailbox> {
+    vec![
+        mailbox("drafts", "Drafts", Some(MailboxRole::Drafts)),
+        mailbox("sent", "Sent", Some(MailboxRole::Sent)),
+    ]
+}
+
+/// A message that **enters Sent through a state change** still yields its recipients.
+///
+/// This is how a message usually becomes sent, not an edge case: the draft is already stored, so
+/// the send reaches the next sync as an `Email/changes` `updated` id or a `labelsAdded` record
+/// for a key we hold — never as a `created`. Reading only the whole objects an update carries
+/// means the address you just wrote to never enters autosuggest.
+///
+/// The change carries filing and keywords, no envelope, so the recipients come from the stored
+/// payload.
+#[tokio::test]
+async fn a_state_change_into_sent_observes_the_recipients_whole_scope() {
+    let provider = FakeMail::new(drafts_and_sent(), vec![addressed_draft()])
+        .then_changing_state(vec![moved_to_sent()]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    sync_mail(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+    assert!(
+        store.recipient_interactions(None).await.unwrap().is_empty(),
+        "a draft is not a sent message, so nothing is observed from it yet"
+    );
+
+    // Second pass: the cursor exists, so the fake emits the move into Sent.
+    sync_mail(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+    let interactions = store.recipient_interactions(None).await.unwrap();
+    assert_eq!(
+        interactions
+            .iter()
+            .map(|item| item.email.as_str())
+            .collect::<Vec<_>>(),
+        vec!["friend@example.test"],
+        "the send is observed from the state change that filed it in Sent"
+    );
+    assert_eq!(interactions[0].sent_count, 1);
+    assert_eq!(interactions[0].name.as_deref(), Some("Friend"));
+}
+
+/// Same claim against the streaming driver, which builds its batch in its own loop.
+#[tokio::test]
+async fn a_state_change_into_sent_observes_the_recipients_streamed() {
+    let provider = FakeMail::new(drafts_and_sent(), vec![addressed_draft()])
+        .then_changing_state(vec![moved_to_sent()]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    for _ in 0..2 {
+        sync_mail_streamed(
+            &provider,
+            &store,
+            &account(),
+            worker(),
+            Duration::from_mins(1),
+            StreamTuning::responsive(),
+            &IgnoreCommits,
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        store
+            .recipient_interactions(None)
+            .await
+            .unwrap()
+            .iter()
+            .map(|item| item.email.as_str())
+            .collect::<Vec<_>>(),
+        vec!["friend@example.test"]
+    );
+}
+
+/// A mark-read on a message sitting in Sent does not observe it a second time.
+///
+/// The observation is keyed by `(account, source message, email)`, so a replay is idempotent —
+/// but a state change that never reaches Sent must not even look, which is what keeps an
+/// ordinary mark-read free of a payload read.
+#[tokio::test]
+async fn a_state_change_that_stays_out_of_sent_observes_nothing() {
+    let provider = FakeMail::new(drafts_and_sent(), vec![addressed_draft()])
+        .then_changing_state(vec![marked_seen()]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    for _ in 0..2 {
+        sync_mail(
+            &provider,
+            &store,
+            &account(),
+            worker(),
+            Duration::from_mins(1),
+        )
+        .await
+        .unwrap();
+    }
+    assert!(
+        store.recipient_interactions(None).await.unwrap().is_empty(),
+        "the message is still in Drafts, so a keyword change says nothing about recipients"
+    );
+}
+
+/// A state change that files the message somewhere that is **not** Sent observes nothing.
+///
+/// The change carries filing here, unlike the mark-read above, so this is the branch that has
+/// to compare it against the account's Sent collections rather than skip on absence. An archive
+/// is the same kind of event as a send on JMAP and Gmail — one object, one new mailbox set — and
+/// reading every filing change as a send would put every correspondent you have ever archived
+/// into autosuggest as someone you wrote to.
+#[tokio::test]
+async fn a_state_change_that_files_the_message_elsewhere_observes_nothing() {
+    let mut mailboxes = drafts_and_sent();
+    mailboxes.push(mailbox("archive", "Archive", Some(MailboxRole::Archive)));
+    let archived = MailStateChange::new(
+        key("m1"),
+        engine_core::mail::MailState::with_keywords(BTreeSet::new())
+            .filed_in(Memberships::of_one(MailboxId::try_from("archive").unwrap())),
+    );
+    let provider =
+        FakeMail::new(mailboxes, vec![addressed_draft()]).then_changing_state(vec![archived]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    for _ in 0..2 {
+        sync_mail(
+            &provider,
+            &store,
+            &account(),
+            worker(),
+            Duration::from_mins(1),
+        )
+        .await
+        .unwrap();
+    }
+    assert!(
+        store.recipient_interactions(None).await.unwrap().is_empty(),
+        "filing a message in Archive is not evidence that anyone was written to"
+    );
+}
+
+/// A state change filing an **unsynced** message in Sent observes nothing, and is not an error.
+///
+/// Gmail's history and JMAP's `Email/changes` are account-global while the sync is windowed, so
+/// a change for mail older than the window is ordinary traffic. There is no stored payload to
+/// read recipients from, and inventing an observation from a key alone would mean a suggestion
+/// with no message behind it. Skipping matches the one-time backfill, which drops a payload
+/// whose row is gone for the same reason.
+#[tokio::test]
+async fn a_state_change_into_sent_for_an_unsynced_message_observes_nothing() {
+    let out_of_window = MailStateChange::new(
+        key("never-synced"),
+        engine_core::mail::MailState::with_keywords(BTreeSet::new())
+            .filed_in(Memberships::of_one(MailboxId::try_from("sent").unwrap())),
+    );
+    let provider = FakeMail::new(drafts_and_sent(), vec![addressed_draft()])
+        .then_changing_state(vec![out_of_window]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    for _ in 0..2 {
+        sync_mail(
+            &provider,
+            &store,
+            &account(),
+            worker(),
+            Duration::from_mins(1),
+        )
+        .await
+        .expect("a change for an unknown key is ordinary traffic, not a failure");
+    }
+    assert!(
+        store.recipient_interactions(None).await.unwrap().is_empty(),
+        "there is no stored message to read recipients from, so nothing is claimed"
     );
 }

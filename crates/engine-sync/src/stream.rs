@@ -230,7 +230,7 @@ where
                 store.release_sync_scope(lease).await?;
                 return Ok(totals.into_applied());
             };
-            let mut chunk = match item {
+            let chunk = match item {
                 Ok(chunk) => chunk,
                 Err(other) => {
                     let _ = store.release_sync_scope(lease).await;
@@ -240,13 +240,19 @@ where
             let count = chunk.changed.len();
             let total = chunk.total;
             let is_reconcile_final = chunk.is_reconcile_final();
-            let patched = core::mem::take(&mut chunk.patched);
             let (update, advance_to) = build_update(chunk, &mut present);
             let mut derived = derive_messages(changed_of(&update));
-            for change in &patched {
+            for change in update.patched() {
                 derived.push_state_change(project_state_change(change));
             }
-            let observations = recipients::observations(account, &update, sent);
+            let observations =
+                match recipients::observations(store, account, &scope, &update, sent).await {
+                    Ok(observations) => observations,
+                    Err(err) => {
+                        let _ = store.release_sync_scope(lease).await;
+                        return Err(err);
+                    }
+                };
             let batch = ApplyBatch::with_cursor(&update, &derived, &[], advance_to.as_ref())
                 .with_recipient_observations(&observations);
             match store.apply_sync_update(&lease, batch).await {
@@ -319,6 +325,13 @@ impl RunningApplied {
 /// - [`PassMode::Reconcile`]: intermediate chunks apply additively and hold the cursor while
 ///   `present` accumulates; the final chunk applies a snapshot against the whole accumulated
 ///   present set (tombstoning) and advances the cursor.
+///
+/// The chunk's state changes go **into the update** rather than beside it, so this driver and
+/// the whole-scope [`drain_email`](engine_provider::stream) reach the same two conclusions from
+/// the same code: a key that also arrived whole drops its patch (the object is the later word),
+/// and a snapshot carries no partials at all, because it is already the scope's whole current
+/// state. Carrying them alongside made the update an incomplete account of the pass — which is
+/// how a message moved into Sent by a state change was invisible to the recipient observations.
 fn build_update(
     chunk: EmailChunk,
     present: &mut BTreeSet<ProviderKey>,
@@ -326,6 +339,7 @@ fn build_update(
     let EmailChunk {
         mode,
         changed,
+        patched,
         removed,
         present: page_present,
         advance_to,
@@ -342,7 +356,7 @@ fn build_update(
             }
         }
     };
-    (update, advance_to)
+    (update.with_patched(patched), advance_to)
 }
 
 /// The upserted objects of an update (a delta's `changed` or a snapshot's `objects`).

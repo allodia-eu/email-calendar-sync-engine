@@ -404,6 +404,16 @@ async fn live_a_label_change_comes_back_as_state_not_a_whole_message() {
         filing.contains(&MailboxId::try_from("INBOX").unwrap()),
         "the self-addressed send is still in the inbox, got {filing:?}"
     );
+    // And `SENT` is in that same set, which is what makes a message *enter* Sent through a
+    // state change on Gmail: `drafts.send` adds the label to the message the draft already
+    // had, so the send arrives as a `labelsAdded` record for a key the store is holding and
+    // never as a `messagesAdded`. The recipient observations read the update's state changes
+    // for exactly this reason (`store-and-sync.md`); without this the address a user just
+    // wrote to would never enter autosuggest.
+    assert!(
+        filing.contains(&MailboxId::try_from("SENT").unwrap()),
+        "a sent message's resulting label set names SENT, got {filing:?}"
+    );
 
     cleanup(&provider, key).await;
 }

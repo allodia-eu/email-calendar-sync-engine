@@ -115,6 +115,20 @@ specifics they implement against the Stalwart fixture. Read it before touching
   correctly; there is no longer a single-page degradation. The orchestrator commits
   intermediate chunks additively (cursor held) and applies the tombstoning snapshot
   only on the final chunk (`store-and-sync.md`).
+- **An `Email/changes` `updated` id is a state change, never a content change.** RFC 8621
+  §4.1 makes `keywords` and `mailboxIds` the *only* mutable `Email` properties — the bytes are
+  immutable, and editing a draft creates a new object — so an id in `updated` cannot be
+  reporting a content change. The adapter resolves those ids with an `Email/get` for
+  `EMAIL_STATE_PROPERTIES` (`id`, `keywords`, `mailboxIds`) and emits a `MailStateChange`;
+  `created` ids are fetched whole. The store then writes the message row and the `membership`
+  junction and leaves the payload alone, so a mark-read cannot destroy a field the change had
+  no way to send.
+
+  Filing is carried (`MailState::mailboxes` is `Some`) because JMAP moves a message **in
+  place**, under a stable id — a keyword-only change would silently lose an archive. It is
+  also how a message becomes *sent*: `EmailSubmission/set` moves the draft with
+  `onSuccessUpdateEmail`, so the send arrives as an `updated` id for a key the store already
+  holds. Both are pinned live (`live_state_delta.rs`, `live_sent_observation.rs`).
 - **Identity + membership.** JMAP identity is the account-global object id. The
   IMAP COPY surfaces in JMAP as **one** object with two `mailboxIds` (multi-
   membership), while the duplicate-`Message-ID` pair stays **two distinct**
