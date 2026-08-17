@@ -22,6 +22,15 @@ use crate::{
 /// The `$select` for a **state-only** read: the mutable half, plus the tokens and
 /// timestamp that move with it. What an etag-less delta entry costs to resolve, instead
 /// of [`MESSAGE_SELECT`](crate::normalize::MESSAGE_SELECT)'s whole message.
+///
+/// `@odata.etag` is deliberately **not** in this list and cannot be: it is an OData
+/// annotation, not a property, and naming it in a `$select` is an error. The live service
+/// returns it on a `$select`ed single-entity `GET` regardless — captured in
+/// `tests/fixtures/mail/message_state.json` and asserted both offline and live, because
+/// the etag is the token an `If-Match` quotes and nothing in the request asks for it.
+/// Should that ever change, the store keeps the stored token rather than blanking it (see
+/// [`RevisionTokens::or`](engine_core::version::RevisionTokens::or)), so the failure is a
+/// stale guard rather than no guard.
 pub(crate) const MESSAGE_STATE_SELECT: &[&str] = &[
     "id",
     "isRead",

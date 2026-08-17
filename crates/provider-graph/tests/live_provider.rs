@@ -386,11 +386,20 @@ async fn live_an_is_read_change_comes_back_as_state_not_a_whole_message() {
         state.state.mailboxes.is_none(),
         "Graph files through identity, so a state change must not claim to move filing"
     );
-    // The change key rides along: a state change replaces the row's revision tokens, and one
-    // that left them empty would blank the value a later conditional write quotes.
+    // Both revision tokens ride along. `changeKey` is asked for by name; `@odata.etag` is an
+    // OData *annotation* and cannot be named in a `$select` at all — so whether the narrow
+    // read answers with one is the service's choice, not ours, and only a live call can say.
+    // It does, today. This assertion is how we find out if it ever stops, because the etag is
+    // the token an `If-Match` quotes and a state change that arrived without one used to blank
+    // the stored value outright.
     assert!(
         state.state.revisions.change_key.is_some(),
         "the narrow $select must return the changeKey"
+    );
+    assert!(
+        state.state.revisions.etag.is_some(),
+        "the narrow $select returns @odata.etag even though it cannot be selected; if this \
+         fails, Graph changed and `message_state.json` needs recapturing"
     );
 
     provider

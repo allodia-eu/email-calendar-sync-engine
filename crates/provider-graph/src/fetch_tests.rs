@@ -1,7 +1,10 @@
 //! Offline tests for the Graph folder/message fetch and paging: the delta's three entry
 //! shapes (full, lightweight partial, removed), the snapshot, and the `$select`/window URLs.
 
-use engine_core::mail::MailboxRole;
+use engine_core::{
+    mail::MailboxRole,
+    version::{ChangeKey, ETag},
+};
 
 use super::*;
 use crate::test_support::{fake_client, folder_routes, json, replay_server};
@@ -11,6 +14,7 @@ const CHANGED: &str = include_str!("../tests/fixtures/mail/messages_delta_change
 const CHANGED_FULL: &str = include_str!("../tests/fixtures/mail/messages_delta_changed_full.json");
 const REMOVED: &str = include_str!("../tests/fixtures/mail/messages_delta_removed.json");
 const DETAIL: &str = include_str!("../tests/fixtures/mail/message_detail.json");
+const STATE: &str = include_str!("../tests/fixtures/mail/message_state.json");
 const LIST_P1: &str = include_str!("../tests/fixtures/mail/messages_list_page1.json");
 const LIST_P2: &str = include_str!("../tests/fixtures/mail/messages_list_page2.json");
 
@@ -112,15 +116,7 @@ async fn a_lightweight_partial_resolves_to_state_and_removed_tombstones() {
         ("delta-token-1", json(CHANGED)),
         (
             "$select=id,isRead,isDraft,flag,lastModifiedDateTime,changeKey",
-            serde_json::json!({
-                "@odata.etag": "W/\"CQAAABYAAAD3\"",
-                "id": "message-3",
-                "isRead": true,
-                "isDraft": false,
-                "flag": { "flagStatus": "notFlagged" },
-                "lastModifiedDateTime": "2026-03-18T10:00:00Z",
-                "changeKey": "CQAAABYAAAD3",
-            }),
+            json(STATE),
         ),
     ]);
     let page = messages_page(&client, &inbox(), Some(&cursor), None, None)
@@ -140,9 +136,22 @@ async fn a_lightweight_partial_resolves_to_state_and_removed_tombstones() {
             .iter()
             .any(|k| k.as_system() == Some(engine_core::mail::SystemKeyword::Seen))
     );
-    // The tokens ride along: a state change replaces the row's, so one that left
-    // them empty would blank the changeKey a later conditional write quotes.
-    assert!(page.patched[0].state.revisions.change_key.is_some());
+    // Both tokens ride along. The narrow `$select` names only `changeKey`, because
+    // `@odata.etag` is an OData *annotation* and cannot be selected — but the live
+    // service returns it anyway, which is what this captured fixture records
+    // (`message_state.json`, Finding 15). Pinned in both directions because the store
+    // writes what arrives: a `None` here used to blank a stored etag, and the etag is
+    // the token an `If-Match` quotes.
+    let revisions = &page.patched[0].state.revisions;
+    assert_eq!(
+        revisions.change_key.as_ref().map(ChangeKey::as_str),
+        Some("CQAAABYAAACwGt3bqyR2Sbk5EX5eSIkhAAAAADM3")
+    );
+    assert_eq!(
+        revisions.etag.as_ref().map(ETag::as_str),
+        Some("W/\"CQAAABYAAACwGt3bqyR2Sbk5EX5eSIkhAAAAADM3\""),
+        "the state-only read answers with the etag too, so the row keeps its guard"
+    );
     assert!(page.patched[0].state.last_modified.is_some());
     assert!(page.present.is_empty()); // a delta carries no present set
     assert!(page.removed.is_empty());
