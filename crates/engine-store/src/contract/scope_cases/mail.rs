@@ -350,3 +350,74 @@ pub(in crate::contract) async fn list_mail_by_keys_resolves_named_messages<S: St
             .is_empty()
     );
 }
+
+/// A whole-object upsert keeps the two columns no provider supplies: the derived `thread_id` and
+/// the body sync's `preview`.
+///
+/// An IMAP-shaped provider assigns no thread ids and has no server snippet, so every object it
+/// re-sends carries `None` for both — which means "nothing to say", not "clear it". Overwriting
+/// dropped the message out of its conversation and lost its snippet until the next derivation
+/// pass, and a resync re-sends every message, so that is the list a user is looking at.
+pub(in crate::contract) async fn a_resent_object_keeps_the_columns_no_provider_supplies<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-resend");
+    let thread = ThreadId::try_from("root@example.com").unwrap();
+
+    // Stored: a message the engine threaded and the body sync gave a snippet.
+    let mut seeded = row("m1", Some("2026-01-03T00:00:00Z"), Some(&thread));
+    seeded.preview = Some("The numbers you asked for are attached.".to_owned());
+    seeded.subject = Some("Quarterly report".to_owned());
+    seed(store, &account, "inbox", "rs-1", vec![seeded]).await;
+
+    // The provider re-sends the same message, as it does on any resync: same content, and
+    // silence on the two fields it never had.
+    let mut resent = row("m1", Some("2026-01-03T00:00:00Z"), None);
+    resent.subject = Some("Quarterly report".to_owned());
+    assert!(resent.thread_id.is_none() && resent.preview.is_none());
+    seed(store, &account, "inbox", "rs-2", vec![resent]).await;
+
+    let rows = store
+        .list_mail(
+            core::slice::from_ref(&account),
+            MailSelector::Newest,
+            usize::MAX,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].mail.thread_id.as_ref(),
+        Some(&thread),
+        "the derived thread survives, so the row does not fall out of its conversation"
+    );
+    assert_eq!(
+        rows[0].mail.preview.as_deref(),
+        Some("The numbers you asked for are attached."),
+        "the snippet the body sync computed survives"
+    );
+
+    // A provider that *does* assign a thread still re-threads: `Some` is authoritative.
+    let rethreaded = ThreadId::try_from("T-provider").unwrap();
+    let mut moved = row("m1", Some("2026-01-03T00:00:00Z"), Some(&rethreaded));
+    moved.preview = Some("A newer snippet.".to_owned());
+    seed(store, &account, "inbox", "rs-3", vec![moved]).await;
+
+    let rows = store
+        .list_mail(
+            core::slice::from_ref(&account),
+            MailSelector::Newest,
+            usize::MAX,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rows[0].mail.thread_id.as_ref(),
+        Some(&rethreaded),
+        "a provider that sends a thread id decides the thread"
+    );
+    assert_eq!(rows[0].mail.preview.as_deref(), Some("A newer snippet."));
+}

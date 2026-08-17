@@ -163,7 +163,17 @@ impl ScopeCell {
                 .push(occ.clone());
         }
         for row in &derived.messages {
-            self.messages.insert(row.key.clone(), row.clone());
+            let mut row = row.clone();
+            // `thread_id` and `preview` are the two columns no provider supplies: the first is
+            // engine-derived wherever the provider assigns no thread ids, the second computed by
+            // the body sync wherever there is no server snippet. `None` from a whole object means
+            // "nothing to say", so what is stored is kept rather than blanked (matches
+            // `store-sqlite`'s `COALESCE`).
+            if let Some(existing) = self.messages.get(&row.key) {
+                row.thread_id = row.thread_id.or_else(|| existing.thread_id.clone());
+                row.preview = row.preview.or_else(|| existing.preview.clone());
+            }
+            self.messages.insert(row.key.clone(), row);
         }
         for row in &derived.state_changes {
             // An update, not an insert: a keyword change carries no subject, sender or date,

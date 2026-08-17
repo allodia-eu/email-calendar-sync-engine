@@ -20,6 +20,15 @@ use crate::{convert, sql};
 ///
 /// The provider sent the object, so it is authoritative about the content columns *and* the state
 /// ones. A state-only change writes the narrower [`apply_state_change`] instead.
+///
+/// **Two columns are `COALESCE`d, because no provider can supply them.** `thread_id` is
+/// engine-derived for any provider that assigns no thread ids of its own, and `preview` is
+/// computed by the body sync for any provider with no server snippet — IMAP is both. A whole
+/// object from such a provider carries `None` for each, which means "nothing to say", not "clear
+/// it". Overwriting turned every re-fetch of a stored message into an un-grouping: the message
+/// dropped out of its conversation and lost its snippet until the next derivation pass, which is
+/// the row a user is looking at while a resync lands. A provider that *does* assign them sends
+/// them on every object, so `excluded` wins there and a re-thread still lands.
 pub(crate) fn upsert_message(
     tx: &Transaction<'_>,
     scope_key: &str,
@@ -34,7 +43,7 @@ pub(crate) fn upsert_message(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(scope_key, provider_key) DO UPDATE SET
              account = excluded.account,
-             thread_id = excluded.thread_id,
+             thread_id = COALESCE(excluded.thread_id, message.thread_id),
              message_id = excluded.message_id,
              date_utc = excluded.date_utc,
              flags = excluded.flags,
@@ -42,7 +51,7 @@ pub(crate) fn upsert_message(
              from_name = excluded.from_name,
              from_addr = excluded.from_addr,
              subject = excluded.subject,
-             preview = excluded.preview,
+             preview = COALESCE(excluded.preview, message.preview),
              last_modified = excluded.last_modified,
              etag = excluded.etag,
              change_key = excluded.change_key,
