@@ -47,6 +47,7 @@ mod http_transport;
 mod json;
 mod mutate;
 mod normalize;
+mod normalize_state;
 mod principal;
 mod provider;
 mod submit;

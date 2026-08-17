@@ -11,13 +11,20 @@
 //!   mid-snapshot are simply re-reported by the first delta — idempotent).
 //! - **Delta** ([`delta_page`], `cursor` `Some`): `users.history.list?startHistoryId=…` returns
 //!   `messagesAdded`/`labelsAdded`/`labelsRemoved` (whose message objects are *partials* — id +
-//!   labelIds only) and `messagesDeleted`. Every touched-but-present id is **re-fetched** full (the
-//!   engine applies whole objects); deleted ids tombstone. A `404` (the `startHistoryId` aged out
-//!   of the window) becomes [`GoogleError::HistoryExpired`] → the stream restarts as a snapshot.
+//!   labelIds only) and `messagesDeleted`. Deleted ids tombstone. A partial's `labelIds` is the
+//!   message's **resulting** label set, and in Gmail that set is the whole of a message's mutable
+//!   state — its keywords *and* its filing — so any label change (a mark-read, a star, an archive,
+//!   which in Gmail is a label change like any other) is already answered by the page and becomes a
+//!   state change costing no further request. Only `messagesAdded` is re-fetched full, because
+//!   nothing in a history record carries a subject, a sender or a body. A `404` (the
+//!   `startHistoryId` aged out of the window) becomes [`GoogleError::HistoryExpired`] → the stream
+//!   restarts as a snapshot.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use engine_core::{
     ids::ProviderKey,
-    mail::{Mailbox, Message},
+    mail::{MailState, MailStateChange, Mailbox, Message},
     raw::RawMime,
     sync::SyncState,
     time::CalendarDate,
@@ -29,7 +36,10 @@ use crate::{
     base64url,
     error::GoogleError,
     json::{opt_str, req_str},
-    normalize::{METADATA_HEADERS, all_mail_mailbox, label_from_json, message_from_json},
+    normalize::{
+        METADATA_HEADERS, all_mail_mailbox, keywords_from_labels, label_from_json, memberships_of,
+        message_from_json,
+    },
     transport::{GoogleClient, encode_query_value},
 };
 
@@ -150,8 +160,9 @@ pub(crate) async fn snapshot_page(
     })
 }
 
-/// Fetches one history-delta page from `cursor` (a `historyId`): re-fetches each changed
-/// message and tombstones each deleted one. A `404` (aged-out cursor) becomes
+/// Fetches one history-delta page from `cursor` (a `historyId`): re-fetches each message
+/// whose content this page could not already know, turns the label-only changes into
+/// state changes, and tombstones each deleted one. A `404` (aged-out cursor) becomes
 /// [`GoogleError::HistoryExpired`].
 pub(crate) async fn delta_page(
     client: &GoogleClient,
@@ -168,9 +179,9 @@ pub(crate) async fn delta_page(
         Err(other) => return Err(other),
     };
 
-    let (changed_ids, removed) = collect_history(&doc)?;
+    let history = collect_history(&doc)?;
     let mut changed = Vec::new();
-    for id in changed_ids {
+    for id in history.refetch {
         match get_message(client, &id).await {
             Ok(message) => changed.push(message),
             // Changed then deleted in the same window → skip (a tombstone covers it).
@@ -185,8 +196,8 @@ pub(crate) async fn delta_page(
     Ok(SyncPage {
         kind: SyncKind::Delta,
         changed,
-        patched: Vec::new(),
-        removed,
+        patched: history.patched,
+        removed: history.removed,
         present: Vec::new(),
         next_page: opt_str(&doc, "nextPageToken").map(PageToken::new),
         next_cursor,
@@ -194,49 +205,137 @@ pub(crate) async fn delta_page(
     })
 }
 
-/// Collects a history page's changed message ids (present, to re-fetch as full objects)
-/// and removed keys (tombstones). A message added-then-deleted in the same window is
-/// only tombstoned. The changed ids stay as strings — they address the re-fetch `get`.
-fn collect_history(doc: &Value) -> Result<(Vec<String>, Vec<ProviderKey>), GoogleError> {
-    let mut removed_keys = Vec::new();
-    let mut removed_ids = std::collections::BTreeSet::new();
-    let mut changed = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
+/// What one history page asks of the adapter.
+struct HistoryPage {
+    /// Ids whose whole object must be re-fetched — a new arrival, or a message whose
+    /// *filing* moved. Strings, because they address the re-fetch `get`.
+    refetch: Vec<String>,
+    /// Label-only changes, which the page has already answered in full.
+    patched: Vec<MailStateChange>,
+    /// Tombstones.
+    removed: Vec<ProviderKey>,
+}
 
+/// Sorts a history page into the three.
+///
+/// A `labelsAdded`/`labelsRemoved` record carries the message's **resulting** `labelIds` in
+/// full, and in Gmail that set is the whole of a message's mutable state: labels are both its
+/// keywords (`UNREAD`, `STARRED`) and its filing (`INBOX`, and every folder-like label). So any
+/// label change — a mark-read, a star, an archive — is answered by the page itself, with no
+/// further request. Only `messagesAdded` needs a fetch, because nothing here carries a subject,
+/// a sender or a body.
+///
+/// A message added-then-deleted in the same window is only tombstoned.
+fn collect_history(doc: &Value) -> Result<HistoryPage, GoogleError> {
     let records = doc.get("history").and_then(Value::as_array);
-    // First pass: deletions win, so gather them before deciding what to re-fetch.
+
+    // Deletions win, so gather them before deciding anything else.
+    let mut removed = Vec::new();
+    let mut deleted = BTreeSet::new();
     for record in records.into_iter().flatten() {
         for id in message_ids(record, "messagesDeleted") {
-            if removed_ids.insert(id.clone()) {
-                removed_keys.push(
+            if deleted.insert(id.clone()) {
+                removed.push(
                     ProviderKey::new(&id)
                         .map_err(|e| GoogleError::protocol(format!("bad deleted id: {e}")))?,
                 );
             }
         }
     }
+
+    let mut order: Vec<String> = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut whole: BTreeSet<String> = BTreeSet::new();
+    let mut resulting: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
     for record in records.into_iter().flatten() {
         for group in ["messagesAdded", "labelsAdded", "labelsRemoved"] {
-            for id in message_ids(record, group) {
-                if !removed_ids.contains(&id) && seen.insert(id.clone()) {
-                    changed.push(id);
+            for entry in group_entries(record, group) {
+                let Some(id) = entry.get("message").and_then(|m| opt_str(m, "id")) else {
+                    continue;
+                };
+                let id = id.to_owned();
+                if deleted.contains(&id) {
+                    continue;
                 }
+                if seen.insert(id.clone()) {
+                    order.push(id.clone());
+                }
+                if group == "messagesAdded" {
+                    // New to us: nothing here carries a subject, sender or body.
+                    whole.insert(id);
+                    continue;
+                }
+                // The set the change left behind. Absent means the page cannot answer the
+                // change on its own.
+                let Some(result) = resulting_labels(entry) else {
+                    whole.insert(id);
+                    continue;
+                };
+                // Records arrive in ascending historyId order, so a later one is the
+                // more recent word on the same message.
+                resulting.insert(id, result);
             }
         }
     }
-    Ok((changed, removed_keys))
+
+    let mut page = HistoryPage {
+        refetch: Vec::new(),
+        patched: Vec::new(),
+        removed,
+    };
+    for id in order {
+        match resulting.get(&id) {
+            Some(labels) if !whole.contains(&id) => {
+                let key = ProviderKey::new(&id)
+                    .map_err(|e| GoogleError::protocol(format!("bad changed id: {e}")))?;
+                let state = MailState::with_keywords(keywords_from_labels(labels))
+                    .filed_in(memberships_of(labels)?);
+                page.patched.push(MailStateChange::new(key, state));
+            }
+            _ => page.refetch.push(id),
+        }
+    }
+    Ok(page)
 }
 
-/// The `message.id`s inside a history record's `group` array (e.g. `messagesAdded`).
-fn message_ids(record: &Value, group: &str) -> Vec<String> {
+/// The entries of a history record's `group` array (e.g. `messagesAdded`).
+fn group_entries<'a>(record: &'a Value, group: &str) -> impl Iterator<Item = &'a Value> {
     record
         .get(group)
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+}
+
+/// The `message.id`s inside a history record's `group` array.
+fn message_ids(record: &Value, group: &str) -> Vec<String> {
+    group_entries(record, group)
         .filter_map(|entry| entry.get("message").and_then(|m| opt_str(m, "id")))
         .map(str::to_owned)
         .collect()
+}
+
+/// The resulting label set carried on the entry's `message`.
+///
+/// `None` when the field is **absent**, which is not the same as empty: an empty set is a
+/// read, archived, unstarred message, and [`keywords_from_labels`] reads the absence of
+/// `UNREAD` as `$seen`. Treating a missing field as empty would mark unread mail read.
+fn resulting_labels(entry: &Value) -> Option<Vec<String>> {
+    string_array(entry.get("message").and_then(|m| m.get("labelIds")))
+}
+
+/// A JSON array of strings as owned values; `None` when the field is absent or not an
+/// array.
+fn string_array(value: Option<&Value>) -> Option<Vec<String>> {
+    Some(
+        value?
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// The `messages.list` URL: a continuation `pageToken`, else the first page, optionally

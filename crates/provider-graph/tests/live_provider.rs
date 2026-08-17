@@ -16,17 +16,12 @@
 use std::collections::BTreeSet;
 
 use engine_core::{
-    calendar::Event,
-    ids::{AccountId, CalendarId, MailboxId, MessageIdHeader, Uid},
+    ids::{AccountId, MailboxId, MessageIdHeader},
     mail::{EmailAddress, MailboxRole, Message, SystemKeyword},
-    membership::Memberships,
     sync::SyncUpdate,
-    time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId},
 };
-use engine_provider::{
-    Draft, EventDeletion, EventDraft, EventEdit, EventPatch, MailEdit, PatchTarget, Provider,
-};
-use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient, GraphProvider};
+use engine_provider::{Draft, MailEdit, Provider};
+use provider_graph::{GraphClient, GraphProvider};
 
 fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
@@ -178,6 +173,13 @@ async fn live_send_preserves_message_id_end_to_end() {
 /// Sends a unique self-addressed message and polls the inbox until it appears, returning
 /// the synced [`Message`] (with its immutable-id provider key). Panics if it never lands.
 async fn send_and_await_inbox(provider: &GraphProvider, message_id: &MessageIdHeader) -> Message {
+    // One `sendMail` at a time. Two in flight for the same mailbox get throttled, and the loser
+    // fails the *send* rather than the thing its test is about — a failure that moves to
+    // whichever test lost the race. The lock covers the send only: waiting for delivery is not
+    // what Graph throttles, and holding it through the poll would serialize the whole suite
+    // behind one mailbox's delivery latency.
+    static SENDING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     let me = EmailAddress::new(SELF_ADDRESS);
     let draft = Draft::new(
         message_id.clone(),
@@ -186,12 +188,18 @@ async fn send_and_await_inbox(provider: &GraphProvider, message_id: &MessageIdHe
         "provider-graph write probe",
         "Sent by the provider-graph live write test; safe to delete.",
     );
-    provider
-        .submit_email(&account(), &draft)
-        .await
-        .expect("submit_email");
+    {
+        let _one_at_a_time = SENDING.lock().await;
+        provider
+            .submit_email(&account(), &draft)
+            .await
+            .expect("submit_email");
+    }
 
-    for _ in 0..15 {
+    // Outlook's own delivery of a self-addressed message is what is being waited on, and it is
+    // occasionally slow — a minute of headroom, because failing here says nothing about the
+    // adapter.
+    for _ in 0..30 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let snapshot = provider.sync_email(&account(), None).await.expect("resync");
         let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {
@@ -306,163 +314,96 @@ async fn archive_folder_id(provider: &GraphProvider) -> MailboxId {
         .id
 }
 
-// ---------------------------------------------------------------------------
-// Calendar (gated live)
-// ---------------------------------------------------------------------------
-
-fn calendar_window() -> CalendarWindow {
-    CalendarWindow::new(
-        CalendarDate::new(2026, 8, 1).unwrap(),
-        CalendarDate::new(2026, 11, 1).unwrap(),
-    )
-}
-
-fn amsterdam() -> TimeZoneId {
-    TimeZoneId::iana("Europe/Amsterdam").unwrap()
-}
-
-/// A calendar provider bound to `calendar`, reading times in Europe/Amsterdam.
-fn calendar_provider(token: &str, calendar: CalendarId) -> GraphCalendarProvider {
-    let client =
-        GraphClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client");
-    GraphCalendarProvider::new(client, calendar, calendar_window(), amsterdam())
-}
-
-fn zoned(local: &str) -> CalendarDateTime {
-    CalendarDateTime::Zoned {
-        local: local.parse::<LocalDateTime>().unwrap(),
-        zone: amsterdam(),
-    }
-}
-
-/// A minimal event carrying the identity + revision a write receipt reports, so a
-/// follow-up patch/delete can guard on the ETag the create/patch returned.
-fn base_from(
-    receipt_event: &CalendarId,
-    id: &str,
-    uid: &Uid,
-    revisions: engine_core::version::RevisionTokens,
-) -> Event {
-    let mut event = Event::new(
-        engine_core::ids::EventId::try_from(id).unwrap(),
-        uid.clone(),
-        Memberships::of_one(receipt_event.clone()),
-        zoned("2026-09-01T10:00:00"),
-    );
-    event.revisions = revisions;
-    event
-}
-
 #[tokio::test]
-async fn live_calendar_lists_syncs_and_writes() {
+async fn live_an_is_read_change_comes_back_as_state_not_a_whole_message() {
+    // Graph's delta returns a *full* object for most edits, and an etag-less **partial** for a
+    // lightweight property change — notably `isRead`. That partial is a state change: the
+    // adapter resolves it through a narrow `$select` rather than re-fetching the whole message,
+    // so a mark-read never rewrites the stored payload.
+    //
+    // Only a live call proves which shape Graph actually sends. The documentation says changed
+    // entries are full objects; the etag-less partial is behaviour observed against the real
+    // service, and the offline fakes answer canned bytes whatever we send.
     let Some(token) = token() else {
-        eprintln!("skipping live_calendar_lists_syncs_and_writes: GRAPH_ACCESS_TOKEN unset");
+        eprintln!("skipping live_an_is_read_change_...: GRAPH_ACCESS_TOKEN unset");
         return;
     };
+    let provider = provider(token);
 
-    // List calendars and find the default (the binding used for events + writes).
-    let placeholder = CalendarId::try_from("placeholder").unwrap();
-    let calendars = calendar_provider(&token, placeholder)
-        .sync_calendars(&account(), None)
-        .await
-        .expect("sync calendars");
-    let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
-        panic!("expected a calendar snapshot");
-    };
-    let default = objects
-        .iter()
-        .find(|c| c.is_default)
-        .expect("a default calendar");
-    let calendar_id = default.id.clone();
-
-    let provider = calendar_provider(&token, calendar_id.clone());
-
-    // A snapshot of the calendar's events: masters + singles, each zoned in the display
-    // zone (proving the Prefer: outlook.timezone request), recurrence mapped for a series.
-    let events = provider
-        .sync_events(&account(), None)
-        .await
-        .expect("sync events");
-    assert!(events.is_snapshot());
-    let SyncUpdate::Snapshot { objects, .. } = &events.update else {
-        panic!("expected an event snapshot");
-    };
-    assert!(
-        objects.iter().all(|e| matches!(
-            e.start,
-            CalendarDateTime::Zoned { .. } | CalendarDateTime::Date(_)
-        )),
-        "every event is zoned or all-day (never a bare UTC instant)"
-    );
-    // A delta from the fresh cursor is a delta, not a snapshot.
-    let delta = provider
-        .sync_events(&account(), Some(&events.next_cursor))
-        .await
-        .expect("delta");
-    assert!(!delta.is_snapshot());
-
-    // Create → patch → delete a throwaway event, guarding each write on the returned ETag.
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let uid = Uid::new(format!("live-cal-{unique}@allodia-e2e.test")).unwrap();
-    let draft = EventDraft::new(
-        calendar_id.clone(),
-        uid.clone(),
-        "provider-graph live write probe",
-        zoned("2026-09-15T10:00:00"),
-        zoned("2026-09-15T10:30:00"),
-        "2026-07-18T10:00:00Z".parse().unwrap(),
-    )
-    .location("Room Z")
-    .description("safe to delete");
+    let message_id =
+        MessageIdHeader::new(format!("graph-state-{unique}@allodia-e2e.test")).unwrap();
+    let message = send_and_await_inbox(&provider, &message_id).await;
+    let key = message.id.key().clone();
 
-    let created = provider
-        .create_event(&account(), &draft)
+    // Take the cursor *after* the arrival, so the delta below carries the `isRead` change and
+    // not the delivery — a newly arrived message is a full entry and is applied whole.
+    let cursor = provider
+        .sync_email(&account(), None)
         .await
-        .expect("create_event");
-    assert!(
-        created.revisions.etag.is_some(),
-        "Graph returns an ETag on create"
-    );
+        .expect("snapshot")
+        .next_cursor;
 
-    // Rename it (a whole-series patch), guarded by the create's ETag.
-    let base = base_from(
-        &calendar_id,
-        created.event.as_str(),
-        &created.uid,
-        created.revisions.clone(),
-    );
-    let edit = EventEdit::new(
-        &base,
-        PatchTarget::Series,
-        EventPatch::new("2026-07-18T10:05:00Z".parse().unwrap())
-            .summary("live write probe (renamed)"),
-    );
-    let patched = provider
-        .patch_event(&account(), &base, &edit)
-        .await
-        .expect("patch_event");
-    assert!(patched.revisions.etag.is_some());
-    assert_ne!(
-        patched.revisions.etag, created.revisions.etag,
-        "a patch advances the ETag"
-    );
-
-    // Delete it, guarded by the patch's ETag.
-    let base = base_from(
-        &calendar_id,
-        patched.event.as_str(),
-        &patched.uid,
-        patched.revisions.clone(),
-    );
     provider
-        .delete_event(&account(), &EventDeletion::of(&base))
+        .edit_mail(&account(), &MailEdit::mark_seen(key.clone(), true))
         .await
-        .expect("delete_event");
-    // (A repeat delete of the just-deleted event is NOT retried here: Graph answers a
-    // re-delete with `400 ErrorInvalidRequest` — the item has moved to Deleted Items — not
-    // the clean `404` the idempotent path keys on. The 404 idempotency is offline-tested;
-    // the outbox's NeedsConfirmation path covers the genuinely-ambiguous retry.)
+        .expect("mark read");
+
+    let delta = provider
+        .sync_email(&account(), Some(&cursor))
+        .await
+        .expect("delta after the isRead change");
+    let SyncUpdate::Delta {
+        changed, patched, ..
+    } = &delta.update
+    else {
+        panic!("expected a delta");
+    };
+
+    assert!(
+        !changed.iter().any(|m| m.id.key() == &key),
+        "an isRead change is not a whole object: it would rewrite the stored payload"
+    );
+    let state = patched
+        .iter()
+        .find(|c| c.key == key)
+        .expect("the isRead change came back as a state change");
+    assert!(
+        state
+            .state
+            .keywords
+            .iter()
+            .any(|k| k.as_system() == Some(SystemKeyword::Seen)),
+        "and it carries the resulting keywords, got {:?}",
+        state.state.keywords
+    );
+    // Graph mail is single-folder and a move mints a new id, so filing is never mutable state
+    // here — the change says nothing about it, and the store leaves those rows alone.
+    assert!(
+        state.state.mailboxes.is_none(),
+        "Graph files through identity, so a state change must not claim to move filing"
+    );
+    // Both revision tokens ride along. `changeKey` is asked for by name; `@odata.etag` is an
+    // OData *annotation* and cannot be named in a `$select` at all — so whether the narrow
+    // read answers with one is the service's choice, not ours, and only a live call can say.
+    // It does, today. This assertion is how we find out if it ever stops, because the etag is
+    // the token an `If-Match` quotes and a state change that arrived without one used to blank
+    // the stored value outright.
+    assert!(
+        state.state.revisions.change_key.is_some(),
+        "the narrow $select must return the changeKey"
+    );
+    assert!(
+        state.state.revisions.etag.is_some(),
+        "the narrow $select returns @odata.etag even though it cannot be selected; if this \
+         fails, Graph changed and `message_state.json` needs recapturing"
+    );
+
+    provider
+        .edit_mail(&account(), &MailEdit::delete(key))
+        .await
+        .expect("clean up the throwaway");
 }

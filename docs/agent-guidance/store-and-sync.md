@@ -194,8 +194,16 @@ lease token. The transaction contains, all-or-nothing:
 5. The next `SyncState` (cursor).
 6. Pending-op reconciliations.
 7. Tombstones for snapshot reconciliation.
-8. Recipient observations derived from changed messages in a resolved Sent
-   collection. Their `(account, source message, canonical email)` identity is
+8. Recipient observations derived from everything the update says is now filed in a resolved
+   Sent collection — whole messages **and** messages a `MailStateChange` moved there. The second
+   half is how a message usually *becomes* sent: JMAP's `EmailSubmission/set` moves the existing
+   draft with `onSuccessUpdateEmail` and Gmail's `drafts.send` adds `SENT` to the message the
+   draft already had, so neither mints a new object and neither arrives as a `created`. A change
+   carries filing and keywords but no envelope, so the recipients are read from the message's
+   stored payload — and only for a change whose resulting filing actually reaches Sent, so an
+   ordinary mark-read costs no read. A change with no filing at all (`mailboxes: None`) is
+   skipped outright: that is a provider filing through identity, where the move arrives as a
+   whole object anyway. Their `(account, source message, canonical email)` identity is
    committed with the message/cursor so replay cannot inflate counts.
 
 Contact-card applies also advance a contact-source generation. Unified people
@@ -264,6 +272,34 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
 
   A snapshot has no partials by construction — it is the scope's whole current state.
 
+  Both drivers reach those two conclusions from the *same* code. The whole-scope
+  `drain_email` and the streaming `sync_email_streamed` each put a chunk's partials **into**
+  the `SyncUpdate` (via `with_patched`) rather than carrying them beside it, so neither can
+  drift from the other and so the update is a complete account of the pass. Carrying them
+  alongside is how a message moved into Sent by a state change became invisible to the
+  recipient observations, which read the update.
+
+- **A partial destroys nothing it is silent about.** `None` in a partial means *not reported*,
+  never *gone*, and every provider produces that silence: Gmail's history record and JMAP's
+  `Email/changes` carry no revision token at all, IMAP's `FLAGS` row carries no `MODSEQ` unless
+  it was asked for, and Graph's narrow `$select` cannot name `@odata.etag` (an OData annotation
+  is not selectable) so it answers with one only because the service chooses to. A store that
+  wrote the silence through would blank the token the next conditional write quotes — and a
+  write that quotes nothing is unguarded last-writer-wins, which fails as lost data rather than
+  as an error. `store-sqlite` expresses this as `COALESCE(?, column)`; a backend that cannot
+  uses `RevisionTokens::or`, the same rule in Rust. A **whole object** is authoritative about
+  every token and replaces them instead.
+
+- **A partial for a key the store does not hold writes nothing — in every table.** The row
+  write is an `UPDATE`, so it no-ops; the membership junction does *not* no-op on its own,
+  because `DELETE`/`INSERT` there does not care whether the message exists. `store-sqlite` gates
+  the membership writes on the `UPDATE`'s row count (SQLite counts every row an `UPDATE`
+  matched, identical values included, so `0` really means absent); the reference store gates on
+  the row being present. Without the gate, a windowed sync with an account-global delta (Gmail's
+  history, JMAP's `Email/changes`) accrues orphan rows on every label change to mail older than
+  the window — invisible to every read, since they all join through the `message` row, and never
+  cleaned up.
+
 - **A message is an immutable half and a mutable half, and they are stored apart.** The content
   never changes once the server holds it — editing a draft mints a *new* provider object on every
   protocol we speak (a JMAP `Email` is immutable; IMAP does APPEND + EXPUNGE and the UID changes),
@@ -293,6 +329,15 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
   path from storage back to a `Message` goes through it. A provider-assigned thread that came
   back with the payload is left as it is — relabelling it derived would tell the derivation pass
   it may re-thread mail the provider threaded.
+
+  **A provider key is not unique within an account** — the store's key is `(scope, key)`, and
+  two of an account's mail scopes really can hold one key. A Microsoft Graph move keeps the
+  message's immutable id (live-verified) and Graph mail sync is per folder, so between the
+  destination folder's delta creating it and the source folder's reporting it `@removed`, both
+  scopes hold it. `compose` therefore composes a key **once**, keeping the row with the later
+  `last_modified` — the move bumped it, so that is where the message actually is. The payload is
+  the immutable half and is the same bytes in either scope, so which one it was read from does
+  not matter.
 - **Idempotent replay.** Re-applying the same batch after a crash is a no-op:
   object writes are upserts keyed by provider key, the cursor advance is
   conditional on the prior state, and a resurrected stale-token worker is

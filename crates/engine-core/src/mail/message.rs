@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::{EmailBodyPart, Envelope, Keyword, SystemKeyword, ThreadRef};
 use crate::{
@@ -28,7 +28,15 @@ use crate::{
 ///
 /// UI/search deduplication across copies is presentation policy, applied above
 /// this type; it never collapses two provider objects into one here.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// **Serialize-only, deliberately.** A whole `Message` is never what storage holds: the store
+/// keeps its immutable half as a [`MailContent`](super::MailContent) payload and its mutable half
+/// in the `message` row and the `membership` junction. Deriving `Deserialize` here would let a
+/// caller decode a payload straight into a `Message` and get one whose keywords, filing and
+/// revision tokens are silently empty — which is how four live assertions came to test that a flag
+/// had *not* moved. Storage decodes into [`StoredContent`](super::StoredContent) and rebuilds
+/// through [`Message::from_parts`](super::Message::from_parts).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Message {
     /// The provider object id.
     pub id: MessageId,
@@ -38,19 +46,19 @@ pub struct Message {
     /// The thread this message belongs to, if threading is resolved, and whether
     /// the provider assigned that id or the engine derived it.
     ///
-    /// **Not carried by the stored payload** ([`MailContent`]): a thread id is mutable state the
-    /// message row owns, so a payload that carried one could disagree with it. Absent when
-    /// decoded straight from storage, and filled by whatever composes a `Message` back out of
-    /// the row.
+    /// **Not carried by the stored payload** ([`MailContent`](super::MailContent)): a thread id is
+    /// mutable state the message row owns, so a payload that carried one could disagree with
+    /// it. Absent when decoded straight from storage, and filled by whatever composes a
+    /// `Message` back out of the row.
     #[serde(default)]
     pub thread: Option<ThreadRef>,
     /// The mailboxes/labels this message belongs to (always at least one).
     pub mailboxes: Memberships<MailboxId>,
     /// The keywords applied to this message.
     ///
-    /// **Not carried by the stored payload** ([`MailContent`]), for the same reason as
-    /// [`thread`](Message::thread): keywords move without the provider ever re-sending the
-    /// object, and their home is the message row plus the membership junction.
+    /// **Not carried by the stored payload** ([`MailContent`](super::MailContent)), for the same
+    /// reason as [`thread`](Message::thread): keywords move without the provider ever
+    /// re-sending the object, and their home is the message row plus the membership junction.
     #[serde(default)]
     pub keywords: BTreeSet<Keyword>,
     /// The size of the raw message in octets, if known.
@@ -88,95 +96,6 @@ pub struct Message {
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
     pub extended: ExtendedProperties,
-}
-
-/// The mail payload the store persists: a message's **immutable half**.
-///
-/// A message's content never changes once the server holds it. Editing a draft is not a
-/// counterexample — it mints a *new* provider object on every protocol we speak (a JMAP `Email`
-/// is immutable, IMAP does APPEND + EXPUNGE and the UID changes). So this can be written once
-/// and never reconciled.
-///
-/// Its mutable counterpart is [`MailState`](super::MailState), whose home is the `message` row
-/// and the `membership` junction. [`Message::keywords`] is therefore absent here by
-/// construction, and [`Message::thread`] is present only when the **provider** assigned it — a
-/// derived thread is the engine's, and it re-keys whenever new mail joins the conversation. A
-/// payload carrying a copy of either could disagree with its home, and the disagreement would be
-/// invisible until someone read the wrong one. There is no copy.
-///
-/// Borrowed and serialize-only: a sync page writes hundreds of these, and the JSON is the cost,
-/// not another owned message beside it.
-#[derive(Debug, Serialize)]
-pub struct MailContent<'a> {
-    id: &'a MessageId,
-    /// Present only when the **provider** assigned the thread, because then it is the provider's
-    /// word about the message and belongs with the rest of what it said.
-    ///
-    /// A locally-derived id is not: the engine computed it from the reference graph and rewrites
-    /// it whenever new mail joins the conversation, so it lives in the `message` row alone. The
-    /// distinction is load-bearing — the derivation pass reads this back to know which messages
-    /// it must leave alone, and a stray `References` header must never merge two threads a
-    /// provider kept apart.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thread: Option<&'a ThreadRef>,
-    blob_id: &'a Option<BlobId>,
-    mailboxes: &'a Memberships<MailboxId>,
-    size: &'a Option<u64>,
-    received_at: &'a Option<UtcDateTime>,
-    sent_at: &'a Option<UtcDateTime>,
-    envelope: &'a Envelope,
-    preview: &'a Option<String>,
-    has_attachment: &'a bool,
-    mime_structure: &'a Option<EmailBodyPart>,
-    attachments: &'a Vec<Attachment>,
-    reply_unique_text: &'a Option<String>,
-    extended: &'a ExtendedProperties,
-}
-
-impl<'a> From<&'a Message> for MailContent<'a> {
-    /// Destructured rather than field-by-field: a new field on [`Message`] stops this compiling
-    /// until someone decides whether it belongs in the payload or in the row. A silent default
-    /// is exactly the failure this type exists to prevent.
-    fn from(message: &'a Message) -> Self {
-        let Message {
-            id,
-            blob_id,
-            thread,
-            // Mutable state whose home is the message row and the membership junction.
-            keywords: _,
-            mailboxes,
-            size,
-            received_at,
-            sent_at,
-            envelope,
-            preview,
-            has_attachment,
-            mime_structure,
-            attachments,
-            reply_unique_text,
-            // Mutable state: revision tokens bump on a state-only change, and the modification
-            // time is when that state moved. Both live in the message row.
-            revisions: _,
-            last_modified: _,
-            extended,
-        } = message;
-        Self {
-            id,
-            thread: thread.as_ref().filter(|t| !t.is_derived()),
-            blob_id,
-            mailboxes,
-            size,
-            received_at,
-            sent_at,
-            envelope,
-            preview,
-            has_attachment,
-            mime_structure,
-            attachments,
-            reply_unique_text,
-            extended,
-        }
-    }
 }
 
 impl Message {
@@ -241,66 +160,6 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn the_stored_record_carries_no_keywords_and_no_derived_thread() {
-        // The contract this type exists for. Asserted on the *rendered JSON keys* rather than on
-        // the struct, because the payload is what a store writes and what a later reader decodes.
-        let mut message = message("m1", "inbox");
-        message
-            .keywords
-            .insert(Keyword::system(SystemKeyword::Seen));
-        message.thread = Some(ThreadRef::derived(ThreadId::try_from("t1").unwrap()));
-
-        let payload = serde_json::to_value(MailContent::from(&message)).unwrap();
-        let keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
-        assert!(
-            !keys.iter().any(|k| *k == "keywords"),
-            "keywords live in the message row and the membership junction, got: {keys:?}"
-        );
-        assert!(
-            !keys.iter().any(|k| *k == "thread"),
-            "a derived thread lives in the message row, got: {keys:?}"
-        );
-        // The content the provider did send is all still there.
-        assert!(keys.iter().any(|k| *k == "envelope"));
-        assert!(keys.iter().any(|k| *k == "mailboxes"));
-    }
-
-    #[test]
-    fn the_stored_record_keeps_a_provider_assigned_thread() {
-        // The provider said it, so it is part of what the provider said. The derivation pass
-        // reads it back to know which mail it must not re-thread; dropping it would let a stray
-        // `References` header merge two threads a provider kept apart.
-        let mut message = message("m1", "inbox");
-        message.thread = Some(ThreadRef::provider_assigned(
-            ThreadId::try_from("T42").unwrap(),
-        ));
-
-        let payload = serde_json::to_value(MailContent::from(&message)).unwrap();
-        let decoded: Message = serde_json::from_value(payload).unwrap();
-        assert_eq!(decoded.thread_id().map(ThreadId::as_str), Some("T42"));
-        assert!(!decoded.thread.unwrap().is_derived());
-    }
-
-    #[test]
-    fn a_stored_payload_decodes_without_the_state_it_no_longer_carries() {
-        // The mirror of the two tests above: `MailContent` omits these keys, so every payload
-        // this build writes lacks them and `#[serde(default)]` is what lets one decode at all.
-        // Without it, reading back a message the store had just written would fail.
-        let decoded: Message = serde_json::from_value(serde_json::json!({
-            "id": "m1",
-            "mailboxes": ["inbox"],
-            "envelope": Envelope::default(),
-            "has_attachment": false,
-            "attachments": [],
-            "revisions": RevisionTokens::default(),
-            "extended": ExtendedProperties::default(),
-        }))
-        .expect("a payload with neither field decodes");
-        assert!(decoded.keywords.is_empty());
-        assert!(decoded.thread.is_none());
-    }
-
     use super::*;
 
     fn message(id: &str, mailbox: &str) -> Message {
@@ -335,15 +194,5 @@ mod tests {
         assert!(!msg.has_keyword(&project));
         msg.keywords.insert(project.clone());
         assert!(msg.has_keyword(&project));
-    }
-
-    #[test]
-    fn roundtrips_through_json() {
-        let mut msg = message("m1", "inbox");
-        msg.keywords.insert(Keyword::system(SystemKeyword::Flagged));
-        msg.size = Some(2048);
-        msg.received_at = Some("2021-01-01T12:00:00Z".parse().unwrap());
-        let json = serde_json::to_string(&msg).unwrap();
-        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), msg);
     }
 }

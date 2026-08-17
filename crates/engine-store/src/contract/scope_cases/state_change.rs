@@ -175,27 +175,40 @@ pub(in crate::contract) async fn state_change_moves_flags_and_leaves_the_rest<
     );
 }
 
-/// A keyword change for a key the store has never seen writes no row.
+/// A state change for a key the store has never seen writes **nothing at all** — no message
+/// row, and no membership rows either.
 ///
-/// It is an `UPDATE`, not an upsert, because the change carries no subject, sender or date: an
-/// insert would file a blank row for a message out of the synced window, and that row would
-/// then appear in a list with nothing in it.
+/// The row is an `UPDATE`, not an upsert, because the change carries no subject, sender or date:
+/// an insert would file a blank row for a message out of the synced window. The memberships have
+/// to follow the same rule for the same reason, and it is the half that is easy to miss — a
+/// `DELETE`/`INSERT` on the junction happily writes rows for a message that is not there, and
+/// they are invisible to every list read, which joins through the `message` row. On a provider
+/// whose sync is windowed and whose deltas are account-global — Gmail's history, JMAP's
+/// `Email/changes` — every label change on mail older than the window is one of these, forever.
 pub(in crate::contract) async fn state_change_for_an_unknown_message_writes_nothing<
     S: Store + StoreRead,
 >(
     store: &S,
     _clock: &ManualClock,
 ) {
+    use engine_core::{ids::MailboxId, membership::Memberships};
+
     let account = acct("acct-keyword-unknown");
     let scope = email_scope(&account);
+    let key = pk("never-synced");
     let claim = store
         .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
         .await
         .unwrap();
     let mut derived = DerivedWrite::empty();
-    derived.push_state_change(project_state_change(&MailStateChange::keywords(
-        pk("never-synced"),
-        [Keyword::system(SystemKeyword::Seen)].into_iter().collect(),
+    // Filing *and* keywords, so both membership kinds are on the table: this is the shape a
+    // Gmail `labelsAdded` or a JMAP `Email/changes` update takes.
+    let state =
+        MailState::with_keywords([Keyword::system(SystemKeyword::Seen)].into_iter().collect())
+            .filed_in(Memberships::of_one(MailboxId::try_from("Archive").unwrap()));
+    derived.push_state_change(project_state_change(&MailStateChange::new(
+        key.clone(),
+        state,
     )));
     let empty: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![]);
     store
@@ -219,11 +232,219 @@ pub(in crate::contract) async fn state_change_for_an_unknown_message_writes_noth
         rows.is_empty(),
         "a keyword change for an unsynced message must not conjure a blank list row"
     );
+    assert!(store.object_payload(&scope, &key).await.unwrap().is_none());
     assert!(
         store
-            .object_payload(&scope, &pk("never-synced"))
+            .index_row_counts(&scope, &key)
             .await
             .unwrap()
-            .is_none()
+            .is_empty(),
+        "and no derived row of any kind survives it — a membership row for a message the store \
+         does not hold is an orphan no read can ever reach or clear"
+    );
+}
+
+/// A state change replaces the revision tokens it **carries** and leaves the ones it is silent
+/// about standing.
+///
+/// A partial says which tokens moved; `None` in one means *not reported*, never *gone*. Writing
+/// it verbatim blanks the token the next conditional write quotes, and a write that quotes
+/// nothing is unguarded last-writer-wins — which fails silently, as lost data rather than an
+/// error. Every provider produces the silence: Gmail and JMAP carry no token at all on a state
+/// change, IMAP's `FLAGS` row carries no `MODSEQ` unless asked, and Graph's narrow `$select` can
+/// answer without the `@odata.etag` a full message resource carries.
+pub(in crate::contract) async fn state_change_keeps_the_tokens_it_did_not_carry<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    use engine_core::version::{ChangeKey, ETag};
+
+    let account = acct("acct-token-silence");
+    let scope = email_scope(&account);
+    let key = pk("m1");
+
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+    let mut derived = DerivedWrite::empty();
+    let mut seeded = seeded_row("m1");
+    seeded.revisions = RevisionTokens {
+        etag: Some(ETag::new("W/\"from-the-whole-object\"")),
+        change_key: Some(ChangeKey::new("key-1")),
+        ..RevisionTokens::default()
+    };
+    derived.messages = vec![seeded];
+    let update = SyncUpdate::delta(vec![TestObject::new("m1", "the-original-payload")], vec![]);
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&update, &derived, &[], &SyncState::new("ts-1")),
+        )
+        .await
+        .unwrap();
+    store.release_sync_scope(claim.lease).await.unwrap();
+
+    // The mark-read: a fresh `changeKey`, no etag, no modification time.
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+    let mut derived = DerivedWrite::empty();
+    let state =
+        MailState::with_keywords([Keyword::system(SystemKeyword::Seen)].into_iter().collect())
+            .revised(
+                RevisionTokens {
+                    change_key: Some(ChangeKey::new("key-2")),
+                    ..RevisionTokens::default()
+                },
+                None,
+            );
+    derived.push_state_change(project_state_change(&MailStateChange::new(
+        key.clone(),
+        state,
+    )));
+    let empty: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![]);
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&empty, &derived, &[], &SyncState::new("ts-2")),
+        )
+        .await
+        .unwrap();
+    store.release_sync_scope(claim.lease).await.unwrap();
+
+    let listed = store
+        .list_mail(
+            core::slice::from_ref(&account),
+            MailSelector::Keys(core::slice::from_ref(&key)),
+            usize::MAX,
+        )
+        .await
+        .unwrap()
+        .pop()
+        .expect("the message is still there");
+    assert_eq!(
+        listed
+            .mail
+            .revisions
+            .change_key
+            .as_ref()
+            .map(ChangeKey::as_str),
+        Some("key-2"),
+        "the token the change named moved"
+    );
+    assert_eq!(
+        listed.mail.revisions.etag.as_ref().map(ETag::as_str),
+        Some("W/\"from-the-whole-object\""),
+        "and the token it never mentioned is still there to quote in the next If-Match"
+    );
+}
+
+/// A state change that **carries filing** moves the message between mailboxes, and still leaves
+/// the content alone.
+///
+/// This is a JMAP or Gmail move: both file a message under a stable id, so an archive reaches
+/// the engine as a change to the same object rather than as a new one. The mailbox memberships
+/// are replaced, the keyword memberships are replaced independently, and the payload — which no
+/// longer carries filing at all — is untouched.
+pub(in crate::contract) async fn state_change_carrying_filing_moves_the_message<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    use engine_core::{ids::MailboxId, membership::Memberships};
+
+    let account = acct("acct-filing-change");
+    let scope = email_scope(&account);
+    let key = pk("m1");
+
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+    let mut derived = DerivedWrite::empty();
+    derived.messages = vec![seeded_row("m1")];
+    derived.memberships = vec![
+        MembershipRow {
+            key: key.clone(),
+            kind: MembershipKind::Mailbox,
+            value: "inbox".to_owned(),
+        },
+        keyword_membership(&key, "todo"),
+    ];
+    let update = SyncUpdate::delta(vec![TestObject::new("m1", "the-original-payload")], vec![]);
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&update, &derived, &[], &SyncState::new("fc-1")),
+        )
+        .await
+        .unwrap();
+    store.release_sync_scope(claim.lease).await.unwrap();
+
+    // The archive: out of the inbox, into Archive, keeping `todo`.
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("worker", 300))
+        .await
+        .unwrap();
+    let mut derived = DerivedWrite::empty();
+    let state = MailState::with_keywords([Keyword::new("todo").unwrap()].into_iter().collect())
+        .filed_in(Memberships::of_one(MailboxId::try_from("Archive").unwrap()));
+    derived.push_state_change(project_state_change(&MailStateChange::new(
+        key.clone(),
+        state,
+    )));
+    let empty: SyncUpdate<TestObject> = SyncUpdate::delta(vec![], vec![]);
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&empty, &derived, &[], &SyncState::new("fc-2")),
+        )
+        .await
+        .unwrap();
+    store.release_sync_scope(claim.lease).await.unwrap();
+
+    let listed = store
+        .list_mail(
+            core::slice::from_ref(&account),
+            MailSelector::Keys(core::slice::from_ref(&key)),
+            usize::MAX,
+        )
+        .await
+        .unwrap()
+        .pop()
+        .expect("the moved message is still there");
+
+    assert_eq!(
+        listed
+            .mailboxes
+            .iter()
+            .map(engine_core::ids::MailboxId::as_str)
+            .collect::<Vec<_>>(),
+        vec!["Archive"],
+        "the move landed: filing is replaced, not added to"
+    );
+    assert_eq!(
+        listed
+            .keywords
+            .iter()
+            .map(Keyword::as_str)
+            .collect::<Vec<_>>(),
+        vec!["todo"],
+        "and the keyword memberships are a different kind, replaced on their own"
+    );
+    assert_eq!(
+        listed.mail.subject.as_deref(),
+        Some("Quarterly report"),
+        "a move is not a new object, so the content it never sent survives"
+    );
+    assert_eq!(
+        store.object_payload(&scope, &key).await.unwrap(),
+        Some(serde_json::json!({ "key": "m1", "data": "the-original-payload" })),
+        "and the payload is not rewritten — it never carried the filing to begin with"
     );
 }

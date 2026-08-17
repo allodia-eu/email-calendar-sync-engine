@@ -202,7 +202,7 @@ async fn sync_event_scope<P, S>(
 ) -> Result<EventSyncReport, SyncError>
 where
     P: Provider,
-    S: Store,
+    S: Store + StoreRead,
 {
     let scope = EventScope {
         provider,

@@ -28,8 +28,11 @@ use crate::{
     calendar::{calendar_from_json, event_from_json},
     error::JmapError,
     fetch,
-    fetch::MemberFetch,
-    mail::{EMAIL_PROPERTIES, mailbox_from_json, message_from_json},
+    fetch::{MemberFetch, UpdatedAsState},
+    mail::{
+        EMAIL_PROPERTIES, EMAIL_STATE_PROPERTIES, mailbox_from_json, message_from_json,
+        state_from_json,
+    },
     request::{Request, Response, capability},
     session::Session,
 };
@@ -270,6 +273,10 @@ impl Provider for JmapProvider {
                     fetch_batch,
                     filter.as_ref(),
                     message_from_json,
+                    &UpdatedAsState {
+                        properties: EMAIL_STATE_PROPERTIES,
+                        normalize: state_from_json,
+                    },
                 )
                 .await?;
                 total = total.or(page.total);
@@ -286,6 +293,7 @@ impl Provider for JmapProvider {
                 for chunk in split_page(
                     pass_mode,
                     page.changed,
+                    page.patched,
                     page.removed,
                     page.present,
                     total,

@@ -90,6 +90,16 @@ imap_cmd INBOX "CREATE QResync" >/dev/null 2>&1 || true
 # flag-toggles in isolation, so its mutations never disturb the count-asserted
 # mailboxes either.
 imap_cmd INBOX "CREATE Idle" >/dev/null 2>&1 || true
+# JmapState and JmapStateArchive are a dedicated pair the JMAP state-delta test mutates in
+# isolation: it flags a message and moves it between the two, which is the shape an
+# `Email/changes` `updated` id takes. Isolated for the same reason as QResync — the test moves
+# a message *out* of a mailbox, and the shared ones are count-asserted.
+imap_cmd INBOX "CREATE JmapState" >/dev/null 2>&1 || true
+imap_cmd INBOX "CREATE JmapStateArchive" >/dev/null 2>&1 || true
+# JmapSent is the home of the sent-observation test's own message. That test moves it into
+# the account's real Sent collection — the one mailbox it cannot provision, because the role
+# is the server's to assign — and back again, so its message must belong to nothing else.
+imap_cmd INBOX "CREATE JmapSent" >/dev/null 2>&1 || true
 # A non-ASCII mailbox name, seeded here *and* on the Dovecot harness under the same
 # display name. The two servers put completely different bytes on the wire for it —
 # modified UTF-7 on rev1, UTF-8 on rev2 — so a mailbox that comes back with one identity
@@ -103,6 +113,9 @@ imap_clear Archive
 imap_clear Projects
 imap_clear QResync
 imap_clear Idle
+imap_clear JmapState
+imap_clear JmapStateArchive
+imap_clear JmapSent
 
 # INBOX was just cleared, so appends land at deterministic sequence numbers
 # (Stalwart's SEARCH does not match on a HEADER Message-ID, so we rely on append
@@ -125,6 +138,17 @@ imap_cmd INBOX "COPY 1 Archive" >/dev/null
 
 log "seeding the dedicated QResync mailbox (three messages) for the QRESYNC delta test"
 imap_cmd INBOX "COPY 1:3 QResync" >/dev/null
+
+# APPENDed, never COPYed from INBOX: JMAP models a message in several mailboxes as ONE Email
+# with several mailboxIds, so an IMAP COPY inside one account adds a mailbox to the existing
+# object rather than minting a second one. The state-delta test MOVEs this message, which
+# replaces its mailboxIds — on a copy that would drag the shared baseline out of INBOX and
+# Archive and break every count asserted there.
+log "seeding the dedicated JmapState mailbox (its own message) for the JMAP state-delta test"
+imap_append "$MAIL_DIR/08-jmap-state.eml" JmapState
+
+log "seeding the dedicated JmapSent mailbox (its own message) for the sent-observation test"
+imap_append "$MAIL_DIR/09-jmap-sent.eml" JmapSent
 
 log "seeding the dedicated Idle mailbox (one message) for the IMAP IDLE push test"
 imap_cmd INBOX "COPY 1 Idle" >/dev/null

@@ -195,6 +195,7 @@ impl Provider for GmailProvider {
                 for chunk in split_page(
                     pass_mode,
                     page.changed,
+                    page.patched,
                     page.removed,
                     page.present,
                     None,

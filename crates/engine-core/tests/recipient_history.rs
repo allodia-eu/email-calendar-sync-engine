@@ -32,9 +32,11 @@ fn sent_message() -> Message {
 
 #[test]
 fn sent_observations_include_to_cc_bcc_and_dedupe_per_message() {
+    let message = sent_message();
     let observations = observe_sent_recipients(
         &AccountId::try_from("account").unwrap(),
-        &sent_message(),
+        (&message).into(),
+        message.mailboxes.iter(),
         &BTreeSet::from([MailboxId::try_from("sent").unwrap()]),
     );
     assert_eq!(observations.len(), 3);
@@ -54,9 +56,11 @@ fn sent_observations_include_to_cc_bcc_and_dedupe_per_message() {
 
 #[test]
 fn a_message_outside_sent_produces_no_observations() {
+    let message = sent_message();
     let observations = observe_sent_recipients(
         &AccountId::try_from("account").unwrap(),
-        &sent_message(),
+        (&message).into(),
+        message.mailboxes.iter(),
         &BTreeSet::from([MailboxId::try_from("other-sent").unwrap()]),
     );
     assert!(observations.is_empty());
@@ -124,7 +128,8 @@ fn invalid_addresses_are_skipped_and_blank_names_are_not_observed() {
     message.envelope.bcc.clear();
     let observations = observe_sent_recipients(
         &AccountId::try_from("account").unwrap(),
-        &message,
+        (&message).into(),
+        message.mailboxes.iter(),
         &BTreeSet::from([MailboxId::try_from("sent").unwrap()]),
     );
     assert_eq!(observations.len(), 1);

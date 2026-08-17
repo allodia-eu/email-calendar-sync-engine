@@ -388,12 +388,16 @@ fn select_condstore_resp(
 
 #[tokio::test]
 async fn a_qresync_delta_reconciles_flag_changes_and_expunges() {
-    // Prior cursor carries a modseq baseline (9); the QRESYNC session opens CONDSTORE
-    // (modseq now 20) and one `CHANGEDSINCE 9 VANISHED` brings back the flag-changed
-    // UID 6 and the expunged UID 3.
+    // Prior cursor carries a modseq baseline (9) and a UIDNEXT of 5; the QRESYNC
+    // session opens CONDSTORE (modseq now 20, UIDNEXT 8). The prior UIDNEXT splits the
+    // pass: `1:4` is already-synced mail, reconciled as state and carrying the expunged
+    // UID 3, and `5:*` is the arrival UID 6, which needs whole-object metadata.
     let select = select_condstore_resp("a2", 1000, 8, 7, 20);
-    let delta = format!("* VANISHED (EARLIER) 3\r\n{}", fetch_resp("a3", &[6]));
-    let server = script(&[GREETING, LOGIN_OK, &select, &delta]);
+    let state = "* VANISHED (EARLIER) 3\r\n\
+         * 1 FETCH (UID 1 FLAGS (\\Seen) MODSEQ (18))\r\n\
+         a3 OK UID FETCH completed\r\n";
+    let arrivals = fetch_resp("a4", &[6]);
+    let server = script(&[GREETING, LOGIN_OK, &select, state, &arrivals]);
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
@@ -406,6 +410,8 @@ async fn a_qresync_delta_reconciles_flag_changes_and_expunges() {
     assert_eq!(page.kind, SyncKind::Delta);
     assert_eq!(page.changed.len(), 1);
     assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u6@INBOX");
+    assert_eq!(page.patched.len(), 1);
+    assert_eq!(page.patched[0].key.as_str(), "imap:v1000:u1@INBOX");
     assert_eq!(page.removed.len(), 1);
     assert_eq!(page.removed[0].as_str(), "imap:v1000:u3@INBOX");
     // The new modseq baseline rides the cursor forward.
@@ -413,7 +419,14 @@ async fn a_qresync_delta_reconciles_flag_changes_and_expunges() {
 
     let sent = written(&recorded);
     assert!(sent.contains("SELECT \"INBOX\" (CONDSTORE)"), "{sent}");
-    assert!(sent.contains("(CHANGEDSINCE 9 VANISHED)"), "{sent}");
+    assert!(
+        sent.contains("UID FETCH 1:4 (UID FLAGS) (CHANGEDSINCE 9 VANISHED)"),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("UID FETCH 5:* (UID FLAGS INTERNALDATE"),
+        "{sent}"
+    );
 }
 
 #[tokio::test]

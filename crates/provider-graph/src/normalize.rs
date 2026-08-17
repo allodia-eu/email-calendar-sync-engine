@@ -18,15 +18,15 @@
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword, ThreadRef},
+    mail::{EmailAddress, Mailbox, MailboxRole, Message, ThreadRef},
     membership::Memberships,
-    version::{ChangeKey, ETag, RevisionTokens},
 };
 use serde_json::Value;
 
 use crate::{
     error::GraphError,
     json::{bool_field, datetime, opt_str, req_str, wrap_id},
+    normalize_state::{keywords_from_json, revisions},
 };
 
 /// The message properties the provider requests via `$select` — exactly the fields
@@ -144,22 +144,7 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GraphError> {
             "conversation id",
         )?));
     }
-    // Graph models read/draft/flag as their own booleans, not a keyword set.
-    if bool_field(value, "isRead") {
-        message
-            .keywords
-            .insert(Keyword::system(SystemKeyword::Seen));
-    }
-    if bool_field(value, "isDraft") {
-        message
-            .keywords
-            .insert(Keyword::system(SystemKeyword::Draft));
-    }
-    if flag_is_flagged(value) {
-        message
-            .keywords
-            .insert(Keyword::system(SystemKeyword::Flagged));
-    }
+    message.keywords = keywords_from_json(value);
     message.has_attachment = bool_field(value, "hasAttachments");
     message.received_at = datetime(value, "receivedDateTime")?;
     message.sent_at = datetime(value, "sentDateTime")?;
@@ -180,29 +165,9 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GraphError> {
     Ok(message)
 }
 
-/// `true` when `flag.flagStatus == "flagged"`.
-fn flag_is_flagged(value: &Value) -> bool {
-    value
-        .get("flag")
-        .and_then(|flag| flag.get("flagStatus"))
-        .and_then(Value::as_str)
-        == Some("flagged")
-}
-
 /// Truncates a body preview to the model's 256-character snippet bound.
 fn snippet(text: &str) -> String {
     text.chars().take(256).collect()
-}
-
-/// The revision tokens Graph supplies: the `@odata.etag` and the `changeKey` (both
-/// requested in `MESSAGE_SELECT`). Absent on a delta *partial* entry that did not
-/// change them. JMAP-style accounts carry none.
-fn revisions(value: &Value) -> RevisionTokens {
-    RevisionTokens {
-        etag: opt_str(value, "@odata.etag").map(ETag::new),
-        change_key: opt_str(value, "changeKey").map(ChangeKey::new),
-        ..RevisionTokens::none()
-    }
 }
 
 /// One `{ emailAddress: { name, address } }` object as a 0-or-1 address list.
@@ -249,6 +214,8 @@ fn message_id_header(value: &Value) -> Result<Option<MessageIdHeader>, GraphErro
 
 #[cfg(test)]
 mod tests {
+    use engine_core::mail::SystemKeyword;
+
     use super::*;
 
     const MAILFOLDERS: &str = include_str!("../tests/fixtures/mail/mailfolders.json");

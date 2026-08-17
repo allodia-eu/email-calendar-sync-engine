@@ -167,15 +167,21 @@ impl ScopeCell {
         }
         for row in &derived.state_changes {
             // An update, not an insert: a keyword change carries no subject, sender or date,
-            // so a message the store has never seen gets no row from one (matches
-            // `store-sqlite`).
-            if let Some(existing) = self.messages.get_mut(&row.key) {
-                existing.flags = row.flags;
-                existing.revisions = row.revisions.clone();
-                existing.last_modified = row.last_modified;
-            }
-            // The keyword memberships are replaced; the mailbox ones decide which folders
-            // the message appears in and are left alone.
+            // so a message the store has never seen gets no row from one — and, because the
+            // junction would happily hold rows for a message that is not there, no membership
+            // row either (matches `store-sqlite`, which gates on the `UPDATE`'s row count).
+            let Some(existing) = self.messages.get_mut(&row.key) else {
+                continue;
+            };
+            existing.flags = row.flags;
+            // A partial names the tokens that moved and is silent about the rest, so what it
+            // does not carry is kept rather than blanked (matches `store-sqlite`'s `COALESCE`).
+            existing.revisions = row.revisions.clone().or(&existing.revisions);
+            existing.last_modified = row.last_modified.or(existing.last_modified);
+            // Each kind is replaced on its own. The keyword memberships always; the mailbox
+            // ones only when the change carries filing — `None` means the provider files
+            // through identity and has nothing to say about which folder this is in, so
+            // clearing them would drop the message out of it (matches `store-sqlite`).
             let memberships = self.memberships.entry(row.key.clone()).or_default();
             memberships.retain(|m| m.kind != MembershipKind::Keyword);
             memberships.extend(row.keywords.iter().map(|value| MembershipRow {
@@ -183,6 +189,14 @@ impl ScopeCell {
                 kind: MembershipKind::Keyword,
                 value: value.clone(),
             }));
+            if let Some(mailboxes) = &row.mailboxes {
+                memberships.retain(|m| m.kind != MembershipKind::Mailbox);
+                memberships.extend(mailboxes.iter().map(|value| MembershipRow {
+                    key: row.key.clone(),
+                    kind: MembershipKind::Mailbox,
+                    value: value.clone(),
+                }));
+            }
         }
         for row in &derived.thread_assignments {
             if let Some(existing) = self.messages.get_mut(&row.key) {

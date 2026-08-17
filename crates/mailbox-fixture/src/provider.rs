@@ -11,7 +11,7 @@
 
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
-    mail::{Mailbox, Message},
+    mail::{MailStateChange, Mailbox, Message},
     sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
 };
 use engine_provider::{
@@ -32,8 +32,13 @@ pub enum Pass {
     /// anything the fixture no longer lists.
     Snapshot(Vec<Message>),
     /// An incremental delta: these messages upserted, nothing tombstoned — the shape
-    /// a flag change or a page of new mail arrives in.
+    /// a page of new mail arrives in.
     Delta(Vec<Message>),
+    /// A **state-only** delta: these messages' mutable half moved and nothing else, so the
+    /// store writes the row's state columns and the keyword memberships and leaves the
+    /// payload alone. The shape a mark-read arrives in now that every adapter can tell a
+    /// state change from a content one.
+    State(Vec<MailStateChange>),
 }
 
 /// A provider bound to one folder of a generated mailbox.
@@ -124,6 +129,15 @@ impl FolderProvider {
                 Some(messages.len()),
                 SyncState::new("delta-1"),
             )],
+            Pass::State(changes) => vec![
+                EmailChunk::additive(
+                    Vec::new(),
+                    Vec::new(),
+                    Some(changes.len()),
+                    SyncState::new("delta-1"),
+                )
+                .with_patched(changes.clone()),
+            ],
             Pass::Snapshot(messages) => {
                 let total = messages.len();
                 if total == 0 {

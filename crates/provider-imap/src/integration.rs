@@ -54,21 +54,6 @@ fn fetch_frag(tag: &str, uids: &[u32]) -> String {
     out
 }
 
-/// A `UID FETCH <uid> (BODY.PEEK[])` reply: the server echoes `BODY[]` with a small
-/// text body, so preview hydration (which the provider runs after each metadata page)
-/// has a message to extract a snippet from. Preview hydration is capped and newest-first,
-/// so a metadata page's messages are each followed by one of these, newest UID first.
-fn body_frag(tag: &str, uid: u32) -> String {
-    let body = format!(
-        "From: alice@test.local\r\nSubject: report {uid}\r\n\
-         Content-Type: text/plain\r\n\r\nPreview body for report {uid}.\r\n"
-    );
-    format!(
-        "* {uid} FETCH (UID {uid} BODY[] {{{}}}\r\n{body})\r\n{tag} OK FETCH done\r\n",
-        body.len()
-    )
-}
-
 /// The folder list as a `LIST-STATUS` server answers it (RFC 5819) — the rows and
 /// their unread counts in one round trip. The tests below set
 /// `list_status_advertised` to match, so the folder list stays a single command and
@@ -305,16 +290,13 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
     let snap_fetch = fetch_frag("a4", &[1, 2, 3]);
     // The delta: a SELECT (condstore, fresh modseq), then the CHANGEDSINCE fetch.
     let delta_select = select_condstore_frag("a5", 100, 4, 2, 15);
-    // The CHANGEDSINCE delta: UID 2 vanished, UID 1 came back \Flagged.
+    // The delta. UIDNEXT has not moved (4), so nothing arrived and the pass is the
+    // state half alone: UID 2 vanished, UID 1 came back `\Flagged`. There is no
+    // envelope here because none was asked for — this is the whole point, and it is
+    // why no body fetch follows either.
     let delta_changes = "* VANISHED (EARLIER) 2\r\n\
-         * 1 FETCH (UID 1 FLAGS (\\Seen \\Flagged) \
-         INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
-         ENVELOPE (NIL \"report 1\" ((\"A\" NIL \"alice\" \"test.local\")) NIL NIL \
-         ((\"B\" NIL \"bob\" \"test.local\")) NIL NIL NIL \"<m1@test.local>\"))\r\n\
+         * 1 FETCH (UID 1 FLAGS (\\Seen \\Flagged) MODSEQ (15))\r\n\
          a6 OK UID FETCH completed\r\n";
-    // The re-upserted UID 1 arrives preview-less (a fresh metadata build), so the
-    // delta path's hydration re-reads its body once.
-    let delta_body = body_frag("a7", 1);
     let server = script(&[
         "* OK ready\r\n",
         "a1 OK LOGIN ok\r\n",
@@ -323,7 +305,6 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
         &snap_fetch,
         &delta_select,
         delta_changes,
-        &delta_body,
     ]);
 
     let (stream, _) = MockStream::new(server);
@@ -367,8 +348,8 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
     .await
     .expect("qresync delta sync");
     assert_eq!(
-        applied.upserted, 1,
-        "only the flag-changed message re-upserts"
+        applied.upserted, 0,
+        "a flag change rewrites no message: it is state, not content"
     );
     assert_eq!(applied.tombstoned, 1, "the expunged message is tombstoned");
 
@@ -412,5 +393,18 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
             .iter()
             .any(|k| k.as_system() == Some(SystemKeyword::Flagged)),
         "and the keyword membership moved with it"
+    );
+    // The content the delta never sent is still there. A state change that wrote the
+    // whole row would have blanked these, because the response carried no envelope —
+    // which is exactly what the old whole-object path risked on an envelope-less row.
+    assert_eq!(
+        row.mail.subject.as_deref(),
+        Some("report 1"),
+        "the subject the delta never mentioned survives"
+    );
+    assert_eq!(
+        row.mail.from_addr.as_deref(),
+        Some("alice@test.local"),
+        "and so does the sender"
     );
 }

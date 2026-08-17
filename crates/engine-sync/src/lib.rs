@@ -164,7 +164,7 @@ pub async fn sync_mailbox_list<P, S>(
 ) -> Result<SyncApplied, SyncError>
 where
     P: Provider,
-    S: Store,
+    S: Store + StoreRead,
 {
     let req = LeaseRequest::new(worker, ttl);
     Ok(run_scope(store, account, &MailboxScope(provider), &req)
@@ -243,12 +243,22 @@ pub(crate) trait ScopeSyncer: Sync {
 
     /// Recipient observations to write in the *same* transaction as the batch.
     /// Empty for every scope but email.
-    fn observations(
+    ///
+    /// Reads the store because an update can say a message is now filed in Sent without
+    /// re-sending it: a state change carries filing and keywords, and the recipients it implies
+    /// are in the message's *stored* payload. See [`recipients::observations`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError`] if the store read fails or a stored payload cannot be decoded.
+    async fn observations(
         &self,
+        _store: &dyn StoreRead,
         _account: &AccountId,
+        _scope: &SyncScope,
         _update: &SyncUpdate<Self::Object>,
-    ) -> Vec<RecipientObservation> {
-        Vec::new()
+    ) -> Result<Vec<RecipientObservation>, SyncError> {
+        Ok(Vec::new())
     }
 }
 
@@ -266,7 +276,7 @@ pub(crate) async fn run_scope<S, Y>(
     req: &LeaseRequest,
 ) -> Result<ScopeRun<Y::Meta, Y::Halt>, SyncError>
 where
-    S: Store,
+    S: Store + StoreRead,
     Y: ScopeSyncer,
 {
     let scope = syncer.scope(account);
@@ -292,7 +302,16 @@ where
             }
         };
         let derived = syncer.derive(&sync);
-        let observations = syncer.observations(account, &sync.update);
+        let observations = match syncer
+            .observations(store, account, &scope, &sync.update)
+            .await
+        {
+            Ok(observations) => observations,
+            Err(err) => {
+                let _ = store.release_sync_scope(claim.lease).await;
+                return Err(err);
+            }
+        };
         let batch = ApplyBatch::new(&sync.update, &derived, &[], &sync.next_cursor)
             .with_recipient_observations(&observations);
         match store.apply_sync_update(&claim.lease, batch).await {
@@ -381,12 +400,14 @@ impl<P: Provider> ScopeSyncer for EmailScope<'_, P> {
         derived
     }
 
-    fn observations(
+    async fn observations(
         &self,
+        store: &dyn StoreRead,
         account: &AccountId,
+        scope: &SyncScope,
         update: &SyncUpdate<Message>,
-    ) -> Vec<RecipientObservation> {
-        recipients::observations(account, update, self.1)
+    ) -> Result<Vec<RecipientObservation>, SyncError> {
+        recipients::observations(store, account, scope, update, self.1).await
     }
 }
 

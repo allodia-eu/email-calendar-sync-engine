@@ -116,8 +116,25 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   absent rows). A `SyncWindow` floor windows the enumeration to `q: after:<epoch>`.
 - **Delta** (cursor `Some`): `history.list?startHistoryId=…` returns
   `messagesAdded`/`labelsAdded`/`labelsRemoved` — whose message objects are **partials**
-  (id + labelIds only), so every touched-but-present id is **re-fetched** full — and
-  `messagesDeleted`, which tombstones. This is an **additive** pass. A `404` (the
+  (id + labelIds only) — and `messagesDeleted`, which tombstones. This is an **additive**
+  pass.
+
+  A partial's `labelIds` is the message's **resulting** label set, and in Gmail that set is
+  the whole of a message's mutable state: labels are both its keywords (`UNREAD`, `STARRED`)
+  and its filing (`INBOX`, and every folder-like label). So any label change — a mark-read, a
+  star, an archive, a send — is already answered by the page and becomes a `MailStateChange`
+  costing **no further request**. Only `messagesAdded` is re-fetched full, because nothing in
+  a history record carries a subject, a sender or a body. A record whose `labelIds` is
+  *absent* is re-fetched too: absent is not empty, and reading it as empty would mark unread
+  mail read (`keywords_from_labels` reads the absence of `UNREAD` as `$seen`).
+
+  That is also how a message *becomes sent* here: `drafts.send` adds `SENT` to the message the
+  draft already had, so the send arrives as a `labelsAdded` record for a key the store is
+  holding and never as a `messagesAdded` — which is why the recipient observations read an
+  update's state changes and not only its whole objects (`store-and-sync.md`). Pinned live in
+  `live_a_label_change_comes_back_as_state_not_a_whole_message`.
+
+  A `404` (the
   `startHistoryId` aged out of Gmail's window) → `GoogleError::HistoryExpired`
   (`NeedsResync`) → the stream drops the cursor and restarts as a snapshot, exactly like
   Graph's `410` restart, and only before the first page is committed. Gmail always returns

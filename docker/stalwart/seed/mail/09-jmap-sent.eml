@@ -1,0 +1,19 @@
+From: Alice Tester <alice@test.local>
+To: Sent Observer <sent-observer@example.test>
+Subject: JMAP sent-observation subject
+Date: Tue, 06 Jan 2026 12:00:00 +0000
+Message-ID: <jmap-sent-0001@test.local>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+The JMAP sent-observation test moves this message into the account's Sent
+collection and back, to prove that a message which *enters* Sent through a state
+change still yields its recipients.
+
+It owns a unique recipient address, addressed nowhere else in the seed, so the
+assertion cannot be satisfied by another fixture and two live suites running
+concurrently cannot see each other's observation.
+
+APPENDed into its own mailbox for the same reason as 08-jmap-state.eml: a JMAP
+move replaces an Email's mailboxIds, so moving a COPY would drag the shared
+baseline out of the count-asserted mailboxes.

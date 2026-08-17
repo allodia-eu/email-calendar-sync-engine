@@ -151,8 +151,11 @@ where
     scope_cases::list_mail_by_keys_resolves_named_messages(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::state_change_moves_flags_and_leaves_the_rest(&store, &clock).await;
+    scope_cases::state_change_carrying_filing_moves_the_message(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::state_change_for_an_unknown_message_writes_nothing(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::state_change_keeps_the_tokens_it_did_not_carry(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::scope_occurrences_reads_the_overlapping_window(&store, &clock).await;
     let (store, clock) = make();

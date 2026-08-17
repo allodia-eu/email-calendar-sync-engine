@@ -29,6 +29,7 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/messages_delta_removed.json` | replay after `DELETE` | `{ id, @removed:{reason} }` tombstone shape |
 | `mail/messages_list_page1.json` / `_page2.json` | `GET …/messages?$top=2` + its `@odata.nextLink` | real `nextLink` pagination chain |
 | `mail/message_detail.json` | `GET /me/messages/{id}` | full single-message shape (the changed-id re-fetch) |
+| `mail/message_state.json` | `GET /me/messages/{id}?$select=id,isRead,isDraft,flag,lastModifiedDateTime,changeKey` | the **state-only** read a lightweight partial resolves through — and that it answers with `@odata.etag` (see Finding 15) |
 | `mail/message_patched.json` | `PATCH /me/messages/{id}` body `{isRead,flag}` | the write echo of a mark-read + flag edit (`isRead:true`, `flag.flagStatus:"flagged"`) |
 | `mail/message_moved.json` | `POST /me/messages/{id}/move` body `{destinationId}` | the move echo — **same `id`** (immutable), `parentFolderId` now the destination |
 | `wellknown/*.json` | `GET /me/mailFolders/{inbox,drafts,…}` | well-known-name → id role resolution |
@@ -57,6 +58,16 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
    `@removed`.
 5. **Immutable ids** (requested via `Prefer: IdType="ImmutableId"`) are stable
    across calls and URL-safe — the right `ProviderKey` for Graph mail.
+15. **A `$select`ed single-entity `GET` still carries `@odata.etag`.** The etag is an
+    OData *annotation*, not a property, so it cannot appear in a `$select` — which
+    leaves whether a narrow read answers with one entirely up to the service. It does
+    (`message_state.json`, captured with exactly the adapter's state `$select`), and
+    `@odata.etag` is `W/"{changeKey}"` verbatim. This matters because the etag is what
+    an `If-Match` quotes: a state change arriving without one used to overwrite the
+    stored etag with nothing. The store now keeps a token a partial is silent about, so
+    a future regression here degrades to a stale guard rather than to none — and the
+    live assertion in `live_an_is_read_change_comes_back_as_state_not_a_whole_message`
+    is what would tell us it happened.
 
 ## Mail-write findings (captured, not assumed)
 

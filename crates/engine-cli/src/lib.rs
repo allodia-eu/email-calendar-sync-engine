@@ -19,14 +19,16 @@
 mod cli;
 mod ingest;
 
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 pub use cli::{USAGE, run};
 use engine_core::{
     calendar::Event,
-    ids::AccountId,
-    mail::Message,
+    ids::{AccountId, MailboxId},
+    mail::{Keyword, Message, StoredContent, StoredState},
+    membership::Memberships,
     sync::{JmapDataType, SyncScope},
+    version::RevisionTokens,
 };
 pub use engine_recurrence::Horizon;
 use engine_search::{CalendarQuery, MailQuery, ParseError, SearchResults};
@@ -78,7 +80,43 @@ pub struct Fixture {
     pub events: Vec<Event>,
     /// Mail messages (projected; no occurrences).
     #[serde(default)]
-    pub messages: Vec<Message>,
+    pub messages: Vec<FixtureMessage>,
+}
+
+/// One mail message as a **fixture file** spells it.
+///
+/// A fixture is an authoring format, not a stored payload: it names a whole object, filing and
+/// keywords included, because it stands in for what a provider handed the engine. The stored
+/// payload deliberately carries neither ([`StoredContent`]), which is why this cannot simply be
+/// a `Message` — that type is serialize-only so a payload can never be mistaken for a whole
+/// message. Assembly goes through [`Message::from_parts`], the same seam storage uses.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct FixtureMessage {
+    /// Everything a stored payload holds.
+    #[serde(flatten)]
+    content: StoredContent,
+    /// The mailboxes the message is filed in (at least one).
+    mailboxes: Memberships<MailboxId>,
+    /// The keywords on the message.
+    #[serde(default)]
+    keywords: BTreeSet<Keyword>,
+}
+
+impl FixtureMessage {
+    /// Assembles the message this fixture entry describes.
+    #[must_use]
+    pub fn to_message(&self) -> Message {
+        Message::from_parts(
+            self.content.clone(),
+            StoredState {
+                mailboxes: self.mailboxes.clone(),
+                keywords: self.keywords.clone(),
+                thread: None,
+                revisions: RevisionTokens::none(),
+                last_modified: None,
+            },
+        )
+    }
 }
 
 impl Fixture {

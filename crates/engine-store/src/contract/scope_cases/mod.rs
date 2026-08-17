@@ -34,7 +34,9 @@ pub(super) use self::{
         structured_index_rows_replace_and_clear,
     },
     state_change::{
+        state_change_carrying_filing_moves_the_message,
         state_change_for_an_unknown_message_writes_nothing,
+        state_change_keeps_the_tokens_it_did_not_carry,
         state_change_moves_flags_and_leaves_the_rest,
     },
 };

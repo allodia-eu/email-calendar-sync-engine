@@ -1,0 +1,17 @@
+From: Alice Tester <alice@test.local>
+To: Bob Tester <bob@test.local>
+Subject: JMAP state delta subject
+Date: Tue, 06 Jan 2026 11:00:00 +0000
+Message-ID: <jmap-state-0001@test.local>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+The JMAP state-delta test flags this message and moves it between JmapState and
+JmapStateArchive.
+
+APPENDed into its own mailbox rather than COPYed from INBOX, and that distinction is the
+point: JMAP models a message in several mailboxes as ONE Email with several mailboxIds, so
+an IMAP COPY inside one account does not mint a second object — it adds a mailbox to the
+existing one. A test that then MOVEd "its copy" would be replacing the mailboxIds of the
+shared baseline, dragging it out of INBOX and Archive and breaking every count asserted
+there. This message belongs to nothing else, so moving it disturbs nothing else.

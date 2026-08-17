@@ -159,7 +159,9 @@ where
             .await?;
             // A delta/reset page is small or rare, so fill list previews (IMAP has no
             // server snippet) before re-chunking — unlike the large backfill, which
-            // streams metadata only and fetches bodies on demand.
+            // streams metadata only and fetches bodies on demand. Only whole objects
+            // are candidates, so a flag-only delta reads no bodies at all: its rows
+            // are state changes, and they keep the preview the store already holds.
             crate::preview::hydrate_previews(&mut conn, &mut page.changed).await;
             total = total.or(page.total);
             let pass_mode = *mode.get_or_insert(match page.kind {
@@ -168,8 +170,15 @@ where
             });
             let is_last = page.next_page.is_none();
             let next_cursor = page.next_cursor.clone();
-            let chunks =
-                split_page(pass_mode, page.changed, page.removed, page.present, total, chunk_size);
+            let chunks = split_page(
+                pass_mode,
+                page.changed,
+                page.patched,
+                page.removed,
+                page.present,
+                total,
+                chunk_size,
+            );
             for chunk in chunks {
                 yield chunk;
             }

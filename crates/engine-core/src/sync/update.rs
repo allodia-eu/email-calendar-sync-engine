@@ -159,7 +159,7 @@ impl SyncObject for AddressBook {
 /// `T` is the normalized object type for the scope (a message, event, mailbox,
 /// or calendar). Removed/present keys use the universal [`ProviderKey`], which
 /// is how the store keys its rows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum SyncUpdate<T: SyncObject> {
     /// An incremental change set.
     Delta {
@@ -373,13 +373,15 @@ mod tests {
     }
 
     #[test]
-    fn roundtrips_through_json() {
+    fn serializes_its_three_channels() {
+        // Serialize-only, like the objects it carries: a `SyncUpdate` is what an adapter hands
+        // the apply path in memory, never something read back out of storage.
         let update: SyncUpdate<Message> = SyncUpdate::delta(vec![message("a")], vec![key("b")])
             .with_patched(vec![MailStateChange::keywords(key("c"), BTreeSet::new())]);
-        let json = serde_json::to_string(&update).unwrap();
-        assert_eq!(
-            serde_json::from_str::<SyncUpdate<Message>>(&json).unwrap(),
-            update
-        );
+        let json = serde_json::to_value(&update).unwrap();
+        let delta = &json["Delta"];
+        assert_eq!(delta["changed"].as_array().unwrap().len(), 1);
+        assert_eq!(delta["patched"].as_array().unwrap().len(), 1);
+        assert_eq!(delta["removed"].as_array().unwrap().len(), 1);
     }
 }
