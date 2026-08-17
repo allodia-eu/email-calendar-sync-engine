@@ -67,6 +67,17 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   or tzdata change. Both it and `sync_calendar` report the events they could **not**
   expand (`unexpandable`): those materialize zero occurrences and so render nowhere, and
   the host is expected to surface that rather than lose them silently.
+- **A provider key resolves to one *message*, not to one row.** The store's key is
+  `(scope, key)`, and two of an account's mail scopes can hold the same key: a Microsoft
+  Graph move keeps the message's immutable id and Graph mail sync is per folder, so between
+  the destination folder's delta and the source folder's, both scopes hold it. `mail_by_keys`
+  therefore returns **two rows** in that window — a host reading rows sees the store's truth —
+  while `messages` / `messages_by_keys` return **one** `Message`, composed from the row with
+  the later `last_modified`. The payload is the message's immutable half and is the same bytes
+  in either scope, so only the row's filing differs, and the later modification time is the
+  move. Do not "simplify" `compose` back into a `HashMap` collect: that resolves the duplicate
+  by whichever scope the read visited last, which is a coin flip between the old folder and the
+  new one (`tests/sync/folder_scopes.rs` asserts both sort orders for exactly this reason).
   The read
   surface enumerates the account's scopes and filters by `SyncScope::object_kind`, so
   the facade never hard-codes which scopes a provider uses. The return values (e.g.

@@ -1,7 +1,7 @@
 //! The read and search surface on `Engine`: per-account search, the mailbox/message
 //! and calendar/event lists, and the windowed and thread-oriented message reads.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use engine_core::{
     calendar::{Calendar, Event},
@@ -122,6 +122,14 @@ impl Engine {
     /// holds; a payload without one is mid-tombstone, and the alternative — returning content
     /// with empty filing and no keywords — is a message that claims to be in no folder and
     /// unread, which is worse than not returning it.
+    ///
+    /// One key is composed **once**, even when two of the account's mail scopes hold it. That is
+    /// a real state, not a corrupt one: a Microsoft Graph move keeps the message's immutable id
+    /// (live-verified), and the adapter is folder-bound, so between the destination folder's sync
+    /// and the source folder's the same key is stored under both scopes. It is one message, so
+    /// returning it twice would put one message in the list twice. The row kept is the one with
+    /// the later `last_modified` — the move bumped it, so that is the folder the message is
+    /// actually in now, rather than whichever scope the read happened to visit last.
     async fn compose(
         &self,
         account: &AccountId,
@@ -131,7 +139,8 @@ impl Engine {
             return Ok(Vec::new());
         }
         let keys: Vec<ProviderKey> = content.iter().map(|c| c.id.key().clone()).collect();
-        let mut rows: HashMap<ProviderKey, MailListRow> = self
+        let mut rows: HashMap<ProviderKey, MailListRow> = HashMap::with_capacity(keys.len());
+        for row in self
             .store
             .list_mail(
                 core::slice::from_ref(account),
@@ -139,11 +148,22 @@ impl Engine {
                 usize::MAX,
             )
             .await?
-            .into_iter()
-            .map(|row| (row.mail.key.clone(), row))
-            .collect();
+        {
+            match rows.entry(row.mail.key.clone()) {
+                Entry::Occupied(mut held) => {
+                    if row.mail.last_modified > held.get().mail.last_modified {
+                        held.insert(row);
+                    }
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(row);
+                }
+            }
+        }
         let mut messages = Vec::with_capacity(content.len());
         for content in content {
+            // `remove`, not `get`: a second payload for a key already composed is the same
+            // message read out of the other scope holding it (see above).
             let Some(row) = rows.remove(content.id.key()) else {
                 continue;
             };
@@ -279,8 +299,11 @@ impl Engine {
             if wanted.is_empty() {
                 break;
             }
-            // A provider key is unique within an account and lives in one scope, so each
-            // resolved key is dropped from `wanted` and never probed in a later scope.
+            // One key is resolved once and then dropped from `wanted`, so a later scope is
+            // never probed for it. A key can genuinely be in two scopes — a Graph move keeps
+            // the immutable id, so the source and destination folders both hold it until the
+            // source's delta reports the removal — but the payload is the message's immutable
+            // half and is the same bytes in either, and `compose` picks the live row.
             for key in wanted.iter().cloned().collect::<Vec<_>>() {
                 if let Some(payload) = self.store.object_payload(&scope, &key).await? {
                     content

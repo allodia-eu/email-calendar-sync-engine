@@ -39,10 +39,13 @@ pub struct MailState {
     /// The mailboxes the message is filed in, when the provider files **in place**.
     ///
     /// `None` does not mean "unchanged" — it means the protocol does not express filing as
-    /// mutable state, because identity carries it. An IMAP move mints a new UID and so a new
-    /// key; a Graph move changes the message id and reaches us as a `@removed` in the source
-    /// folder's delta. Neither can move a message between mailboxes under a stable key, so
-    /// neither has anything to say here and the store leaves the mailbox memberships alone.
+    /// mutable state *within a scope*, because the scope carries it. An IMAP move mints a new
+    /// UID and so a new key. A Graph move keeps the message's immutable id, but the adapter is
+    /// folder-bound: the message leaves the source folder's scope (a `@removed` in its delta)
+    /// and appears in the destination folder's, so what moved is which scope holds it, not a
+    /// membership inside one. Neither provider can report a filing change against a key the
+    /// scope keeps, so neither has anything to say here and the store leaves the mailbox
+    /// memberships alone.
     ///
     /// `Some` is the **complete resulting** set, as JMAP and Gmail report it — both of which do
     /// move a message in place, and for both of which a "keyword change" and a "move" are the

@@ -82,8 +82,20 @@ each over its own `GraphClient` on the same token. The mail layers:
   The exception, **not in the docs** and observed on consumer mailboxes, is a
   *lightweight* property change (notably `isRead`): it returns only the changed
   property + `id`, with **no** `@odata.etag`. So the adapter uses the entry
-  directly when it carries `@odata.etag` (the common case) and **re-fetches** only
-  the etag-less partials (the store applies whole objects, not property merges). A
+  directly when it carries `@odata.etag` (the common case) and resolves the
+  etag-less partials as **state changes** through the narrow `MESSAGE_STATE_SELECT`
+  rather than re-fetching the whole message.
+
+  That narrow read cannot ask for the etag: `@odata.etag` is an OData *annotation*,
+  not a property, so naming it in a `$select` is an error — whether a `$select`ed
+  single-entity `GET` answers with one is the service's choice. It does
+  (live-verified, captured as `tests/fixtures/mail/message_state.json`, where
+  `@odata.etag` is `W/"{changeKey}"` verbatim), and both the offline test and
+  `live_an_is_read_change_comes_back_as_state_not_a_whole_message` assert it, because
+  the etag is the token an `If-Match` quotes and nothing in the request asks for it.
+  If it ever stops, the store keeps the stored token rather than blanking it
+  (`RevisionTokens::or`, `store-and-sync.md`), so the failure degrades to a stale
+  guard instead of to none. A
   removal is `{ id, @removed: { reason } }` → an inline tombstone. (JMAP differs
   again: `Foo/changes`→`Foo/get` always yields full objects.) The rest of the flow
   follows the doc verbatim: initial `messages/delta` with `$select`, drain
@@ -158,6 +170,13 @@ different Graph shapes (Graph models mail state as typed properties, not a keywo
   across a move (live-verified: the `201` echo keeps the id, updates `parentFolderId`),
   so the receipt key is the **unchanged** target and the destination folder reconciles
   the new membership on its next sync — the JMAP shape, not IMAP's synthesize-a-new-key.
+
+  A consequence worth knowing before writing a read: because the id survives and mail sync
+  is **per folder**, one provider key is legitimately held by **two** scopes between the
+  destination folder's delta creating it and the source folder's delta reporting it
+  `@removed`. Nothing in the store forbids it — its key is `(scope, key)` — so an
+  account-wide read must not assume a key resolves to one row. `Engine::compose` composes
+  such a key once, keeping the row with the later `last_modified`; see `engine-api.md`.
 - **`Delete` → `POST /messages/{id}/permanentDelete`.** The neutral `Delete` is a
   **permanent**, irreversible delete (a Trash *move* is `MoveTo(trash)`), so it uses
   `permanentDelete`, not `DELETE /messages/{id}` (which only soft-deletes to Deleted
