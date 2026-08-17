@@ -141,11 +141,28 @@ is authoritative for the `provider-caldav` calendar client.
   server lists `QRESYNC`, `ENABLE QRESYNC` — best-effort, so a server that lists it but
   rejects `ENABLE` stays on the baseline. On a QRESYNC session the sync layer opens the
   mailbox `SELECT … (CONDSTORE)` so the response carries `[HIGHESTMODSEQ n]`, recorded
-  in the cursor. A delta with a prior baseline then issues a single
-  `UID FETCH 1:* (<items>) (CHANGEDSINCE <modseq> VANISHED)`: every message whose
-  mod-sequence exceeds the baseline returns with **full metadata** (new arrivals *and*
-  flag-only changes, so the store upserts them by their stable key), and
-  `* VANISHED (EARLIER) <set>` lists the UIDs expunged since the baseline, which become
+  in the cursor. A delta with a prior baseline then **splits the UID space at the prior
+  cursor's `UIDNEXT`**, because the two halves are worth different amounts of network.
+  *Below* it the message is already stored and its content cannot have moved — IMAP has no
+  in-place edit, so an edit or a move mints a new UID — which makes `FLAGS` the whole of what
+  a `CHANGEDSINCE` row there can be reporting: it is fetched
+  `UID FETCH 1:<next-1> (UID FLAGS) (CHANGEDSINCE <modseq> VANISHED)` and each row becomes a
+  `MailStateChange` the store applies to that row's state columns. This is the half a "mark all
+  read" lands in; it used to return every changed message's `ENVELOPE` and `BODYSTRUCTURE` to
+  write a flag bitfield. *At or above* it the message is new to us and comes back with the full
+  metadata a first sync needs, as `changed`.
+
+  Two traps guard that second fetch, and they are not the same one. `UID FETCH n:*` matches the
+  **highest** UID when nothing reaches `n` (RFC 9051 §6.4.8), so the range is issued only when
+  the current `UIDNEXT` has moved — and, separately, every returned row is floored at
+  `uid >= n`, because `UIDNEXT` can have moved while nothing at or above it *survives* (mail
+  arrived since the baseline and was expunged again). Without the floor that case re-maps the
+  newest already-synced message as an arrival and rewrites a payload the pass had no reason to
+  touch. A row with no `ENVELOPE` is an unsolicited flag-only `FETCH` the server may interleave
+  once CONDSTORE is on (RFC 7162 §3.2) and becomes a state change rather than an empty-envelope
+  object.
+
+  `* VANISHED (EARLIER) <set>` rides the first command and lists the UIDs expunged since the baseline, which become
   the page's `removed` keys (the store tombstones them inline — `store-and-sync.md`
   `Delta { changed, removed }`). The set is expanded per UID and bounded by a cap so a
   hostile range cannot exhaust memory. The pass is a single page (the changed set is

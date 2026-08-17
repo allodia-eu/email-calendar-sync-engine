@@ -252,6 +252,42 @@ async fn an_unsolicited_flag_row_becomes_a_state_change() {
 }
 
 #[tokio::test]
+async fn an_arrival_that_was_also_expunged_does_not_re_upsert_the_newest_stored_message() {
+    // The half of the `n:*` trap the UIDNEXT guard cannot see. Mail arrived at UIDs 10
+    // and 11 and was expunged again before this sync, so UIDNEXT moved to 12 (the guard
+    // passes) while nothing at or above 10 survives. `UID FETCH 10:*` then answers with
+    // UID 9 — the newest *already-synced* message — because `*` is the highest UID and a
+    // range containing it matches (RFC 9051 §6.4.8). Taking that as an arrival would
+    // rewrite a good payload on a pass whose whole point is that state moves without one.
+    let state = "a2 OK UID FETCH completed\r\n";
+    let arrivals = "* 9 FETCH (UID 9 FLAGS (\\Seen) \
+         INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
+         ENVELOPE (NIL \"already stored\" ((\"A\" NIL \"a\" \"h\")) NIL NIL NIL NIL NIL NIL \"<m9@h>\"))\r\n\
+         a3 OK UID FETCH completed\r\n";
+    let mut conn = logged_in(script(&[GREETING, LOGIN_OK, state, arrivals])).await;
+
+    let page = delta_page(
+        &mut conn,
+        &inbox(),
+        1000,
+        SyncState::new("v1000;n12;m40"),
+        9,
+        10,
+        12,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        page.changed.is_empty(),
+        "a UID below the prior UIDNEXT is not an arrival, whatever the range returned"
+    );
+    // Its flags are still the freshest word on it, so the row is kept as the state it is.
+    assert_eq!(page.patched.len(), 1);
+    assert_eq!(page.patched[0].key.as_str(), "imap:v1000:u9@INBOX");
+}
+
+#[tokio::test]
 async fn a_qresync_delta_with_no_changes_is_empty() {
     // A `CHANGEDSINCE` that matched nothing: no FETCH rows, no VANISHED — a clean,
     // empty delta that still advances the cursor.

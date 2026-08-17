@@ -112,7 +112,14 @@ where
         // mid-fetch (RFC 7162 §3.2). Mapping it as a message would build an
         // empty-envelope object that overwrites good metadata — but it is a perfectly
         // good state change, which is what the flags it carries were announcing.
-        if row.envelope.is_some() {
+        //
+        // The UID floor is the same `n:*` trap the guard above covers, in the case the
+        // guard cannot see: UIDNEXT can have moved while *nothing* at or above
+        // `synced_below` survives (everything that arrived since the baseline was also
+        // expunged), and `synced_below:*` then answers with the newest **already-synced**
+        // message. Its content cannot have moved — IMAP has no in-place edit — so taking
+        // it as an arrival would rewrite a payload this pass had no reason to touch.
+        if row.envelope.is_some() && row.uid >= synced_below {
             changed.push(message_from_fetch(row, mailbox, uid_validity));
         } else {
             patched.push(state_change(row, mailbox, uid_validity));
@@ -142,9 +149,18 @@ where
 
 /// The state change one `FLAGS` row reports.
 ///
-/// IMAP has no per-message revision token and no per-message modification time — the
-/// mod-sequence the cursor tracks is the mailbox's — so the change carries the keyword
-/// set alone, which is exactly what an IMAP message stores.
+/// It carries the keyword set alone, which is what an IMAP message stores today. That is a
+/// **gap, not a protocol fact**: RFC 7162 §3.1.2 defines a per-message `MODSEQ`, and §3.1.4.1
+/// says a CONDSTORE-enabled session returns it on every untagged `FETCH` whether or not it was
+/// asked for — so these rows already carry one and this adapter simply does not parse it
+/// ([`FetchRow`] has no field for it). Storing it is the prerequisite for `STORE
+/// (UNCHANGEDSINCE …)`, the conditional write that would give IMAP mail the write guard no
+/// provider has yet; it belongs with that work, not here. IMAP has no per-message modification
+/// *time* either way.
+///
+/// Until then the change is silent about the token rather than claiming it is absent, and the
+/// store keeps whatever it holds instead of blanking it
+/// ([`RevisionTokens::or`](engine_core::version::RevisionTokens::or)).
 fn state_change(row: &FetchRow, mailbox: &MailboxId, uid_validity: u32) -> MailStateChange {
     MailStateChange::keywords(
         message_key(mailbox.as_str(), uid_validity, row.uid),
