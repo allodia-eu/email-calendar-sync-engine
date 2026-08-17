@@ -12,7 +12,7 @@
 //! | `apply/page` | a page of a sync landing, threading included |
 //! | `mixed/read_under_apply` | the list, read while a sync commits |
 //! | `open/cold` | opening the store and painting the first rows |
-//! | `threads/rebuild` | the whole-account repair — the cost a sync **no longer** pays |
+//! | `threads/rebuild` | the whole-account repair; a sync no longer runs it at all |
 //!
 //! Size comes from `ENGINE_BENCH_SCALE` (`10k` by default, `100k` in CI, `400k`
 //! opt-in). The fixture is built once per process, on disk, because a cold open is one
@@ -385,9 +385,10 @@ fn derive(
     account: &AccountId,
 ) {
     let mut slow = group(criterion, "threads", SLOW_SAMPLES);
-    // Kept as a benchmark because it is still the repair path — and because it is the number a
-    // sync used to pay on top of `apply/page`, every single pass, to move one flag. Read the two
-    // together: this is what the incremental index removed from the sync, not what it made faster.
+    // Kept because it is still the repair path, and because it is the number a sync *used* to pay
+    // on top of `apply/page`, every pass, to move one flag: 81 ms over 10k and 986 ms over 100k —
+    // linear in the mailbox, since it reads every payload in the account. Threading now happens
+    // inside `apply/page` instead, which is where the two should be read together.
     measure(&mut slow, recorder, "threads/rebuild", "rebuild", || {
         black_box(
             runtime
