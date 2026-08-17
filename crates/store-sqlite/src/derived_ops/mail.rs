@@ -97,8 +97,14 @@ pub(super) fn assign_thread(
 ///
 /// Deliberately an `UPDATE`, not an upsert — a state change carries no subject, sender or
 /// date, so an insert would file a blank row for a message the store has never seen. A change
-/// for an unknown key is a no-op: the message is out of the synced window, and the pass that
-/// admits it will bring its state with it.
+/// for an unknown key is a **no-op in every table**: the message is out of the synced window,
+/// and the pass that admits it will bring its state with it. The `UPDATE`'s row count is what
+/// says so, which is why the memberships are gated on it rather than written unconditionally —
+/// SQLite counts every row an `UPDATE` matched, identical values included, so `0` means the
+/// message is genuinely absent. Junction rows do not care whether their message exists, they
+/// are invisible to every read that joins through it, and on a windowed sync with an
+/// account-global delta (Gmail's history, JMAP's `Email/changes`) they would accrue on every
+/// label change to mail older than the window.
 ///
 /// Each membership replace is scoped to its own `kind`, which is what makes a partial write
 /// safe. Clearing every kind here — the shape [`replace_memberships`] uses, where the batch
@@ -109,6 +115,12 @@ pub(super) fn assign_thread(
 /// it has nothing to say about this axis and the rows it would otherwise clear are the only
 /// record of which folder the message is in.
 ///
+/// The revision tokens and `last_modified` are `COALESCE`d for the same reason at column
+/// granularity: a partial names the tokens that moved and is silent about the rest, and a `NULL`
+/// written over a stored token blanks the value the next conditional write has to quote. See
+/// [`RevisionTokens::or`](engine_core::version::RevisionTokens::or), which is the same rule for a
+/// backend that cannot express it in SQL.
+///
 /// `schedule_tag` has no column: it is CalDAV scheduling state, which a message can never carry.
 pub(super) fn apply_state_change(
     tx: &Transaction<'_>,
@@ -117,10 +129,14 @@ pub(super) fn apply_state_change(
 ) -> Result<()> {
     // One statement: the flags and the revision tokens are the same message's state, and they
     // move together whenever a provider reports one.
-    sql::execute(
+    let updated = sql::execute(
         tx,
         "UPDATE message
-            SET flags = ?3, last_modified = ?4, etag = ?5, change_key = ?6, mod_seq = ?7
+            SET flags = ?3,
+                last_modified = COALESCE(?4, last_modified),
+                etag = COALESCE(?5, etag),
+                change_key = COALESCE(?6, change_key),
+                mod_seq = COALESCE(?7, mod_seq)
           WHERE scope_key = ?1 AND provider_key = ?2",
         rusqlite::params![
             scope_key,
@@ -135,6 +151,9 @@ pub(super) fn apply_state_change(
                 .and_then(|m| i64::try_from(m.get()).ok()),
         ],
     )?;
+    if updated == 0 {
+        return Ok(());
+    }
     replace_kind(
         tx,
         scope_key,

@@ -47,6 +47,12 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
   completed from there (`store-and-sync.md`). A second copy in the payload could only ever be a
   copy that disagrees. A new state axis — Graph's `categories` next — is a field on `MailState`,
   not a new mechanism.
+- A **partial** report is silent, never negative. `MailState::mailboxes` is `Option` because
+  `None` means "this protocol cannot move a message under a stable key", not "no mailboxes"; a
+  `RevisionTokens` field left `None` on a partial means "not reported", not "gone", and
+  `RevisionTokens::or` is the one place that rule is written down. Every provider produces the
+  silence, so a type that could not express it would force each adapter to invent a value —
+  which is how a stored `ETag` gets blanked and the next conditional write goes out unguarded.
 - Keywords (user-settable state such as read/flagged) and membership (collection placement) are distinct axes. A provider's flag/label namespace partitions across both, plus role: JMAP keywords and IMAP flags are keywords; mailboxes/folders and most labels are membership; some Gmail system labels are keywords (`UNREAD`, `STARRED`, `IMPORTANT`), not membership.
 - Collections carry a normalized role (inbox, sent, drafts, trash, junk, archive, all) mapped from provider roles — JMAP `role`, IMAP SPECIAL-USE, Gmail system labels, Graph well-known names — distinct from id and display name.
 - A mail collection carries the **server's** unread count (`Mailbox::unread_count`), not a derived one: the store holds only the synced window, so counting stored rows answers a different question than a folder badge asks. It is a first-class field rather than an extended property because all four mail transports report it — JMAP `unreadEmails`, IMAP `STATUS (UNSEEN)`, Gmail `messagesUnread`, Graph `unreadItemCount`. It counts **messages**; only JMAP offers the conversation form, so that one cannot be modelled portably. `None` means unreported and must never be read as zero.

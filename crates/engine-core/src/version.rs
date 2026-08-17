@@ -122,6 +122,30 @@ impl RevisionTokens {
             && self.change_key.is_none()
             && self.mod_seq.is_none()
     }
+
+    /// These tokens, taking each one they are **silent** about from `prior` — field by field,
+    /// exactly [`Option::or`].
+    ///
+    /// For applying a **partial** report over a stored set. A partial names the tokens that
+    /// moved and says nothing about the rest, so a `None` in it means *not reported*, never
+    /// *gone*. Writing one verbatim would blank a token a later conditional write has to quote,
+    /// and a write that quotes nothing is an unguarded last-writer-wins — the failure is silent
+    /// data loss, not an error anyone sees.
+    ///
+    /// This is provider-neutral because the silence is: Gmail's history record and JMAP's
+    /// `Email/changes` carry no token at all, IMAP's `FLAGS` row carries no `MODSEQ` unless it
+    /// was asked for, and Graph's narrow `$select` may answer without the `@odata.etag` a full
+    /// message resource would have carried. A **whole object** is authoritative about every
+    /// token and replaces them instead — it does not come through here.
+    #[must_use]
+    pub fn or(self, prior: &Self) -> Self {
+        Self {
+            etag: self.etag.or_else(|| prior.etag.clone()),
+            schedule_tag: self.schedule_tag.or_else(|| prior.schedule_tag.clone()),
+            change_key: self.change_key.or_else(|| prior.change_key.clone()),
+            mod_seq: self.mod_seq.or(prior.mod_seq),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +174,52 @@ mod tests {
         let m = ModSeq::new(42);
         assert_eq!(m.get(), 42);
         assert!(ModSeq::new(1) < ModSeq::new(2));
+    }
+
+    #[test]
+    fn a_silent_token_is_taken_from_the_prior_set_and_a_named_one_replaces_it() {
+        let stored = RevisionTokens {
+            etag: Some(ETag::new("W/\"stored\"")),
+            change_key: Some(ChangeKey::new("stored-key")),
+            mod_seq: Some(ModSeq::new(7)),
+            schedule_tag: Some(ScheduleTag::new("\"sched\"")),
+        };
+        // What a Graph state-only `$select` answers when it omits the etag annotation: the
+        // changeKey moved, and the rest of the set was never mentioned.
+        let reported = RevisionTokens {
+            change_key: Some(ChangeKey::new("fresh-key")),
+            ..RevisionTokens::none()
+        };
+        let merged = reported.or(&stored);
+        assert_eq!(
+            merged.change_key.as_ref().map(ChangeKey::as_str),
+            Some("fresh-key"),
+            "the token the report named moved"
+        );
+        assert_eq!(
+            merged.etag.as_ref().map(ETag::as_str),
+            Some("W/\"stored\""),
+            "and the one it was silent about survives — blanking it disarms the next If-Match"
+        );
+        assert_eq!(merged.mod_seq, Some(ModSeq::new(7)));
+        assert_eq!(
+            merged.schedule_tag.as_ref().map(ScheduleTag::as_str),
+            Some("\"sched\"")
+        );
+    }
+
+    #[test]
+    fn a_wholly_silent_report_changes_nothing() {
+        // Gmail's history record and JMAP's `Email/changes` carry no token at all, so every
+        // state change those two produce lands here.
+        let stored = RevisionTokens::from_etag(ETag::new("v1"));
+        assert_eq!(RevisionTokens::none().or(&stored), stored);
+        // And over an empty prior set it stays empty rather than inventing one.
+        assert!(
+            RevisionTokens::none()
+                .or(&RevisionTokens::none())
+                .is_empty()
+        );
     }
 
     #[test]

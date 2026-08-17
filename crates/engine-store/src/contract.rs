@@ -155,6 +155,8 @@ where
     let (store, clock) = make();
     scope_cases::state_change_for_an_unknown_message_writes_nothing(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::state_change_keeps_the_tokens_it_did_not_carry(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::scope_occurrences_reads_the_overlapping_window(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::scope_occurrences_keep_overrides_and_drop_with_the_event(&store, &clock).await;
