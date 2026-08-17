@@ -12,7 +12,9 @@ use engine_core::{
 };
 use serde::Serialize;
 
-use super::{Inner, MemStore, ObservationCell, OpCell, ScopeCell, expiry_after, is_live};
+use super::{
+    Inner, MemStore, ObservationCell, OpCell, ScopeCell, expiry_after, is_live, threading,
+};
 use crate::{
     apply::{ApplyBatch, DerivedWrite, SyncApplied},
     error::{Result, StoreError},
@@ -144,6 +146,20 @@ impl<C: Clock> Store for MemStore<C> {
         // A streaming page (`next_state == None`) leaves the cursor unchanged.
         if let Some(next_state) = batch.next_state {
             cell.state = Some(next_state.clone());
+        }
+
+        // Last, and across the **account** rather than the scope: a reply in Sent and its
+        // original in the Inbox are one conversation in two scopes, so the merge has to see
+        // both — which means the borrow of this scope's cell has to have ended.
+        if !batch.derived.messages.is_empty() {
+            let scope = lease.scope().clone();
+            threading::assign_threads(
+                scopes,
+                scope.account(),
+                &scope,
+                &batch.derived.messages,
+                &batch.derived.msgid_refs,
+            );
         }
         Ok(applied)
     }

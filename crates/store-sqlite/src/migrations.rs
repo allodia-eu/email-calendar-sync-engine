@@ -15,33 +15,42 @@
 //!
 //! Re-deriving is cheap only when it costs a *local* pass. A step that would otherwise force a
 //! re-**sync** — every message downloaded again over the network, which the user watches — carries
-//! a [`backfill`](crate::backfill) instead: it fills the new shape from `object`, which already
-//! holds the normalized record, by running the engine's own projection over it.
+//! a [`backfill`](crate::backfill) step instead: it fills the new shape from `object`, which
+//! already holds the normalized record, by running the engine's own projection over it.
 //!
 //! Postgres will use the same discipline later via a `schema_migrations` table
 //! (it has no `user_version`); the migration SQL stays per-store because the
 //! dialects differ, while the portable query layer lives in `engine-search`.
 
 use engine_store::{Result, SchemaStatus, StoreError};
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 
-use crate::{convert::backend, schema};
+use crate::{backfill, convert::backend, schema};
 
-/// One migration step: its DDL.
+/// One migration step: its DDL, and optionally a data move that must land with it.
 ///
-/// A step that must also *move data* — a new table whose contents are a function of what the
-/// store already holds — needs the move to commit in the same transaction as the DDL, so a
-/// database is never at the new version with the new table empty. Nothing needs that today; add
-/// the hook back when something does, and pin its SQL to its own version rather than borrowing
+/// A step that adds a table whose contents are a function of what the store already holds needs
+/// the move to commit in the same transaction as the DDL, so a database is never at the new
+/// version with the new table empty. The move is pinned to its own version rather than borrowing
 /// the live write path, which moves on.
 struct Migration {
     sql: &'static str,
+    fill: Option<fn(&Transaction<'_>) -> Result<()>>,
 }
 
 impl Migration {
     /// A step that is only DDL.
     const fn sql(sql: &'static str) -> Self {
-        Self { sql }
+        Self { sql, fill: None }
+    }
+
+    /// A step whose new shape is filled from what the store already holds, in the same
+    /// transaction.
+    const fn filled(sql: &'static str, fill: fn(&Transaction<'_>) -> Result<()>) -> Self {
+        Self {
+            sql,
+            fill: Some(fill),
+        }
     }
 }
 
@@ -58,6 +67,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(schema::V7),
     Migration::sql(schema::V8),
     Migration::sql(schema::V9),
+    Migration::filled(schema::V10, backfill::msgid_refs),
 ];
 
 /// Brings `conn` up to the latest schema version.
@@ -86,6 +96,9 @@ fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<SchemaStatus> 
         let version = i64::try_from(index + 1).map_err(backend)?;
         let tx = conn.transaction().map_err(backend)?;
         tx.execute_batch(step.sql).map_err(backend)?;
+        if let Some(fill) = step.fill {
+            fill(&tx)?;
+        }
         // `user_version` is a transaction-safe header write, so the step and the
         // version bump commit together; it cannot be bound, so format the checked
         // integer in directly.
@@ -117,6 +130,25 @@ mod tests {
     fn version(conn: &Connection) -> i64 {
         conn.pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap()
+    }
+
+    /// The normalized payload a v9 store held for a message, as the engine writes it.
+    fn stored_payload(key: &str, owned: &str, references: &[&str]) -> String {
+        use engine_core::{
+            ids::{MailboxId, MessageId, MessageIdHeader},
+            mail::{MailContent, Message},
+            membership::Memberships,
+        };
+        let mut message = Message::new(
+            MessageId::try_from(key).unwrap(),
+            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
+        );
+        message.envelope.message_id = vec![MessageIdHeader::new(owned).unwrap()];
+        message.envelope.references = references
+            .iter()
+            .map(|id| MessageIdHeader::new(*id).unwrap())
+            .collect();
+        serde_json::to_string(&MailContent::from(&message)).unwrap()
     }
 
     fn table_count(conn: &Connection, name: &str) -> i64 {
@@ -262,6 +294,85 @@ mod tests {
 
     /// Opening a store that is behind reports the pair a support answer needs: what it was, and
     /// what it is now.
+    /// The v10 step fills the message-id graph from the payloads already stored, so a store that
+    /// upgrades is not left threading nothing.
+    ///
+    /// The failure this pins is silent: an empty graph reads as "no message shares an id with any
+    /// other", so every reply after the upgrade would open a conversation of its own and the
+    /// mailbox would look fine until someone counted the rows.
+    #[test]
+    fn the_v10_step_fills_the_graph_from_the_payloads_already_stored() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        // Bring the database up to v9 — everything before the graph existed.
+        run(&mut conn, &MIGRATIONS[..9]).unwrap();
+        assert_eq!(version(&conn), 9);
+
+        // A stored reply and its original, as v9 held them: a payload plus a message row. The
+        // payload goes through the real projection, so a shape change breaks this test rather
+        // than silently making the backfill skip every row.
+        for (key, owned, references) in [("m1", "a@h", &[][..]), ("m2", "b@h", &["a@h"][..])] {
+            conn.execute(
+                "INSERT INTO object (scope_key, provider_key, payload) VALUES ('s1', ?1, ?2)",
+                (key, stored_payload(key, owned, references)),
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO message (scope_key, provider_key, account, flags, has_attachment)
+                 VALUES ('s1', ?1, 'acct', 0, 0)",
+                [key],
+            )
+            .unwrap();
+        }
+
+        run(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(version(&conn), i64::from(expected_version()));
+
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM msgid_ref", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 3, "two owned ids and one reference");
+        let owned: i64 = conn
+            .query_row("SELECT count(*) FROM msgid_ref WHERE owned = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            owned, 2,
+            "the reference is not owned, so it cannot name a thread"
+        );
+        // The account rides the row, because the lookup that matters is account-wide.
+        let scoped: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM msgid_ref WHERE account = 'acct' AND msgid = 'a@h'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(scoped, 2, "both messages touch the original's id");
+    }
+
+    /// A payload that will not decode is skipped, not fatal: it is already unreadable by every
+    /// other path, and failing here would leave a store that cannot open at all.
+    #[test]
+    fn an_undecodable_payload_does_not_fail_the_upgrade() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run(&mut conn, &MIGRATIONS[..9]).unwrap();
+        conn.execute(
+            "INSERT INTO object (scope_key, provider_key, payload) VALUES ('s1', 'bad', 'not json')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message (scope_key, provider_key, account, flags, has_attachment)
+             VALUES ('s1', 'bad', 'acct', 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        run(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(version(&conn), i64::from(expected_version()));
+    }
+
     #[test]
     fn migrating_reports_the_version_it_moved_from() {
         let mut conn = Connection::open_in_memory().unwrap();

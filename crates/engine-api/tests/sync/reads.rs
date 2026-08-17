@@ -25,7 +25,7 @@ async fn windowed_read_returns_the_newest_and_thread_read_is_age_independent() {
     let engine = Engine::open_in_memory().unwrap();
     engine.sync_mail(&provider, &account()).await.unwrap();
     // IMAP-shaped mail arrives unthreaded; derivation groups `new` with `old` (shared reference).
-    engine.derive_mail_threads(&account()).await.unwrap();
+    engine.rebuild_thread_index(&account()).await.unwrap();
 
     // A window of 2 keeps only the two newest by date, newest first — `old` is outside it.
     let windowed = engine.mail_window(&[account()], 2).await.unwrap();

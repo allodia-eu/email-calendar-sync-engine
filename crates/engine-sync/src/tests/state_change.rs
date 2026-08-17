@@ -154,7 +154,7 @@ async fn the_derivation_pass_does_not_hand_back_a_flag_a_keyword_change_moved() 
     // Let the grouping settle first: this message owns no `Message-ID`, so the pass re-keys its
     // seeded thread to the fallback (its provider key) once, legitimately. The question here is
     // what a *later* pass does to a flag, not what the first one does to a thread.
-    crate::derive_mail_threads(&store, &account(), worker(), Duration::from_mins(1))
+    crate::rebuild_thread_index(&store, &account(), worker(), Duration::from_mins(1))
         .await
         .unwrap();
     let settled = listed(&store)
@@ -177,19 +177,21 @@ async fn the_derivation_pass_does_not_hand_back_a_flag_a_keyword_change_moved() 
         "the mark-read landed"
     );
 
-    crate::derive_mail_threads(&store, &account(), worker(), Duration::from_mins(1))
+    crate::rebuild_thread_index(&store, &account(), worker(), Duration::from_mins(1))
         .await
         .unwrap();
     intact_and_seen(&listed(&store).await, settled.as_str());
 }
 
-/// A second derivation pass over unchanged mail assigns nothing.
+/// A rebuild over mail the sync already threaded assigns nothing — the first time and every time.
 ///
-/// The pass compares its computed assignment against the **stored row**, not against the
-/// payload it rebuilt the graph from. Comparing against the payload would re-assign every
-/// message on every pass, forever, because a thread-only write leaves the payload alone.
+/// Two rules meet here. The sync threads what it applies, so by the time a rebuild runs there is
+/// nothing left to decide. And the rebuild compares its computed assignment against the **stored
+/// row**, not against the payload it rebuilt the graph from — comparing against the payload would
+/// re-assign every message on every pass, forever, because a thread-only write leaves the payload
+/// alone.
 #[tokio::test]
-async fn a_repeat_derivation_pass_writes_nothing() {
+async fn a_rebuild_over_mail_the_sync_threaded_writes_nothing() {
     let provider = FakeMail::new(
         vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
         vec![message("m1", "a", "Quarterly report")],
@@ -205,14 +207,15 @@ async fn a_repeat_derivation_pass_writes_nothing() {
     .await
     .unwrap();
 
-    let first = crate::derive_mail_threads(&store, &account(), worker(), Duration::from_mins(1))
+    let first = crate::rebuild_thread_index(&store, &account(), worker(), Duration::from_mins(1))
         .await
         .unwrap();
     assert_eq!(
-        first.messages_assigned, 1,
-        "the message had no thread id and gets one"
+        first.messages_assigned, 0,
+        "the apply that stored the message already threaded it"
     );
-    let second = crate::derive_mail_threads(&store, &account(), worker(), Duration::from_mins(1))
+    assert_eq!(first.threads, 1, "and it is on a conversation of its own");
+    let second = crate::rebuild_thread_index(&store, &account(), worker(), Duration::from_mins(1))
         .await
         .unwrap();
     assert_eq!(

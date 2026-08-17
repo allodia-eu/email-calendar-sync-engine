@@ -25,22 +25,25 @@
 //! - [`FtsField`]/[`FtsRow`] — the field-tagged full-text document for one object.
 //! - [`MembershipRow`]/[`MembershipKind`] — collection/keyword membership, shared by mail and
 //!   calendar.
-//! - [`mail`] — [`project_message`] and the mail filter rows, plus [`project_state_change`] for a
-//!   change that moved a message's mutable state alone.
+//! - [`mail`] — [`project_message`] and the mail filter rows.
+//! - [`mail_state`] — [`project_state_change`], for a change that moved a message's mutable state
+//!   alone, and the thread-assignment row.
+//! - [`mail_refs`] — [`project_refs`], the message-id graph a conversation is a component of.
 //! - [`calendar`] — [`project_event`] (which needs the account's [`OwnerAddresses`] to resolve "my"
 //!   RSVP) and the calendar filter rows.
 
 pub mod calendar;
 pub mod mail;
+pub mod mail_refs;
+pub mod mail_state;
 
 pub use calendar::{
     EventIndexRow, EventParticipantRow, EventProjection, OwnerAddresses, ParticipantField,
     project_event,
 };
-pub use mail::{
-    AddressField, MailAddressRow, MailProjection, MailRow, MailStateRow, MailThreadRow,
-    project_message, project_state_change,
-};
+pub use mail::{AddressField, MailAddressRow, MailProjection, MailRow, project_message};
+pub use mail_refs::{MailRefRow, project_refs};
+pub use mail_state::{MailStateRow, MailThreadRow, project_state_change};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::ProviderKey;

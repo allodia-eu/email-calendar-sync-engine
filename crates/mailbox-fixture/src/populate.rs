@@ -16,7 +16,7 @@ use crate::{
 ///
 /// The generated messages already carry the thread ids derivation would assign (see
 /// [`crate::generate`]), so no derivation pass runs here. A caller that wants to
-/// *measure* derivation calls [`Engine::derive_mail_threads`] itself; over a fixture it
+/// *measure* derivation calls [`Engine::rebuild_thread_index`] itself; over a fixture it
 /// is the steady-state pass — a full scan that writes nothing.
 ///
 /// # Errors

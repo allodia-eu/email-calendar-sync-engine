@@ -24,7 +24,8 @@ use engine_core::{
     people::{CanonicalEmail, PeopleSnapshot},
     recipient::{RecipientCoverage, RecipientObservation},
     search_index::{
-        EventIndexRow, EventParticipantRow, MailAddressRow, MailRow, MembershipKind, MembershipRow,
+        EventIndexRow, EventParticipantRow, MailAddressRow, MailRefRow, MailRow, MembershipKind,
+        MembershipRow,
     },
     sync::{SyncObject, SyncScope, SyncState},
     time::{ExpansionWindow, UtcDateTime},
@@ -42,6 +43,7 @@ use crate::{
 
 mod contact;
 mod read;
+mod threading;
 mod write;
 
 #[cfg(test)]
@@ -81,6 +83,9 @@ pub(super) struct ScopeCell {
     fts: HashMap<ProviderKey, Vec<FtsField>>,
     occurrences: HashMap<ProviderKey, Vec<OccurrenceRow>>,
     pub(super) messages: HashMap<ProviderKey, MailRow>,
+    /// The message-id graph rows, per message — empty for a provider-threaded one, which is not
+    /// in the graph at all.
+    pub(super) refs: HashMap<ProviderKey, Vec<MailRefRow>>,
     addresses: HashMap<ProviderKey, Vec<MailAddressRow>>,
     pub(super) memberships: HashMap<ProviderKey, Vec<MembershipRow>>,
     event_index: HashMap<ProviderKey, EventIndexRow>,
@@ -98,6 +103,7 @@ impl ScopeCell {
             fts: HashMap::new(),
             occurrences: HashMap::new(),
             messages: HashMap::new(),
+            refs: HashMap::new(),
             addresses: HashMap::new(),
             memberships: HashMap::new(),
             event_index: HashMap::new(),
@@ -119,6 +125,7 @@ impl ScopeCell {
         self.fts.remove(key);
         self.occurrences.remove(key);
         self.messages.remove(key);
+        self.refs.remove(key);
         self.addresses.remove(key);
         self.memberships.remove(key);
         self.event_index.remove(key);
@@ -215,6 +222,9 @@ impl ScopeCell {
         }
         for row in &derived.event_index {
             self.event_index.insert(row.key.clone(), row.clone());
+        }
+        for (key, rows) in group_by_key(&derived.msgid_refs, |r| &r.key) {
+            self.refs.insert(key, rows);
         }
         for (key, rows) in group_by_key(&derived.addresses, |r| &r.key) {
             self.addresses.insert(key, rows);

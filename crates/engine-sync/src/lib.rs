@@ -461,7 +461,7 @@ pub use outbox::{
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::{StreamTuning, sync_email_streamed, sync_mail_streamed};
-pub use threading::{ThreadDeriveReport, derive_mail_threads};
+pub use threading::{ThreadRebuildReport, rebuild_thread_index};
 
 #[cfg(test)]
 mod tests;

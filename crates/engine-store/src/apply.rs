@@ -25,7 +25,7 @@ use engine_core::{
     recipient::RecipientObservation,
     search_index::{
         EventIndexRow, EventParticipantRow, EventProjection, MailAddressRow, MailProjection,
-        MailRow, MailStateRow, MailThreadRow, MembershipRow,
+        MailRefRow, MailRow, MailStateRow, MailThreadRow, MembershipRow,
     },
     sync::{SyncObject, SyncState, SyncUpdate},
     time::UtcDateTime,
@@ -119,6 +119,13 @@ pub struct DerivedWrite {
     /// The derivation pass produces these. It reads payloads to rebuild the reference graph but
     /// has no business rewriting them — the thread id is the only thing it decided.
     pub thread_assignments: Vec<MailThreadRow>,
+    /// Message-id graph rows to replace (per object): the ids each message owns and references,
+    /// which is what an incremental thread assignment looks a component up through.
+    ///
+    /// Empty for a provider-threaded message — it is not in the graph, so a `References` header
+    /// cannot reach the thread the provider decided
+    /// ([`project_refs`](engine_core::search_index::project_refs)).
+    pub msgid_refs: Vec<MailRefRow>,
     /// Mail address-junction rows to replace (per object).
     pub addresses: Vec<MailAddressRow>,
     /// Mailbox/keyword/calendar membership rows to replace (per object).
@@ -159,6 +166,7 @@ impl DerivedWrite {
             && self.messages.is_empty()
             && self.state_changes.is_empty()
             && self.thread_assignments.is_empty()
+            && self.msgid_refs.is_empty()
             && self.addresses.is_empty()
             && self.memberships.is_empty()
             && self.event_index.is_empty()
@@ -174,11 +182,13 @@ impl DerivedWrite {
             row,
             addresses,
             memberships,
+            refs,
         } = projection;
         self.fts.push(fts);
         self.messages.push(row);
         self.addresses.extend(addresses);
         self.memberships.extend(memberships);
+        self.msgid_refs.extend(refs);
     }
 
     /// Adds a keyword-only change ([`engine_core::search_index::project_state_change`]).

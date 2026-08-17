@@ -72,12 +72,28 @@ pub(crate) fn apply_derived(
             ),
         )?;
     }
-    if !derived.messages.is_empty() {
+    if !derived.messages.is_empty() || !derived.msgid_refs.is_empty() {
         // Resolved once per batch, not once per row: the account is a property of the scope, and
         // the scope is lease-held for the whole apply.
         let account = scope_account(tx, scope_key)?;
         for row in &derived.messages {
             upsert_message(tx, scope_key, &account, row)?;
+        }
+        // The graph rows first, then the assignment that reads them: an incoming message has to
+        // be *in* the graph before the component it joins is looked up, or it cannot find the
+        // sibling that arrived in the same page.
+        threading::replace_refs(tx, scope_key, &account, &derived.msgid_refs)?;
+        // Only for an incoming page. A rebuild carries no message rows — it names the assignments
+        // itself, below — so it is not second-guessed here by the incremental rule it exists to
+        // correct.
+        if !derived.messages.is_empty() {
+            threading::assign_threads(
+                tx,
+                scope_key,
+                &account,
+                &derived.messages,
+                &derived.msgid_refs,
+            )?;
         }
     }
     for row in &derived.state_changes {
@@ -147,6 +163,7 @@ pub(crate) fn delete_derived_rows(tx: &Transaction<'_>, scope_key: &str, key: &s
     for table in [
         "fts_doc",
         "message",
+        "msgid_ref",
         "mail_address",
         "membership",
         "event_index",
@@ -376,6 +393,7 @@ fn count_for_key(
 }
 
 mod mail;
+mod threading;
 
 use mail::apply_state_change;
 pub(crate) use mail::upsert_message;

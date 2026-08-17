@@ -7,6 +7,7 @@ mod mail;
 mod occurrences;
 mod read;
 mod state_change;
+mod threading;
 
 pub(super) use self::{
     apply::{
@@ -39,5 +40,10 @@ pub(super) use self::{
         state_change_for_an_unknown_message_writes_nothing,
         state_change_keeps_the_tokens_it_did_not_carry,
         state_change_moves_flags_and_leaves_the_rest,
+    },
+    threading::{
+        a_bare_message_threads_alone_and_stays, a_provider_thread_is_never_joined_or_moved,
+        a_reply_joins_its_original_across_scopes, a_smaller_owned_id_rekeys_every_member,
+        one_page_that_shares_an_id_is_one_thread,
     },
 };
