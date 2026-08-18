@@ -174,6 +174,39 @@ So, concretely, before a provider change is done:
 4. If a live run genuinely cannot be done, say so explicitly in the PR and name what is unverified.
    That is a disclosure, not a default.
 
+### When the gate is slow, it is usually not the code
+
+The suite runs in **under 20 seconds**. Everything else a `cargo test --workspace --all-features`
+costs is building 96 test binaries and *starting* them, so a slow gate is a machine problem, not a
+test problem — measure before assuming otherwise:
+
+```sh
+grep -c "^test result:"   run.log   # suites finished, out of ~96
+grep -oE "finished in [0-9.]+s" run.log | grep -oE "[0-9.]+" | awk '{s+=$1} END {print s" s"}'
+```
+
+Three things have each cost multiples here, none of them visible in a profiler:
+
+- **macOS Gatekeeper, which is usually the biggest.** `syspolicyd` assesses every locally built
+  executable the first time it runs — hashing the whole file — and `XProtectService` scans it too.
+  96 freshly linked test binaries means 96 first-run assessments, in another process: low CPU in
+  yours, constant disk reads, nothing to profile. One measured run was **35.8 minutes wall for
+  19.3 seconds of tests.** The fix is Apple's developer exemption and is per-machine, which is why
+  it is written here and not in a file: **System Settings → Privacy & Security → Developer Tools**,
+  add the app that *hosts* the build (the terminal, or the editor you launch it from), then restart
+  it. The exemption follows the responsible process, so the host covers cargo, rustc and every test
+  binary under it — there is nothing to register per binary, and nothing could be, since their
+  hashes change every build. It does not disable Gatekeeper; `spctl --master-disable` is not the
+  answer. Same commit, same 19 crates rebuilt, before and after: **35.8 min → 7.8 min.**
+- **Debug info in the profile that actually builds** — see the `[profile.test]` comment in
+  [`Cargo.toml`](Cargo.toml). Setting it on `dev` alone does nothing for `cargo test`. Measured
+  **368s → 149s** on `--no-run` after touching one crate.
+- **Artifacts nothing reclaims.** Cargo prunes neither `target/debug/incremental` (a session dir
+  per compilation context; it reached 14 GB here) nor superseded test executables (434 of them,
+  5.7 GB, after a day of iterating). Both are safe to delete — executables cost a relink, the
+  incremental cache cost **70 crates and 323s** the once — but the `.rlib`s beside them are not,
+  because that rebuilds every dependency. Near a full disk all of this gets sharply worse.
+
 ## Required Verification
 
 **Run this full gate and make it pass before every `git push`** (not only at final hand-off). It
