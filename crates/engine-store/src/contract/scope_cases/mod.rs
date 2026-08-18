@@ -44,6 +44,6 @@ pub(super) use self::{
     threading::{
         a_bare_message_threads_alone_and_stays, a_provider_thread_is_never_joined_or_moved,
         a_reply_joins_its_original_across_scopes, a_smaller_owned_id_rekeys_every_member,
-        one_page_that_shares_an_id_is_one_thread,
+        one_page_that_shares_an_id_is_one_thread, ungrouped_graphed_mail_is_visible_to_the_store,
     },
 };

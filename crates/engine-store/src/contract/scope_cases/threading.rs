@@ -334,3 +334,41 @@ pub(in crate::contract) async fn a_bare_message_threads_alone_and_stays<S: Store
         "and a resync leaves it exactly where it was"
     );
 }
+
+/// The store can say when a message is in the graph but carries no thread — the one shape an
+/// arrival cannot repair, because the component lookup reaches a stored message only through the
+/// thread id its row already carries.
+///
+/// This is what the v10 migration leaves behind for mail the old whole-account pass had not yet
+/// grouped, and it is the question `engine-sync` asks once per mail sync so no host has to
+/// remember to repair anything. It must be **false** in steady state: an ordinary page threads
+/// what it applies, so a store that answers `true` after a normal sync would put every sync into
+/// a whole-account rebuild.
+pub(in crate::contract) async fn ungrouped_graphed_mail_is_visible_to_the_store<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-thread-ungrouped");
+    let inbox = email_scope(&account);
+
+    assert!(
+        !store.has_ungrouped_graphed_mail(&account).await.unwrap(),
+        "an empty account has nothing ungrouped"
+    );
+
+    sync_page(
+        store,
+        &account,
+        &inbox,
+        "ug-1",
+        &[message("m1", "inbox", &["a@h"], &[])],
+    )
+    .await;
+    assert!(
+        !store.has_ungrouped_graphed_mail(&account).await.unwrap(),
+        "an ordinary page threads what it applies, so a sync must not leave work behind — a store \
+         answering true here would send every later sync through a whole-account rebuild"
+    );
+}

@@ -120,6 +120,16 @@ where
     P: Provider,
     S: Store + StoreRead + ContactStore,
 {
+    // A message that is in the graph but carries no thread cannot be repaired by an arrival: the
+    // component lookup reaches a stored message only through the thread id its row already
+    // carries. The migration that introduced the graph is what leaves them behind, so the repair
+    // runs here rather than being asked of every host — and it is triggered by the damage, not by
+    // a flag someone has to set and clear, so it also catches a rebuild that failed halfway. In
+    // steady state this is one indexed lookup that finds nothing.
+    if store.has_ungrouped_graphed_mail(account).await? {
+        rebuild_thread_index(store, account, worker.clone(), ttl).await?;
+    }
+
     let req = LeaseRequest::new(worker, ttl);
     let (mailboxes, ()) = run_scope(store, account, &MailboxScope(provider), &req)
         .await?

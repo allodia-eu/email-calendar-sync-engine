@@ -33,6 +33,16 @@ impl<C: Clock> StoreRead for MemStore<C> {
         Ok(SchemaStatus::current(0))
     }
 
+    async fn has_ungrouped_graphed_mail(&self, account: &AccountId) -> Result<bool> {
+        let inner = self.lock();
+        Ok(inner.scopes.iter().any(|(scope, cell)| {
+            scope.account() == account
+                && cell.messages.iter().any(|(key, row)| {
+                    row.thread_id.is_none() && cell.refs.get(key).is_some_and(|ids| !ids.is_empty())
+                })
+        }))
+    }
+
     async fn account_scopes(&self, account: AccountId) -> Result<Vec<SyncScope>> {
         let inner = self.lock();
         let mut scopes: Vec<SyncScope> = inner

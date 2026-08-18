@@ -157,6 +157,7 @@ where
     scope_cases::one_page_that_shares_an_id_is_one_thread(&store, &clock).await;
     scope_cases::a_provider_thread_is_never_joined_or_moved(&store, &clock).await;
     scope_cases::a_bare_message_threads_alone_and_stays(&store, &clock).await;
+    scope_cases::ungrouped_graphed_mail_is_visible_to_the_store(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::state_change_moves_flags_and_leaves_the_rest(&store, &clock).await;
     scope_cases::state_change_carrying_filing_moves_the_message(&store, &clock).await;

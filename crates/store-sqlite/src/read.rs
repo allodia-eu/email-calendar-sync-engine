@@ -58,6 +58,12 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
             .await
     }
 
+    async fn has_ungrouped_graphed_mail(&self, account: &AccountId) -> Result<bool> {
+        let account = account.clone();
+        self.read(move |conn| mail_ops::has_ungrouped_graphed_mail(conn, account.as_str()))
+            .await
+    }
+
     async fn list_mail(
         &self,
         accounts: &[AccountId],
