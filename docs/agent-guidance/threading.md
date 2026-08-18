@@ -93,16 +93,18 @@ or `Engine::rebuild_thread_index` (`engine-sync` `threading.rs`).
 pass. `Engine::rebuild_thread_index` is the repair path only — a store that has just migrated
 onto the graph, or an index a support case says is wrong.
 
-**One thing a host MUST run: a rebuild after the migration that introduced the graph.** When
-`SchemaStatus::migrated()` reports the store moved, call `rebuild_thread_index` once per account
-before trusting the grouping. The migration backfills the graph rows from the stored payloads but
-assigns no thread ids, and the incremental assignment reaches a stored message only through the
-thread id its row already carries — so a message that was left **unthreaded** on the old store
-stays unthreaded, and its replies open conversations of their own instead of joining it. That was
-survivable before, because the old whole-account pass re-derived everything on its next run and
-healed it by brute force; nothing does that any more, and the migration is exactly the moment the
-healing stops. A host that skips this has no error to see: the mailbox looks fine, one
-conversation at a time.
+**Not even the migration repair.** The migration that introduced the graph backfills its rows from
+the stored payloads but assigns no thread ids, so a message the old whole-account pass had not yet
+grouped stays ungrouped — and an arrival cannot adopt it, because the component lookup reaches a
+stored message only through the thread id its row already carries. `sync_mail` repairs that itself:
+it asks the store whether any message is *in the graph with no thread* and rebuilds when the answer
+is yes.
+
+That question is deliberately about the damage rather than a flag saying a repair is due. A flag has
+to be set by whoever knew and cleared by whoever fixed it, and is wrong if either forgets; this is
+true exactly when there is something to fix, so it also covers a rebuild that failed halfway and a
+store damaged in some way nobody predicted. In steady state it is one indexed lookup that finds
+nothing, because an ordinary page threads what it applies.
 
 The engine derives and **persists** the grouping; it exposes the flat list
 (`Engine::messages`, each row carrying `thread_id`) and a host groups by `thread_id`.

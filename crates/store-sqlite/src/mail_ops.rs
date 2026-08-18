@@ -351,3 +351,24 @@ fn sql_limit(limit: usize) -> i64 {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether the account holds a message that is in the graph but carries no thread.
+///
+/// `message_account_thread` is `(account, thread_id)`, so the null-threaded rows of one account
+/// are an index range rather than a scan; the graph membership is then a primary-key probe on
+/// `msgid_ref`. `LIMIT 1` because the answer is a yes/no, and in steady state there is nothing to
+/// find — this runs once per mail sync and must cost nothing when it is not needed.
+pub(crate) fn has_ungrouped_graphed_mail(conn: &Connection, account: &str) -> Result<bool> {
+    Ok(sql::query_opt(
+        conn,
+        "SELECT 1 FROM message m
+          WHERE m.account = ?1
+            AND m.thread_id IS NULL
+            AND EXISTS (SELECT 1 FROM msgid_ref r
+                         WHERE r.scope_key = m.scope_key AND r.provider_key = m.provider_key)
+          LIMIT 1",
+        [account],
+        |row| row.get::<_, i64>(0),
+    )?
+    .is_some())
+}

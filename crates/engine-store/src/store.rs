@@ -385,6 +385,28 @@ pub trait StoreRead: Send + Sync {
     /// predicate over one table, so the ordering across accounts is the backend's and not a merge
     /// the caller re-derives. An empty `accounts` selects nothing.
     ///
+    /// Whether the account holds a message that is **in the message-id graph but carries no
+    /// thread** — the one shape the incremental assignment cannot repair by itself.
+    ///
+    /// A thread is decided when a message is applied, so this is empty in steady state. It is not
+    /// empty right after the migration that introduced the graph: that step backfills the graph
+    /// rows from the stored payloads but assigns no thread ids, so any message the *old*
+    /// whole-account pass had not yet grouped stays ungrouped — and a later arrival cannot adopt
+    /// it, because the component lookup reaches a stored message only through the thread id its
+    /// row already carries. Its replies would open conversations of their own, quietly, forever.
+    ///
+    /// Deliberately a question about the damage rather than a flag saying repair is due: a flag
+    /// has to be set by whoever knew, and cleared by whoever fixed it, and is wrong if either
+    /// forgets. This is true exactly when there is something to fix, so it also catches a rebuild
+    /// that failed halfway and a store damaged some way nobody predicted. `engine-sync` asks it
+    /// once per mail sync and repairs when the answer is yes — no host is asked to remember
+    /// anything.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn has_ungrouped_graphed_mail(&self, account: &AccountId) -> Result<bool>;
+
     /// Rows sort newest first with undated messages last — they enter a window only if dated ones
     /// leave room — and the order is **total**: ties break on the row's own identity, so two
     /// reads of an unchanged store return the same sequence and a host reconciling by row id sees

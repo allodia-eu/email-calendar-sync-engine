@@ -400,3 +400,49 @@ fn an_empty_selector_names_nothing_and_never_reaches_the_store() {
     assert!(own(MailSelector::Keys(&[])).is_none());
     assert!(own(MailSelector::Newest).is_some());
 }
+
+/// The detection the migration repair hangs off: a message **in the graph** with no thread is
+/// visible; the same message once threaded is not, and neither is one that was never in the graph.
+///
+/// The middle case is what makes the whole design safe to run per sync — if it answered `true` for
+/// ordinary mail, every sync would drag a whole-account rebuild behind it. The last case is the
+/// bare message with no `Message-ID` at all, which is a legitimate singleton and not damage.
+#[test]
+fn ungrouped_graphed_mail_is_told_apart_from_threaded_and_from_bare() {
+    let conn = open();
+    let insert = |key: &str, thread: Option<&str>, graphed: bool| {
+        conn.execute(
+            "INSERT INTO message (scope_key, provider_key, account, thread_id, flags,
+                                  has_attachment)
+             VALUES ('scope-a', ?1, 'a', ?2, 0, 0)",
+            rusqlite::params![key, thread],
+        )
+        .expect("message");
+        if graphed {
+            conn.execute(
+                "INSERT INTO msgid_ref (scope_key, provider_key, account, msgid, owned)
+                 VALUES ('scope-a', ?1, 'a', ?1 || '@h', 1)",
+                [key],
+            )
+            .expect("ref");
+        }
+    };
+
+    insert("threaded", Some("t@h"), true);
+    insert("bare", None, false);
+    assert!(
+        !has_ungrouped_graphed_mail(&conn, "a").expect("query"),
+        "a threaded message and a bare one are both fine — this must not fire on ordinary mail"
+    );
+
+    // What the v10 migration leaves behind: in the graph, but never assigned a thread.
+    insert("stranded", None, true);
+    assert!(
+        has_ungrouped_graphed_mail(&conn, "a").expect("query"),
+        "a graphed message with no thread is the damage an arrival cannot repair"
+    );
+    assert!(
+        !has_ungrouped_graphed_mail(&conn, "b").expect("query"),
+        "and it is scoped to the account that has it"
+    );
+}

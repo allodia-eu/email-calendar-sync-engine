@@ -90,10 +90,13 @@ impl Engine {
     /// `Message-ID`/`In-Reply-To`/`References` headers (so a sent reply and its received original
     /// share a thread). A no-op for providers that assign thread ids themselves.
     ///
-    /// **Not part of a sync.** [`Engine::sync_mail`] threads what it applies inside the same
-    /// transaction, so an ordinary pass needs nothing here and calling it would re-read every
-    /// payload in the account to confirm an answer already written. This is the repair: reach for
-    /// it when the index is suspect, and it writes no thread id over mail that is already right.
+    /// **Nothing is required to call this.** [`Engine::sync_mail`] threads what it applies inside
+    /// the same transaction, and repairs the one shape an arrival cannot — a message left in the
+    /// graph with no thread by the migration that introduced it — by asking the store and
+    /// rebuilding when the answer is yes. So an ordinary pass needs nothing here, and calling it
+    /// anyway would re-read every payload in the account to confirm an answer already written.
+    /// This stays public for the case a support answer calls for: an index someone has reason to
+    /// doubt. It writes no thread id over mail that is already right.
     ///
     /// # Errors
     ///
