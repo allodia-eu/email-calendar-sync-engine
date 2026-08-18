@@ -46,6 +46,23 @@ license = "MPL-2.0"
 [profile.dev]
 debug = "line-tables-only"
 
+# `[profile.test]` has to say it again, and this is the trap. `cargo test` builds its targets
+# under the *test* profile, and while the Cargo book describes that profile as inheriting `dev`,
+# the top-level `debug` key measurably does not come with it: setting it on `dev` alone rebuilds
+# nothing for `cargo test`, and adding it here rebuilds everything. So the debug-info fix below
+# applied to `cargo build` and never to the command that does the bulk of the work — 96 test
+# binaries under `--all-features`.
+#
+# Measured, same machine, `touch crates/engine-core/src/lib.rs` then
+# `CARGO_INCREMENTAL=0 cargo test --workspace --all-features --no-run`:
+# **368s before, 149s and 149s after.** User CPU is unchanged (170s vs 173s) and only wall time
+# moves, because what this removes is the writing of debug info, not the compiling of code.
+#
+# The `package."*"` override below does NOT need repeating — that one is inherited, verified by
+# adding a `[profile.test.package."*"]` twin and watching cargo rebuild nothing.
+[profile.test]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 debug = 0
 
@@ -55,7 +72,7 @@ debug = 0
 # afterwards.
 [profile.debugger]
 inherits = "dev"
-debug = "full"
+debug = true
 
 # Centralized dependency versions so every crate agrees on one version.
 [workspace.dependencies]
