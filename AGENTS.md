@@ -201,11 +201,23 @@ Three things have each cost multiples here, none of them visible in a profiler:
 - **Debug info in the profile that actually builds** — see the `[profile.test]` comment in
   [`Cargo.toml`](Cargo.toml). Setting it on `dev` alone does nothing for `cargo test`. Measured
   **368s → 149s** on `--no-run` after touching one crate.
-- **Artifacts nothing reclaims.** Cargo prunes neither `target/debug/incremental` (a session dir
-  per compilation context; it reached 14 GB here) nor superseded test executables (434 of them,
-  5.7 GB, after a day of iterating). Both are safe to delete — executables cost a relink, the
-  incremental cache cost **70 crates and 323s** the once — but the `.rlib`s beside them are not,
-  because that rebuilds every dependency. Near a full disk all of this gets sharply worse.
+- **Artifacts nothing reclaims — and past a point, deleting all of them is the fastest thing you
+  can do.** Cargo prunes neither `target/debug/incremental` (a session dir per compilation context)
+  nor superseded test executables: one day of iterating left a **34 GB** target holding **412**
+  executables, on a disk at 96%. In that state the "warm cache" is not a cache, it is ballast.
+  Measured, same commit, same trigger of 19 recompiled crates:
+
+  | target | wall | user | sys |
+  |---|---|---|---|
+  | 34 GB, disk at 96% | **479 s** | 83 s | 239 s |
+  | 3.9 GB, disk at 88% | **21.7 s** | 43 s | 43 s |
+
+  The first spent 83 s computing and 239 s in the kernel across 479 s of wall clock — it was
+  waiting, not building. A **cold** build of all 189 crates from an empty target took **57 s**, so
+  the bloated warm cache was 8× slower than having no cache at all. `rm -rf target` is therefore a
+  legitimate one-time reset once the dir has bloated, and the usual advice against it applies to a
+  *healthy* target, not this. It regrows fast — two builds took the fresh 3.9 GB back to 7.0 GB and
+  88 executables to 124 — so this is periodic, not permanent.
 
 ## Required Verification
 
