@@ -332,7 +332,7 @@ pub use contact::{
     sync_contact_cards, sync_contacts,
 };
 pub use horizon::{HorizonExpansion, UnexpandableEvent, expand_calendar_horizon};
-pub use mail_account::{FolderSync, MailSyncReport, sync_mail};
+pub use mail_account::{FolderSync, MailSyncReport, refresh_folders, sync_mail};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
     CalendarWriteOutcome, ContactWriteOutcome, MailEditOutcome, SubmitOutcome,

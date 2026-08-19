@@ -13,7 +13,7 @@
 //! rather than "every folder at once".
 
 use core::time::Duration;
-use std::time::Instant;
+use std::{collections::BTreeSet, time::Instant};
 
 use engine_core::{
     ids::{AccountId, MailboxId},
@@ -64,8 +64,13 @@ pub struct MailSyncReport {
     /// the account being unreachable. That distinction is the whole reason it is its own field: a
     /// broken store that reports itself as an outage sends the user to check their wifi.
     pub account_steps: Result<(), SyncError>,
-    /// The folder-list (container) sync.
-    pub mailboxes: Result<SyncApplied, SyncError>,
+    /// The folder-list (container) sync, or `None` when this pass never looked at it — which is
+    /// what [`refresh_folders`] does.
+    ///
+    /// `None` is not a success and not a failure: nothing was asked of the server, so a caller
+    /// weighing whether the account is reachable must treat it the way it treats a scope another
+    /// pass was holding, and read the folders instead.
+    pub mailboxes: Option<Result<SyncApplied, SyncError>>,
     /// One entry per folder, in completion order.
     pub folders: Vec<FolderSync>,
     /// Wall time for the whole pass.
@@ -101,7 +106,7 @@ impl MailSyncReport {
     #[must_use]
     pub fn is_ok(&self) -> bool {
         self.account_steps.is_ok()
-            && self.mailboxes.is_ok()
+            && self.mailboxes.as_ref().is_none_or(Result::is_ok)
             && self.folders.iter().all(|f| f.result.is_ok())
     }
 
@@ -111,19 +116,22 @@ impl MailSyncReport {
         self.account_steps
             .as_ref()
             .err()
-            .or(self.mailboxes.as_ref().err())
+            .or_else(|| self.mailboxes.as_ref().and_then(|r| r.as_ref().err()))
             .or_else(|| self.folders.iter().find_map(|f| f.result.as_ref().err()))
     }
 
     /// How many of this pass's scopes were skipped because another pass held them.
     #[must_use]
     pub fn busy_scopes(&self) -> usize {
-        usize::from(self.mailboxes.as_ref().is_err_and(SyncError::is_busy))
-            + self
-                .folders
-                .iter()
-                .filter(|f| f.result.as_ref().is_err_and(SyncError::is_busy))
-                .count()
+        usize::from(
+            self.mailboxes
+                .as_ref()
+                .is_some_and(|r| r.as_ref().is_err_and(SyncError::is_busy)),
+        ) + self
+            .folders
+            .iter()
+            .filter(|f| f.result.as_ref().is_err_and(SyncError::is_busy))
+            .count()
     }
 
     /// How many folders this pass actually synced.
@@ -167,7 +175,7 @@ where
         observer.account_sync_finished(account);
         return MailSyncReport {
             account_steps: Ok(()),
-            mailboxes: Ok(SyncApplied::default()),
+            mailboxes: None,
             folders: Vec::new(),
             elapsed: started.elapsed(),
         };
@@ -192,14 +200,113 @@ where
         return fail_early(observer, account, repaired, mailboxes, err, started);
     }
 
+    let folders = run_folders(providers, store, account, &req, tuning, observer, &sent).await;
+
+    let coverage = recipients::record_coverage(store, account, tuning.window, !sent.is_empty());
+    let account_steps = repaired.and(coverage.await);
+    observer.account_sync_finished(account);
+
+    MailSyncReport {
+        account_steps,
+        mailboxes: Some(mailboxes),
+        folders,
+        elapsed: started.elapsed(),
+    }
+}
+
+/// Syncs exactly the folders given, and **discovers nothing**.
+///
+/// The targeted counterpart of [`sync_mail`], for when the caller already knows which folder
+/// changed — an IMAP `IDLE` push, a webhook, a folder the user just opened. It does no
+/// account-level work at all: no folder-list sync, no thread-index repair, no recipient backfill,
+/// no coverage record. `mailboxes` in the returned report is therefore `None`.
+///
+/// **This exists because the folder list is most of the cost, and a push has already told you the
+/// answer it would give.** Measured against the Stalwart harness on a steady-state single-folder
+/// pass, discovery was **57%** of the work on a `LIST-STATUS` server and **86%** on one without —
+/// and the wire cost is worse than the wall clock says, because a server that cannot answer
+/// `LIST-STATUS` is asked for a `STATUS` **per folder**: one extra round trip becomes fourteen on
+/// a thirteen-folder account, on the path whose whole job is making new mail appear at once.
+///
+/// The one account-level thing it does keep is reading which mailboxes are Sent, because a
+/// message landing in Sent must still be recorded as a recipient observation and that is a store
+/// read with no round trip in it.
+///
+/// **Where new account-level work goes: [`sync_mail`], and only there.** This is a different
+/// operation, not a second way to run a pass — its contract is that it does none of that — so
+/// anything that must happen once per account belongs beside the repair and the recipient steps.
+///
+/// # Errors
+///
+/// None: every failure is reported in the [`MailSyncReport`], per scope. See its docs.
+pub async fn refresh_folders<P, S, O>(
+    providers: &[P],
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+    tuning: StreamTuning,
+    observer: &O,
+) -> MailSyncReport
+where
+    P: Provider,
+    S: Store + StoreRead + ContactStore,
+    O: SyncObserver,
+{
+    let started = Instant::now();
+    let req = LeaseRequest::new(worker, ttl);
+    let sent = match recipients::sent_mailboxes(store, account).await {
+        Ok(sent) => sent,
+        Err(err) => {
+            observer.account_sync_started(account, 0, None);
+            observer.account_sync_finished(account);
+            return MailSyncReport {
+                account_steps: Err(err),
+                mailboxes: None,
+                folders: Vec::new(),
+                elapsed: started.elapsed(),
+            };
+        }
+    };
+    let folders = run_folders(providers, store, account, &req, tuning, observer, &sent).await;
+    observer.account_sync_finished(account);
+
+    MailSyncReport {
+        account_steps: Ok(()),
+        mailboxes: None,
+        folders,
+        elapsed: started.elapsed(),
+    }
+}
+
+/// Orders the folders, tells the observer what is coming, and streams them concurrently.
+///
+/// Shared by both entrypoints so the fan-out — its bound, its ordering and the events a host sees
+/// — cannot drift between a full pass and a targeted refresh.
+///
+/// Resolving the Inbox is a **store** read, so a targeted refresh can afford it too: the ordering
+/// matters when several folders are refreshed at once, and a host filing streaming rows by folder
+/// needs the answer either way.
+async fn run_folders<P, S, O>(
+    providers: &[P],
+    store: &S,
+    account: &AccountId,
+    req: &LeaseRequest,
+    tuning: StreamTuning,
+    observer: &O,
+    sent: &BTreeSet<MailboxId>,
+) -> Vec<FolderSync>
+where
+    P: Provider,
+    S: Store + StoreRead + ContactStore,
+    O: SyncObserver,
+{
     let inbox = stored_inbox(store, account).await;
     let order = inbox_first(account, providers, inbox.as_ref());
     observer.account_sync_started(account, order.len(), inbox.as_ref());
 
-    let folders = stream::iter(order.into_iter().map(|index| {
+    stream::iter(order.into_iter().map(|index| {
         let provider = &providers[index];
-        let sent = &sent;
-        let req = &req;
         async move {
             let started = Instant::now();
             let result = stream_email(provider, store, account, req, tuning, observer, sent).await;
@@ -214,18 +321,7 @@ where
     }))
     .buffer_unordered(MAX_CONCURRENT_FOLDERS)
     .collect::<Vec<_>>()
-    .await;
-
-    let coverage = recipients::record_coverage(store, account, tuning.window, !sent.is_empty());
-    let account_steps = repaired.and(coverage.await);
-    observer.account_sync_finished(account);
-
-    MailSyncReport {
-        account_steps,
-        mailboxes,
-        folders,
-        elapsed: started.elapsed(),
-    }
+    .await
 }
 
 /// A pass that stopped at an account-level store step, before any folder ran.
@@ -241,7 +337,7 @@ fn fail_early<O: SyncObserver>(
     observer.account_sync_finished(account);
     MailSyncReport {
         account_steps: repaired.and(Err(err)),
-        mailboxes,
+        mailboxes: Some(mailboxes),
         folders: Vec::new(),
         elapsed: started.elapsed(),
     }

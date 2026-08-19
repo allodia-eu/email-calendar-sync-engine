@@ -229,7 +229,17 @@ async fn an_account_pass_syncs_the_folder_list_then_its_folders() {
     .await;
 
     assert!(report.is_ok(), "{report:?}");
-    assert_eq!(report.mailboxes.as_ref().unwrap().upserted, 1, "the folder");
+    assert_eq!(
+        report
+            .mailboxes
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upserted,
+        1,
+        "the folder"
+    );
     assert_eq!(report.upserted(), 1, "the message");
     assert_eq!(report.folders.len(), 1);
     assert_eq!(report.folders_synced(), 1);
