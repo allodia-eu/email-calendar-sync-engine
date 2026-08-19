@@ -240,6 +240,31 @@ pub struct PruneReport {
     pub messages_removed: usize,
 }
 
+/// Counts from a content-addressed blob sweep, for diagnostics and tests.
+///
+/// Blobs are named by the hash of their bytes so two copies of one message share a
+/// file, which also means no single row owns one — they are reclaimed by a sweep of
+/// the blob area against the rows that still name a hash, not by the delete that
+/// dropped the last of those rows (`store-and-sync.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SweepReport {
+    /// Blob files removed because no row named their hash.
+    pub blobs_removed: usize,
+    /// Bytes those files occupied.
+    pub bytes_reclaimed: u64,
+}
+
+impl SweepReport {
+    /// Folds another namespace's counts into this one.
+    #[must_use]
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            blobs_removed: self.blobs_removed + other.blobs_removed,
+            bytes_reclaimed: self.bytes_reclaimed + other.bytes_reclaimed,
+        }
+    }
+}
+
 /// A planned match between an incoming synced object and an outstanding pending
 /// op (e.g. by generated `Message-ID`), resolved inside the apply transaction.
 ///

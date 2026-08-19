@@ -20,9 +20,10 @@
 //! the store's single connection serializes it atomically against any in-flight sync,
 //! and it advances no cursor, so a later delta sync resumes unaffected. It reuses the
 //! scope tombstone ([`scope_ops::tombstone`]), so the derived search/thread/occurrence
-//! rows go with each object. The lease-free body/source caches and the
-//! content-addressed raw blobs are left to size-based eviction and `VACUUM`, exactly as
-//! a normal tombstone and `forget_account` leave them.
+//! rows and the two lease-free content caches go with each object — the caches being the
+//! bulk of what the mail occupied. The blob each source row named is content-addressed and
+//! shared, so the files are reclaimed by [`SqliteStore::sweep_unreferenced_blobs`] and the
+//! freed database pages by [`SqliteStore::vacuum`], both of which a host runs after this.
 
 use engine_core::{
     ids::AccountId,

@@ -47,6 +47,7 @@ mod scope_ops;
 mod search_ops;
 mod source_ops;
 mod sql;
+mod sweep;
 mod window_ops;
 
 use core::fmt;

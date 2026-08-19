@@ -328,3 +328,86 @@ async fn a_server_supplied_snippet_is_left_alone_and_costs_no_derivation() {
             .collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn narrowing_depth_reclaims_the_body_and_blob_of_the_mail_it_drops() {
+    // Sync depth is the retention policy, so the space a narrower window frees is the
+    // point of it — and the caches are the bulk of that space, not the metadata rows.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("engine.sqlite");
+    let engine = Engine::open(&db).unwrap();
+    let provider = SimProvider::new(
+        vec![
+            message("old", "Old", "2026-01-15T09:00:00Z"),
+            message("recent", "Recent", "2026-06-20T09:00:00Z"),
+        ],
+        2,
+    );
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            responsive(),
+            &no_observer(),
+        )
+        .await;
+
+    // Warm both: each caches its text in SQLite and its raw source as a blob on disk.
+    let rows = engine.mail_missing_body(&[account()], 50).await.unwrap();
+    warm(&engine, &provider, &rows).await;
+    assert_eq!(source_blobs(&db), 2);
+
+    // Narrow the window past the January message, with no provider round trip.
+    let floor = engine_core::time::CalendarDate::new(2026, 4, 1).unwrap();
+    let pruned = engine
+        .prune_account_mail_outside_window(&account(), SyncWindow::since(floor))
+        .await
+        .unwrap();
+    assert_eq!(pruned.messages_removed, 1);
+
+    age_blobs(&db);
+    let swept = engine.sweep_unreferenced_blobs().await.unwrap();
+
+    // Exactly the dropped message's blob is gone; the survivor keeps its file and stays
+    // warm, so the sweep took the orphan rather than the cache.
+    assert_eq!(swept.blobs_removed, 1);
+    assert!(swept.bytes_reclaimed > 0, "freed no bytes");
+    assert_eq!(source_blobs(&db), 1);
+    assert!(
+        engine
+            .mail_missing_body(&[account()], 50)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the surviving message lost its cached body"
+    );
+}
+
+/// The raw-source blob files beside `db`.
+fn source_blobs(db: &std::path::Path) -> usize {
+    let mut root = db.file_name().unwrap().to_os_string();
+    root.push(".blobs");
+    std::fs::read_dir(db.with_file_name(root).join("sources"))
+        .map(|entries| entries.filter_map(Result::ok).count())
+        .unwrap_or_default()
+}
+
+/// Backdates the blobs past the sweep's grace period — which exists because a blob is
+/// written before the row naming it, so one written moments ago may be mid-write. A test
+/// that did not do this would prove only that the grace period works.
+fn age_blobs(db: &std::path::Path) {
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_hours(1);
+    let mut root = db.file_name().unwrap().to_os_string();
+    root.push(".blobs");
+    for entry in std::fs::read_dir(db.with_file_name(root).join("sources"))
+        .unwrap()
+        .flatten()
+    {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(entry.path())
+            .unwrap()
+            .set_modified(stale)
+            .unwrap();
+    }
+}

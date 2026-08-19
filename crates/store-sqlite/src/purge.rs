@@ -55,10 +55,11 @@ impl<C: Clock> SqliteStore<C> {
     /// clears only the cursors and lets the next sync reconcile the still-present
     /// objects, whereas this drops the objects too and forgets the scopes entirely.
     ///
-    /// The content-addressed raw-message blobs on disk are **not** deleted here: they
-    /// are deduplicated by content hash (a blob may back another account) and carry no
-    /// refcount, so they are left to the separate size-based eviction path
-    /// (`message_source.fetched_at`). A re-add re-adopts an identical blob on the next
+    /// The content-addressed blobs on disk are **not** deleted here: they are deduplicated
+    /// by content hash (a blob may back another account) and carry no refcount, so no row
+    /// owns one. They are reclaimed by
+    /// [`sweep_unreferenced_blobs`](Self::sweep_unreferenced_blobs), which a host runs
+    /// after this. A re-add before that sweep re-adopts an identical blob on the next
     /// on-demand fetch rather than re-downloading it.
     ///
     /// # Errors

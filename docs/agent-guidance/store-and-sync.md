@@ -514,8 +514,9 @@ through **separate, lease-free** traits in `engine-store` (beside `Store`), keye
 - **Text — `MessageBodyStore`** (`put_message_body`/`get_message_body`). The extracted
   body (plain + html) lives in the `message_body` table — small, the reading-view fast
   path (no disk read, no re-parse), and the **search** source. A trigger maintains
-  `message_body_fts` (FTS5 over the plain text). Because this index is lease-free and
-  sync never touches it, an IMAP re-snapshot cannot wipe it; `search_mail` matches it
+  `message_body_fts` (FTS5 over the plain text). Because this index is lease-free, an
+  IMAP re-snapshot cannot wipe it wholesale — sync reaches it only through the tombstone,
+  which drops the row for a message that is gone; `search_mail` matches it
   alongside the scope FTS (RRF-fused) and joins to the live `message` rows so stale rows
   for deleted messages drop out, and to `message_body.account` so IMAP keys that
   collide across accounts cannot cross over (`search.md`).
@@ -524,8 +525,12 @@ through **separate, lease-free** traits in `engine-store` (beside `Store`), keye
   `fetch_inline_parts`, `fetch_message_attachments`, and `fetch_message_attachment`
   (raw blob → one provider fetch if missing; best-effort raw caching). They surface as
   `Engine::message_body`, `message_inline_parts`, `message_attachments`, and
-  `message_attachment` (`engine-api.md`). Durable per-attachment blob entities, quota
-  eviction, and embeddings/RAG over the indexed text are later slices.
+  `message_attachment` (`engine-api.md`). Durable per-attachment blob entities and
+  embeddings/RAG over the indexed text are later slices.
+- **Both are bounded by sync depth, not by a size cap.** The scope tombstone removes a
+  message's cached body and source with it, so the caches hold exactly the window the host
+  chose to sync (below). A size cap survives only as a possible backstop for an account
+  synced over all time.
 - A host warming the cache in bulk (an offline-first client fetching every body in its
   synced window) plans its work with `Engine::mail_missing_body(accounts, limit)` —
   the list read's ranking (newest first) with the already-warm rows filtered out **in the
@@ -583,10 +588,33 @@ returning a `PruneReport { messages_removed }` (`engine-store`).
   accounts are untouched.
 - Like `forget_account` it is **not lease-gated** — the store's single connection serializes it
   atomically against any in-flight sync — and it **advances no cursor**, so a later delta sync
-  resumes unaffected (a delta brings new arrivals only and never re-adds the pruned tail). The
-  lease-free body/source caches and the content-addressed raw blobs are left to size-based
-  eviction and `VACUUM`, exactly as a normal tombstone and `forget_account` leave them; run
-  `vacuum` afterwards to reclaim the freed pages.
+  resumes unaffected (a delta brings new arrivals only and never re-adds the pruned tail).
+- The **caches follow the mail**: the scope tombstone drops the message's `message_body` and
+  `message_source` rows with it, so depth bounds the caches too. Afterwards run
+  `sweep_unreferenced_blobs` (the files) and `vacuum` (the database pages) — the two halves of
+  the space a prune frees, and the file half is far the larger one.
+
+## Reclaiming blobs: the delete is asymmetric
+
+A blob's name is the SHA-256 of its bytes, so two copies of one message share one file and **no
+row owns a file**. Dropping the last `message_source` row that names a hash therefore cannot
+delete it: another account's row may name the same hash. The file half is a mark-and-sweep —
+`SqliteStore::sweep_unreferenced_blobs` (`Engine::sweep_unreferenced_blobs`), returning a
+`SweepReport { blobs_removed, bytes_reclaimed }`.
+
+- It covers **every** namespace in `blob::NAMESPACES` (raw sources and contact photos). A
+  namespace missing from that list is a namespace that leaks, which is why it is one constant
+  rather than a call site per kind.
+- **Ordering is the safety.** A blob is written *before* the row that names it, so it lists the
+  blob area **first** and reads the live hashes second: a file written after the listing is not a
+  candidate at all. A five-minute grace period covers the remaining window (one directory scan),
+  and any file young enough to be mid-write is skipped.
+- It takes no lease and holds no transaction. A blob removed a moment early reads back as a
+  **cache miss** — `read_source` verifies the hash — so the caller re-fetches; it can never serve
+  wrong bytes.
+- A host runs it after anything that drops mail in quantity: a depth narrowing, a narrower-window
+  re-snapshot, or `forget_account`. Nothing calls it on a sync's own tombstones, so mail deleted
+  on the server leaves its blob until the next sweep.
 
 ## The outbox
 

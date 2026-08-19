@@ -10,12 +10,14 @@
 //! (`north-star.md`).
 
 use std::{
+    collections::HashSet,
     fmt, fs,
     io::Write,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
 
-use engine_store::Result;
+use engine_store::{Result, SweepReport};
 use sha2::{Digest, Sha256};
 use tempfile::{NamedTempFile, TempDir};
 
@@ -133,6 +135,104 @@ fn read_blob(root: &Path, namespace: &str, extension: &str, hash: &str) -> Resul
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(backend(err)),
     }
+}
+
+/// The blob namespaces and the extension each writes, in one place so a sweep covers
+/// every one of them: a namespace missing here is a namespace that leaks.
+pub(crate) const NAMESPACES: [(&str, &str); 2] = [("sources", "eml"), ("contact-photos", "blob")];
+
+/// How old a blob must be before a sweep may remove it.
+///
+/// A blob is written *before* the row that names it, so a file whose write is still in
+/// flight looks unreferenced. Listing before reading the live hashes narrows that window
+/// to one directory scan; this is the margin over it. Erring long costs a later reclaim,
+/// erring short costs the user a re-download.
+const SWEEP_GRACE: Duration = Duration::from_mins(5);
+
+/// One blob file a sweep may remove if no row names its hash.
+pub(crate) struct Candidate {
+    /// The file's SHA-256 name, matched against the hashes the store still holds.
+    pub(crate) hash: String,
+    path: PathBuf,
+    len: u64,
+}
+
+/// Every blob old enough to sweep, across all [`NAMESPACES`].
+///
+/// Collected **before** the caller reads the live hash set, so a blob written after this
+/// listing is not a candidate at all rather than one the grace period has to rescue. A
+/// namespace directory that does not exist yet contributes nothing.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`](engine_store::StoreError) on a non-`NotFound`
+/// filesystem failure.
+pub(crate) fn candidates(root: &Path, now: SystemTime) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    for (namespace, extension) in NAMESPACES {
+        let dir = root.join(namespace);
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(backend(err)),
+        };
+        for entry in entries {
+            let path = entry.map_err(backend)?.path();
+            // Anything but a `<hash>.<extension>` file is not ours to remove — the
+            // staging temp files a concurrent write is using carry no extension.
+            if path.extension().and_then(std::ffi::OsStr::to_str) != Some(extension) {
+                continue;
+            }
+            let Some(hash) = path.file_stem().and_then(std::ffi::OsStr::to_str) else {
+                continue;
+            };
+            let meta = fs::metadata(&path).map_err(backend)?;
+            let young = meta
+                .modified()
+                .ok()
+                .and_then(|at| now.duration_since(at).ok())
+                .is_none_or(|age| age < SWEEP_GRACE);
+            if young {
+                continue;
+            }
+            out.push(Candidate {
+                hash: hash.to_owned(),
+                path,
+                len: meta.len(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Removes every candidate whose hash is not in `live`, reporting what that reclaimed.
+///
+/// A file that vanished between the listing and here (a concurrent sweep, a host
+/// clearing its data directory) is not an error — it is already gone.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`](engine_store::StoreError) on a non-`NotFound`
+/// filesystem failure.
+pub(crate) fn remove_unreferenced(
+    candidates: &[Candidate],
+    live: &HashSet<String>,
+) -> Result<SweepReport> {
+    let mut report = SweepReport::default();
+    for candidate in candidates {
+        if live.contains(&candidate.hash) {
+            continue;
+        }
+        match fs::remove_file(&candidate.path) {
+            Ok(()) => {
+                report.blobs_removed += 1;
+                report.bytes_reclaimed += candidate.len;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(backend(err)),
+        }
+    }
+    Ok(report)
 }
 
 /// Lower-hex encodes bytes (the SHA-256 digest) into a filesystem-safe name.
