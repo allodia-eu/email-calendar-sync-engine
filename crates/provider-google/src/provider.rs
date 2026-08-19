@@ -146,7 +146,8 @@ impl Provider for GmailProvider {
         // A sync-depth window bounds the *snapshot* via `q: after:<floor>`. A delta
         // cannot carry one (`history.list` takes a `startHistoryId`, not a query), so a
         // relabelled old message is reported whatever its date; the engine drops it on
-        // apply (`SyncWindow::admits`), which is where the bound holds for every adapter.
+        // apply (`SyncWindow::admits`), which is where the delta's bound holds for every
+        // adapter. The snapshot's bound is this query, and is not re-checked there.
         let floor = window.floor();
         Box::pin(async_stream::try_stream! {
             let mut page_token: Option<PageToken> = None;

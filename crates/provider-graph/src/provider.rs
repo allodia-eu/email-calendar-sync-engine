@@ -159,7 +159,8 @@ impl Provider for GraphProvider {
         // A sync-depth window bounds a snapshot via a `receivedDateTime` `$filter`. A
         // delta cannot carry one (the `deltaLink` is opaque), so a message moved into the
         // folder is reported however old it is; the engine drops it on apply
-        // (`SyncWindow::admits`), which is where the bound holds for every adapter.
+        // (`SyncWindow::admits`), which is where the delta's bound holds for every adapter.
+        // The snapshot's bound is this `$filter`, and is not re-checked there.
         let floor = window.floor();
         Box::pin(async_stream::try_stream! {
             // Each Graph page is fetched whole over HTTP and re-chunked for incremental

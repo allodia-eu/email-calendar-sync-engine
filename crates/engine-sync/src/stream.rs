@@ -296,17 +296,21 @@ fn build_update(
         advance_to,
         ..
     } = chunk;
-    // The window bounds what is *stored*, not only what was fetched. A delta's arrivals are new
-    // to us rather than recent — every protocol reports a message filed into a folder as one —
-    // so without this, mail the user asked not to keep walks back in and no later pass removes
-    // it. A reconcile's `present` is the adapter's own in-window key set, and holds only keys,
-    // so the filter applies to the upserts alone.
-    let changed: Vec<Message> = changed
-        .into_iter()
-        .filter(|message| window.admits(message.received_at.or(message.sent_at)))
-        .collect();
     let update = match mode {
-        PassMode::Additive => SyncUpdate::delta(changed, removed),
+        // A delta's arrivals are new to *us* rather than recent — every protocol reports a
+        // message filed into a folder as one, and none of them can carry a date filter — so
+        // without this, mail the user asked not to keep walks back in and no later pass
+        // removes it. This is the only place that can say no: a delta has no present set, so
+        // nothing downstream ever revisits the decision.
+        PassMode::Additive => SyncUpdate::delta(admitted(changed, window), removed),
+        // A reconcile is **not** filtered here, and that is deliberate. Its `present` set is
+        // the adapter's own enumeration of the window, and the store tombstones by diffing
+        // against it, so the adapter already decided — with its server's date semantics, which
+        // are not ours. Re-deciding with a second rule can only disagree: IMAP `SINCE`
+        // compares `INTERNALDATE` in the *server's* timezone, so a message a snapshot
+        // deliberately asked for can read as out-of-window here and be dropped while its key
+        // stays in `present`. Depth on the snapshot path is the adapter's job, and
+        // `prune_account_mail_outside_window` is the backstop.
         PassMode::Reconcile => {
             present.extend(page_present);
             if advance_to.is_some() {
@@ -317,6 +321,17 @@ fn build_update(
         }
     };
     (update.with_patched(patched), advance_to)
+}
+
+/// The messages a window admits, by the date the store will sort and filter them on.
+fn admitted(changed: Vec<Message>, window: SyncWindow) -> Vec<Message> {
+    if !window.is_bounded() {
+        return changed;
+    }
+    changed
+        .into_iter()
+        .filter(|message| window.admits(message.received_at.or(message.sent_at)))
+        .collect()
 }
 
 /// The upserted objects of an update (a delta's `changed` or a snapshot's `objects`).
