@@ -337,23 +337,29 @@ pub const PREVIEW_MAX_CHARS: usize = 200;
 /// sender-and-subject rather than showing noise.
 #[must_use]
 pub fn preview_from_body(body: &engine_core::mail::MessageBody) -> Option<String> {
-    let collapsed = body
-        .plain()?
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if collapsed.is_empty() {
-        return None;
+    // Built up to the cap and stopped there, rather than collapsing the whole body and cutting
+    // the result down. A newsletter's text part runs to tens of kilobytes and this keeps 200
+    // characters of it, so the obvious `split_whitespace().collect().join(" ")` allocates the
+    // whole body twice over to discard nearly all of it — for every message whose body is read.
+    let mut preview = String::with_capacity(PREVIEW_MAX_CHARS);
+    let mut chars = 0usize;
+    for word in body.plain()?.split_whitespace() {
+        if chars == PREVIEW_MAX_CHARS {
+            break;
+        }
+        if chars > 0 {
+            preview.push(' ');
+            chars += 1;
+        }
+        for ch in word.chars() {
+            if chars == PREVIEW_MAX_CHARS {
+                break;
+            }
+            preview.push(ch);
+            chars += 1;
+        }
     }
-    Some(truncate_chars(&collapsed, PREVIEW_MAX_CHARS))
-}
-
-/// Truncates `s` to at most `max` characters on a char boundary, dropping any trailing space.
-fn truncate_chars(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        None => s.to_owned(),
-        Some((end, _)) => s[..end].trim_end().to_owned(),
-    }
+    (!preview.is_empty()).then_some(preview)
 }
 
 #[cfg(test)]
@@ -371,6 +377,23 @@ mod preview_tests {
         let preview = preview_from_body(&body).expect("text");
         assert!(preview.starts_with("line one line two"));
         assert_eq!(preview.chars().count(), PREVIEW_MAX_CHARS);
+    }
+
+    #[test]
+    fn a_long_body_is_not_collapsed_whole_just_to_keep_its_first_line() {
+        // The regression this guards is invisible in the output and only shows in the cost: a
+        // body that is collapsed and *then* cut allocates all of itself to keep 200 chars, on
+        // every message whose body is read. Asserted through the one observable consequence —
+        // the result is capped and the words are in order — plus a body far larger than the cap.
+        let word = "alpha ";
+        let body = MessageBody::new(Some(word.repeat(50_000)), None);
+        let preview = preview_from_body(&body).expect("text");
+        assert_eq!(preview.chars().count(), PREVIEW_MAX_CHARS);
+        assert!(preview.starts_with("alpha alpha"));
+        assert!(
+            !preview.ends_with(' '),
+            "no trailing separator: {preview:?}"
+        );
     }
 
     #[test]

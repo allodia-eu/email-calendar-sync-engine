@@ -290,3 +290,41 @@ async fn warming_a_body_fills_the_list_snippet_a_provider_never_sent() {
             .collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn a_server_supplied_snippet_is_left_alone_and_costs_no_derivation() {
+    // JMAP, Graph and Gmail all send a snippet, so for them warming a body must be a field test
+    // and nothing more — no walking the body, no store round trip. The observable half is that
+    // the server's text survives: deriving over it would replace every provider's snippet with
+    // ours, quietly, on the first body read.
+    let engine = Engine::open_in_memory().unwrap();
+    let mut sent = messages(2);
+    for message in &mut sent {
+        message.preview = Some("the server's own words".to_owned());
+    }
+    let provider = SimProvider::new(sent, 2);
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            responsive(),
+            &no_observer(),
+        )
+        .await;
+
+    let rows = engine.mail_window(&[account()], 10).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    warm(&engine, &provider, &rows).await;
+
+    let after = engine.mail_window(&[account()], 10).await.unwrap();
+    assert!(
+        after
+            .iter()
+            .all(|row| row.mail.preview.as_deref() == Some("the server's own words")),
+        "a warmed body must not overwrite the provider's snippet: {:?}",
+        after
+            .iter()
+            .map(|r| r.mail.preview.clone())
+            .collect::<Vec<_>>()
+    );
+}
