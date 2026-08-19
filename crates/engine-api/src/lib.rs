@@ -127,12 +127,12 @@ pub use engine_store::{
     MailListRow, OccurrenceRow, PendingOpState, PruneReport, SchemaStatus, SyncApplied,
     TzdataVersion,
 };
-use engine_sync::SyncError;
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
-    ContactSourceReport, ContactSyncReport, ContactWriteOutcome, EventSyncReport, HorizonExpansion,
-    IgnoreCommits, MailEditOutcome, MailSyncReport, PeopleRebuildReport, ProgressSnapshot,
-    StreamTuning, SubmitOutcome, SyncCommit, SyncObserver, ThreadRebuildReport, UnexpandableEvent,
+    ContactSourceReport, ContactSyncReport, ContactWriteOutcome, EventSyncReport, FolderSync,
+    HorizonExpansion, IgnoreCommits, MailEditOutcome, MailSyncReport, PeopleRebuildReport,
+    ProgressSnapshot, StreamTuning, SubmitOutcome, SyncCommit, SyncError, SyncObserver,
+    ThreadRebuildReport, UnexpandableEvent,
 };
 pub use scheduling::InboundScheduling;
 
