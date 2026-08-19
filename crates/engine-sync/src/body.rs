@@ -60,17 +60,24 @@ where
         body
     };
 
-    // **The one place a derived list snippet is recorded.** A provider that sends its own
-    // (JMAP, Graph, Gmail) has already filled the column and the store's `preview IS NULL` gate
-    // keeps it; IMAP sends none, so the snippet has to come from the body — and this is the
-    // only function that holds one.
+    // **The one place a derived list snippet is recorded**, and only for a message that has no
+    // snippet of its own. JMAP, Graph and Gmail all send one, so for them this is a field test
+    // and nothing more — no derivation, no store round trip. IMAP sends none, so the snippet has
+    // to come from the body, and this is the only function that holds one.
     //
     // It is here rather than in the sync so that *every* road reaches it: a backfill's rows, a
-    // delta's new arrival, and a message opened on demand all end up fetching their body, and
-    // the alternative — reading bodies during the sync — is an extra fetch per message on
-    // exactly the pass that must not do that. The cost of putting it on the read path is one
-    // indexed UPDATE that matches nothing once the snippet is set.
-    if let Some(preview) = engine_mime::preview_from_body(&body) {
+    // delta's new arrival, and a message opened on demand all end up fetching their body. The
+    // alternative — reading bodies during the sync — is an extra fetch per message on exactly
+    // the pass that must not do one.
+    //
+    // The gate is the message's own preview rather than the stored row's, which costs no read
+    // and is right for every message that has never had one. It does mean re-deriving on a
+    // *repeat* open of an IMAP message, because the payload keeps the `None` the provider sent
+    // while the row now has a snippet; the store's `preview IS NULL` catches that write. Bounded
+    // by how often someone reopens a message, against a store read on every body fetched.
+    if message.preview.is_none()
+        && let Some(preview) = engine_mime::preview_from_body(&body)
+    {
         let _ = store.set_mail_preview(account, key, &preview).await;
     }
     Ok(body)
