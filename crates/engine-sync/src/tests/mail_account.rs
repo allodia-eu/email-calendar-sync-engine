@@ -24,7 +24,7 @@ fn folders(names: &[&str], log: &Arc<Mutex<Vec<MailboxId>>>) -> Vec<FakeMail> {
 /// Counts what an observer is told, which is all a host needs for "syncing, 5 of 10".
 #[derive(Default)]
 struct Watcher {
-    started: Mutex<Vec<usize>>,
+    started: Mutex<Vec<(usize, Option<MailboxId>)>>,
     finished: Mutex<Vec<(SyncScope, bool)>>,
     ended: Mutex<usize>,
 }
@@ -32,8 +32,13 @@ struct Watcher {
 impl SyncObserver for Watcher {
     fn committed(&self, _commit: &SyncCommit<'_>) {}
 
-    fn account_sync_started(&self, _account: &AccountId, folders: usize) {
-        self.started.lock().unwrap().push(folders);
+    fn account_sync_started(
+        &self,
+        _account: &AccountId,
+        folders: usize,
+        inbox: Option<&MailboxId>,
+    ) {
+        self.started.lock().unwrap().push((folders, inbox.cloned()));
     }
 
     fn folder_sync_finished(&self, _account: &AccountId, scope: &SyncScope, synced: bool) {
@@ -94,9 +99,17 @@ async fn the_observer_is_told_the_folder_count_and_each_folder_as_it_lands() {
     )
     .await;
 
-    // The denominator arrives once, after the folder list — before it there is nothing to
-    // divide by, which is why it is not reported at the call.
-    assert_eq!(*watcher.started.lock().unwrap(), vec![2]);
+    // The denominator and the Inbox arrive together, once, after the folder list — before it
+    // there is nothing to divide by and no role to look up. A host filing streaming rows by
+    // folder needs the Inbox now, not when the pass ends.
+    let started = watcher.started.lock().unwrap().clone();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].0, 2, "both folders");
+    assert_eq!(
+        started[0].1.as_ref().map(MailboxId::as_str),
+        Some("INBOX"),
+        "and the account's Inbox, resolved from the folder list this pass just synced"
+    );
     let finished = watcher.finished.lock().unwrap();
     assert_eq!(finished.len(), 2, "one per folder");
     assert!(finished.iter().all(|(_, synced)| *synced));
@@ -123,6 +136,6 @@ async fn a_pass_with_no_providers_still_opens_and_closes_its_progress() {
 
     assert!(report.is_ok());
     assert!(report.folders.is_empty());
-    assert_eq!(*watcher.started.lock().unwrap(), vec![0]);
+    assert_eq!(*watcher.started.lock().unwrap(), vec![(0, None)]);
     assert_eq!(*watcher.ended.lock().unwrap(), 1);
 }

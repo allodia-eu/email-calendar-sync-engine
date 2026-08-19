@@ -163,7 +163,7 @@ where
 {
     let started = Instant::now();
     let Some(first) = providers.first() else {
-        observer.account_sync_started(account, 0);
+        observer.account_sync_started(account, 0, None);
         observer.account_sync_finished(account);
         return MailSyncReport {
             account_steps: Ok(()),
@@ -192,8 +192,9 @@ where
         return fail_early(observer, account, repaired, mailboxes, err, started);
     }
 
-    let order = inbox_first(store, account, providers).await;
-    observer.account_sync_started(account, order.len());
+    let inbox = stored_inbox(store, account).await;
+    let order = inbox_first(account, providers, inbox.as_ref());
+    observer.account_sync_started(account, order.len(), inbox.as_ref());
 
     let folders = stream::iter(order.into_iter().map(|index| {
         let provider = &providers[index];
@@ -236,7 +237,7 @@ fn fail_early<O: SyncObserver>(
     err: SyncError,
     started: Instant,
 ) -> MailSyncReport {
-    observer.account_sync_started(account, 0);
+    observer.account_sync_started(account, 0, None);
     observer.account_sync_finished(account);
     MailSyncReport {
         account_steps: repaired.and(Err(err)),
@@ -254,22 +255,17 @@ fn fail_early<O: SyncObserver>(
 ///
 /// A provider whose scope names no mailbox (JMAP, Gmail, Graph — one provider for the account)
 /// cannot be ordered against the others and does not need to be: there is only one.
-async fn inbox_first<P: Provider, S: StoreRead>(
-    store: &S,
+fn inbox_first<P: Provider>(
     account: &AccountId,
     providers: &[P],
+    inbox: Option<&MailboxId>,
 ) -> Vec<usize> {
     let mut order: Vec<usize> = (0..providers.len()).collect();
-    // One provider is already in the only order it has, and reading the folder list to discover
-    // that would be a store round trip per pass for every JMAP, Gmail and Graph account.
-    if providers.len() < 2 {
-        return order;
-    }
-    let Some(inbox) = stored_inbox(store, account).await else {
+    let Some(inbox) = inbox else {
         return order;
     };
     // Stable, so everything that is not the Inbox keeps the order the caller gave.
-    order.sort_by_key(|&index| !names_mailbox(&providers[index].email_scope(account), &inbox));
+    order.sort_by_key(|&index| !names_mailbox(&providers[index].email_scope(account), inbox));
     order
 }
 

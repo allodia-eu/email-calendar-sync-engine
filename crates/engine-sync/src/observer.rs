@@ -8,7 +8,7 @@
 //! engine side); a host clones only what it keeps.
 
 use engine_core::{
-    ids::{AccountId, ProviderKey},
+    ids::{AccountId, MailboxId, ProviderKey},
     mail::Message,
     sync::SyncScope,
 };
@@ -66,14 +66,28 @@ pub trait SyncObserver: Send + Sync {
     /// Receives one durable commit for a scope.
     fn committed(&self, commit: &SyncCommit<'_>);
 
-    /// One account's mail pass has begun, and will sync `folders` of them.
+    /// One account's mail pass has begun, and will sync `folders` of them. `inbox` is the
+    /// account's Inbox, when it has one.
     ///
-    /// The count is known only after the folder list has synced, which is why this arrives then
-    /// rather than at the call — a host that wants "5 of 10" has no denominator before it.
+    /// Both arrive only after the folder list has synced, which is why this is reported here
+    /// rather than at the call — before it there is no denominator to divide by and no folder
+    /// list to find a role in.
+    ///
+    /// **The Inbox is here because the pass closed the gap a host used to reach through.** The
+    /// folder list and the folders were once two calls, so a host could look up the Inbox
+    /// between them; one call leaves nowhere to stand, and a host that files streaming rows by
+    /// folder needs the answer *before* those rows arrive, not after the pass. The engine has
+    /// already resolved it to order the fan-out, so saying so costs nothing.
     ///
     /// Defaulted to nothing, like the two below: an observer that only splices rows says so by
     /// not implementing them, rather than by writing three empty bodies.
-    fn account_sync_started(&self, _account: &AccountId, _folders: usize) {}
+    fn account_sync_started(
+        &self,
+        _account: &AccountId,
+        _folders: usize,
+        _inbox: Option<&MailboxId>,
+    ) {
+    }
 
     /// One folder of that pass has finished, whether or not it succeeded.
     ///
