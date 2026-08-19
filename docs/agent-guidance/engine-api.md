@@ -273,6 +273,24 @@ Step 6 lands in small, tested slices. Order and status:
    each other, and work put in the convenience ran in the tests and nowhere else — which
    is exactly how the thread-index repair came to be unreachable in the product while
    every test passed.
+
+5. **Targeted refresh — `Engine::refresh_folders(providers, account, tuning, observer)`.**
+   Syncs exactly the folders given and **discovers nothing**: no folder-list sync, no
+   repair, no recipient backfill, no coverage record, and `mailboxes` in the report is
+   `None`. For a caller that already knows which folder changed — an `IDLE` push, a
+   webhook, a folder the user just opened.
+
+   It is a **different operation, not a second way to run a pass**, and that distinction
+   is what keeps it from re-creating the problem above: its contract is that it does no
+   account-level work, so anything that must happen once per account goes in `sync_mail`
+   and only there, beside the repair and the recipient steps.
+
+   It exists because discovery is most of what a targeted refresh would otherwise pay.
+   Measured on a steady-state single-folder pass against a live server, the folder list
+   was **57%** of the work with `LIST-STATUS` and **86%** without — and in round trips,
+   which is what a remote server charges for, a server that cannot answer `LIST-STATUS`
+   is asked for a `STATUS` **per folder**: one extra trip becomes fourteen on a
+   thirteen-folder account, on the path whose job is making new mail appear at once.
 5. **Bindings.** `bindings-uniffi` (Kotlin/Swift) and `bindings-ffi-c` (C ABI)
    over `engine-api`. These need `unsafe`/codegen, so they override the workspace
    `unsafe_code = "forbid"` lint locally (isolated + documented, per `AGENTS.md`),

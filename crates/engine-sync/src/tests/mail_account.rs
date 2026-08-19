@@ -139,3 +139,69 @@ async fn a_pass_with_no_providers_still_opens_and_closes_its_progress() {
     assert_eq!(*watcher.started.lock().unwrap(), vec![(0, None)]);
     assert_eq!(*watcher.ended.lock().unwrap(), 1);
 }
+
+#[tokio::test]
+async fn a_targeted_refresh_syncs_the_folder_and_discovers_nothing() {
+    // What a push notification does: the folder that changed, and nothing else. The folder list
+    // is the expensive half and the push has already answered the question it would ask.
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let providers = folders(&["INBOX", "Archive"], &log);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let watcher = Watcher::default();
+
+    let report = refresh_folders(
+        core::slice::from_ref(&providers[1]),
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &watcher,
+    )
+    .await;
+
+    assert!(report.is_ok(), "{report:?}");
+    assert_eq!(report.folders.len(), 1, "only the folder it was given");
+    assert_eq!(report.upserted(), 1);
+    assert!(
+        report.mailboxes.is_none(),
+        "no folder list was looked at, and saying `Ok` here would tell a caller the server was \
+         reached when nothing asked it"
+    );
+    // The folder list is what discovery would have written, and nothing did.
+    assert!(
+        store
+            .object_keys(&providers[1].mailbox_scope(&account()))
+            .await
+            .unwrap()
+            .is_empty(),
+        "a targeted refresh must not discover folders"
+    );
+    // A host still gets the lifecycle, so a status hint behaves the same either way.
+    assert_eq!(watcher.started.lock().unwrap().len(), 1);
+    assert_eq!(*watcher.ended.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn a_targeted_refresh_leaves_the_thread_index_repair_to_a_full_pass() {
+    // The repair is account-level, so it belongs to `sync_mail` alone. A refresh that ran it
+    // would be doing account work under a contract that says it does none — the split this
+    // whole change exists to remove.
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let providers = folders(&["INBOX"], &log);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    let report = refresh_folders(
+        &providers,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
+    )
+    .await;
+
+    assert!(report.account_steps.is_ok());
+    assert!(report.mailboxes.is_none());
+}

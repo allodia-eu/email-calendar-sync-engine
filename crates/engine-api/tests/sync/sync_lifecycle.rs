@@ -19,7 +19,16 @@ async fn syncs_mail_from_a_provider() {
         )
         .await;
     // First sync is a snapshot: both containers and both members are upserted.
-    assert_eq!(report.mailboxes.as_ref().unwrap().upserted, 2);
+    assert_eq!(
+        report
+            .mailboxes
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upserted,
+        2
+    );
     assert_eq!(report.upserted(), 2);
     assert_eq!(report.tombstoned(), 0);
 }
@@ -139,7 +148,11 @@ async fn mail_provider_failure_surfaces_as_a_sync_error() {
     // The folder list is the first thing a provider is asked for, so a provider that fails
     // everything fails there — and the report says *that*, rather than collapsing the pass into
     // one error that cannot say which scope broke.
-    assert!(report.mailboxes.is_err(), "got {:?}", report.mailboxes);
+    assert!(
+        report.mailboxes.as_ref().unwrap().is_err(),
+        "got {:?}",
+        report.mailboxes
+    );
     assert!(!report.is_ok());
 }
 
@@ -197,6 +210,8 @@ async fn concurrent_same_scope_sync_reports_busy() {
     let err = racer_result
         .mailboxes
         .as_ref()
+        .unwrap()
+        .as_ref()
         .expect_err("the racer must lose the scope race");
     assert!(err.is_busy(), "got {err:?}");
 }
@@ -252,7 +267,16 @@ async fn abandon_sync_leases_recovers_an_aborted_sync_without_losing_cursor() {
             &quiet(),
         )
         .await;
-    assert_eq!(resumed.mailboxes.as_ref().unwrap().upserted, 0);
+    assert_eq!(
+        resumed
+            .mailboxes
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upserted,
+        0
+    );
     assert_eq!(resumed.upserted(), 0);
 }
 
@@ -374,7 +398,16 @@ async fn an_account_pass_syncs_the_folder_list_and_then_its_mail() {
         .await;
 
     assert!(report.is_ok());
-    assert_eq!(report.mailboxes.as_ref().unwrap().upserted, 2);
+    assert_eq!(
+        report
+            .mailboxes
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upserted,
+        2
+    );
     assert_eq!(report.upserted(), 2);
     assert_eq!(report.folders_synced(), 1);
     assert_eq!(engine.mailboxes(&account()).await.unwrap().len(), 2);

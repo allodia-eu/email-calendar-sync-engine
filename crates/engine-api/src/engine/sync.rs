@@ -12,8 +12,8 @@ use engine_store::{PruneReport, Store};
 use engine_sync::{
     CalendarSyncReport, ContactSourceReport, ContactSyncReport, EventSyncReport, HorizonExpansion,
     MailSyncReport, PeopleRebuildReport, StreamTuning, SyncObserver, ThreadRebuildReport,
-    expand_calendar_horizon, rebuild_thread_index, reconcile_calendar_events, sync_address_books,
-    sync_calendar, sync_contact_cards, sync_contacts, sync_mail,
+    expand_calendar_horizon, rebuild_thread_index, reconcile_calendar_events, refresh_folders,
+    sync_address_books, sync_calendar, sync_contact_cards, sync_contacts, sync_mail,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -89,6 +89,42 @@ impl Engine {
         observer: &O,
     ) -> MailSyncReport {
         sync_mail(
+            providers,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            tuning,
+            observer,
+        )
+        .await
+    }
+
+    /// Refreshes exactly the folders given, discovering nothing.
+    ///
+    /// The targeted counterpart of [`Engine::sync_mail`], for a caller that already knows which
+    /// folder changed — an IMAP `IDLE` push, a webhook, a folder the user just opened. It runs no
+    /// account-level work: no folder-list sync, no thread-index repair, no recipient backfill, no
+    /// coverage record. [`MailSyncReport::mailboxes`](engine_sync::MailSyncReport) is `None`,
+    /// which is neither success nor failure — nothing was asked of the server, so a caller
+    /// weighing reachability must read the folders instead.
+    ///
+    /// **Discovery is most of what a targeted refresh would otherwise pay.** Measured on a
+    /// steady-state single-folder pass against a live server, the folder list was 57% of the work
+    /// where `LIST-STATUS` is available and 86% where it is not — and in round trips, which is
+    /// what a remote server actually charges for, a server without `LIST-STATUS` is asked for a
+    /// `STATUS` per folder: one extra trip becomes fourteen on a thirteen-folder account.
+    ///
+    /// Use [`Engine::sync_mail`] for a periodic or user-triggered pass; new account-level work
+    /// goes there and only there.
+    pub async fn refresh_folders<P: Provider, O: SyncObserver>(
+        &self,
+        providers: &[P],
+        account: &AccountId,
+        tuning: StreamTuning,
+        observer: &O,
+    ) -> MailSyncReport {
+        refresh_folders(
             providers,
             &self.store,
             account,

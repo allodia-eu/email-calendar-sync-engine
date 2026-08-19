@@ -31,7 +31,16 @@ async fn sync_mail_persists_containers_members_and_index() {
         &IgnoreCommits,
     )
     .await;
-    assert_eq!(report.mailboxes.as_ref().unwrap().upserted, 2);
+    assert_eq!(
+        report
+            .mailboxes
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upserted,
+        2
+    );
     assert_eq!(report.upserted(), 2);
 
     // Containers landed under the mailbox scope.
