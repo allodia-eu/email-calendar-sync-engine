@@ -90,10 +90,12 @@ impl Engine {
     /// `Message-ID`/`In-Reply-To`/`References` headers (so a sent reply and its received original
     /// share a thread). A no-op for providers that assign thread ids themselves.
     ///
-    /// **Nothing is required to call this.** [`Engine::sync_mail`] threads what it applies inside
-    /// the same transaction, and repairs the one shape an arrival cannot — a message left in the
-    /// graph with no thread by the migration that introduced it — by asking the store and
-    /// rebuilding when the answer is yes. So an ordinary pass needs nothing here, and calling it
+    /// **Nothing is required to call this.** A sync threads what it applies inside the same
+    /// transaction, and repairs the one shape an arrival cannot — a message left in the graph with
+    /// no thread by the migration that introduced it — by asking the store and rebuilding when the
+    /// answer is yes. Both account-level entrypoints do it, [`Engine::sync_mail`] and
+    /// [`Engine::sync_mailbox_list`], so a host that fans folders out concurrently is covered as
+    /// well as one that does not. So an ordinary pass needs nothing here, and calling it
     /// anyway would re-read every payload in the account to confirm an answer already written.
     /// This stays public for the case a support answer calls for: an index someone has reason to
     /// doubt. It writes no thread id over mail that is already right.
@@ -347,6 +349,11 @@ impl Engine {
     /// ([`Engine::sync_folder_email_streamed`]) **concurrently**: the folder-list scope
     /// is shared, so syncing it once up front lets the independent per-folder email
     /// scopes proceed in parallel without contending over it.
+    ///
+    /// Being the account-level step of that form, this is also where the thread index is repaired
+    /// if the store holds mail the v10 migration left ungrouped — see
+    /// [`Engine::rebuild_thread_index`]. In steady state that is one indexed lookup finding
+    /// nothing.
     ///
     /// # Errors
     ///

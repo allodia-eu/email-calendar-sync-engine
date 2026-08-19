@@ -492,9 +492,11 @@ dependencies = [
  "engine-recurrence",
  "engine-store",
  "futures-util",
+ "rusqlite",
  "serde",
  "serde_json",
  "store-sqlite",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

@@ -60,6 +60,39 @@ use crate::SyncError;
 
 mod grouping;
 
+/// Rebuilds the thread index when, and only when, the store holds mail the incremental rule
+/// cannot reach.
+///
+/// A message that is in the message-id graph but carries no thread is invisible to an arriving
+/// sibling: the component lookup joins through the thread id a stored row already carries, so a
+/// row with none is never a candidate to merge onto and stays alone forever. The v10 migration is
+/// what leaves them — it fills the graph from stored payloads without assigning, so any mail the
+/// old whole-account pass had not yet grouped arrives at v10 graphed and ungrouped.
+///
+/// **This runs on both account-level entrypoints, because hosts use both.** A host either calls
+/// [`sync_mail`], or calls this crate's split form — [`sync_mailbox_list`] once, then
+/// [`sync_email_streamed`] per folder, concurrently. Putting the repair only in the first left it
+/// unreachable for every host that streams, which is the shape a real client uses. It is not in
+/// the per-folder sync: that runs N at a time over one account, and N concurrent whole-account
+/// rebuilds would contend for the same mail scopes.
+///
+/// Triggered by the damage rather than by a flag someone has to set and clear, so it also catches
+/// a rebuild that failed halfway. In steady state it is one indexed lookup that finds nothing.
+pub(crate) async fn repair_thread_index_if_damaged<S>(
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+) -> Result<(), SyncError>
+where
+    S: Store + StoreRead,
+{
+    if store.has_ungrouped_graphed_mail(account).await? {
+        rebuild_thread_index(store, account, worker, ttl).await?;
+    }
+    Ok(())
+}
+
 use grouping::derive_thread_assignments;
 
 /// What one [`rebuild_thread_index`] pass changed.
