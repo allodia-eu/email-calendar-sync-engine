@@ -42,22 +42,37 @@ where
 {
     let key = message.id.key();
     // Fast path: the extracted text is already in SQLite.
-    if let Some(body) = store.get_message_body(account, key).await? {
-        return Ok(body);
-    }
-
-    // Otherwise we need the raw bytes — from the on-disk blob, or one provider fetch.
-    let (from_provider, raw) = match store.get_message_source(account, key).await? {
-        Some(cached) => (false, cached),
-        None => (true, provider.fetch_message_source(account, message).await?),
+    let cached = store.get_message_body(account, key).await?;
+    let body = if let Some(body) = cached {
+        body
+    } else {
+        // Otherwise we need the raw bytes — from the on-disk blob, or one provider fetch.
+        let (from_provider, raw) = match store.get_message_source(account, key).await? {
+            Some(cached) => (false, cached),
+            None => (true, provider.fetch_message_source(account, message).await?),
+        };
+        let body = engine_mime::extract_body(&raw);
+        // Best-effort caching; the read already succeeded.
+        if from_provider {
+            let _ = store.put_message_source(account, key, raw).await;
+        }
+        let _ = store.put_message_body(account, key, &body).await;
+        body
     };
-    let body = engine_mime::extract_body(&raw);
 
-    // Best-effort caching; the read already succeeded.
-    if from_provider {
-        let _ = store.put_message_source(account, key, raw).await;
+    // **The one place a derived list snippet is recorded.** A provider that sends its own
+    // (JMAP, Graph, Gmail) has already filled the column and the store's `preview IS NULL` gate
+    // keeps it; IMAP sends none, so the snippet has to come from the body — and this is the
+    // only function that holds one.
+    //
+    // It is here rather than in the sync so that *every* road reaches it: a backfill's rows, a
+    // delta's new arrival, and a message opened on demand all end up fetching their body, and
+    // the alternative — reading bodies during the sync — is an extra fetch per message on
+    // exactly the pass that must not do that. The cost of putting it on the read path is one
+    // indexed UPDATE that matches nothing once the snippet is set.
+    if let Some(preview) = engine_mime::preview_from_body(&body) {
+        let _ = store.set_mail_preview(account, key, &preview).await;
     }
-    let _ = store.put_message_body(account, key, &body).await;
     Ok(body)
 }
 

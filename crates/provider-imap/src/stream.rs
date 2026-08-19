@@ -146,7 +146,7 @@ where
         let final_cursor = loop {
             // Reuse the SELECT already done above — the mailbox stays selected across
             // the pass, so the page path must not re-SELECT.
-            let mut page = sync_page_selected(
+            let page = sync_page_selected(
                 &mut conn,
                 mailbox,
                 &select,
@@ -157,12 +157,6 @@ where
                 since.as_deref(),
             )
             .await?;
-            // A delta/reset page is small or rare, so fill list previews (IMAP has no
-            // server snippet) before re-chunking — unlike the large backfill, which
-            // streams metadata only and fetches bodies on demand. Only whole objects
-            // are candidates, so a flag-only delta reads no bodies at all: its rows
-            // are state changes, and they keep the preview the store already holds.
-            crate::preview::hydrate_previews(&mut conn, &mut page.changed).await;
             total = total.or(page.total);
             let pass_mode = *mode.get_or_insert(match page.kind {
                 SyncKind::Snapshot => PassMode::Reconcile,

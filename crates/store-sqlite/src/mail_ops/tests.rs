@@ -446,3 +446,46 @@ fn ungrouped_graphed_mail_is_told_apart_from_threaded_and_from_bare() {
         "and it is scoped to the account that has it"
     );
 }
+
+/// A derived snippet fills an empty column and never replaces a provider's own.
+///
+/// The gate lives in the SQL because the caller — holding a body it has just extracted — cannot
+/// know whether the row already has one without asking. Getting this wrong would be quiet and
+/// bad: JMAP, Graph and Gmail all send a server snippet, and a body warmed afterwards would
+/// overwrite every one of them with our locally derived text.
+#[test]
+fn a_derived_preview_fills_an_empty_column_and_spares_a_providers_own() {
+    let conn = open();
+    seed_minimal(&conn, "scope-a", "a", "imap-1", None);
+    seed_minimal(&conn, "scope-a", "a", "jmap-1", Some("from the server"));
+
+    for key in ["imap-1", "jmap-1"] {
+        conn.execute(
+            "UPDATE message SET preview = ?3
+              WHERE account = ?1 AND provider_key = ?2 AND preview IS NULL",
+            ("a", key, "derived locally"),
+        )
+        .expect("update");
+    }
+
+    let preview = |key: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT preview FROM message WHERE account = 'a' AND provider_key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .expect("read")
+    };
+    assert_eq!(preview("imap-1").as_deref(), Some("derived locally"));
+    assert_eq!(preview("jmap-1").as_deref(), Some("from the server"));
+}
+
+/// One message row with just enough columns to carry a preview.
+fn seed_minimal(conn: &Connection, scope: &str, acct: &str, key: &str, preview: Option<&str>) {
+    conn.execute(
+        "INSERT INTO message (scope_key, provider_key, account, flags, has_attachment, preview)
+         VALUES (?1, ?2, ?3, 0, 0, ?4)",
+        (scope, key, acct, preview),
+    )
+    .expect("seed");
+}

@@ -74,6 +74,27 @@ pub trait MessageBodyStore {
         body: &MessageBody,
     ) -> Result<()>;
 
+    /// Records the list snippet derived from a message's body — **only if the row has none**.
+    ///
+    /// Gated in the store rather than at the call site, because "does this message already have
+    /// a snippet" is a question about a row and the caller holding the body does not know the
+    /// answer without asking. A provider that supplies its own (JMAP, Graph, Gmail) therefore
+    /// keeps it: the server's snippet is the better one, and this must never overwrite it.
+    ///
+    /// Lease-free, like [`put_message_body`](Self::put_message_body) beside it. A snippet is a
+    /// property of one message with no bearing on any other, and the whole-object upsert
+    /// `COALESCE`s this column, so a concurrent sync of the same message cannot blank it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`](crate::StoreError) on a backend failure.
+    async fn set_mail_preview(
+        &self,
+        account: &AccountId,
+        key: &ProviderKey,
+        preview: &str,
+    ) -> Result<()>;
+
     /// Returns the cached body text for `(account, key)`, or `None` if no body has
     /// been extracted yet.
     ///

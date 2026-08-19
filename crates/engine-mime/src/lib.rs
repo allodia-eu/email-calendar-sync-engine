@@ -319,3 +319,63 @@ mod tests {
         ));
     }
 }
+
+/// The longest list snippet kept for a message.
+///
+/// [`Message::preview`](engine_core::mail::Message::preview) is documented as ≤256 chars and a
+/// list row shows about two lines, so a little under that is plenty and keeps the store lean.
+pub const PREVIEW_MAX_CHARS: usize = 200;
+
+/// Derives a compact, whitespace-collapsed list snippet from an extracted body.
+///
+/// **The one place this rule lives.** IMAP has no server snippet, so one is derived from the
+/// body — and the body arrives by two different roads (the adapter reading it during a delta
+/// page, the engine caching it for offline reading), which would otherwise each grow their own
+/// idea of what a snippet is and disagree on the same message.
+///
+/// `None` when the message carries no usable text: a row with nothing to say degrades to
+/// sender-and-subject rather than showing noise.
+#[must_use]
+pub fn preview_from_body(body: &engine_core::mail::MessageBody) -> Option<String> {
+    let collapsed = body
+        .plain()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(truncate_chars(&collapsed, PREVIEW_MAX_CHARS))
+}
+
+/// Truncates `s` to at most `max` characters on a char boundary, dropping any trailing space.
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        None => s.to_owned(),
+        Some((end, _)) => s[..end].trim_end().to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use engine_core::mail::MessageBody;
+
+    use super::{PREVIEW_MAX_CHARS, preview_from_body};
+
+    #[test]
+    fn a_snippet_collapses_whitespace_and_stops_on_a_char_boundary() {
+        let body = MessageBody::new(
+            Some(format!("  line one\n\n  line   two  {}", "é".repeat(400))),
+            None,
+        );
+        let preview = preview_from_body(&body).expect("text");
+        assert!(preview.starts_with("line one line two"));
+        assert_eq!(preview.chars().count(), PREVIEW_MAX_CHARS);
+    }
+
+    #[test]
+    fn a_body_with_no_text_has_no_snippet() {
+        assert!(preview_from_body(&MessageBody::new(Some(String::new()), None)).is_none());
+        assert!(preview_from_body(&MessageBody::new(Some("   \n\t ".to_owned()), None)).is_none());
+    }
+}

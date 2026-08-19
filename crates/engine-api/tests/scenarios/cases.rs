@@ -248,3 +248,45 @@ fn key(value: &str) -> ProviderKey {
 fn no_observer() -> impl engine_api::SyncObserver {
     engine_api::IgnoreCommits
 }
+
+#[tokio::test]
+async fn warming_a_body_fills_the_list_snippet_a_provider_never_sent() {
+    // IMAP sends no server snippet, so a synced row has an empty preview and the list shows
+    // sender and subject with nothing under them. The snippet has to be derived from the body,
+    // and the body warming pass is the one place every message's body passes through —
+    // a backfill's rows, a delta's arrival and an on-demand open all end up here.
+    //
+    // This is the bug the first real cold sync surfaced: 5,022 of 5,022 IMAP rows had no
+    // preview, while every provider-supplied one did.
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = SimProvider::new(messages(3), 3);
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            responsive(),
+            &no_observer(),
+        )
+        .await;
+
+    let before = engine.mail_window(&[account()], 10).await.unwrap();
+    assert_eq!(before.len(), 3);
+    assert!(
+        before.iter().all(|row| row.mail.preview.is_none()),
+        "the fake sends no snippet, so the sync cannot have invented one"
+    );
+
+    warm(&engine, &provider, &before).await;
+
+    let after = engine.mail_window(&[account()], 10).await.unwrap();
+    assert!(
+        after
+            .iter()
+            .all(|row| row.mail.preview.as_deref() == Some("warmed body")),
+        "every warmed row carries the snippet its body yielded: {:?}",
+        after
+            .iter()
+            .map(|r| r.mail.preview.clone())
+            .collect::<Vec<_>>()
+    );
+}
