@@ -4,7 +4,7 @@
 //! (calendar) scope. The public async wrapper's unbounded no-op is covered too.
 
 use engine_core::{
-    ids::AccountId,
+    ids::{AccountId, MailboxId},
     sync::{JmapDataType, SyncScope, SyncWindow},
     time::CalendarDate,
 };
@@ -31,6 +31,15 @@ fn mail_scope(account: &str) -> SyncScope {
     }
 }
 
+/// A second **mail** scope for `account` — an IMAP mailbox, so one account can hold
+/// the same provider key in two scopes (`search_domain() == Mail`).
+fn imap_mail_scope(account: &str, mailbox: &str) -> SyncScope {
+    SyncScope::ImapMailbox {
+        account: self::account(account),
+        mailbox: MailboxId::try_from(mailbox).unwrap(),
+    }
+}
+
 /// A JMAP calendar scope for `account` (`search_domain() == Calendar`, so a prune
 /// skips it).
 fn calendar_scope(account: &str) -> SyncScope {
@@ -54,8 +63,9 @@ fn seed_scope(conn: &Connection, scope: &SyncScope) -> String {
 
 /// Seeds one mail object into `scope_key` with its object payload, a full-text row
 /// (subject term probeable via `fts_index MATCH`), a `message` row carrying
-/// `date` (or `NULL`), and one address + membership junction row — so a tombstone
-/// can be verified to clear *every* derived kind, not just the object.
+/// `date` (or `NULL`), one address + membership junction row, and both on-demand
+/// content caches (body text and raw-source metadata) — so a tombstone can be
+/// verified to clear *every* derived kind and both caches, not just the object.
 fn seed_mail(conn: &Connection, scope_key: &str, key: &str, date: Option<&str>, subject: &str) {
     conn.execute(
         "INSERT INTO object (scope_key, provider_key, payload) VALUES (?1, ?2, '{}')",
@@ -84,6 +94,26 @@ fn seed_mail(conn: &Connection, scope_key: &str, key: &str, date: Option<&str>, 
         "INSERT INTO membership (scope_key, provider_key, kind, value)
          VALUES (?1, ?2, 'mailbox', 'inbox')",
         (scope_key, key),
+    )
+    .unwrap();
+    seed_caches(conn, scope_key, key, subject);
+}
+
+/// Seeds the two lease-free content caches for one message: the extracted body text
+/// (whose `message_body_fts` shadow a trigger maintains, so `subject` doubles as a
+/// probeable body term) and the raw-source metadata pointing at a blob hash. Both are
+/// keyed by `(account, provider_key)`, resolved from the scope.
+fn seed_caches(conn: &Connection, scope_key: &str, key: &str, subject: &str) {
+    conn.execute(
+        "INSERT INTO message_body (account, provider_key, plain, fetched_at)
+         VALUES ((SELECT account FROM sync_scope WHERE scope_key = ?1), ?2, ?3, '2026-06-01T00:00:00Z')",
+        (scope_key, key, format!("body of {subject}")),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_source (account, provider_key, content_hash, fetched_at)
+         VALUES ((SELECT account FROM sync_scope WHERE scope_key = ?1), ?2, ?3, '2026-06-01T00:00:00Z')",
+        (scope_key, key, format!("hash-{key}")),
     )
     .unwrap();
 }
@@ -279,4 +309,67 @@ async fn bounded_prune_on_an_empty_store_removes_nothing() {
         .await
         .unwrap();
     assert_eq!(report, PruneReport::default());
+}
+
+/// Counts rows in an account-keyed content cache for one `(account, provider_key)`.
+fn cached(conn: &Connection, table: &str, account: &str, key: &str) -> i64 {
+    conn.query_row(
+        &format!("SELECT count(*) FROM {table} WHERE account = ?1 AND provider_key = ?2"),
+        (account, key),
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Counts `message_body_fts` rows matching `term` (proving the FTS5 shadow followed
+/// the `message_body` delete through its trigger).
+fn body_matches(conn: &Connection, term: &str) -> i64 {
+    conn.query_row(
+        "SELECT count(*) FROM message_body_fts WHERE message_body_fts MATCH ?1",
+        [term],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn pruned_mail_takes_its_cached_body_and_source_with_it() {
+    let (mut conn, ..) = seed();
+    prune_account_mail(&mut conn, &account("a"), &floor().to_string()).unwrap();
+
+    // The caches are the bulk of what an account occupies on disk, so they follow the
+    // message out of the window rather than outliving it.
+    for table in ["message_body", "message_source"] {
+        assert_eq!(cached(&conn, table, "a", "old"), 0, "{table} kept old");
+        assert_eq!(cached(&conn, table, "a", "new"), 1, "{table} lost new");
+    }
+    assert_eq!(body_matches(&conn, "alpha"), 0);
+    assert_eq!(body_matches(&conn, "newterm"), 1);
+}
+
+#[test]
+fn a_copy_still_live_in_another_scope_keeps_its_cached_body_and_source() {
+    let (mut conn, ..) = seed();
+    // The caches are keyed by `(account, provider_key)` while a tombstone is per scope,
+    // so a provider whose key spans folders would lose a live message's body when one
+    // folder dropped its copy.
+    let second = seed_scope(&conn, &imap_mail_scope("a", "archive"));
+    conn.execute(
+        "INSERT INTO object (scope_key, provider_key, payload) VALUES (?1, 'old', '{}')",
+        [&second],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message (scope_key, provider_key, account, date_utc, flags, has_attachment)
+         VALUES (?1, 'old', 'a', '2026-06-20T09:00:00Z', 0, 0)",
+        [&second],
+    )
+    .unwrap();
+
+    prune_account_mail(&mut conn, &account("a"), &floor().to_string()).unwrap();
+
+    for table in ["message_body", "message_source"] {
+        assert_eq!(cached(&conn, table, "a", "old"), 1, "{table} dropped old");
+    }
+    assert_eq!(body_matches(&conn, "alpha"), 1);
 }

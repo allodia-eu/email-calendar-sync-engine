@@ -24,7 +24,7 @@ use rusqlite::{Connection, Transaction};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{contact_ops, convert, derived_ops, sql};
+use crate::{contact_ops, convert, derived_ops, source_ops, sql};
 
 /// An owned, type-erased projection of a [`SyncUpdate`], built before the work is
 /// offloaded to the blocking thread (where the generic object type `T` is gone).
@@ -421,8 +421,9 @@ fn upsert_object(tx: &Transaction<'_>, scope_key: &str, key: &str, payload: &str
     Ok(())
 }
 
-/// Removes an object and the derived rows keyed by it. Returns whether the object
-/// existed (so snapshot/delta tombstone counts match the reference store).
+/// Removes an object, the derived rows keyed by it, and its cached content. Returns
+/// whether the object existed (so snapshot/delta tombstone counts match the reference
+/// store).
 ///
 /// Shared with the local-prune path (`crate::prune`), which tombstones an account's
 /// out-of-window mail exactly as a snapshot reconciliation would.
@@ -433,6 +434,7 @@ pub(crate) fn tombstone(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Res
         (scope_key, key),
     )? > 0;
     derived_ops::delete_derived_rows(tx, scope_key, key)?;
+    source_ops::drop_cached_content(tx, scope_key, key)?;
     Ok(existed)
 }
 
