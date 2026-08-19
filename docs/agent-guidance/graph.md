@@ -109,8 +109,10 @@ each over its own `GraphClient` on the same token. The mail layers:
   not cheaply resumable mid-pass, so intermediate chunks **hold** the cursor and a crash
   re-runs the pass. A `SyncWindow { since }` passed **per sync** bounds the initial
   snapshot via a `receivedDateTime ge` `$filter`, so a large folder syncs only recent
-  mail; a delta ignores it (new arrivals are recent, and the deltaLink carries the
-  window). `GraphProvider::with_since` survives only as the `default_sync_window` the
+  mail. A delta cannot carry a filter (the `deltaLink` is opaque), so a message moved into
+  the folder is reported however old it is; the engine drops it on apply
+  (`SyncWindow::admits`, `store-and-sync.md`), which is where the bound holds for every
+  adapter. `GraphProvider::with_since` survives only as the `default_sync_window` the
   whole-scope `sync_email` drain fetches under. The `chunk_size` knob is the commit
   granularity; the `fetch_batch` knob has no lever yet (page size is server-controlled —
   see Known limitations).

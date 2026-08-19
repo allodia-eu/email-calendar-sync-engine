@@ -26,10 +26,11 @@
 //! since the last sync, but a bulk server-side change returns every changed message in
 //! one response, so this does **not** honor the `limit`/paging the snapshot path uses
 //! (a documented limitation; paging the delta is a later refinement). It also fetches
-//! from UID 1 regardless of any sync-depth window; a state change for an out-of-window
-//! message is now harmless, because applying one is an `UPDATE` that matches no row,
-//! but a new arrival still enters unwindowed (`imap-smtp.md`). The new baseline is the
-//! SELECT-time `HIGHESTMODSEQ`, already encoded into `next_cursor` by
+//! from UID 1 regardless of any sync-depth window, and that is safe from both halves: a
+//! state change for an out-of-window message applies as an `UPDATE` matching no row, and
+//! an arrival above `UIDNEXT` — which is what filing an old message into the folder mints,
+//! since IMAP has no in-place edit — is dropped on apply by `SyncWindow::admits`. The new baseline
+//! is the SELECT-time `HIGHESTMODSEQ`, already encoded into `next_cursor` by
 //! [`crate::sync::sync_page_selected`] before this is called.
 
 use std::cmp::Reverse;

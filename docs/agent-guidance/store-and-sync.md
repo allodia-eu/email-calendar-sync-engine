@@ -389,9 +389,32 @@ Graph `$top`); `chunk_size` bounds how many messages accumulate before a chunk i
 committed and reported. A large `fetch_batch` with a small `chunk_size` gives *both*
 few round trips *and* row-as-it-arrives commits (`StreamTuning::responsive` is the
 interactive default, `bulk` the throughput one). `window` is the per-sync **depth**
-(`SyncWindow { since }`, `engine-core`) — a provider-neutral date floor bounding a
-snapshot/backfill (a delta is new-arrivals-only and never narrowed), passed per sync so
-a host changes depth without reconnecting providers.
+(`SyncWindow { since }`, `engine-core`) — a provider-neutral date floor, passed per sync so
+a host changes depth without reconnecting providers. It bounds the pass twice, and the two
+are different jobs:
+
+- **What is fetched.** Each adapter maps the floor to its protocol's date filter on the
+  snapshot/backfill: IMAP `UID SEARCH SINCE`, JMAP an `Email/query` `after`, Graph a
+  `receivedDateTime ge` `$filter`, Gmail `q: after:`. **No delta can carry one** — a
+  `deltaLink`, a `startHistoryId` and `Email/changes` all take a cursor, not a query.
+- **What is stored.** The orchestrator drops any incoming message the window does not admit
+  (`SyncWindow::admits`) before the apply. This is not belt-and-braces: a delta's "new
+  arrival" is new to *us*, not recent. IMAP has no in-place edit, so filing a three-year-old
+  message into a folder mints a UID above the cursor; Graph, Gmail and JMAP report a move
+  the same way. Unfiltered, mail the user asked this device not to keep walks back in
+  through every protocol, and no later pass removes it, because a delta never re-lists what
+  it did not change.
+
+`admits` compares **dates**, inclusively, against `received_at` falling back to `sent_at` —
+the same value `MailRow::date_utc` carries, so what was fetched and what is kept cannot
+disagree — and admits **undated** mail, which is not provably outside the window.
+
+One consequence to expect at the boundary: a provider's own filter may be a shade wider than
+the engine's. IMAP `SINCE` compares `INTERNALDATE` in the **server's** timezone, so a
+snapshot can return a message whose UTC date falls the day before the floor; the engine drops
+it, and the pass stores fewer than it fetched. That is the window doing its job — the message
+is outside the depth the user chose — but it means `upserted < fetched` is normal on a
+windowed pass and not a sign of a lost message.
 
 **Change events (`SyncObserver` / `SyncCommit`).** After every committed chunk the
 orchestrator calls the caller's `SyncObserver::committed` with a `SyncCommit { scope,

@@ -156,9 +156,10 @@ impl Provider for GraphProvider {
         _fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
-        // A sync-depth window bounds a snapshot via a `receivedDateTime` `$filter`; a
-        // delta ignores it (new arrivals are recent, and the deltaLink carries the
-        // window).
+        // A sync-depth window bounds a snapshot via a `receivedDateTime` `$filter`. A
+        // delta cannot carry one (the `deltaLink` is opaque), so a message moved into the
+        // folder is reported however old it is; the engine drops it on apply
+        // (`SyncWindow::admits`), which is where the bound holds for every adapter.
         let floor = window.floor();
         Box::pin(async_stream::try_stream! {
             // Each Graph page is fetched whole over HTTP and re-chunked for incremental

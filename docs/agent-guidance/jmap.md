@@ -104,9 +104,11 @@ specifics they implement against the Stalwart fixture. Read it before touching
 - **Sync-depth window (JMAP now windows).** `stream_email` takes a `SyncWindow { since }`
   **per sync** and threads it into the snapshot `Email/query` as an `after` filter on
   `receivedAt` (RFC 8621 §4.4.1), so a large mailbox syncs only recent mail — JMAP is no
-  longer the "can't window" provider (the depth is no longer baked in at construction). A
-  delta ignores the window (new arrivals are recent by definition). `default_sync_window`
-  (the full history) backs the whole-scope `sync_email` drain.
+  longer the "can't window" provider (the depth is no longer baked in at construction).
+  `Email/changes` takes no filter, so a delta carries an old message moved into scope; the
+  engine drops it on apply (`SyncWindow::admits`, `store-and-sync.md`), which is where the
+  bound holds for every adapter. `default_sync_window` (the full history) backs the
+  whole-scope `sync_email` drain.
 - **Delta vs snapshot.** First sync (no cursor) is a snapshot; thereafter a delta,
   recovering to a snapshot on a `cannotCalculateChanges` method error (mapped to
   `FailureClass::NeedsResync`) — recovery happens on the first page, so a recovered

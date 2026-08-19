@@ -186,7 +186,7 @@ where
             let total = chunk.total;
             let is_reconcile_final = chunk.is_reconcile_final();
             let projected = Instant::now();
-            let (update, advance_to) = build_update(chunk, &mut present);
+            let (update, advance_to) = build_update(chunk, tuning.window, &mut present);
             let mut derived = derive_messages(changed_of(&update));
             for change in update.patched() {
                 derived.push_state_change(project_state_change(change));
@@ -284,6 +284,7 @@ impl RunningApplied {
 /// how a message moved into Sent by a state change was invisible to the recipient observations.
 fn build_update(
     chunk: EmailChunk,
+    window: SyncWindow,
     present: &mut BTreeSet<ProviderKey>,
 ) -> (SyncUpdate<Message>, Option<SyncState>) {
     let EmailChunk {
@@ -295,6 +296,15 @@ fn build_update(
         advance_to,
         ..
     } = chunk;
+    // The window bounds what is *stored*, not only what was fetched. A delta's arrivals are new
+    // to us rather than recent — every protocol reports a message filed into a folder as one —
+    // so without this, mail the user asked not to keep walks back in and no later pass removes
+    // it. A reconcile's `present` is the adapter's own in-window key set, and holds only keys,
+    // so the filter applies to the upserts alone.
+    let changed: Vec<Message> = changed
+        .into_iter()
+        .filter(|message| window.admits(message.received_at.or(message.sent_at)))
+        .collect();
     let update = match mode {
         PassMode::Additive => SyncUpdate::delta(changed, removed),
         PassMode::Reconcile => {
