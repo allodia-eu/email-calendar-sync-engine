@@ -8,7 +8,7 @@ use engine_core::{
 };
 use engine_provider::{ContactsProvider, Provider};
 use engine_recurrence::Horizon;
-use engine_store::{PruneReport, Store};
+use engine_store::{PruneReport, Store, SweepReport};
 use engine_sync::{
     CalendarSyncReport, ContactSourceReport, ContactSyncReport, EventSyncReport, HorizonExpansion,
     MailSyncReport, PeopleRebuildReport, StreamTuning, SyncObserver, ThreadRebuildReport,
@@ -244,9 +244,10 @@ impl Engine {
     /// The destructive counterpart of [`reset`](Self::reset): reset only clears cursors
     /// so the next sync reconciles the still-present objects; this drops the objects and
     /// forgets the scopes outright. Run it after the account is detached from the
-    /// runtime, with no sync of it in flight. The content-addressed raw-message blobs on
-    /// disk are left to size-based eviction (they are deduplicated and carry no
-    /// refcount).
+    /// runtime, with no sync of it in flight. The content-addressed blobs on disk are
+    /// deduplicated and carry no refcount, so no row owns one; follow this with
+    /// [`sweep_unreferenced_blobs`](Self::sweep_unreferenced_blobs) to reclaim the ones
+    /// this account was the last to name.
     ///
     /// # Errors
     ///
@@ -267,9 +268,11 @@ impl Engine {
     /// It keeps in-window and undated mail (an undated message is not provably out of
     /// window), non-mail data, account metadata, and every other account; each removed
     /// message takes its derived search/thread/occurrence rows with it (the same
-    /// tombstone a sync applies). An unbounded `window` is a no-op. It advances no
-    /// cursor, so a later network sync resumes normally; run [`vacuum`](Self::vacuum)
-    /// afterwards to reclaim the freed pages. Returns a
+    /// tombstone a sync applies) **and its cached body and raw source**, which are the bulk
+    /// of what the mail occupied. An unbounded `window` is a no-op. It advances no cursor,
+    /// so a later network sync resumes normally; follow it with
+    /// [`sweep_unreferenced_blobs`](Self::sweep_unreferenced_blobs) and
+    /// [`vacuum`](Self::vacuum) to reclaim the freed files and pages. Returns a
     /// [`PruneReport`](engine_store::PruneReport) with the count removed.
     ///
     /// # Errors
@@ -284,6 +287,29 @@ impl Engine {
             .store
             .prune_account_mail_outside_window(account, window)
             .await?)
+    }
+
+    /// Deletes every content-addressed blob no store row names any more — the raw
+    /// message sources (and contact photos) left behind when the mail that cached them
+    /// was removed.
+    ///
+    /// Blobs are named by the hash of their bytes so two copies of one message share one
+    /// file, which means no row owns a file and the delete that drops the last row naming
+    /// a hash cannot free it. A host therefore runs this after anything that drops mail in
+    /// quantity — [`prune_account_mail_outside_window`](Self::prune_account_mail_outside_window),
+    /// a narrower-window re-snapshot, or [`forget_account`](Self::forget_account) — and
+    /// pairs it with [`vacuum`](Self::vacuum), which reclaims the database half of the same
+    /// space. Raw sources run 1–15 MB apiece, so this is the larger half.
+    ///
+    /// Safe to run at any time: it takes no lease, and a blob removed a moment early reads
+    /// back as a cache miss the caller re-fetches, never as wrong bytes. Returns a
+    /// [`SweepReport`](engine_store::SweepReport) with the count and bytes freed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a filesystem or backend failure.
+    pub async fn sweep_unreferenced_blobs(&self) -> Result<SweepReport, ApiError> {
+        Ok(self.store.sweep_unreferenced_blobs().await?)
     }
 
     /// Syncs one account's calendars from `provider`: calendar containers first,

@@ -216,13 +216,21 @@ impl Provider for SimProvider {
     async fn fetch_message_source(
         &self,
         _account: &AccountId,
-        _message: &Message,
+        message: &Message,
     ) -> ProviderResult<RawMime> {
         if self.offline.load(Ordering::SeqCst) {
             return Err(ProviderError::retryable("account is offline"));
         }
+        // The key rides in a header, not the body: the blob area is content-addressed, so
+        // sources identical across messages would dedupe to one file and hide anything a
+        // test wants to say about per-message blobs — while the extracted body text (and
+        // so the preview) must stay the same for every message.
         Ok(RawMime::new(
-            b"Content-Type: text/plain\r\n\r\nwarmed body".to_vec(),
+            format!(
+                "Content-Type: text/plain\r\nX-Fixture-Key: {}\r\n\r\nwarmed body",
+                message.id.key().as_str()
+            )
+            .into_bytes(),
         ))
     }
 }
