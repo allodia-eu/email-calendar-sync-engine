@@ -289,6 +289,29 @@ uncovered lines: `cargo llvm-cov -p <crate> --all-features --show-missing-lines`
 
 If a command cannot run, say exactly why and what remains unverified.
 
+## Chained work goes in a stack, not in parallel PRs off `main`
+
+**A PR that depends on another sets its base to that branch, never to `main`.**
+
+```sh
+gh pr create --base <the-branch-below>
+```
+
+[`.claude/skills/gh-stack`](.claude/skills/gh-stack) wraps the `gh stack` extension, which keeps
+the chain rebased and the bases pointed at each other for you.
+
+Merge bottom-up; GitHub retargets the rest of the stack automatically as each one lands.
+
+The failure this prevents is invisible until the first merge, which is why it is written down.
+Branch B off branch A and open both against `main`, and B's diff silently contains A's commits.
+Nothing complains — both PRs read fine, and CI is green on both. Then A is merged with **rebase**
+or **squash**, which gives its commits new SHAs on `main`, and B is still carrying the old ones:
+every PR above the one that landed conflicts at once, in changes their authors never touched. The
+same branches with the right bases would have needed no intervention at all.
+
+The tell that you are about to do this: a PR whose "files changed" includes work you know belongs
+to a different review. Check that before opening, not after merging.
+
 ## Breaking changes
 Don't be afraid to make breaking changes. We're in early product development and prefer
 a breaking change over workarounds/patchwork if that's cleaner for the future.
