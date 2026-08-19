@@ -261,6 +261,13 @@ Step 6 lands in small, tested slices. Order and status:
    `committed` alone. A closure is a `SyncObserver` via the blanket impl, and
    `IgnoreCommits` is the no-op sink.
 
+   Each `FolderSync` also carries a `SyncTiming` — how long that folder spent **fetching**
+   (the network), **deriving** (projecting rows) and **storing** (the apply). They do not
+   sum to its `elapsed`; the remainder is the scope lease and the bookkeeping between
+   chunks. Reported rather than logged, for the reason in `AGENTS.md`: a log line is the
+   host's product surface, a duration is a fact, and this is the same seam
+   `ConnectObserver` uses.
+
    **It returns a `MailSyncReport`, not a `Result`**, because a partial failure is the
    ordinary case: `account_steps` (a **store** fault, never a network one), `mailboxes`,
    and one `FolderSync` per folder with its own result and elapsed time. Collapsing

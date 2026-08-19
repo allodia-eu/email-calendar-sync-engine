@@ -18,7 +18,7 @@
 //! start; a reconciling pass holds the cursor until its final chunk tombstones
 //! (rare, restarts on crash).
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, time::Instant};
 
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
@@ -30,7 +30,10 @@ use engine_provider::{EmailChunk, PassMode, Provider};
 use engine_store::{ApplyBatch, LeaseRequest, Store, StoreError, StoreRead, SyncApplied};
 use futures_util::StreamExt;
 
-use crate::{MAX_STALE_RECLAIMS, SyncCommit, SyncError, SyncObserver, derive_messages, recipients};
+use crate::{
+    MAX_STALE_RECLAIMS, SyncCommit, SyncError, SyncObserver, derive_messages,
+    mail_account::SyncTiming, recipients,
+};
 
 /// How a streaming sync runs: the depth window, plus how it separates network
 /// batching from commit granularity.
@@ -107,20 +110,41 @@ impl Default for StreamTuning {
 /// chunk. A `StaleLease` abandons the partial stream and restarts from a fresh claim;
 /// the checkpointed (additive) or held (reconcile) cursor makes that safe, and the
 /// adapter reconciles its own transport on the next fetch.
+pub(crate) struct FolderPass<'a, S, O> {
+    /// Where the chunks land.
+    pub(crate) store: &'a S,
+    /// The lease every scope in this pass claims under.
+    pub(crate) req: &'a LeaseRequest,
+    /// Depth window, fetch batching and commit granularity.
+    pub(crate) tuning: StreamTuning,
+    /// Told about every committed chunk.
+    pub(crate) observer: &'a O,
+    /// The account's Sent mailboxes, resolved once for the whole pass.
+    pub(crate) sent: &'a BTreeSet<MailboxId>,
+}
+
+/// Streams one folder's mail into the store, filling `timing` as it goes.
+///
+/// Everything that is the same for every folder of a pass travels in [`FolderPass`], so what
+/// varies per call is the folder's provider, the account, and where its measurements go.
 pub(crate) async fn stream_email<P, S, O>(
     provider: &P,
-    store: &S,
     account: &AccountId,
-    req: &LeaseRequest,
-    tuning: StreamTuning,
-    observer: &O,
-    sent: &BTreeSet<MailboxId>,
+    pass: &FolderPass<'_, S, O>,
+    timing: &mut SyncTiming,
 ) -> Result<SyncApplied, SyncError>
 where
     P: Provider,
     S: Store + StoreRead,
     O: SyncObserver,
 {
+    let FolderPass {
+        store,
+        req,
+        tuning,
+        observer,
+        sent,
+    } = *pass;
     let scope = provider.email_scope(account);
     let mut reclaims = 0u32;
     'restart: loop {
@@ -142,7 +166,10 @@ where
             tuning.chunk_size,
         );
         loop {
-            let Some(item) = stream.next().await else {
+            let awaited = Instant::now();
+            let next = stream.next().await;
+            timing.add_fetching(awaited);
+            let Some(item) = next else {
                 // The stream ended cleanly: an additive pass has committed and
                 // checkpointed its final chunk, so the cursor is already current.
                 store.release_sync_scope(lease).await?;
@@ -158,11 +185,14 @@ where
             let count = chunk.changed.len();
             let total = chunk.total;
             let is_reconcile_final = chunk.is_reconcile_final();
+            let projected = Instant::now();
             let (update, advance_to) = build_update(chunk, &mut present);
             let mut derived = derive_messages(changed_of(&update));
             for change in update.patched() {
                 derived.push_state_change(project_state_change(change));
             }
+            timing.add_deriving(projected);
+            let stored = Instant::now();
             let observations =
                 match recipients::observations(store, account, &scope, &update, sent).await {
                     Ok(observations) => observations,
@@ -173,7 +203,9 @@ where
                 };
             let batch = ApplyBatch::with_cursor(&update, &derived, &[], advance_to.as_ref())
                 .with_recipient_observations(&observations);
-            match store.apply_sync_update(&lease, batch).await {
+            let applied_result = store.apply_sync_update(&lease, batch).await;
+            timing.add_storing(stored);
+            match applied_result {
                 Ok(applied) => {
                     totals.add(applied);
                     fetched += count;
