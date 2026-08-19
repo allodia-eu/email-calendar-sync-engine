@@ -397,24 +397,27 @@ are different jobs:
   snapshot/backfill: IMAP `UID SEARCH SINCE`, JMAP an `Email/query` `after`, Graph a
   `receivedDateTime ge` `$filter`, Gmail `q: after:`. **No delta can carry one** — a
   `deltaLink`, a `startHistoryId` and `Email/changes` all take a cursor, not a query.
-- **What is stored.** The orchestrator drops any incoming message the window does not admit
-  (`SyncWindow::admits`) before the apply. This is not belt-and-braces: a delta's "new
-  arrival" is new to *us*, not recent. IMAP has no in-place edit, so filing a three-year-old
-  message into a folder mints a UID above the cursor; Graph, Gmail and JMAP report a move
-  the same way. Unfiltered, mail the user asked this device not to keep walks back in
-  through every protocol, and no later pass removes it, because a delta never re-lists what
-  it did not change.
+- **What a `PassMode::Additive` delta stores.** The orchestrator drops any incoming message
+  the window does not admit (`SyncWindow::admits`) before the apply. A delta's "new arrival"
+  is new to *us*, not recent: IMAP has no in-place edit, so filing a three-year-old message
+  into a folder mints a UID above the cursor; Graph, Gmail and JMAP report a move the same
+  way. Unfiltered, mail the user asked this device not to keep walks back in through every
+  protocol, and no later pass removes it, because a delta never re-lists what it did not
+  change. This is the only place that can say no — a delta has no present set, so nothing
+  downstream revisits the decision.
+
+**A `PassMode::Reconcile` snapshot is not filtered, deliberately.** Its `present` set *is* the
+adapter's enumeration of the window, and the store tombstones by diffing against it, so the
+adapter has already decided — with its server's date semantics, which are not the engine's.
+Re-deciding with a second rule can only disagree: IMAP `SINCE` compares `INTERNALDATE` in the
+**server's** timezone, so a message the snapshot deliberately asked for can read as
+out-of-window here and be dropped *while its key stays in `present`* — absent from the store
+and never tombstoned either. Depth on the snapshot path is the adapter's job, and
+`prune_account_mail_outside_window` is the backstop when a host wants it enforced locally.
 
 `admits` compares **dates**, inclusively, against `received_at` falling back to `sent_at` —
-the same value `MailRow::date_utc` carries, so what was fetched and what is kept cannot
-disagree — and admits **undated** mail, which is not provably outside the window.
-
-One consequence to expect at the boundary: a provider's own filter may be a shade wider than
-the engine's. IMAP `SINCE` compares `INTERNALDATE` in the **server's** timezone, so a
-snapshot can return a message whose UTC date falls the day before the floor; the engine drops
-it, and the pass stores fewer than it fetched. That is the window doing its job — the message
-is outside the depth the user chose — but it means `upserted < fetched` is normal on a
-windowed pass and not a sign of a lost message.
+the same value `MailRow::date_utc` carries — and admits **undated** mail, which is not provably
+outside the window.
 
 **Change events (`SyncObserver` / `SyncCommit`).** After every committed chunk the
 orchestrator calls the caller's `SyncObserver::committed` with a `SyncCommit { scope,

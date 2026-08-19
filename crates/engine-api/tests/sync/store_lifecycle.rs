@@ -209,6 +209,37 @@ async fn a_delta_cannot_re_admit_mail_from_outside_the_window() {
 }
 
 #[tokio::test]
+async fn a_snapshot_is_the_adapters_call_and_is_not_second_guessed_here() {
+    // The counterpart of the test above, and the reason the filter is delta-only. A
+    // reconcile carries a present set, and the store tombstones by diffing against it, so
+    // the adapter has already decided what the window holds — using its server's date
+    // semantics, not ours. IMAP `SINCE` compares `INTERNALDATE` in the *server's* timezone,
+    // so re-deciding here would drop a message the snapshot deliberately asked for while its
+    // key stayed in `present`: absent from the store, and never tombstoned either.
+    let engine = Engine::open_in_memory().unwrap();
+    let floor = engine_core::time::CalendarDate::new(2026, 4, 1).unwrap();
+    let provider = FakeProvider {
+        messages: vec![dated_message("old", "old@h", &[], "2023-02-01T09:00:00Z")],
+        ..FakeProvider::new()
+    };
+
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain().within(SyncWindow::since(floor)),
+            &quiet(),
+        )
+        .await;
+
+    assert_eq!(
+        engine.messages(&account()).await.unwrap().len(),
+        1,
+        "a snapshot's own enumeration was overruled"
+    );
+}
+
+#[tokio::test]
 async fn an_unbounded_window_stores_every_arrival_however_old() {
     // The filter is the window's, not a freshness rule of its own: with no floor there is
     // nothing outside it, and an account synced over all time keeps what it is sent.

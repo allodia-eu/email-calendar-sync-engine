@@ -247,7 +247,8 @@ impl Provider for JmapProvider {
         // A sync-depth window bounds a snapshot via `receivedAt` (RFC 8621 §4.4.1). A
         // delta carries no filter — `Email/changes` takes none — so an old message moved
         // into scope is reported as a change; the engine drops it on apply
-        // (`SyncWindow::admits`), which is where the bound holds for every adapter.
+        // (`SyncWindow::admits`), which is where the delta's bound holds for every adapter.
+        // The snapshot's bound is this filter, and is not re-checked there.
         let filter = window
             .floor()
             .map(|date| json!({ "after": format!("{date}T00:00:00Z") }));

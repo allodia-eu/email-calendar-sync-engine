@@ -441,9 +441,10 @@ is authoritative for the `provider-caldav` calendar client.
   message in one response and one transaction. Per-page streaming of the delta is a later
   refinement. It still fetches `1:*` regardless of the sync-depth window, which is correct:
   `VANISHED` needs `1:*` to report already-expunged UIDs, and the window must restrict only
-  the *upserts*. It does — in the orchestrator, for every adapter at once
+  the *upserts*. It does — in the orchestrator, for every adapter's **delta** at once
   (`SyncWindow::admits`, `store-and-sync.md`), so an out-of-window UID above the cursor
-  cannot re-enter the store. An *unsolicited* flag-only `FETCH` (no `ENVELOPE`) that the server
+  cannot re-enter the store. The snapshot path is not re-checked there: its bound is the
+  `UID SEARCH SINCE` above, in the server's own date semantics. An *unsolicited* flag-only `FETCH` (no `ENVELOPE`) that the server
   interleaves mid-response is dropped, so it can never overwrite a stored message's
   metadata; the change it signals rides a later `CHANGEDSINCE`. A `* VANISHED` set larger
   than the `MAX_VANISHED` cap (2²⁰, the adversarial-allocation guard) is truncated — an

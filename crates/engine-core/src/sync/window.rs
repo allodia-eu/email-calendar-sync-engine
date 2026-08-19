@@ -13,13 +13,17 @@ use crate::time::{CalendarDate, UtcDateTime};
 /// protocol's date filter: IMAP `UID SEARCH SINCE <date>`, JMAP an `Email/query`
 /// `after` filter on `receivedAt`, Microsoft Graph a `receivedDateTime ge` filter.
 ///
-/// It bounds what a pass **fetches** and, through [`admits`](Self::admits), what the engine
-/// **stores**. The two are not the same job: a delta's "new arrivals" are new to *us*, not
-/// necessarily recent. IMAP has no in-place edit, so filing a three-year-old message into a
+/// It bounds what a pass **fetches**, and — through [`admits`](Self::admits) — what a **delta**
+/// is allowed to store. The two are not the same job: a delta's "new arrivals" are new to *us*,
+/// not necessarily recent. IMAP has no in-place edit, so filing a three-year-old message into a
 /// folder mints a UID above the cursor and the delta carries it as an arrival; Graph, Gmail and
 /// JMAP deltas report a moved message the same way. Left unfiltered, mail the user asked this
 /// device not to keep walks back in through every protocol, and no later pass removes it —
 /// a delta never re-lists what it did not change.
+///
+/// A **snapshot** is not filtered against this: its present set is the adapter's own enumeration
+/// of the window, in its server's date semantics, and the store tombstones by diffing against
+/// it (`store-and-sync.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SyncWindow {
     /// The oldest date to fetch, inclusive, or `None` for the full history.
