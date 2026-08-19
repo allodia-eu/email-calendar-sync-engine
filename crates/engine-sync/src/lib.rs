@@ -153,8 +153,9 @@ where
 /// sync would cause — letting the independent per-folder email scopes proceed in
 /// parallel without fighting over it.
 ///
-/// Being that form's account-level step, it is also where
-/// [`repair_thread_index_if_damaged`] runs — the per-folder syncs are concurrent and cannot.
+/// Being that form's account-level step, it is also where the thread index is repaired if the
+/// store holds mail the v10 migration left ungrouped ([`rebuild_thread_index`]) — the per-folder
+/// syncs are concurrent and cannot.
 ///
 /// # Errors
 ///
