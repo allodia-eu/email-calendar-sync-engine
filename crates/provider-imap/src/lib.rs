@@ -71,7 +71,6 @@ mod mutate;
 mod parse;
 mod parse_qresync;
 mod place;
-mod preview;
 mod provider;
 mod qresync;
 mod smtp;

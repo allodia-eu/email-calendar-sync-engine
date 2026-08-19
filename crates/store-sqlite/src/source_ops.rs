@@ -81,6 +81,31 @@ impl<C: Clock> MessageBodyStore for SqliteStore<C> {
         .await
     }
 
+    async fn set_mail_preview(
+        &self,
+        account: &AccountId,
+        key: &ProviderKey,
+        preview: &str,
+    ) -> Result<()> {
+        let account = account.as_str().to_owned();
+        let key = key.as_str().to_owned();
+        let preview = preview.to_owned();
+        self.call(move |conn| {
+            // `preview IS NULL` is the whole rule: a provider that sent its own snippet keeps
+            // it, and a message already filled costs a matched-nothing UPDATE rather than a
+            // rewrite. Keyed by account rather than scope because a body is fetched without
+            // one — the same message in two folders shares the row this sets.
+            sql::execute(
+                conn,
+                "UPDATE message SET preview = ?3
+                  WHERE account = ?1 AND provider_key = ?2 AND preview IS NULL",
+                (account.as_str(), key.as_str(), preview.as_str()),
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn get_message_body(
         &self,
         account: &AccountId,
