@@ -205,3 +205,39 @@ async fn a_targeted_refresh_leaves_the_thread_index_repair_to_a_full_pass() {
     assert!(report.account_steps.is_ok());
     assert!(report.mailboxes.is_none());
 }
+
+#[tokio::test]
+async fn a_folder_reports_where_its_time_went() {
+    // The point of the split: "how long did the download take, versus the work afterwards" is a
+    // question the host cannot answer from one number, and the engine will not answer in prose.
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let providers = folders(&["INBOX"], &log);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    let report = sync_mail(
+        &providers,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
+    )
+    .await;
+
+    let folder = &report.folders[0];
+    let timing = folder.timing;
+    let accounted = timing.fetching + timing.deriving + timing.storing;
+    assert!(
+        accounted <= folder.elapsed,
+        "the phases are parts of the folder's own time, not more than it: {timing:?} vs {:?}",
+        folder.elapsed
+    );
+    // A pass that stored a message must have spent time storing it. The other two are real work
+    // too, but a fake provider can answer faster than the clock's resolution.
+    assert_eq!(report.upserted(), 1);
+    assert!(
+        timing.storing > Duration::ZERO,
+        "a committed chunk took no measurable time in the store: {timing:?}"
+    );
+}

@@ -26,7 +26,8 @@ use futures_util::{StreamExt, stream};
 
 use crate::{
     MailboxScope, StreamTuning, SyncError, SyncObserver, recipients, run_scope,
-    stream::stream_email, threading::repair_thread_index_if_damaged,
+    stream::{FolderPass, stream_email},
+    threading::repair_thread_index_if_damaged,
 };
 
 /// How many of an account's folders sync at once.
@@ -39,6 +40,40 @@ use crate::{
 /// numbers can be reconciled into one when it lands rather than fighting.
 const MAX_CONCURRENT_FOLDERS: usize = 5;
 
+/// Where a folder's sync spent its time.
+///
+/// **Reported rather than logged, because the engine is a library.** A log line is the host's
+/// product surface — its wording, its level, its privacy rules — and a duration is a fact. The
+/// same seam as `ConnectObserver`: the engine says what happened, the host decides how to say it.
+///
+/// The three do **not** sum to [`FolderSync::elapsed`]. What is left over is claiming and
+/// releasing the scope lease, and the bookkeeping between chunks — small, and worth seeing as a
+/// remainder rather than being folded into one of the buckets it is not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SyncTiming {
+    /// Awaiting the provider: the network, and whatever the adapter does to parse the wire.
+    pub fetching: Duration,
+    /// Projecting what arrived into rows — envelopes, the message-id graph, addresses.
+    pub deriving: Duration,
+    /// The store: the apply that commits a chunk, plus the recipient read it needs first.
+    pub storing: Duration,
+}
+
+impl SyncTiming {
+    /// Adds one phase's measurement to the running total.
+    pub(crate) fn add_fetching(&mut self, at: Instant) {
+        self.fetching += at.elapsed();
+    }
+
+    pub(crate) fn add_deriving(&mut self, at: Instant) {
+        self.deriving += at.elapsed();
+    }
+
+    pub(crate) fn add_storing(&mut self, at: Instant) {
+        self.storing += at.elapsed();
+    }
+}
+
 /// One folder's outcome within an account pass.
 #[derive(Debug)]
 pub struct FolderSync {
@@ -48,6 +83,8 @@ pub struct FolderSync {
     pub result: Result<SyncApplied, SyncError>,
     /// Wall time for this folder alone. Folders overlap, so these do **not** sum to the pass.
     pub elapsed: Duration,
+    /// Where that time went — network, projection, store.
+    pub timing: SyncTiming,
 }
 
 /// What one account-level mail sync did.
@@ -305,17 +342,29 @@ where
     let order = inbox_first(account, providers, inbox.as_ref());
     observer.account_sync_started(account, order.len(), inbox.as_ref());
 
+    let pass = FolderPass {
+        store,
+        req,
+        tuning,
+        observer,
+        sent,
+    };
     stream::iter(order.into_iter().map(|index| {
         let provider = &providers[index];
+        let pass = &pass;
         async move {
             let started = Instant::now();
-            let result = stream_email(provider, store, account, req, tuning, observer, sent).await;
+            let mut timing = SyncTiming::default();
+            // Filled through even on the paths that return early, so a folder that failed still
+            // says where it got to.
+            let result = stream_email(provider, account, pass, &mut timing).await;
             let scope = provider.email_scope(account);
             observer.folder_sync_finished(account, &scope, result.is_ok());
             FolderSync {
                 scope,
                 result,
                 elapsed: started.elapsed(),
+                timing,
             }
         }
     }))
