@@ -23,7 +23,14 @@ async fn windowed_read_returns_the_newest_and_thread_read_is_age_independent() {
         ..FakeProvider::new()
     };
     let engine = Engine::open_in_memory().unwrap();
-    engine.sync_mail(&provider, &account()).await.unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
     // IMAP-shaped mail arrives unthreaded; derivation groups `new` with `old` (shared reference).
     engine.rebuild_thread_index(&account()).await.unwrap();
 
@@ -95,9 +102,13 @@ async fn windowed_read_returns_the_newest_and_thread_read_is_age_independent() {
 async fn searches_synced_mail() {
     let engine = Engine::open_in_memory().unwrap();
     engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::new()),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
 
     // Full-text over the indexed subject: "report" matches m1's "Quarterly report".
     let m1 = message("m1", "a", "Quarterly report").id.key().clone();
@@ -164,9 +175,13 @@ async fn search_on_an_unsynced_account_is_empty() {
 async fn lists_synced_mailboxes_and_messages() {
     let engine = Engine::open_in_memory().unwrap();
     engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::new()),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
 
     // The two synced mailboxes, carrying their real names (not just keys).
     let mailboxes = engine.mailboxes(&account()).await.unwrap();
@@ -298,7 +313,14 @@ async fn a_keyword_only_change_is_visible_through_the_read_api() {
         [Keyword::system(SystemKeyword::Seen)].into_iter().collect(),
     )]);
 
-    engine.sync_mail(&provider, &account()).await.unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
     let before = engine
         .messages_by_keys(&account(), &[ProviderKey::new("m1").unwrap()])
         .await
@@ -309,7 +331,14 @@ async fn a_keyword_only_change_is_visible_through_the_read_api() {
     );
 
     // The resync reports the keyword change and no object.
-    engine.sync_mail(&provider, &account()).await.unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
     let after = engine
         .messages_by_keys(&account(), &[ProviderKey::new("m1").unwrap()])
         .await

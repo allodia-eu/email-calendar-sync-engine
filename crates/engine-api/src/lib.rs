@@ -16,8 +16,7 @@
 //! search** ([`Engine::search_mail`], [`Engine::search_calendar`]),
 //! **outbox-mediated mail submission** ([`Engine::submit_mail`],
 //! [`Engine::pending_op_state`]), **streaming mail sync**
-//! ([`Engine::sync_mail_streamed`], plus the per-folder split
-//! [`Engine::sync_mailbox_list`] + [`Engine::sync_folder_email_streamed`] for
+//! ([`Engine::sync_mail`], which streams each folder and fans them out itself, for
 //! concurrent cross-folder sync), and **outbox-mediated calendar writes**
 //! ([`Engine::create_calendar_event`], [`Engine::patch_calendar_event`],
 //! [`Engine::delete_calendar_event`]) — which carry *intent*, so the same call drives

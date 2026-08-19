@@ -18,10 +18,7 @@ use engine_core::{
 use engine_provider::Provider;
 use engine_search::MailQuery;
 use engine_store::{ManualClock, StoreRead, WorkerId};
-use engine_sync::{
-    IgnoreCommits, StreamTuning, SyncCommit, fetch_message_body, sync_email_streamed,
-    sync_mail_streamed,
-};
+use engine_sync::{IgnoreCommits, StreamTuning, SyncCommit, fetch_message_body, sync_mail};
 use store_sqlite::SqliteStore;
 
 use crate::{
@@ -63,6 +60,14 @@ const LIST_FRAG: &str = "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n\
                          * LIST (\\HasNoChildren) \"/\" \"Archive\"\r\n\
                          * STATUS \"Archive\" (UNSEEN 0)\r\n\
                          a2 OK LIST done\r\n";
+
+/// The same fragment under an arbitrary tag.
+///
+/// An account pass lists the folders **every time**, because the list is a per-account container
+/// it syncs before fanning out — so a test that syncs twice answers two `LIST`s, not one.
+fn list_frag(tag: &str) -> String {
+    LIST_FRAG.replace("a2 OK LIST done", &format!("{tag} OK LIST done"))
+}
 
 /// A `SELECT (CONDSTORE)` fragment carrying a `HIGHESTMODSEQ` — what a QRESYNC
 /// session opens the mailbox with.
@@ -112,8 +117,8 @@ async fn streamed_imap_sync_lands_in_the_store_with_progress() {
     let account = AccountId::try_from("imap-acct").unwrap();
 
     let recorded: Mutex<Vec<(usize, Option<usize>, SyncScope)>> = Mutex::new(Vec::new());
-    let report = sync_mail_streamed(
-        &provider,
+    let report = sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap"),
@@ -126,8 +131,7 @@ async fn streamed_imap_sync_lands_in_the_store_with_progress() {
                 .push((commit.fetched, commit.total, commit.scope.clone()));
         },
     )
-    .await
-    .expect("sync_mail_streamed");
+    .await;
 
     // Containers: both folders landed under the per-account folder-list scope.
     let mailbox_scope = provider.mailbox_scope(&account);
@@ -138,7 +142,7 @@ async fn streamed_imap_sync_lands_in_the_store_with_progress() {
     let email_scope = provider.email_scope(&account);
     let keys = store.object_keys(&email_scope).await.unwrap();
     assert_eq!(keys.len(), 5);
-    assert_eq!(report.email.upserted, 5);
+    assert_eq!(report.upserted(), 5);
     // Identity is the synthesized (mailbox, UIDVALIDITY, UID) key.
     assert!(keys.iter().any(|k| k.as_str() == "imap:v100:u5@INBOX"));
 
@@ -173,15 +177,28 @@ async fn a_cleared_cursor_resync_reconciles_expunged_mail() {
     // re-sync over an EXISTING store must tombstone rows the server no longer has. A
     // fresh backfill's completing chunk reconciles against the full present set, so the
     // expunged UID 3 is dropped even though the pass streams additively.
-    let s2 = select_frag("a2", 100, 4, 3);
-    let f3 = fetch_frag("a3", &[1, 2, 3]);
-    // The re-sync: UID 3 was expunged server-side; only 1,2 come back.
-    let s4 = select_frag("a4", 100, 4, 2);
-    let f5 = fetch_frag("a5", &[1, 2]);
-    let server = script(&["* OK ready\r\n", "a1 OK LOGIN ok\r\n", &s2, &f3, &s4, &f5]);
+    let l2 = list_frag("a2");
+    let s3 = select_frag("a3", 100, 4, 3);
+    let f4 = fetch_frag("a4", &[1, 2, 3]);
+    // The re-sync: it lists the folders again, then UID 3 was expunged server-side; only 1,2
+    // come back.
+    let l5 = list_frag("a5");
+    let s6 = select_frag("a6", 100, 4, 2);
+    let f7 = fetch_frag("a7", &[1, 2]);
+    let server = script(&[
+        "* OK ready\r\n",
+        "a1 OK LOGIN ok\r\n",
+        &l2,
+        &s3,
+        &f4,
+        &l5,
+        &s6,
+        &f7,
+    ]);
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
+    conn.negotiated = crate::capability::Negotiated::from_capabilities(&["LIST-STATUS".to_owned()]);
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
 
     let store =
@@ -191,8 +208,8 @@ async fn a_cleared_cursor_resync_reconciles_expunged_mail() {
     let email_scope = provider.email_scope(&account);
 
     // First sync: three messages land.
-    sync_email_streamed(
-        &provider,
+    sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap"),
@@ -200,15 +217,14 @@ async fn a_cleared_cursor_resync_reconciles_expunged_mail() {
         StreamTuning::new(50, 0),
         &IgnoreCommits,
     )
-    .await
-    .expect("first sync");
+    .await;
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 3);
 
     // Simulate a reset: clear the cursor so the next sync is a no-cursor re-sync.
     store.clear_scope_cursor(&email_scope).await.unwrap();
 
-    let applied = sync_email_streamed(
-        &provider,
+    let applied = sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap"),
@@ -216,12 +232,12 @@ async fn a_cleared_cursor_resync_reconciles_expunged_mail() {
         StreamTuning::new(50, 0),
         &IgnoreCommits,
     )
-    .await
-    .expect("resync");
+    .await;
 
     // The expunged UID 3 was tombstoned; only 1 and 2 remain.
     assert_eq!(
-        applied.tombstoned, 1,
+        applied.tombstoned(),
+        1,
         "the expunged message was reconciled away"
     );
     let keys = store.object_keys(&email_scope).await.unwrap();
@@ -288,21 +304,24 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
     // group over UIDs 1..=3, metadata only (no preview hydration on the backfill).
     let snap_select = select_condstore_frag("a3", 100, 4, 3, 10);
     let snap_fetch = fetch_frag("a4", &[1, 2, 3]);
-    // The delta: a SELECT (condstore, fresh modseq), then the CHANGEDSINCE fetch.
-    let delta_select = select_condstore_frag("a5", 100, 4, 2, 15);
+    // The delta pass lists the folders again before it reaches the mail, then a SELECT
+    // (condstore, fresh modseq), then the CHANGEDSINCE fetch.
+    let delta_list = list_frag("a5");
+    let delta_select = select_condstore_frag("a6", 100, 4, 2, 15);
     // The delta. UIDNEXT has not moved (4), so nothing arrived and the pass is the
     // state half alone: UID 2 vanished, UID 1 came back `\Flagged`. There is no
     // envelope here because none was asked for — this is the whole point, and it is
     // why no body fetch follows either.
     let delta_changes = "* VANISHED (EARLIER) 2\r\n\
          * 1 FETCH (UID 1 FLAGS (\\Seen \\Flagged) MODSEQ (15))\r\n\
-         a6 OK UID FETCH completed\r\n";
+         a7 OK UID FETCH completed\r\n";
     let server = script(&[
         "* OK ready\r\n",
         "a1 OK LOGIN ok\r\n",
         LIST_FRAG,
         &snap_select,
         &snap_fetch,
+        &delta_list,
         &delta_select,
         delta_changes,
     ]);
@@ -320,8 +339,8 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
     let account = AccountId::try_from("imap-acct").unwrap();
 
     // First sync: three messages land, the cursor records the modseq baseline.
-    sync_mail_streamed(
-        &provider,
+    sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap"),
@@ -329,15 +348,14 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
         StreamTuning::new(50, 0),
         &IgnoreCommits,
     )
-    .await
-    .expect("snapshot sync");
+    .await;
 
     let email_scope = provider.email_scope(&account);
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 3);
 
     // QRESYNC delta: reconciles the flag change and the expunge incrementally.
-    let applied = sync_email_streamed(
-        &provider,
+    let applied = sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap"),
@@ -345,13 +363,17 @@ async fn a_qresync_delta_reconciles_flags_and_expunges_in_the_store() {
         StreamTuning::new(50, 0),
         &IgnoreCommits,
     )
-    .await
-    .expect("qresync delta sync");
+    .await;
     assert_eq!(
-        applied.upserted, 0,
+        applied.upserted(),
+        0,
         "a flag change rewrites no message: it is state, not content"
     );
-    assert_eq!(applied.tombstoned, 1, "the expunged message is tombstoned");
+    assert_eq!(
+        applied.tombstoned(),
+        1,
+        "the expunged message is tombstoned"
+    );
 
     // The store now holds exactly UID 1 (re-flagged) and UID 3 (untouched); the
     // expunged UID 2 is gone — without a full re-snapshot.

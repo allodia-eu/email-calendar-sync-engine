@@ -22,7 +22,7 @@ use engine_core::{
 };
 use engine_provider::{Draft, Provider};
 use engine_store::{MailSelector, ManualClock, StoreRead, WorkerId};
-use engine_sync::{StreamTuning, SyncCommit, submit_mail, sync_mail, sync_mail_streamed};
+use engine_sync::{IgnoreCommits, StreamTuning, SyncCommit, submit_mail, sync_mail};
 use provider_imap::{ImapConfig, ImapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
@@ -174,14 +174,15 @@ async fn live_imap_sync_loads_the_inbox_seed() {
     assert_eq!(info.http_version, None);
 
     sync_mail(
-        &inbox_provider,
+        core::slice::from_ref(&inbox_provider),
         &store,
         &account,
         WorkerId::new("imap-live"),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync INBOX");
+    .await;
 
     // Folders: INBOX/Archive/Projects discovered under the per-account list scope.
     let mailbox_scope = inbox_provider.mailbox_scope(&account);
@@ -251,14 +252,15 @@ async fn live_imap_sync_loads_the_inbox_seed() {
     // ---- The IMAP identity contrast: the COPY in Archive is a SEPARATE object. ----
     let archive_provider = connect(&harness, "Archive").await;
     sync_mail(
-        &archive_provider,
+        core::slice::from_ref(&archive_provider),
         &store,
         &account,
         WorkerId::new("imap-live"),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync Archive");
+    .await;
 
     let archive_scope = archive_provider.email_scope(&account);
     let archive_messages = messages_in(&store, &archive_scope).await;
@@ -313,8 +315,8 @@ async fn live_imap_streams_the_inbox_with_progress() {
 
     // Fetch batch 2 over the eight-message INBOX forces several committed chunks.
     let recorded: Mutex<Vec<(usize, Option<usize>, SyncScope)>> = Mutex::new(Vec::new());
-    let report = sync_mail_streamed(
-        &provider,
+    let report = sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap-live-stream"),
@@ -327,13 +329,12 @@ async fn live_imap_streams_the_inbox_with_progress() {
                 .push((commit.fetched, commit.total, commit.scope.clone()));
         },
     )
-    .await
-    .expect("sync_mail_streamed");
+    .await;
 
     let scope = provider.email_scope(&account);
     let stored = store.object_keys(&scope).await.unwrap().len();
     assert_eq!(stored, 8);
-    assert_eq!(report.email.upserted, 8);
+    assert_eq!(report.upserted(), 8);
 
     let seq = recorded.lock().unwrap();
     assert!(seq.len() >= 2, "several committed chunks");
@@ -391,14 +392,15 @@ async fn live_smtp_submits_and_files_the_sent_copy() {
 
     // The sent copy is filed in Sent and reconciles by the generated Message-ID.
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap-live-smtp"),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync Sent");
+    .await;
 
     let sent_scope = provider.email_scope(&account);
     let sent = messages_in(&store, &sent_scope).await;
@@ -446,14 +448,15 @@ async fn live_imap_saves_a_draft() {
 
     // Re-sync Drafts; the saved draft is there, found by Message-ID and flagged.
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap-live-draft"),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync Drafts");
+    .await;
 
     let scope = provider.email_scope(&account);
     let saved = messages_in(&store, &scope)

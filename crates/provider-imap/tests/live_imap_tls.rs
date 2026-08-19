@@ -23,7 +23,7 @@ use engine_core::{
 };
 use engine_provider::{Draft, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
-use engine_sync::{submit_mail, sync_mail};
+use engine_sync::{IgnoreCommits, StreamTuning, submit_mail, sync_mail};
 use provider_imap::{ImapConfig, ImapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
@@ -182,14 +182,15 @@ async fn live_imap_starttls_syncs_the_inbox_seed() {
     let account = AccountId::try_from("imap-starttls").unwrap();
 
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap-starttls"),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync over STARTTLS");
+    .await;
 
     // The upgraded session runs real IMAP: the eight-message INBOX seed lands.
     let scope = provider.email_scope(&account);
@@ -240,14 +241,15 @@ async fn live_smtp_starttls_submits_and_files_the_sent_copy() {
 
     // The sent copy is filed in Sent and reconciles by the generated Message-ID.
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap-starttls-smtp"),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync Sent");
+    .await;
 
     let sent_scope = provider.email_scope(&account);
     let sent = messages_in(&store, &sent_scope).await;
@@ -306,14 +308,15 @@ async fn live_smtp_implicit_tls_submits_and_files_the_sent_copy() {
     assert_eq!(outcome.message_id.as_str(), message_id);
 
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("imap-implicit-tls-smtp"),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync Sent");
+    .await;
 
     let sent = messages_in(&store, &provider.email_scope(&account)).await;
     assert!(

@@ -43,7 +43,7 @@ use engine_core::{
 };
 use engine_provider::{Draft, DraftCalendar, MailEdit, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
-use engine_sync::{submit_mail, sync_mail};
+use engine_sync::{IgnoreCommits, StreamTuning, submit_mail, sync_mail};
 use provider_imap::{ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
@@ -123,14 +123,15 @@ async fn filed_copies(
     account: &AccountId,
 ) -> Vec<StoredContent> {
     sync_mail(
-        provider,
+        core::slice::from_ref(provider),
         store,
         account,
         WorkerId::new("imip-live"),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync Sent");
+    .await;
     let scope = provider.email_scope(account);
     let mut found = Vec::new();
     for key in store.object_keys(&scope).await.expect("object keys") {

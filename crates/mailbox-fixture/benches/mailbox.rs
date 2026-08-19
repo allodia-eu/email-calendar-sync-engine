@@ -232,17 +232,13 @@ fn applies(
     measure(&mut fast, recorder, "apply/flag_only", "flag_only", || {
         toggle.set(!toggle.get());
         let message = if toggle.get() { &read } else { &unread };
-        black_box(
-            runtime
-                .block_on(sync_folder(
-                    engine,
-                    spec,
-                    fixture,
-                    folder,
-                    Pass::Delta(vec![message.clone()]),
-                ))
-                .expect("apply a flag-only delta"),
-        );
+        black_box(runtime.block_on(sync_folder(
+            engine,
+            spec,
+            fixture,
+            folder,
+            Pass::Delta(vec![message.clone()]),
+        )));
     });
     // The same user action — one message marked read — as the state change every adapter
     // emits now. Beside `apply/flag_only` on purpose: that is what the same action cost when
@@ -262,34 +258,26 @@ fn applies(
             } else {
                 BTreeSet::new()
             };
-            black_box(
-                runtime
-                    .block_on(sync_folder(
-                        engine,
-                        spec,
-                        fixture,
-                        folder,
-                        Pass::State(vec![MailStateChange::keywords(key.clone(), keywords)]),
-                    ))
-                    .expect("apply a state-only delta"),
-            );
+            black_box(runtime.block_on(sync_folder(
+                engine,
+                spec,
+                fixture,
+                folder,
+                Pass::State(vec![MailStateChange::keywords(key.clone(), keywords)]),
+            )));
         },
     );
     fast.finish();
 
     let mut slow = group(criterion, "apply_page", SLOW_SAMPLES);
     measure(&mut slow, recorder, "apply/page", "page", || {
-        black_box(
-            runtime
-                .block_on(sync_folder(
-                    engine,
-                    spec,
-                    fixture,
-                    folder,
-                    Pass::Delta(page.clone()),
-                ))
-                .expect("apply a page"),
-        );
+        black_box(runtime.block_on(sync_folder(
+            engine,
+            spec,
+            fixture,
+            folder,
+            Pass::Delta(page.clone()),
+        )));
     });
     slow.finish();
 }
@@ -336,7 +324,7 @@ fn contended(
                     (0..CONCURRENT_READS).map(|_| engine.mail_window(accounts, FIRST_PAGE)),
                 );
                 let (applied, read) = futures_util::future::join(apply, reads).await;
-                black_box(applied.expect("apply a page while reading"));
+                black_box(applied);
                 for rows in read {
                     black_box(rows.expect("read the first page under load"));
                 }

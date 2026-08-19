@@ -38,6 +38,8 @@ mod expansion;
 mod folder_scopes;
 #[path = "sync/reads.rs"]
 mod reads;
+#[path = "sync/store_lifecycle.rs"]
+mod store_lifecycle;
 #[path = "sync/sync_lifecycle.rs"]
 mod sync_lifecycle;
 #[path = "sync/threading.rs"]

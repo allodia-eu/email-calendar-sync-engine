@@ -13,9 +13,7 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 
 - An [`Engine`] owns **one durable [`SqliteStore`]** driven by a host wall clock
   ([`SystemClock`]), and exposes high-level operations over it.
-- Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`
-  (or `sync_mail_streamed` — or the per-folder `sync_mailbox_list` +
-  `sync_folder_email_streamed` — for live progress and change events); build a mailbox
+- Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`; build a mailbox
   list with `mail_window` (the projected rows a list renders, across any set of accounts
   in one ordered answer), complete its conversations with `mail_on_threads` and resolve
   a named message with `mail_by_keys`; read `mailboxes` / `messages` /
@@ -240,22 +238,41 @@ Step 6 lands in small, tested slices. Order and status:
        `Busy` means a concurrent sync holds the event scope. Recover by re-reading
        (`Engine::reconcile_calendar_events`, also the batch path for a host driving the
        low-level `engine_sync` drivers itself) — **never** by re-issuing the write.
-4. **Streaming sync — _done_.** `Engine::sync_mail_streamed(provider, account, tuning,
-   observer)` drives `engine-sync`'s `sync_mail_streamed`: the email scope commits
-   **chunk by chunk** under one lease, reporting a `SyncCommit { scope, fetched, total,
-   upserted, removed }` to the host's `SyncObserver` after each committed chunk — so a
-   UI shows recent mail and a "downloaded Y of X" bar before the sync finishes **and**
-   splices its list from the exact `upserted`/`removed` rows without re-querying the
-   mailbox. An additive pass (cold backfill or delta) checkpoints the cursor per chunk,
-   so a mid-stream crash resumes where it stopped; a reconcile re-snapshot holds the
-   cursor until its tombstoning final chunk (`store-and-sync.md`). `StreamTuning` sets
-   the per-sync depth `window` and decouples the fetch batch (round trips) from the
-   chunk size (commit granularity). For a **concurrent per-folder fan-out** (IMAP/Graph)
-   `Engine::sync_mailbox_list` syncs the folder list once and
-   `Engine::sync_folder_email_streamed` streams each folder's mail in parallel, all
-   reporting into one observer — e.g. `AccountProgress`, which folds per-folder commits
-   into a single account-level "downloaded Y of X". A closure is a `SyncObserver` via
-   the blanket impl, and `IgnoreCommits` is the no-op sink.
+4. **Mail sync — _one entrypoint, and the engine owns the fan-out._**
+   `Engine::sync_mail(providers, account, tuning, observer)` takes the account's mail
+   providers — one per folder where the protocol binds a connection to a mailbox (IMAP),
+   a single element where one serves the account (JMAP, Gmail, Graph) — and runs the
+   whole pass: the folder-list container once, the account-level store steps once, then
+   the folders **concurrently, bounded, Inbox first**.
+
+   Each folder commits **chunk by chunk** under its own lease, reporting a `SyncCommit
+   { scope, fetched, total, upserted, removed }` after each committed chunk — so a UI
+   shows recent mail before the sync finishes **and** splices its list from the exact
+   rows without re-querying. An additive pass checkpoints the cursor per chunk, so a
+   mid-stream crash resumes where it stopped; a reconcile re-snapshot holds the cursor
+   until its tombstoning final chunk (`store-and-sync.md`). `StreamTuning` sets the
+   per-sync depth `window` and decouples the fetch batch (round trips) from the chunk
+   size (commit granularity).
+
+   The observer also receives the pass's **lifecycle** — `account_sync_started(folders)`
+   once the denominator is known, `folder_sync_finished` per folder, and
+   `account_sync_finished` — which is what a host renders "syncing, 5 of 10" from. All
+   three default to nothing, so an observer that only splices rows implements
+   `committed` alone. A closure is a `SyncObserver` via the blanket impl, and
+   `IgnoreCommits` is the no-op sink.
+
+   **It returns a `MailSyncReport`, not a `Result`**, because a partial failure is the
+   ordinary case: `account_steps` (a **store** fault, never a network one), `mailboxes`,
+   and one `FolderSync` per folder with its own result and elapsed time. Collapsing
+   those into one error loses what a caller needs to tell an outage from an expired
+   sign-in from a scope another pass is holding — `SyncError::is_busy` names the last.
+
+   **Why one and not four.** There used to be a whole-account convenience, a streaming
+   variant, and the two halves a host drove itself; the shipping client used only the two
+   halves. So anything account-level had to be written into functions that never call
+   each other, and work put in the convenience ran in the tests and nowhere else — which
+   is exactly how the thread-index repair came to be unreachable in the product while
+   every test passed.
 5. **Bindings.** `bindings-uniffi` (Kotlin/Swift) and `bindings-ffi-c` (C ABI)
    over `engine-api`. These need `unsafe`/codegen, so they override the workspace
    `unsafe_code = "forbid"` lint locally (isolated + documented, per `AGENTS.md`),
@@ -301,7 +318,7 @@ mail/event with complete coverage, a malformed query is `ApiError::Query`, and a
 unsynced account returns an empty answer. A `SubmittingProvider` then exercises the
 outbox facade: a successful `submit_mail` commits the op `Succeeded` (read back via
 `pending_op_state`), a failed send surfaces as `ApiError::Sync`, and an unknown op id
-reads back `None`. A streamed `sync_mail_streamed` with a closure observer then asserts
+reads back `None`. A `sync_mail` with a closure observer then asserts
 one `SyncCommit` lands with `fetched == total == 2`. Run the standard gate (`AGENTS.md`):
 `cargo +nightly fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own

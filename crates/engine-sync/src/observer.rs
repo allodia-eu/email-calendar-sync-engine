@@ -7,7 +7,11 @@
 //! committed chunk. The commit borrows the just-committed data (zero-copy on the
 //! engine side); a host clones only what it keeps.
 
-use engine_core::{ids::ProviderKey, mail::Message, sync::SyncScope};
+use engine_core::{
+    ids::{AccountId, ProviderKey},
+    mail::Message,
+    sync::SyncScope,
+};
 
 /// One durable commit the streaming sync just made — progress plus the rows it
 /// changed, borrowed for the duration of the callback.
@@ -61,6 +65,26 @@ impl SyncCommit<'_> {
 pub trait SyncObserver: Send + Sync {
     /// Receives one durable commit for a scope.
     fn committed(&self, commit: &SyncCommit<'_>);
+
+    /// One account's mail pass has begun, and will sync `folders` of them.
+    ///
+    /// The count is known only after the folder list has synced, which is why this arrives then
+    /// rather than at the call — a host that wants "5 of 10" has no denominator before it.
+    ///
+    /// Defaulted to nothing, like the two below: an observer that only splices rows says so by
+    /// not implementing them, rather than by writing three empty bodies.
+    fn account_sync_started(&self, _account: &AccountId, _folders: usize) {}
+
+    /// One folder of that pass has finished, whether or not it succeeded.
+    ///
+    /// `synced` is false for a folder that failed **or** was skipped because a concurrent pass
+    /// held its scope. A host counting progress wants both — the folder is no longer pending
+    /// either way, and a count that only advanced on success would stall at "3 of 10" forever.
+    fn folder_sync_finished(&self, _account: &AccountId, _scope: &SyncScope, _synced: bool) {}
+
+    /// The account's pass has ended. Always paired with a start, including on the paths that
+    /// stop early, so a host can clear its indicator without a timeout.
+    fn account_sync_finished(&self, _account: &AccountId) {}
 }
 
 impl<F: Fn(&SyncCommit<'_>) + Send + Sync> SyncObserver for F {

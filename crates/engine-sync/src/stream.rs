@@ -18,7 +18,6 @@
 //! start; a reconciling pass holds the cursor until its final chunk tombstones
 //! (rare, restarts on crash).
 
-use core::time::Duration;
 use std::collections::BTreeSet;
 
 use engine_core::{
@@ -28,15 +27,10 @@ use engine_core::{
     sync::{SyncState, SyncUpdate, SyncWindow},
 };
 use engine_provider::{EmailChunk, PassMode, Provider};
-use engine_store::{
-    ApplyBatch, ContactStore, LeaseRequest, Store, StoreError, StoreRead, SyncApplied, WorkerId,
-};
+use engine_store::{ApplyBatch, LeaseRequest, Store, StoreError, StoreRead, SyncApplied};
 use futures_util::StreamExt;
 
-use crate::{
-    MAX_STALE_RECLAIMS, MailSyncReport, MailboxScope, SyncCommit, SyncError, SyncObserver,
-    derive_messages, recipients, run_scope,
-};
+use crate::{MAX_STALE_RECLAIMS, SyncCommit, SyncError, SyncObserver, derive_messages, recipients};
 
 /// How a streaming sync runs: the depth window, plus how it separates network
 /// batching from commit granularity.
@@ -107,89 +101,13 @@ impl Default for StreamTuning {
     }
 }
 
-/// Syncs one account's mail like [`crate::sync_mail`], but **streams** the email
-/// scope: mailbox containers are fetched whole (small, and they must precede email),
-/// then each chunk of messages commits as it arrives — so a host renders recent mail
-/// and live progress before the sync finishes. `observer` is notified after every
-/// committed chunk with the exact rows that changed (`store-and-sync.md`).
-///
-/// `window` bounds the depth (a first snapshot/backfill fetches only mail on or after
-/// [`SyncWindow::since`]); `tuning` separates batching from commit granularity.
-///
-/// # Errors
-///
-/// Returns [`SyncError`] if the provider fetch fails or the store rejects an apply
-/// for a reason other than a recoverable `StaleLease`.
-pub async fn sync_mail_streamed<P, S, O>(
-    provider: &P,
-    store: &S,
-    account: &AccountId,
-    worker: WorkerId,
-    ttl: Duration,
-    tuning: StreamTuning,
-    observer: &O,
-) -> Result<MailSyncReport, SyncError>
-where
-    P: Provider,
-    S: Store + StoreRead + ContactStore,
-    O: SyncObserver,
-{
-    let req = LeaseRequest::new(worker, ttl);
-    let (mailboxes, ()) = run_scope(store, account, &MailboxScope(provider), &req)
-        .await?
-        .into_applied();
-    let sent = recipients::sent_mailboxes(store, account).await?;
-    if !sent.is_empty() {
-        recipients::backfill(store, account, &sent).await?;
-    }
-    let email = stream_email(provider, store, account, &req, tuning, observer, &sent).await?;
-    recipients::record_coverage(store, account, tuning.window, !sent.is_empty()).await?;
-    Ok(MailSyncReport { mailboxes, email })
-}
-
-/// Streams **only** one account's email for the mailbox `provider` is bound to — the
-/// per-folder counterpart of [`sync_mail_streamed`] that skips the mailbox-list step.
-///
-/// A host runs [`sync_mailbox_list`](crate::sync_mailbox_list) once per account, then
-/// calls this for each folder provider **concurrently**: each folder is a distinct
-/// member scope (e.g. `ImapMailbox`), so their per-folder leases never contend and
-/// the independent sessions sync in parallel, each reporting through `observer`.
-///
-/// # Errors
-///
-/// Returns [`SyncError`] if the provider fetch fails or the store rejects an apply
-/// for a reason other than a recoverable `StaleLease`.
-pub async fn sync_email_streamed<P, S, O>(
-    provider: &P,
-    store: &S,
-    account: &AccountId,
-    worker: WorkerId,
-    ttl: Duration,
-    tuning: StreamTuning,
-    observer: &O,
-) -> Result<SyncApplied, SyncError>
-where
-    P: Provider,
-    S: Store + StoreRead + ContactStore,
-    O: SyncObserver,
-{
-    let req = LeaseRequest::new(worker, ttl);
-    let sent = recipients::sent_mailboxes(store, account).await?;
-    if !sent.is_empty() {
-        recipients::backfill(store, account, &sent).await?;
-    }
-    let applied = stream_email(provider, store, account, &req, tuning, observer, &sent).await?;
-    recipients::record_coverage(store, account, tuning.window, !sent.is_empty()).await?;
-    Ok(applied)
-}
-
 /// Streams the email scope chunk by chunk under one lease. Each additive chunk
 /// commits and advances the cursor to its checkpoint (resumable); a reconciling pass
 /// holds the cursor and tombstones against the accumulated present set on its final
 /// chunk. A `StaleLease` abandons the partial stream and restarts from a fresh claim;
 /// the checkpointed (additive) or held (reconcile) cursor makes that safe, and the
 /// adapter reconciles its own transport on the next fetch.
-async fn stream_email<P, S, O>(
+pub(crate) async fn stream_email<P, S, O>(
     provider: &P,
     store: &S,
     account: &AccountId,

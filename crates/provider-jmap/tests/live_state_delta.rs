@@ -24,7 +24,7 @@ use engine_core::{
 };
 use engine_provider::{MailEdit, Provider};
 use engine_store::{MailListRow, MailSelector, ManualClock, StoreRead, WorkerId};
-use engine_sync::sync_mail;
+use engine_sync::{IgnoreCommits, StreamTuning, sync_mail};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
@@ -90,14 +90,15 @@ async fn a_jmap_update_moves_state_and_never_rewrites_the_message() {
 
     // ---- First sync: everything lands as whole objects. ----
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         worker(),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("first sync");
+    .await;
 
     // The dedicated pair this test owns, by name.
     let mailboxes = provider
@@ -140,14 +141,15 @@ async fn a_jmap_update_moves_state_and_never_rewrites_the_message() {
         .await
         .expect("put it back in its home mailbox");
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         worker(),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync the reset");
+    .await;
 
     let before = rows_in(&store, &account).await;
     let target = by_subject(&before, "JMAP state delta subject");
@@ -169,16 +171,18 @@ async fn a_jmap_update_moves_state_and_never_rewrites_the_message() {
         .expect("flag the message");
 
     let applied = sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         worker(),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("delta after the flag change");
+    .await;
     assert_eq!(
-        applied.email.upserted, 0,
+        applied.upserted(),
+        0,
         "a flag change rewrites no message: its content cannot have moved"
     );
 
@@ -221,16 +225,18 @@ async fn a_jmap_update_moves_state_and_never_rewrites_the_message() {
         .expect("move the message");
 
     let applied = sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         worker(),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("delta after the move");
+    .await;
     assert_eq!(
-        applied.email.upserted, 0,
+        applied.upserted(),
+        0,
         "a move rewrites no message either — only where it is filed changed"
     );
 

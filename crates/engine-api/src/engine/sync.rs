@@ -8,13 +8,12 @@ use engine_core::{
 };
 use engine_provider::{ContactsProvider, Provider};
 use engine_recurrence::Horizon;
-use engine_store::{PruneReport, Store, SyncApplied};
+use engine_store::{PruneReport, Store};
 use engine_sync::{
     CalendarSyncReport, ContactSourceReport, ContactSyncReport, EventSyncReport, HorizonExpansion,
     MailSyncReport, PeopleRebuildReport, StreamTuning, SyncObserver, ThreadRebuildReport,
     expand_calendar_horizon, rebuild_thread_index, reconcile_calendar_events, sync_address_books,
-    sync_calendar, sync_contact_cards, sync_contacts, sync_email_streamed, sync_mail,
-    sync_mail_streamed, sync_mailbox_list,
+    sync_calendar, sync_contact_cards, sync_contacts, sync_mail,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -66,23 +65,39 @@ impl Engine {
             .map_err(map_sync_error)
     }
 
-    /// Syncs one account's mail from `provider`: mailbox containers first, then
-    /// email members, each through the claim → fetch → derive → apply → release
-    /// cycle with `StaleLease` recovery (`store-and-sync.md`).
+    /// Syncs one account's mail: the folder list once, then every folder, each through the
+    /// claim → fetch → derive → apply → release cycle with `StaleLease` recovery
+    /// (`store-and-sync.md`).
     ///
-    /// # Errors
+    /// **This is the only way to sync mail, and the engine drives the fan-out.** `providers` is
+    /// whatever the account has — one per folder where the protocol binds a connection to a
+    /// mailbox (IMAP), a single element where one provider serves the account (JMAP, Graph,
+    /// Gmail). The engine bounds how many run at once, puts the Inbox first, and runs the
+    /// account-level store steps once rather than once per folder.
     ///
-    /// Returns [`ApiError::Busy`] if another sync already holds this account's mail
-    /// scope, or [`ApiError::Sync`] if the provider fetch fails or the store rejects
-    /// the apply.
-    pub async fn sync_mail<P: Provider>(
+    /// `observer` receives every committed chunk plus the pass's lifecycle, so a host can splice
+    /// its list and show which account is syncing without polling.
+    ///
+    /// Returns no `Result`: a partial failure is ordinary, and
+    /// [`MailSyncReport`](engine_sync::MailSyncReport) reports each scope's outcome separately so
+    /// a caller can tell an outage from an expired sign-in from a scope another pass is holding.
+    pub async fn sync_mail<P: Provider, O: SyncObserver>(
         &self,
-        provider: &P,
+        providers: &[P],
         account: &AccountId,
-    ) -> Result<MailSyncReport, ApiError> {
-        sync_mail(provider, &self.store, account, worker(), LEASE_TTL)
-            .await
-            .map_err(map_sync_error)
+        tuning: StreamTuning,
+        observer: &O,
+    ) -> MailSyncReport {
+        sync_mail(
+            providers,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            tuning,
+            observer,
+        )
+        .await
     }
 
     /// Rebuilds the account's derived thread ids and the message-id graph behind them from the
@@ -93,9 +108,8 @@ impl Engine {
     /// **Nothing is required to call this.** A sync threads what it applies inside the same
     /// transaction, and repairs the one shape an arrival cannot — a message left in the graph with
     /// no thread by the migration that introduced it — by asking the store and rebuilding when the
-    /// answer is yes. Both account-level entrypoints do it, [`Engine::sync_mail`] and
-    /// [`Engine::sync_mailbox_list`], so a host that fans folders out concurrently is covered as
-    /// well as one that does not. So an ordinary pass needs nothing here, and calling it
+    /// answer is yes — [`Engine::sync_mail`] does it once per pass, before any folder runs. So an
+    /// ordinary pass needs nothing here, and calling it
     /// anyway would re-read every payload in the account to confirm an answer already written.
     /// This stays public for the case a support answer calls for: an index someone has reason to
     /// doubt. It writes no thread id over mail that is already right.
@@ -338,105 +352,6 @@ impl Engine {
             LEASE_TTL,
             horizon,
             host_zone,
-        )
-        .await
-        .map_err(map_sync_error)
-    }
-
-    /// Syncs **only** one account's mailbox list (folder discovery) from `provider`,
-    /// skipping the email members. The once-per-account container step a host runs
-    /// before fanning out the per-folder email syncs
-    /// ([`Engine::sync_folder_email_streamed`]) **concurrently**: the folder-list scope
-    /// is shared, so syncing it once up front lets the independent per-folder email
-    /// scopes proceed in parallel without contending over it.
-    ///
-    /// Being the account-level step of that form, this is also where the thread index is repaired
-    /// if the store holds mail the v10 migration left ungrouped — see
-    /// [`Engine::rebuild_thread_index`]. In steady state that is one indexed lookup finding
-    /// nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError::Busy`] if another sync already holds this account's
-    /// folder-list scope, or [`ApiError::Sync`] if the provider fetch fails or the
-    /// store rejects the apply.
-    pub async fn sync_mailbox_list<P: Provider>(
-        &self,
-        provider: &P,
-        account: &AccountId,
-    ) -> Result<SyncApplied, ApiError> {
-        sync_mailbox_list(provider, &self.store, account, worker(), LEASE_TTL)
-            .await
-            .map_err(map_sync_error)
-    }
-
-    /// Streams **only** the mail of the single folder `provider` is bound to, skipping
-    /// the mailbox-list step — the per-folder counterpart of
-    /// [`Engine::sync_mail_streamed`]. A host runs [`Engine::sync_mailbox_list`] once,
-    /// then calls this for each folder provider **concurrently** (distinct mailbox
-    /// scopes never contend), each reporting [`SyncCommit`](engine_sync::SyncCommit)s to
-    /// `observer` after every committed chunk — the exact rows that changed, so a host
-    /// splices its view without re-querying. `tuning` sets the depth window and
-    /// decouples fetch batching from commit granularity
-    /// ([`StreamTuning`](engine_sync::StreamTuning)); a cold backfill checkpoints per
-    /// chunk, so a kill resumes where it stopped.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError::Busy`] if another sync already holds this folder's mail
-    /// scope, or [`ApiError::Sync`] if the provider fetch fails or the store rejects an
-    /// apply.
-    pub async fn sync_folder_email_streamed<P: Provider, O: SyncObserver>(
-        &self,
-        provider: &P,
-        account: &AccountId,
-        tuning: StreamTuning,
-        observer: &O,
-    ) -> Result<SyncApplied, ApiError> {
-        sync_email_streamed(
-            provider,
-            &self.store,
-            account,
-            worker(),
-            LEASE_TTL,
-            tuning,
-            observer,
-        )
-        .await
-        .map_err(map_sync_error)
-    }
-
-    /// Syncs one account's mail like [`Engine::sync_mail`], but **streams** the email
-    /// scope: each chunk of messages commits as it arrives — so a host can render
-    /// recent mail and live "downloaded Y of X" feedback before the whole sync
-    /// finishes — reporting a [`SyncCommit`](engine_sync::SyncCommit) (progress **and**
-    /// the exact upserted/removed rows) to `observer` after every committed chunk. A
-    /// cold backfill checkpoints its cursor per chunk, so a mid-stream crash resumes
-    /// from where it stopped rather than restarting. `tuning`
-    /// ([`StreamTuning`](engine_sync::StreamTuning)) sets the depth window and decouples
-    /// the fetch batch (round trips) from the chunk size (commit granularity).
-    /// `observer` must be cheap and non-blocking (record into a snapshot, push onto a
-    /// channel); a closure works via the blanket `SyncObserver` impl.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError::Busy`] if another sync already holds the mail scope, or
-    /// [`ApiError::Sync`] if the provider fetch fails or the store rejects an apply.
-    pub async fn sync_mail_streamed<P: Provider, O: SyncObserver>(
-        &self,
-        provider: &P,
-        account: &AccountId,
-        tuning: StreamTuning,
-        observer: &O,
-    ) -> Result<MailSyncReport, ApiError> {
-        sync_mail_streamed(
-            provider,
-            &self.store,
-            account,
-            worker(),
-            LEASE_TTL,
-            tuning,
-            observer,
         )
         .await
         .map_err(map_sync_error)

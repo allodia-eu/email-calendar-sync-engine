@@ -3,10 +3,13 @@
 //! workers, mailboxes, messages, drafts, provider keys). The behavior tests live in
 //! the themed submodules and reach this scaffolding via `use super::*`.
 
-use core::num::NonZeroU32;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+use core::{num::NonZeroU32, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use engine_core::{
@@ -33,16 +36,16 @@ use engine_store::{
 use store_sqlite::SqliteStore;
 
 use super::{
-    AccountId, AccountProgress, Duration, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
+    AccountId, AccountProgress, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
     create_calendar_event, delete_calendar_event, edit_mail, expand_calendar_horizon,
     patch_calendar_event, put_calendar_document, reconcile_calendar_events, rsvp_calendar_event,
-    submit_mail, sync_calendar, sync_email_streamed, sync_mail, sync_mail_streamed,
-    sync_mailbox_list,
+    submit_mail, sync_calendar, sync_mail,
 };
 
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
+mod mail_account;
 mod mail_edit;
 mod mail_sync;
 mod state_change;
@@ -81,6 +84,12 @@ struct FakeMail {
     /// Keyword-only changes emitted once alongside `delta` — what a provider that can tell a
     /// mark-read from a content change sends.
     state_delta: Mutex<Vec<MailStateChange>>,
+    /// The folder this provider is bound to, for the IMAP shape where a host builds one per
+    /// folder. `None` is the JMAP shape: one provider, one account-wide email scope.
+    folder: Option<MailboxId>,
+    /// Records, in order, the scopes whose mail was fetched — so a test can assert *which folder
+    /// went first*, which a report ordered by completion cannot show.
+    started: Arc<Mutex<Vec<MailboxId>>>,
 }
 
 impl FakeMail {
@@ -99,7 +108,18 @@ impl FakeMail {
             faults: Vec::new(),
             delta: Mutex::default(),
             state_delta: Mutex::default(),
+            folder: None,
+            started: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Binds this provider to one folder — the IMAP shape, where a host builds one per folder
+    /// and the engine fans them out. `log` is shared across the set so the order they were
+    /// *started* in is visible to the test.
+    fn in_folder(mut self, mailbox: &str, log: &Arc<Mutex<Vec<MailboxId>>>) -> Self {
+        self.folder = Some(MailboxId::try_from(mailbox).unwrap());
+        self.started = Arc::clone(log);
+        self
     }
 
     /// Arms the keyword-only changes this provider emits after its first (snapshot) pass —
@@ -142,9 +162,15 @@ impl Provider for FakeMail {
     }
 
     fn email_scope(&self, account: &AccountId) -> SyncScope {
-        SyncScope::JmapType {
-            account: account.clone(),
-            data_type: JmapDataType::Email,
+        match &self.folder {
+            Some(mailbox) => SyncScope::ImapMailbox {
+                account: account.clone(),
+                mailbox: mailbox.clone(),
+            },
+            None => SyncScope::JmapType {
+                account: account.clone(),
+                data_type: JmapDataType::Email,
+            },
         }
     }
 
@@ -168,6 +194,9 @@ impl Provider for FakeMail {
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
+        if let Some(folder) = &self.folder {
+            self.started.lock().unwrap().push(folder.clone());
+        }
         // One chunk: a reconciling snapshot on first sync (so the drain tombstones),
         // an additive empty delta once a cursor exists.
         let chunk = if cursor.is_none() {
