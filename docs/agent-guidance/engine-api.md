@@ -256,6 +256,14 @@ Step 6 lands in small, tested slices. Order and status:
    reporting into one observer — e.g. `AccountProgress`, which folds per-folder commits
    into a single account-level "downloaded Y of X". A closure is a `SyncObserver` via
    the blanket impl, and `IgnoreCommits` is the no-op sink.
+
+   **Account-level work goes on `sync_mail` *and* `sync_mailbox_list`, or it does not
+   run.** These are alternatives, not layers: the split form does not call `sync_mail`,
+   and the shipping client uses the split form. Anything that must happen once per
+   account per pass — the thread-index repair is the one that exists today — added to
+   only one of them is dead code in the product while every test that drives `sync_mail`
+   goes on passing. It does not belong in `sync_folder_email_streamed` either: those run
+   N at a time over one account, so whatever it is would start N times and contend.
 5. **Bindings.** `bindings-uniffi` (Kotlin/Swift) and `bindings-ffi-c` (C ABI)
    over `engine-api`. These need `unsafe`/codegen, so they override the workspace
    `unsafe_code = "forbid"` lint locally (isolated + documented, per `AGENTS.md`),
