@@ -1,6 +1,6 @@
 //! Getting a generated mailbox into an [`Engine`].
 
-use engine_api::{ApiError, Engine, IgnoreCommits, StreamTuning, SyncApplied};
+use engine_api::{ApiError, Engine, IgnoreCommits, MailSyncReport, StreamTuning};
 
 use crate::{
     generate::{Fixture, generate},
@@ -25,24 +25,29 @@ use crate::{
 pub async fn populate(engine: &Engine, spec: &FixtureSpec) -> Result<Fixture, ApiError> {
     let fixture = generate(spec);
     let mailboxes = fixture.mailboxes();
-    // The folder-list scope is shared across every folder provider, so it syncs once.
-    let first = FolderProvider::new(
-        fixture.folders[0].id.clone(),
-        mailboxes.clone(),
-        Pass::Snapshot(Vec::new()),
-    );
-    engine.sync_mailbox_list(&first, &spec.account).await?;
-
-    for (index, folder) in fixture.folders.iter().enumerate() {
-        sync_folder(
-            engine,
-            spec,
-            &fixture,
-            index,
-            Pass::Snapshot(folder.messages.clone()),
+    // One provider per folder, handed over together: the engine syncs the shared folder-list
+    // scope once and fans the folders out itself, which is the path a host drives.
+    let providers: Vec<FolderProvider> = fixture
+        .folders
+        .iter()
+        .map(|folder| {
+            FolderProvider::new(
+                folder.id.clone(),
+                mailboxes.clone(),
+                Pass::Snapshot(folder.messages.clone()),
+            )
+        })
+        .collect();
+    engine
+        .sync_mail(
+            &providers,
+            &spec.account,
+            // The provider decides its own paging (`POPULATE_CHUNK`), so neither knob applies
+            // here; both are passed at their "provider's choice" value.
+            StreamTuning::new(0, 0),
+            &IgnoreCommits,
         )
-        .await?;
-    }
+        .await;
     Ok(fixture)
 }
 
@@ -66,15 +71,17 @@ pub async fn sync_folder(
     fixture: &Fixture,
     index: usize,
     pass: Pass,
-) -> Result<SyncApplied, ApiError> {
+) -> MailSyncReport {
     let folder = &fixture.folders[index];
     let provider = FolderProvider::new(folder.id.clone(), fixture.mailboxes(), pass);
+    // A whole account pass over a one-folder account — the shape a JMAP, Gmail or Graph account
+    // actually has. It therefore includes the folder-list scope and the account-level store steps,
+    // which the old per-folder entrypoint did not: a delta timing from here is a whole pass, and
+    // is not comparable with one taken before the entrypoints were folded together.
     engine
-        .sync_folder_email_streamed(
-            &provider,
+        .sync_mail(
+            core::slice::from_ref(&provider),
             &spec.account,
-            // The provider decides its own paging (`POPULATE_CHUNK`), so neither knob
-            // applies here; both are passed at their "provider's choice" value.
             StreamTuning::new(0, 0),
             &IgnoreCommits,
         )

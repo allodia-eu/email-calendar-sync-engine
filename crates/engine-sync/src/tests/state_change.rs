@@ -10,7 +10,7 @@
 //! nothing left for it to destroy — and the derivation pass that runs after it must not undo it
 //! either, which is the second test here.
 //!
-//! Both drivers are exercised: `sync_mail` (whole scope) and `sync_mail_streamed` (per chunk).
+//! Exercised through `sync_mail`, the account pass, which commits per chunk.
 //! They build their batches in different places, so a fix applied to one is not a fix.
 
 use std::collections::BTreeSet;
@@ -80,26 +80,28 @@ async fn a_keyword_change_keeps_the_thread_and_preview_whole_scope() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
     assert!(!listed(&store).await.mail.flags.seen(), "starts unread");
 
     // Second pass: the cursor exists, so the fake emits the armed keyword change.
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
     intact_and_seen(&listed(&store).await, "thread-root");
 }
 
@@ -113,8 +115,8 @@ async fn a_keyword_change_keeps_the_thread_and_preview_streamed() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     for _ in 0..2 {
-        sync_mail_streamed(
-            &provider,
+        sync_mail(
+            core::slice::from_ref(&provider),
             &store,
             &account(),
             worker(),
@@ -122,8 +124,7 @@ async fn a_keyword_change_keeps_the_thread_and_preview_streamed() {
             StreamTuning::responsive(),
             &IgnoreCommits,
         )
-        .await
-        .unwrap();
+        .await;
     }
     intact_and_seen(&listed(&store).await, "thread-root");
 }
@@ -143,14 +144,15 @@ async fn the_derivation_pass_does_not_hand_back_a_flag_a_keyword_change_moved() 
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
     // Let the grouping settle first: this message owns no `Message-ID`, so the pass re-keys its
     // seeded thread to the fallback (its provider key) once, legitimately. The question here is
     // what a *later* pass does to a flag, not what the first one does to a thread.
@@ -164,14 +166,15 @@ async fn the_derivation_pass_does_not_hand_back_a_flag_a_keyword_change_moved() 
         .expect("the pass assigned a thread");
 
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
     assert!(
         listed(&store).await.mail.flags.seen(),
         "the mark-read landed"
@@ -198,14 +201,15 @@ async fn a_rebuild_over_mail_the_sync_threaded_writes_nothing() {
     );
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
 
     let first = crate::rebuild_thread_index(&store, &account(), worker(), Duration::from_mins(1))
         .await
@@ -267,14 +271,15 @@ async fn a_state_change_into_sent_observes_the_recipients_whole_scope() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
     assert!(
         store.recipient_interactions(None).await.unwrap().is_empty(),
         "a draft is not a sent message, so nothing is observed from it yet"
@@ -282,14 +287,15 @@ async fn a_state_change_into_sent_observes_the_recipients_whole_scope() {
 
     // Second pass: the cursor exists, so the fake emits the move into Sent.
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
     let interactions = store.recipient_interactions(None).await.unwrap();
     assert_eq!(
         interactions
@@ -311,8 +317,8 @@ async fn a_state_change_into_sent_observes_the_recipients_streamed() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     for _ in 0..2 {
-        sync_mail_streamed(
-            &provider,
+        sync_mail(
+            core::slice::from_ref(&provider),
             &store,
             &account(),
             worker(),
@@ -320,8 +326,7 @@ async fn a_state_change_into_sent_observes_the_recipients_streamed() {
             StreamTuning::responsive(),
             &IgnoreCommits,
         )
-        .await
-        .unwrap();
+        .await;
     }
     assert_eq!(
         store
@@ -348,14 +353,15 @@ async fn a_state_change_that_stays_out_of_sent_observes_nothing() {
 
     for _ in 0..2 {
         sync_mail(
-            &provider,
+            core::slice::from_ref(&provider),
             &store,
             &account(),
             worker(),
             Duration::from_mins(1),
+            StreamTuning::new(0, 0),
+            &IgnoreCommits,
         )
-        .await
-        .unwrap();
+        .await;
     }
     assert!(
         store.recipient_interactions(None).await.unwrap().is_empty(),
@@ -385,14 +391,15 @@ async fn a_state_change_that_files_the_message_elsewhere_observes_nothing() {
 
     for _ in 0..2 {
         sync_mail(
-            &provider,
+            core::slice::from_ref(&provider),
             &store,
             &account(),
             worker(),
             Duration::from_mins(1),
+            StreamTuning::new(0, 0),
+            &IgnoreCommits,
         )
-        .await
-        .unwrap();
+        .await;
     }
     assert!(
         store.recipient_interactions(None).await.unwrap().is_empty(),
@@ -420,14 +427,15 @@ async fn a_state_change_into_sent_for_an_unsynced_message_observes_nothing() {
 
     for _ in 0..2 {
         sync_mail(
-            &provider,
+            core::slice::from_ref(&provider),
             &store,
             &account(),
             worker(),
             Duration::from_mins(1),
+            StreamTuning::new(0, 0),
+            &IgnoreCommits,
         )
-        .await
-        .expect("a change for an unknown key is ordinary traffic, not a failure");
+        .await;
     }
     assert!(
         store.recipient_interactions(None).await.unwrap().is_empty(),

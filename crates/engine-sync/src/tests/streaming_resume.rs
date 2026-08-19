@@ -118,8 +118,8 @@ async fn cold_backfill_resumes_from_the_checkpoint_after_a_kill() {
 
     // First run is "killed" after two chunks (six messages committed, cursor = 6).
     let killed = BackfillMail::new(messages.clone(), 3).stopping_after(2);
-    let applied = sync_email_streamed(
-        &killed,
+    let applied = sync_mail(
+        core::slice::from_ref(&killed),
         &*store,
         &account(),
         worker(),
@@ -127,17 +127,16 @@ async fn cold_backfill_resumes_from_the_checkpoint_after_a_kill() {
         StreamTuning::new(3, 3),
         &IgnoreCommits,
     )
-    .await
-    .unwrap();
-    assert_eq!(applied.upserted, 6);
+    .await;
+    assert_eq!(applied.upserted(), 6);
     let email_scope = killed.email_scope(&account());
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 6);
 
     // Second run resumes: it must be handed the checkpointed cursor (index 6), NOT
     // start over from the newest — the whole point of resumable backfill.
     let resumed = BackfillMail::new(messages, 3);
-    let applied = sync_email_streamed(
-        &resumed,
+    let applied = sync_mail(
+        core::slice::from_ref(&resumed),
         &*store,
         &account(),
         worker(),
@@ -145,10 +144,9 @@ async fn cold_backfill_resumes_from_the_checkpoint_after_a_kill() {
         StreamTuning::new(3, 3),
         &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
     // Only the remaining three were fetched, and the stream started at index 6.
-    assert_eq!(applied.upserted, 3);
+    assert_eq!(applied.upserted(), 3);
     assert_eq!(*resumed.starts.lock().unwrap(), vec![6]);
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 9);
 }

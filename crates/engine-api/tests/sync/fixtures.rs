@@ -5,7 +5,19 @@
 //! `#[path]` from the crate root, because a `tests/NAME.rs` *is* a crate root and a nested file
 //! is not a module of it by default.
 
+use engine_api::{IgnoreCommits, StreamTuning};
+
 use super::*;
+
+/// The tuning a test wants when it is not testing tuning: the provider's own paging.
+pub(crate) fn plain() -> StreamTuning {
+    StreamTuning::new(0, 0)
+}
+
+/// A sync whose commits nobody is watching.
+pub(crate) fn quiet() -> IgnoreCommits {
+    IgnoreCommits
+}
 
 pub(crate) fn account() -> AccountId {
     AccountId::try_from("acct-1").expect("valid account")

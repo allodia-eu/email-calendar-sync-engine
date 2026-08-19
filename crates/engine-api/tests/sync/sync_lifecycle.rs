@@ -1,7 +1,7 @@
-//! Sync mechanics and store lifecycle: mail/calendar snapshot-then-delta, cursor
-//! persistence across reopen, delta tombstoning, provider-failure surfacing, the
-//! same-scope busy race, streaming sync, and reset/vacuum. Thread derivation lives in
-//! its own `threading` module.
+//! Sync mechanics: mail/calendar snapshot-then-delta, cursor persistence across reopen, delta
+//! tombstoning, provider-failure surfacing, the same-scope busy race, and the account pass.
+//! Thread derivation lives in its own `threading` module, and the operations that reshape the
+//! store rather than sync it in `store_lifecycle`.
 
 use engine_api::{ApiError, Engine, StreamTuning, SyncCommit, TimeZoneId};
 
@@ -11,13 +11,17 @@ use super::*;
 async fn syncs_mail_from_a_provider() {
     let engine = Engine::open_in_memory().unwrap();
     let report = engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::new()),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
     // First sync is a snapshot: both containers and both members are upserted.
-    assert_eq!(report.mailboxes.upserted, 2);
-    assert_eq!(report.email.upserted, 2);
-    assert_eq!(report.email.tombstoned, 0);
+    assert_eq!(report.mailboxes.as_ref().unwrap().upserted, 2);
+    assert_eq!(report.upserted(), 2);
+    assert_eq!(report.tombstoned(), 0);
 }
 
 #[tokio::test]
@@ -39,10 +43,14 @@ async fn reopen_resumes_mail_from_the_persisted_cursor() {
 
     let first = Engine::open(&db).unwrap();
     let initial = first
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
-    assert_eq!(initial.email.upserted, 2); // first sync is a snapshot
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::new()),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
+    assert_eq!(initial.upserted(), 2); // first sync is a snapshot
     drop(first);
 
     // Reopen and sync again. Because the cursor persisted, the fake is asked for a
@@ -51,11 +59,15 @@ async fn reopen_resumes_mail_from_the_persisted_cursor() {
     // be 2. Asserting 0 is therefore a real persistence check, not a re-apply count.
     let reopened = Engine::open(&db).unwrap();
     let resumed = reopened
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
-    assert_eq!(resumed.email.upserted, 0);
-    assert_eq!(resumed.email.tombstoned, 0);
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::new()),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
+    assert_eq!(resumed.upserted(), 0);
+    assert_eq!(resumed.tombstoned(), 0);
 }
 
 #[tokio::test]
@@ -89,24 +101,46 @@ async fn resync_tombstones_mail_dropped_from_the_delta() {
     let dropped = message("m1", "a", "Quarterly report").id.key().clone();
     let provider = FakeProvider::new().removing_on_resync(vec![dropped]);
 
-    let initial = engine.sync_mail(&provider, &account()).await.unwrap();
-    assert_eq!(initial.email.upserted, 2);
+    let initial = engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
+    assert_eq!(initial.upserted(), 2);
 
     // The cursor now exists, so the second sync is a delta that drops m1: it must be
     // tombstoned, with nothing upserted.
-    let resync = engine.sync_mail(&provider, &account()).await.unwrap();
-    assert_eq!(resync.email.tombstoned, 1);
-    assert_eq!(resync.email.upserted, 0);
+    let resync = engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
+    assert_eq!(resync.tombstoned(), 1);
+    assert_eq!(resync.upserted(), 0);
 }
 
 #[tokio::test]
 async fn mail_provider_failure_surfaces_as_a_sync_error() {
     let engine = Engine::open_in_memory().unwrap();
-    let err = engine
-        .sync_mail(&FakeProvider::failing(), &account())
-        .await
-        .unwrap_err();
-    assert!(matches!(err, ApiError::Sync(_)), "got {err:?}");
+    let report = engine
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::failing()),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
+    // The folder list is the first thing a provider is asked for, so a provider that fails
+    // everything fails there — and the report says *that*, rather than collapsing the pass into
+    // one error that cannot say which scope broke.
+    assert!(report.mailboxes.is_err(), "got {:?}", report.mailboxes);
+    assert!(!report.is_ok());
 }
 
 #[tokio::test]
@@ -133,26 +167,38 @@ async fn concurrent_same_scope_sync_reports_busy() {
     };
 
     // The gated sync claims the mailbox scope and parks (lease held) until released.
-    let held = engine.sync_mail(&gate, &acct);
+    let quiet = quiet();
+    let held = engine.sync_mail(core::slice::from_ref(&gate), &acct, plain(), &quiet);
     // The racer waits until the lease is held, then attempts the same scope.
     let racer = async {
         claim_rx.await.expect("first sync should claim the scope");
-        let outcome = engine.sync_mail(&FakeProvider::new(), &acct).await;
+        let outcome = engine
+            .sync_mail(
+                core::slice::from_ref(&FakeProvider::new()),
+                &acct,
+                plain(),
+                &quiet,
+            )
+            .await;
         release_tx.send(()).expect("first sync still parked");
         outcome
     };
 
     let (held_result, racer_result) = tokio::join!(held, racer);
-    held_result.expect("the lease holder completes once released");
-
-    // The racer found the scope's lease live -> retryable ScopeHeld -> ApiError::Busy,
-    // not an opaque sync error.
-    let err = racer_result.expect_err("the racer must lose the scope race");
-    assert!(matches!(err, ApiError::Busy), "got {err:?}");
-    assert_eq!(
-        err.to_string(),
-        "scope is busy: another sync is in progress; retry shortly"
+    assert!(
+        held_result.is_ok(),
+        "the lease holder completes once released"
     );
+
+    // The racer found the folder-list lease live, so that scope reports ScopeHeld — and the
+    // report says which scope, rather than collapsing the pass into one error. Being busy is not
+    // a failure of the account: nothing was asked of the server.
+    assert_eq!(racer_result.busy_scopes(), 1);
+    let err = racer_result
+        .mailboxes
+        .as_ref()
+        .expect_err("the racer must lose the scope race");
+    assert!(err.is_busy(), "got {err:?}");
 }
 
 #[tokio::test]
@@ -161,8 +207,15 @@ async fn abandon_sync_leases_recovers_an_aborted_sync_without_losing_cursor() {
 
     let engine = Arc::new(Engine::open_in_memory().unwrap());
     let acct = account();
-    let initial = engine.sync_mail(&FakeProvider::new(), &acct).await.unwrap();
-    assert_eq!(initial.email.upserted, 2);
+    let initial = engine
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::new()),
+            &acct,
+            plain(),
+            &quiet(),
+        )
+        .await;
+    assert_eq!(initial.upserted(), 2);
 
     let (claim_tx, claim_rx) = oneshot::channel();
     let (release_tx, release_rx) = oneshot::channel();
@@ -175,16 +228,32 @@ async fn abandon_sync_leases_recovers_an_aborted_sync_without_losing_cursor() {
     let held_engine = Arc::clone(&engine);
     let held_gate = Arc::clone(&gate);
     let held_acct = acct.clone();
-    let held = tokio::spawn(async move { held_engine.sync_mail(&*held_gate, &held_acct).await });
+    let held = tokio::spawn(async move {
+        held_engine
+            .sync_mail(
+                core::slice::from_ref(&*held_gate),
+                &held_acct,
+                StreamTuning::new(0, 0),
+                &engine_api::IgnoreCommits,
+            )
+            .await
+    });
     claim_rx.await.expect("sync should claim a scope");
     held.abort();
     assert!(held.await.unwrap_err().is_cancelled());
     drop(release_tx);
 
     assert_eq!(engine.abandon_sync_leases().await.unwrap(), 1);
-    let resumed = engine.sync_mail(&FakeProvider::new(), &acct).await.unwrap();
-    assert_eq!(resumed.mailboxes.upserted, 0);
-    assert_eq!(resumed.email.upserted, 0);
+    let resumed = engine
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::new()),
+            &acct,
+            plain(),
+            &quiet(),
+        )
+        .await;
+    assert_eq!(resumed.mailboxes.as_ref().unwrap().upserted, 0);
+    assert_eq!(resumed.upserted(), 0);
 }
 
 #[tokio::test]
@@ -211,25 +280,46 @@ async fn clear_mail_cursors_forces_a_reconciling_resnapshot() {
     };
 
     // First sync snapshots both messages.
-    engine.sync_mail(&provider, &account()).await.unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
     assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
 
     // The server drops m2 (a move/expunge). A plain re-sync is a delta carrying no
     // removals (IMAP without CONDSTORE), so it does NOT reconcile — m2 lingers.
     dropped.store(true, Ordering::SeqCst);
-    engine.sync_mail(&provider, &account()).await.unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
     assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
 
     // Clearing the mail cursors forces the next sync to snapshot, which tombstones the
     // now-absent m2 — the reconcile a host triggers for a "refresh" that reflects
     // server-side changes.
     engine.clear_mail_cursors(&account()).await.unwrap();
-    engine.sync_mail(&provider, &account()).await.unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
     assert_eq!(engine.messages(&account()).await.unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn sync_mail_streamed_reports_progress() {
+async fn a_pass_reports_streaming_progress() {
     use std::sync::{Arc, Mutex};
     // The (fetched, total) each commit reported, factored out so the shared handle's
     // type stays simple (clippy::type_complexity).
@@ -243,15 +333,14 @@ async fn sync_mail_streamed_reports_progress() {
     };
 
     let report = engine
-        .sync_mail_streamed(
-            &FakeProvider::new(),
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::new()),
             &account(),
             StreamTuning::new(0, 0),
             &observer,
         )
-        .await
-        .unwrap();
-    assert_eq!(report.email.upserted, 2);
+        .await;
+    assert_eq!(report.upserted(), 2);
 
     // The fake returns both messages in one snapshot chunk whose total is known up
     // front, so exactly one commit lands with fetched == total == 2.
@@ -262,164 +351,33 @@ async fn sync_mail_streamed_reports_progress() {
 }
 
 #[tokio::test]
-async fn folder_split_sync_lists_then_streams_email() {
+async fn an_account_pass_syncs_the_folder_list_and_then_its_mail() {
     use std::sync::{Arc, Mutex};
     let engine = Engine::open_in_memory().unwrap();
     let provider = FakeProvider::new();
 
-    // The container step applies only the folder list — the messages are not synced yet,
-    // so the per-folder email streams can fan out afterwards without re-listing.
-    let mailboxes = engine
-        .sync_mailbox_list(&provider, &account())
-        .await
-        .unwrap();
-    assert_eq!(mailboxes.upserted, 2);
-    assert_eq!(engine.mailboxes(&account()).await.unwrap().len(), 2);
-    assert!(engine.messages(&account()).await.unwrap().is_empty());
-
-    // The per-folder email stream then commits the messages and reports progress,
-    // without re-touching the folder list.
+    // One call does both halves, and the report keeps them apart: the folder-list scope is a
+    // container the engine syncs once before fanning the folders out, and a caller that needs to
+    // know which half failed can still see it.
     let seen: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
     let observer = {
         let seen = Arc::clone(&seen);
         move |c: &SyncCommit<'_>| seen.lock().unwrap().push(c.fetched)
     };
-    let email = engine
-        .sync_folder_email_streamed(&provider, &account(), StreamTuning::new(0, 0), &observer)
-        .await
-        .unwrap();
-    assert_eq!(email.upserted, 2);
+    let report = engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            StreamTuning::new(0, 0),
+            &observer,
+        )
+        .await;
+
+    assert!(report.is_ok());
+    assert_eq!(report.mailboxes.as_ref().unwrap().upserted, 2);
+    assert_eq!(report.upserted(), 2);
+    assert_eq!(report.folders_synced(), 1);
+    assert_eq!(engine.mailboxes(&account()).await.unwrap().len(), 2);
     assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
     assert_eq!(seen.lock().unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn reset_clears_cursors_and_forces_a_full_resync() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("engine.sqlite");
-    let engine = Engine::open(&db).unwrap();
-
-    // First sync is a snapshot (2 upserts); a second is an empty delta off the cursor.
-    let first = engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
-    assert_eq!(first.email.upserted, 2);
-    let delta = engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
-    assert_eq!(delta.email.upserted, 0);
-
-    // Reset clears the cursors, so the next sync re-snapshots (full refetch) again.
-    engine.reset().await.unwrap();
-    let resynced = engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
-    assert_eq!(resynced.email.upserted, 2);
-}
-
-#[tokio::test]
-async fn forget_account_purges_the_account_and_a_re_add_starts_clean() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("engine.sqlite");
-    let engine = Engine::open(&db).unwrap();
-
-    // Sync the account: mail (2) and calendar (1) land, and the scopes carry cursors —
-    // a second mail sync is an empty delta off the persisted cursor.
-    engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
-    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
-    engine
-        .sync_calendar(&FakeProvider::new(), &account(), horizon(), &zone)
-        .await
-        .unwrap();
-    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
-    let redelta = engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
-    assert_eq!(redelta.email.upserted, 0, "cursor persisted before forget");
-
-    // Forgetting the account drops its objects and scopes: reads are empty, and search
-    // (which ranks over the derived rows) finds nothing.
-    engine.forget_account(&account()).await.unwrap();
-    assert!(engine.messages(&account()).await.unwrap().is_empty());
-    assert!(engine.mailboxes(&account()).await.unwrap().is_empty());
-    assert!(
-        engine
-            .search_mail(&account(), "report", 10)
-            .await
-            .unwrap()
-            .hits
-            .is_empty()
-    );
-
-    // Re-adding the same account starts clean: the scopes were forgotten, so the next
-    // sync is a full snapshot again (upserted == 2), not an empty delta off a stale
-    // cursor. That is the remove-then-re-add guarantee.
-    let readd = engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
-    assert_eq!(readd.email.upserted, 2, "re-add re-snapshots from scratch");
-    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
-}
-
-#[tokio::test]
-async fn prune_drops_out_of_window_mail_offline() {
-    let engine = Engine::open_in_memory().unwrap();
-    // Mail synced under a wide window: one old message and one recent one land locally.
-    let provider = FakeProvider {
-        messages: vec![
-            dated_message("old", "old@h", &[], "2026-01-15T09:00:00Z"),
-            dated_message("recent", "recent@h", &[], "2026-06-20T09:00:00Z"),
-        ],
-        ..FakeProvider::new()
-    };
-    engine.sync_mail(&provider, &account()).await.unwrap();
-    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
-
-    // Narrowing to an unbounded window removes nothing — nothing is "outside" it.
-    let full = engine
-        .prune_account_mail_outside_window(&account(), SyncWindow::full())
-        .await
-        .unwrap();
-    assert_eq!(full.messages_removed, 0);
-    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
-
-    // Narrowing depth to a 2026-04-01 floor prunes the January message locally, with no
-    // provider round trip — the offline equivalent of a narrower re-snapshot.
-    let floor = engine_core::time::CalendarDate::new(2026, 4, 1).unwrap();
-    let report = engine
-        .prune_account_mail_outside_window(&account(), SyncWindow::since(floor))
-        .await
-        .unwrap();
-    assert_eq!(report.messages_removed, 1);
-
-    // Only the in-window message remains, and it reads back intact.
-    let remaining = engine.messages(&account()).await.unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].id.key().as_str(), "recent");
-}
-
-#[tokio::test]
-async fn vacuum_compacts_the_store_without_losing_data() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("engine.sqlite");
-    let engine = Engine::open(&db).unwrap();
-
-    engine
-        .sync_mail(&FakeProvider::new(), &account())
-        .await
-        .unwrap();
-    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
-
-    // Compaction runs without error and keeps the live rows readable — the store-sqlite
-    // test proves it reclaims the freed pages and shrinks the file on disk.
-    engine.vacuum().await.unwrap();
-    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
 }

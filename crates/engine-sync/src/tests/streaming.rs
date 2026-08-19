@@ -177,8 +177,8 @@ async fn streamed_email_commits_each_chunk_and_reports_progress() {
                 .collect(),
         ));
     };
-    let report = sync_mail_streamed(
-        &provider,
+    let report = sync_mail(
+        core::slice::from_ref(&provider),
         &*store,
         &account(),
         worker(),
@@ -186,13 +186,12 @@ async fn streamed_email_commits_each_chunk_and_reports_progress() {
         StreamTuning::responsive(),
         &observer,
     )
-    .await
-    .unwrap();
+    .await;
 
     // Every message committed; the closing snapshot tombstoned nothing (the
     // accumulated present set covered them all).
-    assert_eq!(report.email.upserted, 5);
-    assert_eq!(report.email.tombstoned, 0);
+    assert_eq!(report.upserted(), 5);
+    assert_eq!(report.tombstoned(), 0);
     let email_scope = provider.email_scope(&account());
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 5);
 
@@ -209,87 +208,40 @@ async fn streamed_email_commits_each_chunk_and_reports_progress() {
 }
 
 #[tokio::test]
-async fn mailbox_list_sync_applies_folders_without_email() {
-    // The once-per-account container step: only the mailbox list is applied; the email
-    // scope stays untouched, so the per-folder email streams can fan out afterwards.
+async fn an_account_pass_syncs_the_folder_list_then_its_folders() {
+    // One call does both halves. They were two entrypoints, and a host had to drive them in the
+    // right order itself; the report keeps them apart so a caller can still see which failed.
     let provider = FakeMail::new(
         vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
         vec![message("m1", "a", "Hello")],
     );
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
-    let applied = sync_mailbox_list(
-        &provider,
+    let report = sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
-    assert_eq!(applied.upserted, 1); // the one folder
+    .await;
+
+    assert!(report.is_ok(), "{report:?}");
+    assert_eq!(report.mailboxes.as_ref().unwrap().upserted, 1, "the folder");
+    assert_eq!(report.upserted(), 1, "the message");
+    assert_eq!(report.folders.len(), 1);
+    assert_eq!(report.folders_synced(), 1);
+    assert_eq!(report.busy_scopes(), 0);
     assert_eq!(
         store
-            .object_keys(&provider.mailbox_scope(&account()))
+            .object_keys(&provider.email_scope(&account()))
             .await
             .unwrap()
             .len(),
         1
     );
-    // Email was deliberately not synced by the list-only call.
-    assert!(
-        store
-            .object_keys(&provider.email_scope(&account()))
-            .await
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[tokio::test]
-async fn folder_email_stream_commits_email_without_a_mailbox_sync() {
-    // The per-folder counterpart streams only email — no mailbox-list step — and
-    // reports progress, so several folders can run it concurrently after one list sync.
-    let store = Arc::new(SqliteStore::open_in_memory(clock()).unwrap());
-    let provider = ChunkedMail::new(
-        vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
-        vec![
-            vec![message("m1", "a", "One"), message("m2", "a", "Two")],
-            vec![message("m3", "a", "Three")],
-        ],
-        Arc::clone(&store),
-        clock(),
-    );
-
-    let recorded: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-    let observer = |commit: &SyncCommit<'_>| recorded.lock().unwrap().push(commit.fetched);
-    // Exercise the depth-window builder alongside the fetch/chunk knobs.
-    let tuning = StreamTuning::new(0, 0).within(engine_core::sync::SyncWindow::full());
-    let applied = sync_email_streamed(
-        &provider,
-        &*store,
-        &account(),
-        worker(),
-        Duration::from_mins(1),
-        tuning,
-        &observer,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(applied.upserted, 3);
-    let email_scope = provider.email_scope(&account());
-    assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 3);
-    // The mailbox scope was never touched by the email-only stream.
-    assert!(
-        store
-            .object_keys(&provider.mailbox_scope(&account()))
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    // Progress reported per committed chunk (2 → 3).
-    assert_eq!(*recorded.lock().unwrap(), vec![2, 3]);
 }
 
 #[tokio::test]
@@ -301,8 +253,8 @@ async fn streamed_resync_applies_a_delta() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     // First streamed sync lands the snapshot.
-    sync_mail_streamed(
-        &provider,
+    sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
@@ -310,11 +262,10 @@ async fn streamed_resync_applies_a_delta() {
         StreamTuning::default(),
         &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
     // Second: a cursor now exists, so the email stream is a single empty delta.
-    let report = sync_mail_streamed(
-        &provider,
+    let report = sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
@@ -322,9 +273,8 @@ async fn streamed_resync_applies_a_delta() {
         StreamTuning::default(),
         &IgnoreCommits,
     )
-    .await
-    .unwrap();
-    assert_eq!(report.email.upserted, 0);
+    .await;
+    assert_eq!(report.upserted(), 0);
     assert_eq!(
         store
             .object_keys(&provider.email_scope(&account()))
@@ -354,8 +304,8 @@ async fn streamed_email_survives_a_midstream_stale_lease() {
     )
     .stealing_before(1);
 
-    let report = sync_mail_streamed(
-        &provider,
+    let report = sync_mail(
+        core::slice::from_ref(&provider),
         &*store,
         &account(),
         worker(),
@@ -363,8 +313,7 @@ async fn streamed_email_survives_a_midstream_stale_lease() {
         StreamTuning::responsive(),
         &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
 
     assert!(
         provider.stolen.load(Ordering::SeqCst),
@@ -372,13 +321,13 @@ async fn streamed_email_survives_a_midstream_stale_lease() {
     );
     // The held cursor made the restart safe: all five land exactly once, none
     // duplicated or tombstoned by the abandoned partial pass.
-    assert_eq!(report.email.upserted, 5);
-    assert_eq!(report.email.tombstoned, 0);
+    assert_eq!(report.upserted(), 5);
+    assert_eq!(report.tombstoned(), 0);
     let email_scope = provider.email_scope(&account());
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 5);
 }
 
-/// The account step repairs mail the v10 migration left in the graph with no thread.
+/// An account pass repairs mail the v10 migration left in the graph with no thread.
 ///
 /// No sequence of applies can produce that state — an apply threads what it stores, and a message
 /// with no references still gets its own name — so it is written here directly, which is also how
@@ -388,7 +337,7 @@ async fn streamed_email_survives_a_midstream_stale_lease() {
 /// No arrival can undo it. The component lookup joins through the thread id a stored row already
 /// carries, so a row with none is never a candidate to merge onto and stays alone for good.
 #[tokio::test]
-async fn a_mailbox_list_sync_repairs_mail_the_migration_left_ungrouped() {
+async fn an_account_pass_repairs_mail_the_migration_left_ungrouped() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mailcal.sqlite");
     let store = SqliteStore::open(&path, clock()).unwrap();
@@ -437,21 +386,20 @@ async fn a_mailbox_list_sync_repairs_mail_the_migration_left_ungrouped() {
         "the fixture must actually be the damaged state, or this proves nothing"
     );
 
-    // The host's account step — not `sync_mail`, which a streaming host never calls.
-    sync_mailbox_list(
-        &provider,
+    sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
 
     assert!(
         !store.has_ungrouped_graphed_mail(&account()).await.unwrap(),
-        "the account step must repair it; leaving it strands the reply in its own conversation \
-         for good"
+        "a pass must repair it; leaving it strands the reply in its own conversation for good"
     );
     let rows = store
         .list_mail(&[account()], MailSelector::Newest, usize::MAX)

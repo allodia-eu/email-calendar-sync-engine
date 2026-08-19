@@ -21,7 +21,7 @@
 //! rows (and their derived rows) absent from the present set; a delta removes the
 //! listed keys. The loop only projects the *changed* objects.
 //!
-//! [`sync_mail_streamed`] is the responsive variant: it commits each email page as
+//! [`sync_mail`] is responsive by construction: it commits each email page as
 //! it lands and reports [`SyncCommit`] to a [`SyncObserver`] for live "downloaded
 //! Y of X" UI, advancing the cursor only on the final page.
 //!
@@ -29,20 +29,16 @@
 //! scopes, the outbox workers, the tzdata-bump driver) is a later build step; this
 //! is deliberately the minimal driver that proves the cycle end to end.
 
-use core::time::Duration;
-use std::collections::BTreeSet;
-
 use engine_core::{
-    ids::{AccountId, MailboxId},
+    ids::AccountId,
     mail::{Mailbox, Message},
     recipient::RecipientObservation,
-    search_index::{project_message, project_state_change},
+    search_index::project_message,
     sync::{SyncObject, SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{Provider, ProviderError, ScopeSync};
 use engine_store::{
-    ApplyBatch, ContactStore, DerivedWrite, LeaseRequest, Store, StoreError, StoreRead,
-    SyncApplied, WorkerId,
+    ApplyBatch, DerivedWrite, LeaseRequest, Store, StoreError, StoreRead, SyncApplied,
 };
 
 /// How many times a scope is re-claimed after a `StaleLease` before giving up.
@@ -85,100 +81,21 @@ pub enum SyncError {
 }
 
 impl SyncError {
+    /// Whether this is "another sync already holds that scope".
+    ///
+    /// Not a failure of the account, and specifically **not** evidence about reachability: the
+    /// server was never asked. A caller deciding whether to raise an outage has to tell this
+    /// apart from a refusal, which is why it is a predicate rather than something to match on a
+    /// nested variant at every call site.
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        matches!(self, Self::Store(StoreError::ScopeHeld))
+    }
+
     /// Wraps a stored payload's deserialization failure.
     pub(crate) fn decode(err: &serde_json::Error) -> Self {
         Self::Decode(err.to_string())
     }
-}
-
-/// What one `sync_mail` run applied, per scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MailSyncReport {
-    /// The mailbox-container apply result.
-    pub mailboxes: SyncApplied,
-    /// The email-member apply result.
-    pub email: SyncApplied,
-}
-
-/// Syncs one account's mail: mailbox containers first, then email members.
-///
-/// Each scope runs the claim → fetch → derive → apply → release cycle with
-/// `StaleLease` recovery. `worker` identifies the lease holder and `ttl` bounds it.
-///
-/// # Errors
-///
-/// Returns [`SyncError`] if the provider fetch fails or the store rejects the
-/// apply for a reason other than a recoverable `StaleLease`.
-pub async fn sync_mail<P, S>(
-    provider: &P,
-    store: &S,
-    account: &AccountId,
-    worker: WorkerId,
-    ttl: Duration,
-) -> Result<MailSyncReport, SyncError>
-where
-    P: Provider,
-    S: Store + StoreRead + ContactStore,
-{
-    repair_thread_index_if_damaged(store, account, worker.clone(), ttl).await?;
-
-    let req = LeaseRequest::new(worker, ttl);
-    let (mailboxes, ()) = run_scope(store, account, &MailboxScope(provider), &req)
-        .await?
-        .into_applied();
-    let sent = recipients::sent_mailboxes(store, account).await?;
-    if !sent.is_empty() {
-        recipients::backfill(store, account, &sent).await?;
-    }
-    let (email, ()) = run_scope(store, account, &EmailScope(provider, &sent), &req)
-        .await?
-        .into_applied();
-    recipients::record_coverage(
-        store,
-        account,
-        provider.default_sync_window(),
-        !sent.is_empty(),
-    )
-    .await?;
-    Ok(MailSyncReport { mailboxes, email })
-}
-
-/// Syncs **only** one account's mailbox list (folder discovery) from `provider`,
-/// skipping the email members.
-///
-/// The cross-folder orchestrator runs this **once per account**, then fans out the
-/// per-folder email syncs ([`sync_email_streamed`]) concurrently. The folder-list
-/// container is a single shared scope (`store-and-sync.md` referential apply order),
-/// so syncing it once up front avoids the contention a repeated per-folder mailbox
-/// sync would cause — letting the independent per-folder email scopes proceed in
-/// parallel without fighting over it.
-///
-/// Being that form's account-level step, it is also where the thread index is repaired if the
-/// store holds mail the v10 migration left ungrouped ([`rebuild_thread_index`]) — the per-folder
-/// syncs are concurrent and cannot.
-///
-/// # Errors
-///
-/// Returns [`SyncError`] if the provider fetch fails or the store rejects the apply
-/// for a reason other than a recoverable `StaleLease`.
-pub async fn sync_mailbox_list<P, S>(
-    provider: &P,
-    store: &S,
-    account: &AccountId,
-    worker: WorkerId,
-    ttl: Duration,
-) -> Result<SyncApplied, SyncError>
-where
-    P: Provider,
-    S: Store + StoreRead,
-{
-    repair_thread_index_if_damaged(store, account, worker.clone(), ttl).await?;
-
-    let req = LeaseRequest::new(worker, ttl);
-    Ok(run_scope(store, account, &MailboxScope(provider), &req)
-        .await?
-        .into_applied()
-        .0)
 }
 
 /// What a fetch produced: something to apply, or a provider-side reason not to.
@@ -372,53 +289,6 @@ impl<P: Provider> ScopeSyncer for MailboxScope<'_, P> {
     }
 }
 
-/// The email-member scope syncer.
-///
-/// Carries the account's Sent mailboxes so the recipient observations they imply are
-/// written in the *same* transaction as the batch — via the shared driver's
-/// `observations` hook rather than a copy of the whole lease loop.
-struct EmailScope<'p, P>(&'p P, &'p BTreeSet<MailboxId>);
-
-#[async_trait::async_trait]
-impl<P: Provider> ScopeSyncer for EmailScope<'_, P> {
-    type Halt = core::convert::Infallible;
-    type Meta = ();
-    type Object = Message;
-
-    fn scope(&self, account: &AccountId) -> SyncScope {
-        self.0.email_scope(account)
-    }
-
-    async fn fetch(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> Result<ScopeFetch<Message, (), Self::Halt>, ProviderError> {
-        self.0
-            .sync_email(account, cursor)
-            .await
-            .map(|sync| ScopeFetch::Proceed { sync, meta: () })
-    }
-
-    fn derive(&self, sync: &ScopeSync<Message>) -> DerivedWrite {
-        let mut derived = derive_messages(changed_objects(&sync.update));
-        for change in sync.update.patched() {
-            derived.push_state_change(project_state_change(change));
-        }
-        derived
-    }
-
-    async fn observations(
-        &self,
-        store: &dyn StoreRead,
-        account: &AccountId,
-        scope: &SyncScope,
-        update: &SyncUpdate<Message>,
-    ) -> Result<Vec<RecipientObservation>, SyncError> {
-        recipients::observations(store, account, scope, update, self.1).await
-    }
-}
-
 /// Projects messages into their derived (full-text/structured/membership) rows —
 /// shared by the whole-scope [`EmailScope`] and the streaming email loop.
 pub(crate) fn derive_messages(messages: &[Message]) -> DerivedWrite {
@@ -444,6 +314,7 @@ mod body;
 mod calendar;
 mod contact;
 mod horizon;
+mod mail_account;
 mod observer;
 mod outbox;
 mod progress;
@@ -461,6 +332,7 @@ pub use contact::{
     sync_contact_cards, sync_contacts,
 };
 pub use horizon::{HorizonExpansion, UnexpandableEvent, expand_calendar_horizon};
+pub use mail_account::{FolderSync, MailSyncReport, sync_mail};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
     CalendarWriteOutcome, ContactWriteOutcome, MailEditOutcome, SubmitOutcome,
@@ -468,8 +340,7 @@ pub use outbox::{
     patch_calendar_event, patch_contact, put_calendar_document, rsvp_calendar_event, submit_mail,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
-pub use stream::{StreamTuning, sync_email_streamed, sync_mail_streamed};
-use threading::repair_thread_index_if_damaged;
+pub use stream::StreamTuning;
 pub use threading::{ThreadRebuildReport, rebuild_thread_index};
 
 #[cfg(test)]

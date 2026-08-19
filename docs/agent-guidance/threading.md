@@ -100,11 +100,9 @@ stored message only through the thread id its row already carries. The engine re
 it asks the store whether any message is *in the graph with no thread* and rebuilds when the answer
 is yes.
 
-**Both account entrypoints ask, because hosts use both.** A host either calls `sync_mail`, or the
-split form a concurrent one needs — `sync_mailbox_list` once, then `sync_email_streamed` per folder.
-Asking only in the first left every streaming host unrepaired, which is the shape a real client
-uses. The per-folder sync deliberately does not ask: N of them run at once over one account, and N
-concurrent whole-account rebuilds would contend for the same mail scopes.
+The pass asks once, before it touches a folder. There is one mail entrypoint and the engine owns
+the fan-out, so there is one place for this — the arrangement that let the question be asked in a
+function the shipping client never called is gone.
 
 That question is deliberately about the damage rather than a flag saying a repair is due. A flag has
 to be set by whoever knew and cleared by whoever fixed it, and is wrong if either forgets; this is

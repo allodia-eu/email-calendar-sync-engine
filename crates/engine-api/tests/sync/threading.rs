@@ -24,9 +24,13 @@ fn thread_of(messages: &[Message], key: &str) -> Option<ThreadId> {
 async fn a_sync_groups_unthreaded_mail_without_a_second_pass() {
     let engine = Engine::open_in_memory().unwrap();
     engine
-        .sync_mail(&FakeProvider::threaded(), &account())
-        .await
-        .unwrap();
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::threaded()),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
 
     // IMAP-shaped mail arrives carrying no thread id, and is threaded by the apply that stores
     // it: the reply (t2) with its original (t1), t3 on its own.
@@ -54,8 +58,22 @@ async fn a_reply_synced_later_joins_the_thread_it_answers() {
         &["a@h"],
     )]);
     let engine = Engine::open_in_memory().unwrap();
-    engine.sync_mail(&provider, &account()).await.unwrap();
-    engine.sync_mail(&provider, &account()).await.unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
 
     let after = engine.messages(&account()).await.unwrap();
     assert_eq!(thread_of(&after, "t4"), thread_of(&after, "t1"));
@@ -83,8 +101,22 @@ async fn a_late_message_owning_a_smaller_id_rekeys_the_whole_thread() {
         &["a@h"],
     )]);
     let engine = Engine::open_in_memory().unwrap();
-    engine.sync_mail(&provider, &account()).await.unwrap();
-    engine.sync_mail(&provider, &account()).await.unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
 
     let after = engine.messages(&account()).await.unwrap();
     for key in ["t1", "t2", "t4"] {
@@ -114,7 +146,14 @@ async fn provider_threaded_mail_is_never_regrouped() {
         ));
     }
     let engine = Engine::open_in_memory().unwrap();
-    engine.sync_mail(&provider, &account()).await.unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
 
     let after = engine.messages(&account()).await.unwrap();
     assert_eq!(after.len(), 3);

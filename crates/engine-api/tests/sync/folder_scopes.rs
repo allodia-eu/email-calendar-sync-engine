@@ -16,7 +16,7 @@ use engine_sync::IgnoreCommits;
 use super::*;
 
 /// A provider bound to one Graph-shaped folder, reporting one fixed message as an additive
-/// stream — the shape `sync_folder_email_streamed` drives.
+/// stream — the shape an account pass drives per folder.
 struct FolderProvider {
     folder: &'static str,
     message: Message,
@@ -96,17 +96,18 @@ async fn move_in_flight_reads_as_one_message_in(source: &'static str, destinatio
     let stale = FolderProvider::holding(source, "2026-06-01T09:00:00Z");
     let fresh = FolderProvider::holding(destination, "2026-06-02T10:00:00Z");
 
-    engine.sync_mailbox_list(&stale, &account()).await.unwrap();
+    // One pass per provider, deliberately: this case turns on the stale folder being seen
+    // *before* the fresh one, and an account pass fans its folders out concurrently, which would
+    // leave the order — and so the outcome — up to the scheduler.
     for provider in [&stale, &fresh] {
         engine
-            .sync_folder_email_streamed(
-                provider,
+            .sync_mail(
+                core::slice::from_ref(provider),
                 &account(),
                 StreamTuning::responsive(),
                 &IgnoreCommits,
             )
-            .await
-            .unwrap();
+            .await;
     }
 
     // Both scopes hold the key — the state this test exists for.

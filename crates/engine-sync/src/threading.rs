@@ -69,12 +69,12 @@ mod grouping;
 /// what leaves them — it fills the graph from stored payloads without assigning, so any mail the
 /// old whole-account pass had not yet grouped arrives at v10 graphed and ungrouped.
 ///
-/// **This runs on both account-level entrypoints, because hosts use both.** A host either calls
-/// [`sync_mail`], or calls this crate's split form — [`sync_mailbox_list`] once, then
-/// [`sync_email_streamed`] per folder, concurrently. Putting the repair only in the first left it
-/// unreachable for every host that streams, which is the shape a real client uses. It is not in
-/// the per-folder sync: that runs N at a time over one account, and N concurrent whole-account
-/// rebuilds would contend for the same mail scopes.
+/// **Called once per account pass, before any folder runs.** There is one mail entrypoint and the
+/// engine owns the fan-out, so there is one place for this. It was previously written into a
+/// whole-account convenience the shipping client never called, while the split form it *did* call
+/// went unrepaired — the arrangement that made that possible is gone. It also cannot go per
+/// folder: those run N at a time over one account, and N concurrent whole-account rebuilds would
+/// contend for the same mail scopes.
 ///
 /// Triggered by the damage rather than by a flag someone has to set and clear, so it also catches
 /// a rebuild that failed halfway. In steady state it is one indexed lookup that finds nothing.

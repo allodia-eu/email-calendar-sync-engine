@@ -594,7 +594,7 @@ behaviour broke; if the answer is none, the test is not proving what it claims.
   the real transport, command sequencing, literal handling, snapshot/delta paging,
   UIDVALIDITY reset, per-recipient rejection, and post-`DATA` ambiguity. An
   **engine-sync integration** drives `ImapProvider` over the mock through
-  `sync_mail_streamed` into a real `SqliteStore` (container-before-member, per-chunk
+  `sync_mail` into a real `SqliteStore` (container-before-member, per-chunk
   commit/progress, FTS search). The `needs_confirmation` → `NeedsConfirmation` bridge is
   locked in `engine-sync`. The **QRESYNC** path is covered offline by replaying the
   **exact bytes captured from live Stalwart** (`CAPABILITY`/`ENABLE`,

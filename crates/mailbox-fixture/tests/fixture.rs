@@ -217,11 +217,9 @@ async fn a_delta_pass_rewrites_only_what_it_carries() {
     edited.keywords.insert(Keyword::system(SystemKeyword::Seen));
     let key = edited.id.key().clone();
 
-    let applied = sync_folder(&engine, &spec, &fixture, folder, Pass::Delta(vec![edited]))
-        .await
-        .expect("apply the delta");
-    assert_eq!(applied.upserted, 1);
-    assert_eq!(applied.tombstoned, 0, "a delta tombstones nothing");
+    let applied = sync_folder(&engine, &spec, &fixture, folder, Pass::Delta(vec![edited])).await;
+    assert_eq!(applied.upserted(), 1);
+    assert_eq!(applied.tombstoned(), 0, "a delta tombstones nothing");
     assert_eq!(
         engine.messages(&account()).await.expect("all").len(),
         400,

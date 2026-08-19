@@ -23,7 +23,7 @@ use engine_core::{
 };
 use engine_provider::{MailEdit, Provider};
 use engine_store::{MailListRow, MailSelector, ManualClock, StoreRead, WorkerId};
-use engine_sync::sync_mail;
+use engine_sync::{IgnoreCommits, StreamTuning, sync_mail};
 use provider_imap::{ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
@@ -104,14 +104,15 @@ async fn live_qresync_delta_reconciles_flag_changes_and_expunges() {
     // ---- Snapshot sync: the three seeded copies land and the cursor records the
     //      HIGHESTMODSEQ baseline (the QRESYNC SELECT carries it). ----
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         worker(),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("snapshot sync");
+    .await;
 
     let before = rows_in(&store, &account).await;
     assert_eq!(before.len(), 3, "QResync was seeded with three messages");
@@ -138,14 +139,15 @@ async fn live_qresync_delta_reconciles_flag_changes_and_expunges() {
 
     // ---- QRESYNC delta sync: reconciles BOTH changes incrementally. ----
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         worker(),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("qresync delta sync");
+    .await;
 
     let after = rows_in(&store, &account).await;
 

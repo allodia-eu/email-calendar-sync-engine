@@ -24,7 +24,7 @@ use engine_provider::Provider;
 use engine_recurrence::Horizon;
 use engine_search::MailQuery;
 use engine_store::{MailSelector, ManualClock, StoreRead, WorkerId};
-use engine_sync::{StreamTuning, SyncCommit, sync_calendar, sync_mail, sync_mail_streamed};
+use engine_sync::{IgnoreCommits, StreamTuning, SyncCommit, sync_calendar, sync_mail};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
@@ -73,14 +73,15 @@ async fn full_mail_and_calendar_sync_loop() {
 
     // ---- Mail: run the loop, then assert the seed in the store. ----
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("live"),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("sync_mail");
+    .await;
 
     let mailbox_scope = provider.mailbox_scope(&account);
     let email_scope = provider.email_scope(&account);
@@ -239,8 +240,8 @@ async fn streamed_mail_sync_commits_pages_and_reports_progress() {
     // Fetch batch 3 over the (≥9) seed forces several round trips; the observer
     // records the running progress and scope after each committed chunk.
     let recorded: Mutex<Vec<(usize, Option<usize>, SyncScope)>> = Mutex::new(Vec::new());
-    let report = sync_mail_streamed(
-        &provider,
+    let report = sync_mail(
+        core::slice::from_ref(&provider),
         &store,
         &account,
         WorkerId::new("live-stream"),
@@ -253,8 +254,7 @@ async fn streamed_mail_sync_commits_pages_and_reports_progress() {
                 .push((commit.fetched, commit.total, commit.scope.clone()));
         },
     )
-    .await
-    .expect("sync_mail_streamed");
+    .await;
 
     let email_scope = provider.email_scope(&account);
     let stored = store.object_keys(&email_scope).await.unwrap().len();
@@ -263,7 +263,8 @@ async fn streamed_mail_sync_commits_pages_and_reports_progress() {
         "at least the nine-email seed is stored, got {stored}"
     );
     assert_eq!(
-        report.email.upserted, stored,
+        report.upserted(),
+        stored,
         "every queried email was committed across the pages"
     );
 

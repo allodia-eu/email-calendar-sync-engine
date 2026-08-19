@@ -29,7 +29,7 @@ use engine_core::{
 };
 use engine_provider::{MailEdit, Provider};
 use engine_store::{ContactStore, MailSelector, ManualClock, StoreRead, WorkerId};
-use engine_sync::sync_mail;
+use engine_sync::{IgnoreCommits, StreamTuning, sync_mail};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
@@ -126,15 +126,16 @@ async fn a_message_moved_into_sent_is_observed_without_ever_being_re_fetched() {
         .expect("put it back in its home mailbox");
 
     let first = sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         worker(),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("first sync");
-    assert!(first.email.upserted > 0, "the seed landed");
+    .await;
+    assert!(first.upserted() > 0, "the seed landed");
     assert!(
         store
             .list_mail(
@@ -168,16 +169,18 @@ async fn a_message_moved_into_sent_is_observed_without_ever_being_re_fetched() {
         .expect("move it into Sent");
 
     let applied = sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         worker(),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("delta after the move into Sent");
+    .await;
     assert_eq!(
-        applied.email.upserted, 0,
+        applied.upserted(),
+        0,
         "the move rewrote no message — which is exactly why the recipients had to come from \
          the stored payload rather than from a whole object the update never carried"
     );
@@ -190,14 +193,15 @@ async fn a_message_moved_into_sent_is_observed_without_ever_being_re_fetched() {
     // Replaying the same state leaves the count alone: the observation is keyed by
     // `(account, source message, canonical email)`, so a re-sync cannot inflate it.
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account,
         worker(),
         Duration::from_mins(5),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .expect("idempotent re-sync");
+    .await;
     assert_eq!(observed_count(&store).await, 1, "replay does not double it");
 
     // ---- Put it back, so a re-run starts where this one did. ----

@@ -38,8 +38,8 @@ specifics they implement against the Stalwart fixture. Read it before touching
 - **`engine-sync`** — the per-scope loop: `claim → fetch → project/derive →
   apply → release`, with `StaleLease` re-claim-and-recompute and container-
   before-member ordering. `sync_mail`, `sync_calendar` (project + `expand`
-  occurrences), and the outbox-mediated `submit_mail`. `sync_mail_streamed` /
-  `sync_email_streamed` are the responsive variant: they commit each email chunk as
+  occurrences), and the outbox-mediated `submit_mail`. `sync_mail` is the responsive
+  path: it commits each email chunk as
   it lands — an **additive** pass (cold backfill or delta) checkpoints the cursor
   per chunk (resumable), a **reconcile** re-snapshot holds it until the tombstoning
   final chunk — and notify a `SyncObserver` with a `SyncCommit { scope, fetched,

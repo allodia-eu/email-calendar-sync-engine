@@ -22,16 +22,17 @@ async fn sync_mail_persists_containers_members_and_index() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     let report = sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
-    assert_eq!(report.mailboxes.upserted, 2);
-    assert_eq!(report.email.upserted, 2);
+    .await;
+    assert_eq!(report.mailboxes.as_ref().unwrap().upserted, 2);
+    assert_eq!(report.upserted(), 2);
 
     // Containers landed under the mailbox scope.
     let mailbox_scope = provider.mailbox_scope(&account());
@@ -64,26 +65,28 @@ async fn resync_with_cursor_applies_empty_delta() {
     );
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
 
     // Second run: a cursor now exists, so the fake returns an empty delta.
     let report = sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
-    assert_eq!(report.email.upserted, 0);
+    .await;
+    assert_eq!(report.upserted(), 0);
     let email_scope = provider.email_scope(&account());
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 1);
 }
@@ -101,14 +104,15 @@ async fn sync_mail_observes_sent_recipients_and_records_window_coverage() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
 
     let interactions = store.recipient_interactions(None).await.unwrap();
     assert_eq!(interactions.len(), 3);
@@ -125,14 +129,15 @@ async fn sync_mail_observes_sent_recipients_and_records_window_coverage() {
     // The provider replays no changed messages on the next cursor pass, and the
     // source-message key keeps the aggregate idempotent.
     sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
     assert!(
         store
             .recipient_interactions(None)
@@ -227,20 +232,21 @@ async fn stale_lease_triggers_reclaim_and_recompute() {
     // The loop's first email apply is stale (the steal bumped the generation during
     // fetch); it re-claims with the fresh state and recomputes to success.
     let report = sync_mail(
-        &provider,
+        core::slice::from_ref(&provider),
         &*store,
         &account(),
         worker(),
         Duration::from_mins(1),
+        StreamTuning::new(0, 0),
+        &IgnoreCommits,
     )
-    .await
-    .unwrap();
+    .await;
 
     assert!(
         provider.stolen.load(Ordering::SeqCst),
         "the steal must have run"
     );
-    assert_eq!(report.email.upserted, 1);
+    assert_eq!(report.upserted(), 1);
     let email_scope = provider.email_scope(&account());
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 1);
 }

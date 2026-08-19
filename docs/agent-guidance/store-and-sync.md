@@ -281,7 +281,7 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
   A snapshot has no partials by construction — it is the scope's whole current state.
 
   Both drivers reach those two conclusions from the *same* code. The whole-scope
-  `drain_email` and the streaming `sync_email_streamed` each put a chunk's partials **into**
+  `drain_email` and the streaming mail pass each put a chunk's partials **into**
   the `SyncUpdate` (via `with_patched`) rather than carrying them beside it, so neither can
   drift from the other and so the update is a complete account of the pass. Carrying them
   alongside is how a message moved into Sent by a state change became invisible to the
@@ -353,8 +353,7 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
 
 ## Streaming sync: additive checkpointing vs reconcile
 
-The responsive mail path (`engine-sync::sync_mail_streamed` / `sync_email_streamed`,
-driven from `Engine::sync_mail_streamed` / `sync_folder_email_streamed`) commits mail
+The responsive mail path (`engine-sync::sync_mail`, driven from `Engine::sync_mail`) commits mail
 **chunk by chunk** under one lease, so a host renders recent mail and live progress
 before a pass finishes. The provider primitive is `Provider::stream_email`
 (`providers.md`): a pull `EmailStream` of `EmailChunk`s. Each chunk carries a
