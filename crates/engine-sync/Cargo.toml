@@ -26,6 +26,11 @@ store-sqlite = { workspace = true }
 # `try_stream!` to build the fake providers' chunk streams in the sync tests.
 async-stream = { workspace = true }
 futures-util = { workspace = true }
+# One test needs a store state no public call can produce: mail in the message-id graph with no
+# thread, which is what the v10 migration leaves and what only the repair can fix. It is written
+# with a second connection to the same file, so the store under test stays the real one.
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

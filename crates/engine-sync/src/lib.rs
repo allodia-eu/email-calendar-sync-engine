@@ -120,15 +120,7 @@ where
     P: Provider,
     S: Store + StoreRead + ContactStore,
 {
-    // A message that is in the graph but carries no thread cannot be repaired by an arrival: the
-    // component lookup reaches a stored message only through the thread id its row already
-    // carries. The migration that introduced the graph is what leaves them behind, so the repair
-    // runs here rather than being asked of every host — and it is triggered by the damage, not by
-    // a flag someone has to set and clear, so it also catches a rebuild that failed halfway. In
-    // steady state this is one indexed lookup that finds nothing.
-    if store.has_ungrouped_graphed_mail(account).await? {
-        rebuild_thread_index(store, account, worker.clone(), ttl).await?;
-    }
+    repair_thread_index_if_damaged(store, account, worker.clone(), ttl).await?;
 
     let req = LeaseRequest::new(worker, ttl);
     let (mailboxes, ()) = run_scope(store, account, &MailboxScope(provider), &req)
@@ -161,6 +153,9 @@ where
 /// sync would cause — letting the independent per-folder email scopes proceed in
 /// parallel without fighting over it.
 ///
+/// Being that form's account-level step, it is also where
+/// [`repair_thread_index_if_damaged`] runs — the per-folder syncs are concurrent and cannot.
+///
 /// # Errors
 ///
 /// Returns [`SyncError`] if the provider fetch fails or the store rejects the apply
@@ -176,6 +171,8 @@ where
     P: Provider,
     S: Store + StoreRead,
 {
+    repair_thread_index_if_damaged(store, account, worker.clone(), ttl).await?;
+
     let req = LeaseRequest::new(worker, ttl);
     Ok(run_scope(store, account, &MailboxScope(provider), &req)
         .await?
@@ -471,6 +468,7 @@ pub use outbox::{
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::{StreamTuning, sync_email_streamed, sync_mail_streamed};
+use threading::repair_thread_index_if_damaged;
 pub use threading::{ThreadRebuildReport, rebuild_thread_index};
 
 #[cfg(test)]

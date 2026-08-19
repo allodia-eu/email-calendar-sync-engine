@@ -4,6 +4,7 @@
 //! the shared fakes and helpers from the parent module via `use super::*`.
 
 use engine_provider::EmailChunk;
+use engine_store::{ApplyBatch, DerivedWrite, MailSelector};
 
 use super::*;
 
@@ -375,4 +376,99 @@ async fn streamed_email_survives_a_midstream_stale_lease() {
     assert_eq!(report.email.tombstoned, 0);
     let email_scope = provider.email_scope(&account());
     assert_eq!(store.object_keys(&email_scope).await.unwrap().len(), 5);
+}
+
+/// The account step repairs mail the v10 migration left in the graph with no thread.
+///
+/// No sequence of applies can produce that state — an apply threads what it stores, and a message
+/// with no references still gets its own name — so it is written here directly, which is also how
+/// it arises in the field: v10 fills the graph from stored payloads without assigning, so mail the
+/// old whole-account pass had not yet grouped arrives graphed and ungrouped.
+///
+/// No arrival can undo it. The component lookup joins through the thread id a stored row already
+/// carries, so a row with none is never a candidate to merge onto and stays alone for good.
+#[tokio::test]
+async fn a_mailbox_list_sync_repairs_mail_the_migration_left_ungrouped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mailcal.sqlite");
+    let store = SqliteStore::open(&path, clock()).unwrap();
+    let provider = FakeMail::new(
+        vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
+        vec![],
+    );
+    let scope = provider.email_scope(&account());
+
+    let mut original = message("m1", "a", "Original");
+    original.envelope.message_id = vec![MessageIdHeader::new("root@h").unwrap()];
+    let mut reply = message("m2", "a", "Re: Original");
+    reply.envelope.message_id = vec![MessageIdHeader::new("reply@h").unwrap()];
+    reply.envelope.references = vec![MessageIdHeader::new("root@h").unwrap()];
+    let messages = [original, reply];
+
+    let mut derived = DerivedWrite::empty();
+    for message in &messages {
+        derived.push_mail(engine_core::search_index::project_message(message));
+    }
+    let update = SyncUpdate::delta(messages.to_vec(), vec![]);
+    let claim = store
+        .claim_sync_scope(
+            account(),
+            &scope,
+            LeaseRequest::new(worker(), Duration::from_mins(1)),
+        )
+        .await
+        .unwrap();
+    store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&update, &derived, &[], &SyncState::new("c1")),
+        )
+        .await
+        .unwrap();
+    store.release_sync_scope(claim.lease).await.unwrap();
+
+    // What v10 leaves: the graph rows the apply wrote, and no thread on the rows they describe.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("UPDATE message SET thread_id = NULL", [])
+        .unwrap();
+    assert!(
+        store.has_ungrouped_graphed_mail(&account()).await.unwrap(),
+        "the fixture must actually be the damaged state, or this proves nothing"
+    );
+
+    // The host's account step — not `sync_mail`, which a streaming host never calls.
+    sync_mailbox_list(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        !store.has_ungrouped_graphed_mail(&account()).await.unwrap(),
+        "the account step must repair it; leaving it strands the reply in its own conversation \
+         for good"
+    );
+    let rows = store
+        .list_mail(&[account()], MailSelector::Newest, usize::MAX)
+        .await
+        .unwrap();
+    let thread_of = |key: &str| {
+        rows.iter()
+            .find(|r| r.mail.key.as_str() == key)
+            .unwrap()
+            .mail
+            .thread_id
+            .clone()
+    };
+    assert_eq!(
+        thread_of("m1"),
+        thread_of("m2"),
+        "the reply belongs with its original"
+    );
+    assert_eq!(thread_of("m1").unwrap().as_str(), "reply@h");
 }
