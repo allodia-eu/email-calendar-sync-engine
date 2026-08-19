@@ -7,6 +7,9 @@
 //! multi-megabyte blob never serializes the store; only the small metadata SQL takes
 //! the lock. The body text (the reading view + the search source) lives in the
 //! `message_body` table, whose `message_body_fts` index a trigger maintains.
+//!
+//! Both rows are removed with the message they cache ([`drop_cached_content`], called
+//! from the scope tombstone), so sync depth bounds what an account occupies on disk.
 
 use async_trait::async_trait;
 use engine_core::{
@@ -15,7 +18,7 @@ use engine_core::{
     raw::RawMime,
 };
 use engine_store::{Clock, MailListRow, MessageBodyStore, MessageSourceCache, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 
 use crate::{SqliteStore, blob, convert::instant_to_text, mail_ops, sql};
 
@@ -192,4 +195,38 @@ fn select_body(conn: &Connection, account: &str, key: &str) -> Result<Option<Mes
         let plain = (!plain.is_empty()).then_some(plain);
         MessageBody::new(plain, html)
     }))
+}
+
+/// Drops the two lease-free content caches for a removed message: the extracted body
+/// text (`message_body`, whose FTS5 shadow follows through its trigger) and the
+/// raw-source metadata (`message_source`). They are the bulk of what an account
+/// occupies on disk, so mail leaving the store takes them with it rather than leaving
+/// them to grow without bound. The blob the source row named is content-addressed and
+/// shared, so it is reclaimed by the blob sweep rather than here.
+///
+/// The caches are keyed by `(account, provider_key)` while a tombstone is per scope, so
+/// a key still live in **another** scope of the same account keeps its cache — a Graph
+/// message id is account-global and immutable, so a move leaves a stale copy in the old
+/// folder's scope until it reconciles. The caller has already deleted the `message` row
+/// for this scope (`derived_ops::delete_derived_rows`), so the guard sees only the others.
+///
+/// Both statements are keyed index lookups and match nothing for a calendar or contact
+/// object, so the non-mail scopes pay two probes rather than a branch here on a domain
+/// this function would have to re-derive from the scope key.
+pub(crate) fn drop_cached_content(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<()> {
+    for table in ["message_body", "message_source"] {
+        sql::execute(
+            tx,
+            &format!(
+                "DELETE FROM {table}
+                  WHERE provider_key = ?2
+                    AND account = (SELECT account FROM sync_scope WHERE scope_key = ?1)
+                    AND NOT EXISTS (SELECT 1 FROM message
+                                     WHERE message.account = {table}.account
+                                       AND message.provider_key = ?2)"
+            ),
+            (scope_key, key),
+        )?;
+    }
+    Ok(())
 }
