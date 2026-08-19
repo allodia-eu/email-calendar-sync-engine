@@ -153,6 +153,97 @@ async fn prune_drops_out_of_window_mail_offline() {
 }
 
 #[tokio::test]
+async fn a_delta_cannot_re_admit_mail_from_outside_the_window() {
+    // "New arrival" means new to us, not recent. IMAP has no in-place edit, so filing an old
+    // message into a folder mints a UID above the cursor and the delta reports it as an
+    // arrival; Graph, Gmail and JMAP deltas do the same for a move. Unfiltered, that walks
+    // mail back past a depth the user chose — and nothing takes it out again, because a delta
+    // never re-lists what it did not change.
+    let engine = Engine::open_in_memory().unwrap();
+    let floor = engine_core::time::CalendarDate::new(2026, 4, 1).unwrap();
+    let windowed = plain().within(SyncWindow::since(floor));
+    let provider = FakeProvider {
+        messages: vec![dated_message(
+            "recent",
+            "recent@h",
+            &[],
+            "2026-06-20T09:00:00Z",
+        )],
+        ..FakeProvider::new()
+    }
+    .adding_on_resync(vec![dated_message(
+        "filed",
+        "filed@h",
+        &[],
+        "2023-02-01T09:00:00Z",
+    )]);
+
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            windowed,
+            &quiet(),
+        )
+        .await;
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 1);
+
+    // The cursored resync's delta carries the old message. It must not land.
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            windowed,
+            &quiet(),
+        )
+        .await;
+
+    let keys: Vec<String> = engine
+        .messages(&account())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|message| message.id.key().as_str().to_owned())
+        .collect();
+    assert_eq!(keys, vec!["recent"], "an out-of-window arrival was stored");
+}
+
+#[tokio::test]
+async fn an_unbounded_window_stores_every_arrival_however_old() {
+    // The filter is the window's, not a freshness rule of its own: with no floor there is
+    // nothing outside it, and an account synced over all time keeps what it is sent.
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = FakeProvider {
+        messages: vec![dated_message(
+            "recent",
+            "recent@h",
+            &[],
+            "2026-06-20T09:00:00Z",
+        )],
+        ..FakeProvider::new()
+    }
+    .adding_on_resync(vec![dated_message(
+        "filed",
+        "filed@h",
+        &[],
+        "2023-02-01T09:00:00Z",
+    )]);
+
+    for _ in 0..2 {
+        engine
+            .sync_mail(
+                core::slice::from_ref(&provider),
+                &account(),
+                plain(),
+                &quiet(),
+            )
+            .await;
+    }
+
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn vacuum_compacts_the_store_without_losing_data() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("engine.sqlite");

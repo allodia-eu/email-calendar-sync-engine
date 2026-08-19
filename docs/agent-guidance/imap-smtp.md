@@ -121,8 +121,10 @@ is authoritative for the `provider-caldav` calendar client.
   `* ESEARCH … ALL`) yields the in-window UIDs, and the sync starts at the **lowest** of
   them (older mail is never fetched), reporting their count as the `total` progress
   denominator. No matches yields an empty snapshot that still tombstones stale rows
-  below the window. A **delta** is already bounded to new arrivals, so the window never
-  narrows it (no `SEARCH` is issued). With no cutoff (the default) the whole mailbox
+  below the window. A **delta** issues no `SEARCH`, so the fetch is unbounded; the
+  orchestrator drops any arrival the window does not admit, which is what stops an old
+  message *filed* into the folder (a fresh UID, since IMAP has no in-place edit) from
+  re-entering. With no cutoff (the default) the whole mailbox
   syncs. This is how a host implements "configurable sync depth" without an
   account-wide message delta — the cutoff is a host-supplied calendar date, so this
   crate stays free of any depth/duration policy.
@@ -433,17 +435,15 @@ is authoritative for the `provider-caldav` calendar client.
   expunge half needs it, and a half-incremental path that detects flag changes but
   silently misses expunges would be a worse, more confusing state than the honest
   snapshot fallback. Wiring CONDSTORE-only flag deltas is a possible later refinement.
-- **QRESYNC delta is a single page and not sync-depth-windowed.** The QRESYNC delta
-  issues one `UID FETCH 1:* (CHANGEDSINCE … VANISHED)`: it does **not** honor the
-  `limit`/paging the snapshot path uses (a bulk server-side change — "mark all read" —
-  returns every changed message in one response and one transaction; per-page streaming
-  of the delta is a later refinement), and it does **not** re-apply the sync-depth
-  window — the window bounds only a snapshot/backfill, and the QRESYNC delta fetches
-  `1:*` regardless (so now that the window is a per-sync `stream_email` argument, this
-  is the one path still ignoring it), so a flag change to an *out-of-window* message can
-  re-enter the store. Bounding the delta — correctly, since `VANISHED` needs `1:*` to
-  report already-expunged UIDs while a window must restrict only `changed` — is a later
-  refinement. An *unsolicited* flag-only `FETCH` (no `ENVELOPE`) that the server
+- **QRESYNC delta is a single page.** The QRESYNC delta issues one
+  `UID FETCH 1:* (CHANGEDSINCE … VANISHED)` and does **not** honor the `limit`/paging the
+  snapshot path uses: a bulk server-side change — "mark all read" — returns every changed
+  message in one response and one transaction. Per-page streaming of the delta is a later
+  refinement. It still fetches `1:*` regardless of the sync-depth window, which is correct:
+  `VANISHED` needs `1:*` to report already-expunged UIDs, and the window must restrict only
+  the *upserts*. It does — in the orchestrator, for every adapter at once
+  (`SyncWindow::admits`, `store-and-sync.md`), so an out-of-window UID above the cursor
+  cannot re-enter the store. An *unsolicited* flag-only `FETCH` (no `ENVELOPE`) that the server
   interleaves mid-response is dropped, so it can never overwrite a stored message's
   metadata; the change it signals rides a later `CHANGEDSINCE`. A `* VANISHED` set larger
   than the `MAX_VANISHED` cap (2²⁰, the adversarial-allocation guard) is truncated — an

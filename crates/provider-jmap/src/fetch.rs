@@ -326,7 +326,8 @@ async fn snapshot_page<T: SyncObject>(
         "calculateTotal": true,
     });
     // A sync-depth window bounds the snapshot to recent mail via a `receivedAt`
-    // filter (RFC 8621 §4.4.1); a delta never applies it (new arrivals are recent).
+    // filter (RFC 8621 §4.4.1). `Email/changes` takes no filter, so a delta applies none
+    // and the orchestrator drops an out-of-window arrival on apply instead.
     if let (Some(filter), Some(args)) = (filter, query_args.as_object_mut()) {
         args.insert("filter".to_owned(), filter.clone());
     }

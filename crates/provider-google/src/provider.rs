@@ -143,8 +143,10 @@ impl Provider for GmailProvider {
         _fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
-        // A sync-depth window bounds the *snapshot* via `q: after:<floor>`; a delta
-        // ignores it (new arrivals are recent, and the cursor is account-global).
+        // A sync-depth window bounds the *snapshot* via `q: after:<floor>`. A delta
+        // cannot carry one (`history.list` takes a `startHistoryId`, not a query), so a
+        // relabelled old message is reported whatever its date; the engine drops it on
+        // apply (`SyncWindow::admits`), which is where the bound holds for every adapter.
         let floor = window.floor();
         Box::pin(async_stream::try_stream! {
             let mut page_token: Option<PageToken> = None;

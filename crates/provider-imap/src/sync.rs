@@ -47,9 +47,9 @@ pub(crate) const FETCH_ITEMS: &str = concat!(
 ///
 /// `since` is the optional sync-depth window floor (an IMAP `dd-Mon-yyyy` date): when
 /// set, a **snapshot** fetches only mail delivered on or after it (found via
-/// `UID SEARCH SINCE`), so a large mailbox syncs just recent messages. It never
-/// narrows a delta — new arrivals are recent by definition — nor changes paging once
-/// the floor is set.
+/// `UID SEARCH SINCE`), so a large mailbox syncs just recent messages. A delta issues no
+/// `SEARCH`, so this never narrows one — the orchestrator drops an out-of-window arrival on
+/// apply instead (`SyncWindow::admits`) — nor does it change paging once the floor is set.
 // The streaming path drives [`sync_page_selected`] directly with its own `SELECT`;
 // this `SELECT`-and-page wrapper now exists only to exercise that page logic in the
 // offline `sync_tests`.
