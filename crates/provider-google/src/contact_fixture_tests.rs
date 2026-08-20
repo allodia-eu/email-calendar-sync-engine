@@ -18,6 +18,7 @@ use crate::{
 };
 
 const CONNECTIONS: &str = include_str!("../tests/fixtures/contacts/connections.json");
+const CONNECTIONS_PHOTOS: &str = include_str!("../tests/fixtures/contacts/connections_photos.json");
 const DELTA: &str = include_str!("../tests/fixtures/contacts/connections_delta.json");
 const DELTA_NOCHANGE: &str =
     include_str!("../tests/fixtures/contacts/connections_delta_nochange.json");
@@ -339,4 +340,58 @@ async fn a_bad_request_on_an_optional_source_surfaces_instead_of_degrading() {
             .is_err(),
         "an INVALID_ARGUMENT must surface, not degrade"
     );
+}
+
+/// Whether a person's card advertises a photo decides whether a host ever asks for one,
+/// and People answers that question with a flag rather than by omitting the entry: a
+/// person with no picture still gets a `photos[]` entry, marked `"default": true`, whose
+/// URL serves Google's own generated monogram. Publishing that as a contact photo would
+/// put a *Google* avatar next to a sender in place of ours, on every contact without a
+/// picture — so the normalizer drops it, and this pins that against a captured payload.
+///
+/// The captured URLs keep their real `=s100` option suffix. That matters: the size the
+/// adapter asks for is a *replacement* of that suffix, and a fixture scrubbed down to a
+/// bare URL would exercise the append path instead of the one real payloads take.
+#[tokio::test]
+async fn a_generated_placeholder_is_not_a_contact_photo() {
+    let provider = GoogleContactProvider::connections(fake_client(vec![(
+        "people/me/connections",
+        json(CONNECTIONS_PHOTOS),
+    )]));
+    let ContactSourceSync::Available { sync, .. } = provider
+        .sync_contacts(&AccountId::try_from("fixtures").unwrap(), None)
+        .await
+        .unwrap()
+    else {
+        panic!("connections are available");
+    };
+    let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
+        panic!("expected a snapshot");
+    };
+
+    let with_photo = objects
+        .iter()
+        .find(|card| card.id.as_str() == "people/c1")
+        .expect("the person carrying real photos");
+    let placeholder = objects
+        .iter()
+        .find(|card| card.id.as_str() == "people/c2")
+        .expect("the person carrying only a generated one");
+
+    assert!(
+        placeholder.media.is_empty(),
+        "a `default: true` entry is Google's generated monogram, not a photo"
+    );
+    assert_eq!(with_photo.media.len(), 2, "both real photos are kept");
+    for resource in with_photo.media.values() {
+        assert_eq!(resource.value.kind.as_deref(), Some("photo"));
+        assert!(
+            resource.value.uri.ends_with("=s100"),
+            "the captured URL keeps the option suffix the adapter replaces: {}",
+            resource.value.uri
+        );
+        // The person's `etag` is what validates cached bytes; the URL is only the
+        // fallback for a source that versions nothing.
+        assert_eq!(resource.value.fingerprint.as_deref(), Some("etag-photo-1"));
+    }
 }

@@ -340,3 +340,9 @@ working size request from an ignored one — both are a successful fetch of a va
 image — so `live_a_contact_photo_arrives_at_the_size_we_asked_for` asserts the returned
 image's **pixel dimensions**. The card keeps the original URL, so the cache key is
 unaffected.
+
+A person with no picture still gets a `photos[]` entry — flagged `"default": true`, serving
+Google's own generated monogram. The normalizer drops those, so a card either advertises a
+real photo or advertises none; publishing one would put a *Google* avatar next to a sender
+in place of the host's own. Pinned offline against `contacts/connections_photos.json`,
+whose URLs keep their real `=s100` suffix so the replacement path is the one exercised.

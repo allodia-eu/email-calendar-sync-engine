@@ -481,9 +481,26 @@ Keep the size on Microsoft's documented list; the fallback to the unsized resour
 bounds the damage to an extra request. The first and third bodies are captured in
 `tests/fixtures/error/photo_image_not_found.json` and `photo_invalid_size.json`.
 
-`@odata.mediaEtag` is Graph's documented cache key for a photo, and is **not** used:
-it lives on the photo *metadata* resource, so reading it costs a second request per
-contact during sync, while the cache key is computed from the card before any fetch
-happens. Photos are therefore invalidated by the card's `changeKey`, which does not
-move when only the picture changes — a stale photo survives until the contact is
-edited. Recorded rather than built.
+`@odata.mediaEtag` is Graph's documented cache key for a photo, and is **not** used: it
+lives on the photo *metadata* resource, so reading it costs a second request per contact
+during sync, while the cache key is computed from the card before any fetch happens.
+Photos are invalidated by the card's revision instead — and for a **personal contact**
+that is enough. Measured, not assumed:
+
+- `changeKey` **does** move on a photo-only change (`PUT …/photo/$value` with no other
+  edit: `…AAImXDTo` → `…AAImXDTs`), and
+- that change **is** delivered by `contacts/delta` — replaying a drained `deltaLink`
+  returned zero entries before the upload and exactly one, carrying the new `changeKey`,
+  after.
+
+So a saved contact's new picture arrives on the next contact sync with no extra request
+and no special handling: a different `changeKey` is a different fingerprint, which is a
+cache miss.
+
+⚠️ **A directory user's photo, by contrast, is never invalidated.** `/users` returns
+neither `@odata.etag` nor `changeKey` (confirmed against a real tenant), and the photo
+resource the normalizer emits carries an empty URI — so every fallback in the fingerprint
+chain is exhausted and it settles on a digest of the empty string, the *same constant for
+every directory user, forever*. The per-card cache key keeps one user's photo from
+serving another's, but once a colleague's picture is cached it is never refetched. This is
+the one provider/source pair where "the server updated it" does not reach the user.

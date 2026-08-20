@@ -433,3 +433,52 @@ fn sized_photo_url(uri: &str) -> String {
     };
     format!("{base}=s{PHOTO_SIZE}{tail}")
 }
+
+#[cfg(test)]
+mod photo_url_tests {
+    use super::sized_photo_url;
+
+    /// The size is an option suffix on the path, and `photos[].url` already carries one,
+    /// so it is **replaced**. Appending would leave the original size in place and the
+    /// CDN would serve that — a plausible image, at the wrong size, with no error.
+    ///
+    /// `?sz=` is not tested as an alternative because it is not one: the CDN accepts it
+    /// and ignores it (see `docs/agent-guidance/google.md`). That is why this transform
+    /// touches the path and why the live test asserts pixels.
+    #[test]
+    fn the_size_replaces_any_option_suffix_rather_than_appending() {
+        let base = "https://lh3.googleusercontent.com/contacts/AbC-1_2";
+        // The shape real payloads carry.
+        assert_eq!(
+            sized_photo_url(&format!("{base}=s100")),
+            format!("{base}=s240")
+        );
+        // Options can carry flags beyond the size; the whole suffix goes.
+        assert_eq!(
+            sized_photo_url(&format!("{base}=s100-c")),
+            format!("{base}=s240")
+        );
+        assert_eq!(
+            sized_photo_url(&format!("{base}=w100-h100")),
+            format!("{base}=s240")
+        );
+        // No suffix at all: the CDN would serve the full stored image, so one is added.
+        assert_eq!(sized_photo_url(base), format!("{base}=s240"));
+        // An empty URI is left alone — there is nothing to size.
+        assert_eq!(sized_photo_url(""), "");
+    }
+
+    /// A `=` in an *earlier* path segment must not be mistaken for the option delimiter,
+    /// and a query or fragment has to survive the rewrite rather than be truncated.
+    #[test]
+    fn only_the_last_segments_option_marker_counts() {
+        assert_eq!(
+            sized_photo_url("https://host.example/a=b/photo=s100"),
+            "https://host.example/a=b/photo=s240"
+        );
+        assert_eq!(
+            sized_photo_url("https://host.example/photo=s100?k=v"),
+            "https://host.example/photo=s240?k=v"
+        );
+    }
+}

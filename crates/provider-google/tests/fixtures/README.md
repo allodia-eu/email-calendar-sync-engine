@@ -157,6 +157,7 @@ handle → a placeholder.
 | `contacts/person.json` | `GET /v1/people/{id}?personFields=…` | the single-person shape |
 | `contacts/person_created.json` | `POST /v1/people:createContact` | the create echo — `resourceName` + first `etag` |
 | `contacts/person_updated.json` | `PATCH /v1/{id}:updateContact` | the update echo with the advanced `etag` |
+| `contacts/connections_photos.json` | `GET /people/me/connections?personFields=names,emailAddresses,photos` | photo normalization: a real photo is kept, a `default: true` generated monogram is dropped, and the URL keeps its real `=s100` option suffix (the size the adapter asks for **replaces** that suffix, so a fixture scrubbed to a bare URL would exercise the wrong path) |
 | `contacts/other_contacts.json` | `GET /v1/otherContacts?readMask=…` | the suggested-source page (**its own narrower mask** — Finding 14) |
 | `contacts/contact_groups.json` | `GET /v1/contactGroups` | group → group-card normalization; no sync token |
 | `contacts/group_created.json` | `POST /v1/contactGroups` | the group create echo |
