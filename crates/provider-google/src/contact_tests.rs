@@ -357,9 +357,13 @@ async fn direct_fetch_writes_photos_and_read_only_rejections_are_targeted() {
         )
         .await
         .unwrap();
+    let photo = photo.expect("the photo downloads");
     assert_eq!(photo.as_bytes(), b"photo-bytes");
     assert_eq!(photo.media_type.as_deref(), Some("image/jpeg"));
-    assert_eq!(photo.fingerprint, "photo-v1");
+    assert_eq!(
+        photo.fingerprint, "photo-v1",
+        "the card's own URL keys the cache, not the sized one asked for"
+    );
 
     let book = AddressBookId::try_from("google-connections").unwrap();
     let mut draft_card = card.clone();

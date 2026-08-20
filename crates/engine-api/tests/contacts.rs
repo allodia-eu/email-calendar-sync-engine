@@ -34,6 +34,9 @@ struct FakeContacts {
     photos: AtomicUsize,
     fail_fetch: bool,
     read_only: bool,
+    /// Answers every photo fetch with "this card has no image", the normal case for
+    /// a correspondent outside the user's address books.
+    no_photo: bool,
 }
 
 impl FakeContacts {
@@ -213,16 +216,19 @@ impl ContactsProvider for FakeContacts {
         _account: &AccountId,
         _card: &ContactCard,
         media: &ContactResource,
-    ) -> ProviderResult<ContactPhoto> {
+    ) -> ProviderResult<Option<ContactPhoto>> {
         self.photos.fetch_add(1, Ordering::SeqCst);
-        Ok(ContactPhoto::new(
+        if self.no_photo {
+            return Ok(None);
+        }
+        Ok(Some(ContactPhoto::new(
             vec![0xff, 0xd8, 0xff],
             Some("image/jpeg".into()),
             media
                 .fingerprint
                 .clone()
                 .unwrap_or_else(|| media.uri.clone()),
-        ))
+        )))
     }
 }
 
@@ -308,38 +314,6 @@ async fn people_can_be_filtered_by_synced_group_membership() {
         .unwrap();
     assert_eq!(page.people.len(), 1);
     assert_eq!(page.people[0].display_name.as_deref(), Some("Ada Lovelace"));
-}
-
-#[tokio::test]
-async fn contact_photos_are_cached_until_the_media_fingerprint_changes() {
-    let engine = Engine::open_in_memory().unwrap();
-    let provider = FakeContacts::default();
-    let account = AccountId::try_from("account-1").unwrap();
-    let card = FakeContacts::card("c1", "Ada", "ada@example.test");
-    let mut media = ContactResource {
-        uri: "https://photos.test/ada".into(),
-        media_type: Some("image/jpeg".into()),
-        fingerprint: Some("photo-1".into()),
-        ..ContactResource::default()
-    };
-
-    let first = engine
-        .contact_photo(&provider, &account, &card, &media)
-        .await
-        .unwrap();
-    let cached = engine
-        .contact_photo(&provider, &account, &card, &media)
-        .await
-        .unwrap();
-    assert_eq!(first.as_bytes(), cached.as_bytes());
-    assert_eq!(provider.photos.load(Ordering::SeqCst), 1);
-
-    media.fingerprint = Some("photo-2".into());
-    engine
-        .contact_photo(&provider, &account, &card, &media)
-        .await
-        .unwrap();
-    assert_eq!(provider.photos.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -464,3 +438,6 @@ async fn people_paging_filters_cursor_validation_and_recipient_history_are_expos
 
 #[path = "contact_cases/edges.rs"]
 mod edges;
+
+#[path = "contact_cases/photos.rs"]
+mod photos;

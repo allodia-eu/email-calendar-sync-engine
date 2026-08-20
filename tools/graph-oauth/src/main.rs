@@ -48,10 +48,17 @@ const DEFAULT_AUTHORITY: &str = "https://login.microsoftonline.com/common";
 /// a **personal** Microsoft account usually cannot consent to them, so if `login`
 /// fails with an AADSTS scope/consent error, re-run with `--scopes` limited to the
 /// non-shared set.
+///
+/// Every scope here must be a delegated permission **on the app registration**, or
+/// consent fails outright and no token is issued. Two are therefore deliberately absent:
+/// `OrgContact.Read.All`, which is not registered and which nothing in this repo reads,
+/// and `ProfilePhoto.Read.All`, which requires *admin* consent — a personal account
+/// cannot grant it at all, and `User.ReadBasic.All` already covers reading another
+/// user's photo.
 const DEFAULT_SCOPES: &str = "offline_access openid profile User.Read \
     Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared \
     Calendars.ReadWrite Calendars.ReadWrite.Shared Contacts.ReadWrite \
-    OrgContact.Read.All User.ReadBasic.All ProfilePhoto.Read.All";
+    User.ReadBasic.All";
 /// Loopback port the redirect server listens on. The Microsoft identity platform
 /// ignores the port when matching a registered `http://localhost` redirect, so the
 /// app only needs `http://localhost` registered (RFC 8252 §7.3).

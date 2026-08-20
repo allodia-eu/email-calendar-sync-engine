@@ -127,6 +127,14 @@ pub(crate) fn read_contact_photo(root: &Path, hash: &str) -> Result<Option<Vec<u
     read_blob(root, "contact-photos", "blob", hash)
 }
 
+/// Where [`write_contact_photo`] puts (or would put) the blob named by `hash`.
+///
+/// Names the location without touching the filesystem, for a caller that hands the
+/// path to an image decoder instead of reading the bytes itself.
+pub(crate) fn contact_photo_path(root: &Path, hash: &str) -> PathBuf {
+    root.join("contact-photos").join(format!("{hash}.blob"))
+}
+
 fn read_blob(root: &Path, namespace: &str, extension: &str, hash: &str) -> Result<Option<Vec<u8>>> {
     let path = root.join(namespace).join(format!("{hash}.{extension}"));
     match fs::read(&path) {

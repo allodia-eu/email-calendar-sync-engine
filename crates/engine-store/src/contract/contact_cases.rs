@@ -11,7 +11,27 @@ use engine_core::{
 };
 
 use super::lease_request;
-use crate::{ApplyBatch, CachedContactPhoto, ContactStore, DerivedWrite, Store};
+use crate::{
+    ApplyBatch, CachedContactPhoto, ContactPhotoCache, ContactStore, DerivedWrite, ManualClock,
+    PhotoCacheTtl, Store,
+};
+
+/// How long a recorded "no photo" is trusted in these cases. Any value works; the
+/// contract is that it expires, not what it is.
+const NEGATIVE_TTL: core::time::Duration = core::time::Duration::from_hours(24 * 7);
+
+/// How long a photo stored under an unrevisioned fingerprint is trusted, in the one case
+/// below that asks for a bound at all.
+const UNREVISIONED_TTL: core::time::Duration = core::time::Duration::from_hours(24 * 3);
+
+/// The default every case uses: expire absences, trust photos indefinitely — which is
+/// what a caller passes whenever the fingerprint tracks the picture.
+fn ttl() -> PhotoCacheTtl {
+    PhotoCacheTtl {
+        negative: NEGATIVE_TTL,
+        unrevisioned: None,
+    }
+}
 
 fn account() -> AccountId {
     AccountId::try_from("contact-contract").unwrap()
@@ -191,31 +211,22 @@ where
     S: ContactStore,
 {
     let contact = ContactId::try_from("photo-card").unwrap();
-    assert!(
-        store
-            .contact_photo(&account(), &contact, "res-a", "rev-1")
-            .await
-            .unwrap()
-            .is_none()
+    assert_eq!(
+        photo(store, &contact, "res-a", "rev-1").await,
+        ContactPhotoCache::Miss
     );
-    let photo = CachedContactPhoto::new(vec![0xff, 0xd8, 0xff], Some("image/jpeg".into()), "rev-1");
+    let bytes = CachedContactPhoto::new(vec![0xff, 0xd8, 0xff], Some("image/jpeg".into()), "rev-1");
     store
-        .put_contact_photo(&account(), &contact, "res-a", &photo)
+        .put_contact_photo(&account(), &contact, "res-a", &bytes)
         .await
         .unwrap();
     assert_eq!(
-        store
-            .contact_photo(&account(), &contact, "res-a", "rev-1")
-            .await
-            .unwrap(),
-        Some(photo)
+        photo(store, &contact, "res-a", "rev-1").await,
+        ContactPhotoCache::Hit(bytes)
     );
-    assert!(
-        store
-            .contact_photo(&account(), &contact, "res-a", "rev-2")
-            .await
-            .unwrap()
-            .is_none(),
+    assert_eq!(
+        photo(store, &contact, "res-a", "rev-2").await,
+        ContactPhotoCache::Miss,
         "a changed revision must invalidate cached bytes"
     );
 }
@@ -232,7 +243,7 @@ where
     let contact = ContactId::try_from("multi-media-card").unwrap();
     // Same card, same fingerprint (the shared card ETag), two different resources.
     let logo = CachedContactPhoto::new(b"logo-bytes".to_vec(), Some("image/png".into()), "etag:v1");
-    let photo = CachedContactPhoto::new(
+    let cached_photo = CachedContactPhoto::new(
         b"photo-bytes".to_vec(),
         Some("image/jpeg".into()),
         "etag:v1",
@@ -242,32 +253,186 @@ where
         .await
         .unwrap();
     store
-        .put_contact_photo(&account(), &contact, "photo", &photo)
+        .put_contact_photo(&account(), &contact, "photo", &cached_photo)
         .await
         .unwrap();
 
     // Neither read may return the other's bytes, and storing the second must not have
     // evicted the first.
     assert_eq!(
-        store
-            .contact_photo(&account(), &contact, "logo", "etag:v1")
-            .await
-            .unwrap(),
-        Some(logo)
+        photo(store, &contact, "logo", "etag:v1").await,
+        ContactPhotoCache::Hit(logo)
     );
     assert_eq!(
-        store
-            .contact_photo(&account(), &contact, "photo", "etag:v1")
-            .await
-            .unwrap(),
-        Some(photo)
+        photo(store, &contact, "photo", "etag:v1").await,
+        ContactPhotoCache::Hit(cached_photo)
     );
     // An unknown resource on a cached card is a miss, not a wrong-bytes hit.
-    assert!(
+    assert_eq!(
+        photo(store, &contact, "sound", "etag:v1").await,
+        ContactPhotoCache::Miss
+    );
+}
+
+/// Reads the cache under the shared negative TTL.
+async fn photo<S: ContactStore>(
+    store: &S,
+    contact: &ContactId,
+    resource: &str,
+    fingerprint: &str,
+) -> ContactPhotoCache {
+    store
+        .contact_photo(&account(), contact, resource, fingerprint, ttl())
+        .await
+        .unwrap()
+}
+
+/// A photo whose card carries no revision that could ever change with it — a Graph
+/// directory user is the real case — must stop being trusted eventually, or the first
+/// picture ever cached is the one shown forever. A photo whose fingerprint *does* track
+/// it must not expire, because re-fetching an unchanged image is bytes spent to learn
+/// nothing.
+pub(super) async fn an_unrevisioned_photo_expires_and_a_revisioned_one_does_not<S>(
+    store: &S,
+    clock: &ManualClock,
+) where
+    S: ContactStore,
+{
+    let contact = ContactId::try_from("unrevisioned-card").unwrap();
+    let bytes = CachedContactPhoto::new(b"jpeg".to_vec(), None, "no-revision");
+    store
+        .put_contact_photo(&account(), &contact, "photo", &bytes)
+        .await
+        .unwrap();
+
+    let bounded = PhotoCacheTtl {
+        negative: NEGATIVE_TTL,
+        unrevisioned: Some(UNREVISIONED_TTL),
+    };
+    let read = async |ttl| {
         store
-            .contact_photo(&account(), &contact, "sound", "etag:v1")
+            .contact_photo(&account(), &contact, "photo", "no-revision", ttl)
             .await
             .unwrap()
-            .is_none()
+    };
+    assert_eq!(read(bounded).await, ContactPhotoCache::Hit(bytes.clone()));
+
+    clock.advance(UNREVISIONED_TTL + core::time::Duration::from_secs(1));
+    assert_eq!(
+        read(bounded).await,
+        ContactPhotoCache::Miss,
+        "past its bound, an unrevisioned photo must be re-asked"
+    );
+    assert_eq!(
+        read(ttl()).await,
+        ContactPhotoCache::Hit(bytes),
+        "the same row, read without a bound, is still a hit — the expiry is the \
+         caller's judgement about the fingerprint, not a property of the stored bytes"
+    );
+}
+
+/// "This person has no photo" is the answer for nearly every correspondent outside
+/// the user's address books, so it has to be *remembered* — otherwise every pass over
+/// a mailing list re-asks the provider about the same strangers. It also has to
+/// **expire**, or a colleague who finally uploads a picture never gets one, and it has
+/// to be bound to the card revision, so an edited card re-asks at once rather than
+/// waiting the negative out.
+pub(super) async fn a_recorded_absence_expires_and_is_revision_bound<S>(
+    store: &S,
+    clock: &ManualClock,
+) where
+    S: ContactStore,
+{
+    let contact = ContactId::try_from("no-photo-card").unwrap();
+    store
+        .put_contact_photo_absent(&account(), &contact, "photo", "rev-1")
+        .await
+        .unwrap();
+    assert_eq!(
+        photo(store, &contact, "photo", "rev-1").await,
+        ContactPhotoCache::NoPhoto,
+        "a fresh negative must stop the caller re-asking"
+    );
+    assert_eq!(
+        photo(store, &contact, "photo", "rev-2").await,
+        ContactPhotoCache::Miss,
+        "an edited card re-asks immediately, without waiting the negative out"
+    );
+
+    clock.advance(NEGATIVE_TTL + core::time::Duration::from_secs(1));
+    assert_eq!(
+        photo(store, &contact, "photo", "rev-1").await,
+        ContactPhotoCache::Miss,
+        "an expired negative must let the caller ask again"
+    );
+
+    // A negative replaces bytes and bytes replace a negative: both are one entry.
+    let bytes = CachedContactPhoto::new(b"jpeg".to_vec(), None, "rev-1");
+    store
+        .put_contact_photo(&account(), &contact, "photo", &bytes)
+        .await
+        .unwrap();
+    assert_eq!(
+        photo(store, &contact, "photo", "rev-1").await,
+        ContactPhotoCache::Hit(bytes)
+    );
+    store
+        .put_contact_photo_absent(&account(), &contact, "photo", "rev-1")
+        .await
+        .unwrap();
+    assert_eq!(
+        photo(store, &contact, "photo", "rev-1").await,
+        ContactPhotoCache::NoPhoto,
+        "a photo the provider has since removed must stop being served"
+    );
+}
+
+/// A mail row names a sender by address, so getting from a screenful of addresses to
+/// the people behind them is the lookup this surface has to serve — and serve in one
+/// call, because a per-row query is a query per row on every rebuild. An address
+/// nobody carries is simply absent, never a present-and-empty entry the caller has to
+/// distinguish from a match.
+pub(super) async fn people_resolve_from_a_batch_of_addresses<S>(store: &S)
+where
+    S: Store + ContactStore,
+{
+    apply_contacts(
+        store,
+        vec![
+            card("p1", "ada@example.test"),
+            card("p2", "grace@example.test"),
+        ],
+        "people-1",
+    )
+    .await;
+    let sources = store.contact_sources().await.unwrap();
+    let people =
+        engine_core::people::rebuild_people(&sources.sources, &PeopleSnapshot::empty()).unwrap();
+    assert!(
+        store
+            .replace_people(sources.generation, &people)
+            .await
+            .unwrap()
+    );
+
+    let ada = CanonicalEmail::parse("ada@example.test").unwrap();
+    let grace = CanonicalEmail::parse("grace@example.test").unwrap();
+    let stranger = CanonicalEmail::parse("nobody@example.test").unwrap();
+    let found = store
+        .people_by_email(&[ada.clone(), stranger, grace.clone()])
+        .await
+        .unwrap();
+
+    assert_eq!(found.len(), 2, "an unknown address contributes no entry");
+    assert!(found[&ada].emails.iter().any(|value| value.value == ada));
+    assert!(
+        found[&grace]
+            .emails
+            .iter()
+            .any(|value| value.value == grace)
+    );
+    assert!(
+        store.people_by_email(&[]).await.unwrap().is_empty(),
+        "an empty batch is an empty answer, not every person"
     );
 }

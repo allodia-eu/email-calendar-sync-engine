@@ -4,17 +4,85 @@
 //! and is it still fresh) are the whole of the caching contract, and they are easy to
 //! get subtly wrong — see the doc comments.
 
+use core::time::Duration;
+
 use engine_core::{
     contact::{ContactCard, ContactResource},
     ids::AccountId,
 };
-use engine_provider::{ContactPhoto, ContactsProvider};
-use engine_store::{CachedContactPhoto, ContactStore};
+use engine_provider::ContactsProvider;
+use engine_store::{
+    CachedContactPhoto, ContactPhotoCache, ContactPhotoFile, ContactStore, PhotoCacheTtl,
+};
 
 use crate::{ApiError, Engine};
 
+/// How long "this card resource has no photo" is trusted before the provider is
+/// asked again.
+///
+/// Long, because the answer almost never changes: a correspondent outside the user's
+/// address books has no picture anywhere, and re-probing them costs a request per
+/// stranger per pass. Not forever, because a colleague who uploads one should get it
+/// without reconnecting the account. A week is well inside the tolerance of both.
+const NEGATIVE_TTL: Duration = Duration::from_hours(24 * 7);
+
+/// How long a photo is trusted when **nothing on the card would change if the picture
+/// did**.
+///
+/// A Graph directory user is the case this exists for: `/users` carries no ETag or
+/// `changeKey`, the photo resource has no URI of its own, and `/users/delta` neither
+/// reports a photo change nor can even name the property (measured — see
+/// `docs/agent-guidance/graph.md`). Nothing anywhere says the picture moved, so the only
+/// remaining question is how long to keep believing an answer, and three days trades a
+/// little bandwidth for a colleague's new photo appearing without a reconnect.
+///
+/// It applies *only* to that case. A fingerprint that does track the picture invalidates
+/// on its own, and re-fetching then would be bytes spent to learn nothing.
+const UNREVISIONED_MAX_AGE: Duration = Duration::from_hours(24 * 3);
+
+/// The cache key for one card resource, and whether it can notice the picture changing.
+struct PhotoKey {
+    fingerprint: String,
+    /// `None` when [`photo_fingerprint`] found a real revision.
+    max_age: Option<Duration>,
+}
+
+impl PhotoKey {
+    fn of(card: &ContactCard, media: &ContactResource) -> Self {
+        match photo_fingerprint(card, media) {
+            Some(fingerprint) => Self {
+                fingerprint,
+                max_age: None,
+            },
+            // Still keyed per card and resource, so one person's photo cannot serve
+            // another's; it simply cannot be told apart from a *later* photo on the same
+            // card, which is exactly what the age bound stands in for.
+            None => Self {
+                fingerprint: "unrevisioned".to_owned(),
+                max_age: Some(UNREVISIONED_MAX_AGE),
+            },
+        }
+    }
+
+    fn ttl(&self) -> PhotoCacheTtl {
+        PhotoCacheTtl {
+            negative: NEGATIVE_TTL,
+            unrevisioned: self.max_age,
+        }
+    }
+}
+
 impl Engine {
-    /// Authenticated on-demand contact-photo fetch.
+    /// Returns the cached file for one card's media resource, fetching it once if
+    /// the cache has no answer.
+    ///
+    /// `None` means the source has no image here — not that the fetch failed. That
+    /// answer is remembered for a week, so a mailbox full of strangers costs one
+    /// provider request per stranger rather than one per pass.
+    ///
+    /// The bytes stay on disk and a path comes back: every mail row on screen carries
+    /// one of these, and copying each image through this API only for a host to write
+    /// it somewhere else is work no one needs. See [`ContactPhotoFile`].
     ///
     /// # Errors
     ///
@@ -26,26 +94,35 @@ impl Engine {
         account: &AccountId,
         card: &ContactCard,
         media: &ContactResource,
-    ) -> Result<ContactPhoto, ApiError> {
-        let fingerprint = photo_fingerprint(card, media);
+    ) -> Result<Option<ContactPhotoFile>, ApiError> {
+        let key = PhotoKey::of(card, media);
         let resource = photo_resource_key(media);
-        if let Some(cached) = self
-            .store
-            .contact_photo(account, &card.id, &resource, &fingerprint)
-            .await?
-        {
-            let media_type = cached.media_type.clone();
-            let fingerprint = cached.fingerprint.clone();
-            return Ok(ContactPhoto::new(
-                cached.into_bytes(),
-                media_type,
-                fingerprint,
-            ));
+        // The file first, because that read is metadata only. Asking the byte-returning
+        // cache would load and re-hash the whole image just to discard it and look the
+        // path up anyway.
+        if let Some(file) = self.photo_file(account, card, &resource, &key).await? {
+            return Ok(Some(file));
+        }
+        // Nothing to serve. Only a *recorded absence* stops us asking; a `Hit` cannot
+        // occur here, since the read above would have answered it.
+        if matches!(
+            self.store
+                .contact_photo(account, &card.id, &resource, &key.fingerprint, key.ttl())
+                .await?,
+            ContactPhotoCache::NoPhoto
+        ) {
+            return Ok(None);
         }
         let photo = provider
             .fetch_contact_photo(account, card, media)
             .await
             .map_err(|error| ApiError::Sync(engine_sync::SyncError::Provider(error)))?;
+        let Some(photo) = photo else {
+            self.store
+                .put_contact_photo_absent(account, &card.id, &resource, &key.fingerprint)
+                .await?;
+            return Ok(None);
+        };
         self.store
             .put_contact_photo(
                 account,
@@ -54,11 +131,46 @@ impl Engine {
                 &CachedContactPhoto::new(
                     photo.as_bytes().to_vec(),
                     photo.media_type.clone(),
-                    fingerprint,
+                    key.fingerprint.clone(),
                 ),
             )
             .await?;
-        Ok(photo)
+        self.photo_file(account, card, &resource, &key).await
+    }
+
+    /// Returns the cached file for one card's media resource **without** reaching a
+    /// provider, or `None` when the cache cannot answer from what it already holds.
+    ///
+    /// This is the call a host makes while building a screen: it does store work
+    /// only, so it belongs on a path that must not grow a network fetch. Whatever it
+    /// answers `None` for is what a background pass then resolves through
+    /// [`contact_photo`](Self::contact_photo).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] when the cache cannot be read.
+    pub async fn cached_contact_photo(
+        &self,
+        account: &AccountId,
+        card: &ContactCard,
+        media: &ContactResource,
+    ) -> Result<Option<ContactPhotoFile>, ApiError> {
+        let key = PhotoKey::of(card, media);
+        let resource = photo_resource_key(media);
+        self.photo_file(account, card, &resource, &key).await
+    }
+
+    async fn photo_file(
+        &self,
+        account: &AccountId,
+        card: &ContactCard,
+        resource: &str,
+        key: &PhotoKey,
+    ) -> Result<Option<ContactPhotoFile>, ApiError> {
+        Ok(self
+            .store
+            .contact_photo_file(account, &card.id, resource, &key.fingerprint, key.max_age)
+            .await?)
     }
 }
 
@@ -76,15 +188,23 @@ fn photo_resource_key(media: &ContactResource) -> String {
     uri_digest(&media.uri)
 }
 
-/// Answers "is the cached photo still the one this card points at".
+/// Answers "is the cached photo still the one this card points at", or `None` when
+/// **nothing on the card could answer that**.
 ///
-/// The last resort is the URI, because a source that versions neither the media nor
-/// the card still changes the URI when the photo changes. It is hashed for the same
-/// reason [`photo_resource_key`] hashes it: a CardDAV inline `PHOTO;ENCODING=b` *is* a
-/// `data:` URI holding the whole image, and storing that as the fingerprint would
-/// write a second copy of the image into a column that is string-compared on every
-/// read.
-fn photo_fingerprint(card: &ContactCard, media: &ContactResource) -> String {
+/// The last resort is the URI, because a source that versions neither the media nor the
+/// card still changes the URI when the photo changes. It is hashed for the same reason
+/// [`photo_resource_key`] hashes it: a CardDAV inline `PHOTO;ENCODING=b` *is* a `data:`
+/// URI holding the whole image, and storing that as the fingerprint would write a second
+/// copy of the image into a column that is string-compared on every read.
+///
+/// An **empty** URI is where that last resort runs out. It means the card advertises a
+/// photo endpoint the adapter derives from the card id rather than a resource with an
+/// identity of its own — a Graph directory user — so hashing it yields the same constant
+/// for every such card forever. Returning `None` rather than that constant is the whole
+/// point: it is the difference between a fingerprint that says "unchanged" and one that
+/// has no idea, and only the caller that can tell them apart can decide to bound the
+/// entry by age instead.
+fn photo_fingerprint(card: &ContactCard, media: &ContactResource) -> Option<String> {
     media
         .fingerprint
         .as_ref()
@@ -101,7 +221,7 @@ fn photo_fingerprint(card: &ContactCard, media: &ContactResource) -> String {
                 .as_ref()
                 .map(|value| format!("change-key:{}", value.as_str()))
         })
-        .unwrap_or_else(|| format!("uri:{}", uri_digest(&media.uri)))
+        .or_else(|| (!media.uri.is_empty()).then(|| format!("uri:{}", uri_digest(&media.uri))))
 }
 
 /// FNV-1a over a resource URI. Both photo cache keys are card-local and compared for
@@ -120,9 +240,10 @@ mod tests {
         contact::{ContactCard, ContactResource},
         ids::{AddressBookId, ContactId},
         membership::Memberships,
+        version::{ETag, RevisionTokens},
     };
 
-    use super::{photo_fingerprint, photo_resource_key};
+    use super::{PhotoKey, UNREVISIONED_MAX_AGE, photo_fingerprint, photo_resource_key};
 
     fn inline(payload: &str) -> ContactResource {
         ContactResource {
@@ -144,13 +265,63 @@ mod tests {
     #[test]
     fn both_photo_cache_keys_stay_short_for_an_inline_image() {
         let big = inline(&"A".repeat(64 * 1024));
-        for key in [photo_resource_key(&big), photo_fingerprint(&card(), &big)] {
+        let fingerprint = photo_fingerprint(&card(), &big).expect("an inline image is its own key");
+        for key in [photo_resource_key(&big), fingerprint] {
             assert!(key.len() <= 32, "{} bytes: {key}", key.len());
         }
         // Still a *fingerprint*: a different inline image must not match.
         assert_ne!(
             photo_fingerprint(&card(), &big),
             photo_fingerprint(&card(), &inline("Qk0=")),
+        );
+    }
+
+    /// The fingerprint and the age bound are one decision, and splitting them is how the
+    /// bound goes missing: a card with nothing to notice a photo change by must come back
+    /// with an expiry, and one that has a real revision must not, or every unchanged
+    /// picture is re-fetched on a timer for nothing.
+    #[test]
+    fn only_a_card_that_cannot_notice_a_change_gets_an_age_bound() {
+        let endpoint = ContactResource {
+            kind: Some("photo".into()),
+            ..ContactResource::default()
+        };
+        let unrevisioned = PhotoKey::of(&card(), &endpoint);
+        assert_eq!(unrevisioned.max_age, Some(UNREVISIONED_MAX_AGE));
+        assert_eq!(unrevisioned.ttl().unrevisioned, Some(UNREVISIONED_MAX_AGE));
+
+        let mut revised = card();
+        revised.revisions = RevisionTokens::from_etag(ETag::new("\"v1\""));
+        let revisioned = PhotoKey::of(&revised, &endpoint);
+        assert_eq!(revisioned.max_age, None);
+        assert_eq!(
+            revisioned.ttl().unrevisioned,
+            None,
+            "a revision that tracks the picture invalidates on its own"
+        );
+
+        // An inline image is its own revision, so it needs no bound either.
+        assert_eq!(PhotoKey::of(&card(), &inline("Qk0=")).max_age, None);
+    }
+
+    /// A card that advertises a photo endpoint rather than a resource — Graph derives the
+    /// URL from the card id, so the media carries no URI — has nothing that could change
+    /// when the picture does. Answering with a fingerprint anyway would claim "unchanged"
+    /// forever; `None` is what lets the caller bound the entry by age instead.
+    #[test]
+    fn a_card_with_no_revision_and_no_uri_has_no_fingerprint() {
+        let endpoint = ContactResource {
+            kind: Some("photo".into()),
+            ..ContactResource::default()
+        };
+        assert_eq!(photo_fingerprint(&card(), &endpoint), None);
+
+        // Any one of the three revisions is enough to make it answerable again.
+        let mut revised = card();
+        revised.revisions = RevisionTokens::from_etag(ETag::new("\"v1\""));
+        assert_eq!(
+            photo_fingerprint(&revised, &endpoint).as_deref(),
+            Some("etag:\"v1\"")
         );
     }
 }

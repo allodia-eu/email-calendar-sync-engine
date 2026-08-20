@@ -374,7 +374,7 @@ async fn direct_fetch_patch_delete_and_photos_use_exact_guards() {
         )
         .await
         .unwrap();
-    assert_eq!(embedded.as_bytes(), &[1, 2, 3]);
+    assert_eq!(embedded.expect("inline photo").as_bytes(), &[1, 2, 3]);
     let remote = provider
         .fetch_contact_photo(
             &account(),
@@ -386,7 +386,7 @@ async fn direct_fetch_patch_delete_and_photos_use_exact_guards() {
         )
         .await
         .unwrap();
-    assert_eq!(remote.as_bytes(), b"uri-photo");
+    assert_eq!(remote.expect("remote photo").as_bytes(), b"uri-photo");
 
     card.revisions = RevisionTokens::none();
     assert!(

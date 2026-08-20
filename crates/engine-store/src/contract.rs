@@ -199,4 +199,11 @@ where
     let (store, _) = make();
     contact_cases::contact_photo_cache_is_fingerprint_bound(&store).await;
     contact_cases::contact_photo_cache_separates_resources_on_one_card(&store).await;
+    let (store, clock) = make();
+    contact_cases::a_recorded_absence_expires_and_is_revision_bound(&store, &clock).await;
+    let (store, clock) = make();
+    contact_cases::an_unrevisioned_photo_expires_and_a_revisioned_one_does_not(&store, &clock)
+        .await;
+    let (store, _) = make();
+    contact_cases::people_resolve_from_a_batch_of_addresses(&store).await;
 }

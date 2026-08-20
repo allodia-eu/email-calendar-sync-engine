@@ -68,6 +68,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(schema::V8),
     Migration::sql(schema::V9),
     Migration::filled(schema::V10, backfill::msgid_refs),
+    Migration::sql(schema::V11),
 ];
 
 /// Brings `conn` up to the latest schema version.
@@ -247,6 +248,38 @@ mod tests {
         assert!(failed.is_err());
         assert_eq!(version(&conn), 1);
         assert_eq!(table_count(&conn, "a"), 1);
+    }
+
+    /// v11 adds the column that separates "no photo here" from "never asked", and every
+    /// photo an existing store already cached was written before that column existed.
+    /// Those rows must keep reading as photos: defaulted the other way, a user who has
+    /// used the app would find every cached picture reinterpreted as an absence and
+    /// remembered as one.
+    #[test]
+    fn photos_cached_before_v11_still_read_as_photos_after_it() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run(&mut conn, &MIGRATIONS[..10]).unwrap();
+        assert_eq!(version(&conn), 10);
+        // Written the way a v10 build wrote it — the `missing` column does not exist yet.
+        conn.execute(
+            "INSERT INTO contact_photo
+             (account, contact, resource, fingerprint, content_hash, media_type, fetched_at)
+             VALUES ('a', 'c', 'photo', 'etag:v1', 'deadbeef', 'image/jpeg', '2020-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        assert_eq!(version(&conn), i64::from(expected_version()));
+        let (hash, missing): (String, i64) = conn
+            .query_row(
+                "SELECT content_hash, missing FROM contact_photo WHERE contact = 'c'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(hash, "deadbeef", "the cached photo survives the migration");
+        assert_eq!(missing, 0, "an existing photo is not an absence");
     }
 
     /// v9 leaves a message row carrying both halves of what a list and a write need, and takes

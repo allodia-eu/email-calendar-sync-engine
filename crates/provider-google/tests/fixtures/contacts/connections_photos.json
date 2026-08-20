@@ -1,0 +1,107 @@
+{
+  "connections": [
+    {
+      "resourceName": "people/c1",
+      "etag": "etag-photo-1",
+      "names": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "type": "CONTACT",
+              "id": "source-1"
+            },
+            "sourcePrimary": true
+          },
+          "displayName": "Test User",
+          "displayNameLastFirst": "Ameling TEST, Dennis",
+          "unstructuredName": "Dennis Ameling TEST",
+          "givenName": "Test",
+          "familyName": "User"
+        }
+      ],
+      "photos": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "type": "CONTACT",
+              "id": "source-1"
+            }
+          },
+          "url": "https://lh3.googleusercontent.com/contacts/photo-1-0=s100"
+        },
+        {
+          "metadata": {
+            "source": {
+              "type": "PROFILE",
+              "id": "source-1"
+            }
+          },
+          "url": "https://lh3.googleusercontent.com/contacts/photo-1-1=s100"
+        }
+      ],
+      "emailAddresses": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "type": "CONTACT",
+              "id": "source-1"
+            }
+          },
+          "value": "testuser@example.test"
+        }
+      ]
+    },
+    {
+      "resourceName": "people/c2",
+      "etag": "etag-photo-2",
+      "names": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "type": "CONTACT",
+              "id": "source-2"
+            },
+            "sourcePrimary": true
+          },
+          "displayName": "Test User",
+          "displayNameLastFirst": "Probe1785156679335595000, Live",
+          "unstructuredName": "Live Probe1785156679335595000",
+          "givenName": "Test",
+          "familyName": "User"
+        }
+      ],
+      "photos": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "type": "CONTACT",
+              "id": "source-2"
+            }
+          },
+          "url": "https://lh3.googleusercontent.com/contacts/photo-2-0=s100",
+          "default": true
+        }
+      ],
+      "emailAddresses": [
+        {
+          "metadata": {
+            "primary": true,
+            "source": {
+              "type": "CONTACT",
+              "id": "source-2"
+            }
+          },
+          "value": "testuser@example.test"
+        }
+      ]
+    }
+  ],
+  "totalPeople": 2,
+  "totalItems": 2,
+  "nextSyncToken": "connections-photo-sync-token-1"
+}

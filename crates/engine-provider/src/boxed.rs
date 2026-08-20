@@ -253,7 +253,7 @@ impl<P: ContactsProvider + ?Sized> ContactsProvider for Box<P> {
         account: &AccountId,
         card: &ContactCard,
         media: &ContactResource,
-    ) -> ProviderResult<ContactPhoto> {
+    ) -> ProviderResult<Option<ContactPhoto>> {
         (**self).fetch_contact_photo(account, card, media).await
     }
 }
@@ -401,12 +401,12 @@ mod contacts_tests {
             _account: &AccountId,
             _card: &ContactCard,
             _media: &ContactResource,
-        ) -> ProviderResult<ContactPhoto> {
-            Ok(ContactPhoto::new(
+        ) -> ProviderResult<Option<ContactPhoto>> {
+            Ok(Some(ContactPhoto::new(
                 vec![7],
                 Some("image/png".into()),
                 "rev-1",
-            ))
+            )))
         }
     }
 
@@ -479,6 +479,7 @@ mod contacts_tests {
                 .fetch_contact_photo(&account, &card, &media)
                 .await
                 .unwrap()
+                .expect("the override answers with a photo")
                 .as_bytes(),
             &[7]
         );

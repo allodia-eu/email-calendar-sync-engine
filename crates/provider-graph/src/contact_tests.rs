@@ -274,10 +274,14 @@ async fn direct_fetch_photo_and_write_error_paths_are_source_targeted() {
         .fetch_contact(&account(), &ContactId::try_from("c1").unwrap())
         .await
         .unwrap();
+    // A `contact` has only the singular `photo` resource, and the route table holds
+    // only that one — so serving these bytes proves the adapter did not ask a contact
+    // for a size. Live, that request is a 400, not a 404, and fails the fetch outright.
     let photo = provider
         .fetch_contact_photo(&account(), &card, &ContactResource::default())
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the sized endpoint answers");
     assert_eq!(photo.as_bytes(), b"photo-bytes");
     assert_eq!(photo.fingerprint, "v1");
 
@@ -335,4 +339,94 @@ async fn malformed_contact_pages_fail_instead_of_advancing_a_cursor() {
                 .is_err()
         );
     }
+}
+
+/// Which photo route an item offers depends on what kind of item it is, and getting
+/// that wrong does not degrade quietly.
+///
+/// `user` offers `photos/{size}` and `contact` does not — asking a contact for a size
+/// is `400 RequestBroker--ParseUri`, a *different status* from every absence, so it
+/// fails the fetch rather than reading as "no photo". These routes are keyed on the
+/// exact URL, so a request for the wrong one finds nothing to answer it.
+#[tokio::test]
+async fn only_a_directory_user_is_asked_for_a_sized_photo() {
+    let card = ContactCard::new(
+        ContactId::try_from("u1").unwrap(),
+        Memberships::of_one(AddressBookId::try_from("graph-directory-users").unwrap()),
+    );
+    let directory = GraphContactProvider::directory(fake_client_fallible(vec![(
+        "/users/u1/photos/240x240/$value",
+        Ok(json!("sized-bytes")),
+    )]));
+    assert_eq!(
+        directory
+            .fetch_contact_photo(&account(), &card, &ContactResource::default())
+            .await
+            .unwrap()
+            .expect("the sized route answers")
+            .as_bytes(),
+        b"sized-bytes",
+        "a directory user is asked for an avatar-sized rendering"
+    );
+}
+
+/// Two different things arrive as a 404 on a Graph photo route, and telling them apart
+/// is the whole point of the fetch answering `Option`.
+///
+/// A photo Graph cannot resize answers 404 for a *specific* size while the unsized
+/// resource serves it, so the sized 404 is not yet an answer — reading it as one would
+/// leave every such contact drawn as a monogram forever. Only when the unsized resource
+/// 404s too is there really no photo, and that is what a caller may remember.
+#[tokio::test]
+async fn a_sized_photo_404_falls_back_before_it_counts_as_no_photo() {
+    let not_found = || {
+        Err((
+            404,
+            json!({"error": {"code": "ErrorItemNotFound", "message": "not found"}}),
+        ))
+    };
+    let card = ContactCard::new(
+        ContactId::try_from("u1").unwrap(),
+        Memberships::of_one(AddressBookId::try_from("graph-directory-users").unwrap()),
+    );
+
+    // Sized 404s, unsized serves: a photo, fetched from the fallback.
+    let provider = GraphContactProvider::directory(fake_client_fallible(vec![
+        ("/users/u1/photos/240x240/$value", not_found()),
+        ("/users/u1/photo/$value", Ok(json!("original-bytes"))),
+    ]));
+    assert_eq!(
+        provider
+            .fetch_contact_photo(&account(), &card, &ContactResource::default())
+            .await
+            .unwrap()
+            .expect("the unsized resource still has it")
+            .as_bytes(),
+        b"original-bytes"
+    );
+
+    // Both 404: this person genuinely has no picture.
+    let provider = GraphContactProvider::directory(fake_client_fallible(vec![
+        ("/users/u1/photos/240x240/$value", not_found()),
+        ("/users/u1/photo/$value", not_found()),
+    ]));
+    assert!(
+        provider
+            .fetch_contact_photo(&account(), &card, &ContactResource::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // A refused permission is not an absence, and must never be cached as one.
+    let provider = GraphContactProvider::directory(fake_client_fallible(vec![(
+        "/users/u1/photos/240x240/$value",
+        Err((403, json!({"error": {"code": "ErrorAccessDenied"}}))),
+    )]));
+    assert!(
+        provider
+            .fetch_contact_photo(&account(), &card, &ContactResource::default())
+            .await
+            .is_err()
+    );
 }

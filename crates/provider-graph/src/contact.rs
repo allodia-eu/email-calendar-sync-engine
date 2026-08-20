@@ -19,7 +19,9 @@ use engine_provider::{
 };
 use serde_json::Value;
 
-use crate::{contact_normalize, contact_write, error::GraphError, transport::GraphClient};
+use crate::{
+    contact_normalize, contact_photo, contact_write, error::GraphError, transport::GraphClient,
+};
 
 const ROOT_BOOK: &str = "graph-personal-root";
 const ORG_BOOK: &str = "graph-organizational-contacts";
@@ -395,24 +397,10 @@ impl ContactsProvider for GraphContactProvider {
         _account: &AccountId,
         card: &ContactCard,
         media: &ContactResource,
-    ) -> ProviderResult<ContactPhoto> {
-        let url = if media.uri.is_empty() {
-            format!("{}/photo/$value", self.item_url(&card.id))
-        } else {
-            media.uri.clone()
-        };
-        let bytes = self.client.get_bytes(&url).await?;
-        Ok(ContactPhoto::new(
-            bytes,
-            media.media_type.clone(),
-            media.fingerprint.clone().unwrap_or_else(|| {
-                card.revisions
-                    .change_key
-                    .as_ref()
-                    .map_or("photo", |key| key.as_str())
-                    .into()
-            }),
-        ))
+    ) -> ProviderResult<Option<ContactPhoto>> {
+        // Only a `user` offers sized photos; a `contact` has the singular resource.
+        let sized = matches!(self.source, GraphContactSource::Directory);
+        contact_photo::fetch(&self.client, &self.item_url(&card.id), sized, card, media).await
     }
 }
 

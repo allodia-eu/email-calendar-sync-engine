@@ -388,6 +388,18 @@ CREATE TABLE recipient_index_state (
 ) STRICT, WITHOUT ROWID;
 ";
 
+/// Migration v11: remembering that a contact *has* no photo.
+///
+/// `contact_photo` could previously only record a photo it held, so "this person has
+/// no picture" — the answer for almost every correspondent outside the user's address
+/// books — was indistinguishable from "never asked", and every pass re-asked the
+/// provider about the same strangers. A negative row carries no bytes, so its
+/// `content_hash` is empty and `missing` is what separates the two; `fetched_at`,
+/// already written and until now never read, is what expires it.
+pub(crate) const V11: &str = "\
+ALTER TABLE contact_photo ADD COLUMN missing INTEGER NOT NULL DEFAULT 0;
+";
+
 mod mail;
 
 pub(crate) use mail::{V8, V9, V10};

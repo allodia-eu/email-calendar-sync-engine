@@ -40,6 +40,7 @@ mod cal_write;
 mod calendar;
 mod contact;
 mod contact_normalize;
+mod contact_photo;
 mod contact_write;
 mod error;
 mod fetch;

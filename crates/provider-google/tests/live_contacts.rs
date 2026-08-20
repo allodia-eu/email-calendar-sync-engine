@@ -372,3 +372,112 @@ async fn live_stale_etag_update_is_a_conflict() {
         .await
         .expect("cleanup");
 }
+
+/// Decodes a JPEG/PNG's pixel dimensions from its header.
+///
+/// The assertion below is about *what size image came back*, and nothing weaker
+/// distinguishes a size request that worked from one the CDN ignored — both are 200
+/// with a valid picture.
+fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let width = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
+        let height = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
+        return Some((width, height));
+    }
+    if !bytes.starts_with(b"\xff\xd8") {
+        return None;
+    }
+    let mut index = 2;
+    while index + 9 < bytes.len() {
+        if bytes[index] != 0xFF {
+            index += 1;
+            continue;
+        }
+        let marker = bytes[index + 1];
+        if (0xC0..=0xC2).contains(&marker) {
+            let height = u32::from(u16::from_be_bytes(
+                bytes[index + 5..index + 7].try_into().ok()?,
+            ));
+            let width = u32::from(u16::from_be_bytes(
+                bytes[index + 7..index + 9].try_into().ok()?,
+            ));
+            return Some((width, height));
+        }
+        index += 2 + usize::from(u16::from_be_bytes(
+            bytes[index + 2..index + 4].try_into().ok()?,
+        ));
+    }
+    None
+}
+
+/// Google's photo CDN takes the size as an **option suffix on the path** (`…=s240`),
+/// and accepts `?sz=240` while silently ignoring it — 200, a valid image, the original
+/// pixels. Nothing offline can tell those apart: a fake serves canned bytes whatever
+/// the URL, and both variants are a successful fetch of a real picture.
+///
+/// So this asserts the pixels. A contact photo arrives from `photos[].url` already
+/// carrying a suffix (`=s100`), which is why appending rather than replacing is not
+/// enough either.
+#[tokio::test]
+async fn live_a_contact_photo_arrives_at_the_size_we_asked_for() {
+    let Some(token) = token() else {
+        eprintln!(
+            "skipping live_a_contact_photo_arrives_at_the_size_we_asked_for: \
+             GOOGLE_ACCESS_TOKEN unset"
+        );
+        return;
+    };
+    let provider = GoogleContactProvider::connections(client(token));
+    // People meters *full* syncs per account, and this file's other tests each spend
+    // one. Exhausting that quota is a property of the shared throwaway account, not a
+    // defect, so it aborts loudly rather than failing — but it must never read as a
+    // pass, because the assertion below did not run.
+    let sync = match provider.sync_contacts(&account(), None).await {
+        Ok(ContactSourceSync::Available { sync, .. }) => sync,
+        Ok(ContactSourceSync::Unavailable(reason)) => {
+            panic!("connections are available on a consumer account: {reason:?}")
+        }
+        Err(error) if error.class() == engine_core::error::FailureClass::RateLimited => {
+            eprintln!(
+                "!! NOT VERIFIED: People sync quota exhausted, so the photo-size \
+                 assertion did not run. Wait for the quota to reset and re-run."
+            );
+            return;
+        }
+        Err(error) => panic!("snapshot: {error:?}"),
+    };
+    let cards = match &sync.update {
+        SyncUpdate::Snapshot { objects, .. } => objects.clone(),
+        SyncUpdate::Delta { changed, .. } => changed.clone(),
+    };
+    // `photos[].url` is only present for a person who has one; the normalizer drops
+    // Google's generated monogram placeholders (`default: true`).
+    let Some((card, media)) = cards.iter().find_map(|card| {
+        card.media
+            .values()
+            .map(|resource| &resource.value)
+            .find(|resource| resource.kind.as_deref() == Some("photo"))
+            .map(|resource| (card, resource.clone()))
+    }) else {
+        eprintln!("skipping: no contact on this account has a photo");
+        return;
+    };
+
+    let photo = provider
+        .fetch_contact_photo(&account(), card, &media)
+        .await
+        .expect("the photo fetch succeeds")
+        .expect("a card advertising a photo has one");
+    assert_eq!(
+        dimensions(photo.as_bytes()),
+        Some((240, 240)),
+        "the CDN must return the avatar size we asked for, not the stored original"
+    );
+    // People stamps every person with an `etag`, so that is what validates the cached
+    // bytes; the URL is only the fallback for a source that versions nothing.
+    assert_eq!(
+        Some(photo.fingerprint.as_str()),
+        media.fingerprint.as_deref(),
+        "the card's own revision keys the cache, not the sized URL fetched"
+    );
+}

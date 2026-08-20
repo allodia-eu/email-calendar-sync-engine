@@ -488,3 +488,7 @@ mod calendar_patch_tests;
 #[cfg(test)]
 #[path = "contact_tests.rs"]
 mod contact_tests;
+
+#[cfg(test)]
+#[path = "contact_shape_tests.rs"]
+mod contact_shape_tests;

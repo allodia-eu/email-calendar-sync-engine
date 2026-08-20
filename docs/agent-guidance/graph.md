@@ -432,3 +432,110 @@ The capture helper defaults include delegated `Contacts.ReadWrite`,
 `OrgContact.Read.All`, `User.ReadBasic.All`, and `ProfilePhoto.Read.All`.
 Directory permissions can require administrator consent and must never become a
 prerequisite for personal contact sync.
+
+## Contact and directory photos
+
+A Graph card never says whether an image exists, so the contact normalizer emits a
+photo `ContactResource` with an **empty** URI and the fetch derives the URL from the
+card id. Whether it resolves is only knowable by asking, and the answer is cached —
+including the negative (`contacts.md` → "Absence is an outcome, not a failure").
+
+**The sized route belongs to `user`, not to `contact`.** `/users/{id}/photos/240x240/$value`
+is valid; `/me/contacts/{id}/photos/240x240/$value` is `400 RequestBroker--ParseUri`
+("Resource not found for the segment 'photos'"). A contact has only the singular
+`photo/$value`. So only the directory source asks for a size — which is also where it
+matters. Measured against a real tenant directory user:
+
+| Route | Bytes | Pixels |
+|---|---|---|
+| `/photos/240x240/$value` | **13.7 KB** | 240x240 |
+| `/photo/$value` | **799 KB** | 2454x2453 |
+
+58x, for a picture drawn at avatar size. A fallback to the unsized route still returns a
+valid photo, so `live_directory_photos` asserts the returned image's **pixels** — nothing
+weaker distinguishes the two.
+
+**`User.ReadBasic.All` is enough to read a colleague's photo; `ProfilePhoto.Read.All` is
+not needed.** That matters because the latter requires **admin consent**, so if it were
+required, tenant directory avatars would be gated behind an administrator for every
+customer. Verified live against a work/school account whose token's `scp` claim was first
+asserted *not* to carry `ProfilePhoto.Read.All` — the app registration holds admin consent
+for it in its home tenant, so without that control a successful read would have proved
+nothing.
+
+One incidental measurement worth keeping: 13 directory users were asked before one had a
+photo. Most people in a tenant have none, and each miss costs two requests (sized, then
+unsized), which is the case the negative cache exists for.
+
+**Every relevant failure here is a 404, separated only by `code`:**
+
+| Code | Means | Seen on |
+|---|---|---|
+| `ImageNotFound` | the resource exists, there is no image | `user` |
+| `ErrorItemNotFound` | the same, for a personal contact | `contact` |
+| `ErrorInvalidImageId` | **the requested size is not one Graph offers** | `user`, with a bad size |
+
+The third is the dangerous one: a mis-set size is indistinguishable by status from
+every contact simply lacking a photo, so it would blank every avatar and fail nothing.
+Keep the size on Microsoft's documented list; the fallback to the unsized resource
+bounds the damage to an extra request. The first and third bodies are captured in
+`tests/fixtures/error/photo_image_not_found.json` and `photo_invalid_size.json`.
+
+`@odata.mediaEtag` is Graph's documented cache key for a photo, and is **not** used: it
+lives on the photo *metadata* resource, so reading it costs a second request per contact
+during sync, while the cache key is computed from the card before any fetch happens.
+Photos are invalidated by the card's revision instead — and for a **personal contact**
+that is enough. Measured, not assumed:
+
+- `changeKey` **does** move on a photo-only change (`PUT …/photo/$value` with no other
+  edit: `…AAImXDTo` → `…AAImXDTs`), and
+- that change **is** delivered by `contacts/delta` — replaying a drained `deltaLink`
+  returned zero entries before the upload and exactly one, carrying the new `changeKey`,
+  after.
+
+So a saved contact's new picture arrives on the next contact sync with no extra request
+and no special handling: a different `changeKey` is a different fingerprint, which is a
+cache miss.
+
+⚠️ **A directory user's photo is invisible to every change signal Graph offers.** Three
+findings, each measured against a real tenant, and the third with both arms:
+
+1. `/users` returns neither `@odata.etag` nor `changeKey`, and the photo resource the
+   normalizer emits carries an empty URI — so every fallback in the fingerprint chain is
+   exhausted. Nothing on the card tracks the photo.
+2. `/users/delta` **cannot** carry photo information: `$select=id,displayName,photo` is
+   rejected outright (*"Invalid request for delta query: for this entity set,
+   $expand/$select…"*). `photo` is a navigation property; delta carries scalars.
+3. **A photo-only change does not appear in `/users/delta` at all.** Changing a user's
+   profile photo moved its `@odata.mediaEtag`
+   (`W/"c8325ba8…"` → `W/"316d8d65…"`) while a saved `deltaLink` replayed **0** changed
+   entries — immediately, and again after a delay, with the cursor provably live (HTTP
+   200, fresh `deltaLink`). The **positive control** rules out a dead cursor: renaming
+   the same user through the same link returned **1** entry carrying the new
+   `displayName` and `surname`.
+
+So a directory user's *details* refresh normally through delta, and their *picture* has no
+signal whatsoever. This is the opposite of a personal contact, where a photo-only change
+both moves `changeKey` and arrives through `contacts/delta` — same provider, two sources,
+genuinely different behaviour, which is why the engine derives this per **card** from the
+fingerprint rather than declaring it per provider.
+
+**Reported upstream**, with this reproduction:
+<https://feedbackportal.microsoft.com/feedback/idea/4a6c7737-8a9c-f111-a3d0-7c1e52cf64f0>.
+If Graph ever fires the delta on a photo change, or allows `$select=photo`, or honours
+`If-None-Match` against the media ETag, the age bound below stops being the only option —
+check that item before assuming it is still the state of the world.
+
+`@odata.mediaEtag` on the photo *metadata* resource (`GET /users/{id}/photo`, no
+`/$value`) is the only true photo revision Graph exposes. It is not used as the cache
+validator because reading it costs a request per photo per check, where the cache's
+purpose is to make that zero — a max age on an unrevisioned entry costs nothing until it
+expires. It remains the obvious basis for a future conditional refresh: ~200 bytes of JSON
+to decide whether to spend 13.7 KB on the image.
+
+**Two saved contacts are kept on each Microsoft test account and should not be deleted:**
+one with a profile picture and one without. The engine never *writes* a contact photo, so
+a live test cannot create the thing it needs to read — the present direction is only
+coverable against a contact someone set up by hand. `live_a_saved_contact_with_a_picture…`
+walks whatever the account has rather than naming them, so renaming is fine; removing the
+one with a picture is what would silently uncover the path.

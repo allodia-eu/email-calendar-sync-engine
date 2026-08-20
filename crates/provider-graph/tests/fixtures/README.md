@@ -34,6 +34,8 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/message_moved.json` | `POST /me/messages/{id}/move` body `{destinationId}` | the move echo — **same `id`** (immutable), `parentFolderId` now the destination |
 | `wellknown/*.json` | `GET /me/mailFolders/{inbox,drafts,…}` | well-known-name → id role resolution |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
+| `error/photo_image_not_found.json` | `GET /me/photos/240x240/$value` with no photo set | the 404 that means "there is no image" |
+| `error/photo_invalid_size.json` | `GET /me/photos/999x999/$value` | the 404 that means "that size is not offered" (see Finding 16) |
 | `me.json` | `GET /me` | account identity probe |
 
 ## Real-behavior findings (captured, not assumed)
@@ -224,3 +226,15 @@ contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@od
 22. **Declining removes the event from the invitee's calendar** (Outlook's default), so a
     later `GET` of it is `404 ErrorItemNotFound` — not a stale-guard failure. A test that
     answers more than once must decline last.
+
+16. **Photo routes are resource-kind specific, and every failure is a 404 except the
+    one that is a 400.** `photos/{size}/$value` exists on `user`
+    (`/me`, `/users/{id}`) and **not** on `contact`: asking a contact for a size is
+    `400 RequestBroker--ParseUri`, "Resource not found for the segment 'photos'". A
+    contact has only `photo/$value`. Among the 404s, `ImageNotFound` (user) and
+    `ErrorItemNotFound` (contact) both mean "there is no image", while
+    `ErrorInvalidImageId` means "that size is not one we offer" — same status,
+    opposite cause. So a mis-set size cannot be told from a photoless address book by
+    status alone; it would draw a monogram everywhere and fail nothing. Captured as
+    `error/photo_image_not_found.json` and `error/photo_invalid_size.json`, and the
+    reason the adapter falls back to the unsized resource on any sized 404.

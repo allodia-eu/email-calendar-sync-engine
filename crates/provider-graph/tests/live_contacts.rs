@@ -15,6 +15,12 @@
 //!
 //! The mutating tests create and delete their own throwaway contacts/folders, so they
 //! are safe to run repeatedly against the shared account.
+//!
+//! **Run with `-- --test-threads=1`.** These all address one mailbox, and Graph throttles
+//! *concurrent* access to a single one: run in parallel they intermittently answer
+//! `429 ApplicationThrottled` ("over its MailboxConcurrency limit"), which is the harness
+//! competing with itself rather than anything under test. Serially the whole file passes
+//! in under three seconds, so there is nothing to gain from the parallelism.
 
 use engine_core::{
     contact::{
@@ -291,4 +297,140 @@ async fn live_fetch_contact_matches_the_synced_card() {
         .delete_contact(&account(), &fetched)
         .await
         .expect("cleanup");
+}
+
+/// A contact with no picture is the ordinary case, and it now has to arrive as an
+/// *absence* rather than an error — a caller cannot remember an error, and re-probing
+/// every photoless correspondent on every pass is what the negative cache exists to
+/// stop.
+///
+/// The offline fake cannot show this: it answers a canned 404 to any URL, so it would
+/// pass just as happily for a request Graph rejects outright. Here the request is real,
+/// and it goes to a contact this test just created — so the 404 can only mean "this
+/// person has no photo".
+///
+/// The card also has to *advertise* a photo resource for a host to have anything to
+/// ask about; unlike the other three providers, whether Graph holds an image is not
+/// knowable from the card, only by asking.
+#[tokio::test]
+async fn live_a_contact_without_a_photo_is_an_absence_not_an_error() {
+    let Some(token) = token() else {
+        eprintln!(
+            "skipping live_a_contact_without_a_photo_is_an_absence_not_an_error: \
+             GRAPH_ACCESS_TOKEN unset"
+        );
+        return;
+    };
+    let provider = GraphContactProvider::personal(client(token));
+    let unique = unique();
+    let receipt = provider
+        .create_contact(&account(), &draft(unique))
+        .await
+        .expect("create_contact");
+
+    let card = provider
+        .fetch_contact(&account(), &receipt.contact)
+        .await
+        .expect("fetch_contact");
+    let media = card
+        .media
+        .values()
+        .map(|resource| &resource.value)
+        .find(|resource| resource.kind.as_deref() == Some("photo"))
+        .expect("a Graph card advertises its photo endpoint");
+    assert!(
+        media.uri.is_empty(),
+        "the URL is derived from the card id, not carried on the card"
+    );
+
+    let photo = provider
+        .fetch_contact_photo(&account(), &card, media)
+        .await
+        .expect("a contact without a photo is not a failed fetch");
+    assert!(
+        photo.is_none(),
+        "this contact was just created with no photo"
+    );
+
+    provider
+        .delete_contact(&account(), &card)
+        .await
+        .expect("cleanup");
+}
+
+/// Both answers a saved contact's photo can give, against real stored contacts: one that
+/// has a picture and one that does not.
+///
+/// The absence direction is covered above with a contact this suite creates. This is the
+/// half that needs a *real* one, because nothing the suite can create has a photo — the
+/// engine never writes one, so there is no request shape here that could put an image
+/// there to read back. Two contacts are kept on the test accounts for it.
+///
+/// It also pins the route: a `contact` has only the singular `photo/$value`, and asking
+/// one for a size is `400 RequestBroker--ParseUri` rather than any kind of absence. A
+/// successful read here is the proof that the personal-contact path does not ask for one.
+///
+/// Deliberately not keyed on a contact's name or id — it walks what the account has and
+/// needs only that both shapes exist, so either Microsoft test account satisfies it.
+#[tokio::test]
+async fn live_a_saved_contact_with_a_picture_returns_it_and_one_without_returns_none() {
+    let Some(token) = token() else {
+        eprintln!(
+            "skipping live_a_saved_contact_with_a_picture_returns_it_and_one_without_returns_none: \
+             GRAPH_ACCESS_TOKEN unset"
+        );
+        return;
+    };
+    let provider = GraphContactProvider::personal(client(token));
+    let ContactSourceSync::Available { sync, .. } = provider
+        .sync_contacts(&account(), None)
+        .await
+        .expect("snapshot")
+    else {
+        panic!("personal contacts are never Unavailable");
+    };
+    let cards = match &sync.update {
+        SyncUpdate::Snapshot { objects, .. } => objects.clone(),
+        SyncUpdate::Delta { changed, .. } => changed.clone(),
+    };
+
+    let (mut with_picture, mut without) = (0_usize, 0_usize);
+    for card in &cards {
+        let media = card
+            .media
+            .values()
+            .map(|resource| &resource.value)
+            .find(|resource| resource.kind.as_deref() == Some("photo"))
+            .expect("every Graph card advertises its photo endpoint");
+        match provider
+            .fetch_contact_photo(&account(), card, media)
+            .await
+            .expect("a saved contact's photo read must not fail either way")
+        {
+            Some(photo) => {
+                // A JPEG or PNG magic number: proof these are image bytes and not, say,
+                // an error document served with a 200.
+                let bytes = photo.as_bytes();
+                assert!(
+                    bytes.starts_with(b"\xff\xd8") || bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+                    "a returned photo must be a raster image, got {:?}",
+                    &bytes[..bytes.len().min(8)]
+                );
+                with_picture += 1;
+            }
+            None => without += 1,
+        }
+    }
+
+    // Only the *present* direction is asserted. It is what this test exists for and what
+    // no self-created contact can cover; the absent direction has its own test above,
+    // which creates the contact it needs and so cannot be left uncovered by account
+    // state. Requiring both here would only make this fail on an account that happens to
+    // have a picture on everything.
+    assert!(
+        with_picture > 0,
+        "no saved contact on this account has a photo, so the direction this test exists \
+         for did not run — set a picture on one contact and re-run"
+    );
+    eprintln!("verified: {with_picture} contact(s) with a picture, {without} without");
 }
