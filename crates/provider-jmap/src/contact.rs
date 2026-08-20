@@ -358,19 +358,36 @@ impl ContactsProvider for JmapProvider {
         _account: &AccountId,
         _card: &ContactCard,
         media: &ContactResource,
-    ) -> ProviderResult<ContactPhoto> {
-        let blob = media
-            .fingerprint
-            .as_deref()
-            .ok_or_else(|| JmapError::protocol("JMAP media has no blobId"))?;
-        let bytes = self
+    ) -> ProviderResult<Option<ContactPhoto>> {
+        // Inline first: a card that reached the server as a vCard with
+        // `PHOTO;ENCODING=b` has no blob to name, and its `uri` *is* the image.
+        if let Some(bytes) = crate::blob::decode_data_uri(&media.uri) {
+            return Ok(Some(ContactPhoto::new(
+                bytes,
+                media.media_type.clone(),
+                media.uri.clone(),
+            )));
+        }
+        let blob = media.fingerprint.as_deref().ok_or_else(|| {
+            JmapError::protocol("JMAP media has neither a blobId nor inline data")
+        })?;
+        let bytes = match self
             .download_contact_blob(blob, media.media_type.as_deref())
-            .await?;
-        Ok(ContactPhoto::new(
+            .await
+        {
+            Ok(bytes) => bytes,
+            // The card named a blob the server no longer holds — a photo that is gone,
+            // not a download that failed.
+            Err(JmapError::Status {
+                status: 404 | 410, ..
+            }) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Some(ContactPhoto::new(
             bytes,
             media.media_type.clone(),
             blob.to_owned(),
-        ))
+        )))
     }
 }
 

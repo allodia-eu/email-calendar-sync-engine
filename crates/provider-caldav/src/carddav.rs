@@ -390,19 +390,28 @@ impl ContactsProvider for CardDavProvider {
         _account: &AccountId,
         _card: &ContactCard,
         media: &ContactResource,
-    ) -> ProviderResult<ContactPhoto> {
+    ) -> ProviderResult<Option<ContactPhoto>> {
         let bytes = if let Some(data) = media.uri.strip_prefix("data:") {
             decode_data_uri(data)?
         } else {
-            self.executor.get_bytes(&media.uri).await?
+            match self.executor.get_bytes(&media.uri).await {
+                Ok(bytes) => bytes,
+                // A `PHOTO` whose URI no longer resolves is a card without a picture.
+                // The vCard still names one, so this cannot be answered by looking at
+                // the card — only by asking.
+                Err(CalDavError::Status {
+                    status: 404 | 410, ..
+                }) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            }
         };
-        Ok(ContactPhoto::new(
+        Ok(Some(ContactPhoto::new(
             bytes,
             media.media_type.clone(),
             media
                 .fingerprint
                 .clone()
                 .unwrap_or_else(|| media.uri.clone()),
-        ))
+        )))
     }
 }

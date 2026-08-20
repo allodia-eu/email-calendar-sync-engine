@@ -432,3 +432,38 @@ The capture helper defaults include delegated `Contacts.ReadWrite`,
 `OrgContact.Read.All`, `User.ReadBasic.All`, and `ProfilePhoto.Read.All`.
 Directory permissions can require administrator consent and must never become a
 prerequisite for personal contact sync.
+
+## Contact and directory photos
+
+A Graph card never says whether an image exists, so the contact normalizer emits a
+photo `ContactResource` with an **empty** URI and the fetch derives the URL from the
+card id. Whether it resolves is only knowable by asking, and the answer is cached —
+including the negative (`contacts.md` → "Absence is an outcome, not a failure").
+
+**The sized route belongs to `user`, not to `contact`.** `/users/{id}/photos/240x240/$value`
+is valid; `/me/contacts/{id}/photos/240x240/$value` is `400 RequestBroker--ParseUri`
+("Resource not found for the segment 'photos'"). A contact has only the singular
+`photo/$value`. So only the directory source asks for a size — which is also where it
+matters, since a directory photo is routinely a megabyte and every caller draws it at
+avatar size.
+
+**Every relevant failure here is a 404, separated only by `code`:**
+
+| Code | Means | Seen on |
+|---|---|---|
+| `ImageNotFound` | the resource exists, there is no image | `user` |
+| `ErrorItemNotFound` | the same, for a personal contact | `contact` |
+| `ErrorInvalidImageId` | **the requested size is not one Graph offers** | `user`, with a bad size |
+
+The third is the dangerous one: a mis-set size is indistinguishable by status from
+every contact simply lacking a photo, so it would blank every avatar and fail nothing.
+Keep the size on Microsoft's documented list; the fallback to the unsized resource
+bounds the damage to an extra request. The first and third bodies are captured in
+`tests/fixtures/error/photo_image_not_found.json` and `photo_invalid_size.json`.
+
+`@odata.mediaEtag` is Graph's documented cache key for a photo, and is **not** used:
+it lives on the photo *metadata* resource, so reading it costs a second request per
+contact during sync, while the cache key is computed from the card before any fetch
+happens. Photos are therefore invalidated by the card's `changeKey`, which does not
+move when only the picture changes — a stale photo survives until the contact is
+edited. Recorded rather than built.

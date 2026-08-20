@@ -27,7 +27,8 @@ pub use apply::{
     SweepReport, SyncApplied, TzdataVersion,
 };
 pub use contact::{
-    CachedContactPhoto, ContactSourceAvailability, ContactSourceSnapshot, ContactStore,
+    CachedContactPhoto, ContactPhotoCache, ContactPhotoFile, ContactSourceAvailability,
+    ContactSourceSnapshot, ContactStore,
 };
 pub use error::{Result, StoreError};
 pub use lease::{

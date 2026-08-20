@@ -1,18 +1,25 @@
 //! Async [`ContactStore`] implementation over the SQLite operations.
 
+use core::time::Duration;
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ContactId},
-    people::{CanonicalEmail, PeopleSnapshot},
+    people::{CanonicalEmail, PeopleSnapshot, Person},
     recipient::{RecipientCoverage, RecipientInteraction, RecipientObservation},
     sync::SyncScope,
 };
 use engine_store::{
-    CachedContactPhoto, Clock, ContactSourceAvailability, ContactSourceSnapshot, ContactStore,
-    Result,
+    CachedContactPhoto, Clock, ContactPhotoCache, ContactPhotoFile, ContactSourceAvailability,
+    ContactSourceSnapshot, ContactStore, Result,
 };
 
-use crate::{SqliteStore, blob, contact_ops, convert::instant_to_text, photo_ops};
+use crate::{
+    SqliteStore, blob, contact_ops,
+    convert::{instant_to_text, parse_instant},
+    photo_ops,
+};
 
 #[async_trait]
 impl<C: Clock> ContactStore for SqliteStore<C> {
@@ -22,24 +29,37 @@ impl<C: Clock> ContactStore for SqliteStore<C> {
         contact: &ContactId,
         resource: &str,
         fingerprint: &str,
-    ) -> Result<Option<CachedContactPhoto>> {
-        let account = account.as_str().to_owned();
-        let contact = contact.as_str().to_owned();
-        let resource = resource.to_owned();
+        negative_ttl: Duration,
+    ) -> Result<ContactPhotoCache> {
+        let now = self.clock.now();
         let fingerprint = fingerprint.to_owned();
-        let Some((hash, media_type)) = self
-            .call({
-                let fingerprint = fingerprint.clone();
-                move |conn| photo_ops::select(conn, &account, &contact, &resource, &fingerprint)
-            })
+        let Some(row) = self
+            .select_photo(account, contact, resource, &fingerprint)
             .await?
         else {
-            return Ok(None);
+            return Ok(ContactPhotoCache::Miss);
         };
+        if row.missing {
+            let fetched_at = parse_instant(&row.fetched_at)?;
+            return Ok(
+                if fetched_at
+                    .checked_add(negative_ttl)
+                    .is_some_and(|expiry| expiry > now)
+                {
+                    ContactPhotoCache::NoPhoto
+                } else {
+                    ContactPhotoCache::Miss
+                },
+            );
+        }
         let root = self.blobs.root().to_path_buf();
+        let hash = row.content_hash;
+        // An evicted or corrupted blob reads as a miss, not as a photo of nothing.
         Ok(Self::block(move || blob::read_contact_photo(&root, &hash))
             .await?
-            .map(|bytes| CachedContactPhoto::new(bytes, media_type, fingerprint)))
+            .map_or(ContactPhotoCache::Miss, |bytes| {
+                ContactPhotoCache::Hit(CachedContactPhoto::new(bytes, row.media_type, fingerprint))
+            }))
     }
 
     async fn put_contact_photo(
@@ -52,27 +72,52 @@ impl<C: Clock> ContactStore for SqliteStore<C> {
         let root = self.blobs.root().to_path_buf();
         let bytes = photo.as_bytes().to_vec();
         let hash = Self::block(move || blob::write_contact_photo(&root, &bytes)).await?;
-        let account = account.as_str().to_owned();
-        let contact = contact.as_str().to_owned();
-        let resource = resource.to_owned();
-        let fingerprint = photo.fingerprint.clone();
-        let media_type = photo.media_type.clone();
-        let fetched_at = instant_to_text(self.clock.now());
-        self.call(move |conn| {
-            photo_ops::upsert(
-                conn,
-                &photo_ops::PhotoRow {
-                    account: &account,
-                    contact: &contact,
-                    resource: &resource,
-                    fingerprint: &fingerprint,
-                    content_hash: &hash,
-                    media_type: media_type.as_deref(),
-                    fetched_at: &fetched_at,
-                },
-            )
-        })
+        self.upsert_photo(
+            account,
+            contact,
+            resource,
+            PhotoValue {
+                fingerprint: &photo.fingerprint,
+                content_hash: &hash,
+                media_type: photo.media_type.as_deref(),
+                missing: false,
+            },
+        )
         .await
+    }
+
+    async fn put_contact_photo_absent(
+        &self,
+        account: &AccountId,
+        contact: &ContactId,
+        resource: &str,
+        fingerprint: &str,
+    ) -> Result<()> {
+        // No bytes, so no blob and no hash naming one.
+        self.upsert_photo(
+            account,
+            contact,
+            resource,
+            PhotoValue {
+                fingerprint,
+                content_hash: "",
+                media_type: None,
+                missing: true,
+            },
+        )
+        .await
+    }
+
+    async fn people_by_email(
+        &self,
+        emails: &[CanonicalEmail],
+    ) -> Result<BTreeMap<CanonicalEmail, Person>> {
+        let emails: Vec<String> = emails
+            .iter()
+            .map(|email| email.as_str().to_owned())
+            .collect();
+        self.read(move |conn| contact_ops::people_by_email(conn, &emails))
+            .await
     }
 
     async fn contact_sources(&self) -> Result<ContactSourceSnapshot> {
@@ -166,5 +211,109 @@ impl<C: Clock> ContactStore for SqliteStore<C> {
     ) -> Result<Vec<(SyncScope, ContactSourceAvailability)>> {
         self.call(move |conn| contact_ops::source_availability(conn, &account))
             .await
+    }
+}
+
+/// What one cache row records, apart from which resource it belongs to.
+struct PhotoValue<'a> {
+    fingerprint: &'a str,
+    /// Names the blob holding the bytes; empty when `missing`.
+    content_hash: &'a str,
+    media_type: Option<&'a str>,
+    /// The provider has no photo for this resource.
+    missing: bool,
+}
+
+impl<C: Clock> SqliteStore<C> {
+    /// The file holding this card resource's cached photo, when the cache holds one
+    /// still bound to `fingerprint`.
+    ///
+    /// Cache-only and metadata-only: it never reaches a provider and never reads the
+    /// image, so a host may call it for every row it is about to draw. A recorded
+    /// absence answers `None` here whatever its age — expiring the negative is what
+    /// decides whether to *re-ask a provider*, and this call asks no one.
+    ///
+    /// Existence is the whole check. The blob is named by the SHA-256 of its bytes
+    /// and staged through an atomic rename, so a file under that name either holds
+    /// those bytes or does not exist; re-hashing it here would mean reading every
+    /// image on a path whose reason for returning a path is not to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`engine_store::StoreError::Backend`] on a backend failure.
+    pub async fn contact_photo_file(
+        &self,
+        account: &AccountId,
+        contact: &ContactId,
+        resource: &str,
+        fingerprint: &str,
+    ) -> Result<Option<ContactPhotoFile>> {
+        let Some(row) = self
+            .select_photo(account, contact, resource, fingerprint)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if row.missing {
+            return Ok(None);
+        }
+        let path = blob::contact_photo_path(self.blobs.root(), &row.content_hash);
+        let media_type = row.media_type;
+        Ok(Self::block(move || path.exists().then_some(path))
+            .await
+            .map(|path| ContactPhotoFile { path, media_type }))
+    }
+
+    async fn select_photo(
+        &self,
+        account: &AccountId,
+        contact: &ContactId,
+        resource: &str,
+        fingerprint: &str,
+    ) -> Result<Option<photo_ops::CachedRow>> {
+        let account = account.as_str().to_owned();
+        let contact = contact.as_str().to_owned();
+        let resource = resource.to_owned();
+        let fingerprint = fingerprint.to_owned();
+        self.read(move |conn| photo_ops::select(conn, &account, &contact, &resource, &fingerprint))
+            .await
+    }
+
+    async fn upsert_photo(
+        &self,
+        account: &AccountId,
+        contact: &ContactId,
+        resource: &str,
+        value: PhotoValue<'_>,
+    ) -> Result<()> {
+        let account = account.as_str().to_owned();
+        let contact = contact.as_str().to_owned();
+        let resource = resource.to_owned();
+        let PhotoValue {
+            fingerprint,
+            content_hash,
+            media_type,
+            missing,
+        } = value;
+        let fingerprint = fingerprint.to_owned();
+        let content_hash = content_hash.to_owned();
+        let media_type = media_type.map(str::to_owned);
+        let fetched_at = instant_to_text(self.clock.now());
+        self.call(move |conn| {
+            photo_ops::upsert(
+                conn,
+                &photo_ops::PhotoRow {
+                    account: &account,
+                    contact: &contact,
+                    resource: &resource,
+                    fingerprint: &fingerprint,
+                    content_hash: &content_hash,
+                    media_type: media_type.as_deref(),
+                    fetched_at: &fetched_at,
+                    missing,
+                },
+            )
+        })
+        .await
     }
 }

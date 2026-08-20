@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "ImageNotFound",
+    "message": "Exception of type 'Microsoft.People.Image.Common.Exceptions.ImageNotFoundException' was thrown.",
+    "innerError": {
+      "date": "2026-01-01T00:00:00",
+      "request-id": "00000000-0000-0000-0000-000000000001",
+      "client-request-id": "00000000-0000-0000-0000-000000000001"
+    }
+  }
+}

@@ -1,20 +1,21 @@
 //! In-memory contact/people/recipient derived-store operations.
 
+use core::time::Duration;
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use engine_core::{
     contact::ContactCard,
     ids::{AccountId, ContactId},
-    people::{CanonicalEmail, PeopleSnapshot, PersonSource},
+    people::{CanonicalEmail, PeopleSnapshot, Person, PersonSource},
     recipient::{RecipientCoverage, RecipientInteraction, RecipientObservation},
     sync::{ObjectKind, SyncScope},
 };
 
-use super::MemStore;
+use super::{MemStore, PhotoCell};
 use crate::{
-    CachedContactPhoto, Clock, ContactSourceAvailability, ContactSourceSnapshot, ContactStore,
-    Result, StoreError,
+    CachedContactPhoto, Clock, ContactPhotoCache, ContactSourceAvailability, ContactSourceSnapshot,
+    ContactStore, Result, StoreError,
 };
 
 #[async_trait]
@@ -25,13 +26,28 @@ impl<C: Clock> ContactStore for MemStore<C> {
         contact: &ContactId,
         resource: &str,
         fingerprint: &str,
-    ) -> Result<Option<CachedContactPhoto>> {
-        Ok(self
-            .lock()
+        negative_ttl: Duration,
+    ) -> Result<ContactPhotoCache> {
+        let now = self.clock.now();
+        let inner = self.lock();
+        let Some(cell) = inner
             .contact_photos
             .get(&(account.clone(), contact.clone(), resource.to_owned()))
-            .filter(|photo| photo.fingerprint == fingerprint)
-            .cloned())
+            .filter(|cell| cell.fingerprint == fingerprint)
+        else {
+            return Ok(ContactPhotoCache::Miss);
+        };
+        Ok(match &cell.photo {
+            Some(photo) => ContactPhotoCache::Hit(photo.clone()),
+            None if cell
+                .fetched_at
+                .checked_add(negative_ttl)
+                .is_some_and(|expiry| expiry > now) =>
+            {
+                ContactPhotoCache::NoPhoto
+            }
+            None => ContactPhotoCache::Miss,
+        })
     }
 
     async fn put_contact_photo(
@@ -41,11 +57,54 @@ impl<C: Clock> ContactStore for MemStore<C> {
         resource: &str,
         photo: &CachedContactPhoto,
     ) -> Result<()> {
+        let fetched_at = self.clock.now();
         self.lock().contact_photos.insert(
             (account.clone(), contact.clone(), resource.to_owned()),
-            photo.clone(),
+            PhotoCell {
+                fingerprint: photo.fingerprint.clone(),
+                photo: Some(photo.clone()),
+                fetched_at,
+            },
         );
         Ok(())
+    }
+
+    async fn put_contact_photo_absent(
+        &self,
+        account: &AccountId,
+        contact: &ContactId,
+        resource: &str,
+        fingerprint: &str,
+    ) -> Result<()> {
+        let fetched_at = self.clock.now();
+        self.lock().contact_photos.insert(
+            (account.clone(), contact.clone(), resource.to_owned()),
+            PhotoCell {
+                photo: None,
+                fingerprint: fingerprint.to_owned(),
+                fetched_at,
+            },
+        );
+        Ok(())
+    }
+
+    async fn people_by_email(
+        &self,
+        emails: &[CanonicalEmail],
+    ) -> Result<BTreeMap<CanonicalEmail, Person>> {
+        let wanted: BTreeSet<&CanonicalEmail> = emails.iter().collect();
+        let inner = self.lock();
+        let mut found = BTreeMap::new();
+        for person in &inner.people.people {
+            for email in &person.emails {
+                if wanted.contains(&email.value) {
+                    found
+                        .entry(email.value.clone())
+                        .or_insert_with(|| person.clone());
+                }
+            }
+        }
+        Ok(found)
     }
 
     async fn contact_sources(&self) -> Result<ContactSourceSnapshot> {

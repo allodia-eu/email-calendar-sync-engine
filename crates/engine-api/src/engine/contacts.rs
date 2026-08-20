@@ -6,11 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use engine_core::{
     contact::{ContactCard, ContactDraft, ContactKind, ContactPatch, ContactSourceClass},
     ids::{AccountId, AddressBookId, ContactId, PersonId},
-    people::{Person, PersonSource, PersonSourceId},
+    people::{CanonicalEmail, Person, PersonSource, PersonSourceId},
     recipient::{RecipientCoverage, RecipientSuggestion, rank_recipient_suggestions},
+    sync::ObjectKind,
 };
 use engine_provider::{ContactDestination, ContactsProvider};
-use engine_store::ContactStore;
+use engine_store::{ContactStore, StoreRead};
 use engine_sync::{
     ContactReconcileReport, ContactWriteOutcome, create_contact, delete_contact, patch_contact,
     reconcile_contact_card, reconcile_contact_deletion,
@@ -169,6 +170,55 @@ impl Engine {
     /// Returns [`ApiError::Store`] when the people snapshot cannot be read.
     pub async fn person(&self, id: PersonId) -> Result<Option<Person>, ApiError> {
         Ok(self.store.people_snapshot().await?.resolve(id).cloned())
+    }
+
+    /// Reads one stored source card.
+    ///
+    /// A [`Person`] carries [`PersonSourceId`]s, not cards, so this is how a host
+    /// gets from a person it resolved to the provider record behind them — and the
+    /// card is what the photo API takes, since a photo belongs to a source record
+    /// rather than to the merged person.
+    ///
+    /// `None` when no synced source in `account` holds that contact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] when the store cannot be read, or
+    /// [`ApiError::InvalidInput`] if the stored payload is not a card.
+    pub async fn contact_card(
+        &self,
+        account: &AccountId,
+        contact: &ContactId,
+    ) -> Result<Option<ContactCard>, ApiError> {
+        // Contact scopes only: a card is looked up by its provider key, which is not
+        // unique across domains, and a mail message could otherwise answer.
+        for scope in self.store.account_scopes(account.clone()).await? {
+            if scope.object_kind() != Some(ObjectKind::ContactCard) {
+                continue;
+            }
+            if let Some(payload) = self.store.object_payload(&scope, contact.key()).await? {
+                return serde_json::from_value(payload)
+                    .map(Some)
+                    .map_err(|error| ApiError::InvalidInput(error.to_string()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Resolves canonical email addresses to the people carrying them.
+    ///
+    /// Batched because the caller is a screenful of mail rows: a mail row names its
+    /// sender by address, and resolving them one at a time is a store round-trip per
+    /// row on every rebuild. Addresses nobody carries are absent from the map.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] when the people index cannot be read.
+    pub async fn people_by_email(
+        &self,
+        emails: &[CanonicalEmail],
+    ) -> Result<BTreeMap<CanonicalEmail, Person>, ApiError> {
+        Ok(self.store.people_by_email(emails).await?)
     }
 
     /// Returns one destination advertised by this source-bound adapter.

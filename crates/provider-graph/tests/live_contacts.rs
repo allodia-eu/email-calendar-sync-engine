@@ -292,3 +292,62 @@ async fn live_fetch_contact_matches_the_synced_card() {
         .await
         .expect("cleanup");
 }
+
+/// A contact with no picture is the ordinary case, and it now has to arrive as an
+/// *absence* rather than an error — a caller cannot remember an error, and re-probing
+/// every photoless correspondent on every pass is what the negative cache exists to
+/// stop.
+///
+/// The offline fake cannot show this: it answers a canned 404 to any URL, so it would
+/// pass just as happily for a request Graph rejects outright. Here the request is real,
+/// and it goes to a contact this test just created — so the 404 can only mean "this
+/// person has no photo".
+///
+/// The card also has to *advertise* a photo resource for a host to have anything to
+/// ask about; unlike the other three providers, whether Graph holds an image is not
+/// knowable from the card, only by asking.
+#[tokio::test]
+async fn live_a_contact_without_a_photo_is_an_absence_not_an_error() {
+    let Some(token) = token() else {
+        eprintln!(
+            "skipping live_a_contact_without_a_photo_is_an_absence_not_an_error: \
+             GRAPH_ACCESS_TOKEN unset"
+        );
+        return;
+    };
+    let provider = GraphContactProvider::personal(client(token));
+    let unique = unique();
+    let receipt = provider
+        .create_contact(&account(), &draft(unique))
+        .await
+        .expect("create_contact");
+
+    let card = provider
+        .fetch_contact(&account(), &receipt.contact)
+        .await
+        .expect("fetch_contact");
+    let media = card
+        .media
+        .values()
+        .map(|resource| &resource.value)
+        .find(|resource| resource.kind.as_deref() == Some("photo"))
+        .expect("a Graph card advertises its photo endpoint");
+    assert!(
+        media.uri.is_empty(),
+        "the URL is derived from the card id, not carried on the card"
+    );
+
+    let photo = provider
+        .fetch_contact_photo(&account(), &card, media)
+        .await
+        .expect("a contact without a photo is not a failed fetch");
+    assert!(
+        photo.is_none(),
+        "this contact was just created with no photo"
+    );
+
+    provider
+        .delete_contact(&account(), &card)
+        .await
+        .expect("cleanup");
+}

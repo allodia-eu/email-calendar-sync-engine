@@ -314,3 +314,29 @@ server strings and go through `transport::encode_query_value` before being
 spliced into a query, in mail and calendar as well as contacts. Unencoded, a
 token containing `&` or `=` re-parameterizes the request and the client fetches
 a page the server never named.
+
+## Contact photos and their size
+
+`photos[].url` is served from `googleusercontent.com`, a different origin from the
+API, so the fetch is unauthenticated (`providers.md` → "Credentials and remote-content
+URLs"). A person with no picture has only a `default: true` entry — Google's generated
+monogram — which the normalizer drops, so a card either advertises a real photo or
+advertises none.
+
+**The size is a path suffix, `…=s240`, and `?sz=` is a silent no-op.** The CDN accepts
+the query parameter and answers `200` with the *original* bytes, so a caller using it
+gets a plausible image and no signal that nothing happened. Measured against a real
+contact photo:
+
+| URL | Result |
+|---|---|
+| bare | 512x512, 65 KB |
+| `?sz=240` | 512x512, 65 KB — ignored |
+| `=s240` | 240x240, 17 KB |
+
+`photos[].url` arrives already carrying a suffix (`=s100`, sometimes with flags like
+`-c`), so the suffix is *replaced*, not appended. Nothing offline can distinguish a
+working size request from an ignored one — both are a successful fetch of a valid
+image — so `live_a_contact_photo_arrives_at_the_size_we_asked_for` asserts the returned
+image's **pixel dimensions**. The card keeps the original URL, so the cache key is
+unaffected.

@@ -208,13 +208,23 @@ pub trait ContactsProvider: Provider {
         ))
     }
 
-    /// Fetches an authenticated photo/media resource.
+    /// Fetches an authenticated photo/media resource, or `None` when the source has
+    /// no image for it.
+    ///
+    /// Absence is an **outcome, not a failure**: for almost every correspondent
+    /// outside the user's address books there is no picture anywhere, and an adapter
+    /// that reported that as an error would make "nobody has a photo" and "the fetch
+    /// broke" the same answer — leaving a caller no way to remember the first and
+    /// stop asking. Each adapter maps its own absence signal here (Graph answers 404
+    /// on `/photo/$value`; a CardDAV or Google photo URI that no longer resolves
+    /// answers 404/410). A transport failure, a refused permission or a malformed
+    /// response stays an error.
     async fn fetch_contact_photo(
         &self,
         account: &AccountId,
         card: &ContactCard,
         media: &ContactResource,
-    ) -> ProviderResult<ContactPhoto> {
+    ) -> ProviderResult<Option<ContactPhoto>> {
         let _ = (account, card, media);
         Err(ProviderError::invalid_state(
             "provider does not support contact photos",

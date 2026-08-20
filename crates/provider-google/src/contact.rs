@@ -24,6 +24,12 @@ use crate::{
     transport::{GoogleClient, encode_query_value},
 };
 
+/// The pixel size requested for a People photo.
+///
+/// Matches the size asked of the other providers, so a row is drawn from comparable
+/// bytes whichever account the sender is in.
+const PHOTO_SIZE: u16 = 240;
+
 /// Google People adapter bound to one source.
 pub struct GoogleContactProvider {
     client: GoogleClient,
@@ -380,15 +386,50 @@ impl ContactsProvider for GoogleContactProvider {
         _account: &AccountId,
         _card: &ContactCard,
         media: &engine_core::contact::ContactResource,
-    ) -> ProviderResult<ContactPhoto> {
-        let bytes = self.client.get_bytes(&media.uri).await?;
-        Ok(ContactPhoto::new(
+    ) -> ProviderResult<Option<ContactPhoto>> {
+        let bytes = match self.client.get_bytes(&sized_photo_url(&media.uri)).await {
+            Ok(bytes) => bytes,
+            // A People photo URL that no longer resolves is a person without a
+            // picture, not a broken sync.
+            Err(GoogleError::Status {
+                status: 404 | 410, ..
+            }) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Some(ContactPhoto::new(
             bytes,
             media.media_type.clone(),
             media
                 .fingerprint
                 .clone()
                 .unwrap_or_else(|| media.uri.clone()),
-        ))
+        )))
     }
+}
+
+/// Asks Google's photo CDN for an avatar-sized rendering.
+///
+/// The size is an **option suffix on the path**, `…=s240`, not a query parameter:
+/// `?sz=` is accepted and silently ignored, answering 200 with the original bytes, so
+/// a caller using it gets a plausible image and no signal that nothing happened.
+/// `photos[].url` arrives already carrying a suffix (`=s100`, sometimes with flags
+/// like `-c`), and it is replaced wholesale — a URL with none serves the full stored
+/// image, measured at 512x512 and 65 KB against 17 KB for the sized rendering.
+///
+/// The URL keeps its original form on the card, so the cache key is unaffected.
+fn sized_photo_url(uri: &str) -> String {
+    if uri.is_empty() {
+        return uri.to_owned();
+    }
+    let (path, tail) = uri
+        .split_once(['?', '#'])
+        .map_or((uri, ""), |(path, _)| (path, &uri[path.len()..]));
+    // Photo ids are unpadded URL-safe base64, so a `=` in the last segment can only be
+    // the option delimiter.
+    let segment_start = path.rfind('/').map_or(0, |index| index + 1);
+    let base = match path[segment_start..].rfind('=') {
+        Some(index) => &path[..segment_start + index],
+        None => path,
+    };
+    format!("{base}=s{PHOTO_SIZE}{tail}")
 }

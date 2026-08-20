@@ -61,6 +61,37 @@ pub(crate) fn download_url(
 /// Returns [`JmapError::Protocol`] if the message carries no `blobId` (it was never
 /// synced with one), [`JmapError::Session`] if the server advertised no
 /// `downloadUrl`, or a transport/HTTP error from the download.
+/// Decodes a `data:` URI's base64 payload, or `None` if `uri` is not one.
+///
+/// A JSContact `media` entry may carry its image **inline** rather than by `blobId`:
+/// a card that reached the server as a vCard with `PHOTO;ENCODING=b` has no blob to
+/// reference, and the `uri` is the whole picture. Observed on Stalwart, and the same
+/// shape the CardDAV adapter builds for the same card — so an adapter that only
+/// understands `blobId` fails on a photo the protocol legitimately delivered.
+pub(crate) fn decode_data_uri(uri: &str) -> Option<Vec<u8>> {
+    let (header, payload) = uri.strip_prefix("data:")?.split_once(',')?;
+    if !header.ends_with(";base64") {
+        return None;
+    }
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::new();
+    let mut bits = 0_u32;
+    let mut count = 0_u8;
+    for byte in payload.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
+        if byte == b'=' {
+            break;
+        }
+        let digit = alphabet.iter().position(|candidate| *candidate == byte)?;
+        bits = (bits << 6) | u32::try_from(digit).ok()?;
+        count += 6;
+        if count >= 8 {
+            count -= 8;
+            out.push(u8::try_from((bits >> count) & 0xFF).ok()?);
+        }
+    }
+    Some(out)
+}
+
 pub(crate) async fn message_source(
     executor: &dyn Executor,
     message: &Message,

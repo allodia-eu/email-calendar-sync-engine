@@ -262,7 +262,16 @@ struct Inner {
     contact_availability: BTreeMap<SyncScope, ContactSourceAvailability>,
     /// Keyed by (account, contact, **resource**) — a card can carry several media
     /// resources and they must not share a cache entry.
-    contact_photos: BTreeMap<(AccountId, ContactId, String), CachedContactPhoto>,
+    contact_photos: BTreeMap<(AccountId, ContactId, String), PhotoCell>,
+}
+
+/// One cached photo entry: the bytes, or a stamped record that there are none.
+#[derive(Debug, Clone)]
+pub(super) struct PhotoCell {
+    /// `None` records that the provider had no photo for this resource.
+    pub(super) photo: Option<CachedContactPhoto>,
+    pub(super) fingerprint: String,
+    pub(super) fetched_at: UtcDateTime,
 }
 
 /// One durable observation row. Suppression survives an idempotent replay.

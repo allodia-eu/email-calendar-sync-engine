@@ -4,17 +4,37 @@
 //! and is it still fresh) are the whole of the caching contract, and they are easy to
 //! get subtly wrong — see the doc comments.
 
+use core::time::Duration;
+
 use engine_core::{
     contact::{ContactCard, ContactResource},
     ids::AccountId,
 };
-use engine_provider::{ContactPhoto, ContactsProvider};
-use engine_store::{CachedContactPhoto, ContactStore};
+use engine_provider::ContactsProvider;
+use engine_store::{CachedContactPhoto, ContactPhotoCache, ContactPhotoFile, ContactStore};
 
 use crate::{ApiError, Engine};
 
+/// How long "this card resource has no photo" is trusted before the provider is
+/// asked again.
+///
+/// Long, because the answer almost never changes: a correspondent outside the user's
+/// address books has no picture anywhere, and re-probing them costs a request per
+/// stranger per pass. Not forever, because a colleague who uploads one should get it
+/// without reconnecting the account. A week is well inside the tolerance of both.
+const NEGATIVE_TTL: Duration = Duration::from_hours(24 * 7);
+
 impl Engine {
-    /// Authenticated on-demand contact-photo fetch.
+    /// Returns the cached file for one card's media resource, fetching it once if
+    /// the cache has no answer.
+    ///
+    /// `None` means the source has no image here — not that the fetch failed. That
+    /// answer is remembered for a week, so a mailbox full of strangers costs one
+    /// provider request per stranger rather than one per pass.
+    ///
+    /// The bytes stay on disk and a path comes back: every mail row on screen carries
+    /// one of these, and copying each image through this API only for a host to write
+    /// it somewhere else is work no one needs. See [`ContactPhotoFile`].
     ///
     /// # Errors
     ///
@@ -26,26 +46,38 @@ impl Engine {
         account: &AccountId,
         card: &ContactCard,
         media: &ContactResource,
-    ) -> Result<ContactPhoto, ApiError> {
+    ) -> Result<Option<ContactPhotoFile>, ApiError> {
         let fingerprint = photo_fingerprint(card, media);
         let resource = photo_resource_key(media);
-        if let Some(cached) = self
-            .store
-            .contact_photo(account, &card.id, &resource, &fingerprint)
+        // The file first, because that read is metadata only. Asking the byte-returning
+        // cache would load and re-hash the whole image just to discard it and look the
+        // path up anyway.
+        if let Some(file) = self
+            .photo_file(account, card, &resource, &fingerprint)
             .await?
         {
-            let media_type = cached.media_type.clone();
-            let fingerprint = cached.fingerprint.clone();
-            return Ok(ContactPhoto::new(
-                cached.into_bytes(),
-                media_type,
-                fingerprint,
-            ));
+            return Ok(Some(file));
+        }
+        // Nothing to serve. Only a *recorded absence* stops us asking; a `Hit` cannot
+        // occur here, since the read above would have answered it.
+        if matches!(
+            self.store
+                .contact_photo(account, &card.id, &resource, &fingerprint, NEGATIVE_TTL)
+                .await?,
+            ContactPhotoCache::NoPhoto
+        ) {
+            return Ok(None);
         }
         let photo = provider
             .fetch_contact_photo(account, card, media)
             .await
             .map_err(|error| ApiError::Sync(engine_sync::SyncError::Provider(error)))?;
+        let Some(photo) = photo else {
+            self.store
+                .put_contact_photo_absent(account, &card.id, &resource, &fingerprint)
+                .await?;
+            return Ok(None);
+        };
         self.store
             .put_contact_photo(
                 account,
@@ -54,11 +86,48 @@ impl Engine {
                 &CachedContactPhoto::new(
                     photo.as_bytes().to_vec(),
                     photo.media_type.clone(),
-                    fingerprint,
+                    fingerprint.clone(),
                 ),
             )
             .await?;
-        Ok(photo)
+        self.photo_file(account, card, &resource, &fingerprint)
+            .await
+    }
+
+    /// Returns the cached file for one card's media resource **without** reaching a
+    /// provider, or `None` when the cache cannot answer from what it already holds.
+    ///
+    /// This is the call a host makes while building a screen: it does store work
+    /// only, so it belongs on a path that must not grow a network fetch. Whatever it
+    /// answers `None` for is what a background pass then resolves through
+    /// [`contact_photo`](Self::contact_photo).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] when the cache cannot be read.
+    pub async fn cached_contact_photo(
+        &self,
+        account: &AccountId,
+        card: &ContactCard,
+        media: &ContactResource,
+    ) -> Result<Option<ContactPhotoFile>, ApiError> {
+        let fingerprint = photo_fingerprint(card, media);
+        let resource = photo_resource_key(media);
+        self.photo_file(account, card, &resource, &fingerprint)
+            .await
+    }
+
+    async fn photo_file(
+        &self,
+        account: &AccountId,
+        card: &ContactCard,
+        resource: &str,
+        fingerprint: &str,
+    ) -> Result<Option<ContactPhotoFile>, ApiError> {
+        Ok(self
+            .store
+            .contact_photo_file(account, &card.id, resource, fingerprint)
+            .await?)
     }
 }
 

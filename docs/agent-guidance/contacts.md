@@ -101,7 +101,8 @@ combined convenience, but stores and reports retain separate source scopes.
   multi-value anniversary/link maps are not advertised for writes because Graph
   exposes only one scalar of each. Never silently choose one value.
 - Fetch personal-contact and directory-user photos on demand. A missing photo is
-  a normal absence, not a failed contact sync.
+  a normal absence, not a failed contact sync — see "Absence is an outcome, not a
+  failure" below, including which photo route each resource kind actually offers.
 
 Relevant permissions include `Contacts.Read`/`Contacts.ReadWrite`,
 `OrgContact.Read.All`, directory user permissions appropriate to the host, and
@@ -305,6 +306,71 @@ Binary DAV reads must not pass through UTF-8 decoding.
 A photo URI comes from remote *content* and may name any host, so the fetch is
 **not** unconditionally authenticated — see "Credentials and remote-content URLs"
 in `providers.md`.
+
+### Absence is an outcome, not a failure
+
+`ContactsProvider::fetch_contact_photo` returns `Option<ContactPhoto>`. For nearly
+every correspondent outside the user's address books there is no picture anywhere, so
+an adapter that reported that as an error would make "nobody has a photo" and "the
+fetch broke" the same answer, and leave a caller no way to remember the first. Each
+adapter maps its own absence signal to `Ok(None)`; a transport failure, a refused
+permission or a malformed response stays an error.
+
+The store therefore answers a three-state `ContactPhotoCache` — `Hit`, `NoPhoto`,
+`Miss` — and `put_contact_photo_absent` records the negative. A negative row carries
+no bytes (empty `content_hash`, `missing = 1`; migration **v11**) and is stamped with
+the store clock, so `contact_photo` expires it against a caller-supplied
+`negative_ttl` (`engine-api` uses a week). It is also bound to the same fingerprint as
+a positive entry, so an edited card re-asks at once rather than waiting the negative
+out. Without the negative, every pass over a mailing list re-probes the same
+strangers; without the expiry, a colleague who uploads a picture never gets one.
+
+`Engine::contact_photo` fetches once and returns a `ContactPhotoFile` — a **path**
+into the blob area, not bytes. A host draws one of these per visible row, so copying
+each image through the API only to write it out again is work nobody needs; the file
+is named by the SHA-256 of its contents, so its name changes when the photo does.
+`Engine::cached_contact_photo` is the same read with no provider behind it, for the
+pass that builds a screen and must not grow a network fetch.
+
+### Photo delivery per provider (surveyed, and each verified live)
+
+| Adapter | Where the image comes from | How "no photo" arrives |
+|---|---|---|
+| Graph | The card advertises a photo resource with an **empty** URI; the URL is derived from the card id. `user` items (directory) offer `photos/{size}/$value` and are asked for `240x240`; a `contact` has only the singular `photo/$value` | 404 — `ErrorItemNotFound` on a contact, `ImageNotFound` on a user |
+| Google People | `photos[].url`, with a `=s240` **path suffix** appended | 404/410 on the CDN URL; a person with no picture has only a `default: true` entry, which the normalizer drops |
+| JMAP | `media[].blobId` through the session `downloadUrl`, **or** an inline `data:` URI when the card has no blob | 404/410 on the blob download |
+| CardDAV | A `PHOTO` property: an inline `data:` URI, or a remote href | 404/410 on the remote href; a card with no `PHOTO` advertises no media at all |
+
+Two shapes of absence follow from that table, and a host needs both: a card that
+**advertises no photo resource** (answerable without a request) and a card that
+advertises one the source turns out not to hold (answerable only by asking). Graph is
+always the second kind — whether an image exists is never visible on the card, which
+is why its normalizer emits the resource unconditionally rather than leaving the
+question unanswerable.
+
+**Three provider traps here, each found by calling the real server and invisible to
+the offline fakes** (which answer canned bytes whatever URL they are sent):
+
+- **Graph's sized `photos/{size}` collection is a `user` route, not a `contact` one.**
+  Asking a contact for a size is `400 RequestBroker--ParseUri`, "Resource not found
+  for the segment 'photos'" — a *different status* from every absence, so it fails the
+  fetch outright rather than reading as "no photo". Only the directory source is asked
+  for a size.
+- **Graph answers an unlisted size with 404 too** (`ErrorInvalidImageId`, against
+  `ImageNotFound` for a real absence). Status alone cannot separate them, so the size
+  constant must stay on Microsoft's documented list; the fallback to the unsized
+  resource means a mistake there costs an extra request rather than a wrong answer.
+  Both bodies are captured under `provider-graph/tests/fixtures/error/`.
+- **Google's photo CDN takes the size as a path suffix (`…=s240`), and accepts
+  `?sz=240` while silently ignoring it** — 200, a valid image, the original pixels.
+  Measured on a real photo: bare URL 512x512 / 65 KB, `=s240` 240x240 / 17 KB,
+  `?sz=240` identical to bare. Nothing offline can tell a working size request from an
+  ignored one, so the live test asserts the returned image's **dimensions**.
+
+A JSContact `media` entry may carry its image inline as a `data:` URI instead of
+naming a blob — a card that reached the server as a vCard with `PHOTO;ENCODING=b` has
+no blob to reference. Both the JMAP and CardDAV adapters can receive that shape (the
+Google and Graph payloads never do), so both decode it.
 
 ## Recipient observations
 

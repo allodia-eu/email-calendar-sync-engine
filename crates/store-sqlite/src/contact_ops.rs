@@ -64,6 +64,39 @@ pub(crate) fn contact_sources(conn: &mut Connection) -> Result<ContactSourceSnap
     })
 }
 
+/// Resolves canonical emails to the people carrying them, using the `person_email`
+/// index rather than a scan of every person payload.
+///
+/// One statement reused across the batch: a screenful of mail rows is one call, and
+/// SQLite plans the indexed equality once. Addresses with no match are simply absent.
+pub(crate) fn people_by_email(
+    conn: &Connection,
+    emails: &[String],
+) -> Result<std::collections::BTreeMap<CanonicalEmail, Person>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT person.payload FROM person_email
+             JOIN person ON person.id = person_email.person_id
+             WHERE person_email.email = ?1",
+        )
+        .map_err(convert::backend)?;
+    let mut found = std::collections::BTreeMap::new();
+    for email in emails {
+        let Some(payload) = stmt
+            .query_row([email], |row| row.get::<_, String>(0))
+            .optional()
+            .map_err(convert::backend)?
+        else {
+            continue;
+        };
+        found.insert(
+            CanonicalEmail::parse(email).map_err(convert::backend)?,
+            serde_json::from_str::<Person>(&payload).map_err(convert::backend)?,
+        );
+    }
+    Ok(found)
+}
+
 /// Loads the current people generation.
 pub(crate) fn people_snapshot(conn: &Connection) -> Result<PeopleSnapshot> {
     let next_id: i64 = conn

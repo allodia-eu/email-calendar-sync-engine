@@ -382,3 +382,44 @@ async fn personal_source_never_degrades_to_unavailable() {
         .await;
     assert!(error.is_err(), "personal contact failures must surface");
 }
+
+/// The photo 404s Graph actually returns, and what each one has to mean.
+///
+/// These matter because **status alone cannot separate them**: a missing image, an
+/// unlisted size, and a missing contact are all 404, distinguished only by `code`.
+/// Captured live (`tests/fixtures/error/`), so a future change to `PHOTO_SIZE` or to
+/// the route split is measured against what the service really said rather than what
+/// the documentation implies.
+const PHOTO_ABSENT: &str = include_str!("../tests/fixtures/error/photo_image_not_found.json");
+const PHOTO_BAD_SIZE: &str = include_str!("../tests/fixtures/error/photo_invalid_size.json");
+
+#[tokio::test]
+async fn every_photo_404_graph_really_returns_reads_as_an_absence() {
+    use engine_core::{contact::ContactCard, ids::ContactId, membership::Memberships};
+
+    let card = ContactCard::new(
+        ContactId::try_from("u1").unwrap(),
+        Memberships::of_one(AddressBookId::try_from("graph-directory-users").unwrap()),
+    );
+    // An unlisted size and a missing image are the same status with different codes.
+    // Both fall through to the unsized resource, and only its own 404 settles it — so
+    // a mis-set size degrades to an extra request, never to a wrong answer.
+    for body in [PHOTO_ABSENT, PHOTO_BAD_SIZE] {
+        let doc: serde_json::Value = serde_json::from_str(body).unwrap();
+        let provider = GraphContactProvider::directory(fake_client_fallible(vec![
+            ("/users/u1/photos/240x240/$value", Err((404, doc.clone()))),
+            ("/users/u1/photo/$value", Err((404, doc))),
+        ]));
+        assert!(
+            provider
+                .fetch_contact_photo(
+                    &AccountId::try_from("fixtures").unwrap(),
+                    &card,
+                    &engine_core::contact::ContactResource::default(),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+}
