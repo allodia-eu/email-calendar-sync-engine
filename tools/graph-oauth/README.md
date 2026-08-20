@@ -30,7 +30,11 @@ In <https://entra.microsoft.com> → **App registrations** → **New registratio
 > The `*.Shared` scopes are an Exchange Online (work/school) feature. A **personal**
 > Microsoft account usually cannot consent to them — if `login` errors on consent,
 > re-run with the non-shared set:
-> `--scopes "offline_access openid profile User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.ReadWrite"`
+> `--scopes "offline_access openid profile User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.ReadWrite User.ReadBasic.All"`
+>
+> Keep `User.ReadBasic.All` in that fallback: it is what the contact-photo live tests
+> read a directory user's photo through, and dropping it silently turns those into a
+> pass against a token that could never have worked.
 
 ## Usage
 
