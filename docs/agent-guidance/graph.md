@@ -504,3 +504,10 @@ chain is exhausted and it settles on a digest of the empty string, the *same con
 every directory user, forever*. The per-card cache key keeps one user's photo from
 serving another's, but once a colleague's picture is cached it is never refetched. This is
 the one provider/source pair where "the server updated it" does not reach the user.
+
+**Two saved contacts are kept on each Microsoft test account and should not be deleted:**
+one with a profile picture and one without. The engine never *writes* a contact photo, so
+a live test cannot create the thing it needs to read — the present direction is only
+coverable against a contact someone set up by hand. `live_a_saved_contact_with_a_picture…`
+walks whatever the account has rather than naming them, so renaming is fine; removing the
+one with a picture is what would silently uncover the path.
