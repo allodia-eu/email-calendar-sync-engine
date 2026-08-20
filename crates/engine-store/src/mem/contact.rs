@@ -15,7 +15,7 @@ use engine_core::{
 use super::{MemStore, PhotoCell};
 use crate::{
     CachedContactPhoto, Clock, ContactPhotoCache, ContactSourceAvailability, ContactSourceSnapshot,
-    ContactStore, Result, StoreError,
+    ContactStore, PhotoCacheTtl, Result, StoreError,
 };
 
 #[async_trait]
@@ -26,7 +26,7 @@ impl<C: Clock> ContactStore for MemStore<C> {
         contact: &ContactId,
         resource: &str,
         fingerprint: &str,
-        negative_ttl: Duration,
+        ttl: PhotoCacheTtl,
     ) -> Result<ContactPhotoCache> {
         let now = self.clock.now();
         let inner = self.lock();
@@ -37,16 +37,21 @@ impl<C: Clock> ContactStore for MemStore<C> {
         else {
             return Ok(ContactPhotoCache::Miss);
         };
+        let fresh = |window: Duration| {
+            cell.fetched_at
+                .checked_add(window)
+                .is_some_and(|expiry| expiry > now)
+        };
         Ok(match &cell.photo {
-            Some(photo) => ContactPhotoCache::Hit(photo.clone()),
-            None if cell
-                .fetched_at
-                .checked_add(negative_ttl)
-                .is_some_and(|expiry| expiry > now) =>
-            {
-                ContactPhotoCache::NoPhoto
+            // No expiry unless the caller asked for one, which it does only when the
+            // fingerprint cannot notice the picture changing.
+            Some(photo) if ttl.unrevisioned.is_none_or(fresh) => {
+                ContactPhotoCache::Hit(photo.clone())
             }
-            None => ContactPhotoCache::Miss,
+            None if fresh(ttl.negative) => ContactPhotoCache::NoPhoto,
+            // A photo past its bound and an absence past its own both mean the same
+            // thing to the caller: ask again.
+            Some(_) | None => ContactPhotoCache::Miss,
         })
     }
 

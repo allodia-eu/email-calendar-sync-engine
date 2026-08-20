@@ -80,6 +80,24 @@ pub enum ContactPhotoCache {
     Miss,
 }
 
+/// How long each kind of photo-cache entry stays usable.
+///
+/// Two different questions, which is why they are not one number. `negative` bounds a
+/// remembered *absence*; `unrevisioned` bounds a remembered *photo* whose card carries
+/// nothing that would change when the picture does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhotoCacheTtl {
+    /// How long "there is no photo here" is trusted before the provider is asked again.
+    pub negative: Duration,
+    /// How long a photo stored under an **unrevisioned** fingerprint is trusted.
+    ///
+    /// `None` means "do not expire it", which is the right answer whenever the
+    /// fingerprint genuinely tracks the photo: re-fetching a picture whose revision has
+    /// not moved is bytes spent to learn nothing. It is only ever `Some` for a card that
+    /// offers no such revision — the source that would otherwise serve one image forever.
+    pub unrevisioned: Option<Duration>,
+}
+
 /// A cached contact photo as a file the host can hand straight to an image decoder.
 ///
 /// The bytes are already on disk in the content-addressed blob area, so a host that
@@ -131,8 +149,14 @@ pub trait ContactStore: Send + Sync {
     /// cache entry. A cached photo counts as a hit only while its provider
     /// fingerprint still matches; a recorded absence counts as
     /// [`NoPhoto`](ContactPhotoCache::NoPhoto) only while it is younger than
-    /// `negative_ttl`, and reads as [`Miss`](ContactPhotoCache::Miss) after that so
-    /// the caller re-asks.
+    /// [`ttl.negative`](PhotoCacheTtl::negative), and reads as
+    /// [`Miss`](ContactPhotoCache::Miss) after that so the caller re-asks.
+    ///
+    /// A stored photo is a [`Hit`](ContactPhotoCache::Hit) indefinitely when its
+    /// fingerprint tracks the picture, and only until
+    /// [`ttl.unrevisioned`](PhotoCacheTtl::unrevisioned) when it does not — the caller
+    /// decides which by what it passes, because whether a revision exists is a property
+    /// of the card, not of the backend.
     ///
     /// # Errors
     ///
@@ -143,7 +167,7 @@ pub trait ContactStore: Send + Sync {
         contact: &ContactId,
         resource: &str,
         fingerprint: &str,
-        negative_ttl: Duration,
+        ttl: PhotoCacheTtl,
     ) -> Result<ContactPhotoCache>;
 
     /// Stores photo bytes in the content-addressed cache and replaces stale

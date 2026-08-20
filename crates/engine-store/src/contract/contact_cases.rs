@@ -13,12 +13,25 @@ use engine_core::{
 use super::lease_request;
 use crate::{
     ApplyBatch, CachedContactPhoto, ContactPhotoCache, ContactStore, DerivedWrite, ManualClock,
-    Store,
+    PhotoCacheTtl, Store,
 };
 
 /// How long a recorded "no photo" is trusted in these cases. Any value works; the
 /// contract is that it expires, not what it is.
 const NEGATIVE_TTL: core::time::Duration = core::time::Duration::from_hours(24 * 7);
+
+/// How long a photo stored under an unrevisioned fingerprint is trusted, in the one case
+/// below that asks for a bound at all.
+const UNREVISIONED_TTL: core::time::Duration = core::time::Duration::from_hours(24 * 3);
+
+/// The default every case uses: expire absences, trust photos indefinitely — which is
+/// what a caller passes whenever the fingerprint tracks the picture.
+fn ttl() -> PhotoCacheTtl {
+    PhotoCacheTtl {
+        negative: NEGATIVE_TTL,
+        unrevisioned: None,
+    }
+}
 
 fn account() -> AccountId {
     AccountId::try_from("contact-contract").unwrap()
@@ -269,9 +282,53 @@ async fn photo<S: ContactStore>(
     fingerprint: &str,
 ) -> ContactPhotoCache {
     store
-        .contact_photo(&account(), contact, resource, fingerprint, NEGATIVE_TTL)
+        .contact_photo(&account(), contact, resource, fingerprint, ttl())
         .await
         .unwrap()
+}
+
+/// A photo whose card carries no revision that could ever change with it — a Graph
+/// directory user is the real case — must stop being trusted eventually, or the first
+/// picture ever cached is the one shown forever. A photo whose fingerprint *does* track
+/// it must not expire, because re-fetching an unchanged image is bytes spent to learn
+/// nothing.
+pub(super) async fn an_unrevisioned_photo_expires_and_a_revisioned_one_does_not<S>(
+    store: &S,
+    clock: &ManualClock,
+) where
+    S: ContactStore,
+{
+    let contact = ContactId::try_from("unrevisioned-card").unwrap();
+    let bytes = CachedContactPhoto::new(b"jpeg".to_vec(), None, "no-revision");
+    store
+        .put_contact_photo(&account(), &contact, "photo", &bytes)
+        .await
+        .unwrap();
+
+    let bounded = PhotoCacheTtl {
+        negative: NEGATIVE_TTL,
+        unrevisioned: Some(UNREVISIONED_TTL),
+    };
+    let read = async |ttl| {
+        store
+            .contact_photo(&account(), &contact, "photo", "no-revision", ttl)
+            .await
+            .unwrap()
+    };
+    assert_eq!(read(bounded).await, ContactPhotoCache::Hit(bytes.clone()));
+
+    clock.advance(UNREVISIONED_TTL + core::time::Duration::from_secs(1));
+    assert_eq!(
+        read(bounded).await,
+        ContactPhotoCache::Miss,
+        "past its bound, an unrevisioned photo must be re-asked"
+    );
+    assert_eq!(
+        read(ttl()).await,
+        ContactPhotoCache::Hit(bytes),
+        "the same row, read without a bound, is still a hit — the expiry is the \
+         caller's judgement about the fingerprint, not a property of the stored bytes"
+    );
 }
 
 /// "This person has no photo" is the answer for nearly every correspondent outside

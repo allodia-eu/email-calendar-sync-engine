@@ -12,7 +12,7 @@ use engine_core::{
 };
 use engine_store::{
     CachedContactPhoto, Clock, ContactPhotoCache, ContactPhotoFile, ContactSourceAvailability,
-    ContactSourceSnapshot, ContactStore, Result,
+    ContactSourceSnapshot, ContactStore, PhotoCacheTtl, Result,
 };
 
 use crate::{
@@ -29,7 +29,7 @@ impl<C: Clock> ContactStore for SqliteStore<C> {
         contact: &ContactId,
         resource: &str,
         fingerprint: &str,
-        negative_ttl: Duration,
+        ttl: PhotoCacheTtl,
     ) -> Result<ContactPhotoCache> {
         let now = self.clock.now();
         let fingerprint = fingerprint.to_owned();
@@ -39,18 +39,23 @@ impl<C: Clock> ContactStore for SqliteStore<C> {
         else {
             return Ok(ContactPhotoCache::Miss);
         };
+        let fetched_at = parse_instant(&row.fetched_at)?;
+        let fresh = |window: Duration| {
+            fetched_at
+                .checked_add(window)
+                .is_some_and(|expiry| expiry > now)
+        };
         if row.missing {
-            let fetched_at = parse_instant(&row.fetched_at)?;
-            return Ok(
-                if fetched_at
-                    .checked_add(negative_ttl)
-                    .is_some_and(|expiry| expiry > now)
-                {
-                    ContactPhotoCache::NoPhoto
-                } else {
-                    ContactPhotoCache::Miss
-                },
-            );
+            return Ok(if fresh(ttl.negative) {
+                ContactPhotoCache::NoPhoto
+            } else {
+                ContactPhotoCache::Miss
+            });
+        }
+        // A stored photo expires only when the caller says its fingerprint cannot notice
+        // the picture changing; otherwise a changed fingerprint is what invalidates it.
+        if ttl.unrevisioned.is_some_and(|window| !fresh(window)) {
+            return Ok(ContactPhotoCache::Miss);
         }
         let root = self.blobs.root().to_path_buf();
         let hash = row.content_hash;
@@ -233,6 +238,13 @@ impl<C: Clock> SqliteStore<C> {
     /// absence answers `None` here whatever its age — expiring the negative is what
     /// decides whether to *re-ask a provider*, and this call asks no one.
     ///
+    /// `unrevisioned_max_age` mirrors [`PhotoCacheTtl::unrevisioned`]: `Some` only for a
+    /// card carrying no revision that tracks the picture, in which case an entry past
+    /// that age answers `None` so the host treats the row as unresolved and its
+    /// background pass refreshes it. Passing `None` here for such a card would keep the
+    /// first picture ever cached on screen for good, because a host that already has a
+    /// path never asks again.
+    ///
     /// Existence is the whole check. The blob is named by the SHA-256 of its bytes
     /// and staged through an atomic rename, so a file under that name either holds
     /// those bytes or does not exist; re-hashing it here would mean reading every
@@ -247,7 +259,9 @@ impl<C: Clock> SqliteStore<C> {
         contact: &ContactId,
         resource: &str,
         fingerprint: &str,
+        unrevisioned_max_age: Option<Duration>,
     ) -> Result<Option<ContactPhotoFile>> {
+        let now = self.clock.now();
         let Some(row) = self
             .select_photo(account, contact, resource, fingerprint)
             .await?
@@ -256,6 +270,12 @@ impl<C: Clock> SqliteStore<C> {
         };
         if row.missing {
             return Ok(None);
+        }
+        if let Some(window) = unrevisioned_max_age {
+            let expiry = parse_instant(&row.fetched_at)?.checked_add(window);
+            if expiry.is_none_or(|expiry| expiry <= now) {
+                return Ok(None);
+            }
         }
         let path = blob::contact_photo_path(self.blobs.root(), &row.content_hash);
         let media_type = row.media_type;

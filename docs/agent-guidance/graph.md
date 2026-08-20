@@ -497,13 +497,41 @@ So a saved contact's new picture arrives on the next contact sync with no extra 
 and no special handling: a different `changeKey` is a different fingerprint, which is a
 cache miss.
 
-⚠️ **A directory user's photo, by contrast, is never invalidated.** `/users` returns
-neither `@odata.etag` nor `changeKey` (confirmed against a real tenant), and the photo
-resource the normalizer emits carries an empty URI — so every fallback in the fingerprint
-chain is exhausted and it settles on a digest of the empty string, the *same constant for
-every directory user, forever*. The per-card cache key keeps one user's photo from
-serving another's, but once a colleague's picture is cached it is never refetched. This is
-the one provider/source pair where "the server updated it" does not reach the user.
+⚠️ **A directory user's photo is invisible to every change signal Graph offers.** Three
+findings, each measured against a real tenant, and the third with both arms:
+
+1. `/users` returns neither `@odata.etag` nor `changeKey`, and the photo resource the
+   normalizer emits carries an empty URI — so every fallback in the fingerprint chain is
+   exhausted. Nothing on the card tracks the photo.
+2. `/users/delta` **cannot** carry photo information: `$select=id,displayName,photo` is
+   rejected outright (*"Invalid request for delta query: for this entity set,
+   $expand/$select…"*). `photo` is a navigation property; delta carries scalars.
+3. **A photo-only change does not appear in `/users/delta` at all.** Changing a user's
+   profile photo moved its `@odata.mediaEtag`
+   (`W/"c8325ba8…"` → `W/"316d8d65…"`) while a saved `deltaLink` replayed **0** changed
+   entries — immediately, and again after a delay, with the cursor provably live (HTTP
+   200, fresh `deltaLink`). The **positive control** rules out a dead cursor: renaming
+   the same user through the same link returned **1** entry carrying the new
+   `displayName` and `surname`.
+
+So a directory user's *details* refresh normally through delta, and their *picture* has no
+signal whatsoever. This is the opposite of a personal contact, where a photo-only change
+both moves `changeKey` and arrives through `contacts/delta` — same provider, two sources,
+genuinely different behaviour, which is why the engine derives this per **card** from the
+fingerprint rather than declaring it per provider.
+
+**Reported upstream**, with this reproduction:
+<https://feedbackportal.microsoft.com/feedback/idea/4a6c7737-8a9c-f111-a3d0-7c1e52cf64f0>.
+If Graph ever fires the delta on a photo change, or allows `$select=photo`, or honours
+`If-None-Match` against the media ETag, the age bound below stops being the only option —
+check that item before assuming it is still the state of the world.
+
+`@odata.mediaEtag` on the photo *metadata* resource (`GET /users/{id}/photo`, no
+`/$value`) is the only true photo revision Graph exposes. It is not used as the cache
+validator because reading it costs a request per photo per check, where the cache's
+purpose is to make that zero — a max age on an unrevisioned entry costs nothing until it
+expires. It remains the obvious basis for a future conditional refresh: ~200 bytes of JSON
+to decide whether to spend 13.7 KB on the image.
 
 **Two saved contacts are kept on each Microsoft test account and should not be deleted:**
 one with a profile picture and one without. The engine never *writes* a contact photo, so

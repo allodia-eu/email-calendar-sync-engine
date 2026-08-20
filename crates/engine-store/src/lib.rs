@@ -28,7 +28,7 @@ pub use apply::{
 };
 pub use contact::{
     CachedContactPhoto, ContactPhotoCache, ContactPhotoFile, ContactSourceAvailability,
-    ContactSourceSnapshot, ContactStore,
+    ContactSourceSnapshot, ContactStore, PhotoCacheTtl,
 };
 pub use error::{Result, StoreError};
 pub use lease::{
