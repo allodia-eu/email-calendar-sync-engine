@@ -3,7 +3,7 @@
 //!
 //! This exists to settle one question with real consequences: `ProfilePhoto.Read.All`
 //! grants the same read but requires **admin consent**, so if it were required, tenant
-//! directory avatars would be gated behind an administrator for every customer. The
+//! directory avatars would be gated behind an administrator in every tenant. The
 //! adapter is built on `User.ReadBasic.All` being sufficient, and that is a claim about
 //! Microsoft's behaviour — so it is asserted against Microsoft, not against a doc page.
 //!
@@ -53,6 +53,42 @@ fn granted_scopes(access_token: &str) -> Option<String> {
     }
     let claims: serde_json::Value = serde_json::from_slice(&out).ok()?;
     claims.get("scp")?.as_str().map(str::to_owned)
+}
+
+/// Decodes a JPEG/PNG's pixel dimensions from its header.
+///
+/// The size assertion needs this because a fallback to the unsized resource returns a
+/// perfectly valid photo too — only the pixels say which route served it.
+fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let width = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
+        let height = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
+        return Some((width, height));
+    }
+    if !bytes.starts_with(b"\xff\xd8") {
+        return None;
+    }
+    let mut index = 2;
+    while index + 9 < bytes.len() {
+        if bytes[index] != 0xFF {
+            index += 1;
+            continue;
+        }
+        let marker = bytes[index + 1];
+        if (0xC0..=0xC2).contains(&marker) {
+            let height = u32::from(u16::from_be_bytes(
+                bytes[index + 5..index + 7].try_into().ok()?,
+            ));
+            let width = u32::from(u16::from_be_bytes(
+                bytes[index + 7..index + 9].try_into().ok()?,
+            ));
+            return Some((width, height));
+        }
+        index += 2 + usize::from(u16::from_be_bytes(
+            bytes[index + 2..index + 4].try_into().ok()?,
+        ));
+    }
+    None
 }
 
 #[tokio::test]
@@ -114,7 +150,7 @@ async fn live_a_colleagues_photo_reads_without_the_admin_consented_scope() {
     // image is there. Walk until one answers, so the test does not depend on *which*
     // colleague has a picture — only on some colleague having one.
     let mut asked = 0_usize;
-    let mut found: Option<(ContactCard, usize)> = None;
+    let mut found: Option<(ContactCard, Vec<u8>)> = None;
     for card in &users {
         let Some(media) = card
             .media
@@ -130,17 +166,27 @@ async fn live_a_colleagues_photo_reads_without_the_admin_consented_scope() {
             .await
             .expect("a directory photo read must not fail");
         if let Some(photo) = photo {
-            found = Some((card.clone(), photo.as_bytes().len()));
+            found = Some((card.clone(), photo.as_bytes().to_vec()));
             break;
         }
     }
 
     match found {
-        Some((_, len)) => {
-            assert!(len > 0, "a photo that exists has bytes");
+        Some((_, bytes)) => {
+            // The sized route is the point, not just that *a* photo came back. Measured
+            // on this tenant: 240x240 is 13.7 KB where the unsized resource is 799 KB at
+            // 2454x2453 — 58x the bytes, for a picture drawn at avatar size. A silent
+            // fallback to the unsized route would still be a valid photo, so the pixels
+            // are the only thing that tells the two apart.
+            assert_eq!(
+                dimensions(&bytes),
+                Some((240, 240)),
+                "the directory read must come from the sized route"
+            );
             eprintln!(
                 "verified: a directory photo read with User.ReadBasic.All and no \
-                 ProfilePhoto.Read.All ({len} bytes, after asking {asked} user(s))"
+                 ProfilePhoto.Read.All ({} bytes at 240x240, after asking {asked} user(s))",
+                bytes.len()
             );
         }
         None => eprintln!(

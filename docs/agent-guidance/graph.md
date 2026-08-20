@@ -444,8 +444,28 @@ including the negative (`contacts.md` → "Absence is an outcome, not a failure"
 is valid; `/me/contacts/{id}/photos/240x240/$value` is `400 RequestBroker--ParseUri`
 ("Resource not found for the segment 'photos'"). A contact has only the singular
 `photo/$value`. So only the directory source asks for a size — which is also where it
-matters, since a directory photo is routinely a megabyte and every caller draws it at
-avatar size.
+matters. Measured against a real tenant directory user:
+
+| Route | Bytes | Pixels |
+|---|---|---|
+| `/photos/240x240/$value` | **13.7 KB** | 240x240 |
+| `/photo/$value` | **799 KB** | 2454x2453 |
+
+58x, for a picture drawn at avatar size. A fallback to the unsized route still returns a
+valid photo, so `live_directory_photos` asserts the returned image's **pixels** — nothing
+weaker distinguishes the two.
+
+**`User.ReadBasic.All` is enough to read a colleague's photo; `ProfilePhoto.Read.All` is
+not needed.** That matters because the latter requires **admin consent**, so if it were
+required, tenant directory avatars would be gated behind an administrator for every
+customer. Verified live against a work/school account whose token's `scp` claim was first
+asserted *not* to carry `ProfilePhoto.Read.All` — the app registration holds admin consent
+for it in its home tenant, so without that control a successful read would have proved
+nothing.
+
+One incidental measurement worth keeping: 13 directory users were asked before one had a
+photo. Most people in a tenant have none, and each miss costs two requests (sized, then
+unsized), which is the case the negative cache exists for.
 
 **Every relevant failure here is a 404, separated only by `code`:**
 

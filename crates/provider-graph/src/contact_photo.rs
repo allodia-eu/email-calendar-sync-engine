@@ -11,8 +11,9 @@ use crate::{error::GraphError, transport::GraphClient};
 /// One of Microsoft's documented sizes; must stay on that list, because Graph answers
 /// an unlisted size with a **404**, the same status as "no image" (`ErrorInvalidImageId`
 /// against `ImageNotFound` — the codes differ, the statuses do not). 240 serves both a
-/// 3x phone list row and a reading header at roughly 15 KB, where the unsized resource
-/// returns whatever was uploaded — routinely a megabyte for a directory user.
+/// 3x phone list row and a reading header. Measured against a real tenant directory
+/// user: **13.7 KB at 240x240, against 799 KB at 2454x2453** from the unsized resource —
+/// 58x the bytes for a picture drawn at avatar size.
 const PHOTO_SIZE: &str = "240x240";
 
 /// Fetches the photo for the card served at `item_url`, or `None` when the source
