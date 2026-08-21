@@ -1,0 +1,9 @@
+{
+  "id": "message-1",
+  "threadId": "message-1",
+  "labelIds": [
+    "UNREAD",
+    "SENT",
+    "INBOX"
+  ]
+}

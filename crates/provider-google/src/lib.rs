@@ -40,6 +40,7 @@ mod json;
 mod mutate;
 mod normalize;
 mod provider;
+mod report;
 mod submit;
 mod transport;
 

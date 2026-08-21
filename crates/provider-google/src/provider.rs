@@ -20,8 +20,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
-    PageToken, PassMode, Provider, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind,
-    split_page,
+    PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
+    ScopeSync, SubmissionReceipt, SyncKind, split_page,
 };
 
 use crate::{fetch, mutate, submit, transport::GoogleClient};
@@ -64,6 +64,15 @@ impl GmailProvider {
                 .with_mail()
                 .with_message_source()
                 .with_mail_writes()
+                // Junk and not-junk only: Gmail's system label set has no phishing member
+                // and `messages.modify` 400s on anything outside it, so the verdict is
+                // withheld rather than filed as junk. `Convention` because the filter is
+                // documented to learn from the `SPAM` label and reports nothing back
+                // (`crate::report`).
+                .with_mail_report(ReportControls {
+                    verdicts: ReportVerdicts::without_phishing(),
+                    evidence: ReportEvidence::Convention,
+                })
                 // Both submission capabilities: this transport hands the server assembled RFC
                 // 5322 bytes (`engine-rfc5322`), so it owns every `Content-Type` parameter —
                 // including the `method=` that makes an iTIP object a scheduling message
@@ -257,6 +266,17 @@ impl Provider for GmailProvider {
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
         submit::send(&self.client, draft).await
+    }
+}
+
+#[async_trait]
+impl engine_provider::ReportingProvider for GmailProvider {
+    async fn report_message(
+        &self,
+        _account: &AccountId,
+        report: &engine_provider::MessageReport,
+    ) -> ProviderResult<engine_provider::ReportReceipt> {
+        crate::report::report_message(&self.client, report).await
     }
 }
 

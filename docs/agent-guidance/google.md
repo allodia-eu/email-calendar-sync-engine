@@ -356,3 +356,34 @@ Google's own generated monogram. The normalizer drops those, so a card either ad
 real photo or advertises none; publishing one would put a *Google* avatar next to a sender
 in place of the host's own. Pinned offline against `contacts/connections_photos.json`,
 whose URLs keep their real `=s100` suffix so the replacement path is the one exercised.
+
+## Reporting a message (junk / not junk)
+
+`users.messages.modify`, in `crate::report`. Gmail has no report endpoint: its filter
+learns from the `SPAM` label, so **the label is the report**, not a move that accompanies
+one. Three behaviours, all verified live and none of them documented:
+
+- **Adding `SPAM` files the message by itself.** The server drops `INBOX` without being
+  asked (`["UNREAD","SENT","INBOX"]` → `["UNREAD","SENT","SPAM"]`), so there is no separate
+  move to make and no way to report without moving.
+- **Removing `SPAM` does *not* put the message back.** It leaves it in no place label at
+  all — archived, and gone from the folder the user was looking at. The not-junk direction
+  therefore adds the destination explicitly; that is the one reason
+  `MessageReport::destination` is read here rather than ignored as it is on Graph.
+- **There is no phishing verdict.** The system label set has no member for it and
+  `messages.modify` answers `400 Invalid label: PHISHING`. The adapter advertises
+  `ReportVerdicts::without_phishing`, and `label_delta` refuses the verdict *locally* as
+  well — a guard that lives only in the capability check upstream is one refactor from
+  being skipped.
+
+A junk report also makes the message **leave the engine's view entirely**: `messages.list`
+omits `SPAM` and `TRASH` unless asked, and this adapter does not ask (no
+`includeSpamTrash`). So the Junk folder cannot be browsed on Gmail and a not-junk report
+cannot be initiated from a synced row. That is pre-existing sync behaviour rather than
+anything the report path introduced, and changing it would alter Trash too — but it is the
+first thing to look at if a host wants a Gmail Junk folder.
+
+`keyword_label_delta` is the other half of this. A keyword Gmail has no label for is an
+error, not a silent drop — a `$junk` write that reported success and did nothing is exactly
+the shape this mapping invites — and for the three junk keywords the error names
+`report_message` as the way to say it.
