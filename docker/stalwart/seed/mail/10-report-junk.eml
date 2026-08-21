@@ -1,0 +1,20 @@
+From: Bulk Sender <bulk@example.test>
+To: Alice Tester <alice@test.local>
+Subject: Report junk subject
+Date: Tue, 06 Jan 2026 13:00:00 +0000
+Message-ID: <report-junk-0001@test.local>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+The junk/not-junk half of the report suites owns this message, on both the JMAP
+and the IMAP side.
+
+Its own message in its own mailbox, for the reason 08-jmap-state.eml gives: a
+report *files* the message, and on JMAP that replaces the Email's mailboxIds, so
+reporting a COPY of a shared fixture would drag the baseline out of the
+count-asserted INBOX and Archive.
+
+It is separate from 11-report-phishing.eml because the two report tests run
+concurrently — cargo runs the tests in one binary in parallel, and CI passes no
+`--test-threads=1`. Sharing one message let each test observe the other's
+keywords, which is a failure that only ever appears on the runner.

@@ -34,10 +34,20 @@ if [ ! -f "$MARKER" ]; then
 
     count=0
     for eml in /harness/seed/mail/*.eml; do
+        # The report fixtures belong to the Reported mailbox below, not to INBOX.
+        case "$eml" in
+            */10-report-junk.eml|*/11-report-phishing.eml) continue ;;
+        esac
         doveadm save -u "$ACCOUNT" -m INBOX <"$eml"
         count=$((count + 1))
     done
     echo "seeded ${count} message(s) into INBOX for ${ACCOUNT}"
+
+    # One message per report test: cargo runs a binary's tests concurrently, so sharing
+    # one would let each test read the other's keywords.
+    doveadm save -u "$ACCOUNT" -m Reported </harness/seed/mail/10-report-junk.eml
+    doveadm save -u "$ACCOUNT" -m Reported </harness/seed/mail/11-report-phishing.eml
+    echo "seeded 2 message(s) into Reported for ${ACCOUNT}"
 
     # One message outside the inbox, so the folder list has a mailbox that is neither
     # empty nor the inbox to report a count for.
