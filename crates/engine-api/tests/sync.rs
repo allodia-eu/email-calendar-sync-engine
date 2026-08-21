@@ -24,7 +24,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
-    Provider, ProviderError, ProviderResult, ScopeSync, SubmissionReceipt,
+    MessageReport, Provider, ProviderError, ProviderResult, ReportControls, ReportEvidence,
+    ReportReceipt, ReportVerdict, ReportVerdicts, ReportingProvider, ScopeSync, SubmissionReceipt,
 };
 use tokio::sync::oneshot;
 
@@ -361,6 +362,33 @@ impl Provider for SubmittingProvider {
             return Err(ProviderError::conflict("UIDVALIDITY changed"));
         }
         Ok(MailEditReceipt::new(edit.target().clone()))
+    }
+}
+
+/// The reporting half, so the outbox path for a report is exercised through the same
+/// fake as an edit. `accept` is what the real adapters do with the capability *before*
+/// they touch the network, so a verdict the controls exclude must be refused here too —
+/// otherwise the test would prove the outbox records an op no provider would accept.
+#[async_trait::async_trait]
+impl ReportingProvider for SubmittingProvider {
+    async fn report_message(
+        &self,
+        _account: &AccountId,
+        report: &MessageReport,
+    ) -> ProviderResult<ReportReceipt> {
+        report_controls().accept(report)?;
+        if self.fail {
+            return Err(ProviderError::conflict("the message moved"));
+        }
+        Ok(ReportReceipt::new(report.target.clone()))
+    }
+}
+
+/// A provider that reports every verdict but acknowledges none — the JMAP/IMAP shape.
+fn report_controls() -> ReportControls {
+    ReportControls {
+        verdicts: ReportVerdicts::without_phishing(),
+        evidence: ReportEvidence::Convention,
     }
 }
 
