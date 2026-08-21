@@ -13,7 +13,7 @@ use engine_core::ids::ProviderKey;
 use engine_provider::{ProviderError, ProviderResult};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{mail::parse_message_key, transport::Connection};
+use crate::{mail::parse_message_key, parse::SelectData, transport::Connection};
 
 /// How to open the target mailbox: `ReadWrite` (`SELECT`) for a mutation, or
 /// `ReadOnly` (`EXAMINE`) for a non-mutating read so the peek takes no write-intent
@@ -38,7 +38,7 @@ pub(crate) async fn select_target<'k, S>(
     connection: &mut Connection<S>,
     key: &'k ProviderKey,
     access: Access,
-) -> ProviderResult<(&'k str, u32)>
+) -> ProviderResult<(&'k str, u32, SelectData)>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
@@ -56,7 +56,7 @@ where
             "UIDVALIDITY changed for {mailbox}: re-sync before retrying"
         )));
     }
-    Ok((mailbox, uid))
+    Ok((mailbox, uid, selected))
 }
 
 /// Rejects a mailbox name carrying `CR`/`LF`/`NUL` before it reaches a quoted IMAP
