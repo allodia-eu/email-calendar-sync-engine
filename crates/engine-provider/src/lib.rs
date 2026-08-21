@@ -28,6 +28,7 @@
 mod boxed;
 mod calendar_write;
 mod capability;
+mod capability_calendar;
 mod connect_observer;
 mod connection;
 mod contact;
@@ -35,6 +36,7 @@ mod error;
 mod mail_edit;
 mod page;
 mod provider;
+mod report;
 mod stream;
 mod submit;
 mod sync;
@@ -44,7 +46,8 @@ pub use calendar_write::{
     EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
     PatchTarget, ReplyDelivery, RsvpResponse, TextEdit, WritePrecondition,
 };
-pub use capability::{Capabilities, RsvpControls, WriteGuard};
+pub use capability::Capabilities;
+pub use capability_calendar::{RsvpControls, WriteGuard};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 pub use connection::{ConnectionInfo, HttpVersion, TlsVersion};
 #[cfg(feature = "http")]
@@ -57,6 +60,10 @@ pub use error::{ProviderError, ProviderResult};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;
+pub use report::{
+    MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
+    ReportingProvider,
+};
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};
 pub use submit::{
     ContentIdError, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,

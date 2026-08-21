@@ -1,4 +1,5 @@
-//! The outbox-mediated **mail** writes on `Engine` — submission and edits — plus the
+//! The outbox-mediated **mail** writes on `Engine` — submission, edits and reporting a
+//! message as junk / not junk / phishing — plus the
 //! pending-op state poll every write (mail and calendar alike) is observed through. The
 //! calendar writes live in `calendar_writes`, which additionally reconciles the store.
 
@@ -6,9 +7,12 @@ use engine_core::{
     ids::{AccountId, ProviderKey},
     write::PendingOpId,
 };
-use engine_provider::{Draft, MailEdit, Provider};
+use engine_provider::{Draft, MailEdit, MessageReport, Provider, ReportingProvider};
 use engine_store::{PendingOpState, StoreRead};
-use engine_sync::{MailEditOutcome, SubmitOutcome, SyncError, edit_mail, submit_mail};
+use engine_sync::{
+    MailEditOutcome, ReportOutcome, SubmitOutcome, SyncError, edit_mail, report_message,
+    submit_mail,
+};
 
 use super::{LEASE_TTL, map_sync_error, worker};
 use crate::{ApiError, Engine};
@@ -99,6 +103,52 @@ impl Engine {
             LEASE_TTL,
             idempotency,
             edit,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
+
+    /// Reports one of the account's messages to its provider as junk, not junk, or
+    /// phishing, through the durable outbox. The message is also **filed** — into
+    /// `report.destination`, which the caller resolves (the account's Junk mailbox, or
+    /// its Inbox for a not-junk verdict), exactly as it resolves Trash for a delete.
+    ///
+    /// **Read
+    /// [`Capabilities::mail_report`](engine_provider::Capabilities::mail_report) first.**
+    /// It is `None` where the provider cannot report at all, and its
+    /// [`verdicts`](engine_provider::ReportControls::verdicts) are not universal — Gmail
+    /// has no phishing verdict, and an adapter asked for one it lacks **refuses** rather
+    /// than filing it as junk. Its
+    /// [`evidence`](engine_provider::ReportControls::evidence) says whether the provider
+    /// acknowledges the report or merely receives a convention, which is what a caller
+    /// needs before telling a user what reporting will achieve.
+    ///
+    /// `idempotency` must be **unique per report intent** — a key derived only from the
+    /// target would collapse a junk report and a later not-junk correction of the same
+    /// message into one op.
+    ///
+    /// The next [`Engine::sync_mail`] reconciles the local rows to the new server state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the report fails: the op is first recorded `Failed`
+    /// (with the failure class), and the error then returns. A store failure also
+    /// surfaces as [`ApiError::Sync`].
+    pub async fn report_message<P: ReportingProvider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        idempotency: &str,
+        report: &MessageReport,
+    ) -> Result<ReportOutcome, ApiError> {
+        report_message(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            idempotency,
+            report,
         )
         .await
         .map_err(map_sync_error)
