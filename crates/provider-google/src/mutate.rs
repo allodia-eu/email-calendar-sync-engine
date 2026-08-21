@@ -127,8 +127,9 @@ async fn modify(
 }
 
 /// The label deltas for a keyword change, translating the keyword axis to Gmail's state
-/// labels — `$seen` inverts against `UNREAD`; `$flagged` is `STARRED`; other keywords
-/// have no Gmail label and are skipped.
+/// labels — `$seen` inverts against `UNREAD`, `$flagged` is `STARRED`. Any other keyword
+/// is an error rather than a skip: Gmail has no label for it, so writing it would change
+/// nothing while answering success.
 fn keyword_label_delta(
     add: &BTreeSet<Keyword>,
     remove: &BTreeSet<Keyword>,
