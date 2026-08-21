@@ -484,6 +484,10 @@ mod calendar_write_support;
 mod calendar_write_tests;
 
 #[cfg(test)]
+#[path = "report_provider_tests.rs"]
+mod report_provider_tests;
+
+#[cfg(test)]
 #[path = "calendar_patch_tests.rs"]
 mod calendar_patch_tests;
 

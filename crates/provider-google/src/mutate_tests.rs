@@ -5,6 +5,7 @@
 use engine_core::{
     error::FailureClass,
     ids::{MailboxId, ProviderKey},
+    mail::{Keyword, SystemKeyword},
 };
 use engine_provider::MailEdit;
 
@@ -26,6 +27,14 @@ const TRASH: &str = include_str!("../tests/fixtures/mail/trash.json");
 
 fn key(id: &str) -> ProviderKey {
     ProviderKey::new(id).unwrap()
+}
+
+fn one(keyword: &Keyword) -> BTreeSet<Keyword> {
+    core::iter::once(keyword.clone()).collect()
+}
+
+fn none() -> BTreeSet<Keyword> {
+    BTreeSet::new()
 }
 
 #[tokio::test]
@@ -216,4 +225,59 @@ async fn a_stale_target_is_a_conflict() {
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Conflict);
+}
+
+/// The whole point of rejecting rather than dropping: Gmail has no label for these, so a
+/// mapping that skipped them would answer `Ok` and change nothing — a write the caller
+/// reads as done. Both directions of the delta are checked, because the loop over
+/// `remove` is a separate arm from the loop over `add`.
+#[test]
+fn a_keyword_gmail_cannot_write_is_refused_in_either_direction() {
+    for keyword in [
+        Keyword::system(SystemKeyword::Draft),
+        Keyword::new("harness").unwrap(),
+    ] {
+        let added = keyword_label_delta(&one(&keyword), &none()).unwrap_err();
+        assert_eq!(added.class(), FailureClass::InvalidState, "{keyword:?}");
+        let removed = keyword_label_delta(&none(), &one(&keyword)).unwrap_err();
+        assert_eq!(removed.class(), FailureClass::InvalidState, "{keyword:?}");
+        assert!(
+            removed.detail().contains(keyword.as_str()),
+            "the error names the keyword it refused: {}",
+            removed.detail()
+        );
+    }
+}
+
+/// The three junk keywords are refused like any other, but the error points at the verb
+/// that *can* express them — the mapping is where someone reaching for `$junk` arrives.
+#[test]
+fn a_junk_keyword_is_refused_with_the_report_verb_named() {
+    for system in [
+        SystemKeyword::Junk,
+        SystemKeyword::NotJunk,
+        SystemKeyword::Phishing,
+    ] {
+        let err = keyword_label_delta(&one(&Keyword::system(system)), &none()).unwrap_err();
+        assert_eq!(err.class(), FailureClass::InvalidState);
+        assert!(
+            err.detail().contains("report_message"),
+            "{system:?} should point at the report verb: {}",
+            err.detail()
+        );
+    }
+}
+
+/// The two Gmail *can* write still map, in both directions — `$seen` is an inversion
+/// (setting it removes `UNREAD`), so a refusal that swallowed the happy path would be
+/// invisible to the tests above.
+#[test]
+fn the_two_writable_keywords_still_map_both_ways() {
+    let (add, remove) = keyword_label_delta(
+        &one(&Keyword::system(SystemKeyword::Seen)),
+        &one(&Keyword::system(SystemKeyword::Flagged)),
+    )
+    .unwrap();
+    assert_eq!(add, Vec::<&str>::new());
+    assert_eq!(remove, vec!["UNREAD", "STARRED"]);
 }
