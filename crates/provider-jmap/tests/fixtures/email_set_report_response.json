@@ -1,0 +1,17 @@
+{
+  "methodResponses": [
+    [
+      "Email/set",
+      {
+        "accountId": "c",
+        "oldState": "swaba",
+        "newState": "sweba",
+        "updated": {
+          "f2aaaabp": null
+        }
+      },
+      "c0"
+    ]
+  ],
+  "sessionState": "8f3ba25f"
+}

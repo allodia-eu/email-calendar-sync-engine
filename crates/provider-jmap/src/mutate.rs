@@ -75,7 +75,7 @@ fn set_arguments(mail_account: &str, edit: &MailEdit, target: &str) -> Value {
 }
 
 /// Wraps a per-object patch in `{ accountId, update: { <target>: <patch> } }`.
-fn update_args(mail_account: &str, target: &str, patch: Value) -> Value {
+pub(crate) fn update_args(mail_account: &str, target: &str, patch: Value) -> Value {
     let mut update = Map::new();
     update.insert(target.to_owned(), patch);
     json!({ "accountId": mail_account, "update": update })
@@ -85,7 +85,7 @@ fn update_args(mail_account: &str, target: &str, patch: Value) -> Value {
 /// `/` → `~1`. JMAP keywords may contain both (RFC 8621 §4.1.1 permits every printable
 /// ASCII bar a short blocklist), so an unescaped `keywords/<kw>` pointer would be
 /// ambiguous.
-fn keyword_pointer(keyword: &str) -> String {
+pub(crate) fn keyword_pointer(keyword: &str) -> String {
     format!("keywords/{}", keyword.replace('~', "~0").replace('/', "~1"))
 }
 
@@ -94,12 +94,25 @@ fn keyword_pointer(keyword: &str) -> String {
 /// neither applied nor reported failed (the server silently dropped our id) is treated
 /// as a `notFound` conflict — never a false success.
 fn check_set_result(result: &Value, edit: &MailEdit, target: &str) -> Result<(), JmapError> {
-    let destroy = matches!(edit, MailEdit::Delete { .. });
-    let (applied, failed) = if destroy {
+    let (applied, failed) = if matches!(edit, MailEdit::Delete { .. }) {
         ("destroyed", "notDestroyed")
     } else {
         ("updated", "notUpdated")
     };
+    check_set_result_for(result, target, applied, failed)
+}
+
+/// The acknowledgement rule shared by every `Email/set` this adapter sends: a
+/// `SetError` under `failed` is a classified [`JmapError::Set`], and a target that is
+/// neither applied nor reported failed (the server silently dropped our id) is treated
+/// as a `notFound` conflict — never a false success.
+pub(crate) fn check_set_result_for(
+    result: &Value,
+    target: &str,
+    applied: &str,
+    failed: &str,
+) -> Result<(), JmapError> {
+    let destroy = applied == "destroyed";
 
     if let Some(error_type) = result
         .get(failed)
