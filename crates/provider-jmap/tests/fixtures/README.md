@@ -28,6 +28,8 @@ tests driven through a fake executor.
 | `email_changes_response.json` | `[Email/changes, Email/get(#created), Email/get(#updated)]` response | Empty-delta orchestration (the changes→get back-reference path). |
 | `submit_context_response.json` | `[Mailbox/get, Identity/get]` response | Resolving the Drafts/Sent mailboxes + submission identity before a send. |
 | `submit_send_response.json` | `[Email/set, EmailSubmission/set]` response | Submission: the created email key, plus the implicit `Email/set` from `onSuccessUpdateEmail` (two responses share call id `1`). |
+| `email_set_report_response.json` | `[Email/set]` response for a report | One `Email/set` carrying **both** the `keywords/$junk` patch and the `mailboxIds` move — the report and its filing cannot land half-applied. |
+| `email_set_report_notfound_response.json` | `[Email/set]` response for an unknown id | The `notFound` `SetError` a stale report target produces → `Conflict`. |
 | `calendar_get.json` | `Calendar/get` result | Calendar-container normalization. |
 | `calendarevent_get.json` | `CalendarEvent/get` result (all 6 seed events) | JSCalendar normalization: zoned/floating/all-day time model, recurrence rule + overrides, participants, virtual location. |
 | `calendar_snapshot_response.json` | `[Calendar/get]` response | Calendar container snapshot orchestration. |
