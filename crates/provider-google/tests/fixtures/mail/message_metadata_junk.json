@@ -1,0 +1,38 @@
+{
+  "historyId": "1662",
+  "id": "message-junk",
+  "internalDate": "1787316876000",
+  "labelIds": [
+    "UNREAD",
+    "SENT",
+    "SPAM"
+  ],
+  "payload": {
+    "headers": [
+      {
+        "name": "From",
+        "value": "Test User <testuser@example.test>"
+      },
+      {
+        "name": "To",
+        "value": "testuser@example.test"
+      },
+      {
+        "name": "Subject",
+        "value": "Fixture: a message in Junk"
+      },
+      {
+        "name": "Message-Id",
+        "value": "<message-junk@mail.gmail.test>"
+      },
+      {
+        "name": "Date",
+        "value": "Fri, 21 Aug 2026 14:54:36 +0200"
+      }
+    ],
+    "mimeType": "text/plain"
+  },
+  "sizeEstimate": 515,
+  "snippet": "The fixture message reported as junk.",
+  "threadId": "message-junk"
+}

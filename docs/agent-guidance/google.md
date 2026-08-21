@@ -366,14 +366,39 @@ one. Three behaviours, all verified live and none of them documented:
   well — a guard that lives only in the capability check upstream is one refactor from
   being skipped.
 
-A junk report also makes the message **leave the engine's view entirely**: `messages.list`
-omits `SPAM` and `TRASH` unless asked, and this adapter does not ask (no
-`includeSpamTrash`). So the Junk folder cannot be browsed on Gmail and a not-junk report
-cannot be initiated from a synced row. That is pre-existing sync behaviour rather than
-anything the report path introduced, and changing it would alter Trash too — but it is the
-first thing to look at if a host wants a Gmail Junk folder.
+A junk report leaves the message where the engine can still see it, but only because the
+snapshot asks for it — see "Spam and Trash are not optional" below. Without that flag the
+not-junk direction would be unreachable from a synced row: the message the user has to
+press "not junk" on would not be in the account the engine shows.
 
 `keyword_label_delta` is the other half of this. A keyword Gmail has no label for is an
 error, not a silent drop — a `$junk` write that reported success and did nothing is exactly
 the shape this mapping invites — and for the three junk keywords the error names
 `report_message` as the way to say it.
+
+## Spam and Trash are not optional in the snapshot
+
+`messages.list` omits `SPAM` and `TRASH` unless `includeSpamTrash=true`. `history.list`
+takes no such flag and reports their label changes regardless. The two passes therefore
+disagree, and not symmetrically: **a snapshot tombstones every key absent from its present
+set**, so the snapshot wins by deleting what the delta had just filed correctly. Which one
+the store believes comes down to whether the last pass happened to be a snapshot, and a
+`historyId` aging out is enough to turn one into the other.
+
+So `fetch::list_url` always sets the flag — including on the windowed `q=after:<epoch>`
+shape, which excludes them just as the unwindowed one does (verified live; an explicit
+`q=in:trash` does *not*, which is why reading the flag's docs is misleading here).
+
+Two consequences worth knowing before touching this:
+
+- **A snapshot fetches every spam and trash message full**, one `messages.get` each, the
+  same as any other. Gmail purges both after 30 days and the sync-window floor bounds it
+  further, but an account with a large Trash pays for it on every reconcile.
+- **Spam and Trash are ordinary place labels here**, so `memberships_of` files a message
+  in them like any other folder and the roles are already mapped (`SPAM` → `Junk`,
+  `TRASH` → `Trash`). A message with only keyword labels still falls through to the
+  synthetic All Mail, which is why spam does not appear there — matching Gmail's own
+  All Mail, which excludes both.
+
+`live_spam_trash.rs` drives both passes over one message and asserts they agree; it fails
+on the snapshot half alone if the flag is dropped.
