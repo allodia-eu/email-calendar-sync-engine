@@ -51,6 +51,7 @@ mod normalize;
 mod normalize_state;
 mod principal;
 mod provider;
+mod report;
 mod submit;
 mod transport;
 

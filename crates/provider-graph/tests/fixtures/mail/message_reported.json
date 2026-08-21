@@ -1,0 +1,9 @@
+{
+  "@odata.context": "https://graph.microsoft.com/beta/$metadata#microsoft.graph.reportMessageCommandResult",
+  "properties": [
+    {
+      "key": "Status",
+      "value": "Success"
+    }
+  ]
+}
