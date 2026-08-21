@@ -15,6 +15,8 @@ const LIST: &str = include_str!("../tests/fixtures/mail/messages_list.json");
 const META: &str = include_str!("../tests/fixtures/mail/message_metadata.json");
 const META_LABELED: &str = include_str!("../tests/fixtures/mail/message_metadata_labeled.json");
 const RAW: &str = include_str!("../tests/fixtures/mail/message_raw.json");
+const LIST_JUNK: &str = include_str!("../tests/fixtures/mail/messages_list_junk.json");
+const META_JUNK: &str = include_str!("../tests/fixtures/mail/message_metadata_junk.json");
 const HISTORY: &str = include_str!("../tests/fixtures/mail/history_delta.json");
 const HISTORY_DELETED: &str = include_str!("../tests/fixtures/mail/history_deleted.json");
 const HISTORY_GONE: &str = include_str!("../tests/fixtures/error/history_gone.json");
@@ -90,6 +92,49 @@ async fn snapshot_windows_by_after_epoch_only_when_a_floor_is_set() {
     // Midnight 2026-04-01 UTC = 1775001600.
     assert!(windowed.contains("&q=after:1775001600"), "{windowed}");
     assert!(!list_url(&client, None, None).contains("q=after"));
+}
+
+#[tokio::test]
+async fn a_junk_message_is_filed_in_spam_and_kept_in_the_present_set() {
+    // Captured from a real account whose message sat in Junk. `present` is what a
+    // snapshot tombstones against, so a spam message missing from it is not merely
+    // unreported — it is deleted from the store on the next reconcile.
+    let client = fake_client(vec![
+        ("/messages?maxResults", json(LIST_JUNK)),
+        ("/messages/message-junk", json(META_JUNK)),
+    ]);
+    let page = snapshot_page(&client, None, None, &SyncState::new("1662"))
+        .await
+        .unwrap();
+
+    let message = page.changed.first().expect("the junk message is carried");
+    assert!(
+        page.present.contains(message.id.key()),
+        "a junk message stays in the present set"
+    );
+    // `SPAM` is an ordinary place label, so it files like any other folder; `UNREAD`
+    // is a keyword and does not.
+    let places: Vec<&str> = message.mailboxes.iter().map(MailboxId::as_str).collect();
+    assert!(places.contains(&"SPAM"), "{places:?}");
+    assert!(!places.contains(&"UNREAD"), "{places:?}");
+}
+
+#[tokio::test]
+async fn every_snapshot_page_asks_for_spam_and_trash() {
+    // `messages.list` omits SPAM and TRASH unless asked, but `history.list` reports
+    // their label changes regardless — so without this flag a delta files a message
+    // into Junk and the next snapshot tombstones it, and which one the store believes
+    // depends on whether the last pass happened to be a snapshot.
+    let client = fake_client(vec![]);
+    let floor = CalendarDate::new(2026, 4, 1).unwrap();
+    let token = PageToken::new("NEXT_PAGE");
+    for url in [
+        list_url(&client, None, None),
+        list_url(&client, None, Some(floor)),
+        list_url(&client, Some(&token), Some(floor)),
+    ] {
+        assert!(url.contains("&includeSpamTrash=true"), "{url}");
+    }
 }
 
 #[tokio::test]
