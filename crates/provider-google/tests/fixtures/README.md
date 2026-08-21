@@ -35,6 +35,9 @@ on the account.
 | `mail/history_deleted.json` | same, after a permanent delete | `messagesDeleted` tombstone shape |
 | `mail/modify_archived.json` | `POST …/messages/{id}/modify` with `removeLabelIds:["INBOX"]`, adding nothing | the **archive**: `INBOX` gone, `UNREAD`/`SENT` preserved |
 | `mail/trash.json` | `POST …/messages/{id}/trash` | the trash response: `TRASH` added, state preserved |
+| `mail/modify_spam.json` | `POST …/messages/{id}/modify` with `addLabelIds:["SPAM"]` | the junk report — and that the server clears `INBOX` **without being asked** (Finding: the label files the message itself) |
+| `mail/modify_not_spam.json` | the same with `removeLabelIds:["SPAM"], addLabelIds:["INBOX"]` | the not-junk report; removing `SPAM` *alone* leaves the message in no place label at all |
+| `error/invalid_label_phishing.json` | the same with `addLabelIds:["PHISHING"]` | Gmail has no phishing label — `400 Invalid label`, so the verdict is refused rather than filed as junk |
 | `error/*.json` | a 400(label)/401/403(rate)/403(perm)/404/410 | `error` envelope → `FailureClass` mapping |
 
 ## Real-behavior findings (captured, not assumed)
