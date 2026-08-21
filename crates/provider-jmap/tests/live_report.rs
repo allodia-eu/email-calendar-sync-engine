@@ -10,6 +10,13 @@
 //! pinned. Every assertion is on harness-controlled state (keywords, membership),
 //! never on the server-assigned ids.
 //!
+//! **Each test owns one seeded message in the dedicated `Reported` mailbox**, addressed
+//! by its Message-ID. Two reasons, and both are failures that only appear on the runner:
+//! a report *files* the message, and a JMAP move replaces an Email's `mailboxIds`, so
+//! reporting a shared fixture would drag it out of the count-asserted INBOX; and cargo
+//! runs a binary's tests concurrently while CI passes no `--test-threads=1`, so two
+//! tests sharing one message read each other's keywords.
+//!
 //! Skips with no `STALWART_HTTP_ADDR`, so the offline suite stays green.
 
 use engine_core::{
@@ -20,6 +27,14 @@ use engine_core::{
 use engine_provider::{MessageReport, Provider, ReportEvidence, ReportVerdict, ReportingProvider};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::Harness;
+
+/// The mailbox holding this suite's own messages (`docker/stalwart/seed.sh`).
+const REPORTED: &str = "Reported";
+
+/// The junk/not-junk test's own message (`seed/mail/10-report-junk.eml`).
+const JUNK_MESSAGE_ID: &str = "report-junk-0001@test.local";
+/// The phishing test's own message (`seed/mail/11-report-phishing.eml`).
+const PHISHING_MESSAGE_ID: &str = "report-phishing-0001@test.local";
 
 fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
@@ -44,14 +59,48 @@ async fn messages(provider: &JmapProvider) -> Vec<Message> {
 
 /// The id of the mailbox holding `role`.
 async fn mailbox_with_role(provider: &JmapProvider, role: &MailboxRole) -> MailboxId {
+    mailboxes(provider)
+        .await
+        .into_iter()
+        .find(|mailbox| mailbox.role.as_ref() == Some(role))
+        .unwrap_or_else(|| panic!("no mailbox with role {role:?}"))
+        .id
+}
+
+/// The id of the seeded mailbox named `name` — `Reported` has no role, so it is found by
+/// name rather than by role.
+async fn mailbox_named(provider: &JmapProvider, name: &str) -> MailboxId {
+    mailboxes(provider)
+        .await
+        .into_iter()
+        .find(|mailbox| mailbox.name == name)
+        .unwrap_or_else(|| panic!("no mailbox named {name} — is the harness seed current?"))
+        .id
+}
+
+async fn mailboxes(provider: &JmapProvider) -> Vec<engine_core::mail::Mailbox> {
     let boxes = provider.sync_mailboxes(&account(), None).await.unwrap();
     let SyncUpdate::Snapshot { objects, .. } = boxes.update else {
         panic!("expected snapshot");
     };
     objects
+}
+
+/// This test's own seeded message, by `Message-ID`.
+///
+/// By identity rather than by position: a positional pick silently follows whatever the
+/// seed happens to order first, which is how one message ends up shared by two tests.
+async fn my_message(provider: &JmapProvider, message_id: &str) -> MessageId {
+    messages(provider)
+        .await
         .into_iter()
-        .find(|mailbox: &engine_core::mail::Mailbox| mailbox.role.as_ref() == Some(role))
-        .unwrap_or_else(|| panic!("no mailbox with role {role:?}"))
+        .find(|m| {
+            m.envelope
+                .message_id
+                .iter()
+                .any(|id| id.as_str() == message_id)
+        })
+        .unwrap_or_else(|| panic!("the seeded {message_id} message — is the harness seed current?"))
         .id
 }
 
@@ -94,21 +143,18 @@ async fn a_junk_report_sets_the_keyword_and_files_the_message_and_the_inverse_un
     assert!(controls.verdicts.junk && controls.verdicts.not_junk && controls.verdicts.phishing);
     assert_eq!(controls.evidence, ReportEvidence::Convention);
 
-    let inbox = mailbox_with_role(&provider, &MailboxRole::Inbox).await;
+    let home = mailbox_named(&provider, REPORTED).await;
     let junk = mailbox_with_role(&provider, &MailboxRole::Junk).await;
+    let target = my_message(&provider, JUNK_MESSAGE_ID).await;
 
-    // Pick a message that currently sits in the Inbox and is not already reported.
-    let target = messages(&provider)
-        .await
-        .into_iter()
-        .find(|m| {
-            m.mailboxes.contains(&inbox)
-                && !m.keywords.contains(&Keyword::system(SystemKeyword::Junk))
-        })
-        .expect("an inbox message to report")
-        .id;
-    let (before_keywords, before_mailboxes) = state_of(&provider, &target).await;
-    assert!(before_mailboxes.contains(&inbox));
+    // The precondition, asserted rather than assumed: a message that already carried
+    // $junk would satisfy every assertion below against an adapter that sent nothing.
+    let (before, before_mailboxes) = state_of(&provider, &target).await;
+    assert!(
+        !before.contains(&Keyword::system(SystemKeyword::Junk)),
+        "the message must start unreported or this proves nothing: {before:?}"
+    );
+    assert!(before_mailboxes.contains(&home));
 
     // --- report junk -------------------------------------------------------------
     let receipt = provider
@@ -127,7 +173,7 @@ async fn a_junk_report_sets_the_keyword_and_files_the_message_and_the_inverse_un
         "the server stored $junk: {keywords:?}"
     );
     assert!(
-        mailboxes.contains(&junk) && !mailboxes.contains(&inbox),
+        mailboxes.contains(&junk) && !mailboxes.contains(&home),
         "the same set filed the message into Junk: {mailboxes:?}"
     );
 
@@ -137,7 +183,7 @@ async fn a_junk_report_sets_the_keyword_and_files_the_message_and_the_inverse_un
     provider
         .report_message(
             &account(),
-            &MessageReport::new(target_key(&target), ReportVerdict::NotJunk, inbox.clone()),
+            &MessageReport::new(target_key(&target), ReportVerdict::NotJunk, home.clone()),
         )
         .await
         .expect("report not junk");
@@ -152,19 +198,9 @@ async fn a_junk_report_sets_the_keyword_and_files_the_message_and_the_inverse_un
         "the contradicting $junk was cleared in the same patch: {keywords:?}"
     );
     assert!(
-        mailboxes.contains(&inbox),
-        "not-junk files back to the Inbox: {mailboxes:?}"
+        mailboxes.contains(&home),
+        "not-junk files to the destination it was given: {mailboxes:?}"
     );
-
-    // Leave the harness as it was found: the seed is shared with every other suite.
-    provider
-        .report_message(
-            &account(),
-            &MessageReport::new(target_key(&target), ReportVerdict::NotJunk, inbox.clone()),
-        )
-        .await
-        .expect("restore");
-    let _ = before_keywords;
 }
 
 #[tokio::test]
@@ -178,18 +214,13 @@ async fn phishing_is_a_keyword_of_its_own_not_an_alias_for_junk() {
         .expect("ready");
     let provider = connect(&harness).await;
 
-    let inbox = mailbox_with_role(&provider, &MailboxRole::Inbox).await;
+    let home = mailbox_named(&provider, REPORTED).await;
     let junk = mailbox_with_role(&provider, &MailboxRole::Junk).await;
-    let target = messages(&provider)
-        .await
-        .into_iter()
-        .find(|m| m.mailboxes.contains(&inbox))
-        .expect("an inbox message")
-        .id;
+    let target = my_message(&provider, PHISHING_MESSAGE_ID).await;
 
-    // Assert the *transition*, not the end state. A previous run of this test used to
-    // leave `$phishing` set — the restore only cleared `$junk` — so the assertion below
-    // passed against an adapter that sent no keyword at all.
+    // Assert the *transition*, not the end state. A message that already carried
+    // `$phishing` would pass every assertion below against an adapter sending no keyword
+    // at all — which is what a shared message and a concurrent junk test produced.
     let (before, _) = state_of(&provider, &target).await;
     assert!(
         !before.contains(&Keyword::system(SystemKeyword::Phishing)),
@@ -214,12 +245,17 @@ async fn phishing_is_a_keyword_of_its_own_not_an_alias_for_junk() {
         "reporting phishing must not silently also assert $junk: {keywords:?}"
     );
 
-    // Restore.
+    // Restore, so a re-run of this test starts from the precondition it asserts.
     provider
         .report_message(
             &account(),
-            &MessageReport::new(target_key(&target), ReportVerdict::NotJunk, inbox),
+            &MessageReport::new(target_key(&target), ReportVerdict::NotJunk, home),
         )
         .await
         .expect("restore");
+    let (after, _) = state_of(&provider, &target).await;
+    assert!(
+        !after.contains(&Keyword::system(SystemKeyword::Phishing)),
+        "not-junk clears the accusation it contradicts: {after:?}"
+    );
 }

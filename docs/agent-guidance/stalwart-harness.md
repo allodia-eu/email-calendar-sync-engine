@@ -227,12 +227,35 @@ sequence numbers are deterministic) rather than by searching.
 | `05-flagged.eml`         | INBOX, `\Flagged` + keyword  | JMAP keywords ↔ IMAP flags. Stalwart marks owner-appended mail `\Seen`, so the distinctive markers are `\Flagged` and the custom keyword `harness`. |
 | `06-thread-root/reply`   | INBOX (`In-Reply-To`/`References`) | Threading by references, independent of subject. |
 | `07-moved.eml`           | INBOX → **MOVE**d to Projects | A moved message keeps a single membership (contrast the copy). |
+| `08-jmap-state.eml`      | `JmapState` (**APPEND**ed)   | Its own object to move between `JmapState` and `JmapStateArchive` — the shape an `Email/changes` `updated` id takes. |
+| `09-jmap-sent.eml`       | `JmapSent` (**APPEND**ed)    | Its own object, and a recipient address used nowhere else in the seed, so the sent-observation assertion cannot be satisfied by another fixture. |
+| `10-report-junk.eml`     | `Reported` (**APPEND**ed)    | The junk/not-junk report tests' own message, on both the JMAP and IMAP side. |
+| `11-report-phishing.eml` | `Reported` (**APPEND**ed)    | A **second** message so the phishing test starts from one carrying neither `$junk` nor `$phishing`. |
 
-Folders `Archive` and `Projects` exercise non-INBOX mailboxes. Two further dedicated
-mailboxes carry isolated copies of INBOX fixtures so a test can mutate them without
-disturbing the count-asserted folders: `QResync` (three messages, for the
-CONDSTORE/QRESYNC delta test) and `Idle` (one message, for the IMAP `IDLE` push test,
-which flag-toggles it on a second connection — `imap-smtp.md`).
+Folders `Archive` and `Projects` exercise non-INBOX mailboxes. Beyond them, every
+**mutating** live test gets a dedicated mailbox, so nothing it does can disturb a
+count-asserted folder (`live_imap.rs` asserts eight messages in INBOX):
+
+| Mailbox | Contents | The test that owns it |
+| --- | --- | --- |
+| `QResync` | three **COPY**s of INBOX fixtures | the CONDSTORE/QRESYNC delta test — it re-flags one and expunges another |
+| `Idle` | one **COPY** | the IMAP `IDLE` push test, which flag-toggles it on a second connection (`imap-smtp.md`) |
+| `JmapState` + `JmapStateArchive` | `08-jmap-state.eml` | the JMAP state-delta test, which moves it between the two |
+| `JmapSent` | `09-jmap-sent.eml` | the sent-observation test, which moves it into the real Sent collection and back |
+| `Reported` | `10-report-junk.eml`, `11-report-phishing.eml` | the JMAP **and** IMAP report suites — one message each |
+
+Two rules that produced this shape, both learned by breaking them:
+
+- **APPEND, never COPY, when the test will *move* the message.** JMAP models a message in
+  several mailboxes as one `Email` with several `mailboxIds`, so an IMAP `COPY` inside one
+  account adds a mailbox to the existing object rather than minting a second one. Moving
+  "the copy" replaces the shared baseline's `mailboxIds` and drags it out of INBOX and
+  Archive.
+- **One message per test, not one per suite.** Cargo runs the tests in a binary
+  concurrently and neither CI job passes `--test-threads=1`, so two tests sharing a
+  message read each other's writes. `Reported` holds two for exactly this reason — the
+  report suite's phishing test failed on the runner, and only on the runner, while both
+  tests passed locally under `--test-threads=1`.
 
 ### Calendar (`seed/calendar/`, via CalDAV into Alice's default calendar)
 
