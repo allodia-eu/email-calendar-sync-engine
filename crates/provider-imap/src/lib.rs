@@ -73,6 +73,7 @@ mod parse_qresync;
 mod place;
 mod provider;
 mod qresync;
+mod report;
 mod smtp;
 mod stream;
 mod sync;

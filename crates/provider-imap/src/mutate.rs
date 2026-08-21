@@ -46,7 +46,7 @@ where
     // Resolve + SELECT the key's own mailbox (a move's source, a delete's home,
     // read-write since this mutates) and guard `UIDVALIDITY` — shared with the read
     // path so the stale-key and CR/LF-injection guards cannot drift apart.
-    let (_mailbox, uid) = select_target(connection, key, Access::ReadWrite).await?;
+    let (_mailbox, uid, _selected) = select_target(connection, key, Access::ReadWrite).await?;
 
     let set = uid.to_string();
     match edit {
