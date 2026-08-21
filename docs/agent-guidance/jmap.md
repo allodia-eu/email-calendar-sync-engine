@@ -530,3 +530,22 @@ what the engine does not model — vendor `x-` extensions, newer JSContact
 properties — while every modelled property, including one the host emptied, is
 re-derived from the card; returning raw verbatim shipped the pre-edit values of
 any card a host cloned and modified.
+
+## Reporting a message (junk / not junk / phishing)
+
+`Email/set`, in `crate::report`. JMAP has no report action — the report *is* the
+IANA-registered keyword (`$junk`, `$notjunk`, `$phishing`; RFC 8621 §4.1.1, RFC 9979).
+
+- **Both halves ride one `Email/set`.** The keyword patch and the `mailboxIds` replacement
+  that files the message travel in the same PatchObject, so a report and its move cannot
+  land half-applied and cost one round-trip. Verified against Stalwart, which applied both.
+- **The contradicting keyword is cleared in the same patch**, and "not junk" clears **both**
+  accusations (`$junk` *and* `$phishing`): the user is vouching for the message, and leaving
+  the stronger claim standing against it would be wrong. Leaving a message asserting it is
+  both junk and not-junk would also make which one a classifier believes an accident.
+- **The evidence is `Convention`, and that is not pessimism.** RFC 8621's "clients SHOULD set
+  `$junk` … to help train automated spam-detection systems" is addressed to *clients*; no
+  capability advertises whether the server trains, and a server that ignored the keyword
+  would answer identically. Stalwart stores and returns all three (verified); what it does
+  with them is not observable from a client. This is the same shape as `calendar_scheduling`
+  — there is nothing to detect, so the capability says so rather than implying success.
