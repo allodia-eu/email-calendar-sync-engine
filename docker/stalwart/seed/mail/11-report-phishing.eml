@@ -1,0 +1,14 @@
+From: Impersonator <phish@example.test>
+To: Alice Tester <alice@test.local>
+Subject: Report phishing subject
+Date: Tue, 06 Jan 2026 14:00:00 +0000
+Message-ID: <report-phishing-0001@test.local>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+The phishing half of the report suites owns this message.
+
+Separate from 10-report-junk.eml so the phishing test starts from a message
+carrying neither $junk nor $phishing — which is a precondition it asserts,
+because "the keyword is set" afterwards proves nothing about a message that
+already had it.
