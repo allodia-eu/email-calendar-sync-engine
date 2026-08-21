@@ -22,8 +22,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
-    PageToken, PassMode, Provider, ProviderResult, ScopeSync, SubmissionReceipt, SyncKind,
-    split_page,
+    PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
+    ScopeSync, SubmissionReceipt, SyncKind, split_page,
 };
 
 use crate::{fetch, transport::GraphClient};
@@ -74,6 +74,13 @@ impl GraphProvider {
             capabilities: Capabilities::none()
                 .with_mail()
                 .with_mail_writes()
+                // The one transport here that takes a report as an *action* and answers
+                // whether it landed, hence `Acknowledged`. All three verdicts exist —
+                // `junk`, `notJunk`, `phish` — and only those three (`crate::report`).
+                .with_mail_report(ReportControls {
+                    verdicts: ReportVerdicts::all(),
+                    evidence: ReportEvidence::Acknowledged,
+                })
                 // Both submission capabilities: this transport hands the server assembled RFC
                 // 5322 bytes (`engine-rfc5322`), so it owns every `Content-Type` parameter —
                 // including the `method=` that makes an iTIP object a scheduling message
@@ -278,6 +285,17 @@ impl Provider for GraphProvider {
         edit: &MailEdit,
     ) -> ProviderResult<MailEditReceipt> {
         crate::mutate::edit_mail(&self.client, edit).await
+    }
+}
+
+#[async_trait]
+impl engine_provider::ReportingProvider for GraphProvider {
+    async fn report_message(
+        &self,
+        _account: &AccountId,
+        report: &engine_provider::MessageReport,
+    ) -> ProviderResult<engine_provider::ReportReceipt> {
+        crate::report::report_message(&self.client, report).await
     }
 }
 

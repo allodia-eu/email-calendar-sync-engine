@@ -193,6 +193,24 @@ impl GraphClient {
         format!("{}{path}", self.base)
     }
 
+    /// Builds a mailbox-rooted URL against the **beta** API version.
+    ///
+    /// Only [`crate::report`] uses this, and only because it has no choice: reporting a
+    /// message has no v1.0 endpoint at all. Its v1.0 predecessors `markAsJunk` /
+    /// `markAsNotJunk` are deprecated and stopped returning data on 2025-12-30, and
+    /// `reportMessage` — the action Microsoft's own deprecation notice points to — is
+    /// beta-only. So this is not reaching for a preview feature; it is the only door.
+    ///
+    /// A base that is not the production root (a test replay server) is left alone, so
+    /// the route still resolves.
+    pub(crate) fn beta_url(&self, path: &str) -> String {
+        let root = match self.base.strip_suffix("/v1.0") {
+            Some(stem) => format!("{stem}/beta"),
+            None => self.base.clone(),
+        };
+        format!("{root}{}{path}", self.principal.root())
+    }
+
     /// Authenticated `GET`, rebasing absolute Graph links onto a non-default base.
     ///
     /// # Errors
