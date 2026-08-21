@@ -4,8 +4,7 @@
 //! call can show them, and both are undocumented:
 //!
 //! - adding `SPAM` files the message **by itself** — the server drops `INBOX` without being asked,
-//!   so there is no separate move for the adapter to make. Because `messages.list` omits `SPAM`,
-//!   the message also leaves the engine's view entirely;
+//!   so there is no separate move for the adapter to make;
 //! - removing `SPAM` does **not** put the message back, which is why the not-junk direction adds
 //!   the destination explicitly. That one is a trap: the naive implementation makes the message
 //!   vanish from the folder the user is looking at.
@@ -60,15 +59,13 @@ fn provider(token: String) -> GmailProvider {
     GmailProvider::new(client)
 }
 
-/// The label membership of `key` as the engine sees it, or `None` when the snapshot
-/// does not carry the message at all.
+/// The label membership of `key` as the engine sees it.
 ///
-/// `None` is a real answer here rather than a lookup failure: Gmail's `messages.list`
-/// omits `SPAM` and `TRASH` unless asked for them, and this adapter does not ask, so a
-/// message that has just been reported as junk **leaves the engine's view entirely**.
-/// That disappearance is the observable effect of a junk report on this transport, and
-/// it is what the test below asserts.
-async fn labels_of(provider: &GmailProvider, key: &ProviderKey) -> Option<Vec<String>> {
+/// Panics when the snapshot does not carry the message: a junk report files it into
+/// `SPAM`, and the snapshot asks for `SPAM` (`fetch::list_url`), so a message missing
+/// here is a regression rather than an expected disappearance —
+/// `live_spam_trash.rs` is what holds that.
+async fn labels_of(provider: &GmailProvider, key: &ProviderKey) -> Vec<String> {
     let snapshot = provider
         .sync_email(&account(), None)
         .await
@@ -79,13 +76,11 @@ async fn labels_of(provider: &GmailProvider, key: &ProviderKey) -> Option<Vec<St
     objects
         .iter()
         .find(|message| message.id.key() == key)
-        .map(|message| {
-            message
-                .mailboxes
-                .iter()
-                .map(|id| id.as_str().to_owned())
-                .collect()
-        })
+        .expect("the snapshot carries the message")
+        .mailboxes
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect()
 }
 
 /// Sends a self-addressed throwaway and returns its key.
@@ -143,12 +138,11 @@ async fn adding_spam_files_the_message_and_removing_it_alone_would_not_bring_it_
         .await
         .expect("report junk");
 
-    // The report filed the message out of the Inbox — and, because `messages.list`
-    // omits SPAM, out of the engine's view altogether.
-    assert!(
-        labels_of(&provider, &key).await.is_none(),
-        "a junk-reported message drops out of the Gmail snapshot"
-    );
+    // The report filed the message out of the Inbox and into Junk, in one call — the
+    // server drops INBOX itself, so this is the whole observable effect.
+    let labels = labels_of(&provider, &key).await;
+    assert!(labels.contains(&"SPAM".to_owned()), "{labels:?}");
+    assert!(!labels.contains(&"INBOX".to_owned()), "{labels:?}");
 
     // --- report not junk ---------------------------------------------------------
     provider
@@ -165,10 +159,8 @@ async fn adding_spam_files_the_message_and_removing_it_alone_would_not_bring_it_
 
     // And the inverse brings it back — which is what makes the assertion above evidence
     // rather than a message that merely failed to sync. A bare `removeLabelIds:["SPAM"]`
-    // would leave it archived and it would still be missing here.
-    let labels = labels_of(&provider, &key)
-        .await
-        .expect("not-junk returns the message to the engine's view");
+    // would leave it archived, in no place label at all.
+    let labels = labels_of(&provider, &key).await;
     assert!(!labels.contains(&"SPAM".to_owned()), "{labels:?}");
     assert!(
         labels.contains(&"INBOX".to_owned()),

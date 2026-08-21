@@ -29,6 +29,8 @@ on the account.
 | `mail/messages_list.json` | `GET /users/me/messages` | the `{id, threadId}` enumeration a snapshot pages |
 | `mail/message_metadata.json` | `GET /users/me/messages/{id}?format=metadata&metadataHeaders=…` | envelope/labels/thread normalization (unread, single-membership) |
 | `mail/message_metadata_labeled.json` | same, the labeled reply | **multi-membership** (INBOX+SENT+custom) + `STARRED`/`IMPORTANT` keywords, read, threaded to the first |
+| `mail/messages_list_junk.json` | `GET /users/me/messages?includeSpamTrash=true` | that the flag is what puts a Junk message in the enumeration at all — without it the list is empty |
+| `mail/message_metadata_junk.json` | same, the junk message | a `SPAM` label set, so the snapshot's `present` set and the SPAM membership are pinned against real bytes |
 | `mail/message_full.json` | `GET …/messages/{id}?format=full` | the `payload` tree (`body.data`, parts) + attachment detection |
 | `mail/message_raw.json` | `GET …/messages/{id}?format=raw` | base64url `raw` → `RawMime` decode |
 | `mail/history_delta.json` | `GET /users/me/history?startHistoryId=…` | delta shape: `messagesAdded`/`labelsAdded`/`labelsRemoved` (partials → re-fetch) |
