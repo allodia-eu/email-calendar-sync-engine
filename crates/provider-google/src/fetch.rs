@@ -340,13 +340,19 @@ fn string_array(value: Option<&Value>) -> Option<Vec<String>> {
 
 /// The `messages.list` URL: a continuation `pageToken`, else the first page, optionally
 /// windowed by an `after:<epoch>` floor.
+///
+/// `includeSpamTrash` is not optional here. `messages.list` omits both by default while
+/// `history.list` reports their label changes regardless — it takes no such flag — so
+/// without it a delta files a message into Junk and the next snapshot, seeing it in no
+/// page, tombstones it. Which one the store believes would depend on whether the last
+/// pass happened to be a snapshot.
 fn list_url(
     client: &GoogleClient,
     page: Option<&PageToken>,
     floor: Option<CalendarDate>,
 ) -> String {
     use std::fmt::Write as _;
-    let mut url = format!("{USERS_ME}/messages?maxResults=100");
+    let mut url = format!("{USERS_ME}/messages?maxResults=100&includeSpamTrash=true");
     if let Some(page) = page {
         let _ = write!(url, "&pageToken={}", encode_query_value(page.as_str()));
     }
