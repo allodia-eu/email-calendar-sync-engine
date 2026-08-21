@@ -87,7 +87,7 @@ impl Executor for JmapClient {
 /// [`engine_provider::Provider`] for the step-4 mail spine (mailboxes + email);
 /// submission and calendar land in later slices.
 pub struct JmapProvider {
-    executor: Box<dyn Executor>,
+    pub(crate) executor: Box<dyn Executor>,
     capabilities: Capabilities,
     /// The address book host-facing contact writes target, once
     /// [`JmapProvider::with_contact_address_book`] has bound one. `None` until then:
@@ -180,7 +180,7 @@ impl JmapProvider {
     }
 
     /// The JMAP (server-side) mail account id for mail method arguments.
-    fn mail_account(&self) -> Result<String, JmapError> {
+    pub(crate) fn mail_account(&self) -> Result<String, JmapError> {
         Ok(self.executor.session().mail_account_id()?.to_owned())
     }
 
@@ -480,6 +480,10 @@ mod calendar_write_support;
 #[cfg(test)]
 #[path = "calendar_write_tests.rs"]
 mod calendar_write_tests;
+
+#[cfg(test)]
+#[path = "report_provider_tests.rs"]
+mod report_provider_tests;
 
 #[cfg(test)]
 #[path = "calendar_patch_tests.rs"]

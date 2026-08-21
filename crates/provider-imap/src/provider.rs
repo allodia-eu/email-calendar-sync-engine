@@ -19,7 +19,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, Draft, EmailStream, MailEdit,
-    MailEditReceipt, Provider, ProviderResult, ScopeSync, SubmissionReceipt, TlsVersion,
+    MailEditReceipt, MessageReport, Provider, ProviderResult, ReportControls, ReportEvidence,
+    ReportReceipt, ReportVerdicts, ReportingProvider, ScopeSync, SubmissionReceipt, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -230,6 +231,15 @@ impl<S> ImapProvider<S> {
         let mut capabilities = Capabilities::none()
             .with_mail()
             .with_mail_writes()
+            // All three registered keywords are expressible; whether the *server* stores
+            // them is a per-mailbox fact (`\*` in `PERMANENTFLAGS`) that only a `SELECT`
+            // can answer, so the report path checks it per call and refuses rather than
+            // writing a flag the server discards (`crate::report`). The evidence is
+            // `Convention`: IMAP has no way to say whether anything trained on the keyword.
+            .with_mail_report(ReportControls {
+                verdicts: ReportVerdicts::all(),
+                evidence: ReportEvidence::Convention,
+            })
             .with_message_source();
         if smtp.is_some() {
             // Both submission capabilities ride the same SMTP transport: the assembler
@@ -448,6 +458,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     ) -> ProviderResult<engine_core::raw::RawMime> {
         let mut connection = self.connection.lock().await;
         crate::fetch::fetch_message_source(&mut connection, message.id.key()).await
+    }
+}
+
+#[async_trait]
+impl<S> ReportingProvider for ImapProvider<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    /// Reports a message as junk / not junk / phishing.
+    ///
+    /// A thin lock-and-call, like [`Provider::edit_mail`]: the keyword choice, the
+    /// `PERMANENTFLAGS` check and the move live in `crate::report` so they stay
+    /// stream-generic and unit-testable.
+    async fn report_message(
+        &self,
+        _account: &AccountId,
+        report: &MessageReport,
+    ) -> ProviderResult<ReportReceipt> {
+        let mut connection = self.connection.lock().await;
+        crate::report::report_message(&mut connection, report).await
     }
 }
 

@@ -100,6 +100,11 @@ imap_cmd INBOX "CREATE JmapStateArchive" >/dev/null 2>&1 || true
 # the account's real Sent collection — the one mailbox it cannot provision, because the role
 # is the server's to assign — and back again, so its message must belong to nothing else.
 imap_cmd INBOX "CREATE JmapSent" >/dev/null 2>&1 || true
+# Reported holds the report suites' own two messages — one per test, because cargo runs the
+# tests in a binary concurrently and CI passes no `--test-threads=1`. A report *files* the
+# message, so it needs a mailbox of its own for the JmapState reason; it needs two messages
+# so the junk test and the phishing test cannot read each other's keywords.
+imap_cmd INBOX "CREATE Reported" >/dev/null 2>&1 || true
 # A non-ASCII mailbox name, seeded here *and* on the Dovecot harness under the same
 # display name. The two servers put completely different bytes on the wire for it —
 # modified UTF-7 on rev1, UTF-8 on rev2 — so a mailbox that comes back with one identity
@@ -116,6 +121,7 @@ imap_clear Idle
 imap_clear JmapState
 imap_clear JmapStateArchive
 imap_clear JmapSent
+imap_clear Reported
 
 # INBOX was just cleared, so appends land at deterministic sequence numbers
 # (Stalwart's SEARCH does not match on a HEADER Message-ID, so we rely on append
@@ -149,6 +155,10 @@ imap_append "$MAIL_DIR/08-jmap-state.eml" JmapState
 
 log "seeding the dedicated JmapSent mailbox (its own message) for the sent-observation test"
 imap_append "$MAIL_DIR/09-jmap-sent.eml" JmapSent
+
+log "seeding the dedicated Reported mailbox (a message per test) for the report suites"
+imap_append "$MAIL_DIR/10-report-junk.eml" Reported
+imap_append "$MAIL_DIR/11-report-phishing.eml" Reported
 
 log "seeding the dedicated Idle mailbox (one message) for the IMAP IDLE push test"
 imap_cmd INBOX "COPY 1 Idle" >/dev/null

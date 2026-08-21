@@ -33,6 +33,8 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/message_patched.json` | `PATCH /me/messages/{id}` body `{isRead,flag}` | the write echo of a mark-read + flag edit (`isRead:true`, `flag.flagStatus:"flagged"`) |
 | `mail/message_moved.json` | `POST /me/messages/{id}/move` body `{destinationId}` | the move echo — **same `id`** (immutable), `parentFolderId` now the destination |
 | `wellknown/*.json` | `GET /me/mailFolders/{inbox,drafts,…}` | well-known-name → id role resolution |
+| `mail/message_reported.json` | `POST {beta}/messages/{id}/reportMessage` `{ReportAction,IsMessageMoveRequested}` | the report echo — a **`reportMessageCommandResult`**, not the `message` object the docs describe (see Finding 17) |
+| `error/report_bad_action.json` | the same call with `ReportAction: unknownFutureValue` | the `400 RequestBodyRead` for a `reportAction` outside the three that exist |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
 | `error/photo_image_not_found.json` | `GET /me/photos/240x240/$value` with no photo set | the 404 that means "there is no image" |
 | `error/photo_invalid_size.json` | `GET /me/photos/999x999/$value` | the 404 that means "that size is not offered" (see Finding 16) |
@@ -238,3 +240,11 @@ contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@od
     status alone; it would draw a monogram everywhere and fail nothing. Captured as
     `error/photo_image_not_found.json` and `error/photo_invalid_size.json`, and the
     reason the adapter falls back to the unsized resource on any sized 404.
+
+17. **`reportMessage` answers a property bag, and its move flag is ignored.** The action
+    returns `{"properties":[{"key":"Status","value":"Success"}]}` rather than the
+    documented `message`, so an adapter that parses a message here fails on every call.
+    `IsMessageMoveRequested: false` does not keep the message in place either — it moves
+    to Junk regardless, with both the JSON boolean and the string `"false"` (the doc's own
+    example form) tried. And only `junk`/`notJunk`/`phish` are accepted; the documented
+    `unknown` and `unknownFutureValue` are both `400`. Details in `graph.md`.

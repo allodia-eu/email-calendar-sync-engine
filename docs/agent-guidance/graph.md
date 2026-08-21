@@ -539,3 +539,42 @@ a live test cannot create the thing it needs to read — the present direction i
 coverable against a contact someone set up by hand. `live_a_saved_contact_with_a_picture…`
 walks whatever the account has rather than naming them, so renaming is fine; removing the
 one with a picture is what would silently uncover the path.
+
+## Reporting a message (junk / not junk / phishing)
+
+`POST {beta}/messages/{id}/reportMessage`, in `crate::report`. Four facts, each
+established by driving a real personal account on 2026-08-21, and **three contradict the
+published documentation** — an adapter written from the docs alone is broken in three
+places:
+
+- **There is no v1.0 endpoint.** `markAsJunk`/`markAsNotJunk` are deprecated and stopped
+  returning data on 2025-12-30; `reportMessage` — the action Microsoft's own deprecation
+  notice points to — is beta-only. So `GraphClient::beta_url` exists for this one call and
+  nothing else. This is not reaching for a preview feature; it is the only door.
+- **The response is not a `message`.** The docs say the action returns a message object. It
+  returns `{"properties":[{"key":"Status","value":"Success"}]}` — a
+  `reportMessageCommandResult`. `check_reported` reads that `Status`, because a `200` whose
+  status is not `Success` is otherwise a silent success. A missing body or missing `Status`
+  is accepted rather than invented into a failure.
+- **`IsMessageMoveRequested: false` does not keep the message in place.** It moves to Junk
+  regardless. Both the JSON boolean and the string `"false"` (the form the doc's own example
+  uses) were sent, so this is the flag being ignored rather than the wrong type — which is
+  the only way that claim could have been made. The adapter therefore sends `true`.
+- **Only three of the five documented `reportAction` values exist.** `unknown` and
+  `unknownFutureValue` are both `400 RequestBodyRead`.
+
+Two more, both load-bearing:
+
+- **The sender is not blocked.** After three junk reports and one phishing report against
+  the same external sender, six subsequent messages from it landed in the Inbox. Its
+  deprecated predecessor `markAsJunk` explicitly *did* block. Caveat this honestly: the
+  blocked-senders list has no Graph surface (`/me/mailboxSettings` and
+  `.../messageRules` both `403` on a personal account), so this is behavioural evidence,
+  not the list read back.
+- **The immutable id survives the move**, so the receipt carries the unchanged target —
+  but only because every request sends `Prefer: IdType="ImmutableId"`. A probe without
+  that header saw the id `404` the instant the message reached Junk.
+
+Only a **personal** Microsoft account has been tested. A work/school tenant may honour the
+move flag, may route reports to Defender, and may apply tenant reporting policy; a run
+against one is owed before the capability claims to describe every Graph account.

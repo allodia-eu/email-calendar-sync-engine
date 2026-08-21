@@ -1,0 +1,19 @@
+{
+  "methodResponses": [
+    [
+      "Email/set",
+      {
+        "accountId": "c",
+        "oldState": "sweba",
+        "newState": "sweba",
+        "notUpdated": {
+          "zzzznotanid": {
+            "type": "notFound"
+          }
+        }
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "8f3ba25f"
+}

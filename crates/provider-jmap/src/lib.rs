@@ -46,6 +46,7 @@ mod json;
 mod mail;
 mod mutate;
 mod provider;
+mod report;
 mod request;
 mod session;
 mod submit;

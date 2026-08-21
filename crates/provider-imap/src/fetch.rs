@@ -34,7 +34,7 @@ pub(crate) async fn fetch_message_source<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let (_mailbox, uid) = select_target(connection, key, Access::ReadOnly).await?;
+    let (_mailbox, uid, _selected) = select_target(connection, key, Access::ReadOnly).await?;
     let bytes = connection.uid_fetch_body(uid).await?.ok_or_else(|| {
         ProviderError::conflict(format!(
             "message UID {uid} no longer exists (expunged): re-sync before fetching"

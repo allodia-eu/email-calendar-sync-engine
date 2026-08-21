@@ -23,7 +23,7 @@ use engine_core::{
     ids::{MailboxId, ProviderKey},
     mail::{Keyword, SystemKeyword},
 };
-use engine_provider::{MailEdit, MailEditReceipt, ProviderResult};
+use engine_provider::{MailEdit, MailEditReceipt, ProviderError, ProviderResult};
 
 use crate::{error::GoogleError, fetch, normalize::ALL_MAIL_ID, transport::GoogleClient};
 
@@ -50,7 +50,7 @@ pub(crate) async fn edit(
     let key = edit.target();
     match edit {
         MailEdit::SetKeywords { add, remove, .. } => {
-            let (add_labels, remove_labels) = keyword_label_delta(add, remove);
+            let (add_labels, remove_labels) = keyword_label_delta(add, remove)?;
             modify(client, key, &add_labels, &remove_labels).await?;
         }
         MailEdit::MoveTo { destination, .. } => move_to(client, key, destination).await?,
@@ -127,12 +127,13 @@ async fn modify(
 }
 
 /// The label deltas for a keyword change, translating the keyword axis to Gmail's state
-/// labels — `$seen` inverts against `UNREAD`; `$flagged` is `STARRED`; other keywords
-/// have no Gmail label and are skipped.
+/// labels — `$seen` inverts against `UNREAD`, `$flagged` is `STARRED`. Any other keyword
+/// is an error rather than a skip: Gmail has no label for it, so writing it would change
+/// nothing while answering success.
 fn keyword_label_delta(
     add: &BTreeSet<Keyword>,
     remove: &BTreeSet<Keyword>,
-) -> (Vec<&'static str>, Vec<&'static str>) {
+) -> ProviderResult<(Vec<&'static str>, Vec<&'static str>)> {
     let mut add_labels = Vec::new();
     let mut remove_labels = Vec::new();
     for keyword in add {
@@ -140,7 +141,7 @@ fn keyword_label_delta(
             // Marking read = removing UNREAD.
             Some(SystemKeyword::Seen) => remove_labels.push("UNREAD"),
             Some(SystemKeyword::Flagged) => add_labels.push("STARRED"),
-            _ => {}
+            other => return Err(unwritable(keyword, other)),
         }
     }
     for keyword in remove {
@@ -148,10 +149,29 @@ fn keyword_label_delta(
             // Marking unread = adding UNREAD.
             Some(SystemKeyword::Seen) => add_labels.push("UNREAD"),
             Some(SystemKeyword::Flagged) => remove_labels.push("STARRED"),
-            _ => {}
+            other => return Err(unwritable(keyword, other)),
         }
     }
-    (add_labels, remove_labels)
+    Ok((add_labels, remove_labels))
+}
+
+/// Rejects a keyword Gmail has no label for, rather than dropping it.
+///
+/// Gmail's writable keyword-ish state is `UNREAD` and `STARRED` and nothing else, so
+/// anything else applied here would be a no-op the caller reads as done — the silent
+/// success this codebase keeps guarding against, and the reason a junk report is its own
+/// verb (`crate::report`) instead of a `$junk` keyword write.
+fn unwritable(keyword: &Keyword, system: Option<SystemKeyword>) -> ProviderError {
+    let hint = match system {
+        Some(SystemKeyword::Junk | SystemKeyword::NotJunk | SystemKeyword::Phishing) => {
+            "; report it through Provider::report_message instead"
+        }
+        _ => "",
+    };
+    ProviderError::invalid_state(format!(
+        "Gmail can write only the $seen and $flagged keywords; got {}{hint}",
+        keyword.as_str()
+    ))
 }
 
 /// The message resource path for `key` (`/gmail/v1/users/me/messages/{id}`).

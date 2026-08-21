@@ -658,3 +658,27 @@ behaviour broke; if the answer is none, the test is not proving what it claims.
   mailbox — the same path the live Stalwart test exercises with a full mutate→delta
   cycle. This is the "external provider smoke test" `north-star.md` step 7 anticipates,
   ahead of schedule.
+
+## Reporting a message (junk / not junk / phishing)
+
+`UID STORE` then `UID MOVE`, in `crate::report`. As on JMAP the report is the registered
+keyword — `$Junk`, `$NotJunk`, `$Phishing` — but IMAP keeps the flag and the folder in
+different verbs, so it is two commands rather than one.
+
+**`PERMANENTFLAGS` is read before the write, and it is the only probe IMAP offers here.**
+RFC 9051 §7.1 makes `\*` the server's statement that a client may create new keywords.
+Without it a server answers `UID STORE +FLAGS ($Junk)` with a plain `OK` and stores nothing
+— the report would read as delivered and be absent on the next `FETCH`. `SelectData` now
+carries `permanent_flags_allow_new`, and a mailbox without it makes the report an
+`InvalidState` rather than a silent no-op.
+
+**That refusal branch has no server to exercise it.** Stalwart and both Dovecot dialects
+advertise `\*`, so the live suite can only pin the *premise* (`live_imap_report.rs` →
+`every_configured_server_permits_new_keywords`); the offline suite is what proves the check
+exists and refuses. Stated plainly because a test that cannot fail is the thing this file
+keeps warning about.
+
+A report into the message's own mailbox skips the `UID MOVE`: moving into the selected
+mailbox is a copy-and-expunge onto itself on some servers, and a no-op is cheaper than
+finding out which. The move mints a new UID, so the receipt names the **source** key — the
+same contract as `MailEdit::MoveTo`.

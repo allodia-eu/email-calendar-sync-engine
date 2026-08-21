@@ -162,6 +162,17 @@ impl Session {
         // a `forbidden` `SetError` (→ `Permanent`), so a mis-advertisement is safe.
         if capabilities.mail() && !account_is_read_only(value, mail_account_id.as_deref()) {
             capabilities = capabilities.with_mail_writes();
+            // Reporting rides the same gate: the report *is* the IANA-registered keyword
+            // (`$junk`/`$notjunk`/`$phishing`), and RFC 8621 §4.1.1 makes keywords part of
+            // the mail capability, so anything that can write mail can carry all three.
+            // The evidence is `Convention` and that is not pessimism: the spec's SHOULD is
+            // addressed to *clients*, no capability advertises whether the server trains on
+            // the keyword, and a server that ignored it would answer identically. Verified
+            // against Stalwart, which stores and returns all three (`crate::report`).
+            capabilities = capabilities.with_mail_report(engine_provider::ReportControls {
+                verdicts: engine_provider::ReportVerdicts::all(),
+                evidence: engine_provider::ReportEvidence::Convention,
+            });
         }
         // Calendar writes (`CalendarEvent/set`) work on the same terms — RFC 8621/8984 make
         // `set` part of the calendars capability, and `isReadOnly` on the *calendar* account
