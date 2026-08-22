@@ -5,7 +5,9 @@
 use engine_core::{ids::MailboxId, mail::MailboxRole};
 
 use super::*;
-use crate::test_support::{fake_client, fake_client_fallible, json, replay_server, tls};
+use crate::test_support::{
+    FakeRoute, fake_client, fake_client_fallible, json, probe_client, replay_server, tls,
+};
 
 const LABELS: &str = include_str!("../tests/fixtures/mail/labels.json");
 const PROFILE: &str = include_str!("../tests/fixtures/mail/profile.json");
@@ -120,6 +122,107 @@ async fn snapshot_skips_a_message_that_404s_between_list_and_get() {
     // Only the two fetchable messages survive.
     assert_eq!(page.changed.len(), 2);
     assert_eq!(page.present.len(), 2);
+}
+
+/// A list page of `count` ids plus a get route per id, for the fan-out tests. Ids are
+/// fixed-width because the fake routes on substring and `msg-1` would shadow `msg-10`.
+fn wide_page(count: usize) -> (Vec<(String, FakeRoute)>, Vec<String>) {
+    let ids: Vec<String> = (0..count).map(|i| format!("msg-{i:03}")).collect();
+    let list = serde_json::json!({
+        "messages": ids
+            .iter()
+            .map(|id| serde_json::json!({ "id": id, "threadId": id }))
+            .collect::<Vec<_>>(),
+    });
+    let mut routes = vec![("/messages?maxResults".to_owned(), Ok(list))];
+    for id in &ids {
+        routes.push((
+            format!("/messages/{id}"),
+            Ok(serde_json::json!({ "id": id, "threadId": id, "labelIds": ["INBOX"] })),
+        ));
+    }
+    (routes, ids)
+}
+
+/// Borrows owned routes into the `&str`-keyed shape the fake builders take.
+fn as_routes(routes: &[(String, FakeRoute)]) -> Vec<(&str, FakeRoute)> {
+    routes
+        .iter()
+        .map(|(key, answer)| (key.as_str(), answer.clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_snapshot_page_fetches_its_messages_concurrently() {
+    // The defect this locks out is a page drained one message at a time: every id costs a
+    // round trip Gmail cannot batch, so a serial page is as deep as it is wide and the first
+    // rows reach the list only after the last fetch has returned.
+    let (routes, _) = wide_page(60);
+    let (client, probe) = probe_client(as_routes(&routes));
+    let page = snapshot_page(&client, None, None, &SyncState::new("7"))
+        .await
+        .unwrap();
+    assert_eq!(page.changed.len(), 60);
+    // One list call plus one get per message.
+    assert_eq!(probe.calls(), 61);
+    assert_eq!(
+        probe.peak(),
+        MAX_CONCURRENT_GETS,
+        "a wide page should fill the fetch window; a serial drain peaks at 1"
+    );
+}
+
+#[tokio::test]
+async fn a_page_smaller_than_the_window_never_exceeds_its_own_size() {
+    // The window is a ceiling, not a target: a page of three does not open twenty requests.
+    let (routes, _) = wide_page(3);
+    let (client, probe) = probe_client(as_routes(&routes));
+    snapshot_page(&client, None, None, &SyncState::new("7"))
+        .await
+        .unwrap();
+    assert_eq!(probe.peak(), 3);
+}
+
+#[tokio::test]
+async fn concurrent_fetches_still_land_in_the_order_the_server_listed_them() {
+    // Fetches complete in whatever order they finish; the page must not inherit that order.
+    let (routes, ids) = wide_page(40);
+    let (client, _) = probe_client(as_routes(&routes));
+    let page = snapshot_page(&client, None, None, &SyncState::new("7"))
+        .await
+        .unwrap();
+    let got: Vec<&str> = page.changed.iter().map(|m| m.id.key().as_str()).collect();
+    assert_eq!(got, ids.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn a_delta_page_refetches_its_new_arrivals_concurrently() {
+    // The delta's re-fetch is the same shape as the snapshot's and pays the same cost: a
+    // `messagesAdded` record carries no subject, sender or body, so each one is a round trip.
+    let history: Vec<serde_json::Value> = (0..30)
+        .map(|i| {
+            serde_json::json!({
+                "messagesAdded": [{ "message": { "id": format!("msg-{i:03}") } }]
+            })
+        })
+        .collect();
+    let mut routes = vec![(
+        "/history?".to_owned(),
+        Ok(serde_json::json!({ "history": history, "historyId": "99" })),
+    )];
+    for i in 0..30 {
+        let id = format!("msg-{i:03}");
+        routes.push((
+            format!("/messages/{id}"),
+            Ok(serde_json::json!({ "id": id, "threadId": id, "labelIds": ["INBOX"] })),
+        ));
+    }
+    let (client, probe) = probe_client(as_routes(&routes));
+    let page = delta_page(&client, &SyncState::new("1"), None)
+        .await
+        .unwrap();
+    assert_eq!(page.changed.len(), 30);
+    assert_eq!(probe.peak(), MAX_CONCURRENT_GETS);
 }
 
 #[tokio::test]

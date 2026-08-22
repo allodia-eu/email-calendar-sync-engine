@@ -53,3 +53,20 @@ cargo run --manifest-path tools/google-oauth/Cargo.toml -- \
 `--client-id`/`--client-secret` also read from `GOOGLE_CLIENT_ID` /
 `GOOGLE_CLIENT_SECRET`. Tokens are stored owner-only under `.local/tokens.json`
 (gitignored).
+
+## Measuring the API
+
+`api-bench.sh` probes Gmail directly with the signed-in account, to answer the questions
+that decide the adapter's fetch shape and that no fixture can: what one `messages.get`
+really costs and whether that cost is the link or the service, how far concurrency scales
+before `429`, what the batch endpoint buys, and what each `format` weighs with and without
+gzip. It is read-only — it lists ids and fetches them.
+
+```sh
+tools/google-oauth/api-bench.sh
+```
+
+That probes the **API**. For the same question asked of the **adapter**, through the real
+code path, use the gated live tests in `crates/provider-google/tests/`:
+`live_throughput` (how fast a real snapshot drains) and `live_batch_vs_concurrent` (the
+head-to-head, with `GOOGLE_BENCH_WINDOW` and `GOOGLE_BENCH_ROUNDS` to sweep).

@@ -36,6 +36,9 @@ pub(crate) type FakeRoute = Result<Value, (u16, Value)>;
 struct Fake {
     routes: Vec<(String, FakeRoute)>,
     unauthenticated: Mutex<Vec<String>>,
+    /// Set only by [`probe_client`]: records how concurrently the caller fetched. `None` for
+    /// every other fake, which is also what keeps the yield below out of their way.
+    probe: Option<std::sync::Arc<ProbeState>>,
 }
 
 impl Fake {
@@ -51,6 +54,17 @@ impl Fake {
 #[async_trait]
 impl GoogleTransport for Fake {
     async fn get(&self, url: &str) -> Result<Value, GoogleError> {
+        // Held to the end of the call, so the in-flight count falls however this returns.
+        let _in_flight = match &self.probe {
+            Some(state) => {
+                state.enter();
+                // The yield is what makes a fan-out visible: without it every answer is ready
+                // on its first poll, and even a concurrent caller never holds two at once.
+                tokio::task::yield_now().await;
+                Some(InFlightGuard(std::sync::Arc::clone(state)))
+            }
+            None => None,
+        };
         match self.route(url)? {
             Ok(doc) => Ok(doc.clone()),
             Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
@@ -141,6 +155,7 @@ pub(crate) fn fake_client_fallible(routes: Vec<(&str, FakeRoute)>) -> GoogleClie
         Box::new(Fake {
             routes,
             unauthenticated: Mutex::new(Vec::new()),
+            probe: None,
         }),
         "https://google.test".to_owned(),
     )
@@ -149,6 +164,67 @@ pub(crate) fn fake_client_fallible(routes: Vec<(&str, FakeRoute)>) -> GoogleClie
 /// Parses a fixture string into JSON.
 pub(crate) fn json(fixture: &str) -> Value {
     serde_json::from_str(fixture).unwrap()
+}
+
+/// What a [`probe_client`] transport records about the calls made through it.
+#[derive(Default)]
+pub(crate) struct ProbeState {
+    in_flight: std::sync::atomic::AtomicUsize,
+    /// The most calls that were ever in flight at the same instant.
+    pub(crate) peak: std::sync::atomic::AtomicUsize,
+    /// How many calls were made in total.
+    pub(crate) calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ProbeState {
+    /// Records one more call entering, and the new high-water mark.
+    fn enter(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+        self.calls.fetch_add(1, SeqCst);
+        self.peak.fetch_max(now, SeqCst);
+    }
+
+    /// Reads [`peak`](Self::peak).
+    pub(crate) fn peak(&self) -> usize {
+        self.peak.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Reads [`calls`](Self::calls).
+    pub(crate) fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Decrements the in-flight count however a probed call leaves.
+struct InFlightGuard(std::sync::Arc<ProbeState>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Builds a [`GoogleClient`] whose transport also records how concurrently it was driven,
+/// returning the shared counters beside it.
+pub(crate) fn probe_client(
+    routes: Vec<(&str, FakeRoute)>,
+) -> (GoogleClient, std::sync::Arc<ProbeState>) {
+    let state = std::sync::Arc::new(ProbeState::default());
+    let client = GoogleClient::with_transport(
+        Box::new(Fake {
+            routes: routes
+                .into_iter()
+                .map(|(key, answer)| (key.to_owned(), answer))
+                .collect(),
+            unauthenticated: Mutex::new(Vec::new()),
+            probe: Some(std::sync::Arc::clone(&state)),
+        }),
+        "https://google.test".to_owned(),
+    );
+    (client, state)
 }
 
 /// Spawns a deterministic fixture-replay HTTP server and returns its base URL.
