@@ -27,15 +27,17 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 # `async-stream` builds the `stream_email` chunk stream with `try_stream!`.
 async-stream = { workspace = true }
+# `buffered` fans a page's per-message `messages.get` calls out concurrently — Gmail is the
+# one adapter whose list endpoint returns bare ids with no companion batch-get.
+futures-util = { workspace = true }
 # The generated `Date` header for the assembled `messages.send` message reads the wall
 # clock at submission (engine time types deliberately cannot), mirroring the Graph path.
 time = { workspace = true }
 
 [dev-dependencies]
-# `time` for the gated live send test's delivery poll (`tokio::time::sleep`).
+# `time` for the gated live send test's delivery poll (`tokio::time::sleep`); `macros`/`rt`
+# for `#[tokio::test]`.
 tokio = { workspace = true, features = ["time"] }
-# `StreamExt` drains `stream_email` into its chunks in the offline tests.
-futures-util = { workspace = true }
 # The gated live test builds a (bundled) TlsClientConfig to pass into `connect`.
 engine-tls = { workspace = true }
 

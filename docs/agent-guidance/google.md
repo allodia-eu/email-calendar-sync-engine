@@ -58,7 +58,8 @@ Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
   links, **there is no URL to rebase**; `with_base` (a proxy, a regional endpoint, or the
   test replay server) is reached because the client roots every path there.
 - **`fetch`** — the label list, the message snapshot (`messages.list` → per-id
-  `messages.get`), the history delta (`history.list`), and the raw-source fetch.
+  `messages.get`, fanned out `MAX_CONCURRENT_GETS` at a time), the history delta
+  (`history.list`), and the raw-source fetch.
 - **`mutate`/`submit`** — `edit_mail` (label deltas) and `submit_email` (`messages.send`).
 - **`provider`** — `GmailProvider`, the `Provider` impl.
 
@@ -110,7 +111,16 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
 
 - **Snapshot** (cursor `None`): capture the account `historyId` from `profile` **before**
   enumerating, then page `messages.list`, fetching each id full (`format=metadata` with a
-  fixed `metadataHeaders` set for a minimal, deterministic payload). The persisted cursor
+  fixed `metadataHeaders` set for a minimal, deterministic payload). Those per-id gets are
+  the pass's whole cost — `messages.list` returns bare `{id, threadId}` and Gmail offers no
+  companion batch-get — so a page fetches them **concurrently**, `MAX_CONCURRENT_GETS` in
+  flight. Gmail answers `429` past 50 concurrent requests per mailbox whatever the quota
+  allows; 20 is the widest window measured clean against a live account (30 draws occasional
+  throttles, 50 throttles a tenth). The batch endpoint is not used: a batch of n counts as n
+  requests, is no faster at equal width (both shapes cost one round trip), costs ~25% more
+  bytes for the multipart envelope, and answers `200` while individual members carry their
+  own `429` — so it buys nothing and adds a parser. `tests/live_batch_vs_concurrent.rs` is
+  the gated probe that keeps that decision honest. The persisted cursor
   is that captured `historyId` (messages arriving mid-snapshot are re-reported by the
   first delta — idempotent). This is a **reconciling** pass (its present set tombstones
   absent rows). A `SyncWindow` floor windows the enumeration to `q: after:<epoch>`.

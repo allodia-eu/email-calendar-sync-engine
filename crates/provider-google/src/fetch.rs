@@ -6,9 +6,10 @@
 //!
 //! - **Snapshot** ([`snapshot_page`], `cursor` `None`): `users.messages.list` enumerates `{id,
 //!   threadId}` refs (paginated by `pageToken`, optionally windowed by a `q: after:<epoch>` floor);
-//!   each id is fetched full (`messages.get?format=metadata`) and normalized. The cursor to persist
-//!   is the account `historyId` captured *before* the enumeration (any messages that arrive
-//!   mid-snapshot are simply re-reported by the first delta — idempotent).
+//!   each id is fetched full (`messages.get?format=metadata`, [`MAX_CONCURRENT_GETS`] at a time)
+//!   and normalized. The cursor to persist is the account `historyId` captured *before* the
+//!   enumeration (any messages that arrive mid-snapshot are simply re-reported by the first delta —
+//!   idempotent).
 //! - **Delta** ([`delta_page`], `cursor` `Some`): `users.history.list?startHistoryId=…` returns
 //!   `messagesAdded`/`labelsAdded`/`labelsRemoved` (whose message objects are *partials* — id +
 //!   labelIds only) and `messagesDeleted`. Deleted ids tombstone. A partial's `labelIds` is the
@@ -30,6 +31,7 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{PageToken, SyncKind, SyncPage};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use serde_json::Value;
 
 use crate::{
@@ -45,6 +47,32 @@ use crate::{
 
 /// The Gmail user-scoped API root (`/gmail/v1/users/me`).
 const USERS_ME: &str = "/gmail/v1/users/me";
+
+/// How many `messages.get` calls a page keeps in flight.
+///
+/// `messages.list` returns only `{id, threadId}`, so every message costs its own request and
+/// a page drained one at a time is as many round trips deep as it has messages — Gmail is the
+/// only adapter here whose list endpoint has no companion batch-get to hide that behind, and
+/// the per-request cost is Google's own service latency rather than the network's, so a fast
+/// link does not shorten it.
+///
+/// Gmail answers `429` past **50 concurrent requests per mailbox** whatever the quota allows.
+/// Measured against a live account, 20 is the widest window that stays clean: 30 draws the
+/// occasional throttle and 50 throttles a tenth of its requests. Throughput scales with the
+/// window because each round costs one round trip whatever its width, so this is a ceiling
+/// question, not a tuning one.
+///
+/// The batch endpoint is deliberately not used. It is no way around the limits — Google
+/// documents a batch of n as counting for n requests, and batches do throttle — and at equal
+/// width it is not measurably faster either: both shapes cost one round trip per round, and
+/// repeated runs hand the win to whichever side the network favoured that minute. What it
+/// reliably does cost is about a quarter more bytes for the multipart envelope, and a parser:
+/// a batch answers `200` while individual members carry their own `429`, so every
+/// sub-response needs its status read and its retry driven separately. Concurrency gets the
+/// same throughput from the HTTP/2 connection the client already pools, and can hand a
+/// message on as it lands rather than after a whole envelope parses.
+/// `tests/live_batch_vs_concurrent.rs` is the gated probe behind all of that.
+const MAX_CONCURRENT_GETS: usize = 20;
 
 /// Fetches the account's labels as mailboxes, dropping the keyword-only labels
 /// (`UNREAD`/`STARRED`) and appending the synthetic All Mail home.
@@ -119,7 +147,30 @@ async fn get_message(client: &GoogleClient, id: &str) -> Result<Message, GoogleE
     message_from_json(&doc)
 }
 
-/// Fetches one snapshot page: a `messages.list` page whose ids are each fetched full.
+/// Fetches every id full, up to [`MAX_CONCURRENT_GETS`] at a time, in the order `ids` gave.
+///
+/// A `404` is a message deleted in the race between the enumeration and its fetch: it drops
+/// out of the result rather than failing the page, and a later delta reports the removal.
+/// Ordered rather than completion-ordered so a page's rows land in the order the server
+/// listed them however the individual fetches interleave.
+async fn get_messages(
+    client: &GoogleClient,
+    ids: Vec<String>,
+) -> Result<Vec<Message>, GoogleError> {
+    stream::iter(ids)
+        .map(|id| async move { get_message(client, &id).await })
+        .buffered(MAX_CONCURRENT_GETS)
+        .filter_map(|result| async move {
+            match result {
+                Err(GoogleError::Status { status: 404, .. }) => None,
+                other => Some(other),
+            }
+        })
+        .try_collect()
+        .await
+}
+
+/// Fetches one snapshot page: a `messages.list` page whose ids are fetched full, concurrently.
 /// `floor` (the sync-window date floor) windows the enumeration to `after:<floor>`;
 /// `history_id` is the account cursor captured before the snapshot, carried as the
 /// page's `next_cursor`.
@@ -131,22 +182,14 @@ pub(crate) async fn snapshot_page(
 ) -> Result<SyncPage<Message>, GoogleError> {
     let doc = client.get(&list_url(client, page, floor)).await?;
 
-    let mut changed = Vec::new();
-    let mut present = Vec::new();
     // `messages` is absent on an empty mailbox / final empty page — treat as no rows.
     let entries = doc.get("messages").and_then(Value::as_array);
+    let mut ids = Vec::new();
     for entry in entries.into_iter().flatten() {
-        let id = req_str(entry, "id")?;
-        match get_message(client, id).await {
-            Ok(message) => {
-                present.push(message.id.key().clone());
-                changed.push(message);
-            }
-            // Deleted in the race between list and get → skip; a later delta reports it.
-            Err(GoogleError::Status { status: 404, .. }) => {}
-            Err(other) => return Err(other),
-        }
+        ids.push(req_str(entry, "id")?.to_owned());
     }
+    let changed = get_messages(client, ids).await?;
+    let present = changed.iter().map(|m| m.id.key().clone()).collect();
 
     Ok(SyncPage {
         kind: SyncKind::Snapshot,
@@ -180,15 +223,9 @@ pub(crate) async fn delta_page(
     };
 
     let history = collect_history(&doc)?;
-    let mut changed = Vec::new();
-    for id in history.refetch {
-        match get_message(client, &id).await {
-            Ok(message) => changed.push(message),
-            // Changed then deleted in the same window → skip (a tombstone covers it).
-            Err(GoogleError::Status { status: 404, .. }) => {}
-            Err(other) => return Err(other),
-        }
-    }
+    // A message changed then deleted inside the same window 404s here and drops out; the
+    // page's own tombstone covers it.
+    let changed = get_messages(client, history.refetch).await?;
 
     // Gmail returns the latest historyId even when nothing changed, so the cursor always
     // advances; fall back to the prior cursor only if the field is somehow absent.
