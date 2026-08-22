@@ -129,6 +129,10 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GoogleError> {
     message.received_at = internal_date(value)?;
     message.preview = opt_str(value, "snippet").map(snippet);
     message.has_attachment = has_attachment(value);
+    // Gmail's own estimate of the raw message in octets, present on every `format`. It is
+    // what a caller weighing whether a body is worth pre-fetching over a metered link reads,
+    // so an adapter that has it should not drop it.
+    message.size = value.get("sizeEstimate").and_then(Value::as_u64);
     // Gmail has no per-message revision token: the message id is immutable and the
     // account-global historyId is the sync cursor, not a per-object version.
     message.revisions = RevisionTokens::none();
