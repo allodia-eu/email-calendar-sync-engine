@@ -64,6 +64,13 @@ fn keyword_only_labels_are_not_mailboxes() {
 }
 
 #[test]
+fn message_carries_gmails_size_estimate() {
+    // Read so a caller can weigh a body against a metered link before fetching it; the
+    // fixture is a real captured response, and every `format` carries the field.
+    assert_eq!(message(META).size, Some(561));
+}
+
+#[test]
 fn message_normalizes_tier1_fields() {
     let msg = message(META);
     // Multi-membership from labelIds, minus the keyword-only labels.
