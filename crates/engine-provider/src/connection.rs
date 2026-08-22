@@ -130,9 +130,9 @@ impl ObservedHttpVersion {
 /// negotiated.
 ///
 /// Returned by [`Provider::connection_info`](crate::Provider::connection_info) — the
-/// single post-connect seam. Copy and three words wide, so it is returned by value
-/// and a provider may compute it per call (an HTTP adapter reads a version its
-/// transport recorded on the first response it saw).
+/// single post-connect seam. Small and `Copy`, so it is returned by value and a provider
+/// may compute it per call (an HTTP adapter reads a version its transport recorded on the
+/// first response it saw).
 ///
 /// ```
 /// use engine_provider::{Capabilities, ConnectionInfo, TlsVersion};
@@ -145,6 +145,8 @@ impl ObservedHttpVersion {
 /// assert_eq!(info.tls_version, Some(TlsVersion::Tls1_3));
 /// // An IMAP connection has no HTTP version — the field is not applicable, not unset.
 /// assert_eq!(info.http_version, None);
+/// // And it is one connection, so a caller must fetch over it one object at a time.
+/// assert_eq!(info.concurrent_fetches, 1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectionInfo {
@@ -158,6 +160,21 @@ pub struct ConnectionInfo {
     /// non-HTTP provider (IMAP/SMTP) or an HTTP provider that has not yet exchanged a
     /// response. See [`ObservedHttpVersion`] for why it is the latest, not the first.
     pub http_version: Option<HttpVersion>,
+    /// How many single-object fetches a caller may usefully keep in flight against this
+    /// connection at once. Always at least 1.
+    ///
+    /// A caller draining a work list one object at a time — warming bodies, resolving a
+    /// list of ids — needs to know whether overlapping those fetches would help or merely
+    /// contend. The answer is a property of the *transport*, not of the provider's name,
+    /// which is why it is reported here rather than left to callers to infer
+    /// (`providers.md`: read facts from this seam, never switch on provider kind).
+    ///
+    /// `1` for a session protocol whose commands share one socket (IMAP), so a fan-out
+    /// would queue behind itself. Higher for an HTTP transport, where requests multiplex
+    /// over a pooled HTTP/2 connection and the limit is whatever the *service* tolerates —
+    /// so an adapter sets this from its own provider's documented or measured ceiling, not
+    /// from a number that sounds safe.
+    pub concurrent_fetches: usize,
 }
 
 impl ConnectionInfo {
@@ -169,7 +186,16 @@ impl ConnectionInfo {
             capabilities,
             tls_version: None,
             http_version: None,
+            concurrent_fetches: 1,
         }
+    }
+
+    /// The same connection, reporting that `n` single-object fetches may be in flight at
+    /// once. Clamped to at least 1, so a zero can never stall a caller's drain loop.
+    #[must_use]
+    pub const fn with_concurrent_fetches(mut self, n: usize) -> Self {
+        self.concurrent_fetches = if n == 0 { 1 } else { n };
+        self
     }
 }
 

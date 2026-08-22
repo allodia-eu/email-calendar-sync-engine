@@ -96,7 +96,12 @@ impl Provider for GmailProvider {
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
             http_version: self.client.http_version(),
+            // The same ceiling the snapshot's own fan-out sits under
+            // (`fetch::MAX_CONCURRENT_GETS`), reported so a caller draining a work list of
+            // single fetches — warming bodies, most of all — overlaps them the same way
+            // instead of paying one round trip per object.
             ..ConnectionInfo::new(self.capabilities)
+                .with_concurrent_fetches(crate::fetch::MAX_CONCURRENT_GETS)
         }
     }
 

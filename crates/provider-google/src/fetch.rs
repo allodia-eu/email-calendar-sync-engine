@@ -72,7 +72,7 @@ const USERS_ME: &str = "/gmail/v1/users/me";
 /// same throughput from the HTTP/2 connection the client already pools, and can hand a
 /// message on as it lands rather than after a whole envelope parses.
 /// `tests/live_batch_vs_concurrent.rs` is the gated probe behind all of that.
-const MAX_CONCURRENT_GETS: usize = 20;
+pub(crate) const MAX_CONCURRENT_GETS: usize = 20;
 
 /// Fetches the account's labels as mailboxes, dropping the keyword-only labels
 /// (`UNREAD`/`STARRED`) and appending the synthetic All Mail home.

@@ -53,6 +53,12 @@ fn scopes_are_account_global_for_mail_and_a_label_container() {
     assert!(caps.submission() && caps.mail_writes());
     // The fake transport reports HTTP/2, so connection_info surfaces it.
     assert!(provider.connection_info().http_version.is_some());
+    // And the transport's fetch ceiling, so a caller draining single fetches (the body warm)
+    // overlaps them the way the snapshot already does rather than paying a round trip each.
+    assert_eq!(
+        provider.connection_info().concurrent_fetches,
+        crate::fetch::MAX_CONCURRENT_GETS
+    );
 }
 
 #[tokio::test]
