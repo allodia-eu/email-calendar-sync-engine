@@ -46,12 +46,11 @@
 //! concurrency everywhere when here it gives none (`jmap.md`).
 
 use engine_core::{calendar::Event, ids::EventId, time::CalendarDateTime, version::RevisionTokens};
-use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventWriteReceipt, PatchTarget, RecurrenceEdit, TextEdit,
-};
+use engine_provider::{EventDeletion, EventDraft, EventEdit, EventWriteReceipt};
 use serde_json::{Map, Value, json};
 
 use crate::{
+    calendar_patch::patch_to_json,
     calendar_rule::render_rule,
     error::JmapError,
     executor::Executor,
@@ -64,7 +63,7 @@ const CREATION_ID: &str = "new";
 
 /// The JSCalendar id given to a location an event does not have yet. Only ever used when
 /// the event's `locations` map is empty, so it cannot collide with one the server assigned.
-const NEW_LOCATION_ID: &str = "1";
+pub(crate) const NEW_LOCATION_ID: &str = "1";
 
 /// Whether a `CalendarEvent/set` asks the server to send the iTIP messages the change
 /// implies (`sendSchedulingMessages`). Always `true` on these three verbs, and the constant
@@ -294,95 +293,6 @@ fn draft_to_json(draft: &EventDraft) -> Result<Value, JmapError> {
     Ok(Value::Object(object))
 }
 
-/// Renders an [`EventEdit`] as a JSCalendar PatchObject (RFC 8620 §5.3): a flat map of
-/// JSON-pointer → new value, where `null` **removes** the property.
-///
-/// An [`Instance`](PatchTarget::Instance) target prefixes every pointer with
-/// `recurrenceOverrides/<original start>/`, which is how JSCalendar names one occurrence
-/// (RFC 8984 §4.3.3) — so overriding a single occurrence is the same set of edits under a
-/// different prefix, and the server materializes the override from the series itself. That
-/// is CalDAV's whole `RECURRENCE-ID`-splitting chore, done server-side.
-fn patch_to_json(base: &Event, edit: &EventEdit) -> Result<Map<String, Value>, JmapError> {
-    let prefix = match &edit.target {
-        PatchTarget::Series => String::new(),
-        PatchTarget::Instance(recurrence_id) => {
-            // The override key is the occurrence's original start in the series' own form.
-            // A zoned series is not overridden by "the same moment" expressed in UTC.
-            if !base.start.has_same_form(recurrence_id) {
-                return Err(JmapError::protocol(format!(
-                    "the occurrence's recurrence id must be in the series' own time form \
-                     ({}); naming it in another form overrides no instance",
-                    base.start.form_name(),
-                )));
-            }
-            format!(
-                "recurrenceOverrides/{}/",
-                escape_pointer(&local_date_time(recurrence_id)?)
-            )
-        }
-    };
-    let patch = &edit.patch;
-    let mut out = Map::new();
-
-    if let Some(recurrence) = patch.recurrence_edit() {
-        // A recurrence edit is series-level by definition, so it cannot ride the
-        // `recurrenceOverrides/<start>/` prefix an Instance target applies to everything
-        // else — writing a rule *inside* one occurrence's override would mean nothing.
-        if !matches!(edit.target, PatchTarget::Series) {
-            return Err(JmapError::protocol(
-                "a recurrence edit targets the series, never one occurrence; an occurrence \
-                 has no rule of its own",
-            ));
-        }
-        // `null` removes the property (RFC 8620 §5.3), which is how a series becomes a
-        // single event. The singular name is Stalwart's and the only one it takes on a
-        // write — see `jmap.md` → "Recurrence property naming".
-        out.insert(
-            "recurrenceRule".to_owned(),
-            match recurrence {
-                RecurrenceEdit::Set(r) => render_rule(&r.rule)?,
-                RecurrenceEdit::Clear => Value::Null,
-            },
-        );
-    }
-
-    if let Some(summary) = patch.summary_edit() {
-        out.insert(format!("{prefix}title"), json!(summary));
-    }
-    if let Some(description) = patch.description_edit() {
-        out.insert(format!("{prefix}description"), text_edit(description));
-    }
-    if let Some(location) = patch.location_edit() {
-        for (pointer, value) in location_edit(base, location) {
-            out.insert(format!("{prefix}{pointer}"), value);
-        }
-    }
-
-    // A move keeps the event's form: JSCalendar states the wall clock in `start` and the
-    // zone separately in `timeZone`, so writing the instant here would move the event for
-    // every reader in another zone. `timeZone` is deliberately never patched — this is a
-    // move, not a conversion.
-    if let Some(start) = patch.start_edit() {
-        if !base.start.has_same_form(start) {
-            return Err(JmapError::protocol(format!(
-                "the new start would change the event's time form ({}), which a move must \
-                 never do silently; supply it in the event's own form",
-                base.start.form_name(),
-            )));
-        }
-        out.insert(format!("{prefix}start"), json!(local_date_time(start)?));
-    }
-    // JSCalendar has no end: it states a `duration` from the start. So an end edit is
-    // resolved against the start the event will *have* — the new one if this patch moves it,
-    // else the one it already has — which is also what catches a caller who drags the start
-    // past the existing end without resizing.
-    if let Some(end) = patch.end_edit() {
-        let effective_start = patch.start_edit().unwrap_or(&base.start);
-        out.insert(format!("{prefix}duration"), duration(effective_start, end)?);
-    }
-    Ok(out)
-}
-
 /// `start` + the fields that state its form: `timeZone` for a zoned value, `showWithoutTime`
 /// for an all-day one (RFC 8984 §4.1.2). A floating value carries a null zone and no flag.
 fn start_fields(start: &CalendarDateTime) -> Result<Vec<(String, Value)>, JmapError> {
@@ -404,7 +314,7 @@ fn start_fields(start: &CalendarDateTime) -> Result<Vec<(String, Value)>, JmapEr
 
 /// A JSCalendar `LocalDateTime` (`YYYY-MM-DDThh:mm:ss`) — the wall clock, with no zone and
 /// no offset, whatever form the value has.
-fn local_date_time(value: &CalendarDateTime) -> Result<String, JmapError> {
+pub(crate) fn local_date_time(value: &CalendarDateTime) -> Result<String, JmapError> {
     match value {
         CalendarDateTime::Floating(local) | CalendarDateTime::Zoned { local, .. } => {
             // The same serde rendering the read path parses, so a write round-trips.
@@ -425,7 +335,10 @@ fn local_date_time(value: &CalendarDateTime) -> Result<String, JmapError> {
 }
 
 /// The JSCalendar `duration` (ISO 8601) from `start` to `end`.
-fn duration(start: &CalendarDateTime, end: &CalendarDateTime) -> Result<Value, JmapError> {
+pub(crate) fn duration(
+    start: &CalendarDateTime,
+    end: &CalendarDateTime,
+) -> Result<Value, JmapError> {
     let duration = start.duration_until(end).map_err(|_| {
         JmapError::protocol(
             "the edit would leave the event ending before it begins, or would mix an all-day \
@@ -434,59 +347,6 @@ fn duration(start: &CalendarDateTime, end: &CalendarDateTime) -> Result<Value, J
     })?;
     serde_json::to_value(duration)
         .map_err(|e| JmapError::protocol(format!("cannot render duration: {e}")))
-}
-
-/// A text property's new value, or `null` to remove it (RFC 8620 §5.3).
-fn text_edit(edit: &TextEdit) -> Value {
-    match edit {
-        TextEdit::Set(text) => json!(text),
-        TextEdit::Clear => Value::Null,
-    }
-}
-
-/// The pointers a location edit writes.
-///
-/// JSCalendar has no scalar location: `locations` is a **map** of id → `Location` object
-/// (RFC 8984 §4.2.5). So renaming "the location" means renaming the one already on the
-/// event, and its id lives only in the preserved `raw_jscalendar` — which is why the read
-/// path keeps it. Patching `locations/<id>/name` leaves that location's coordinates, its
-/// `locationTypes` and any other location the event has exactly as they were; replacing the
-/// whole map would discard them.
-///
-/// An event with no location yet gets one at a fresh id; clearing removes the whole map,
-/// which is the only honest reading of "this event has no location".
-fn location_edit(base: &Event, edit: &TextEdit) -> Vec<(String, Value)> {
-    match edit {
-        TextEdit::Clear => vec![("locations".to_owned(), Value::Null)],
-        TextEdit::Set(name) => {
-            match existing_location_id(base) {
-                Some(id) => vec![(
-                    format!("locations/{}/name", escape_pointer(&id)),
-                    json!(name),
-                )],
-                // No location to rename: add one. The whole object goes in at once, because
-                // a pointer into a map entry the server does not have would be an
-                // `invalidPatch`.
-                None => vec![(
-                    format!("locations/{NEW_LOCATION_ID}"),
-                    json!({ "@type": "Location", "name": name }),
-                )],
-            }
-        }
-    }
-}
-
-/// The id of the first location on the event, read out of the preserved JSCalendar payload.
-///
-/// The projection ([`Location`](engine_core::calendar::Location)) does not carry the
-/// JSCalendar map id — it has no use for it on the read path — so the raw is the only place
-/// it survives. An event with no raw (never synced from this transport) reports none, and a
-/// location edit then adds one rather than failing.
-fn existing_location_id(base: &Event) -> Option<String> {
-    let raw = base.raw_jscalendar.as_ref()?;
-    let value: Value = serde_json::from_str(raw.as_str()).ok()?;
-    let locations = value.get("locations")?.as_object()?;
-    locations.keys().next().cloned()
 }
 
 /// Escapes a JSON Pointer reference token (RFC 6901 §3): `~` → `~0`, `/` → `~1`.

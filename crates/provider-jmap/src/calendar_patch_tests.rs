@@ -171,13 +171,13 @@ async fn an_end_before_the_start_is_refused() {
 }
 
 #[tokio::test]
-async fn editing_one_occurrence_patches_under_the_recurrence_override() {
+async fn editing_an_already_overridden_occurrence_patches_through_its_pointer() {
     // JSCalendar names an occurrence by its *original* start under `recurrenceOverrides`
     // (RFC 8984 §4.3.3), and the **server** materializes the override from the series. That
     // is CalDAV's whole RECURRENCE-ID-splitting chore, done server-side — which is exactly
     // why the neutral `PatchTarget::Instance` must not promise CalDAV's start+end.
     let (p, exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
-    let base = base();
+    let base = overridden_base("2026-08-08T09:00:00");
     p.patch_event(
         &account(),
         &base,
@@ -200,6 +200,76 @@ async fn editing_one_occurrence_patches_under_the_recurrence_override() {
             "recurrenceOverrides/2026-08-08T09:00:00/start": "2026-08-08T10:00:00",
         }),
         "every pointer must sit under the occurrence's original start, not the new one"
+    );
+}
+
+#[tokio::test]
+async fn a_first_edit_of_an_occurrence_assigns_the_override_map() {
+    // A series nobody has touched has no `recurrenceOverrides` at all, and RFC 8620 §5.3
+    // lets a pointer address only what already exists — so the pointer form above would be
+    // rejected *whole*, taking the edit with it. The first edit therefore assigns the map.
+    // The occurrence's own properties keep their names inside it: the entry is itself a
+    // PatchObject.
+    let (p, exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
+    let base = recurring_base();
+    p.patch_event(
+        &account(),
+        &base,
+        &edit(
+            &base,
+            PatchTarget::Instance(zoned("2026-08-08T09:00:00")),
+            EventPatch::new(stamp())
+                .summary("Skipped standup")
+                .start(zoned("2026-08-08T10:00:00")),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let (_, _, args) = exec.sole_call();
+    assert_eq!(
+        args["update"][EVENT],
+        json!({
+            "recurrenceOverrides": {
+                "2026-08-08T09:00:00": {
+                    "title": "Skipped standup",
+                    "start": "2026-08-08T10:00:00",
+                },
+            },
+        }),
+        "the map is keyed by the occurrence's original start, not the new one"
+    );
+}
+
+#[tokio::test]
+async fn a_first_edit_that_adds_a_location_keeps_its_pointer_inside_the_override() {
+    // The one shape that could have been mangled by nesting: a location edit is already a
+    // pointer, and an override entry is a PatchObject, so it goes in verbatim rather than
+    // being expanded into nested objects.
+    let (p, exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
+    let base = recurring_base();
+    p.patch_event(
+        &account(),
+        &base,
+        &edit(
+            &base,
+            PatchTarget::Instance(zoned("2026-08-08T09:00:00")),
+            EventPatch::new(stamp()).location("Room B"),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let (_, _, args) = exec.sole_call();
+    assert_eq!(
+        args["update"][EVENT],
+        json!({
+            "recurrenceOverrides": {
+                "2026-08-08T09:00:00": {
+                    "locations/1": { "@type": "Location", "name": "Room B" },
+                },
+            },
+        }),
     );
 }
 

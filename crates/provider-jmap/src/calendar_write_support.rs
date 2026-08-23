@@ -6,9 +6,10 @@
 //! update produces) — because the second is where all the protocol detail lives.
 
 use engine_core::{
-    calendar::Event,
+    calendar::{Event, Frequency, Recurrence, RecurrenceOverride, RecurrenceRule},
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
+    patch::PatchObject,
     raw::RawJsCalendar,
     time::{CalendarDateTime, LocalDateTime, TimeZoneId, UtcDateTime},
 };
@@ -60,6 +61,34 @@ pub(super) fn base() -> Event {
         "timeZone": "Europe/Amsterdam",
         "duration": "PT30M",
     }))
+}
+
+/// The base event as a weekly series that has **never** been overridden, so the server
+/// holds no `recurrenceOverrides` map for a pointer to address.
+pub(super) fn recurring_base() -> Event {
+    let mut event = base();
+    event.recurrence = Some(Recurrence::from_rule(RecurrenceRule::new(
+        Frequency::Weekly,
+    )));
+    event
+}
+
+/// The same series with the occurrence at `at` already overridden — the state that makes a
+/// `recurrenceOverrides/<start>/…` pointer address something.
+pub(super) fn overridden_base(at: &str) -> Event {
+    let mut event = recurring_base();
+    event
+        .recurrence
+        .as_mut()
+        .expect("a series")
+        .overrides
+        .insert(
+            at.parse().expect("a local date-time"),
+            RecurrenceOverride::Patch(
+                PatchObject::new([("title".to_owned(), json!("Renamed once"))]).expect("a patch"),
+            ),
+        );
+    event
 }
 
 pub(super) fn set_response(result: &Value) -> Value {
