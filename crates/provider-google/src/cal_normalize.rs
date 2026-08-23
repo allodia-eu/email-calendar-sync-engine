@@ -23,16 +23,19 @@ use engine_core::{
     calendar::{
         Calendar, CalendarAccess, Event, EventStatus, FreeBusyStatus, Location, Participant,
         ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
-        VirtualLocation, parse_rrule,
+        RecurrenceOverride, VirtualLocation, parse_rrule,
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
+    patch::PatchObject,
     time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId},
     version::{ETag, RevisionTokens},
 };
+use engine_ical::parse_recurrence_dates;
 use serde_json::Value;
 
 use crate::{
+    cal_override::local_of,
     error::GoogleError,
     json::{bool_field, datetime, opt_str, req_str, wrap_id},
 };
@@ -148,7 +151,7 @@ pub(crate) fn event_from_json(
 /// zoneless [`Date`](CalendarDateTime::Date); a `{ dateTime, timeZone }` is
 /// [`Zoned`](CalendarDateTime::Zoned) with the wall clock (the RFC 3339 value stripped of
 /// its offset) in the IANA `timeZone` (falling back to `default_zone`, then UTC).
-fn parse_endpoint(
+pub(crate) fn parse_endpoint(
     value: &Value,
     key: &str,
     default_zone: Option<&str>,
@@ -196,10 +199,15 @@ fn parse_date(s: &str) -> Option<CalendarDate> {
     CalendarDate::new(y, m, d).ok()
 }
 
-/// The event's recurrence: the `RRULE` lines of the `recurrence` array parsed through the
-/// shared parser (`EXRULE` → excluded rules); `None` when the event is not recurring.
-/// `EXDATE`/`RDATE` are staged (per-instance overrides are deferred —
-/// `calendar-semantics.md`).
+/// The event's recurrence, read off the `recurrence` array — which is **raw iCalendar
+/// lines**, whatever else the rest of this API is.
+///
+/// `RRULE`/`EXRULE` go through the shared rule parser; `EXDATE`/`RDATE` become overrides,
+/// which is what they are: a date the series does not produce, or one it produces on top of
+/// the rule. Both are parsed by `engine-ical`, because the engine has one iCalendar parser
+/// and a second one here would eventually disagree with it.
+///
+/// Returns `None` when the event is not recurring.
 fn recurrence(value: &Value) -> Result<Option<Recurrence>, GoogleError> {
     let lines = value.get("recurrence").and_then(Value::as_array);
     let Some(lines) = lines else {
@@ -215,9 +223,33 @@ fn recurrence(value: &Value) -> Result<Option<Recurrence>, GoogleError> {
             recurrence.excluded_rules.push(
                 parse_rrule(rule).map_err(|e| GoogleError::protocol(format!("bad EXRULE: {e}")))?,
             );
+        } else if starts_with_property(line, "EXDATE") {
+            for at in parse_recurrence_dates(line) {
+                recurrence
+                    .overrides
+                    .insert(local_of(&at), RecurrenceOverride::Excluded);
+            }
+        } else if starts_with_property(line, "RDATE") {
+            // An empty patch is RFC 8984's "this instance happens, unmodified" — the
+            // JSCalendar spelling of an RDATE.
+            for at in parse_recurrence_dates(line) {
+                recurrence
+                    .overrides
+                    .entry(local_of(&at))
+                    .or_insert_with(|| RecurrenceOverride::Patch(PatchObject::default()));
+            }
         }
     }
     Ok((!recurrence.rules.is_empty()).then_some(recurrence))
+}
+
+/// Whether a `recurrence` line states the named property — allowing for the parameters an
+/// `EXDATE` usually carries (`EXDATE;TZID=Europe/Amsterdam:…`), which a plain `starts_with`
+/// on `"EXDATE:"` would miss.
+fn starts_with_property(line: &str, name: &str) -> bool {
+    line.len() > name.len()
+        && line[..name.len()].eq_ignore_ascii_case(name)
+        && matches!(line.as_bytes()[name.len()], b':' | b';')
 }
 
 /// The organizer (role owner) plus every attendee — **one participant per address**.

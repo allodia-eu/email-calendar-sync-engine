@@ -252,6 +252,37 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
   already-gone — which is why the live test asserts on the delta's removal set, never on
   the call succeeding.
 
+- **A changed occurrence arrives as an entry of its own, and is folded onto its series.**
+  With `singleEvents=false` a series is the master **plus** one entry per occurrence somebody
+  touched: `recurringEventId` names the master, `originalStartTime` names which occurrence,
+  and a deleted one carries `status: "cancelled"` as well. None of them is an object this
+  engine stores — they are exceptions *of* the series — so `cal_override` collects them and
+  folds them into the master's `Recurrence::overrides`, the same map CalDAV's `RECURRENCE-ID`
+  components and JSCalendar's `recurrenceOverrides` land in.
+
+  Three things that decide the shape of that code:
+
+  - **The key is `originalStartTime`, never the instance's current `start`.** Keying by where
+    it was moved *to* would override an instant the rule does not produce and leave the
+    occurrence the user moved still drawn at its old time.
+  - **A cancelled entry is read as an exclusion and nothing else**, even though Google still
+    sends it with the `start`, `end` and `summary` it had (captured — see
+    `events_series_with_overrides.json`). RFC 8984 makes that structural: an excluded override
+    carries no patch.
+  - **The folding waits for the whole pass.** An entry names its master by id and nothing
+    orders the two, so the master may be on any page. A delta that changes an occurrence
+    carries its master too — measured: overriding one and cancelling another bumped the
+    master's `updated`, and all three arrived in the next `syncToken` response — so an entry
+    whose master is nowhere in the pass is dropped rather than chased. The recovery, if that
+    is ever seen, is `events.get` for the master's `iCalUID` and then
+    `events.list?iCalUID=`, which does return the master and every override (measured).
+- **The `recurrence` array is raw iCalendar, `EXDATE` and `RDATE` included.** A calendar
+  synced into Google over CalDAV leaves its exclusions there rather than as cancelled
+  instances, so both are read — through `engine_ical::parse_recurrence_dates`, because the
+  engine has exactly one iCalendar parser and a second one here would eventually disagree
+  with it. An `EXDATE` value becomes an excluded override; an `RDATE` becomes an override that
+  patches nothing, which is JSCalendar's way of saying "this instance happens as well".
+
 ## Testing (3-tier, mirroring Graph — `AGENTS.md` offline-mock caveat)
 
 1. **Offline** (always green): normalizers + error mapping against scrubbed captured

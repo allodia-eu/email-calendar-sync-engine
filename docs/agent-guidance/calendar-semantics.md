@@ -500,6 +500,13 @@ Three things follow, and each has bitten:
   two removals are therefore unconditional. CalDAV and JMAP, editing the series, keep the
   guard the series has.
 
+**Reading a changed occurrence back is a per-transport problem, and only Graph still has
+it.** CalDAV states one as a `RECURRENCE-ID` component and JMAP as a `recurrenceOverrides`
+entry, both inside the series' own object; Google states it as a **separate entry** carrying
+`recurringEventId` and `originalStartTime`, which `provider-google` folds onto the series once
+the pass is in (`google.md`). All three therefore reach the expander as the same
+`Recurrence::overrides` map, keyed by the occurrence's **original** start.
+
 ⚠️ **Graph does not yet read its own cancellations back.** `calendarView/delta` reports a
 cancelled occurrence by re-sending the series and its *surviving* occurrences — there is no
 `@removed` entry, measured — and the reader keeps only masters and single events. The

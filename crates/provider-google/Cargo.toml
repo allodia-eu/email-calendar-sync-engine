@@ -9,6 +9,9 @@ license.workspace = true
 
 [dependencies]
 engine-core = { workspace = true }
+# Google states a series' exclusions as raw iCalendar `EXDATE` lines inside its own
+# JSON, and the engine has exactly one iCalendar parser.
+engine-ical = { workspace = true }
 # `http` enables `HttpVersion::from_http`, the one place a reqwest response's version is
 # mapped onto the engine's neutral `HttpVersion` (`ConnectionInfo`).
 engine-provider = { workspace = true, features = ["http"] }

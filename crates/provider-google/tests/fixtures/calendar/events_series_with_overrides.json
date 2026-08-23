@@ -1,0 +1,89 @@
+{
+  "items": [
+    {
+      "kind": "calendar#event",
+      "id": "evt-series-1",
+      "status": "confirmed",
+      "created": "2026-08-23T13:42:26.000Z",
+      "updated": "2026-08-23T13:42:28.199Z",
+      "summary": "Fixture capture",
+      "creator": {
+        "email": "owner@example.test",
+        "self": true
+      },
+      "organizer": {
+        "email": "owner@example.test",
+        "self": true
+      },
+      "start": {
+        "dateTime": "2026-09-07T09:30:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "end": {
+        "dateTime": "2026-09-07T10:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "recurrence": [
+        "RRULE:FREQ=WEEKLY;COUNT=6"
+      ]
+    },
+    {
+      "kind": "calendar#event",
+      "id": "evt-series-1_20260914T073000Z",
+      "status": "confirmed",
+      "created": "2026-08-23T13:42:26.000Z",
+      "updated": "2026-08-23T13:42:28.199Z",
+      "summary": "Moved to the afternoon",
+      "creator": {
+        "email": "owner@example.test",
+        "self": true
+      },
+      "organizer": {
+        "email": "owner@example.test",
+        "self": true
+      },
+      "start": {
+        "dateTime": "2026-09-14T14:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "end": {
+        "dateTime": "2026-09-14T14:45:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "recurringEventId": "evt-series-1",
+      "originalStartTime": {
+        "dateTime": "2026-09-14T09:30:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      }
+    },
+    {
+      "kind": "calendar#event",
+      "id": "evt-series-1_20260921T073000Z",
+      "status": "cancelled",
+      "created": "2026-08-23T13:42:26.000Z",
+      "updated": "2026-08-23T13:42:28.199Z",
+      "summary": "Fixture capture",
+      "creator": {
+        "email": "owner@example.test",
+        "self": true
+      },
+      "organizer": {
+        "email": "owner@example.test",
+        "self": true
+      },
+      "start": {
+        "dateTime": "2026-09-21T09:30:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "end": {
+        "dateTime": "2026-09-21T10:00:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "recurringEventId": "evt-series-1",
+      "originalStartTime": {
+        "dateTime": "2026-09-21T09:30:00+02:00",
+        "timeZone": "Europe/Amsterdam"
+      }
+    }
+  ]
+}

@@ -66,6 +66,26 @@ use recurrence::fold_override;
 pub use unfold::{split_once_unquoted, split_unquoted};
 use value::parse_utc;
 
+/// The values of one recurrence-date property line — `EXDATE` or `RDATE` — read through the
+/// same parser `DTSTART` uses, with the line's `VALUE`/`TZID` parameters applied to every
+/// entry of its comma-separated list (RFC 5545 §3.8.5).
+///
+/// Public for the same reason this crate exists at all: iCalendar arrives over more than
+/// CalDAV. **Google Calendar states a series' exclusions as raw `EXDATE` lines inside its own
+/// JSON**, so `provider-google` reads them with this rather than with a second parser that
+/// would eventually disagree with it.
+///
+/// Best-effort, like the rest of the read path: a malformed entry is skipped rather than
+/// discarding the line, so one bad element does not take a series' other exclusions with it.
+/// A string that is not a content line at all yields nothing.
+#[must_use]
+pub fn parse_recurrence_dates(line: &str) -> Vec<engine_core::time::CalendarDateTime> {
+    unfold::content_lines(line)
+        .first()
+        .map(value::parse_date_time_list)
+        .unwrap_or_default()
+}
+
 /// Parses one calendar object resource into a single normalized [`Event`].
 ///
 /// The master `VEVENT` (the one without a `RECURRENCE-ID`) becomes the event; its

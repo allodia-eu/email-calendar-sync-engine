@@ -3,6 +3,7 @@
 
 use engine_core::calendar::{
     EventStatus, FreeBusyStatus, Frequency, ParticipantRole, ParticipationStatus, RecurrenceBound,
+    RecurrenceOverride,
 };
 use serde_json::Value;
 
@@ -290,4 +291,53 @@ fn malformed_events_are_protocol_errors_not_panics() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn exdate_and_rdate_lines_become_overrides() {
+    // Google's `recurrence` is raw iCalendar, so a client that syncs a calendar into it over
+    // CalDAV leaves EXDATEs there. Ignoring them draws an occurrence the user had deleted.
+    let mut doc: Value = serde_json::from_str(RECURRING).unwrap();
+    doc["recurrence"] = serde_json::json!([
+        "RRULE:FREQ=WEEKLY;COUNT=6;BYDAY=MO",
+        "EXDATE;TZID=Europe/Amsterdam:20260914T093000,20260921T093000",
+        "RDATE;TZID=Europe/Amsterdam:20261001T093000",
+    ]);
+    let event = event_from_json(&doc, &calendar(), None).unwrap();
+    let recurrence = event.recurrence.expect("a recurring master");
+
+    assert_eq!(recurrence.rules.len(), 1, "the rule still reads");
+    for excluded in ["2026-09-14T09:30:00", "2026-09-21T09:30:00"] {
+        assert_eq!(
+            recurrence.overrides.get(&excluded.parse().unwrap()),
+            Some(&RecurrenceOverride::Excluded),
+            "both entries of the comma-separated EXDATE are excluded"
+        );
+    }
+    // An RDATE adds an instance the rule does not produce, which JSCalendar states as an
+    // override that patches nothing.
+    let RecurrenceOverride::Patch(patch) = recurrence
+        .overrides
+        .get(&"2026-10-01T09:30:00".parse().unwrap())
+        .expect("the RDATE is an added instance")
+    else {
+        panic!("an RDATE adds an instance; it does not exclude one");
+    };
+    assert!(patch.is_empty(), "and it changes nothing about it");
+}
+
+#[test]
+fn a_malformed_exdate_entry_does_not_take_the_others_with_it() {
+    // Best-effort, like the rest of the read path: one bad element must not cost the user
+    // the exclusions either side of it, nor the event.
+    let mut doc: Value = serde_json::from_str(RECURRING).unwrap();
+    doc["recurrence"] = serde_json::json!([
+        "RRULE:FREQ=WEEKLY;COUNT=6;BYDAY=MO",
+        "EXDATE;TZID=Europe/Amsterdam:20260914T093000,not-a-date,20260921T093000",
+    ]);
+    let recurrence = event_from_json(&doc, &calendar(), None)
+        .unwrap()
+        .recurrence
+        .expect("a recurring master");
+    assert_eq!(recurrence.overrides.len(), 2);
 }
