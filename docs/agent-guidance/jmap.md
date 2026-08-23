@@ -7,6 +7,13 @@ specifics they implement against the Stalwart fixture. Read it before touching
 (the Provider Contract), `store-and-sync.md` (the apply/lease model),
 `modeling.md`, `calendar-semantics.md`, and `stalwart-harness.md` (the fixture).
 
+## Driving a real server by hand
+
+`tools/jmap-client` (its own README) is the JMAP counterpart of `tools/graph-oauth` and
+`tools/google-oauth`: it prints a session, runs one method call, downloads a blob, and sweeps
+body-download concurrency. Reach for it to capture a fixture from observed bytes, or to answer
+"what does this server actually do" before changing the adapter to match a guess.
+
 ## The three crates
 
 - **`engine-provider`** — the minimal, provider-neutral trait surface. Adapters

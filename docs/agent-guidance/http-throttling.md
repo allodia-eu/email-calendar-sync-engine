@@ -55,7 +55,7 @@ Surveyed across every adapter, because a throttle is not a provider-specific sym
 |---|---|---|---|
 | `provider-google` | `429`, and `403` with a rate-limit `reason` | 20 per mailbox | Measured: 20 clean, 30 occasional, 50 throttles a tenth |
 | `provider-graph` | `429` (+ `Retry-After`) | 4 per mailbox | Documented `MailboxConcurrency`, and measured: 4 clean, 6 draws a `429` |
-| `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | The server states it (RFC 8620 §2) |
+| `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | The server states it (RFC 8620 §2) — 4 on Stalwart, 10 on Fastmail |
 | `provider-caldav` | `429` | not fanned out | No per-object fetch to overlap: `calendar-multiget` batches |
 | `provider-imap` | n/a | 1 | Not HTTP, and one connection is one command at a time |
 

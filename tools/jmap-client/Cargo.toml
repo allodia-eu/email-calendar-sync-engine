@@ -1,0 +1,24 @@
+# Standalone dev tool — NOT part of the engine workspace (its own `[workspace]`
+# table detaches it from `crates/*`), so it never affects the engine's
+# fmt/clippy/coverage gates. The sibling of `tools/graph-oauth` and
+# `tools/google-oauth`: it drives a real JMAP server directly, to capture offline
+# fixtures for `provider-jmap` and to measure what the server actually does.
+[package]
+name = "jmap-client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "jmap-client"
+path = "src/main.rs"
+
+[dependencies]
+# Blocking HTTP keeps the tool runtime-free — the concurrency sweep uses threads,
+# which is also closer to "N requests genuinely in flight" than a task pool.
+# rustls so there is no OpenSSL requirement (mirrors the engine's TLS posture).
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
+serde_json = "1.0.150"
+
+# Detach from the engine workspace above this directory.
+[workspace]

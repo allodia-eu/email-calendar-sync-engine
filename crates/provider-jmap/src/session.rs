@@ -81,6 +81,16 @@ pub struct CoreLimits {
     /// concurrent body warm too. It defaults to `1` rather than to a guess, because the
     /// cost of being wrong is asymmetric — too narrow is slow, too wide is refused
     /// requests.
+    ///
+    /// Reading it rather than picking a number is what makes this right on both servers
+    /// seen so far: Stalwart says 4 and enforces it, Fastmail says 10. Measured against a
+    /// live Fastmail account over 80 bodies, throughput is linear the whole way up —
+    /// 5.4 bodies/s at 1, 21.1 at 4, **48.5 at 10** — so a constant tuned for either server
+    /// would be wrong for the other by about a factor of two in one direction or the other.
+    ///
+    /// Note that Fastmail did not *refuse* a 16-wide drain, which was faster still (63.7).
+    /// The advertised number is respected anyway: it is what the server asked for, one of
+    /// these two servers enforces it with a hard `400`, and 9× is not worth the refusals.
     pub max_concurrent_requests: usize,
 }
 
