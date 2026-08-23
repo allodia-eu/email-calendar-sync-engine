@@ -36,6 +36,7 @@
 mod cal_fetch;
 mod cal_normalize;
 mod cal_recur;
+mod cal_recur_render;
 mod cal_write;
 mod calendar;
 mod contact;

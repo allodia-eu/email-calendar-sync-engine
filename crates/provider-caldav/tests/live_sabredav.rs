@@ -232,6 +232,34 @@ async fn sabredav_instance_override_split_is_accepted() {
     common::write::instance_override_split_is_accepted(&provider, &account).await;
 }
 
+/// The same recurring create, on a **second** CalDAV implementation.
+///
+/// Stalwart reserializes what it stores and SabreDAV keeps the bytes verbatim
+/// (`common/mod.rs`), so running the scenario on both is what shows the rule survives as a
+/// *rule* rather than as one server's formatting.
+#[tokio::test]
+async fn sabredav_create_carries_the_recurrence_rule() {
+    let Some((provider, account)) =
+        write_provider("sabredav_create_carries_the_recurrence_rule").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::recurrence::create_carries_the_rule(&provider, &account).await;
+}
+
+/// And the `UNTIL`-in-UTC rule, which is RFC 5545's rather than any one server's.
+#[tokio::test]
+async fn sabredav_recurrence_until_is_written_in_utc() {
+    let Some((provider, account)) =
+        write_provider("sabredav_recurrence_until_is_written_in_utc").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::recurrence::an_until_is_written_in_utc(&provider, &account).await;
+}
+
 /// **The negative half of the discovered-scheduling pair, and the only place we have it.**
 ///
 /// This fixture loads `Sabre\CalDAV\Plugin` and deliberately not

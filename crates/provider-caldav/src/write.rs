@@ -53,7 +53,7 @@ pub(crate) async fn create_event(
     href: EventId,
     draft: &EventDraft,
 ) -> Result<EventWriteReceipt, CalDavError> {
-    let ical = build_event_ical(draft);
+    let ical = build_event_ical(draft)?;
     put(exec, &href, &ical, Precondition::IfNoneMatch)
         .await
         .map(|revisions| EventWriteReceipt::new(href.clone(), draft.uid.clone(), revisions))

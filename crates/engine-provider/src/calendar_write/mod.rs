@@ -53,7 +53,7 @@ mod patch;
 mod rsvp;
 
 use engine_core::{
-    calendar::Event,
+    calendar::{Event, RecurrenceRule},
     ids::{CalendarId, EventId, Uid},
     raw::RawIcal,
     time::{CalendarDateTime, UtcDateTime},
@@ -62,6 +62,57 @@ use engine_core::{
 pub use patch::{EventEdit, EventPatch, PatchTarget, TextEdit};
 pub use rsvp::{EventRsvp, ReplyDelivery, RsvpResponse};
 use serde::{Deserialize, Serialize};
+
+/// How a new event repeats.
+///
+/// A rule, plus the one thing about it no adapter can work out for itself.
+///
+/// # Why the instant rides along
+///
+/// [`RecurrenceBound::Until`](engine_core::calendar::RecurrenceBound::Until) holds a **wall
+/// clock in the event's own zone** — the JSCalendar reading, which is what the engine model
+/// follows. iCalendar disagrees: RFC 5545 §3.3.10 requires `UNTIL` **in UTC** whenever
+/// `DTSTART` is zoned or UTC, and resolving a wall clock through a zone needs tzdata, which
+/// lives in `engine-recurrence` and which no adapter (nor `engine-core`, nor `engine-ical`)
+/// depends on. So the caller resolves it once — `engine_api::resolve_instant` is the
+/// resolver — and the answer travels with the draft.
+///
+/// It rides *here*, on the durable payload, rather than being passed beside it, because the
+/// outbox serializes an [`EventDraft`] before the side effect: a create replayed after a
+/// restart must not have to redo zone maths whose tz database may since have moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftRecurrence {
+    /// The rule the series follows.
+    pub rule: RecurrenceRule,
+    /// The rule's `UNTIL` resolved to an instant through the event's own zone.
+    ///
+    /// Required exactly when the rule ends at a wall clock **and** the draft's
+    /// [`start`](EventDraft::start) is zoned or UTC; an adapter that needs it and does not
+    /// have it refuses the write rather than emitting a local `UNTIL` an RFC 5545 reader
+    /// would misread.
+    ///
+    /// `None` otherwise: an unbounded or counted rule has no `UNTIL` at all, and a floating
+    /// or all-day series renders it from the rule's own wall clock, which needs no zone.
+    pub until: Option<UtcDateTime>,
+}
+
+impl DraftRecurrence {
+    /// A series following `rule`, with no `UNTIL` to resolve — unbounded, counted, or on a
+    /// floating/all-day event.
+    #[must_use]
+    pub fn new(rule: RecurrenceRule) -> Self {
+        Self { rule, until: None }
+    }
+
+    /// A series following `rule`, whose `UNTIL` resolves to `until` in the event's own zone.
+    #[must_use]
+    pub fn ending_at(rule: RecurrenceRule, until: UtcDateTime) -> Self {
+        Self {
+            rule,
+            until: Some(until),
+        }
+    }
+}
 
 /// A new event to create.
 ///
@@ -93,6 +144,11 @@ pub struct EventDraft {
     /// When the event was created — the caller's, because engine time types deliberately
     /// cannot read the system clock. A server that stamps its own ignores it.
     pub stamp: UtcDateTime,
+    /// How the event repeats, or `None` for a one-off.
+    ///
+    /// A create is the only write that can give an event a rule from nothing; changing or
+    /// removing one afterwards goes through [`EventPatch`].
+    pub recurrence: Option<DraftRecurrence>,
 }
 
 impl EventDraft {
@@ -115,6 +171,7 @@ impl EventDraft {
             description: None,
             location: None,
             stamp,
+            recurrence: None,
         }
     }
 
@@ -129,6 +186,16 @@ impl EventDraft {
     #[must_use]
     pub fn location(mut self, location: impl Into<String>) -> Self {
         self.location = Some(location.into());
+        self
+    }
+
+    /// Makes the new event repeat.
+    ///
+    /// See [`DraftRecurrence`] for why a rule ending at a wall clock carries a resolved
+    /// instant beside it.
+    #[must_use]
+    pub fn repeating(mut self, recurrence: DraftRecurrence) -> Self {
+        self.recurrence = Some(recurrence);
         self
     }
 }

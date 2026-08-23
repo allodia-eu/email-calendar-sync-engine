@@ -24,99 +24,17 @@
 //!
 //! Every scenario leaves the seeded calendar exactly as it found it.
 
+mod common;
+
+use common::*;
 use engine_core::{
     calendar::{Event, RecurrenceOverride},
-    ids::{AccountId, CalendarId, Uid},
-    sync::SyncUpdate,
-    time::{CalendarDateTime, TimeZoneId, UtcDateTime},
+    ids::Uid,
+    time::CalendarDateTime,
 };
 use engine_provider::{
     EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider, WriteGuard,
 };
-use provider_jmap::{Credentials, JmapConfig, JmapProvider};
-use stalwart_harness::Harness;
-
-fn account() -> AccountId {
-    AccountId::try_from("live").unwrap()
-}
-
-async fn connect(harness: &Harness) -> JmapProvider {
-    JmapProvider::connect(JmapConfig::new(
-        format!("http://{}", harness.http_addr),
-        Credentials::basic(&harness.account, &harness.password),
-    ))
-    .await
-    .expect("connect")
-}
-
-fn stamp() -> UtcDateTime {
-    UtcDateTime::new(2026, 6, 1, 12, 0, 0).unwrap()
-}
-
-fn amsterdam(local: &str) -> CalendarDateTime {
-    CalendarDateTime::Zoned {
-        local: local.parse().unwrap(),
-        zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
-    }
-}
-
-/// Every event the account currently holds.
-async fn all_events(provider: &JmapProvider) -> Vec<Event> {
-    let events = provider.sync_events(&account(), None).await.unwrap();
-    let SyncUpdate::Snapshot { objects, .. } = events.update else {
-        panic!("expected a snapshot");
-    };
-    objects
-}
-
-/// The event with `uid`, if the server still holds one.
-async fn fetch(provider: &JmapProvider, uid: &str) -> Option<Event> {
-    all_events(provider)
-        .await
-        .into_iter()
-        .find(|e| e.uid.as_str() == uid)
-}
-
-async fn require(provider: &JmapProvider, uid: &str) -> Event {
-    fetch(provider, uid)
-        .await
-        .unwrap_or_else(|| panic!("event {uid} is present on the server"))
-}
-
-/// The account's first calendar — where a throwaway event lands.
-async fn calendar(provider: &JmapProvider) -> CalendarId {
-    let calendars = provider.sync_calendars(&account(), None).await.unwrap();
-    let SyncUpdate::Snapshot { objects, .. } = calendars.update else {
-        panic!("expected a snapshot");
-    };
-    objects
-        .into_iter()
-        .next()
-        .expect("the seeded account has a calendar")
-        .id
-}
-
-/// Removes any residue of `uid` from a prior interrupted run.
-async fn pre_clean(provider: &JmapProvider, uid: &str) {
-    if let Some(stale) = fetch(provider, uid).await {
-        provider
-            .delete_event(&account(), &EventDeletion::of(&stale))
-            .await
-            .expect("clean up a prior run's event");
-    }
-}
-
-/// Starts the harness, or `None` when the gate env var is unset.
-async fn setup(name: &str) -> Option<JmapProvider> {
-    let Some(harness) = Harness::from_env() else {
-        eprintln!("skipping {name}: STALWART_HTTP_ADDR unset");
-        return None;
-    };
-    harness
-        .wait_until_ready(std::time::Duration::from_secs(30))
-        .expect("ready");
-    Some(connect(&harness).await)
-}
 
 // ---------------------------------------------------------------------------
 // 1. The write lifecycle.
@@ -420,9 +338,9 @@ const SEED_OVERRIDE_TITLE: &str = "Weekly standup (this instance moved to the af
 /// A bad pointer is exactly the class of bug the offline fake cannot catch (it would reply
 /// `updated` to a malformed patch just as readily), so this must run against a server.
 ///
-/// It edits the **seed** — the only recurring event available, since a neutral `EventDraft`
-/// cannot yet state a recurrence rule — and restores the original title before returning, so
-/// the seed the read tests assert on is left exactly as found.
+/// It edits the **seed**, whose override map is richer than a create can build, and restores
+/// the original title before returning, so the seed the read tests assert on is left exactly
+/// as found.
 #[tokio::test]
 async fn recurrence_override_edit() {
     let Some(provider) = setup("recurrence_override_edit").await else {

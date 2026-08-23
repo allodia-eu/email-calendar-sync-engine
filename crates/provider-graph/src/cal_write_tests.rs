@@ -10,7 +10,8 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, PatchTarget, RsvpResponse,
+    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, PatchTarget,
+    RsvpResponse,
 };
 use serde_json::json as sjson;
 
@@ -289,4 +290,76 @@ async fn an_rsvp_to_an_event_that_is_gone_is_an_error_not_a_silent_success() {
     .await
     .unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);
+}
+
+// ---------------------------------------------------------------------------
+// Recurrence on create
+// ---------------------------------------------------------------------------
+
+fn weekly_on_monday() -> engine_core::calendar::RecurrenceRule {
+    let mut rule =
+        engine_core::calendar::RecurrenceRule::new(engine_core::calendar::Frequency::Weekly);
+    rule.by_day = vec![engine_core::calendar::NDay {
+        day: engine_core::calendar::Weekday::Mo,
+        nth_of_period: None,
+    }];
+    rule
+}
+
+#[test]
+fn build_create_writes_a_patterned_recurrence_not_an_rrule() {
+    // Graph is the one transport that takes recurrence as a named pattern, so nothing
+    // here goes through `format_rrule`.
+    let body = build_create(&draft().repeating(DraftRecurrence::new(weekly_on_monday()))).unwrap();
+    assert_eq!(body["recurrence"]["pattern"]["type"], "weekly");
+    assert_eq!(
+        body["recurrence"]["pattern"]["daysOfWeek"],
+        serde_json::json!(["monday"])
+    );
+    assert_eq!(body["recurrence"]["range"]["type"], "noEnd");
+    // The range is anchored on the draft's own start date.
+    assert_eq!(body["recurrence"]["range"]["startDate"], "2026-08-03");
+    assert!(body.get("recurrence").is_some());
+}
+
+#[test]
+fn build_create_omits_recurrence_for_a_one_off() {
+    assert!(build_create(&draft()).unwrap().get("recurrence").is_none());
+}
+
+#[test]
+fn build_create_maps_a_bounded_rule_onto_graphs_range() {
+    let mut counted = weekly_on_monday();
+    counted.bound =
+        engine_core::calendar::RecurrenceBound::Count(core::num::NonZeroU32::new(6).unwrap());
+    let body = build_create(&draft().repeating(DraftRecurrence::new(counted))).unwrap();
+    assert_eq!(body["recurrence"]["range"]["type"], "numbered");
+    assert_eq!(body["recurrence"]["range"]["numberOfOccurrences"], 6);
+
+    let mut until = weekly_on_monday();
+    until.bound =
+        engine_core::calendar::RecurrenceBound::Until("2026-10-26T23:59:59".parse().unwrap());
+    let body = build_create(&draft().repeating(DraftRecurrence::new(until))).unwrap();
+    assert_eq!(body["recurrence"]["range"]["type"], "endDate");
+    assert_eq!(body["recurrence"]["range"]["endDate"], "2026-10-26");
+}
+
+#[test]
+fn a_zoned_until_needs_no_resolved_instant_on_graph() {
+    // Graph's `endDate` is a plain date, so unlike CalDAV and Google this adapter never
+    // needs `DraftRecurrence::until` — the same draft that CalDAV would refuse works here.
+    let mut until = weekly_on_monday();
+    until.bound =
+        engine_core::calendar::RecurrenceBound::Until("2026-10-26T23:59:59".parse().unwrap());
+    assert!(build_create(&draft().repeating(DraftRecurrence::new(until))).is_ok());
+}
+
+#[test]
+fn build_create_refuses_a_rule_graph_cannot_express() {
+    // The renderer's refusals reach the create path rather than being approximated into
+    // a different series. `cal_recur_render` owns the full set; this is the wiring.
+    let mut by_set_pos = weekly_on_monday();
+    by_set_pos.by_set_position = vec![-1];
+    let err = build_create(&draft().repeating(DraftRecurrence::new(by_set_pos))).unwrap_err();
+    assert!(err.to_string().contains("BYSETPOS"), "{err}");
 }

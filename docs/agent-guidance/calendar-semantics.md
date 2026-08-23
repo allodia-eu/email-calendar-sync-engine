@@ -336,6 +336,28 @@ mail is still readable. Two things a real server-authored invitation taught us
     form through `UntilForm` (`Date` / `Floating` / `Utc(instant)`) and resolves the
     instant itself. A series ending on the wrong day for readers in another zone is
     the bug that shape makes unrepresentable.
+- **Creating a recurring event: one rule, four renderings.** `EventDraft::recurrence` is the
+  neutral intent; each adapter renders it in its own vocabulary, and none of them shares a
+  line of code with another beyond `format_rrule`:
+
+  | Provider | Rendering | `UNTIL` |
+  |---|---|---|
+  | CalDAV | an `RRULE:` line via `format_rrule` | **UTC** — needs the resolved instant |
+  | Google | the same string, in the `recurrence` array | **UTC** — needs the resolved instant |
+  | Graph | a structured `patternedRecurrence` (`cal_recur_render`) | a plain `endDate` **date** |
+  | JMAP | a JSCalendar rule object (`calendar_rule`) | a **local** wall clock |
+
+  The `UNTIL` column is why `DraftRecurrence` carries a resolved instant beside the rule:
+  two of the four transports need one, and no adapter carries tzdata. An adapter that needs
+  it and does not have it **refuses the write** rather than emitting a local clock an RFC 5545
+  reader would misread — a series that ends a day early for everyone outside the authoring
+  zone is worse than a save that failed.
+
+  **Graph's pattern set is narrower than `RRULE`, and the renderer refuses rather than
+  approximates.** Every Monday of a month with no ordinal, two different days-of-month, a
+  `BYSETPOS`, a sub-daily frequency, a negative `dayOfMonth`: each is an error naming what
+  could not be expressed, because the nearest Graph pattern is a *different series* stored
+  as if it were the same.
 - **Rule:** `RawIcal` and `RawJsCalendar` are preserved beside the projection
   (model invariant). Provider writes round-trip from raw plus targeted patches,
   never by re-serializing the lossy projection. The projection exists for

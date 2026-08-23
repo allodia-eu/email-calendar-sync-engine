@@ -421,3 +421,27 @@ async fn caldav_scheduling_cleanup_leaves_no_residue() {
     let _serial = common::serial_guard().await;
     scheduling::cleanup_leaves_no_residue(&parties).await;
 }
+
+/// A recurring create really lands on Stalwart, and the rule reads back through the
+/// server's own reserialization.
+#[tokio::test]
+async fn caldav_create_carries_the_recurrence_rule() {
+    let Some((provider, account)) = connect("caldav_create_carries_the_recurrence_rule").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::recurrence::create_carries_the_rule(&provider, &account).await;
+}
+
+/// A series ending at a wall clock reaches the server with `UNTIL` in UTC, and the draft
+/// that omits the resolved instant is refused rather than written with a local clock.
+#[tokio::test]
+async fn caldav_recurrence_until_is_written_in_utc() {
+    let Some((provider, account)) = connect("caldav_recurrence_until_is_written_in_utc").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::recurrence::an_until_is_written_in_utc(&provider, &account).await;
+}

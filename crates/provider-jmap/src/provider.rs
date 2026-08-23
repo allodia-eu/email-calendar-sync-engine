@@ -436,6 +436,10 @@ mod write_tests;
 mod calendar_write_support;
 
 #[cfg(test)]
+#[path = "calendar_recurrence_tests.rs"]
+mod calendar_recurrence_tests;
+
+#[cfg(test)]
 #[path = "calendar_write_tests.rs"]
 mod calendar_write_tests;
 
