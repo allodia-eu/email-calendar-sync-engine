@@ -38,6 +38,8 @@ use engine_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::DraftRecurrence;
+
 /// Which occurrence of a recurring event an [`EventPatch`] lands on.
 ///
 /// There is no `Default` — see the module docs. For a non-recurring event only
@@ -81,6 +83,33 @@ pub enum TextEdit {
     Clear,
 }
 
+/// What an edit does to the event's recurrence: give it a rule, or take its rule away.
+///
+/// Three states with `Option<RecurrenceEdit>`, on the same reasoning as [`TextEdit`]: *not
+/// mentioning* recurrence leaves the series exactly as it was, which is not the same as
+/// turning a repeating event into a single one.
+///
+/// Only a [`Series`](PatchTarget::Series) target may carry one. A single occurrence has no
+/// rule of its own — it is one instance *of* a rule — so an adapter refuses the pairing
+/// rather than writing something whose meaning it would have to invent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecurrenceEdit {
+    /// Replace the rule, or give a one-off event its first one.
+    ///
+    /// Carries a [`DraftRecurrence`] rather than a bare rule for the reason a create does:
+    /// an `UNTIL` on a zoned event has to reach iCalendar and Google in UTC, and no adapter
+    /// carries the tzdata to work that out.
+    ///
+    /// Boxed because a rule holds ten `by*` vectors and this enum's other variant holds
+    /// nothing: unboxed, every [`EventPatch`] — including the overwhelming majority that
+    /// touch no recurrence at all — would carry that size through the outbox and every
+    /// clone. The `Box` is invisible at a match site, which derefs.
+    Set(Box<DraftRecurrence>),
+    /// Remove the recurrence: every occurrence but the first goes, and the event becomes a
+    /// single one.
+    Clear,
+}
+
 /// The properties an edit changes. Anything not set here is left exactly as it was.
 ///
 /// Built with a consuming `with`-style chain from [`EventPatch::new`], so an unset property
@@ -93,6 +122,7 @@ pub struct EventPatch {
     location: Option<TextEdit>,
     start: Option<CalendarDateTime>,
     end: Option<CalendarDateTime>,
+    recurrence: Option<RecurrenceEdit>,
 }
 
 impl EventPatch {
@@ -116,6 +146,7 @@ impl EventPatch {
             location: None,
             start: None,
             end: None,
+            recurrence: None,
         }
     }
 
@@ -178,6 +209,29 @@ impl EventPatch {
         self
     }
 
+    /// Replaces the event's recurrence — or gives a one-off event its first rule.
+    ///
+    /// Valid only with a [`Series`](PatchTarget::Series) target; see [`RecurrenceEdit`].
+    #[must_use]
+    pub fn recurrence(mut self, recurrence: DraftRecurrence) -> Self {
+        self.recurrence = Some(RecurrenceEdit::Set(Box::new(recurrence)));
+        self
+    }
+
+    /// Turns a repeating event into a single one — distinct from not mentioning recurrence,
+    /// which leaves the series alone.
+    #[must_use]
+    pub fn clear_recurrence(mut self) -> Self {
+        self.recurrence = Some(RecurrenceEdit::Clear);
+        self
+    }
+
+    /// What the edit does to the recurrence, if it touches it.
+    #[must_use]
+    pub fn recurrence_edit(&self) -> Option<&RecurrenceEdit> {
+        self.recurrence.as_ref()
+    }
+
     /// When the user made this edit. See [`new`](Self::new) for who honours it.
     #[must_use]
     pub fn stamp(&self) -> UtcDateTime {
@@ -221,7 +275,10 @@ impl EventPatch {
     /// when this is `true`.
     #[must_use]
     pub fn is_significant(&self) -> bool {
-        self.start.is_some() || self.end.is_some() || self.location.is_some()
+        self.start.is_some()
+            || self.end.is_some()
+            || self.location.is_some()
+            || self.recurrence.is_some()
     }
 
     /// Whether the patch changes nothing but its own stamp.
@@ -232,6 +289,7 @@ impl EventPatch {
             && self.location.is_none()
             && self.start.is_none()
             && self.end.is_none()
+            && self.recurrence.is_none()
     }
 }
 

@@ -5,7 +5,7 @@
 //! requires of a revised event (`DTSTAMP`, `LAST-MODIFIED`, `SEQUENCE`).
 
 use engine_core::time::CalendarDateTime;
-use engine_provider::{EventPatch, TextEdit};
+use engine_provider::{EventPatch, RecurrenceEdit, TextEdit};
 
 use super::{
     super::{
@@ -13,7 +13,7 @@ use super::{
         lines::{Document, Edits, LineEdit},
         unfold::split_once_unquoted,
     },
-    vevent::{Vevent, property_name},
+    vevent::{Resource, Vevent, property_name},
 };
 use crate::error::IcalError;
 
@@ -103,6 +103,62 @@ pub(super) fn plan(
     }
     if patch.is_significant() {
         bump_sequence(doc, vevent, edits);
+    }
+    Ok(())
+}
+
+/// Applies a recurrence edit to the series master.
+///
+/// Separate from [`plan`] because a *removal* reaches past the master's own lines: the
+/// override `VEVENT`s have to go with the rule (see [`Resource::overrides`]), and only the
+/// whole resource can see them.
+///
+/// A **replacement** deliberately touches nothing but the `RRULE` line. `EXDATE`, `RDATE`
+/// and the override components record what the *user* did to individual occurrences, and on
+/// this transport those survive a rule change (`calendar-semantics.md`); wiping them would
+/// be Microsoft Graph's behaviour, imposed on a server that does not have it.
+///
+/// # Errors
+///
+/// Returns [`IcalError`] if the rule cannot be rendered as an `RRULE` — a non-Gregorian
+/// rule, or an `UNTIL` on a zoned series with no resolved instant.
+pub(super) fn set_recurrence(
+    doc: &Document,
+    master: &Vevent,
+    resource: &Resource,
+    patch: &EventPatch,
+    edits: &mut Edits,
+) -> Result<(), IcalError> {
+    let Some(edit) = patch.recurrence_edit() else {
+        return Ok(());
+    };
+    let start = master
+        .date_time(doc, "DTSTART")
+        .transpose()?
+        .ok_or_else(|| IcalError::new("event has no DTSTART"))?;
+
+    match edit {
+        RecurrenceEdit::Set(recurrence) => {
+            let line = format!("RRULE:{}", super::rrule_value(recurrence, &start)?);
+            match master.property(doc, "RRULE") {
+                Some(group) => replace(edits, group, line),
+                None => insert(doc, master, edits, &line),
+            }
+        }
+        RecurrenceEdit::Clear => {
+            drop_series_rules(doc, master, edits);
+            for group in master.own.iter().copied() {
+                let name = property_name(&doc.logical(group)).to_ascii_uppercase();
+                if name == "EXRULE" {
+                    remove(edits, group);
+                }
+            }
+            for override_vevent in resource.overrides(doc) {
+                for group in override_vevent.groups() {
+                    remove(edits, group);
+                }
+            }
+        }
     }
     Ok(())
 }

@@ -248,3 +248,130 @@ async fn live_calendar_creates_a_recurring_event() {
         .await
         .expect("delete the probe series");
 }
+
+/// Changing and removing a rule on Google.
+///
+/// The clear is the half worth a live test on its own: an adapter can only *claim* it
+/// removed a rule, and a patch that quietly changed nothing would look identical from
+/// here. Google accepts both an empty array and `null` for this — both were measured, and
+/// this test was watched to fail on neither, which is why the assertion is on the
+/// **read-back** rather than on the request we sent.
+#[tokio::test]
+async fn live_calendar_changes_and_removes_a_rule() {
+    use engine_core::{
+        calendar::{Event, Frequency, NDay, RecurrenceRule, Weekday},
+        ids::Uid,
+        membership::Memberships,
+        time::{CalendarDateTime, LocalDateTime, TimeZoneId, UtcDateTime},
+    };
+    use engine_provider::{
+        DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget,
+    };
+
+    let Some(token) = token() else {
+        eprintln!("skipping live_calendar_changes_and_removes_a_rule: GOOGLE_ACCESS_TOKEN unset");
+        return;
+    };
+    let provider = calendar_provider(token);
+    let cal = CalendarId::try_from("primary").unwrap();
+    let stamp: UtcDateTime = "2026-08-23T10:00:00Z".parse().unwrap();
+    let zoned = |s: &str| CalendarDateTime::Zoned {
+        local: s.parse::<LocalDateTime>().unwrap(),
+        zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+    };
+    let weekly_on = |day: Weekday| {
+        let mut rule = RecurrenceRule::new(Frequency::Weekly);
+        rule.by_day = vec![NDay {
+            day,
+            nth_of_period: None,
+        }];
+        rule
+    };
+
+    let created = provider
+        .create_event(
+            &account(),
+            &EventDraft::new(
+                cal.clone(),
+                Uid::new(format!("live-rule-{}@example.test", std::process::id())).unwrap(),
+                "Live rule-edit probe",
+                zoned("2026-09-07T09:30:00"),
+                zoned("2026-09-07T10:00:00"),
+                stamp,
+            )
+            .repeating(DraftRecurrence::new(weekly_on(Weekday::Mo))),
+        )
+        .await
+        .expect("create a recurring event");
+
+    let read_back = |id: engine_core::ids::EventId| {
+        let provider = &provider;
+        async move {
+            let events = provider
+                .sync_events(&account(), None)
+                .await
+                .expect("sync events");
+            let SyncUpdate::Snapshot { objects, .. } = events.update else {
+                panic!("expected an event snapshot");
+            };
+            objects
+                .into_iter()
+                .find(|e| e.id == id)
+                .expect("the series is in the snapshot")
+        }
+    };
+
+    let mut base = Event::new(
+        created.event.clone(),
+        created.uid.clone(),
+        Memberships::of_one(cal.clone()),
+        zoned("2026-09-07T09:30:00"),
+    );
+    base.revisions = created.revisions.clone();
+    let changed = provider
+        .patch_event(
+            &account(),
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Series,
+                EventPatch::new(stamp).recurrence(DraftRecurrence::new(weekly_on(Weekday::We))),
+            ),
+        )
+        .await
+        .expect("change the rule");
+    assert_eq!(
+        read_back(created.event.clone())
+            .await
+            .recurrence
+            .unwrap()
+            .rules[0]
+            .by_day,
+        weekly_on(Weekday::We).by_day,
+        "Google stored the new rule"
+    );
+
+    base.revisions = changed.revisions.clone();
+    let cleared = provider
+        .patch_event(
+            &account(),
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Series,
+                EventPatch::new(stamp).clear_recurrence(),
+            ),
+        )
+        .await
+        .expect("remove the rule");
+    assert!(
+        !read_back(created.event.clone()).await.is_recurring(),
+        "the rule is gone from the server's own copy, not just from the request"
+    );
+
+    base.revisions = cleared.revisions.clone();
+    provider
+        .delete_event(&account(), &EventDeletion::of(&base))
+        .await
+        .expect("delete the probe event");
+}

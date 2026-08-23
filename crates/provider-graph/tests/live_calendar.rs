@@ -287,3 +287,147 @@ async fn live_calendar_creates_a_recurring_event() {
         .await
         .expect("delete the probe series");
 }
+
+/// Changing and removing a rule on Graph, where the pattern is structured and `null`
+/// clears it.
+///
+/// ⚠️ This also pins the behaviour the product has to warn about: a rule change on Graph
+/// discards every per-occurrence exception and cancellation. That is Outlook's own
+/// semantics, measured rather than assumed (`calendar-semantics.md`).
+#[tokio::test]
+async fn live_calendar_changes_and_removes_a_rule() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_calendar_changes_and_removes_a_rule: GRAPH_ACCESS_TOKEN unset");
+        return;
+    };
+
+    let placeholder = CalendarId::try_from("placeholder").unwrap();
+    let calendars = calendar_provider(&token, placeholder)
+        .sync_calendars(&account(), None)
+        .await
+        .expect("sync calendars");
+    let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
+        panic!("expected a calendar snapshot");
+    };
+    let calendar_id = objects
+        .iter()
+        .find(|c| c.is_default)
+        .expect("a default calendar")
+        .id
+        .clone();
+    let provider = calendar_provider(&token, calendar_id.clone());
+
+    let mut mondays = RecurrenceRule::new(Frequency::Weekly);
+    mondays.by_day = vec![NDay {
+        day: Weekday::Mo,
+        nth_of_period: None,
+    }];
+    mondays.bound = RecurrenceBound::Count(NonZeroU32::new(8).unwrap());
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let draft = EventDraft::new(
+        calendar_id.clone(),
+        Uid::new(format!("live-rule-{unique}@allodia-e2e.test")).unwrap(),
+        "provider-graph live rule-edit probe",
+        zoned("2026-09-07T09:30:00"),
+        zoned("2026-09-07T10:00:00"),
+        "2026-08-23T10:00:00Z".parse().unwrap(),
+    )
+    .repeating(DraftRecurrence::new(mondays));
+    let created = provider
+        .create_event(&account(), &draft)
+        .await
+        .expect("create a recurring event");
+
+    // ---- Change the rule. ----
+    let mut wednesdays = RecurrenceRule::new(Frequency::Weekly);
+    wednesdays.by_day = vec![NDay {
+        day: Weekday::We,
+        nth_of_period: None,
+    }];
+    let base = base_from(
+        &calendar_id,
+        created.event.as_str(),
+        &created.uid,
+        created.revisions.clone(),
+    );
+    let changed = provider
+        .patch_event(
+            &account(),
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Series,
+                EventPatch::new("2026-08-23T10:05:00Z".parse().unwrap())
+                    .recurrence(DraftRecurrence::new(wednesdays.clone())),
+            ),
+        )
+        .await
+        .expect("change the rule");
+
+    let stored = |objects: &[engine_core::calendar::Event], id: &engine_core::ids::EventId| {
+        objects
+            .iter()
+            .find(|e| &e.id == id)
+            .expect("the series is in the snapshot")
+            .clone()
+    };
+    let events = provider
+        .sync_events(&account(), None)
+        .await
+        .expect("sync events");
+    let SyncUpdate::Snapshot { objects, .. } = &events.update else {
+        panic!("expected an event snapshot");
+    };
+    assert_eq!(
+        stored(objects, &created.event).recurrence.unwrap().rules,
+        vec![wednesdays],
+        "Graph stored the new pattern"
+    );
+
+    // ---- Remove it: `null` turns the series into a single event. ----
+    let base = base_from(
+        &calendar_id,
+        changed.event.as_str(),
+        &changed.uid,
+        changed.revisions.clone(),
+    );
+    let cleared = provider
+        .patch_event(
+            &account(),
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Series,
+                EventPatch::new("2026-08-23T10:10:00Z".parse().unwrap()).clear_recurrence(),
+            ),
+        )
+        .await
+        .expect("remove the rule");
+
+    let events = provider
+        .sync_events(&account(), None)
+        .await
+        .expect("sync events");
+    let SyncUpdate::Snapshot { objects, .. } = &events.update else {
+        panic!("expected an event snapshot");
+    };
+    assert!(
+        !stored(objects, &created.event).is_recurring(),
+        "the event no longer recurs"
+    );
+
+    let base = base_from(
+        &calendar_id,
+        cleared.event.as_str(),
+        &cleared.uid,
+        cleared.revisions.clone(),
+    );
+    provider
+        .delete_event(&account(), &EventDeletion::of(&base))
+        .await
+        .expect("delete the probe event");
+}

@@ -122,6 +122,22 @@ impl Resource {
     ///
     /// Returns [`IcalError`] if the resource has no `END:VCALENDAR` — a
     /// truncated document we must not "repair" by guessing.
+    /// Every `RECURRENCE-ID` override in the resource.
+    ///
+    /// Removing the series' rule has to take these with it: an override whose master no
+    /// longer recurs is not inert, it is an **extra instance** — the reader folds it into
+    /// the event's override map either way, and the expander materializes an override on a
+    /// non-rule instant as an added occurrence (RDATE-like). Left behind, "does not repeat"
+    /// would still draw every occurrence the user had ever edited.
+    pub(super) fn overrides<'a>(
+        &'a self,
+        doc: &'a Document,
+    ) -> impl Iterator<Item = &'a Vevent> + 'a {
+        self.vevents
+            .iter()
+            .filter(move |vevent| vevent.property(doc, "RECURRENCE-ID").is_some())
+    }
+
     pub(super) fn splice_point(&self) -> Result<usize, IcalError> {
         self.end_vcalendar
             .ok_or_else(|| IcalError::new("resource has no END:VCALENDAR to splice into"))

@@ -59,7 +59,7 @@ use engine_core::{
     time::{CalendarDateTime, UtcDateTime},
     version::RevisionTokens,
 };
-pub use patch::{EventEdit, EventPatch, PatchTarget, TextEdit};
+pub use patch::{EventEdit, EventPatch, PatchTarget, RecurrenceEdit, TextEdit};
 pub use rsvp::{EventRsvp, ReplyDelivery, RsvpResponse};
 use serde::{Deserialize, Serialize};
 
@@ -146,8 +146,8 @@ pub struct EventDraft {
     pub stamp: UtcDateTime,
     /// How the event repeats, or `None` for a one-off.
     ///
-    /// A create is the only write that can give an event a rule from nothing; changing or
-    /// removing one afterwards goes through [`EventPatch`].
+    /// Changing or removing the rule afterwards goes through
+    /// [`EventPatch::recurrence`](crate::EventPatch::recurrence).
     pub recurrence: Option<DraftRecurrence>,
 }
 

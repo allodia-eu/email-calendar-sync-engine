@@ -241,3 +241,152 @@ fn overriding_an_instance_of_a_non_recurring_event_is_an_error() {
         "the error should say why the instance cannot be overridden: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Recurrence
+// ---------------------------------------------------------------------------
+
+/// A weekly series with one exclusion and one moved instance — the shape a user who has
+/// been living with a repeating meeting actually has.
+const SERIES_WITH_OVERRIDES: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n\
+     BEGIN:VEVENT\r\nUID:s@test.local\r\n\
+     DTSTART;TZID=Europe/Amsterdam:20260105T093000\r\n\
+     DTEND;TZID=Europe/Amsterdam:20260105T100000\r\n\
+     RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=8\r\n\
+     EXDATE;TZID=Europe/Amsterdam:20260119T093000\r\n\
+     SUMMARY:Standup\r\nEND:VEVENT\r\n\
+     BEGIN:VEVENT\r\nUID:s@test.local\r\n\
+     RECURRENCE-ID;TZID=Europe/Amsterdam:20260126T093000\r\n\
+     DTSTART;TZID=Europe/Amsterdam:20260126T140000\r\n\
+     DTEND;TZID=Europe/Amsterdam:20260126T143000\r\n\
+     SUMMARY:Standup (moved)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+fn every_wednesday() -> engine_core::calendar::RecurrenceRule {
+    let mut rule =
+        engine_core::calendar::RecurrenceRule::new(engine_core::calendar::Frequency::Weekly);
+    rule.by_day = vec![engine_core::calendar::NDay {
+        day: engine_core::calendar::Weekday::We,
+        nth_of_period: None,
+    }];
+    rule
+}
+
+#[test]
+fn setting_a_rule_rewrites_only_the_rrule_line() {
+    // The user's own per-occurrence work — the EXDATE and the moved instance — survives.
+    // Wiping it would be Microsoft Graph's behaviour imposed on a server that does not
+    // have it (`calendar-semantics.md`).
+    let out = patch_event_ical(
+        &RawIcal::new(SERIES_WITH_OVERRIDES),
+        &PatchTarget::Series,
+        &EventPatch::new(stamp()).recurrence(DraftRecurrence::new(every_wednesday())),
+    )
+    .unwrap();
+    let body = out.as_str();
+
+    assert!(body.contains("RRULE:FREQ=WEEKLY;BYDAY=WE\r\n"), "{body}");
+    assert!(!body.contains("COUNT=8"), "the old rule is gone: {body}");
+    assert!(
+        body.contains("EXDATE;TZID=Europe/Amsterdam:20260119T093000"),
+        "the exclusion survives a rule change: {body}"
+    );
+    assert!(
+        body.contains("SUMMARY:Standup (moved)"),
+        "the overridden instance survives a rule change: {body}"
+    );
+}
+
+/// A plain one-off, for the "make this repeat" direction.
+const ONE_OFF: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n\
+     BEGIN:VEVENT\r\nUID:one@test.local\r\n\
+     DTSTART;TZID=Europe/Amsterdam:20260105T093000\r\n\
+     DTEND;TZID=Europe/Amsterdam:20260105T100000\r\n\
+     SUMMARY:Once\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+#[test]
+fn giving_a_one_off_event_a_rule_inserts_an_rrule() {
+    let out = patch_event_ical(
+        &RawIcal::new(ONE_OFF),
+        &PatchTarget::Series,
+        &EventPatch::new(stamp()).recurrence(DraftRecurrence::new(every_wednesday())),
+    )
+    .unwrap();
+    assert!(
+        out.as_str().contains("RRULE:FREQ=WEEKLY;BYDAY=WE\r\n"),
+        "{}",
+        out.as_str()
+    );
+}
+
+#[test]
+fn clearing_the_rule_takes_the_overrides_with_it() {
+    // The trap: an override whose master no longer recurs is not inert. The reader folds
+    // it into the event's override map either way, and the expander materializes an
+    // override on a non-rule instant as an *added* occurrence — so a leftover would keep
+    // drawing every occurrence the user had ever edited, under "does not repeat".
+    let out = patch_event_ical(
+        &RawIcal::new(SERIES_WITH_OVERRIDES),
+        &PatchTarget::Series,
+        &EventPatch::new(stamp()).clear_recurrence(),
+    )
+    .unwrap();
+    let body = out.as_str();
+
+    assert!(!body.contains("RRULE"), "the rule is gone: {body}");
+    assert!(!body.contains("EXDATE"), "the exclusion is gone: {body}");
+    assert!(
+        !body.contains("RECURRENCE-ID"),
+        "the override is gone: {body}"
+    );
+    assert!(!body.contains("Standup (moved)"), "{body}");
+    // What is left is one ordinary event, still itself.
+    assert!(body.contains("SUMMARY:Standup\r\n"), "{body}");
+    assert!(
+        body.contains("DTSTART;TZID=Europe/Amsterdam:20260105T093000"),
+        "{body}"
+    );
+    assert_eq!(body.matches("BEGIN:VEVENT").count(), 1, "{body}");
+}
+
+#[test]
+fn a_recurrence_edit_cannot_target_one_occurrence() {
+    // An occurrence has no rule of its own — it is one instance *of* a rule — so there is
+    // nothing this could mean, and guessing would either rewrite the whole series or write
+    // an RRULE onto an override.
+    let err = patch_event_ical(
+        &RawIcal::new(SERIES_WITH_OVERRIDES),
+        &PatchTarget::Instance(amsterdam("2026-01-26T09:30:00")),
+        &EventPatch::new(stamp()).recurrence(DraftRecurrence::new(every_wednesday())),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("targets the series"), "{err}");
+}
+
+#[test]
+fn a_zoned_series_needs_the_resolved_instant_for_an_until() {
+    let mut rule = every_wednesday();
+    rule.bound =
+        engine_core::calendar::RecurrenceBound::Until("2026-10-26T23:59:59".parse().unwrap());
+
+    let unresolved = patch_event_ical(
+        &RawIcal::new(SERIES_WITH_OVERRIDES),
+        &PatchTarget::Series,
+        &EventPatch::new(stamp()).recurrence(DraftRecurrence::new(rule.clone())),
+    );
+    assert!(unresolved.is_err(), "a zoned UNTIL must not be guessed");
+
+    let resolved = patch_event_ical(
+        &RawIcal::new(SERIES_WITH_OVERRIDES),
+        &PatchTarget::Series,
+        &EventPatch::new(stamp()).recurrence(DraftRecurrence::ending_at(
+            rule,
+            "2026-10-26T22:59:59Z".parse().unwrap(),
+        )),
+    )
+    .unwrap();
+    assert!(
+        resolved.as_str().contains("UNTIL=20261026T225959Z"),
+        "{}",
+        resolved.as_str()
+    );
+}

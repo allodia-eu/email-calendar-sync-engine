@@ -53,8 +53,12 @@ mod patch_tests;
 #[cfg(test)]
 mod test_support;
 
-use engine_core::{raw::RawIcal, time::CalendarDateTime};
-use engine_provider::{EventPatch, PatchTarget};
+use engine_core::{
+    calendar::{RecurrenceBound, UntilForm, format_rrule},
+    raw::RawIcal,
+    time::CalendarDateTime,
+};
+use engine_provider::{DraftRecurrence, EventPatch, PatchTarget};
 
 use super::{
     format::date_time_line,
@@ -89,8 +93,18 @@ pub fn patch_event_ical(
         PatchTarget::Series => {
             let master = resource.master(&doc)?;
             plan::plan(&doc, master, patch, &mut edits)?;
+            plan::set_recurrence(&doc, master, &resource, patch, &mut edits)?;
         }
         PatchTarget::Instance(recurrence_id) => {
+            // A single occurrence has no rule of its own — it is one instance *of* a rule
+            // — so there is nothing a recurrence edit could mean here, and guessing would
+            // either rewrite the whole series or write an RRULE onto an override.
+            if patch.recurrence_edit().is_some() {
+                return Err(IcalError::new(
+                    "a recurrence edit targets the series, never one occurrence; an \
+                     occurrence has no rule of its own",
+                ));
+            }
             if let Some(existing) = resource.override_for(&doc, recurrence_id) {
                 // The series is already overridden here: patch that VEVENT in place.
                 plan::plan(&doc, existing, patch, &mut edits)?;
@@ -103,6 +117,37 @@ pub fn patch_event_ical(
         }
     }
     Ok(RawIcal::new(doc.render(&edits)))
+}
+
+/// The `RRULE` value for a draft's recurrence, rendered in the `UNTIL` form the draft's
+/// own `DTSTART` requires (RFC 5545 §3.3.10).
+///
+/// A zoned or UTC `DTSTART` obliges `UNTIL` to be UTC, and the instant that takes is the
+/// caller's to resolve — this crate has no tzdata (`DraftRecurrence`). Refusing here is
+/// the point: emitting the wall clock instead would end the series on a different day for
+/// every reader outside the authoring zone.
+pub(crate) fn rrule_value(
+    recurrence: &DraftRecurrence,
+    start: &CalendarDateTime,
+) -> Result<String, IcalError> {
+    let until = match (start, &recurrence.rule.bound) {
+        // No UNTIL to render at all; the form is irrelevant.
+        (_, RecurrenceBound::Unbounded | RecurrenceBound::Count(_))
+        | (CalendarDateTime::Floating(_), RecurrenceBound::Until(_)) => UntilForm::Floating,
+        (CalendarDateTime::Date(_), RecurrenceBound::Until(_)) => UntilForm::Date,
+        (CalendarDateTime::Zoned { .. }, RecurrenceBound::Until(_)) => {
+            let at = recurrence.until.ok_or_else(|| {
+                IcalError::new(
+                    "a recurrence ending at a wall clock on a zoned event needs that clock \
+                     resolved to an instant: RFC 5545 requires UNTIL in UTC when DTSTART \
+                     carries a TZID, and resolving it needs tzdata this crate does not have. \
+                     Build the draft with DraftRecurrence::ending_at",
+                )
+            })?;
+            UntilForm::Utc(at)
+        }
+    };
+    format_rrule(&recurrence.rule, until).map_err(|e| IcalError::new(e.to_string()))
 }
 
 /// Renders a new override `VEVENT` for the occurrence originally starting at

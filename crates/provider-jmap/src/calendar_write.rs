@@ -47,7 +47,7 @@
 
 use engine_core::{calendar::Event, ids::EventId, time::CalendarDateTime, version::RevisionTokens};
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventWriteReceipt, PatchTarget, TextEdit,
+    EventDeletion, EventDraft, EventEdit, EventWriteReceipt, PatchTarget, RecurrenceEdit, TextEdit,
 };
 use serde_json::{Map, Value, json};
 
@@ -323,6 +323,28 @@ fn patch_to_json(base: &Event, edit: &EventEdit) -> Result<Map<String, Value>, J
     };
     let patch = &edit.patch;
     let mut out = Map::new();
+
+    if let Some(recurrence) = patch.recurrence_edit() {
+        // A recurrence edit is series-level by definition, so it cannot ride the
+        // `recurrenceOverrides/<start>/` prefix an Instance target applies to everything
+        // else — writing a rule *inside* one occurrence's override would mean nothing.
+        if !matches!(edit.target, PatchTarget::Series) {
+            return Err(JmapError::protocol(
+                "a recurrence edit targets the series, never one occurrence; an occurrence \
+                 has no rule of its own",
+            ));
+        }
+        // `null` removes the property (RFC 8620 §5.3), which is how a series becomes a
+        // single event. The singular name is Stalwart's and the only one it takes on a
+        // write — see `jmap.md` → "Recurrence property naming".
+        out.insert(
+            "recurrenceRule".to_owned(),
+            match recurrence {
+                RecurrenceEdit::Set(r) => render_rule(&r.rule)?,
+                RecurrenceEdit::Clear => Value::Null,
+            },
+        );
+    }
 
     if let Some(summary) = patch.summary_edit() {
         out.insert(format!("{prefix}title"), json!(summary));

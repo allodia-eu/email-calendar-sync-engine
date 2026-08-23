@@ -358,6 +358,31 @@ mail is still readable. Two things a real server-authored invitation taught us
   `BYSETPOS`, a sub-daily frequency, a negative `dayOfMonth`: each is an error naming what
   could not be expressed, because the nearest Graph pattern is a *different series* stored
   as if it were the same.
+- **Changing or removing the rule is `EventPatch::recurrence`, and it is series-only.** Three
+  states, like every other optional property: not mentioning recurrence leaves the series
+  alone, `Set` replaces the rule (or gives a one-off its first), `Clear` turns a series back
+  into a single event. A recurrence edit paired with a
+  `PatchTarget::Instance` is an **error** on every adapter — an occurrence has no rule of
+  its own, it is one instance *of* a rule, so there is nothing the pairing could mean.
+
+  | Provider | Set | Clear |
+  |---|---|---|
+  | CalDAV | rewrite/insert the master's `RRULE` line | drop `RRULE`/`RDATE`/`EXDATE`/`EXRULE` **and every `RECURRENCE-ID` component** |
+  | Google | the `recurrence` array | an empty array (`null` also works — measured) |
+  | Graph | the structured pattern | `null` |
+  | JMAP | the `recurrenceRule` object | `null` (RFC 8620 §5.3 removes a property) |
+
+  **CalDAV's clear has to take the override components with it**, and that is the one part of
+  this that is not obvious. An override whose master no longer recurs is not inert: the reader
+  folds it into the event's override map either way, and the expander materializes an override
+  on a non-rule instant as an *added* occurrence. Left behind, "does not repeat" would keep
+  drawing every occurrence the user had ever edited.
+
+  A **replacement**, by contrast, deliberately leaves `EXDATE`, `RDATE` and the overrides
+  alone. Those record what the user did to individual occurrences, and on CalDAV, JMAP and
+  Google they survive a rule change. **Graph is the exception and discards them** — Outlook's
+  own behaviour, measured — which is a property of that transport rather than of the edit, so
+  it belongs in a host's confirmation copy rather than in a refusal here.
 - **Rule:** `RawIcal` and `RawJsCalendar` are preserved beside the projection
   (model invariant). Provider writes round-trip from raw plus targeted patches,
   never by re-serializing the lossy projection. The projection exists for
