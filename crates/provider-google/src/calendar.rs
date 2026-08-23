@@ -37,8 +37,8 @@ const GOOGLE_RSVP: RsvpControls = RsvpControls {
 };
 
 use crate::{
-    cal_fetch::{self, CalendarWindow},
-    cal_write,
+    cal_fetch::{self, CalendarWindow, EventsPage},
+    cal_override, cal_write,
     transport::GoogleClient,
 };
 
@@ -154,6 +154,7 @@ impl Provider for GoogleCalendarProvider {
         let mut changed = Vec::new();
         let mut removed = Vec::new();
         let mut present = BTreeSet::new();
+        let mut overrides = Vec::new();
         let mut kind: Option<SyncKind> = None;
         let next_cursor = loop {
             let page = match cal_fetch::events_page(
@@ -179,15 +180,23 @@ impl Provider for GoogleCalendarProvider {
                 }
                 Err(err) => return Err(err.into()),
             };
+            let EventsPage {
+                page,
+                overrides: page_overrides,
+            } = page;
             kind.get_or_insert(page.kind);
             changed.extend(page.changed);
             removed.extend(page.removed);
             present.extend(page.present);
+            overrides.extend(page_overrides);
             if page.next_page.is_none() {
                 break page.next_cursor;
             }
             page_token = page.next_page;
         };
+        // Only now: an override names its master by id, and the master may have been on any
+        // page of this pass — or, on a delta, on none of them.
+        cal_override::fold_into(&mut changed, overrides);
         let update = match kind.unwrap_or(SyncKind::Delta) {
             SyncKind::Snapshot => SyncUpdate::snapshot(changed, present),
             SyncKind::Delta => SyncUpdate::delta(changed, removed),

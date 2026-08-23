@@ -1326,6 +1326,7 @@ dependencies = [
  "async-trait",
  "engine-core",
  "engine-http",
+ "engine-ical",
  "engine-provider",
  "engine-rfc5322",
  "engine-tls",

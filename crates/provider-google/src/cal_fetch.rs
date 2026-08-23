@@ -6,10 +6,13 @@
 //! (`timeMin`/`timeMax`) is **optional** and applies only to the initial (snapshot)
 //! request (a `syncToken` request cannot also carry a window). `singleEvents=false`
 //! returns the series **master** (with its `RRULE`) and standalone **single** events; the
-//! engine expands the master locally, so a per-instance override (`recurringEventId` set)
-//! is dropped (deferred — `calendar-semantics.md`). A `status:"cancelled"` entry is a
-//! tombstone. A `410` on a stale `syncToken` classifies as `NeedsResync`, restarting the
-//! pass as a snapshot (the same mechanism as Gmail's history-expiry).
+//! engine expands the master locally. An entry carrying `recurringEventId` is an occurrence
+//! somebody changed — not an object of its own, but an exception *of* its series, so it is
+//! set aside here and folded onto that series once the pass is in
+//! ([`cal_override`](crate::cal_override)). A `status:"cancelled"` entry is a tombstone
+//! **unless** it is one of those, in which case it is that occurrence's exclusion. A `410`
+//! on a stale `syncToken` classifies as `NeedsResync`, restarting the pass as a snapshot
+//! (the same mechanism as Gmail's history-expiry).
 
 use engine_core::{
     calendar::{Calendar, Event},
@@ -22,6 +25,7 @@ use serde_json::Value;
 
 use crate::{
     cal_normalize::{calendar_from_json, event_from_json},
+    cal_override::{PendingOverride, pending_override},
     error::GoogleError,
     json::{opt_str, req_str, wrap_id},
     transport::{GoogleClient, encode_query_value},
@@ -75,6 +79,19 @@ pub(crate) async fn calendars(client: &GoogleClient) -> Result<Vec<Calendar>, Go
     Ok(calendars)
 }
 
+/// One page of events, plus the occurrence-level entries on it.
+///
+/// The overrides ride beside the page rather than inside it because they cannot be applied
+/// yet: an entry names its master by id, and the master may be on another page (see
+/// [`cal_override`](crate::cal_override)).
+#[derive(Debug)]
+pub(crate) struct EventsPage {
+    /// The masters and single events this page carried.
+    pub(crate) page: SyncPage<Event>,
+    /// The occurrence-level entries this page carried, unfolded.
+    pub(crate) overrides: Vec<PendingOverride>,
+}
+
 /// Fetches one page of the bound calendar's events via `events.list`. `window` bounds the
 /// **initial** snapshot request only; a delta (`cursor`) and a continuation (`page`)
 /// carry the server's tokens.
@@ -84,7 +101,7 @@ pub(crate) async fn events_page(
     cursor: Option<&SyncState>,
     page: Option<&PageToken>,
     window: Option<CalendarWindow>,
-) -> Result<SyncPage<Event>, GoogleError> {
+) -> Result<EventsPage, GoogleError> {
     let kind = if cursor.is_none() {
         SyncKind::Snapshot
     } else {
@@ -100,14 +117,17 @@ pub(crate) async fn events_page(
     let mut changed = Vec::new();
     let mut removed = Vec::new();
     let mut present = Vec::new();
+    let mut overrides = Vec::new();
     for entry in array(&doc, "items", "events.list")? {
-        if opt_str(entry, "status") == Some("cancelled") {
-            removed.push(entry_key(entry)?);
+        // An occurrence somebody changed or cancelled. It is not an object of its own to
+        // this engine — it is an exception *of* its series — so it is collected here and
+        // folded into that series once the pass is in.
+        if entry.get("recurringEventId").is_some() {
+            overrides.push(pending_override(entry, default_zone)?);
             continue;
         }
-        // A per-instance override (a modified exception) — dropped; the engine expands
-        // the master itself (per-instance override reconciliation is deferred).
-        if entry.get("recurringEventId").is_some() {
+        if opt_str(entry, "status") == Some("cancelled") {
+            removed.push(entry_key(entry)?);
             continue;
         }
         let event = event_from_json(entry, calendar, default_zone)?;
@@ -124,15 +144,18 @@ pub(crate) async fn events_page(
             .cloned()
             .unwrap_or_else(|| SyncState::new(PENDING_CURSOR)),
     };
-    Ok(SyncPage {
-        kind,
-        changed,
-        patched: Vec::new(),
-        removed,
-        present,
-        next_page,
-        next_cursor,
-        total: None,
+    Ok(EventsPage {
+        overrides,
+        page: SyncPage {
+            kind,
+            changed,
+            patched: Vec::new(),
+            removed,
+            present,
+            next_page,
+            next_cursor,
+            total: None,
+        },
     })
 }
 

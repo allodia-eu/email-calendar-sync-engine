@@ -27,6 +27,7 @@
 mod base64url;
 mod cal_fetch;
 mod cal_normalize;
+mod cal_override;
 mod cal_write;
 mod calendar;
 mod contact;
