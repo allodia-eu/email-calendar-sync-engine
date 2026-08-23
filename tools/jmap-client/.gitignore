@@ -1,0 +1,4 @@
+/target
+# Saved credentials — a JMAP API token is a password.
+/.local/
+Cargo.lock

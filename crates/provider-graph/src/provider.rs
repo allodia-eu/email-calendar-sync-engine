@@ -105,13 +105,23 @@ impl GraphProvider {
 ///
 /// Exchange Online caps a mailbox at four concurrent requests
 /// (<https://learn.microsoft.com/en-us/graph/throttling-limits>), and a live mailbox agrees
-/// exactly: measured over 48 messages, 1 → 11.5 bodies/s, 2 → 24.9, 4 → 35.2 all clean, and 6
-/// draws its first `429`. Re-running width 1 afterwards gave 11.9, so none of that is a warm
-/// cache.
+/// exactly: **4 is the last clean width**, and both 5 and 6 draw `429`s. Going wider survives
+/// now that a throttle is waited out rather than dropped, and is still wrong — the mailbox's
+/// other ceiling is 10,000 requests per 10 minutes, and requests spent being refused come out
+/// of it.
 ///
-/// Going wider is possible now that a throttle is waited out rather than dropped, and is
-/// still wrong: the mailbox's other ceiling is 10,000 requests per 10 minutes, and requests
-/// spent being refused come out of it.
+/// **Narrower is wrong too, which is less obvious.** Leaving a lane free would stop a
+/// background body warm from occupying every slot of a host-side per-mailbox semaphore, and
+/// measured over five alternating rounds a 3-wide drain runs at 68% of a 4-wide one — a third
+/// of the throughput for that headroom. It buys less than it looks: the request-per-window
+/// ceiling is what actually throttles a large mailbox, and narrowing only postpones it. Ten
+/// thousand bodies exhaust the 10-minute budget in about 3.4 minutes at four wide and about
+/// 5.0 at three; both then wait, so the narrow one has paid a third of its speed to arrive at
+/// the same wall later.
+///
+/// Rates here are the *shape*, not constants to compare across runs: the same width measured
+/// in two sweeps minutes apart differed by 40%, so any comparison has to alternate widths
+/// inside one run.
 ///
 /// The `$batch` endpoint is deliberately not used. Graph hands Outlook at most four
 /// sub-requests at a time whatever the batch holds, so it buys no parallelism this does not
