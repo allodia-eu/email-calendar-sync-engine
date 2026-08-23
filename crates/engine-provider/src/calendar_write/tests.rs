@@ -43,6 +43,41 @@ fn stored(revisions: RevisionTokens) -> Event {
 }
 
 #[test]
+fn removing_one_occurrence_still_names_the_series() {
+    // The id is the *series'*, never a synthetic one for the instance: the two transports
+    // that have such an id derive it differently, so deriving it is the adapter's job.
+    let base = stored(RevisionTokens::from_etag(ETag::new("\"v7\"")));
+    let deletion = EventDeletion::occurrence(
+        &base,
+        Occurrence::starting(zoned("2026-08-08T09:00:00")),
+        "2026-07-14T10:00:00Z".parse().unwrap(),
+    );
+
+    assert_eq!(deletion.event, event_id());
+    assert_eq!(deletion.uid, uid());
+    assert_eq!(
+        deletion.occurrence_target().map(|o| o.start.clone()),
+        Some(zoned("2026-08-08T09:00:00"))
+    );
+    assert!(
+        EventDeletion::of(&base).occurrence_target().is_none(),
+        "a whole-event delete targets no occurrence"
+    );
+}
+
+#[test]
+fn only_a_caller_who_resolved_the_instant_carries_one() {
+    // Google names an occurrence by its start in UTC and no adapter carries tzdata, so the
+    // resolution is the caller's — and its absence has to be visible rather than guessed at.
+    let start = zoned("2026-08-08T09:00:00");
+    assert!(Occurrence::starting(start.clone()).instant.is_none());
+    assert_eq!(
+        Occurrence::at(start, "2026-08-08T07:00:00Z".parse().unwrap()).instant,
+        Some("2026-08-08T07:00:00Z".parse().unwrap())
+    );
+}
+
+#[test]
 fn a_draft_carries_intent_but_never_an_id() {
     // The caller mints the UID — the cross-system identity, and what makes a retried
     // create recognizable — but never the EventId: a server-assigning transport hands

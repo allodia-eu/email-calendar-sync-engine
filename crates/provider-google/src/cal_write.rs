@@ -16,8 +16,8 @@ use engine_core::{
 };
 use engine_provider::{
     DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp,
-    EventWriteReceipt, PatchTarget, ProviderError, ProviderResult, RecurrenceEdit, RsvpResponse,
-    TextEdit,
+    EventWriteReceipt, Occurrence, PatchTarget, ProviderError, ProviderResult, RecurrenceEdit,
+    RsvpResponse, TextEdit,
 };
 use serde_json::{Map, Value, json};
 
@@ -187,23 +187,31 @@ fn build_rsvp(rsvp: &EventRsvp) -> Value {
 /// already-deleted event). A stale `If-Match` on an event that still exists (modified
 /// out from under the caller) is a `412` [`Conflict`](engine_core::error::FailureClass::Conflict),
 /// surfaced so the caller refetches — not swallowed as idempotent.
+/// One **occurrence** is deleted the same way, at a *derived* id — see [`occurrence_id`] —
+/// so finding it costs no round trip. The guard cannot travel with it: `deletion.guard` is
+/// the *series'* ETag, and the occurrence is a separate resource with a revision of its own,
+/// so sending it would fail the precondition on an occurrence nobody had touched. An
+/// occurrence delete is therefore unconditional.
 pub(crate) async fn delete_event(
     client: &GoogleClient,
     calendar: &str,
     deletion: &EventDeletion,
 ) -> ProviderResult<()> {
-    let guard = deletion
-        .guard
-        .as_ref()
-        .and_then(|r| r.etag.as_ref())
-        .map(ETag::as_str);
+    let master = deletion.event.key().as_str();
+    let (id, guard) = match deletion.occurrence_target() {
+        None => (
+            master.to_owned(),
+            deletion
+                .guard
+                .as_ref()
+                .and_then(|r| r.etag.as_ref())
+                .map(ETag::as_str),
+        ),
+        Some(occurrence) => (occurrence_id(master, occurrence)?, None),
+    };
     match client
         .delete(
-            &client.url(&format!(
-                "{}/{}",
-                events_path(calendar),
-                deletion.event.key().as_str()
-            )),
+            &client.url(&format!("{}/{id}", events_path(calendar))),
             guard,
         )
         .await
@@ -214,6 +222,49 @@ pub(crate) async fn delete_event(
         }) => Ok(()),
         Err(other) => Err(other.into()),
     }
+}
+
+/// Google's id for one occurrence of a series: the series id, an underscore, and the
+/// occurrence's **original** start in a compact form — `YYYYMMDD` for an all-day series,
+/// `YYYYMMDDTHHMMSSZ` in **UTC** for a timed one.
+///
+/// The UTC half is why [`Occurrence`] carries a resolved instant beside the wall clock: no
+/// other transport needs one (iCalendar, JSCalendar and Graph all name an occurrence by its
+/// local value), and resolving a wall clock through a zone needs tzdata no adapter carries —
+/// the same reason a recurrence ending at a wall clock carries its own resolved bound.
+/// Refusing here is the point: an id built from the wall clock as if it were UTC would name
+/// a different occurrence, or none, and Google would answer `404` — which this verb reads as
+/// "already gone", reporting a delete that never happened.
+///
+/// # Errors
+///
+/// Returns [`ProviderError`] when a timed occurrence carries no resolved instant.
+fn occurrence_id(master: &str, occurrence: &Occurrence) -> ProviderResult<String> {
+    if let CalendarDateTime::Date(date) = occurrence.start {
+        return Ok(format!(
+            "{master}_{:04}{:02}{:02}",
+            date.year(),
+            date.month(),
+            date.day()
+        ));
+    }
+    let at = occurrence.instant.ok_or_else(|| {
+        ProviderError::invalid_state(
+            "removing one occurrence of a timed series needs its original start resolved to an \
+             instant: Google names an occurrence by that start in UTC, and resolving a wall \
+             clock needs tzdata this adapter does not carry. Build the target with \
+             Occurrence::at",
+        )
+    })?;
+    Ok(format!(
+        "{master}_{:04}{:02}{:02}T{:02}{:02}{:02}Z",
+        at.year(),
+        at.month(),
+        at.day(),
+        at.hour(),
+        at.minute(),
+        at.second()
+    ))
 }
 
 /// Builds the `events.insert` body from a draft.
@@ -379,4 +430,8 @@ fn receipt(
 
 #[cfg(test)]
 #[path = "cal_write_tests.rs"]
-mod tests;
+mod cal_write_tests;
+
+#[cfg(test)]
+#[path = "cal_recurrence_tests.rs"]
+mod cal_recurrence_tests;

@@ -8,7 +8,9 @@ mod common;
 
 use common::*;
 use engine_core::ids::Uid;
-use engine_provider::{EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider};
+use engine_provider::{
+    EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget, Provider,
+};
 
 /// Creating a **recurring** event through the neutral draft, and reading the rule back.
 ///
@@ -66,7 +68,7 @@ async fn create_carries_a_recurrence_rule() {
     let mut base = made.clone();
     base.revisions = created.revisions.clone();
     provider
-        .delete_event(&account(), &EventDeletion::of(&base))
+        .delete_event(&account(), None, &EventDeletion::of(&base))
         .await
         .expect("delete the probe series");
 }
@@ -160,7 +162,7 @@ async fn a_rule_can_be_changed_and_removed() {
     );
 
     provider
-        .delete_event(&account(), &EventDeletion::of(&single))
+        .delete_event(&account(), None, &EventDeletion::of(&single))
         .await
         .expect("delete the probe event");
 }
@@ -267,7 +269,148 @@ async fn a_first_edit_of_an_occurrence_lands_and_so_does_the_second() {
     );
 
     provider
-        .delete_event(&account(), &EventDeletion::of(&second))
+        .delete_event(&account(), None, &EventDeletion::of(&second))
+        .await
+        .expect("delete the probe event");
+}
+
+/// Removing **one occurrence**, from a series with no overrides and then from one with.
+///
+/// Both shapes again, and for the same reason as the first edit: with no
+/// `recurrenceOverrides` on the event there is nothing for a pointer to address, so the
+/// exclusion has to assign the map. And the second removal proves the pointer form reaches
+/// the same place — which the offline fake, answering `updated` to anything, cannot.
+#[tokio::test]
+async fn an_occurrence_can_be_removed() {
+    use engine_core::calendar::{Frequency, RecurrenceOverride, RecurrenceRule};
+    use engine_provider::DraftRecurrence;
+
+    const UID: &str = "live-jmap-occurrence-delete@test.local";
+
+    let Some(provider) = setup("an_occurrence_can_be_removed").await else {
+        return;
+    };
+    pre_clean(&provider, UID).await;
+
+    provider
+        .create_event(
+            &account(),
+            &EventDraft::new(
+                calendar(&provider).await,
+                Uid::new(UID).unwrap(),
+                "Live occurrence delete",
+                amsterdam("2026-06-01T09:30:00"),
+                amsterdam("2026-06-01T10:00:00"),
+                stamp(),
+            )
+            .repeating(DraftRecurrence::new(RecurrenceRule::new(Frequency::Weekly))),
+        )
+        .await
+        .expect("create a recurring event");
+
+    for removed in ["2026-06-08T09:30:00", "2026-06-15T09:30:00"] {
+        let base = require(&provider, UID).await;
+        provider
+            .delete_event(
+                &account(),
+                Some(&base),
+                &EventDeletion::occurrence(
+                    &base,
+                    Occurrence::starting(amsterdam(removed)),
+                    stamp(),
+                ),
+            )
+            .await
+            .expect("the server accepts the exclusion");
+    }
+
+    let after = require(&provider, UID).await;
+    let recurrence = after.recurrence.as_ref().expect("still a series");
+    for removed in ["2026-06-08T09:30:00", "2026-06-15T09:30:00"] {
+        assert_eq!(
+            recurrence.overrides.get(&removed.parse().unwrap()),
+            Some(&RecurrenceOverride::Excluded),
+            "{removed} is excluded: {:?}",
+            recurrence.overrides
+        );
+    }
+    assert!(!recurrence.rules.is_empty(), "the rule itself survives");
+
+    provider
+        .delete_event(&account(), None, &EventDeletion::of(&after))
+        .await
+        .expect("delete the probe event");
+}
+
+/// Removing an occurrence the user had **edited** replaces that override rather than
+/// merging into it: an excluded override may carry nothing else (RFC 8984 §4.3.3).
+#[tokio::test]
+async fn removing_an_edited_occurrence_replaces_its_override() {
+    use engine_core::calendar::{Frequency, RecurrenceOverride, RecurrenceRule};
+    use engine_provider::DraftRecurrence;
+
+    const UID: &str = "live-jmap-edited-occurrence-delete@test.local";
+    const OCCURRENCE: &str = "2026-06-08T09:30:00";
+
+    let Some(provider) = setup("removing_an_edited_occurrence_replaces_its_override").await else {
+        return;
+    };
+    pre_clean(&provider, UID).await;
+
+    provider
+        .create_event(
+            &account(),
+            &EventDraft::new(
+                calendar(&provider).await,
+                Uid::new(UID).unwrap(),
+                "Live edited-occurrence delete",
+                amsterdam("2026-06-01T09:30:00"),
+                amsterdam("2026-06-01T10:00:00"),
+                stamp(),
+            )
+            .repeating(DraftRecurrence::new(RecurrenceRule::new(Frequency::Weekly))),
+        )
+        .await
+        .expect("create a recurring event");
+
+    let base = require(&provider, UID).await;
+    provider
+        .patch_event(
+            &account(),
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Instance(amsterdam(OCCURRENCE)),
+                EventPatch::new(stamp()).summary("Moved to the afternoon"),
+            ),
+        )
+        .await
+        .expect("override one occurrence");
+
+    let base = require(&provider, UID).await;
+    provider
+        .delete_event(
+            &account(),
+            Some(&base),
+            &EventDeletion::occurrence(&base, Occurrence::starting(amsterdam(OCCURRENCE)), stamp()),
+        )
+        .await
+        .expect("remove the occurrence the user had edited");
+
+    let after = require(&provider, UID).await;
+    assert_eq!(
+        after
+            .recurrence
+            .as_ref()
+            .expect("a series")
+            .overrides
+            .get(&OCCURRENCE.parse().unwrap()),
+        Some(&RecurrenceOverride::Excluded),
+        "the edit is gone with the occurrence, not left beside the exclusion"
+    );
+
+    provider
+        .delete_event(&account(), None, &EventDeletion::of(&after))
         .await
         .expect("delete the probe event");
 }

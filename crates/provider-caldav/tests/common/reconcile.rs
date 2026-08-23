@@ -192,6 +192,7 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
         worker(),
         ttl(),
         "live:ryw:delete",
+        None,
         &EventDeletion::of(&twice),
     )
     .await

@@ -365,6 +365,7 @@ impl Provider for CalendarServer {
     async fn delete_event(
         &self,
         _account: &AccountId,
+        _base: Option<&Event>,
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
         let mut state = self.0.lock().unwrap();

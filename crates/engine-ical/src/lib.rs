@@ -59,7 +59,7 @@ pub use lines::{Document, Edit, Edits, LineEdit};
 // The structural patcher is an *implementation detail* of `Provider::patch_event`: a
 // host states the neutral `EventPatch`/`PatchTarget` intent (`engine-provider`) and never
 // reaches for the iCalendar surgery itself.
-pub use patch::patch_event_ical;
+pub use patch::{exclude_occurrence_ical, patch_event_ical};
 use recurrence::fold_override;
 // The quote-aware splitters are the crate's canonical iCalendar tokenizing
 // primitives; the `imip` RSVP patcher reuses them rather than re-implementing.

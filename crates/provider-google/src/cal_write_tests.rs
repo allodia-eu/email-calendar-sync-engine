@@ -11,8 +11,7 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, PatchTarget,
-    RsvpResponse,
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, PatchTarget, RsvpResponse,
 };
 use serde_json::json as sjson;
 
@@ -22,22 +21,22 @@ use crate::{
     test_support::{capturing_server, fake_client_fallible, retry, tls},
 };
 
-fn calendar() -> CalendarId {
+pub(super) fn calendar() -> CalendarId {
     CalendarId::try_from("cal-1").unwrap()
 }
 
-fn stamp() -> UtcDateTime {
+pub(super) fn stamp() -> UtcDateTime {
     "2026-07-18T10:00:00Z".parse().unwrap()
 }
 
-fn zoned(local: &str) -> CalendarDateTime {
+pub(super) fn zoned(local: &str) -> CalendarDateTime {
     CalendarDateTime::Zoned {
         local: local.parse::<LocalDateTime>().unwrap(),
         zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
     }
 }
 
-fn draft() -> EventDraft {
+pub(super) fn draft() -> EventDraft {
     EventDraft::new(
         calendar(),
         Uid::new("draft-uid@test.local").unwrap(),
@@ -50,7 +49,7 @@ fn draft() -> EventDraft {
     .description("agenda")
 }
 
-fn base_event() -> Event {
+pub(super) fn base_event() -> Event {
     let mut event = Event::new(
         EventId::try_from("evt-1").unwrap(),
         Uid::new("evt-1@test.local").unwrap(),
@@ -389,94 +388,3 @@ async fn the_rsvps_own_guard_decides_the_precondition() {
 // ---------------------------------------------------------------------------
 // Recurrence on create
 // ---------------------------------------------------------------------------
-
-fn weekly_on_monday() -> engine_core::calendar::RecurrenceRule {
-    let mut rule =
-        engine_core::calendar::RecurrenceRule::new(engine_core::calendar::Frequency::Weekly);
-    rule.by_day = vec![engine_core::calendar::NDay {
-        day: engine_core::calendar::Weekday::Mo,
-        nth_of_period: None,
-    }];
-    rule
-}
-
-#[test]
-fn build_create_writes_the_rule_as_an_rrule_line() {
-    // Google's `recurrence` is an array of raw iCalendar lines, so what lands here is the
-    // same string CalDAV writes — one renderer, two transports.
-    let body = build_create(&draft().repeating(DraftRecurrence::new(weekly_on_monday()))).unwrap();
-    assert_eq!(body["recurrence"], sjson!(["RRULE:FREQ=WEEKLY;BYDAY=MO"]));
-}
-
-#[test]
-fn build_create_omits_recurrence_for_a_one_off() {
-    assert!(build_create(&draft()).unwrap().get("recurrence").is_none());
-}
-
-#[test]
-fn build_create_needs_a_resolved_instant_for_a_zoned_until() {
-    // RFC 5545 §3.3.10: a zoned start obliges UNTIL in UTC. Refusing is what stops the
-    // series ending on a different day for every reader outside Europe/Amsterdam.
-    let mut rule = weekly_on_monday();
-    rule.bound =
-        engine_core::calendar::RecurrenceBound::Until("2026-10-26T23:59:59".parse().unwrap());
-
-    let unresolved = build_create(&draft().repeating(DraftRecurrence::new(rule.clone())));
-    assert_eq!(
-        unresolved.unwrap_err().class(),
-        FailureClass::InvalidState,
-        "a zoned UNTIL must not be guessed"
-    );
-
-    // 23:59:59 in Europe/Amsterdam is 22:59:59Z.
-    let resolved = build_create(&draft().repeating(DraftRecurrence::ending_at(
-        rule,
-        "2026-10-26T22:59:59Z".parse().unwrap(),
-    )))
-    .unwrap();
-    assert_eq!(
-        resolved["recurrence"],
-        sjson!(["RRULE:FREQ=WEEKLY;UNTIL=20261026T225959Z;BYDAY=MO"])
-    );
-}
-
-#[test]
-fn build_create_writes_an_all_day_series_until_as_a_date() {
-    let mut rule = weekly_on_monday();
-    rule.bound =
-        engine_core::calendar::RecurrenceBound::Until("2026-10-26T23:59:59".parse().unwrap());
-    let all_day = EventDraft::new(
-        calendar(),
-        Uid::new("draft-uid@test.local").unwrap(),
-        "Offsite",
-        CalendarDateTime::Date(CalendarDate::new(2026, 8, 3).unwrap()),
-        CalendarDateTime::Date(CalendarDate::new(2026, 8, 4).unwrap()),
-        stamp(),
-    )
-    .repeating(DraftRecurrence::new(rule));
-    assert_eq!(
-        build_create(&all_day).unwrap()["recurrence"],
-        sjson!(["RRULE:FREQ=WEEKLY;UNTIL=20261026;BYDAY=MO"])
-    );
-}
-
-#[test]
-fn build_patch_sets_and_clears_the_recurrence() {
-    let set = build_patch(
-        &base_event(),
-        &EventPatch::new(stamp()).recurrence(DraftRecurrence::new(weekly_on_monday())),
-    )
-    .unwrap();
-    assert_eq!(set["recurrence"], sjson!(["RRULE:FREQ=WEEKLY;BYDAY=MO"]));
-
-    // An empty array clears it. (Google accepts `null` for this too — measured — so this
-    // pins the spelling we send, not a difference in what the server does.)
-    let cleared = build_patch(&base_event(), &EventPatch::new(stamp()).clear_recurrence()).unwrap();
-    assert_eq!(cleared["recurrence"], sjson!([]));
-}
-
-#[test]
-fn a_patch_that_does_not_mention_recurrence_leaves_it_alone() {
-    let body = build_patch(&base_event(), &EventPatch::new(stamp()).summary("Renamed")).unwrap();
-    assert!(body.get("recurrence").is_none());
-}

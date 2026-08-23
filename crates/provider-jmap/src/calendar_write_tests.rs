@@ -145,7 +145,7 @@ async fn a_create_the_server_neither_confirmed_nor_rejected_is_a_conflict() {
 async fn destroy_removes_the_event() {
     let (p, exec) = recording(vec![set_response(&json!({ "destroyed": [EVENT] }))]);
     let base = base();
-    p.delete_event(&account(), &EventDeletion::of(&base))
+    p.delete_event(&account(), None, &EventDeletion::of(&base))
         .await
         .unwrap();
 
@@ -173,7 +173,7 @@ async fn destroying_an_already_gone_event_is_idempotent_success() {
         &json!({ "notDestroyed": { EVENT: { "type": "notFound" } } }),
     )]);
     let base = base();
-    p.delete_event(&account(), &EventDeletion::of(&base))
+    p.delete_event(&account(), None, &EventDeletion::of(&base))
         .await
         .unwrap();
 }
@@ -186,7 +186,7 @@ async fn a_forbidden_destroy_still_surfaces() {
     )]);
     let base = base();
     let err = p
-        .delete_event(&account(), &EventDeletion::of(&base))
+        .delete_event(&account(), None, &EventDeletion::of(&base))
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);

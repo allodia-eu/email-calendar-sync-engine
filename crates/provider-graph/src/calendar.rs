@@ -243,6 +243,7 @@ impl Provider for GraphCalendarProvider {
     async fn delete_event(
         &self,
         _account: &AccountId,
+        _base: Option<&Event>,
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
         cal_write::delete_event(&self.client, deletion).await

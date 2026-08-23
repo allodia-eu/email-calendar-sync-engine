@@ -9,7 +9,7 @@ use engine_core::{
     raw::RawIcal,
     time::{CalendarDateTime, UtcDateTime},
 };
-use engine_provider::{EventPatch, PatchTarget};
+use engine_provider::{EventPatch, Occurrence, PatchTarget};
 
 use super::*;
 use crate::test_support::{Replay, wrote};
@@ -45,6 +45,18 @@ fn stored(etag: Option<&str>) -> Event {
     event.revisions = etag.map_or_else(RevisionTokens::none, |e| {
         RevisionTokens::from_etag(ETag::new(e))
     });
+    event
+}
+
+/// The same event as a weekly series — the only shape an occurrence can be removed from.
+const SERIES: &str = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:evt-1@test.local\r\n\
+                      DTSTAMP:20260601T000000Z\r\nDTSTART:20260625T140000Z\r\n\
+                      DTEND:20260625T150000Z\r\nRRULE:FREQ=WEEKLY\r\n\
+                      SUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+fn series(etag: Option<&str>) -> Event {
+    let mut event = stored(etag);
+    event.raw_ical = Some(RawIcal::new(SERIES));
     event
 }
 
@@ -215,7 +227,7 @@ async fn an_unconditional_document_write_sends_no_precondition() {
 async fn delete_sends_if_match_when_guarded() {
     let exec = Replay::new(vec![wrote(204, None)]);
     let base = stored(Some("\"v2\""));
-    delete_event(&exec, &EventDeletion::of(&base))
+    delete_event(&exec, None, &EventDeletion::of(&base))
         .await
         .unwrap();
     let writes = exec.writes();
@@ -231,7 +243,7 @@ async fn delete_sends_if_match_when_guarded() {
 #[tokio::test]
 async fn unconditional_delete_sends_no_precondition() {
     let exec = Replay::new(vec![wrote(204, None)]);
-    delete_event(&exec, &EventDeletion::unconditional(href(), uid()))
+    delete_event(&exec, None, &EventDeletion::unconditional(href(), uid()))
         .await
         .unwrap();
     assert_eq!(exec.writes()[0].precondition, Precondition::None);
@@ -245,7 +257,7 @@ async fn a_guard_naming_no_revision_degrades_to_unconditional() {
     // guard is worth on this transport.
     let exec = Replay::new(vec![wrote(204, None)]);
     let base = stored(None);
-    delete_event(&exec, &EventDeletion::of(&base))
+    delete_event(&exec, None, &EventDeletion::of(&base))
         .await
         .unwrap();
     assert_eq!(exec.writes()[0].precondition, Precondition::None);
@@ -258,7 +270,7 @@ async fn deleting_an_already_gone_resource_is_idempotent_success() {
     // does not report a hard failure.
     for status in [404, 410] {
         let exec = Replay::new(vec![wrote(status, None)]);
-        delete_event(&exec, &EventDeletion::unconditional(href(), uid()))
+        delete_event(&exec, None, &EventDeletion::unconditional(href(), uid()))
             .await
             .unwrap();
     }
@@ -270,7 +282,7 @@ async fn a_delete_if_match_conflict_is_surfaced() {
     // distinct from the already-gone case — the caller refetches and merges.
     let exec = Replay::new(vec![wrote(412, None)]);
     let base = stored(Some("\"stale\""));
-    let err = delete_event(&exec, &EventDeletion::of(&base))
+    let err = delete_event(&exec, None, &EventDeletion::of(&base))
         .await
         .unwrap_err();
     assert_eq!(err.failure_class(), FailureClass::Conflict);
@@ -280,8 +292,70 @@ async fn a_delete_if_match_conflict_is_surfaced() {
 async fn a_delete_server_error_still_surfaces() {
     // A genuine failure (e.g. 503) is not swallowed by the idempotent-gone path.
     let exec = Replay::new(vec![wrote(503, None)]);
-    let err = delete_event(&exec, &EventDeletion::unconditional(href(), uid()))
+    let err = delete_event(&exec, None, &EventDeletion::unconditional(href(), uid()))
         .await
         .unwrap_err();
     assert_eq!(err.failure_class(), FailureClass::Retryable);
+}
+
+#[tokio::test]
+async fn removing_one_occurrence_puts_the_series_back_with_an_exdate() {
+    // There is no per-occurrence resource to DELETE here, so the verb changes shape
+    // entirely: a guarded PUT of the series, with the occurrence excluded from it.
+    let exec = Replay::new(vec![wrote(204, Some("\"v2\""))]);
+    let base = series(Some("\"v1\""));
+    delete_event(
+        &exec,
+        Some(&base),
+        &EventDeletion::occurrence(
+            &base,
+            Occurrence::starting(CalendarDateTime::utc(
+                "2026-07-02T14:00:00".parse().unwrap(),
+            )),
+            stamp(),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let writes = exec.writes();
+    assert_eq!(writes[0].method, DavMethod::Put);
+    assert_eq!(writes[0].href, href().as_str());
+    assert!(
+        writes[0].body.contains("EXDATE:20260702T140000Z\r\n"),
+        "the occurrence is excluded from the stored series: {}",
+        writes[0].body
+    );
+    assert!(
+        writes[0].body.contains("RRULE:FREQ=WEEKLY\r\n"),
+        "and the rule the rest of the series runs on is untouched"
+    );
+    assert_eq!(
+        writes[0].precondition,
+        Precondition::IfMatch("\"v1\"".to_owned()),
+        "it is an edit of the series, so it is guarded like one"
+    );
+}
+
+#[tokio::test]
+async fn removing_one_occurrence_without_the_stored_document_is_refused() {
+    // The alternative is rebuilding the series from the lossy projection, which would
+    // silently drop the VALARMs, the X- properties and the attendees on its way to
+    // removing one occurrence.
+    let exec = Replay::new(vec![wrote(204, None)]);
+    let base = series(Some("\"v1\""));
+    let deletion = EventDeletion::occurrence(
+        &base,
+        Occurrence::starting(CalendarDateTime::utc(
+            "2026-07-02T14:00:00".parse().unwrap(),
+        )),
+        stamp(),
+    );
+    let err = delete_event(&exec, None, &deletion).await.unwrap_err();
+
+    assert_eq!(err.failure_class(), FailureClass::Permanent);
+    assert!(
+        exec.writes().is_empty(),
+        "and nothing reached the network on the way to failing"
+    );
 }

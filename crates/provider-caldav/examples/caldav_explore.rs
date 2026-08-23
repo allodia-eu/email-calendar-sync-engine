@@ -163,6 +163,7 @@ async fn write_demo(
     let _ = provider
         .delete_event(
             account,
+            None,
             &EventDeletion::unconditional(provider.event_href(&uid)?, uid.clone()),
         )
         .await;
@@ -189,6 +190,7 @@ async fn write_demo(
     provider
         .delete_event(
             account,
+            None,
             &EventDeletion::unconditional(receipt.event, receipt.uid),
         )
         .await?;

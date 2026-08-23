@@ -4,7 +4,9 @@
 //!
 //! Split from `calendar_write_tests` to keep both files under the 500-line cap.
 
-use engine_provider::{DraftRecurrence, EventDraft, EventPatch, PatchTarget};
+use engine_provider::{
+    DraftRecurrence, EventDeletion, EventDraft, EventPatch, Occurrence, PatchTarget,
+};
 use serde_json::json;
 
 use super::{calendar_write_support::*, provider_test_support::*, *};
@@ -159,4 +161,88 @@ async fn a_recurrence_edit_cannot_ride_an_instance_target() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("targets the series"), "{err}");
+}
+
+#[tokio::test]
+async fn removing_one_occurrence_of_an_untouched_series_assigns_the_override_map() {
+    // There is nothing to destroy — an occurrence is not an object here — so the delete is
+    // an `update` marking it excluded. And on a series with no overrides yet, the map has to
+    // be assigned rather than pointed into (RFC 8620 §5.3).
+    let (p, exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
+    let base = recurring_base();
+    p.delete_event(
+        &account(),
+        Some(&base),
+        &EventDeletion::occurrence(
+            &base,
+            Occurrence::starting(zoned("2026-08-08T09:00:00")),
+            stamp(),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let (_, method, args) = exec.sole_call();
+    assert_eq!(method, "CalendarEvent/set");
+    assert_eq!(
+        args["update"][EVENT],
+        json!({ "recurrenceOverrides": { "2026-08-08T09:00:00": { "excluded": true } } }),
+    );
+    assert!(
+        args.get("destroy").is_none(),
+        "the series itself must survive: {args}"
+    );
+}
+
+#[tokio::test]
+async fn removing_an_occurrence_of_an_overridden_series_points_at_its_entry() {
+    // The map exists, so the write can address one entry — and replaces it whole, because an
+    // excluded override may carry nothing else (RFC 8984 §4.3.3).
+    let (p, exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
+    let base = overridden_base("2026-08-08T09:00:00");
+    p.delete_event(
+        &account(),
+        Some(&base),
+        &EventDeletion::occurrence(
+            &base,
+            Occurrence::starting(zoned("2026-08-08T09:00:00")),
+            stamp(),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let (_, _, args) = exec.sole_call();
+    assert_eq!(
+        args["update"][EVENT],
+        json!({ "recurrenceOverrides/2026-08-08T09:00:00": { "excluded": true } }),
+    );
+}
+
+#[tokio::test]
+async fn removing_an_occurrence_named_in_another_time_form_is_refused() {
+    // The series' occurrences are zoned wall clocks; an all-day value names none of them,
+    // and an override written at a key that matches no instance excludes nothing.
+    let (p, exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
+    let base = recurring_base();
+    let err = p
+        .delete_event(
+            &account(),
+            Some(&base),
+            &EventDeletion::occurrence(
+                &base,
+                Occurrence::starting(engine_core::time::CalendarDateTime::Date(
+                    engine_core::time::CalendarDate::new(2026, 8, 8).unwrap(),
+                )),
+                stamp(),
+            ),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("time form"), "{err}");
+    assert!(
+        exec.requests.lock().unwrap().is_empty(),
+        "a refused delete must never reach the network"
+    );
 }

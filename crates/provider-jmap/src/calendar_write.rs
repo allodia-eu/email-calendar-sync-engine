@@ -50,7 +50,7 @@ use engine_provider::{EventDeletion, EventDraft, EventEdit, EventWriteReceipt};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    calendar_patch::patch_to_json,
+    calendar_patch::{exclusion, patch_to_json},
     calendar_rule::render_rule,
     error::JmapError,
     executor::Executor,
@@ -165,6 +165,25 @@ pub(crate) async fn patch_event(
         ));
     }
 
+    apply_update(executor, calendar_account, target, patch).await?;
+    Ok(EventWriteReceipt::new(
+        edit.event.clone(),
+        edit.uid.clone(),
+        RevisionTokens::none(),
+    ))
+}
+
+/// One `CalendarEvent/set` `update` of `target`, and the acknowledgement rules that decide
+/// whether it landed.
+///
+/// Shared by the two writes that patch a stored event: an edit, and the removal of one
+/// occurrence — which on this transport *is* an edit of the series.
+async fn apply_update(
+    executor: &dyn Executor,
+    calendar_account: &str,
+    target: &str,
+    patch: Map<String, Value>,
+) -> Result<(), JmapError> {
     let mut update = Map::new();
     update.insert(target.to_owned(), Value::Object(patch));
     let args = json!({
@@ -187,14 +206,15 @@ pub(crate) async fn patch_event(
     if result.get("updated").and_then(|u| u.get(target)).is_none() {
         return Err(JmapError::set(target, "notFound"));
     }
-    Ok(EventWriteReceipt::new(
-        edit.event.clone(),
-        edit.uid.clone(),
-        RevisionTokens::none(),
-    ))
+    Ok(())
 }
 
 /// Deletes an event: one `CalendarEvent/set` `destroy`.
+///
+/// Removing **one occurrence** is not a destroy at all — an occurrence is not an object
+/// here, the series is — so it is an `update` marking that occurrence `excluded`
+/// ([`exclusion`]), which is what JSCalendar's `recurrenceOverrides` means by removing one
+/// (RFC 8984 §4.3.3).
 ///
 /// An event that is **already gone** is a success, not an error. A `notFound` on a destroy
 /// means the desired end state already holds, so a retry of a delete whose response was lost
@@ -205,18 +225,34 @@ pub(crate) async fn patch_event(
 /// # Errors
 ///
 /// Returns [`JmapError`] on a transport/method failure, or [`JmapError::Set`] for any other
-/// `SetError` (a `forbidden` is `Permanent`, not something to retry).
+/// `SetError` (a `forbidden` is `Permanent`, not something to retry). Removing an occurrence
+/// with no `base` is [`JmapError::Protocol`]: which of the two override shapes the write
+/// takes is read off the event the caller had.
 pub(crate) async fn delete_event(
     executor: &dyn Executor,
     calendar_account: &str,
+    base: Option<&Event>,
     deletion: &EventDeletion,
 ) -> Result<(), JmapError> {
     let target = deletion.event.as_str();
-    let args = json!({
-        "accountId": calendar_account,
-        "destroy": [target],
-        "sendSchedulingMessages": SCHEDULE,
-    });
+    let args = match deletion.occurrence_target() {
+        None => json!({
+            "accountId": calendar_account,
+            "destroy": [target],
+            "sendSchedulingMessages": SCHEDULE,
+        }),
+        Some(occurrence) => {
+            let base = base.ok_or_else(|| {
+                JmapError::protocol(
+                    "removing one occurrence needs the event the caller read: whether the \
+                     series is already overridden decides whether a pointer into \
+                     recurrenceOverrides addresses anything",
+                )
+            })?;
+            let update = exclusion(base, &occurrence.start)?;
+            return apply_update(executor, calendar_account, target, update).await;
+        }
+    };
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
     let call = req.invoke("CalendarEvent/set", args);

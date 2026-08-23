@@ -157,7 +157,7 @@ pub(crate) async fn storing_an_invitation_is_a_guarded_create(
         .await
         .expect("still present");
     provider
-        .delete_event(account, &EventDeletion::of(&final_copy))
+        .delete_event(account, None, &EventDeletion::of(&final_copy))
         .await
         .expect("clean up");
 }

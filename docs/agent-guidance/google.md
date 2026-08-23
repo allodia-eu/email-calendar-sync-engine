@@ -241,6 +241,17 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
     `events.insert`, which mints its own). Nothing is mailed. That is the only way to get a
     real `needsAction` invitation on a single test account.
 
+- **Removing one occurrence: the id is derived from the original start in UTC.**
+  `<eventId>_<YYYYMMDDThhmmssZ>` for a timed series, `<eventId>_<YYYYMMDD>` for an all-day
+  one. The UTC half is why the neutral `Occurrence` carries a resolved instant beside the
+  wall clock: no other transport needs one, and no adapter carries tzdata. Measured — the
+  derived `DELETE` answers `204`, and the cancelled instance then appears in `events.list`
+  as a `status: "cancelled"` entry carrying `recurringEventId`, which `cal_fetch` already
+  reports as a removal. So unlike Graph, the cancellation *is* visible to a delta sync. An
+  instant the rule does not produce answers `404`, which an idempotent delete reads as
+  already-gone — which is why the live test asserts on the delta's removal set, never on
+  the call succeeding.
+
 ## Testing (3-tier, mirroring Graph — `AGENTS.md` offline-mock caveat)
 
 1. **Offline** (always green): normalizers + error mapping against scrubbed captured

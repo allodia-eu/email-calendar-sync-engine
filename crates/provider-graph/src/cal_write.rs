@@ -156,26 +156,57 @@ fn build_rsvp(rsvp: &EventRsvp) -> Value {
 
 /// Deletes `deletion.event` via `DELETE /me/events/{id}`, guarded by the ETag it was read
 /// at. An event that is **already gone** (`404`) is success — the delete is idempotent.
+///
+/// One **occurrence** is deleted the same way, at a *derived* id: Graph addresses an
+/// occurrence as `OID.<seriesMasterId>.<local date>`, the shape it uses itself in the
+/// series master's `cancelledOccurrences`. So no `/instances` round trip is needed to
+/// find one — a `DELETE` on the derived id is enough, and the cancellation then appears in
+/// that list.
+///
+/// **The guard cannot travel with it.** `deletion.guard` is the *series'* ETag, and the
+/// occurrence is a different resource with a revision of its own; sending it would fail the
+/// precondition on an occurrence nobody had touched. So an occurrence delete is
+/// unconditional — a concurrent edit of that occurrence is overwritten rather than refused.
 pub(crate) async fn delete_event(
     client: &GraphClient,
     deletion: &EventDeletion,
 ) -> ProviderResult<()> {
-    let guard = deletion
-        .guard
-        .as_ref()
-        .and_then(|r| r.etag.as_ref())
-        .map(ETag::as_str);
+    let master = deletion.event.key().as_str();
+    let (id, guard) = match deletion.occurrence_target() {
+        None => (
+            master.to_owned(),
+            deletion
+                .guard
+                .as_ref()
+                .and_then(|r| r.etag.as_ref())
+                .map(ETag::as_str),
+        ),
+        Some(occurrence) => (occurrence_id(master, &occurrence.start), None),
+    };
     match client
-        .delete(
-            &client.url(&format!("/events/{}", deletion.event.key().as_str())),
-            guard,
-        )
+        .delete(&client.url(&format!("/events/{id}")), guard)
         .await
     {
         // A `404` — already deleted (or moved) — is idempotent success, like a clean delete.
         Ok(()) | Err(GraphError::Status { status: 404, .. }) => Ok(()),
         Err(other) => Err(other.into()),
     }
+}
+
+/// Graph's id for one occurrence of a series: `OID.<seriesMasterId>.<YYYY-MM-DD>`, where the
+/// date is the occurrence's **local** one.
+///
+/// ⚠️ A date names an occurrence only while no rule can produce two in a day, which is true
+/// of every rule the expander materializes (it has no sub-daily frequencies). A `HOURLY`
+/// series would need Graph's real occurrence id, read from `/instances`.
+fn occurrence_id(master: &str, start: &CalendarDateTime) -> String {
+    let date = calendar_date_of(start);
+    format!(
+        "OID.{master}.{:04}-{:02}-{:02}",
+        date.year(),
+        date.month(),
+        date.day()
+    )
 }
 
 /// Builds the `POST …/events` create body from a draft.
@@ -202,15 +233,17 @@ fn build_create(draft: &EventDraft) -> ProviderResult<Value> {
         // `dayOfMonth`/`month` an RRULE leaves implicit in DTSTART.
         body.insert(
             "recurrence".to_owned(),
-            render_recurrence(&recurrence.rule, series_start_date(&draft.start))?,
+            render_recurrence(&recurrence.rule, calendar_date_of(&draft.start))?,
         );
     }
     Ok(Value::Object(body))
 }
 
-/// The calendar date a draft's start falls on, in its own terms — the anchor Graph's
-/// recurrence range and its absolute patterns are stated against.
-fn series_start_date(start: &CalendarDateTime) -> CalendarDate {
+/// The calendar date a scheduled value falls on, in its own terms.
+///
+/// The anchor Graph's recurrence range and its absolute patterns are stated against, and the
+/// date half of an occurrence id.
+fn calendar_date_of(start: &CalendarDateTime) -> CalendarDate {
     match start {
         CalendarDateTime::Date(date) => *date,
         CalendarDateTime::Floating(local) | CalendarDateTime::Zoned { local, .. } => {
@@ -257,7 +290,7 @@ fn build_patch(base: &Event, patch: &EventPatch) -> ProviderResult<Value> {
         // confirmation copy rather than to a refusal here (`calendar-semantics.md`).
         let value = match edit {
             RecurrenceEdit::Set(recurrence) => {
-                render_recurrence(&recurrence.rule, series_start_date(&base.start))?
+                render_recurrence(&recurrence.rule, calendar_date_of(&base.start))?
             }
             RecurrenceEdit::Clear => Value::Null,
         };

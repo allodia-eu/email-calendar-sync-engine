@@ -4,7 +4,7 @@
 //! actually changed may produce a different byte, plus the bookkeeping RFC 5545
 //! requires of a revised event (`DTSTAMP`, `LAST-MODIFIED`, `SEQUENCE`).
 
-use engine_core::time::CalendarDateTime;
+use engine_core::time::{CalendarDateTime, UtcDateTime};
 use engine_provider::{EventPatch, RecurrenceEdit, TextEdit};
 
 use super::{
@@ -90,20 +90,76 @@ pub(super) fn plan(
         set_text(doc, vevent, edits, "LOCATION", location);
     }
 
-    // A revised instance carries a fresh DTSTAMP (RFC 5545 §3.8.7.2), and a
-    // LAST-MODIFIED that would otherwise be a lie — but only if the event kept one.
-    // CalDAV is a client-stamped transport: the caller's stamp is what lands.
-    set_or_insert(doc, vevent, edits, "DTSTAMP", &format_utc(patch.stamp()));
+    revise(doc, vevent, edits, patch.stamp(), patch.is_significant());
+    Ok(())
+}
+
+/// The bookkeeping RFC 5545 requires of a revised event.
+///
+/// A fresh `DTSTAMP` (§3.8.7.2), and a `LAST-MODIFIED` that would otherwise be a lie — but
+/// only if the event kept one. CalDAV is a client-stamped transport: the caller's stamp is
+/// what lands. A change attendees care about also bumps `SEQUENCE` (§3.8.7.4).
+fn revise(
+    doc: &Document,
+    vevent: &Vevent,
+    edits: &mut Edits,
+    stamp: UtcDateTime,
+    significant: bool,
+) {
+    set_or_insert(doc, vevent, edits, "DTSTAMP", &format_utc(stamp));
     if let Some(group) = vevent.property(doc, "LAST-MODIFIED") {
-        replace(
-            edits,
-            group,
-            format!("LAST-MODIFIED:{}", format_utc(patch.stamp())),
-        );
+        replace(edits, group, format!("LAST-MODIFIED:{}", format_utc(stamp)));
     }
-    if patch.is_significant() {
+    if significant {
         bump_sequence(doc, vevent, edits);
     }
+}
+
+/// Plans the removal of one occurrence from a series: an `EXDATE` naming it, and the loss of
+/// any override the user had made to it.
+///
+/// The exclusion goes in as its **own** `EXDATE` line rather than being merged into one the
+/// event already carries. The property may repeat (RFC 5545 §3.8.5.1), and merging would
+/// mean rewriting a line whose `TZID` and value list this edit has no business touching —
+/// against a patcher whose whole promise is that untouched bytes stay untouched.
+///
+/// The override has to go with it, for the same reason clearing the rule takes the overrides
+/// (see [`Resource::overrides`]): an override on an instant the rule no longer produces is
+/// not inert, it is an *extra* occurrence. Left behind, the occurrence the user just deleted
+/// would keep being drawn.
+///
+/// # Errors
+///
+/// Returns [`IcalError`] if the event does not recur (there is no occurrence to remove, only
+/// the event), if it has no `DTSTART`, or if the occurrence is named in a different time
+/// form from the series — which would name no instance of it.
+pub(super) fn exclude(
+    doc: &Document,
+    master: &Vevent,
+    resource: &Resource,
+    occurrence: &CalendarDateTime,
+    stamp: UtcDateTime,
+    edits: &mut Edits,
+) -> Result<(), IcalError> {
+    if !master.is_recurring(doc) {
+        return Err(IcalError::new(
+            "cannot remove one occurrence of an event that does not recur; delete the event",
+        ));
+    }
+    let start = master
+        .date_time(doc, "DTSTART")
+        .transpose()?
+        .ok_or_else(|| IcalError::new("event has no DTSTART"))?;
+    ensure_same_form(&start, occurrence, "EXDATE")?;
+
+    insert(doc, master, edits, &date_time_line("EXDATE", occurrence));
+    if let Some(overridden) = resource.override_for(doc, occurrence) {
+        for group in overridden.groups() {
+            remove(edits, group);
+        }
+    }
+    // Cancelling an occurrence is exactly the kind of change an attendee needs to hear about.
+    revise(doc, master, edits, stamp, true);
     Ok(())
 }
 

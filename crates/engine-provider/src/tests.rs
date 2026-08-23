@@ -334,7 +334,7 @@ async fn calendar_write_rejections<P: Provider>(
             .unwrap_err()
             .class(),
         provider
-            .delete_event(&account(), &EventDeletion::of(&base))
+            .delete_event(&account(), Some(&base), &EventDeletion::of(&base))
             .await
             .unwrap_err()
             .class(),

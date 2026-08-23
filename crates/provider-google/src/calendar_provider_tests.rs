@@ -157,7 +157,7 @@ async fn create_patch_delete_route_through_the_provider() {
     );
     assert!(p.patch_event(&account(), &base, &edit).await.is_ok());
     assert!(
-        p.delete_event(&account(), &EventDeletion::of(&base))
+        p.delete_event(&account(), None, &EventDeletion::of(&base))
             .await
             .is_ok()
     );

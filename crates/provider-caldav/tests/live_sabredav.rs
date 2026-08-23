@@ -362,3 +362,14 @@ async fn sabredav_a_rule_can_be_changed_and_removed() {
     let _serial = common::serial_guard().await;
     common::recurrence::a_rule_can_be_changed_and_removed(&provider, &account).await;
 }
+
+/// Removing one occurrence takes the user's edit to it along, and leaves the rest.
+#[tokio::test]
+async fn sabredav_an_occurrence_can_be_removed() {
+    let Some((provider, account)) = write_provider("sabredav_an_occurrence_can_be_removed").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::recurrence::an_occurrence_can_be_removed(&provider, &account).await;
+}

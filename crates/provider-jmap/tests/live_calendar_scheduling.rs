@@ -229,7 +229,7 @@ async fn jmap_cancelling_a_meeting_reaches_the_attendee() {
 
     parties
         .organizer_jmap
-        .delete_event(&organizer_account(), &EventDeletion::of(&theirs))
+        .delete_event(&organizer_account(), None, &EventDeletion::of(&theirs))
         .await
         .expect("the organizer cancels over JMAP");
 

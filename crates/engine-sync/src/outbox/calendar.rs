@@ -204,14 +204,29 @@ where
     .await
 }
 
-/// Deletes an event through the outbox. Returns the durable op id; the next sync tombstones
-/// the local row.
+/// Deletes an event — or one of its occurrences — through the outbox. Returns the durable op
+/// id; the next sync tombstones the local row (or re-expands the series without that
+/// occurrence).
+///
+/// `base` is the event **as the caller read it**, and only a
+/// [`DeleteTarget::Occurrence`](engine_provider::DeleteTarget::Occurrence) needs it: removing
+/// one occurrence is a rewrite of the series on a document transport, which runs over the
+/// document the caller read. It stays out of the [`EventDeletion`] for the same reason
+/// `patch_calendar_event`'s does — the durable payload records the *intent*, so a recovery
+/// retry re-applies it to a freshly fetched base rather than to a stale one.
 ///
 /// # Errors
 ///
 /// Returns [`SyncError::Provider`] if the delete fails (after recording it),
 /// [`SyncError::Store`] on a store failure, or [`SyncError::Outbox`] if the request cannot
 /// be encoded or the just-enqueued op is not claimable.
+// One argument past the lint's taste, and they do not fold — the same split as
+// `patch_calendar_event`: (worker, ttl) and the idempotency key belong to the *outbox*,
+// while `base` and the deletion belong to the write.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the outbox's lease params plus the write's base and intent, which must stay separate"
+)]
 pub async fn delete_calendar_event<P, S>(
     provider: &P,
     store: &S,
@@ -219,6 +234,7 @@ pub async fn delete_calendar_event<P, S>(
     worker: WorkerId,
     ttl: Duration,
     idempotency: &str,
+    base: Option<&Event>,
     deletion: &EventDeletion,
 ) -> Result<PendingOpId, SyncError>
 where
@@ -236,7 +252,7 @@ where
     )
     .await?;
 
-    match provider.delete_event(account, deletion).await {
+    match provider.delete_event(account, base, deletion).await {
         Ok(()) => {
             store
                 .mark_pending_op(

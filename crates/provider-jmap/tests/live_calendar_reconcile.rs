@@ -107,7 +107,7 @@ async fn a_delta_redelivers_our_own_write() {
     let (events, _) = snapshot(&provider).await;
     if let Some(stale) = events.iter().find(|e| e.uid.as_str() == UID) {
         provider
-            .delete_event(&account(), &EventDeletion::of(stale))
+            .delete_event(&account(), None, &EventDeletion::of(stale))
             .await
             .expect("clean up");
     }
@@ -175,7 +175,7 @@ async fn a_delta_redelivers_our_own_write() {
 
     // ---- Destroy: the delta must report it as removed, so the store tombstones it. ----
     provider
-        .delete_event(&account(), &EventDeletion::of(edited))
+        .delete_event(&account(), None, &EventDeletion::of(edited))
         .await
         .expect("destroy");
 

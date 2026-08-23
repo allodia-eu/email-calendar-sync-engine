@@ -272,6 +272,7 @@ async fn clean_up(parties: &Parties, uid: &Uid) {
             .attendee
             .delete_event(
                 &parties.attendee_account,
+                None,
                 &EventDeletion::unconditional(mine.id.clone(), uid.clone()),
             )
             .await;

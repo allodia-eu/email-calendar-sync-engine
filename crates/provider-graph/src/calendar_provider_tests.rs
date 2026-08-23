@@ -204,7 +204,7 @@ async fn create_patch_delete_dispatch_to_the_writer() {
     assert!(provider.patch_event(&account(), &base, &edit).await.is_ok());
     assert!(
         provider
-            .delete_event(&account(), &EventDeletion::of(&base))
+            .delete_event(&account(), None, &EventDeletion::of(&base))
             .await
             .is_ok()
     );

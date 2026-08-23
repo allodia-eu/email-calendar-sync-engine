@@ -12,12 +12,13 @@
 use core::num::NonZeroU32;
 
 use engine_core::{
-    calendar::{Frequency, NDay, RecurrenceBound, RecurrenceRule, Weekday},
+    calendar::{Frequency, NDay, RecurrenceBound, RecurrenceOverride, RecurrenceRule, Weekday},
     ids::{AccountId, Uid},
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
 use engine_provider::{
-    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider,
+    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget,
+    Provider,
 };
 use provider_caldav::CalDavProvider;
 
@@ -88,7 +89,7 @@ pub(crate) async fn create_carries_the_rule(provider: &CalDavProvider, account: 
     let mut base = made.clone();
     base.revisions = created.revisions.clone();
     provider
-        .delete_event(account, &EventDeletion::of(&base))
+        .delete_event(account, None, &EventDeletion::of(&base))
         .await
         .expect("delete the probe series");
 }
@@ -149,7 +150,7 @@ pub(crate) async fn an_until_is_written_in_utc(provider: &CalDavProvider, accoun
     let mut base = made.clone();
     base.revisions = created.revisions.clone();
     provider
-        .delete_event(account, &EventDeletion::of(&base))
+        .delete_event(account, None, &EventDeletion::of(&base))
         .await
         .expect("delete the probe series");
 }
@@ -247,7 +248,100 @@ pub(crate) async fn a_rule_can_be_changed_and_removed(
     let mut base = single.clone();
     base.revisions = cleared.revisions.clone();
     provider
-        .delete_event(account, &EventDeletion::of(&base))
+        .delete_event(account, None, &EventDeletion::of(&base))
         .await
         .expect("delete the probe event");
+}
+
+/// Removing **one occurrence**, including one the user had already edited.
+///
+/// The offline suite proves the document this builds; only a server says whether it accepts
+/// it and hands the occurrence back as excluded. The second half is the one that cannot be
+/// reasoned about from the bytes: an override whose instant the rule no longer produces is
+/// materialized as an *added* occurrence, so a leftover would keep drawing the very
+/// occurrence the user deleted — at the time they had moved it to.
+pub(crate) async fn an_occurrence_can_be_removed(provider: &CalDavProvider, account: &AccountId) {
+    const UID: &str = "live-caldav-occurrence-delete@test.local";
+    let uid = Uid::new(UID).unwrap();
+    pre_clean(provider, account, &uid).await;
+
+    let created = provider
+        .create_event(
+            account,
+            &EventDraft::new(
+                provider.calendar_id(),
+                uid.clone(),
+                "Live occurrence delete",
+                amsterdam("2026-06-01T09:30:00"),
+                amsterdam("2026-06-01T10:00:00"),
+                stamp(),
+            )
+            .repeating(DraftRecurrence::new(weekly_on_monday())),
+        )
+        .await
+        .expect("create a recurring event");
+
+    // ---- Edit the 8th's occurrence, so the removal has an override to take with it. ----
+    let mut base = require(provider, account, UID).await;
+    base.revisions = created.revisions.clone();
+    let edited = provider
+        .patch_event(
+            account,
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Instance(amsterdam("2026-06-08T09:30:00")),
+                EventPatch::new(stamp())
+                    .summary("Moved to the afternoon")
+                    .start(amsterdam("2026-06-08T14:00:00"))
+                    .end(amsterdam("2026-06-08T14:30:00")),
+            ),
+        )
+        .await
+        .expect("override one occurrence");
+
+    // ---- Remove that occurrence, and a second one nobody had touched. ----
+    let mut revisions = edited.revisions.clone();
+    for removed in ["2026-06-08T09:30:00", "2026-06-15T09:30:00"] {
+        let mut base = require(provider, account, UID).await;
+        base.revisions = revisions.clone();
+        provider
+            .delete_event(
+                account,
+                Some(&base),
+                &EventDeletion::occurrence(
+                    &base,
+                    Occurrence::starting(amsterdam(removed)),
+                    stamp(),
+                ),
+            )
+            .await
+            .expect("remove one occurrence");
+        // The PUT reports the new ETag through the next read, not through the delete.
+        revisions = require(provider, account, UID).await.revisions;
+    }
+
+    let after = require(provider, account, UID).await;
+    let recurrence = after.recurrence.as_ref().expect("still a series");
+    for removed in ["2026-06-08T09:30:00", "2026-06-15T09:30:00"] {
+        assert_eq!(
+            recurrence.overrides.get(&removed.parse().unwrap()),
+            Some(&RecurrenceOverride::Excluded),
+            "{removed} is excluded, and the edit that was on it went with it: {:?}",
+            recurrence.overrides
+        );
+    }
+    assert_eq!(
+        recurrence.rules,
+        vec![weekly_on_monday()],
+        "the rest of the series is untouched"
+    );
+    assert_eq!(after.title, "Live occurrence delete");
+
+    let mut base = after.clone();
+    base.revisions = revisions;
+    provider
+        .delete_event(account, Some(&base), &EventDeletion::of(&base))
+        .await
+        .expect("delete the probe series");
 }
