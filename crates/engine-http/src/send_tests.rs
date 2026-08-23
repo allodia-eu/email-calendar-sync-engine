@@ -168,8 +168,13 @@ async fn a_retry_after_given_as_a_date_is_honoured_too() {
     assert_eq!(response.status().as_u16(), 200);
     assert_eq!(served.load(Ordering::SeqCst), 2);
     let waited = started.elapsed();
+    // The band absorbs a second the header cannot carry: `fmt_http_date` truncates to whole
+    // seconds, so the instant it names is up to a second nearer than the 20s asked for, and
+    // the delay is then measured from a `now` read after the round trip. Both losses are on
+    // the same side, and 18s is still three orders of magnitude from the quarter-second the
+    // backoff schedule would have chosen, which is what this distinguishes.
     assert!(
-        waited >= Duration::from_secs(19) && waited <= Duration::from_secs(22),
+        waited >= Duration::from_secs(18) && waited <= Duration::from_secs(22),
         "waited {waited:?}, want the ~20s the date named",
     );
     assert!(
