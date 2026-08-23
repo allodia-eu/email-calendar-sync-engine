@@ -361,3 +361,108 @@ async fn live_calendar_removes_one_occurrence_and_keeps_the_series() {
         .await
         .expect("delete the probe series");
 }
+
+/// Editing **one occurrence** of a series, at the id Graph derives for it.
+///
+/// ⚠️ Same shape as the removal beside it, and the same limit: Graph returns an edited
+/// occurrence as an `exception` entry, and the reader keeps only masters and single events
+/// (`cal_fetch::keep`), so the edit is not yet visible through this suite.
+///
+/// What is asserted is the failure that would cost the user their series: an id resolving to
+/// the **master**, so that renaming one Tuesday renames every Tuesday. The id's *date* is
+/// pinned offline as a string; only a server can say what the id resolves to.
+#[tokio::test]
+async fn live_calendar_edits_one_occurrence_and_leaves_the_series_alone() {
+    const TITLE: &str = "provider-graph live occurrence-edit probe";
+
+    let Some(token) = token() else {
+        eprintln!("skipping live_calendar_edits_one_occurrence…: GRAPH_ACCESS_TOKEN unset");
+        return;
+    };
+
+    let placeholder = CalendarId::try_from("placeholder").unwrap();
+    let calendars = calendar_provider(&token, placeholder)
+        .sync_calendars(&account(), None)
+        .await
+        .expect("sync calendars");
+    let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
+        panic!("expected a calendar snapshot");
+    };
+    let calendar_id = objects
+        .iter()
+        .find(|c| c.is_default)
+        .expect("a default calendar")
+        .id
+        .clone();
+    let provider = calendar_provider(&token, calendar_id.clone());
+
+    let mut mondays = RecurrenceRule::new(Frequency::Weekly);
+    mondays.by_day = vec![NDay {
+        day: Weekday::Mo,
+        nth_of_period: None,
+    }];
+    mondays.bound = RecurrenceBound::Count(NonZeroU32::new(6).unwrap());
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let created = provider
+        .create_event(
+            &account(),
+            &EventDraft::new(
+                calendar_id.clone(),
+                Uid::new(format!("live-occ-edit-{unique}@allodia-e2e.test")).unwrap(),
+                TITLE,
+                zoned("2026-09-07T09:30:00"),
+                zoned("2026-09-07T10:00:00"),
+                "2026-08-23T10:00:00Z".parse().unwrap(),
+            )
+            .repeating(DraftRecurrence::new(mondays)),
+        )
+        .await
+        .expect("create a recurring event");
+
+    let base = base_from(
+        &calendar_id,
+        created.event.as_str(),
+        &created.uid,
+        created.revisions.clone(),
+    );
+    provider
+        .patch_event(
+            &account(),
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Instance(Occurrence::starting(zoned("2026-09-14T09:30:00"))),
+                EventPatch::new("2026-08-23T10:05:00Z".parse().unwrap())
+                    .summary("Moved to the afternoon"),
+            ),
+        )
+        .await
+        .expect("edit one occurrence");
+
+    let events = provider
+        .sync_events(&account(), None)
+        .await
+        .expect("sync events");
+    let SyncUpdate::Snapshot { objects, .. } = &events.update else {
+        panic!("expected an event snapshot");
+    };
+    let series = objects
+        .iter()
+        .find(|e| e.id == created.event)
+        .expect("the series survived the edit of one of its occurrences");
+    assert_eq!(
+        series.title, TITLE,
+        "the series keeps its own title — an id that resolved to it would have renamed \
+         every occurrence"
+    );
+    assert!(series.is_recurring(), "and it is still a series");
+
+    provider
+        .delete_event(&account(), None, &EventDeletion::of(&base))
+        .await
+        .expect("delete the probe series");
+}

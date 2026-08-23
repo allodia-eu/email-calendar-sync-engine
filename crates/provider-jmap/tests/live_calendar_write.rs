@@ -33,7 +33,7 @@ use engine_core::{
     time::CalendarDateTime,
 };
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider, WriteGuard,
+    EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget, Provider, WriteGuard,
 };
 
 // ---------------------------------------------------------------------------
@@ -375,7 +375,7 @@ async fn recurrence_override_edit() {
             &series,
             &EventEdit::new(
                 &series,
-                PatchTarget::Instance(override_at.clone()),
+                PatchTarget::Instance(Occurrence::starting(override_at.clone())),
                 EventPatch::new(stamp()).summary("Standup (occurrence renamed)"),
             ),
         )
@@ -404,7 +404,7 @@ async fn recurrence_override_edit() {
             &edited,
             &EventEdit::new(
                 &edited,
-                PatchTarget::Instance(override_at),
+                PatchTarget::Instance(Occurrence::starting(override_at)),
                 EventPatch::new(stamp()).summary(SEED_OVERRIDE_TITLE),
             ),
         )

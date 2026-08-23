@@ -49,19 +49,27 @@ pub(crate) async fn create_event(
     receipt(&created, draft.uid.clone())
 }
 
-/// Applies `edit` to `base` via `PATCH …/events/{id}`, guarded by the ETag `base` was read
-/// at. Only [`PatchTarget::Series`] is supported; a single-occurrence edit is deferred
-/// (per-instance overrides are staged — `calendar-semantics.md`).
+/// Applies `edit` to `base` via `PATCH …/events/{id}`, guarded by the ETag `base` was read at.
+///
+/// An [`Instance`](PatchTarget::Instance) target patches the occurrence at the id Google
+/// derives for it ([`occurrence_id`]) — the same id a per-occurrence delete addresses, and the
+/// reason the ETag cannot travel with it: that occurrence is a resource of its own with a
+/// revision this base does not carry, so an instance edit is **unguarded**.
+///
+/// The `base` still decides the event's time *form*, which a move must not change, whichever
+/// occurrence it lands on.
 pub(crate) async fn patch_event(
     client: &GoogleClient,
     calendar: &str,
     base: &Event,
     edit: &EventEdit,
 ) -> ProviderResult<EventWriteReceipt> {
-    if !matches!(edit.target, PatchTarget::Series) {
+    if let PatchTarget::Instance(_) = &edit.target
+        && edit.patch.recurrence_edit().is_some()
+    {
         return Err(ProviderError::invalid_state(
-            "Google calendar patch supports only whole-series edits; per-occurrence edits are not \
-             yet supported",
+            "a recurrence edit targets the series, never one occurrence; an occurrence has no \
+             rule of its own",
         ));
     }
     // An empty patch changes nothing; skip the round trip and report the current revision.
@@ -72,22 +80,27 @@ pub(crate) async fn patch_event(
             base.revisions.clone(),
         ));
     }
+    let (id, guard) = match &edit.target {
+        PatchTarget::Series => (base.id.key().as_str().to_owned(), if_match(base)),
+        PatchTarget::Instance(occurrence) => {
+            (occurrence_id(base.id.key().as_str(), occurrence)?, None)
+        }
+    };
     let body = build_patch(base, &edit.patch)?;
     let updated = client
         .patch(
-            &client.url(&format!(
-                "{}/{}",
-                events_path(calendar),
-                base.id.key().as_str()
-            )),
+            &client.url(&format!("{}/{id}", events_path(calendar))),
             "application/json",
-            if_match(base),
+            guard,
             serde_json::to_vec(&body).map_err(GoogleError::from)?,
         )
         .await?;
-    match updated {
-        Some(event) => receipt(&event, base.uid.clone()),
-        None => Ok(EventWriteReceipt::new(
+    // An instance patch answers with the *occurrence*, whose id is not the series'. The
+    // receipt names what the caller asked about — the event they hold — so the echo is read
+    // only for a series edit.
+    match (updated, &edit.target) {
+        (Some(event), PatchTarget::Series) => receipt(&event, base.uid.clone()),
+        _ => Ok(EventWriteReceipt::new(
             base.id.clone(),
             base.uid.clone(),
             RevisionTokens::none(),

@@ -157,3 +157,61 @@ async fn removing_one_occurrence_deletes_that_occurrence_not_the_series() {
     )]);
     delete_event(&client, "primary", &deletion).await.unwrap();
 }
+
+#[tokio::test]
+async fn an_occurrence_edit_patches_the_id_google_derives_for_it() {
+    // The route is the assertion: an edit that fell back to the series id would rewrite
+    // every occurrence instead of the one the user changed.
+    let client = fake_client_fallible(vec![(
+        "/events/evt-1_20260810T070000Z",
+        Ok(serde_json::Value::Null),
+    )]);
+    let edit = EventEdit::new(
+        &base_event(),
+        PatchTarget::Instance(Occurrence::at(
+            zoned("2026-08-10T09:00:00"),
+            "2026-08-10T07:00:00Z".parse().unwrap(),
+        )),
+        EventPatch::new(stamp()).summary("Moved"),
+    );
+    let receipt = patch_event(&client, "cal-1", &base_event(), &edit)
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt.event,
+        base_event().id,
+        "the receipt names the event the caller holds, never the occurrence's own id"
+    );
+}
+
+#[tokio::test]
+async fn an_occurrence_edit_without_a_resolved_instant_is_refused() {
+    // Google names the occurrence by its original start in UTC, and the wall clock written
+    // as if it were UTC would patch a different occurrence — or none, which answers `404`
+    // and would surface as a failed edit rather than a wrong one. Either way, refuse first.
+    let client = fake_client_fallible(vec![]);
+    let edit = EventEdit::new(
+        &base_event(),
+        PatchTarget::Instance(Occurrence::starting(zoned("2026-08-10T09:00:00"))),
+        EventPatch::new(stamp()).summary("Moved"),
+    );
+    let err = patch_event(&client, "cal-1", &base_event(), &edit)
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), FailureClass::InvalidState);
+    assert!(err.to_string().contains("Occurrence::at"), "{err}");
+}
+
+#[tokio::test]
+async fn an_occurrence_edit_cannot_carry_a_recurrence_change() {
+    let client = fake_client_fallible(vec![]);
+    let edit = EventEdit::new(
+        &base_event(),
+        PatchTarget::Instance(Occurrence::starting(zoned("2026-08-10T09:00:00"))),
+        EventPatch::new(stamp()).recurrence(DraftRecurrence::new(weekly_on_monday())),
+    );
+    let err = patch_event(&client, "cal-1", &base_event(), &edit)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("targets the series"), "{err}");
+}

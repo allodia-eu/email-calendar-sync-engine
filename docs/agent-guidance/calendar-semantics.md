@@ -432,6 +432,21 @@ this section fixes the *semantics* they share.
 
   A host that does not ask the user which one it meant will eventually rewrite someone's
   weekly standup for all time.
+- **Naming one occurrence takes more than a wall clock.** `PatchTarget::Instance` and a
+  per-occurrence delete both carry an `Occurrence`: the **original start**, in the series' own
+  time form, plus the same moment as an **instant** where the caller could resolve one. Three
+  of the four transports need only the wall clock — iCalendar's `RECURRENCE-ID`, JSCalendar's
+  `recurrenceOverrides` key, and the local date at the end of a Graph occurrence id — but
+  Google addresses an occurrence by that start **in UTC**, and resolving a wall clock through a
+  zone needs tzdata no adapter carries. So the caller states it, exactly as a recurrence ending
+  at a wall clock states its own resolved bound.
+- **On Graph and Google, editing one occurrence is unguarded.** Both patch a *derived* id, and
+  that occurrence is a resource with a revision of its own which the series' `ETag` is not —
+  sending it would fail the precondition on an occurrence nobody had touched. CalDAV and JMAP,
+  which express the same edit as a change to the series, keep the series' guard. Same intent,
+  different concurrency: read
+  [`Capabilities::calendar_write_guard`](engine_provider::Capabilities::calendar_write_guard)
+  for what a guard is worth, and know that on those two it is worth nothing for an occurrence.
 - **Materializing an override the series does not have yet is *not* uniform, and the neutral
   type must not pretend it is.** CalDAV has to do it by hand: copy the master's `VEVENT`
   (attendees, alarms, `X-` props and all), drop its series-level `RRULE`/`RDATE`/`EXDATE`

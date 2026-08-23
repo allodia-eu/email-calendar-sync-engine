@@ -101,7 +101,7 @@ pub fn patch_event_ical(
             plan::plan(&doc, master, patch, &mut edits)?;
             plan::set_recurrence(&doc, master, &resource, patch, &mut edits)?;
         }
-        PatchTarget::Instance(recurrence_id) => {
+        PatchTarget::Instance(occurrence) => {
             // A single occurrence has no rule of its own — it is one instance *of* a rule
             // — so there is nothing a recurrence edit could mean here, and guessing would
             // either rewrite the whole series or write an RRULE onto an override.
@@ -111,6 +111,7 @@ pub fn patch_event_ical(
                      occurrence has no rule of its own",
                 ));
             }
+            let recurrence_id = &occurrence.start;
             if let Some(existing) = resource.override_for(&doc, recurrence_id) {
                 // The series is already overridden here: patch that VEVENT in place.
                 plan::plan(&doc, existing, patch, &mut edits)?;

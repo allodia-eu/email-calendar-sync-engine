@@ -241,6 +241,7 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
     `events.insert`, which mints its own). Nothing is mailed. That is the only way to get a
     real `needsAction` invitation on a single test account.
 
+- **Editing one occurrence uses the same derived id as removing one**, unguarded for the same reason: the `ETag` the caller read belongs to the series, not to the occurrence. The response echoes the *occurrence*, whose id is not the series', so the receipt keeps naming the event the caller holds rather than reporting an id the store has never seen.
 - **Removing one occurrence: the id is derived from the original start in UTC.**
   `<eventId>_<YYYYMMDDThhmmssZ>` for a timed series, `<eventId>_<YYYYMMDD>` for an all-day
   one. The UTC half is why the neutral `Occurrence` carries a resolved instant beside the

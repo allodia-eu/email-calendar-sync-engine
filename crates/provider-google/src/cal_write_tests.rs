@@ -160,27 +160,14 @@ fn build_patch_rejects_a_form_change() {
 }
 
 #[tokio::test]
-async fn patch_event_empty_is_a_no_op_and_a_per_occurrence_target_is_refused() {
-    let client = fake_client_fallible(vec![]);
+async fn patch_event_with_an_empty_patch_calls_nothing() {
     // An empty patch neither errors nor calls the server; it reports the base revision.
+    let client = fake_client_fallible(vec![]);
     let edit = EventEdit::new(&base_event(), PatchTarget::Series, EventPatch::new(stamp()));
     let receipt = patch_event(&client, "cal-1", &base_event(), &edit)
         .await
         .unwrap();
     assert_eq!(receipt.revisions.etag, Some(ETag::new("\"v7\"")));
-    // A per-occurrence edit is deferred → refused.
-    let per_occ = EventEdit::new(
-        &base_event(),
-        PatchTarget::Instance(zoned("2026-08-10T09:00:00")),
-        EventPatch::new(stamp()).summary("x"),
-    );
-    assert_eq!(
-        patch_event(&client, "cal-1", &base_event(), &per_occ)
-            .await
-            .unwrap_err()
-            .class(),
-        FailureClass::InvalidState
-    );
 }
 
 #[tokio::test]
