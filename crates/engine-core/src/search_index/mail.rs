@@ -64,6 +64,12 @@ pub struct MailRow {
     pub flags: MailFlags,
     /// Whether the message has a non-inline attachment.
     pub has_attachment: bool,
+    /// How large the provider says the message is, in octets, when it says at all.
+    ///
+    /// `None` means *no opinion* — an adapter that reports no size — never "small". Stored so a
+    /// caller can ask "which messages are under this size" in SQL; the payload carries the same
+    /// value, but only as JSON no index can reach.
+    pub size_octets: Option<u64>,
     /// The first sender's display name, if the header carried one.
     pub from_name: Option<String>,
     /// The first sender's address, as the header spelled it.
@@ -159,6 +165,7 @@ pub fn project_message(message: &Message) -> MailProjection {
             date_utc: message.received_at.or(message.sent_at),
             flags: MailFlags::from_keywords(&message.keywords),
             has_attachment: message.has_attachment,
+            size_octets: message.size,
             from_name: sender.and_then(|address| address.name.clone()),
             from_addr: sender.map(|address| address.email.as_str().to_owned()),
             subject: message.envelope.subject.clone(),

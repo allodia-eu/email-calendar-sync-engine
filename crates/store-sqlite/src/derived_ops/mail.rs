@@ -38,9 +38,9 @@ pub(crate) fn upsert_message(
     sql::execute(
         tx,
         "INSERT INTO message (scope_key, provider_key, account, thread_id, message_id, date_utc,
-                              flags, has_attachment, from_name, from_addr, subject, preview,
-                              last_modified, etag, change_key, mod_seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                              flags, has_attachment, size_octets, from_name, from_addr, subject,
+                              preview, last_modified, etag, change_key, mod_seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(scope_key, provider_key) DO UPDATE SET
              account = excluded.account,
              thread_id = COALESCE(excluded.thread_id, message.thread_id),
@@ -48,6 +48,7 @@ pub(crate) fn upsert_message(
              date_utc = excluded.date_utc,
              flags = excluded.flags,
              has_attachment = excluded.has_attachment,
+             size_octets = COALESCE(excluded.size_octets, message.size_octets),
              from_name = excluded.from_name,
              from_addr = excluded.from_addr,
              subject = excluded.subject,
@@ -65,6 +66,7 @@ pub(crate) fn upsert_message(
             row.date_utc.map(convert::instant_to_text),
             i64::from(row.flags.bits()),
             i64::from(row.has_attachment),
+            row.size_octets.and_then(|size| i64::try_from(size).ok()),
             row.from_name.as_deref(),
             row.from_addr.as_deref(),
             row.subject.as_deref(),

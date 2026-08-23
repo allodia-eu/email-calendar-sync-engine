@@ -279,3 +279,56 @@ fn re_expansion_updates_version_and_keeps_instants_byte_stable() {
     assert_eq!(end, "2026-03-01T09:15:00Z");
     assert_eq!(version, "2025b");
 }
+
+/// A `MailRow` carrying only what the size rule needs.
+fn sized_row(key: &str, size: Option<u64>) -> engine_core::search_index::MailRow {
+    engine_core::search_index::MailRow {
+        key: pk(key),
+        thread_id: None,
+        message_id: None,
+        date_utc: None,
+        flags: engine_core::mail::MailFlags::default(),
+        has_attachment: false,
+        size_octets: size,
+        from_name: None,
+        from_addr: None,
+        subject: None,
+        preview: None,
+        revisions: engine_core::version::RevisionTokens::default(),
+        last_modified: None,
+    }
+}
+
+fn stored_size(conn: &Connection) -> Option<i64> {
+    conn.query_row("SELECT size_octets FROM message", [], |r| r.get(0))
+        .expect("one message row")
+}
+
+#[test]
+fn a_reported_size_is_stored_and_a_silent_re_fetch_does_not_erase_it() {
+    // The same "nothing to say, not clear it" rule `thread_id` and `preview` follow, and the
+    // one that matters most here: Graph reports no size at all, so an account that syncs the
+    // same message through two adapters — or an adapter that starts reporting and stops —
+    // must not lose the number a size cap decides on.
+    let mut conn = Connection::open_in_memory().expect("open");
+    crate::migrations::migrate(&mut conn).expect("schema");
+
+    let tx = conn.transaction().expect("tx");
+    mail::upsert_message(&tx, "s1", "acct", &sized_row("m1", Some(4_194_304))).expect("insert");
+    tx.commit().expect("commit");
+    assert_eq!(stored_size(&conn), Some(4_194_304));
+
+    let tx = conn.transaction().expect("tx");
+    mail::upsert_message(&tx, "s1", "acct", &sized_row("m1", None)).expect("re-fetch");
+    tx.commit().expect("commit");
+    assert_eq!(
+        stored_size(&conn),
+        Some(4_194_304),
+        "an adapter with no opinion must not clear a size another one reported",
+    );
+
+    let tx = conn.transaction().expect("tx");
+    mail::upsert_message(&tx, "s1", "acct", &sized_row("m1", Some(512))).expect("re-fetch");
+    tx.commit().expect("commit");
+    assert_eq!(stored_size(&conn), Some(512), "a new number still wins");
+}
