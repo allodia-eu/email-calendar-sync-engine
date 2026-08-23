@@ -350,3 +350,15 @@ async fn sabredav_write_reconciles_the_store() {
     let _serial = common::serial_guard().await;
     common::reconcile::read_your_writes(&provider, &account).await;
 }
+
+/// Changing a rule keeps the per-occurrence work; removing one takes it with it.
+#[tokio::test]
+async fn sabredav_a_rule_can_be_changed_and_removed() {
+    let Some((provider, account)) =
+        write_provider("sabredav_a_rule_can_be_changed_and_removed").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::recurrence::a_rule_can_be_changed_and_removed(&provider, &account).await;
+}

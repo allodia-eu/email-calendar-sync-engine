@@ -363,3 +363,39 @@ fn build_create_refuses_a_rule_graph_cannot_express() {
     let err = build_create(&draft().repeating(DraftRecurrence::new(by_set_pos))).unwrap_err();
     assert!(err.to_string().contains("BYSETPOS"), "{err}");
 }
+
+#[test]
+fn build_patch_sets_and_clears_the_recurrence() {
+    // Graph takes the structured pattern to set a rule and `null` to remove one; either
+    // way the server does the surgery.
+    let set = build_patch(
+        &base_event(),
+        &EventPatch::new(stamp()).recurrence(DraftRecurrence::new(weekly_on_monday())),
+    )
+    .unwrap();
+    assert_eq!(set["recurrence"]["pattern"]["type"], "weekly");
+
+    let cleared = build_patch(&base_event(), &EventPatch::new(stamp()).clear_recurrence()).unwrap();
+    assert!(
+        cleared["recurrence"].is_null(),
+        "null turns a series into one event"
+    );
+}
+
+#[test]
+fn a_patch_that_does_not_mention_recurrence_leaves_it_alone() {
+    // The third state: absent is not the same as cleared.
+    let body = build_patch(&base_event(), &EventPatch::new(stamp()).summary("Renamed")).unwrap();
+    assert!(body.get("recurrence").is_none());
+}
+
+#[test]
+fn a_recurrence_change_is_significant() {
+    // It moves when the meeting happens, so attendees must be told (RFC 5546 §3.2.8).
+    assert!(
+        EventPatch::new(stamp())
+            .recurrence(DraftRecurrence::new(weekly_on_monday()))
+            .is_significant()
+    );
+    assert!(EventPatch::new(stamp()).clear_recurrence().is_significant());
+}

@@ -15,7 +15,7 @@ use engine_core::{
 };
 use engine_provider::{
     EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWriteReceipt, PatchTarget,
-    ProviderError, ProviderResult, RsvpResponse, TextEdit,
+    ProviderError, ProviderResult, RecurrenceEdit, RsvpResponse, TextEdit,
 };
 use serde_json::{Map, Value, json};
 
@@ -246,6 +246,22 @@ fn build_patch(base: &Event, patch: &EventPatch) -> ProviderResult<Value> {
         // The end must keep the start's form (both endpoints are the same kind).
         guard_form(&base.start, end)?;
         body.insert("end".to_owned(), graph_datetime(end)?.0);
+    }
+    if let Some(edit) = patch.recurrence_edit() {
+        // `null` is how Graph turns a series back into a single event; the structured
+        // pattern is how it takes a new rule. Either way the *server* does the surgery.
+        //
+        // ⚠️ On Graph a rule change also discards every per-occurrence exception and
+        // cancellation the user made — measured, and Outlook's own behaviour. That is a
+        // property of this transport, not of the edit, so it belongs to the host's
+        // confirmation copy rather than to a refusal here (`calendar-semantics.md`).
+        let value = match edit {
+            RecurrenceEdit::Set(recurrence) => {
+                render_recurrence(&recurrence.rule, series_start_date(&base.start))?
+            }
+            RecurrenceEdit::Clear => Value::Null,
+        };
+        body.insert("recurrence".to_owned(), value);
     }
     Ok(Value::Object(body))
 }

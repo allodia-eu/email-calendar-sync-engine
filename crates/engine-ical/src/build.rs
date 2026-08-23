@@ -17,12 +17,8 @@
 //! [`unescape_text`](super::unfold::unescape_text), so a built document round-trips. Both
 //! are [`format`](super::format), shared with the patcher.
 
-use engine_core::{
-    calendar::{RecurrenceBound, UntilForm, format_rrule},
-    raw::RawIcal,
-    time::CalendarDateTime,
-};
-use engine_provider::{DraftRecurrence, EventDraft};
+use engine_core::raw::RawIcal;
+use engine_provider::EventDraft;
 
 use super::format::{date_time_line, escape_text, format_utc, strip_control};
 use crate::error::IcalError;
@@ -37,7 +33,7 @@ use crate::error::IcalError;
 /// Returns [`IcalError`] if the draft's recurrence cannot be written as an `RRULE`: a
 /// non-Gregorian rule (which would silently become Gregorian), or a rule ending at a wall
 /// clock on a zoned or UTC event with no resolved instant to render `UNTIL` from — see
-/// [`DraftRecurrence`].
+/// [`engine_provider::DraftRecurrence`].
 pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
     let mut ical = String::new();
     ical.push_str("BEGIN:VCALENDAR\r\n");
@@ -62,42 +58,15 @@ pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
         push_property(&mut ical, "LOCATION", &escape_text(location));
     }
     if let Some(recurrence) = &draft.recurrence {
-        push_property(&mut ical, "RRULE", &rrule_value(recurrence, &draft.start)?);
+        push_property(
+            &mut ical,
+            "RRULE",
+            &crate::patch::rrule_value(recurrence, &draft.start)?,
+        );
     }
     ical.push_str("END:VEVENT\r\n");
     ical.push_str("END:VCALENDAR\r\n");
     Ok(RawIcal::new(ical))
-}
-
-/// The `RRULE` value for a draft's recurrence, rendered in the `UNTIL` form the draft's
-/// own `DTSTART` requires (RFC 5545 §3.3.10).
-///
-/// A zoned or UTC `DTSTART` obliges `UNTIL` to be UTC, and the instant that takes is the
-/// caller's to resolve — this crate has no tzdata (`DraftRecurrence`). Refusing here is
-/// the point: emitting the wall clock instead would end the series on a different day for
-/// every reader outside the authoring zone.
-fn rrule_value(
-    recurrence: &DraftRecurrence,
-    start: &CalendarDateTime,
-) -> Result<String, IcalError> {
-    let until = match (start, &recurrence.rule.bound) {
-        // No UNTIL to render at all; the form is irrelevant.
-        (_, RecurrenceBound::Unbounded | RecurrenceBound::Count(_))
-        | (CalendarDateTime::Floating(_), RecurrenceBound::Until(_)) => UntilForm::Floating,
-        (CalendarDateTime::Date(_), RecurrenceBound::Until(_)) => UntilForm::Date,
-        (CalendarDateTime::Zoned { .. }, RecurrenceBound::Until(_)) => {
-            let at = recurrence.until.ok_or_else(|| {
-                IcalError::new(
-                    "a recurrence ending at a wall clock on a zoned event needs that clock \
-                     resolved to an instant: RFC 5545 requires UNTIL in UTC when DTSTART \
-                     carries a TZID, and resolving it needs tzdata this crate does not have. \
-                     Build the draft with DraftRecurrence::ending_at",
-                )
-            })?;
-            UntilForm::Utc(at)
-        }
-    };
-    format_rrule(&recurrence.rule, until).map_err(|e| IcalError::new(e.to_string()))
 }
 
 /// Appends one `NAME:VALUE` content line, CRLF-terminated (RFC 5545 §3.1). `value`
@@ -115,6 +84,7 @@ mod tests {
         ids::{CalendarId, EventId, Uid},
         time::{CalendarDate, CalendarDateTime, TimeZoneId, UtcDateTime},
     };
+    use engine_provider::DraftRecurrence;
 
     use super::{super::parse_calendar_object, *};
 

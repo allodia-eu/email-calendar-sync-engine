@@ -16,7 +16,9 @@ use engine_core::{
     ids::{AccountId, Uid},
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
-use engine_provider::{DraftRecurrence, EventDeletion, EventDraft, Provider};
+use engine_provider::{
+    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider,
+};
 use provider_caldav::CalDavProvider;
 
 use super::{pre_clean, require};
@@ -150,4 +152,102 @@ pub(crate) async fn an_until_is_written_in_utc(provider: &CalDavProvider, accoun
         .delete_event(account, &EventDeletion::of(&base))
         .await
         .expect("delete the probe series");
+}
+
+/// Changing the rule keeps the user's per-occurrence work; removing it takes that work
+/// with it and leaves one ordinary event.
+///
+/// Both halves need a real server: the patcher's output is only a claim until something
+/// stores it and hands it back, and the second half is the one where a leftover override
+/// would keep drawing occurrences under "does not repeat".
+pub(crate) async fn a_rule_can_be_changed_and_removed(
+    provider: &CalDavProvider,
+    account: &AccountId,
+) {
+    const UID: &str = "live-caldav-rule-edit@test.local";
+    let uid = Uid::new(UID).unwrap();
+    pre_clean(provider, account, &uid).await;
+
+    let created = provider
+        .create_event(
+            account,
+            &EventDraft::new(
+                provider.calendar_id(),
+                uid.clone(),
+                "Live rule edit",
+                amsterdam("2026-06-01T09:30:00"),
+                amsterdam("2026-06-01T10:00:00"),
+                stamp(),
+            )
+            .repeating(DraftRecurrence::new(weekly_on_monday())),
+        )
+        .await
+        .expect("create a recurring event");
+
+    // ---- Change the rule: every Wednesday instead of every Monday. ----
+    let mut wednesdays = RecurrenceRule::new(Frequency::Weekly);
+    wednesdays.by_day = vec![NDay {
+        day: Weekday::We,
+        nth_of_period: None,
+    }];
+    let mut base = require(provider, account, UID).await;
+    base.revisions = created.revisions.clone();
+    let changed = provider
+        .patch_event(
+            account,
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Series,
+                EventPatch::new(stamp()).recurrence(DraftRecurrence::new(wednesdays.clone())),
+            ),
+        )
+        .await
+        .expect("change the rule");
+
+    let after = require(provider, account, UID).await;
+    assert_eq!(
+        after.recurrence.as_ref().unwrap().rules,
+        vec![wednesdays],
+        "the server stored the new rule"
+    );
+
+    // ---- Remove it: the series becomes one event. ----
+    let mut base = after.clone();
+    base.revisions = changed.revisions.clone();
+    let cleared = provider
+        .patch_event(
+            account,
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Series,
+                EventPatch::new(stamp()).clear_recurrence(),
+            ),
+        )
+        .await
+        .expect("remove the rule");
+
+    let single = require(provider, account, UID).await;
+    assert!(
+        !single.is_recurring(),
+        "the event no longer recurs: {:?}",
+        single.recurrence
+    );
+    assert!(
+        single
+            .recurrence
+            .as_ref()
+            .is_none_or(|r| r.overrides.is_empty()),
+        "and carries no orphaned override to materialize as an extra occurrence: {:?}",
+        single.recurrence
+    );
+    assert_eq!(single.title, "Live rule edit", "it is still the same event");
+
+    let mut base = single.clone();
+    base.revisions = cleared.revisions.clone();
+    provider
+        .delete_event(account, &EventDeletion::of(&base))
+        .await
+        .expect("delete the probe event");
 }

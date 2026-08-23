@@ -4,7 +4,7 @@
 //!
 //! Split from `calendar_write_tests` to keep both files under the 500-line cap.
 
-use engine_provider::{DraftRecurrence, EventDraft};
+use engine_provider::{DraftRecurrence, EventDraft, EventPatch, PatchTarget};
 use serde_json::json;
 
 use super::{calendar_write_support::*, provider_test_support::*, *};
@@ -97,4 +97,66 @@ async fn a_zoned_until_stays_a_local_wall_clock_on_jmap() {
         args["create"]["new"]["recurrenceRule"]["until"],
         "2026-10-26T23:59:59"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Editing the rule
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_recurrence_edit_sets_or_removes_the_singular_property() {
+    let (p, exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
+    p.patch_event(
+        &account(),
+        &base(),
+        &edit(
+            &base(),
+            PatchTarget::Series,
+            EventPatch::new(stamp()).recurrence(DraftRecurrence::new(weekly_on_monday())),
+        ),
+    )
+    .await
+    .unwrap();
+    let (_, _, args) = exec.sole_call();
+    assert_eq!(
+        args["update"][EVENT]["recurrenceRule"]["frequency"],
+        "weekly"
+    );
+
+    // `null` removes a property in an RFC 8620 §5.3 PatchObject — how a series becomes a
+    // single event.
+    let (p, exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
+    p.patch_event(
+        &account(),
+        &base(),
+        &edit(
+            &base(),
+            PatchTarget::Series,
+            EventPatch::new(stamp()).clear_recurrence(),
+        ),
+    )
+    .await
+    .unwrap();
+    let (_, _, args) = exec.sole_call();
+    assert!(args["update"][EVENT]["recurrenceRule"].is_null());
+}
+
+#[tokio::test]
+async fn a_recurrence_edit_cannot_ride_an_instance_target() {
+    // Everything else in an Instance patch is prefixed `recurrenceOverrides/<start>/`;
+    // a rule written inside one occurrence's override would mean nothing at all.
+    let (p, _exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
+    let err = p
+        .patch_event(
+            &account(),
+            &base(),
+            &edit(
+                &base(),
+                PatchTarget::Instance(zoned("2026-08-01T09:00:00")),
+                EventPatch::new(stamp()).recurrence(DraftRecurrence::new(weekly_on_monday())),
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("targets the series"), "{err}");
 }

@@ -445,3 +445,14 @@ async fn caldav_recurrence_until_is_written_in_utc() {
     let _serial = common::serial_guard().await;
     common::recurrence::an_until_is_written_in_utc(&provider, &account).await;
 }
+
+/// Changing a rule keeps the per-occurrence work; removing one takes it with it.
+#[tokio::test]
+async fn caldav_a_rule_can_be_changed_and_removed() {
+    let Some((provider, account)) = connect("caldav_a_rule_can_be_changed_and_removed").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::recurrence::a_rule_can_be_changed_and_removed(&provider, &account).await;
+}

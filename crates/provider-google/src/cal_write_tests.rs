@@ -459,3 +459,24 @@ fn build_create_writes_an_all_day_series_until_as_a_date() {
         sjson!(["RRULE:FREQ=WEEKLY;UNTIL=20261026;BYDAY=MO"])
     );
 }
+
+#[test]
+fn build_patch_sets_and_clears_the_recurrence() {
+    let set = build_patch(
+        &base_event(),
+        &EventPatch::new(stamp()).recurrence(DraftRecurrence::new(weekly_on_monday())),
+    )
+    .unwrap();
+    assert_eq!(set["recurrence"], sjson!(["RRULE:FREQ=WEEKLY;BYDAY=MO"]));
+
+    // An empty array clears it. (Google accepts `null` for this too — measured — so this
+    // pins the spelling we send, not a difference in what the server does.)
+    let cleared = build_patch(&base_event(), &EventPatch::new(stamp()).clear_recurrence()).unwrap();
+    assert_eq!(cleared["recurrence"], sjson!([]));
+}
+
+#[test]
+fn a_patch_that_does_not_mention_recurrence_leaves_it_alone() {
+    let body = build_patch(&base_event(), &EventPatch::new(stamp()).summary("Renamed")).unwrap();
+    assert!(body.get("recurrence").is_none());
+}

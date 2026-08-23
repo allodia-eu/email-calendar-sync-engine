@@ -16,7 +16,8 @@ use engine_core::{
 };
 use engine_provider::{
     DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp,
-    EventWriteReceipt, PatchTarget, ProviderError, ProviderResult, RsvpResponse, TextEdit,
+    EventWriteReceipt, PatchTarget, ProviderError, ProviderResult, RecurrenceEdit, RsvpResponse,
+    TextEdit,
 };
 use serde_json::{Map, Value, json};
 
@@ -283,6 +284,18 @@ fn build_patch(base: &Event, patch: &EventPatch) -> ProviderResult<Value> {
     if let Some(end) = patch.end_edit() {
         guard_form(&base.start, end)?;
         body.insert("end".to_owned(), google_datetime(end)?);
+    }
+    if let Some(edit) = patch.recurrence_edit() {
+        // An empty array clears the rule. Measured: Google also accepts `null` here and
+        // clears it just the same — the array is chosen because it says "this event has
+        // no recurrence rules" rather than relying on how a patch reads a null.
+        let value = match edit {
+            RecurrenceEdit::Set(recurrence) => {
+                json!([format!("RRULE:{}", rrule_value(recurrence, &base.start)?)])
+            }
+            RecurrenceEdit::Clear => json!([]),
+        };
+        body.insert("recurrence".to_owned(), value);
     }
     Ok(Value::Object(body))
 }
