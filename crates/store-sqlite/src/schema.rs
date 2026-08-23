@@ -400,6 +400,22 @@ pub(crate) const V11: &str = "\
 ALTER TABLE contact_photo ADD COLUMN missing INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Migration v12: how big a message is, and how big the copy we kept turned out to be.
+///
+/// Two columns because they answer different questions and disagree on purpose.
+/// `message.size_octets` is what the **provider** said before anything was fetched — the number a
+/// size cap has to decide on, nullable because Graph and CalDAV say nothing. `message_source
+/// .size_octets` is what we actually **wrote**, exact on every provider because we counted the
+/// bytes, and the only honest answer to "how much disk would dropping this reclaim".
+///
+/// Neither is indexed. The gating query orders by date and filters on size, so it rides
+/// `message_date` and an index here would not be chosen; the reclaim query scans one row per
+/// cached body. Add one when a measurement asks for it.
+pub(crate) const V12: &str = "\
+ALTER TABLE message ADD COLUMN size_octets INTEGER;
+ALTER TABLE message_source ADD COLUMN size_octets INTEGER;
+";
+
 mod mail;
 
 pub(crate) use mail::{V8, V9, V10};

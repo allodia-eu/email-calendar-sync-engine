@@ -37,6 +37,7 @@ fn structured_index_fixture() -> DerivedWrite {
         date_utc: Some("2026-01-01T00:00:00Z".parse().unwrap()),
         flags: MailFlags::default(),
         has_attachment: true,
+        size_octets: None,
         from_name: Some("Alice".into()),
         from_addr: Some("alice@example.com".into()),
         subject: Some("hello".into()),

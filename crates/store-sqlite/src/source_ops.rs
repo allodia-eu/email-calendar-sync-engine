@@ -33,13 +33,17 @@ impl<C: Clock> MessageSourceCache for SqliteStore<C> {
         // Heavy work — hashing + the blob file write — runs off the connection lock.
         let root = self.blobs.root().to_path_buf();
         let bytes = source.into_bytes();
+        // Counted here because this is the only place that knows it: the number a reclaim pass
+        // needs is what we *wrote*, not what a provider estimated, and the two disagree — a
+        // provider that reports no size at all still lands exact bytes on disk.
+        let size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
         let hash = Self::block(move || blob::write_source(&root, &bytes)).await?;
 
         // Only the tiny metadata upsert takes the connection.
         let fetched_at = instant_to_text(self.clock.now());
         let account = account.as_str().to_owned();
         let key = key.as_str().to_owned();
-        self.call(move |conn| upsert_source(conn, &account, &key, &hash, &fetched_at))
+        self.call(move |conn| upsert_source(conn, &account, &key, &hash, &fetched_at, size))
             .await
     }
 
@@ -138,15 +142,17 @@ fn upsert_source(
     key: &str,
     hash: &str,
     fetched_at: &str,
+    size: i64,
 ) -> Result<()> {
     sql::execute(
         conn,
-        "INSERT INTO message_source (account, provider_key, content_hash, fetched_at)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO message_source (account, provider_key, content_hash, fetched_at, size_octets)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(account, provider_key) DO UPDATE SET
              content_hash = excluded.content_hash,
-             fetched_at   = excluded.fetched_at",
-        (account, key, hash, fetched_at),
+             fetched_at   = excluded.fetched_at,
+             size_octets  = excluded.size_octets",
+        (account, key, hash, fetched_at, size),
     )?;
     Ok(())
 }

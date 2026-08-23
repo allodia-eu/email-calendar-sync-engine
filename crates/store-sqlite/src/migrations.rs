@@ -69,6 +69,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(schema::V9),
     Migration::filled(schema::V10, backfill::msgid_refs),
     Migration::sql(schema::V11),
+    Migration::sql(schema::V12),
 ];
 
 /// Brings `conn` up to the latest schema version.
@@ -317,11 +318,13 @@ mod tests {
                 "preview",
                 "provider_key",
                 "scope_key",
+                "size_octets",
                 "subject",
                 "thread_id",
             ],
-            "the row is what a list shows plus the state that moves without the message's bytes; \
-             `schedule_tag` is CalDAV scheduling state and has no place on a message"
+            "the row is what a list shows plus the state that moves without the message's bytes, \
+             plus how big the provider says it is so a size cap can ask in SQL; `schedule_tag` \
+             is CalDAV scheduling state and has no place on a message"
         );
     }
 

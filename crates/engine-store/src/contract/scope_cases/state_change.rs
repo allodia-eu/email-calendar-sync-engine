@@ -25,6 +25,7 @@ fn seeded_row(key: &str) -> MailRow {
         date_utc: Some("2026-01-03T00:00:00Z".parse::<UtcDateTime>().unwrap()),
         flags: MailFlags::default(),
         has_attachment: true,
+        size_octets: None,
         from_name: Some("Alice".to_owned()),
         from_addr: Some("alice@example.com".to_owned()),
         subject: Some("Quarterly report".to_owned()),
