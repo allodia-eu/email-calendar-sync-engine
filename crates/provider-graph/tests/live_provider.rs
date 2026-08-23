@@ -411,3 +411,62 @@ async fn live_an_is_read_change_comes_back_as_state_not_a_whole_message() {
         .await
         .expect("clean up the throwaway");
 }
+
+/// A size estimate reaches the caller for the messages that can be large.
+///
+/// The unit test proves the arithmetic against a captured shape; this proves the two halves
+/// that only a real server can: that the delta endpoint accepts the `$expand` at all — it
+/// rejects the same request for `PR_MESSAGE_SIZE` with a `400` — and that what it returns is
+/// the field the normalizer reads.
+#[tokio::test]
+async fn live_attachment_bearing_messages_carry_a_size_estimate() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_attachment_bearing_messages_carry_a_size_estimate: no token");
+        return;
+    };
+    let provider = provider(token);
+    let SyncUpdate::Snapshot { objects, .. } = provider
+        .sync_email(&account(), None)
+        .await
+        .expect("snapshot")
+        .update
+    else {
+        panic!("a first sync is a snapshot");
+    };
+
+    let with_attachments: Vec<_> = objects.iter().filter(|m| m.has_attachment).collect();
+    assert!(
+        !with_attachments.is_empty(),
+        "the mailbox should hold at least one message with an attachment",
+    );
+    let sized = with_attachments.iter().filter(|m| m.size.is_some()).count();
+    assert_eq!(
+        sized,
+        with_attachments.len(),
+        "every attachment-bearing message should carry an estimate",
+    );
+    // Some messages carry a size *without* `hasAttachments`, and that is the point rather than
+    // a bug: Graph reports that flag false for a message whose only attachments are inline —
+    // the embedded images that carry no paperclip and plenty of bytes. The estimate reads the
+    // attachments collection, so it sees them; a cap keyed on `hasAttachments` would not.
+    let inline_only = objects
+        .iter()
+        .filter(|m| !m.has_attachment && m.size.is_some())
+        .count();
+    println!("{inline_only} message(s) sized through inline attachments alone");
+
+    // Nothing is sized blanket-wise: a message with an empty attachments collection has no
+    // opinion, which is what leaves it always fetched.
+    assert!(
+        objects.iter().any(|m| m.size.is_none()),
+        "a plain message must not be given a size it did not earn",
+    );
+    // And no estimate lands below the body allowance it always includes.
+    assert!(
+        objects
+            .iter()
+            .filter_map(|m| m.size)
+            .all(|size| size >= 128 * 1024),
+        "every estimate carries the body allowance",
+    );
+}
