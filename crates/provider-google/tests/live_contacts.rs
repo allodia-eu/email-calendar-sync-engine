@@ -45,7 +45,12 @@ fn token() -> Option<String> {
 }
 
 fn client(token: String) -> GoogleClient {
-    GoogleClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client")
+    GoogleClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client")
 }
 
 fn property(id: &str) -> PropertyId {

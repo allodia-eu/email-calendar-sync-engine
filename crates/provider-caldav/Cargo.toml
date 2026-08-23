@@ -18,6 +18,8 @@ engine-ical = { workspace = true }
 engine-provider = { workspace = true, features = ["http"] }
 # One shared TLS trust policy across every provider (`docs/agent-guidance/tls.md`);
 # `reqwest` enables the preconfigured-client builder this HTTP transport uses.
+# One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).
+engine-http = { workspace = true }
 engine-tls = { workspace = true, features = ["reqwest"] }
 reqwest = { workspace = true }
 quick-xml = { workspace = true }

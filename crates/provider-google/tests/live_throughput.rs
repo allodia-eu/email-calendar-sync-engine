@@ -47,8 +47,12 @@ fn token() -> Option<String> {
 }
 
 fn provider(token: String) -> GmailProvider {
-    let client =
-        GoogleClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client");
+    let client = GoogleClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
     GmailProvider::new(client)
 }
 

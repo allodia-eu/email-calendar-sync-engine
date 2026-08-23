@@ -40,8 +40,12 @@ fn token() -> Option<String> {
 
 /// A provider bound to the inbox (Graph accepts the well-known alias in the URL).
 fn provider(token: String) -> GraphProvider {
-    let client =
-        GraphClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client");
+    let client = GraphClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
     GraphProvider::new(client, MailboxId::try_from("inbox").unwrap())
 }
 

@@ -65,6 +65,10 @@ pub struct CalDavConfig {
     /// (`docs/agent-guidance/tls.md`). Defaults to the hermetic bundled roots;
     /// override with [`CalDavConfig::with_tls`].
     pub tls: TlsClientConfig,
+    /// The throttling policy for this account, shared with every other provider
+    /// (`docs/agent-guidance/http-throttling.md`). Defaults to waiting a `429` out;
+    /// override with [`CalDavConfig::with_retry`].
+    pub retry: engine_http::RetryConfig,
     /// Private, unlike its siblings: a `dyn` observer is neither `Debug` nor
     /// meaningfully inspectable, so it is set through
     /// [`CalDavConfig::with_connect_observer`] and read only by
@@ -82,6 +86,7 @@ impl core::fmt::Debug for CalDavConfig {
             .field("discovery_path", &self.discovery_path)
             .field("calendar", &self.calendar)
             .field("tls", &self.tls)
+            .field("retry", &self.retry)
             .field("connect_observer", &self.connect_observer.is_some())
             .finish()
     }
@@ -98,6 +103,7 @@ impl CalDavConfig {
             discovery_path: "/.well-known/caldav".to_owned(),
             calendar: "default".to_owned(),
             tls: TlsClientConfig::default(),
+            retry: engine_http::RetryConfig::default(),
             connect_observer: None,
         }
     }
@@ -122,6 +128,14 @@ impl CalDavConfig {
     #[must_use]
     pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
         self.tls = tls;
+        self
+    }
+
+    /// Sets the throttling policy (the host builds one and shares it across the account's
+    /// providers, like the TLS policy above).
+    #[must_use]
+    pub fn with_retry(mut self, retry: engine_http::RetryConfig) -> Self {
+        self.retry = retry;
         self
     }
 
@@ -187,7 +201,12 @@ impl CalDavProvider {
             .connect_observer
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
-        let client = DavClient::new(&config.base_url, config.credentials, &config.tls)?;
+        let client = DavClient::new(
+            &config.base_url,
+            config.credentials,
+            &config.tls,
+            &config.retry,
+        )?;
         Self::with_executor(
             Box::new(client),
             &config.discovery_path,

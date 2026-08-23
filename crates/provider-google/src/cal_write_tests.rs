@@ -18,7 +18,7 @@ use serde_json::json as sjson;
 use super::*;
 use crate::{
     GoogleClient,
-    test_support::{capturing_server, fake_client_fallible, tls},
+    test_support::{capturing_server, fake_client_fallible, retry, tls},
 };
 
 fn calendar() -> CalendarId {
@@ -232,7 +232,7 @@ async fn delete_event_is_idempotent_on_404_and_410_but_a_conflict_on_412() {
 #[tokio::test]
 async fn create_posts_the_event_json_over_the_real_transport() {
     let (base, rx) = capturing_server("200 OK", &stored("x", "u@google.com", "\"v1\"").to_string());
-    let client = GoogleClient::with_base("tok", base, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), retry()).unwrap();
     create_event(&client, "cal-1", &draft()).await.unwrap();
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
@@ -251,7 +251,7 @@ async fn patch_sends_if_match_and_only_the_changed_field() {
         "200 OK",
         &stored("evt-1", "u@google.com", "\"v8\"").to_string(),
     );
-    let client = GoogleClient::with_base("tok", base, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), retry()).unwrap();
     let edit = EventEdit::new(
         &base_event(),
         PatchTarget::Series,
@@ -307,7 +307,7 @@ async fn an_rsvp_patches_the_response_status_and_asks_google_to_notify() {
         "200 OK",
         &stored("evt-1", "u@google.com", "\"v8\"").to_string(),
     );
-    let client = GoogleClient::with_base("tok", url, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", url, tls(), retry()).unwrap();
 
     rsvp_event(
         &client,
@@ -343,7 +343,7 @@ async fn declining_quietly_asks_google_to_tell_nobody() {
         "200 OK",
         &stored("evt-1", "u@google.com", "\"v8\"").to_string(),
     );
-    let client = GoogleClient::with_base("tok", url, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", url, tls(), retry()).unwrap();
 
     rsvp_event(
         &client,
@@ -370,7 +370,7 @@ async fn the_rsvps_own_guard_decides_the_precondition() {
         "200 OK",
         &stored("evt-1", "u@google.com", "\"v8\"").to_string(),
     );
-    let client = GoogleClient::with_base("tok", url, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", url, tls(), retry()).unwrap();
 
     let mut unconditional = EventRsvp::to(&base, "me@example.com", RsvpResponse::Accepted);
     unconditional.guard = None;

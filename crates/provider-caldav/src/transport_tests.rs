@@ -68,6 +68,7 @@ async fn a_foreign_photo_uri_is_fetched_without_the_account_credentials() {
             password: "super-secret".to_owned(),
         },
         &engine_tls::TlsClientConfig::default(),
+        &engine_http::RetryConfig::default(),
     )
     .expect("client");
 
@@ -106,6 +107,7 @@ async fn binary_get_preserves_non_utf8_photo_bytes() {
         &base,
         Credentials::Bearer("tok".to_owned()),
         &engine_tls::TlsClientConfig::default(),
+        &engine_http::RetryConfig::default(),
     )
     .expect("client");
 
@@ -239,6 +241,7 @@ async fn a_conditional_put_returns_its_new_etag_over_the_live_transport() {
         &base,
         Credentials::Bearer("tok".to_owned()),
         &engine_tls::TlsClientConfig::default(),
+        &engine_http::RetryConfig::default(),
     )
     .expect("client");
 

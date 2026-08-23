@@ -6,6 +6,7 @@
 //! so it can rebase a foreign advertised origin onto the connection (see
 //! [`SessionUrlPolicy`](crate::SessionUrlPolicy)).
 
+use engine_http::{RetryConfig, send_retrying};
 use engine_provider::{HttpVersion, ObservedHttpVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{Client, RequestBuilder, StatusCode, header::WWW_AUTHENTICATE, redirect::Policy};
@@ -34,18 +35,27 @@ pub(crate) struct Transport {
     /// different origin from the `apiUrl` that serves method calls, so the latest
     /// observation — not the first — is the one that describes the working connection.
     http_version: ObservedHttpVersion,
+    /// How a `429` is waited out. A JMAP server also has protocol-level `rateLimit` /
+    /// `overQuota` errors inside a `200`, which the method layer classifies; this covers
+    /// only the HTTP one, which is the shape a blob download meets.
+    retry: RetryConfig,
 }
 
 impl Transport {
     /// Builds a transport with redirect-following disabled, trusting per `tls`
     /// (`docs/agent-guidance/tls.md`).
-    pub(crate) fn new(credentials: Credentials, tls: &TlsClientConfig) -> Result<Self, JmapError> {
+    pub(crate) fn new(
+        credentials: Credentials,
+        tls: &TlsClientConfig,
+        retry: &RetryConfig,
+    ) -> Result<Self, JmapError> {
         let client = tls.reqwest_builder().redirect(Policy::none()).build()?;
         Ok(Self {
             client,
             scheme: NegotiatedScheme::new(credentials.preferred_scheme()),
             credentials,
             http_version: ObservedHttpVersion::default(),
+            retry: retry.clone().labelled("jmap"),
         })
     }
 
@@ -108,7 +118,7 @@ impl Transport {
     /// the way through. The engine's shared client offers ALPN `h2` then `http/1.1`
     /// (`docs/agent-guidance/tls.md`), so this is HTTP/2 wherever the server supports it.
     async fn dispatch(&self, builder: RequestBuilder) -> Result<reqwest::Response, JmapError> {
-        let response = builder.send().await?;
+        let response = send_retrying(builder, &self.retry).await?;
         self.http_version.record(response.version());
         Ok(response)
     }

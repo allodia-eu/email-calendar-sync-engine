@@ -42,8 +42,12 @@ fn amsterdam() -> TimeZoneId {
 
 /// A calendar provider bound to `calendar`, reading times in Europe/Amsterdam.
 fn calendar_provider(token: &str, calendar: CalendarId) -> GraphCalendarProvider {
-    let client =
-        GraphClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client");
+    let client = GraphClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
     GraphCalendarProvider::new(client, calendar, calendar_window(), amsterdam())
 }
 

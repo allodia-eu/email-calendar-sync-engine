@@ -7,7 +7,7 @@ use engine_provider::{ContentIdHeader, Draft, DraftAttachment};
 use super::*;
 use crate::{
     GoogleClient, base64url,
-    test_support::{capturing_server, fake_client_fallible, tls},
+    test_support::{capturing_server, fake_client_fallible, retry, tls},
 };
 
 fn draft() -> Draft {
@@ -51,7 +51,7 @@ async fn send_posts_a_base64url_raw_mime_over_the_real_transport() {
     // Drive the REAL reqwest transport at a capturing server, so the offline suite asserts
     // the request shape the fake cannot (`AGENTS.md`).
     let (base, rx) = capturing_server("200 OK", r#"{"id":"19f7abcdef012345"}"#);
-    let client = GoogleClient::with_base("secret-token", base, tls()).unwrap();
+    let client = GoogleClient::with_base("secret-token", base, tls(), retry()).unwrap();
 
     let draft = draft()
         .with_cc(vec![EmailAddress::new("carol@test.local")])

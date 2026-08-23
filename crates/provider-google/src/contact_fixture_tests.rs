@@ -296,7 +296,13 @@ async fn other_contacts_requests_only_the_fields_that_source_allows() {
         "200 OK",
         r#"{"otherContacts":[],"nextSyncToken":"next"}"#,
     );
-    let client = crate::GoogleClient::with_base("token", base, crate::test_support::tls()).unwrap();
+    let client = crate::GoogleClient::with_base(
+        "token",
+        base,
+        crate::test_support::tls(),
+        crate::test_support::retry(),
+    )
+    .unwrap();
     let _ = GoogleContactProvider::other_contacts(client)
         .sync_contacts(&account(), None)
         .await;

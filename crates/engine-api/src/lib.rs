@@ -110,6 +110,12 @@ pub use engine_core::{
     write::PendingOpId,
 };
 pub use engine_core::{mail::MailFlags, search_index::MailRow};
+/// How every HTTP provider answers a throttled reply, and how a host hears about it.
+///
+/// Re-exported because both halves are the host's: it builds one [`RetryConfig`] and hands it
+/// to each provider it configures — the way it hands out one TLS policy — and it implements
+/// [`ThrottleObserver`], because the engine writes no logs of its own.
+pub use engine_http::{IgnoreThrottles, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver};
 pub use engine_provider::{
     Capabilities, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader, Draft,
     DraftAttachment, DraftAttachmentDisposition, DraftCalendar, EventDeletion, EventDraft,

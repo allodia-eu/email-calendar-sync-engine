@@ -69,8 +69,12 @@ fn calendar() -> CalendarId {
 }
 
 fn provider(token: String) -> GoogleCalendarProvider {
-    let client =
-        GoogleClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client");
+    let client = GoogleClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
     GoogleCalendarProvider::new(client, calendar())
 }
 

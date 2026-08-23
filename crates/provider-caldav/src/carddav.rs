@@ -56,6 +56,8 @@ pub struct CardDavConfig {
     pub address_book: String,
     /// Shared TLS trust policy.
     pub tls: TlsClientConfig,
+    /// Shared throttling policy (`docs/agent-guidance/http-throttling.md`).
+    pub retry: engine_http::RetryConfig,
 }
 
 impl CardDavConfig {
@@ -68,6 +70,7 @@ impl CardDavConfig {
             discovery_path: "/.well-known/carddav".into(),
             address_book: "default".into(),
             tls: TlsClientConfig::default(),
+            retry: engine_http::RetryConfig::default(),
         }
     }
 
@@ -82,6 +85,13 @@ impl CardDavConfig {
     #[must_use]
     pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
         self.tls = tls;
+        self
+    }
+
+    /// Overrides the throttling policy.
+    #[must_use]
+    pub fn with_retry(mut self, retry: engine_http::RetryConfig) -> Self {
+        self.retry = retry;
         self
     }
 }
@@ -118,7 +128,12 @@ impl CardDavProvider {
     ///
     /// Returns [`CalDavError`] for transport, discovery, or malformed collection data.
     pub async fn connect(config: CardDavConfig) -> Result<Self, CalDavError> {
-        let client = DavClient::new(&config.base_url, config.credentials, &config.tls)?;
+        let client = DavClient::new(
+            &config.base_url,
+            config.credentials,
+            &config.tls,
+            &config.retry,
+        )?;
         Self::with_executor(
             Box::new(client),
             &config.discovery_path,

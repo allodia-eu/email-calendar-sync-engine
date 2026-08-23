@@ -122,7 +122,12 @@ async fn live_a_colleagues_photo_reads_without_the_admin_consented_scope() {
 
     let account = AccountId::try_from("live-directory").unwrap();
     let provider = GraphContactProvider::directory(
-        GraphClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client"),
+        GraphClient::connect(
+            token,
+            &engine_tls::TlsClientConfig::bundled(),
+            &engine_http::RetryConfig::default(),
+        )
+        .expect("client"),
     );
     let users = match provider.sync_contacts(&account, None).await {
         Ok(ContactSourceSync::Available { sync, .. }) => match sync.update {
