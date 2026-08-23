@@ -2,7 +2,7 @@
 //! create/patch/delete flows over the fake transport.
 
 use engine_core::{
-    calendar::Event,
+    calendar::{Event, Frequency, NDay, RecurrenceRule, Weekday},
     error::FailureClass,
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
@@ -140,17 +140,46 @@ async fn patch_event_empty_is_a_no_op_without_a_request() {
 }
 
 #[tokio::test]
-async fn patch_event_rejects_a_per_occurrence_target() {
-    let client = fake_client_fallible(vec![]);
+async fn an_occurrence_edit_patches_the_id_graph_derives_for_it() {
+    // The route is the assertion: an edit that fell back to the series id would find the
+    // wrong route, and rewrite every occurrence instead of the one the user changed.
+    let client = fake_client_fallible(vec![(
+        "/events/OID.evt-1.2026-08-10",
+        Ok(serde_json::Value::Null),
+    )]);
     let edit = EventEdit::new(
         &base_event(),
-        PatchTarget::Instance(zoned("2026-08-10T09:00:00")),
-        EventPatch::new(stamp()).summary("x"),
+        PatchTarget::Instance(Occurrence::starting(zoned("2026-08-10T09:00:00"))),
+        EventPatch::new(stamp()).summary("Moved"),
+    );
+    let receipt = patch_event(&client, &base_event(), &edit).await.unwrap();
+    assert_eq!(
+        receipt.event,
+        base_event().id,
+        "the receipt names the event the caller holds, never the occurrence's own id"
+    );
+}
+
+#[tokio::test]
+async fn an_occurrence_edit_cannot_carry_a_recurrence_change() {
+    // Everything else in the patch lands on one occurrence; a rule written there would
+    // either mean nothing or rewrite the series behind the user's back.
+    let client = fake_client_fallible(vec![]);
+    let mut weekly = RecurrenceRule::new(Frequency::Weekly);
+    weekly.by_day = vec![NDay {
+        day: Weekday::Mo,
+        nth_of_period: None,
+    }];
+    let edit = EventEdit::new(
+        &base_event(),
+        PatchTarget::Instance(Occurrence::starting(zoned("2026-08-10T09:00:00"))),
+        EventPatch::new(stamp()).recurrence(DraftRecurrence::new(weekly)),
     );
     let err = patch_event(&client, &base_event(), &edit)
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::InvalidState);
+    assert!(err.to_string().contains("targets the series"), "{err}");
 }
 
 #[tokio::test]

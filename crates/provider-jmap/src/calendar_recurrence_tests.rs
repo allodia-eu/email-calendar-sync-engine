@@ -154,7 +154,7 @@ async fn a_recurrence_edit_cannot_ride_an_instance_target() {
             &base(),
             &edit(
                 &base(),
-                PatchTarget::Instance(zoned("2026-08-01T09:00:00")),
+                PatchTarget::Instance(Occurrence::starting(zoned("2026-08-01T09:00:00"))),
                 EventPatch::new(stamp()).recurrence(DraftRecurrence::new(weekly_on_monday())),
             ),
         )

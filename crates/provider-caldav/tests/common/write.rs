@@ -31,7 +31,8 @@ use engine_core::{
     version::RevisionTokens,
 };
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, PatchTarget, Provider, WriteGuard,
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, Occurrence, PatchTarget,
+    Provider, WriteGuard,
 };
 use provider_caldav::CalDavProvider;
 
@@ -436,7 +437,7 @@ pub(crate) async fn instance_override_split_is_accepted(
             &before,
             &EventEdit::new(
                 &before,
-                PatchTarget::Instance(amsterdam("2026-06-09T10:00:00")),
+                PatchTarget::Instance(Occurrence::starting(amsterdam("2026-06-09T10:00:00"))),
                 EventPatch::new(stamp())
                     .summary("Standup (moved)")
                     .start(amsterdam("2026-06-09T14:00:00"))

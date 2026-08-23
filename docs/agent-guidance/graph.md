@@ -228,6 +228,7 @@ shared mailboxes; verification awaits a work/school account.)
 
 ## Known limitations (documented, not bugs)
 
+- **Editing one occurrence: the same derived id, and Graph flips its `type` to `exception`.** `PATCH /me/events/OID.<seriesMasterId>.<date>` applies to that occurrence alone — measured: `200`, the id survives, and the series keeps its own subject. The `ETag` the caller read is the *series'*, so it is not sent; the occurrence's own revision is not something a base of the series carries.
 - **Removing one occurrence: the id is derived, and the cancellation is write-only for now.**
   Graph addresses an occurrence as `OID.<seriesMasterId>.<YYYY-MM-DD>` — the shape it uses
   itself in the series master's `cancelledOccurrences` — so a removal needs no `/instances`

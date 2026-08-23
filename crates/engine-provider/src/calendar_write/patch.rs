@@ -38,7 +38,7 @@ use engine_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::DraftRecurrence;
+use super::{DraftRecurrence, Occurrence};
 
 /// Which occurrence of a recurring event an [`EventPatch`] lands on.
 ///
@@ -51,16 +51,13 @@ pub enum PatchTarget {
     /// iCalendar: the master `VEVENT` (the one with no `RECURRENCE-ID`). JSCalendar: the
     /// top-level object, leaving `recurrenceOverrides` alone.
     Series,
-    /// A single occurrence, named by its **original** start — the start it had *before*
-    /// this patch, which is its identity within the series, not where it is being moved to.
-    ///
-    /// The value must be in the series' own time form (a zoned series is overridden by a
-    /// zoned instant, not by "the same moment" in UTC), and it must name a real occurrence
-    /// of the rule: an adapter cannot expand recurrence to check, so a caller that invents
-    /// one writes an override that matches no instance.
+    /// A single occurrence — see [`Occurrence`] for how one is named, and why naming it
+    /// takes more than a wall clock.
     ///
     /// iCalendar: the `RECURRENCE-ID` override `VEVENT` (RFC 5545 §3.8.4.4). JSCalendar:
-    /// the `recurrenceOverrides` entry keyed by that start (RFC 8984 §4.3.3).
+    /// the `recurrenceOverrides` entry keyed by that start (RFC 8984 §4.3.3). Graph and
+    /// Google patch the occurrence at an id they derive from it, which is why the resolved
+    /// instant matters here as much as it does on a delete.
     ///
     /// **Creating** an override the series does not have yet may need more than the patch
     /// itself carries: an adapter that must split the occurrence out of the series by hand
@@ -68,7 +65,7 @@ pub enum PatchTarget {
     /// requires this occurrence's [`start`](EventPatch::start) **and** [`end`](EventPatch::end)
     /// on the patch — pass both, unchanged, even when the edit does not move the event. An
     /// adapter whose server materializes the override (JMAP) needs neither.
-    Instance(CalendarDateTime),
+    Instance(Occurrence),
 }
 
 /// What an edit does to an optional text property: give it a value, or take it away.
@@ -402,9 +399,9 @@ mod tests {
             .summary("Sprint planning")
             .clear_location()
             .start(zoned("2026-08-01T09:00:00"));
-        let target = PatchTarget::Instance(CalendarDateTime::Date(
+        let target = PatchTarget::Instance(Occurrence::starting(CalendarDateTime::Date(
             CalendarDate::new(2026, 8, 1).unwrap(),
-        ));
+        )));
 
         let encoded = serde_json::to_value(&patch).unwrap();
         assert_eq!(

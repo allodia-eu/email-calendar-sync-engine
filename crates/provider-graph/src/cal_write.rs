@@ -45,19 +45,25 @@ pub(crate) async fn create_event(
     receipt(&created, draft.uid.clone())
 }
 
-/// Applies `edit` to `base` via `PATCH /me/events/{id}`, guarded by the ETag `base` was
-/// read at. Only [`PatchTarget::Series`] is supported; a single-occurrence edit is
-/// deferred (Graph needs the occurrence resolved from its recurrence-id, which v1.0 does
-/// not expose — see the `graph.md` limitations).
+/// Applies `edit` to `base` via `PATCH /me/events/{id}`, guarded by the ETag `base` was read
+/// at.
+///
+/// An [`Instance`](PatchTarget::Instance) target patches the occurrence at the id Graph
+/// derives for it ([`occurrence_id`]) — the same id a per-occurrence delete addresses, and the
+/// reason the ETag cannot travel with it: that occurrence is a resource of its own with a
+/// revision this base does not carry, so an instance edit is **unguarded**. Graph flips the
+/// occurrence's `type` to `exception` as it applies the patch.
 pub(crate) async fn patch_event(
     client: &GraphClient,
     base: &Event,
     edit: &EventEdit,
 ) -> ProviderResult<EventWriteReceipt> {
-    if !matches!(edit.target, PatchTarget::Series) {
+    if let PatchTarget::Instance(_) = &edit.target
+        && edit.patch.recurrence_edit().is_some()
+    {
         return Err(ProviderError::invalid_state(
-            "Graph calendar patch supports only whole-series edits; per-occurrence edits are not \
-             yet supported (v1.0 exposes no occurrence recurrence-id)",
+            "a recurrence edit targets the series, never one occurrence; an occurrence has no \
+             rule of its own",
         ));
     }
     // An empty patch changes nothing; skip the round trip and report the current revision.
@@ -68,19 +74,28 @@ pub(crate) async fn patch_event(
             base.revisions.clone(),
         ));
     }
+    let (id, guard) = match &edit.target {
+        PatchTarget::Series => (base.id.key().as_str().to_owned(), if_match(base)),
+        PatchTarget::Instance(occurrence) => (
+            occurrence_id(base.id.key().as_str(), &occurrence.start),
+            None,
+        ),
+    };
     let body = build_patch(base, &edit.patch)?;
     let updated = client
         .patch(
-            &client.url(&format!("/events/{}", base.id.key().as_str())),
+            &client.url(&format!("/events/{id}")),
             "application/json",
-            if_match(base),
+            guard,
             serde_json::to_vec(&body).map_err(GraphError::from)?,
         )
         .await?;
-    // Graph echoes the updated event; fall back to the base's identity if it did not.
-    match updated {
-        Some(event) => receipt(&event, base.uid.clone()),
-        None => Ok(EventWriteReceipt::new(
+    // Graph echoes the event it patched. On an instance that is the *occurrence*, whose id
+    // is not the series' — so the echo is read only for a series edit; the receipt always
+    // names the event the caller holds.
+    match (updated, &edit.target) {
+        (Some(event), PatchTarget::Series) => receipt(&event, base.uid.clone()),
+        _ => Ok(EventWriteReceipt::new(
             base.id.clone(),
             base.uid.clone(),
             RevisionTokens::none(),

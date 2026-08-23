@@ -8,7 +8,10 @@
     reason = "each live suite uses a different subset of these helpers"
 )]
 
-use engine_core::ids::{AccountId, CalendarId};
+use engine_core::{
+    ids::{AccountId, CalendarId},
+    time::{CalendarDateTime, LocalDateTime, TimeZoneId},
+};
 use provider_google::{GoogleCalendarProvider, GoogleClient};
 
 pub(crate) fn account() -> AccountId {
@@ -33,4 +36,12 @@ pub(crate) fn calendar_provider(token: String) -> GoogleCalendarProvider {
     .expect("client");
     // "primary" is Google's alias for the account's default calendar.
     GoogleCalendarProvider::new(client, CalendarId::try_from("primary").unwrap())
+}
+
+/// A zoned wall clock in the zone the probes author in.
+pub(crate) fn zoned(local: &str) -> CalendarDateTime {
+    CalendarDateTime::Zoned {
+        local: local.parse::<LocalDateTime>().unwrap(),
+        zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+    }
 }

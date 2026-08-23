@@ -234,7 +234,7 @@ async fn a_first_edit_of_an_occurrence_lands_and_so_does_the_second() {
             &series,
             &EventEdit::new(
                 &series,
-                PatchTarget::Instance(amsterdam(OCCURRENCE)),
+                PatchTarget::Instance(Occurrence::starting(amsterdam(OCCURRENCE))),
                 EventPatch::new(stamp()).summary("Moved to the afternoon"),
             ),
         )
@@ -254,7 +254,7 @@ async fn a_first_edit_of_an_occurrence_lands_and_so_does_the_second() {
             &first,
             &EventEdit::new(
                 &first,
-                PatchTarget::Instance(amsterdam(OCCURRENCE)),
+                PatchTarget::Instance(Occurrence::starting(amsterdam(OCCURRENCE))),
                 EventPatch::new(stamp()).summary("Renamed again"),
             ),
         )
@@ -380,7 +380,7 @@ async fn removing_an_edited_occurrence_replaces_its_override() {
             &base,
             &EventEdit::new(
                 &base,
-                PatchTarget::Instance(amsterdam(OCCURRENCE)),
+                PatchTarget::Instance(Occurrence::starting(amsterdam(OCCURRENCE))),
                 EventPatch::new(stamp()).summary("Moved to the afternoon"),
             ),
         )

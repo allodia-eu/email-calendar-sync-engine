@@ -290,7 +290,7 @@ pub(crate) async fn an_occurrence_can_be_removed(provider: &CalDavProvider, acco
             &base,
             &EventEdit::new(
                 &base,
-                PatchTarget::Instance(amsterdam("2026-06-08T09:30:00")),
+                PatchTarget::Instance(Occurrence::starting(amsterdam("2026-06-08T09:30:00"))),
                 EventPatch::new(stamp())
                     .summary("Moved to the afternoon")
                     .start(amsterdam("2026-06-08T14:00:00"))

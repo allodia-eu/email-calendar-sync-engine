@@ -7,7 +7,7 @@
 //! server merges it as we expect is `tests/live_calendar_write.rs`.
 
 use engine_core::{error::FailureClass, ids::EventId, time::CalendarDateTime};
-use engine_provider::{EventPatch, PatchTarget};
+use engine_provider::{EventPatch, Occurrence, PatchTarget};
 use serde_json::json;
 
 use super::{calendar_write_support::*, provider_test_support::*, *};
@@ -183,7 +183,7 @@ async fn editing_an_already_overridden_occurrence_patches_through_its_pointer() 
         &base,
         &edit(
             &base,
-            PatchTarget::Instance(zoned("2026-08-08T09:00:00")),
+            PatchTarget::Instance(Occurrence::starting(zoned("2026-08-08T09:00:00"))),
             EventPatch::new(stamp())
                 .summary("Skipped standup")
                 .start(zoned("2026-08-08T10:00:00")),
@@ -217,7 +217,7 @@ async fn a_first_edit_of_an_occurrence_assigns_the_override_map() {
         &base,
         &edit(
             &base,
-            PatchTarget::Instance(zoned("2026-08-08T09:00:00")),
+            PatchTarget::Instance(Occurrence::starting(zoned("2026-08-08T09:00:00"))),
             EventPatch::new(stamp())
                 .summary("Skipped standup")
                 .start(zoned("2026-08-08T10:00:00")),
@@ -253,7 +253,7 @@ async fn a_first_edit_that_adds_a_location_keeps_its_pointer_inside_the_override
         &base,
         &edit(
             &base,
-            PatchTarget::Instance(zoned("2026-08-08T09:00:00")),
+            PatchTarget::Instance(Occurrence::starting(zoned("2026-08-08T09:00:00"))),
             EventPatch::new(stamp()).location("Room B"),
         ),
     )
@@ -286,9 +286,9 @@ async fn an_occurrence_named_in_another_time_form_overrides_nothing_and_is_refus
             &base,
             &edit(
                 &base,
-                PatchTarget::Instance(CalendarDateTime::utc(
+                PatchTarget::Instance(Occurrence::starting(CalendarDateTime::utc(
                     "2026-08-08T07:00:00".parse().unwrap(),
-                )),
+                ))),
                 EventPatch::new(stamp()).summary("Renamed"),
             ),
         )

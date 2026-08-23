@@ -5,6 +5,7 @@
 //! [`patch_tests`](super::patch_tests).
 
 use engine_core::{raw::RawIcal, time::CalendarDate};
+use engine_provider::Occurrence;
 
 use super::{test_support::*, *};
 
@@ -183,7 +184,7 @@ fn hostile_input_errors_rather_than_panics() {
         );
         let _ = patch_event_ical(
             &RawIcal::new(text),
-            &PatchTarget::Instance(amsterdam("2026-01-05T09:30:00")),
+            &PatchTarget::Instance(Occurrence::starting(amsterdam("2026-01-05T09:30:00"))),
             &patch().summary("x"),
         );
     }

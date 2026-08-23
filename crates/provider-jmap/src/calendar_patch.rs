@@ -56,8 +56,8 @@ pub(crate) fn patch_to_json(
     // The recurrence id is the occurrence's identity within the series, so check it before
     // anything else: an id in the wrong form names no occurrence at all, and saying so beats
     // reporting whatever a property downstream trips over first.
-    if let PatchTarget::Instance(recurrence_id) = &edit.target
-        && !base.start.has_same_form(recurrence_id)
+    if let PatchTarget::Instance(occurrence) = &edit.target
+        && !base.start.has_same_form(&occurrence.start)
     {
         return Err(JmapError::protocol(format!(
             "the occurrence's recurrence id must be in the series' own time form ({}); \
@@ -133,8 +133,8 @@ pub(crate) fn patch_to_json(
 
     match &edit.target {
         PatchTarget::Series => out.append(&mut properties),
-        PatchTarget::Instance(recurrence_id) if !properties.is_empty() => {
-            let start = local_date_time(recurrence_id)?;
+        PatchTarget::Instance(occurrence) if !properties.is_empty() => {
+            let start = local_date_time(&occurrence.start)?;
             if is_overridden(base) {
                 let key = escape_pointer(&start);
                 for (name, value) in properties {

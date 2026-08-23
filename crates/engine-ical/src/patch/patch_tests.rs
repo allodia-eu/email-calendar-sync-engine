@@ -4,6 +4,8 @@
 //! [`guard_tests`](super::guard_tests). The fixture and the byte-equality assertion both
 //! rest on are [`test_support`](super::test_support).
 
+use engine_provider::Occurrence;
+
 use super::{test_support::*, *};
 
 // --- the series (every occurrence) ---------------------------------------------
@@ -109,7 +111,7 @@ fn moving_one_occurrence_leaves_the_whole_original_document_byte_for_byte() {
     // spliced in before END:VCALENDAR.
     let after = apply(
         SERIES,
-        &PatchTarget::Instance(amsterdam("2026-01-26T09:30:00")),
+        &PatchTarget::Instance(Occurrence::starting(amsterdam("2026-01-26T09:30:00"))),
         &patch()
             .start(amsterdam("2026-01-26T14:00:00"))
             .end(amsterdam("2026-01-26T14:30:00")),
@@ -143,7 +145,7 @@ fn the_moved_occurrence_folds_back_into_the_series_on_re_read() {
 
     let after = apply(
         SERIES,
-        &PatchTarget::Instance(amsterdam("2026-01-26T09:30:00")),
+        &PatchTarget::Instance(Occurrence::starting(amsterdam("2026-01-26T09:30:00"))),
         &patch()
             .start(amsterdam("2026-01-26T14:00:00"))
             .end(amsterdam("2026-01-26T14:30:00")),
@@ -171,14 +173,14 @@ fn the_moved_occurrence_folds_back_into_the_series_on_re_read() {
 fn editing_an_occurrence_twice_patches_the_override_rather_than_adding_a_second() {
     let once = apply(
         SERIES,
-        &PatchTarget::Instance(amsterdam("2026-01-26T09:30:00")),
+        &PatchTarget::Instance(Occurrence::starting(amsterdam("2026-01-26T09:30:00"))),
         &patch()
             .start(amsterdam("2026-01-26T14:00:00"))
             .end(amsterdam("2026-01-26T14:30:00")),
     );
     let twice = apply(
         &once,
-        &PatchTarget::Instance(amsterdam("2026-01-26T09:30:00")),
+        &PatchTarget::Instance(Occurrence::starting(amsterdam("2026-01-26T09:30:00"))),
         &patch().summary("Standup (verplaatst)"),
     );
     assert_eq!(
@@ -204,7 +206,7 @@ fn splitting_a_new_override_demands_the_occurrences_own_times() {
     // expander this crate does not have, so the caller must state it.
     let err = patch_event_ical(
         &RawIcal::new(SERIES),
-        &PatchTarget::Instance(amsterdam("2026-01-26T09:30:00")),
+        &PatchTarget::Instance(Occurrence::starting(amsterdam("2026-01-26T09:30:00"))),
         &patch().start(amsterdam("2026-01-26T14:00:00")), // no end
     )
     .unwrap_err();
@@ -216,7 +218,7 @@ fn splitting_a_new_override_demands_the_occurrences_own_times() {
     // Retitling one occurrence is legal — it just has to say when that occurrence is.
     let after = apply(
         SERIES,
-        &PatchTarget::Instance(amsterdam("2026-01-26T09:30:00")),
+        &PatchTarget::Instance(Occurrence::starting(amsterdam("2026-01-26T09:30:00"))),
         &patch()
             .start(amsterdam("2026-01-26T09:30:00"))
             .end(amsterdam("2026-01-26T10:00:00"))
@@ -232,7 +234,7 @@ fn overriding_an_instance_of_a_non_recurring_event_is_an_error() {
     let single = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x@y\r\nDTSTART;TZID=Europe/Amsterdam:20260105T093000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
     let err = patch_event_ical(
         &RawIcal::new(single),
-        &PatchTarget::Instance(amsterdam("2026-01-05T09:30:00")),
+        &PatchTarget::Instance(Occurrence::starting(amsterdam("2026-01-05T09:30:00"))),
         &patch().summary("x"),
     )
     .unwrap_err();
@@ -355,7 +357,7 @@ fn a_recurrence_edit_cannot_target_one_occurrence() {
     // an RRULE onto an override.
     let err = patch_event_ical(
         &RawIcal::new(SERIES_WITH_OVERRIDES),
-        &PatchTarget::Instance(amsterdam("2026-01-26T09:30:00")),
+        &PatchTarget::Instance(Occurrence::starting(amsterdam("2026-01-26T09:30:00"))),
         &EventPatch::new(stamp()).recurrence(DraftRecurrence::new(every_wednesday())),
     )
     .unwrap_err();
