@@ -24,8 +24,8 @@ use crate::{
     error::GraphError,
     json::{req_str, wrap_id},
     normalize::{
-        MESSAGE_SELECT, WELL_KNOWN_ROLES, apply_roles, folder_from_json, message_from_json,
-        well_known_folder_id,
+        MESSAGE_EXPAND, MESSAGE_SELECT, WELL_KNOWN_ROLES, apply_roles, folder_from_json,
+        message_from_json, well_known_folder_id,
     },
     normalize_state::{MESSAGE_STATE_SELECT, state_from_json},
     transport::GraphClient,
@@ -92,7 +92,10 @@ async fn optional_well_known_id(
 pub(crate) async fn message(client: &GraphClient, id: &MessageId) -> Result<Message, GraphError> {
     let select = MESSAGE_SELECT.join(",");
     let doc = client
-        .get(&client.url(&format!("/messages/{}?$select={select}", id.as_str())))
+        .get(&client.url(&format!(
+            "/messages/{}?$select={select}&$expand={MESSAGE_EXPAND}",
+            id.as_str()
+        )))
         .await?;
     message_from_json(&doc)
 }
@@ -221,7 +224,7 @@ fn page_url(
     } else {
         let select = MESSAGE_SELECT.join(",");
         let mut path = format!(
-            "/mailFolders/{}/messages/delta?$select={select}",
+            "/mailFolders/{}/messages/delta?$select={select}&$expand={MESSAGE_EXPAND}",
             folder.as_str()
         );
         if let Some(date) = floor {
