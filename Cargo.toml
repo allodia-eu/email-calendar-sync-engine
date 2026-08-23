@@ -163,6 +163,7 @@ idna = "1.1.0"
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
+engine-http = { path = "crates/engine-http" }
 engine-tls = { path = "crates/engine-tls" }
 engine-mime = { path = "crates/engine-mime" }
 # The iCalendar layer is transport-neutral: iMIP carries it over *mail* on every

@@ -17,6 +17,7 @@
 //! ([`HttpTransport`](crate::http_transport)) lives in `http_transport`.
 
 use async_trait::async_trait;
+use engine_http::RetryConfig;
 use engine_provider::HttpVersion;
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
@@ -136,10 +137,15 @@ impl GoogleClient {
     ///
     /// Returns [`GoogleError::Transport`] if the HTTP client cannot be built.
     ///
-    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`), shared
-    /// with the account's other providers.
-    pub fn connect(token: impl Into<String>, tls: &TlsClientConfig) -> Result<Self, GoogleError> {
-        let transport = Box::new(HttpTransport::new(token.into(), tls)?);
+    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`) and `retry` its
+    /// throttling policy (`docs/agent-guidance/http-throttling.md`), both shared with the
+    /// account's other providers.
+    pub fn connect(
+        token: impl Into<String>,
+        tls: &TlsClientConfig,
+        retry: &RetryConfig,
+    ) -> Result<Self, GoogleError> {
+        let transport = Box::new(HttpTransport::new(token.into(), tls, retry)?);
         Ok(Self::with_transport(transport, GOOGLE_BASE.to_owned()))
     }
 
@@ -156,9 +162,10 @@ impl GoogleClient {
         token: impl Into<String>,
         base: impl Into<String>,
         tls: &TlsClientConfig,
+        retry: &RetryConfig,
     ) -> Result<Self, GoogleError> {
         Ok(Self::with_transport(
-            Box::new(HttpTransport::new(token.into(), tls)?),
+            Box::new(HttpTransport::new(token.into(), tls, retry)?),
             base.into(),
         ))
     }
@@ -272,15 +279,24 @@ mod tests {
 
     #[test]
     fn client_roots_urls_at_the_base_and_redacts_debug() {
-        let client =
-            GoogleClient::connect("super-secret-token", crate::test_support::tls()).unwrap();
+        let client = GoogleClient::connect(
+            "super-secret-token",
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
         assert_eq!(
             client.url("/gmail/v1/users/me/labels"),
             format!("{GOOGLE_BASE}/gmail/v1/users/me/labels")
         );
         // A custom base roots every path there (a replay server / proxy).
-        let custom =
-            GoogleClient::with_base("t", "http://127.0.0.1:9", crate::test_support::tls()).unwrap();
+        let custom = GoogleClient::with_base(
+            "t",
+            "http://127.0.0.1:9",
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
         assert_eq!(
             custom.url("/calendar/v3/users/me/calendarList"),
             "http://127.0.0.1:9/calendar/v3/users/me/calendarList"
@@ -294,7 +310,12 @@ mod tests {
     /// base (replay server / proxy) still wins.
     #[test]
     fn people_paths_root_at_the_people_host_unless_a_custom_base_is_set() {
-        let client = GoogleClient::connect("t", crate::test_support::tls()).unwrap();
+        let client = GoogleClient::connect(
+            "t",
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
         assert_eq!(
             client.people_url("/v1/people/me/connections"),
             format!("{PEOPLE_BASE}/v1/people/me/connections")
@@ -305,8 +326,13 @@ mod tests {
             format!("{GOOGLE_BASE}/gmail/v1/users/me/labels")
         );
         // A custom base wins, so the offline fixture-replay tests are unchanged.
-        let custom =
-            GoogleClient::with_base("t", "http://127.0.0.1:9", crate::test_support::tls()).unwrap();
+        let custom = GoogleClient::with_base(
+            "t",
+            "http://127.0.0.1:9",
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
         assert_eq!(
             custom.people_url("/v1/people/me/connections"),
             "http://127.0.0.1:9/v1/people/me/connections"

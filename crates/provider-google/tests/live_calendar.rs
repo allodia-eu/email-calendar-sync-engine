@@ -25,8 +25,12 @@ fn token() -> Option<String> {
 // --- Google Calendar (Phase D) ---
 
 fn calendar_provider(token: String) -> GoogleCalendarProvider {
-    let client =
-        GoogleClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client");
+    let client = GoogleClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
     // "primary" is Google's alias for the account's default calendar.
     GoogleCalendarProvider::new(client, CalendarId::try_from("primary").unwrap())
 }

@@ -1,0 +1,26 @@
+[package]
+name = "engine-http"
+description = "One throttling policy for every HTTP provider in the PIM sync engine (docs/agent-guidance/http-throttling.md). A 429 is answered the same way whichever adapter received it: the server's own Retry-After when it supplies one, jittered exponential backoff when it does not, bounded by a total-wait budget — and reported to a host-supplied ThrottleObserver, because the engine does no logging of its own."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The one HTTP client every provider here ships on; this crate wraps its send call
+# rather than replacing it, so a transport keeps building requests exactly as before.
+reqwest = { workspace = true }
+# `time` for the backoff sleep. No runtime is started here — the caller's is used.
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+# The client the providers actually build, so the tests send through the same stack (and
+# through the crypto provider `rustls-no-provider` requires one of).
+engine-tls = { workspace = true, features = ["reqwest"] }
+# `macros`/`rt` for `#[tokio::test]`; `test-util` for `pause()`, so the backoff tests
+# assert the waits without spending them.
+tokio = { workspace = true, features = ["time", "macros", "rt", "test-util"] }
+
+[lints]
+workspace = true

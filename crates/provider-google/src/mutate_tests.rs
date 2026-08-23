@@ -13,7 +13,8 @@ use crate::{
     GoogleClient,
     normalize::ALL_MAIL_ID,
     test_support::{
-        capturing_replay_server, capturing_server, fake_client, fake_client_fallible, json, tls,
+        capturing_replay_server, capturing_server, fake_client, fake_client_fallible, json, retry,
+        tls,
     },
 };
 
@@ -48,7 +49,7 @@ async fn mark_read_removes_unread_and_flag_adds_starred() {
 async fn mark_read_body_removes_unread_over_the_real_transport() {
     // Drive the REAL reqwest transport at a capturing server and assert the modify body.
     let (base, rx) = capturing_server("200 OK", r#"{"id":"message-1"}"#);
-    let client = GoogleClient::with_base("tok", base, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), retry()).unwrap();
     edit(&client, &MailEdit::mark_seen(key("message-1"), true))
         .await
         .unwrap();
@@ -77,7 +78,7 @@ async fn mark_read_body_removes_unread_over_the_real_transport() {
 #[tokio::test]
 async fn mark_unread_adds_unread() {
     let (base, rx) = capturing_server("200 OK", r#"{"id":"message-1"}"#);
-    let client = GoogleClient::with_base("tok", base, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), retry()).unwrap();
     edit(&client, &MailEdit::mark_seen(key("message-1"), false))
         .await
         .unwrap();
@@ -92,7 +93,7 @@ async fn mark_unread_adds_unread() {
 async fn move_to_trash_uses_the_trash_endpoint() {
     // Answers with the real captured `messages.trash` body.
     let (base, rx) = capturing_server("200 OK", TRASH);
-    let client = GoogleClient::with_base("tok", base, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), retry()).unwrap();
     edit(
         &client,
         &MailEdit::move_to(key("message-4"), MailboxId::try_from("TRASH").unwrap()),
@@ -150,7 +151,7 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
         ),
         ("/modify", json(MODIFY_ARCHIVED)),
     ]);
-    let client = GoogleClient::with_base("tok", base, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), retry()).unwrap();
     edit(
         &client,
         &MailEdit::move_to(key("message-4"), MailboxId::try_from(ALL_MAIL_ID).unwrap()),
@@ -190,7 +191,7 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
 #[tokio::test]
 async fn permanent_delete_hits_the_delete_endpoint() {
     let (base, rx) = capturing_server("204 No Content", "");
-    let client = GoogleClient::with_base("tok", base, tls()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), retry()).unwrap();
     edit(&client, &MailEdit::delete(key("message-1")))
         .await
         .unwrap();

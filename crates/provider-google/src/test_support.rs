@@ -23,6 +23,13 @@ pub(crate) fn tls() -> &'static TlsClientConfig {
     TLS.get_or_init(TlsClientConfig::bundled)
 }
 
+/// The default throttling policy, for tests that build a real transport. No offline route
+/// answers `429`, so nothing here ever waits.
+pub(crate) fn retry() -> &'static engine_http::RetryConfig {
+    static RETRY: OnceLock<engine_http::RetryConfig> = OnceLock::new();
+    RETRY.get_or_init(engine_http::RetryConfig::default)
+}
+
 /// What a fake route answers with: a fixture body, or an HTTP status plus the Google
 /// error envelope to fail with. The failing form exists so a recovery path can be
 /// driven offline — notably Google Calendar answering `410 fullSyncRequired` or Gmail

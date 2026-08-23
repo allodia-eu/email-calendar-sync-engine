@@ -15,6 +15,7 @@
 //! ([`HttpTransport`](crate::http_transport)) lives in `http_transport`.
 
 use async_trait::async_trait;
+use engine_http::RetryConfig;
 use engine_provider::HttpVersion;
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
@@ -118,10 +119,15 @@ impl GraphClient {
     ///
     /// Returns [`GraphError::Transport`] if the HTTP client cannot be built.
     ///
-    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`), shared
-    /// with the account's other providers.
-    pub fn connect(token: impl Into<String>, tls: &TlsClientConfig) -> Result<Self, GraphError> {
-        let transport = Box::new(HttpTransport::new(token.into(), tls)?);
+    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`) and `retry` its
+    /// throttling policy (`docs/agent-guidance/http-throttling.md`), both shared with the
+    /// account's other providers.
+    pub fn connect(
+        token: impl Into<String>,
+        tls: &TlsClientConfig,
+        retry: &RetryConfig,
+    ) -> Result<Self, GraphError> {
+        let transport = Box::new(HttpTransport::new(token.into(), tls, retry)?);
         Ok(Self::with_transport(transport, GRAPH_BASE.to_owned()))
     }
 
@@ -139,8 +145,9 @@ impl GraphClient {
         token: impl Into<String>,
         principal: MailboxPrincipal,
         tls: &TlsClientConfig,
+        retry: &RetryConfig,
     ) -> Result<Self, GraphError> {
-        Ok(Self::connect(token, tls)?.with_principal(principal))
+        Ok(Self::connect(token, tls, retry)?.with_principal(principal))
     }
 
     /// Connects a real client to a custom base origin instead of the Graph root —
@@ -156,9 +163,10 @@ impl GraphClient {
         token: impl Into<String>,
         base: impl Into<String>,
         tls: &TlsClientConfig,
+        retry: &RetryConfig,
     ) -> Result<Self, GraphError> {
         Ok(Self::with_transport(
-            Box::new(HttpTransport::new(token.into(), tls)?),
+            Box::new(HttpTransport::new(token.into(), tls, retry)?),
             base.into(),
         ))
     }
@@ -319,7 +327,12 @@ mod tests {
     #[test]
     fn client_roots_urls_at_the_principal_and_redacts_debug() {
         // Default — the signed-in user's own mailbox roots at /me.
-        let me = GraphClient::connect("super-secret-token", crate::test_support::tls()).unwrap();
+        let me = GraphClient::connect(
+            "super-secret-token",
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
         assert_eq!(me.url("/messages"), format!("{GRAPH_BASE}/me/messages"));
         // A shared mailbox roots requests at /users/{address} — the documented shape
         // `…/users/info@example.org/mailFolders('Inbox')/messages`.
@@ -327,6 +340,7 @@ mod tests {
             "t",
             MailboxPrincipal::user("info@example.org"),
             crate::test_support::tls(),
+            crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(
@@ -340,12 +354,22 @@ mod tests {
     #[test]
     fn rebase_targets_a_custom_base_but_is_a_noop_at_the_default() {
         // At the default base, an absolute Graph link is left untouched.
-        let prod = GraphClient::connect("t", crate::test_support::tls()).unwrap();
+        let prod = GraphClient::connect(
+            "t",
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
         let link = format!("{GRAPH_BASE}/me/messages/delta?$deltatoken=x");
         assert_eq!(prod.rebase(&link), link);
         // A custom base catches the absolute link (a replay server / proxy) …
-        let custom =
-            GraphClient::with_base("t", "http://127.0.0.1:9", crate::test_support::tls()).unwrap();
+        let custom = GraphClient::with_base(
+            "t",
+            "http://127.0.0.1:9",
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
         assert_eq!(
             custom.rebase(&link),
             "http://127.0.0.1:9/me/messages/delta?$deltatoken=x"

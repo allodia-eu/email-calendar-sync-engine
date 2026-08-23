@@ -6,6 +6,7 @@
 //! The offline tests drive it over a blocking single-shot mock server (no network).
 
 use async_trait::async_trait;
+use engine_http::{RetryConfig, send_retrying};
 use engine_provider::{HttpVersion, ObservedHttpVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
@@ -20,6 +21,9 @@ pub(crate) struct HttpTransport {
     /// `GraphClient::connect` performs no request (Graph has no session-discovery step),
     /// so this stays `None` until the adapter's first fetch.
     http_version: ObservedHttpVersion,
+    /// How a `429` is waited out. Exchange Online throttles a mailbox on both concurrency
+    /// and a requests-per-window budget, and names its own wait in `Retry-After`.
+    retry: RetryConfig,
 }
 
 impl HttpTransport {
@@ -29,12 +33,18 @@ impl HttpTransport {
     ///
     /// Returns [`GraphError::Transport`] if the HTTP client cannot be built.
     ///
-    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`).
-    pub(crate) fn new(token: String, tls: &TlsClientConfig) -> Result<Self, GraphError> {
+    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`) and `retry` its
+    /// throttling policy (`docs/agent-guidance/http-throttling.md`).
+    pub(crate) fn new(
+        token: String,
+        tls: &TlsClientConfig,
+        retry: &RetryConfig,
+    ) -> Result<Self, GraphError> {
         Ok(Self {
             client: tls.reqwest_builder().build()?,
             token,
             http_version: ObservedHttpVersion::default(),
+            retry: retry.clone().labelled("graph"),
         })
     }
 
@@ -51,13 +61,14 @@ impl HttpTransport {
             Some(extra) => format!("IdType=\"ImmutableId\", {extra}"),
             None => "IdType=\"ImmutableId\"".to_owned(),
         };
-        let response = self
-            .client
-            .get(url)
-            .bearer_auth(&self.token)
-            .header("Prefer", prefer)
-            .send()
-            .await?;
+        let response = send_retrying(
+            self.client
+                .get(url)
+                .bearer_auth(&self.token)
+                .header("Prefer", prefer),
+            &self.retry,
+        )
+        .await?;
         self.http_version.record(response.version());
         Ok(response)
     }
@@ -93,7 +104,7 @@ impl HttpTransport {
         if body.is_empty() {
             request = request.header(reqwest::header::CONTENT_LENGTH, 0);
         }
-        let response = request.body(body).send().await?;
+        let response = send_retrying(request.body(body), &self.retry).await?;
         self.http_version.record(response.version());
         Ok(response)
     }
@@ -159,7 +170,7 @@ impl GraphTransport for HttpTransport {
     async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GraphError> {
         // No `Authorization` and no `Prefer`: this URL came from payload content, not
         // from the Graph API, so it gets a bare GET.
-        let resp = self.client.get(url).send().await?;
+        let resp = send_retrying(self.client.get(url), &self.retry).await?;
         self.http_version.record(resp.version());
         Self::collect_bytes(resp).await
     }
@@ -261,8 +272,12 @@ mod tests {
     #[tokio::test]
     async fn the_anonymous_byte_path_sends_no_authorization_header() {
         let (base, seen) = mock_server_capturing(http("200 OK", "bytes"));
-        let transport =
-            HttpTransport::new("super-secret".to_owned(), crate::test_support::tls()).unwrap();
+        let transport = HttpTransport::new(
+            "super-secret".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
 
         transport.get_bytes_unauthenticated(&base).await.unwrap();
 
@@ -287,7 +302,12 @@ mod tests {
     #[tokio::test]
     async fn get_parses_a_success_body() {
         let base = mock_server(http("200 OK", r#"{"value":[]}"#));
-        let transport = HttpTransport::new("tok".to_owned(), crate::test_support::tls()).unwrap();
+        let transport = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
         let doc = transport.get(&base).await.unwrap();
         assert!(doc.get("value").is_some());
     }
@@ -298,7 +318,12 @@ mod tests {
         // has observed nothing; the first response fills the fact in. This is the one
         // provider where `ConnectionInfo::http_version` is `None` on a live connection.
         let base = mock_server(http("200 OK", r#"{"value":[]}"#));
-        let transport = HttpTransport::new("tok".to_owned(), crate::test_support::tls()).unwrap();
+        let transport = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap();
         assert_eq!(GraphTransport::http_version(&transport), None);
 
         transport.get(&base).await.unwrap();
@@ -313,11 +338,15 @@ mod tests {
         // `$value` is not JSON — it is the raw RFC 822 MIME; get_bytes returns it as-is.
         let mime = "From: a@example.com\r\nSubject: Hi\r\n\r\nBody\r\n";
         let base = mock_server(http("200 OK", mime));
-        let bytes = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
-            .unwrap()
-            .get_bytes(&base)
-            .await
-            .unwrap();
+        let bytes = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap()
+        .get_bytes(&base)
+        .await
+        .unwrap();
         assert_eq!(bytes, mime.as_bytes());
     }
 
@@ -326,11 +355,15 @@ mod tests {
         // A gone/moved message → the same status classification as any Graph error.
         let body = r#"{"error":{"code":"ErrorItemNotFound","message":"gone"}}"#;
         let base = mock_server(http("404 Not Found", body));
-        let err = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
-            .unwrap()
-            .get_bytes(&base)
-            .await
-            .unwrap_err();
+        let err = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap()
+        .get_bytes(&base)
+        .await
+        .unwrap_err();
         assert!(
             matches!(&err, GraphError::Status { code: Some(c), .. } if c == "ErrorItemNotFound")
         );
@@ -340,11 +373,15 @@ mod tests {
     async fn non_success_status_becomes_a_classified_status_error() {
         let body = r#"{"error":{"code":"InvalidAuthenticationToken","message":"nope"}}"#;
         let base = mock_server(http("401 Unauthorized", body));
-        let err = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
-            .unwrap()
-            .get(&base)
-            .await
-            .unwrap_err();
+        let err = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap()
+        .get(&base)
+        .await
+        .unwrap_err();
         assert!(
             matches!(&err, GraphError::Status { code: Some(c), .. } if c == "InvalidAuthenticationToken")
         );
@@ -354,11 +391,15 @@ mod tests {
     #[tokio::test]
     async fn a_non_json_success_body_is_a_permanent_decode_error() {
         let base = mock_server(http("200 OK", "this is not json"));
-        let err = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
-            .unwrap()
-            .get(&base)
-            .await
-            .unwrap_err();
+        let err = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap()
+        .get(&base)
+        .await
+        .unwrap_err();
         // A body that does not decode is a permanent protocol mismatch.
         assert!(matches!(err, GraphError::Transport(_)));
         assert_eq!(err.failure_class(), FailureClass::Permanent);
@@ -367,11 +408,15 @@ mod tests {
     #[tokio::test]
     async fn a_refused_connection_is_a_retryable_transport_error() {
         // Nothing is listening on this port → reqwest connect error → retryable.
-        let err = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
-            .unwrap()
-            .get("http://127.0.0.1:1/me")
-            .await
-            .unwrap_err();
+        let err = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap()
+        .get("http://127.0.0.1:1/me")
+        .await
+        .unwrap_err();
         assert!(matches!(err, GraphError::Transport(_)));
         assert!(err.failure_class().is_retryable());
     }
@@ -380,19 +425,27 @@ mod tests {
     async fn a_write_body_parses_json_or_treats_empty_as_none() {
         // A create/patch echoes JSON; a 202/204 carries none.
         let base = mock_server(http("201 Created", r#"{"id":"x"}"#));
-        let created = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
-            .unwrap()
-            .post(&base, "application/json", b"{}".to_vec())
-            .await
-            .unwrap();
+        let created = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap()
+        .post(&base, "application/json", b"{}".to_vec())
+        .await
+        .unwrap();
         assert_eq!(created.unwrap()["id"], "x");
 
         let base = mock_server(http("204 No Content", ""));
-        let none = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
-            .unwrap()
-            .patch(&base, "application/json", Some("etag"), b"{}".to_vec())
-            .await
-            .unwrap();
+        let none = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap()
+        .patch(&base, "application/json", Some("etag"), b"{}".to_vec())
+        .await
+        .unwrap();
         assert!(none.is_none());
     }
 
@@ -400,11 +453,15 @@ mod tests {
     async fn a_412_write_is_a_classified_conflict() {
         let body = r#"{"error":{"code":"ErrorIrresolvableConflict","message":"stale"}}"#;
         let base = mock_server(http("412 Precondition Failed", body));
-        let err = HttpTransport::new("tok".to_owned(), crate::test_support::tls())
-            .unwrap()
-            .delete(&base, Some("stale-etag"))
-            .await
-            .unwrap_err();
+        let err = HttpTransport::new(
+            "tok".to_owned(),
+            crate::test_support::tls(),
+            crate::test_support::retry(),
+        )
+        .unwrap()
+        .delete(&base, Some("stale-etag"))
+        .await
+        .unwrap_err();
         assert_eq!(err.failure_class(), FailureClass::Conflict);
     }
 }

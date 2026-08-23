@@ -9,6 +9,7 @@
 //! so discovery can resolve the RFC 6764 well-known `307` itself.
 
 use async_trait::async_trait;
+use engine_http::{RetryConfig, send_retrying};
 use engine_provider::{HttpVersion, ObservedHttpVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{Client, Method, redirect::Policy};
@@ -238,6 +239,10 @@ pub(crate) struct DavClient {
     /// that serves every real request, so the latest observation — not the first — is
     /// the one that describes the working connection.
     http_version: ObservedHttpVersion,
+    /// How a `429` is waited out. Note that `PROPFIND` and `REPORT` are extension methods
+    /// rather than ones `http` knows are idempotent, so a `503` on them is not retried even
+    /// though their own RFCs say it would be safe.
+    retry: RetryConfig,
 }
 
 impl core::fmt::Debug for DavClient {
@@ -264,6 +269,7 @@ impl DavClient {
         base_url: &str,
         credentials: Credentials,
         tls: &TlsClientConfig,
+        retry: &RetryConfig,
     ) -> Result<Self, CalDavError> {
         let base = reqwest::Url::parse(base_url)
             .map_err(|e| CalDavError::protocol(format!("bad base URL {base_url:?}: {e}")))?;
@@ -277,6 +283,7 @@ impl DavClient {
             base,
             credentials,
             http_version: ObservedHttpVersion::default(),
+            retry: retry.clone().labelled("caldav"),
         })
     }
 }
@@ -357,26 +364,25 @@ impl DavExecutor for DavClient {
         depth: &str,
         body: String,
     ) -> Result<HttpResponse, CalDavError> {
-        let response = self
+        let request = self
             .request(method, href)?
             .header("Depth", depth)
             .header(
                 reqwest::header::CONTENT_TYPE,
                 "application/xml; charset=utf-8",
             )
-            .body(body)
-            .send()
-            .await?;
+            .body(body);
+        let response = send_retrying(request, &self.retry).await?;
         self.collect(response).await
     }
 
     async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
-        let response = self.request(DavMethod::Options, href)?.send().await?;
+        let response = send_retrying(self.request(DavMethod::Options, href)?, &self.retry).await?;
         self.collect(response).await
     }
 
     async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
-        let response = self.request(DavMethod::Get, href)?.send().await?;
+        let response = send_retrying(self.request(DavMethod::Get, href)?, &self.retry).await?;
         self.http_version.record(response.version());
         let status = response.status().as_u16();
         let bytes = response.bytes().await?;
@@ -402,7 +408,7 @@ impl DavExecutor for DavClient {
             Precondition::IfMatch(etag) => builder.header(reqwest::header::IF_MATCH, etag),
             Precondition::None => builder,
         };
-        let response = builder.body(request.body).send().await?;
+        let response = send_retrying(builder.body(request.body), &self.retry).await?;
         self.collect(response).await
     }
 }

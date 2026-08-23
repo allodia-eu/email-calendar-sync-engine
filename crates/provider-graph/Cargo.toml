@@ -17,6 +17,8 @@ engine-provider = { workspace = true, features = ["http"] }
 engine-rfc5322 = { workspace = true }
 # One shared TLS trust policy across every provider (`docs/agent-guidance/tls.md`);
 # `reqwest` enables the preconfigured-client builder this HTTP transport uses.
+# One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).
+engine-http = { workspace = true }
 engine-tls = { workspace = true, features = ["reqwest"] }
 # reqwest + rustls (pure-Rust TLS, mobile cross-compile) on the engine's standard
 # HTTP stack, mirroring provider-jmap.

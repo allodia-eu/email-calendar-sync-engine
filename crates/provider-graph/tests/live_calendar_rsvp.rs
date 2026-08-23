@@ -114,8 +114,12 @@ async fn whoami(token: &str) -> String {
 
 /// A calendar provider for `token`, bound to that account's default calendar.
 async fn calendar_provider(token: &str) -> GraphCalendarProvider {
-    let client =
-        GraphClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client");
+    let client = GraphClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
     let placeholder = GraphCalendarProvider::new(
         client,
         CalendarId::try_from("placeholder").unwrap(),
@@ -133,8 +137,12 @@ async fn calendar_provider(token: &str) -> GraphCalendarProvider {
         .iter()
         .find(|calendar| calendar.is_default)
         .expect("a default calendar");
-    let client =
-        GraphClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client");
+    let client = GraphClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
     GraphCalendarProvider::new(
         client,
         default.id.clone(),

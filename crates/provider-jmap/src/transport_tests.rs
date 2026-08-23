@@ -122,7 +122,12 @@ const EXPECTED_BASIC: &str = "Basic YWxpY2VAZXhhbXBsZS5jb206czNjcmV0";
 const EXPECTED_BEARER: &str = "Bearer s3cret";
 
 fn transport() -> Transport {
-    Transport::new(Credentials::basic("alice@example.com", "s3cret"), tls()).unwrap()
+    Transport::new(
+        Credentials::basic("alice@example.com", "s3cret"),
+        tls(),
+        &engine_http::RetryConfig::default(),
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -191,7 +196,12 @@ async fn a_bearer_credential_is_not_downgraded_to_basic() {
     // A bare token has no username to build a Basic header from, so the 401 stands.
     let (base, seen) = mock_server(vec![unauthorized(r#"Basic realm="jmap""#)]);
 
-    let transport = Transport::new(Credentials::bearer("tok"), tls()).unwrap();
+    let transport = Transport::new(
+        Credentials::bearer("tok"),
+        tls(),
+        &engine_http::RetryConfig::default(),
+    )
+    .unwrap();
     let response = transport.get(&base).await.unwrap();
 
     assert_eq!(response.status(), 401);

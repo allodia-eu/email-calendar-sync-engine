@@ -361,6 +361,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "engine-core",
+ "engine-http",
  "engine-ical",
  "engine-provider",
  "engine-recurrence",
@@ -402,6 +403,15 @@ dependencies = [
  "serde_json",
  "thiserror",
  "time",
+]
+
+[[package]]
+name = "engine-http"
+version = "0.1.0"
+dependencies = [
+ "engine-tls",
+ "reqwest",
+ "tokio",
 ]
 
 [[package]]
@@ -1286,6 +1296,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "engine-core",
+ "engine-http",
  "engine-ical",
  "engine-provider",
  "engine-recurrence",
@@ -1313,6 +1324,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "engine-core",
+ "engine-http",
  "engine-provider",
  "engine-rfc5322",
  "engine-tls",
@@ -1332,6 +1344,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "engine-core",
+ "engine-http",
  "engine-provider",
  "engine-rfc5322",
  "engine-tls",
@@ -1377,6 +1390,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "engine-core",
+ "engine-http",
  "engine-mime",
  "engine-provider",
  "engine-recurrence",

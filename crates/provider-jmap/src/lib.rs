@@ -135,6 +135,7 @@ pub struct JmapConfig {
     session_path: String,
     session_urls: SessionUrlPolicy,
     tls: TlsClientConfig,
+    retry: engine_http::RetryConfig,
     connect_observer: Option<Arc<dyn ConnectObserver>>,
 }
 
@@ -150,6 +151,7 @@ impl JmapConfig {
             session_path: "/.well-known/jmap".to_owned(),
             session_urls: SessionUrlPolicy::RebaseToConnection,
             tls: TlsClientConfig::default(),
+            retry: engine_http::RetryConfig::default(),
             connect_observer: None,
         }
     }
@@ -174,6 +176,15 @@ impl JmapConfig {
     #[must_use]
     pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
         self.tls = tls;
+        self
+    }
+
+    /// Sets the throttling policy (the host builds one and shares it across the account's
+    /// providers, like the TLS policy above). Defaults to waiting a `429` out
+    /// (`docs/agent-guidance/http-throttling.md`).
+    #[must_use]
+    pub fn with_retry(mut self, retry: engine_http::RetryConfig) -> Self {
+        self.retry = retry;
         self
     }
 
@@ -232,7 +243,7 @@ impl JmapClient {
             .connect_observer
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
-        let transport = Transport::new(config.credentials, &config.tls)?;
+        let transport = Transport::new(config.credentials, &config.tls, &config.retry)?;
         let document = fetch_session(
             &transport,
             &base,

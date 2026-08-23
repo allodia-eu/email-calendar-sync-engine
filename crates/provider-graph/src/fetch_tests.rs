@@ -250,8 +250,13 @@ async fn folders_skip_an_unprovisioned_well_known_alias() {
         .into_iter()
         .filter(|(key, _)| *key != "/mailFolders/archive")
         .collect();
-    let client =
-        GraphClient::with_base("t", replay_server(routes), crate::test_support::tls()).unwrap();
+    let client = GraphClient::with_base(
+        "t",
+        replay_server(routes),
+        crate::test_support::tls(),
+        crate::test_support::retry(),
+    )
+    .unwrap();
     let mailboxes = folders(&client).await.unwrap();
     // The Archive folder is present but roleless (its alias 404'd); a
     // provisioned alias still resolved.
@@ -299,6 +304,7 @@ async fn delta_refetch_skips_a_message_that_404s() {
         "t",
         replay_server(vec![("$deltatoken=", json(CHANGED))]),
         crate::test_support::tls(),
+        crate::test_support::retry(),
     )
     .unwrap();
     let cursor = SyncState::new(

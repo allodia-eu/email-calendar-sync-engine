@@ -45,7 +45,12 @@ fn token() -> Option<String> {
 }
 
 fn client(token: String) -> GraphClient {
-    GraphClient::connect(token, &engine_tls::TlsClientConfig::bundled()).expect("client")
+    GraphClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client")
 }
 
 fn property(id: &str) -> PropertyId {
