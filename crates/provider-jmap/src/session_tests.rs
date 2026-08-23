@@ -14,7 +14,8 @@ fn session_doc() -> Value {
             "urn:ietf:params:jmap:core": {
                 "maxCallsInRequest": 16,
                 "maxObjectsInGet": 500,
-                "maxObjectsInSet": 500
+                "maxObjectsInSet": 500,
+                "maxConcurrentRequests": 4
             },
             "urn:ietf:params:jmap:mail": {},
             "urn:ietf:params:jmap:submission": {},
@@ -90,6 +91,22 @@ fn reads_capabilities_and_limits() {
     assert!(caps.idle());
     assert_eq!(session.limits().max_objects_in_get, 500);
     assert_eq!(session.limits().max_calls_in_request, 16);
+    // What a concurrent body warm is allowed to be: the server's number, not a guess.
+    assert_eq!(session.limits().max_concurrent_requests, 4);
+}
+
+#[test]
+fn a_session_that_names_no_concurrency_limit_stays_one_at_a_time() {
+    // Widening past an unstated limit is refused rather than queued (a `400`
+    // `urn:ietf:params:jmap:error:limit`), so silence has to mean one.
+    let mut doc = session_doc();
+    doc["capabilities"]["urn:ietf:params:jmap:core"]
+        .as_object_mut()
+        .unwrap()
+        .remove("maxConcurrentRequests");
+    let base = Url::parse("http://127.0.0.1:18080").unwrap();
+    let session = Session::parse(&doc, &base, SessionUrlPolicy::RebaseToConnection).unwrap();
+    assert_eq!(session.limits().max_concurrent_requests, 1);
 }
 
 #[test]

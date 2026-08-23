@@ -198,7 +198,9 @@ impl Provider for JmapProvider {
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
             http_version: self.executor.http_version(),
+            // The server named this in its session; nothing here needs to guess it.
             ..ConnectionInfo::new(self.capabilities)
+                .with_concurrent_fetches(self.executor.session().limits().max_concurrent_requests)
         }
     }
 

@@ -96,6 +96,29 @@ impl GraphProvider {
     }
 }
 
+/// How many `$value` fetches a caller may keep in flight against one mailbox.
+///
+/// A Graph delta returns whole message objects inline, so the metadata sync costs one round
+/// trip per *page* and has nothing to overlap. The **source** does not come with them:
+/// `GET /messages/{id}/$value` is one request per message, which is what a host warming
+/// bodies pays, one round trip deep, however fast the link is.
+///
+/// Exchange Online caps a mailbox at four concurrent requests
+/// (<https://learn.microsoft.com/en-us/graph/throttling-limits>), and a live mailbox agrees
+/// exactly: measured over 48 messages, 1 → 11.5 bodies/s, 2 → 24.9, 4 → 35.2 all clean, and 6
+/// draws its first `429`. Re-running width 1 afterwards gave 11.9, so none of that is a warm
+/// cache.
+///
+/// Going wider is possible now that a throttle is waited out rather than dropped, and is
+/// still wrong: the mailbox's other ceiling is 10,000 requests per 10 minutes, and requests
+/// spent being refused come out of it.
+///
+/// The `$batch` endpoint is deliberately not used. Graph hands Outlook at most four
+/// sub-requests at a time whatever the batch holds, so it buys no parallelism this does not
+/// already have; measured at equal width it was within noise of plain concurrency, and it
+/// base64-encodes every body for about 25% more bytes.
+pub(crate) const MAX_CONCURRENT_SOURCE_FETCHES: usize = 4;
+
 #[async_trait]
 impl Provider for GraphProvider {
     /// The fixed mail capabilities plus the transport's negotiated HTTP version.
@@ -109,6 +132,7 @@ impl Provider for GraphProvider {
         ConnectionInfo {
             http_version: self.client.http_version(),
             ..ConnectionInfo::new(self.capabilities)
+                .with_concurrent_fetches(MAX_CONCURRENT_SOURCE_FETCHES)
         }
     }
 

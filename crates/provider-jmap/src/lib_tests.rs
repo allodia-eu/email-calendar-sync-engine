@@ -214,6 +214,9 @@ async fn jmap_provider_connects_and_syncs_through_the_real_client() {
     );
     assert_eq!(info.tls_version, None);
     assert!(info.capabilities.mail());
+    // This session names no `maxConcurrentRequests`, so the body warm stays one at a
+    // time rather than guessing a width the server never granted.
+    assert_eq!(info.concurrent_fetches, 1);
     let account = engine_core::ids::AccountId::try_from("acct").unwrap();
     assert!(
         provider
@@ -266,6 +269,23 @@ async fn bearer_auth_connects() {
 // `Executor` delegation end-to-end, the paths otherwise only hit by the live tests.
 
 /// A session advertising the download + upload + submission surface these tests need.
+/// The same session, advertising the concurrency limit RFC 8620 §2 defines.
+const CONCURRENT_SESSION_DOC: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{"maxObjectsInGet":500,"maxConcurrentRequests":6},"urn:ietf:params:jmap:mail":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c"},"apiUrl":"https://mail.test.local/jmap/"}"#;
+
+#[tokio::test]
+async fn the_body_warm_is_as_wide_as_the_session_says_it_may_be() {
+    let base = mock_server(vec![http_ok(CONCURRENT_SESSION_DOC)]);
+    let provider = JmapProvider::connect(
+        JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        engine_provider::Provider::connection_info(&provider).concurrent_fetches,
+        6
+    );
+}
+
 const RICH_SESSION_DOC: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{"maxObjectsInGet":500},"urn:ietf:params:jmap:mail":{},"urn:ietf:params:jmap:submission":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c","urn:ietf:params:jmap:submission":"c"},"apiUrl":"https://mail.test.local/jmap/","downloadUrl":"https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}","uploadUrl":"https://mail.test.local/upload/{accountId}/"}"#;
 
 fn rich_config(base: String) -> JmapConfig {

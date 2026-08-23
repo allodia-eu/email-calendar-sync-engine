@@ -72,6 +72,16 @@ pub struct CoreLimits {
     pub max_objects_in_set: usize,
     /// Max method calls in one request (`maxCallsInRequest`).
     pub max_calls_in_request: usize,
+    /// Max requests the server will accept at once (`maxConcurrentRequests`).
+    ///
+    /// RFC 8620 §2 scopes this to the API endpoint, and defines no companion limit for
+    /// the download endpoint — but a server is free to apply one number to both, and
+    /// Stalwart does: exceeding it on a blob download is refused with a `400`
+    /// `urn:ietf:params:jmap:error:limit`, not queued. So this is what bounds a
+    /// concurrent body warm too. It defaults to `1` rather than to a guess, because the
+    /// cost of being wrong is asymmetric — too narrow is slow, too wide is refused
+    /// requests.
+    pub max_concurrent_requests: usize,
 }
 
 impl Default for CoreLimits {
@@ -82,6 +92,7 @@ impl Default for CoreLimits {
             max_objects_in_get: 100,
             max_objects_in_set: 100,
             max_calls_in_request: 16,
+            max_concurrent_requests: 1,
         }
     }
 }
@@ -444,6 +455,7 @@ fn parse_limits(core: &Value) -> CoreLimits {
         max_objects_in_get: read("maxObjectsInGet", defaults.max_objects_in_get),
         max_objects_in_set: read("maxObjectsInSet", defaults.max_objects_in_set),
         max_calls_in_request: read("maxCallsInRequest", defaults.max_calls_in_request),
+        max_concurrent_requests: read("maxConcurrentRequests", defaults.max_concurrent_requests),
     }
 }
 

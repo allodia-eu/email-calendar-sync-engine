@@ -53,6 +53,12 @@ async fn advertises_per_folder_scopes_and_mail_capability() {
     // A fixture-fed fake transport speaks no HTTP and reqwest never reports TLS.
     assert_eq!(info.http_version, None);
     assert_eq!(info.tls_version, None);
+    // And the mailbox's concurrency ceiling, so a caller draining single fetches (the body
+    // warm) overlaps them instead of paying a round trip each.
+    assert_eq!(
+        info.concurrent_fetches,
+        crate::provider::MAX_CONCURRENT_SOURCE_FETCHES
+    );
     assert_eq!(
         provider.mailbox_scope(&account()),
         SyncScope::GraphFolderList { account: account() }

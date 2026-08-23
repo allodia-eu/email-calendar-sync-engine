@@ -100,7 +100,7 @@ impl JmapError {
     pub fn failure_class(&self) -> FailureClass {
         match self {
             Self::Transport(e) => transport_class(e),
-            Self::Status { status, .. } => status_class(*status),
+            Self::Status { status, body } => status_class(*status, body),
             // A malformed response/session is a protocol-level incompatibility:
             // retrying the same request will not fix it.
             Self::Json(_) | Self::Protocol(_) | Self::Session(_) | Self::MissingResponse(_) => {
@@ -143,14 +143,37 @@ fn method_class(error_type: &str) -> FailureClass {
     }
 }
 
-/// Maps an HTTP status to a [`FailureClass`].
-fn status_class(status: u16) -> FailureClass {
+/// Maps an HTTP status to a [`FailureClass`], reading the request-level problem-details
+/// body where the status alone is not the whole answer.
+fn status_class(status: u16, body: &str) -> FailureClass {
     match status {
         401 => FailureClass::Authentication,
+        400 if is_concurrency_limit(body) => FailureClass::RateLimited,
         429 => FailureClass::RateLimited,
         500..=599 => FailureClass::Retryable,
         _ => FailureClass::Permanent,
     }
+}
+
+/// Whether a `400` is the server saying "too many at once" rather than "this request is
+/// wrong".
+///
+/// RFC 8620 §3.6.1 gives request-level errors as problem details, and returns *all* of them
+/// with a `400` — including `urn:ietf:params:jmap:error:limit`, whose `limit` property names
+/// which limit was hit. `maxConcurrentRequests` is the only one of the three a client can
+/// clear by waiting: `maxSizeRequest` and `maxCallsInRequest` describe the request that was
+/// sent, and re-sending it unchanged fails identically.
+///
+/// This matters because the status alone reads as permanent, and a body dropped as permanent
+/// is a body no pass fetches again. Observed against Stalwart, which applies its
+/// `maxConcurrentRequests` to blob downloads as well as to the API endpoint.
+fn is_concurrency_limit(body: &str) -> bool {
+    let Ok(problem) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    problem.get("type").and_then(serde_json::Value::as_str)
+        == Some("urn:ietf:params:jmap:error:limit")
+        && problem.get("limit").and_then(serde_json::Value::as_str) == Some("maxConcurrentRequests")
 }
 
 /// Maps a reqwest transport error to a [`FailureClass`]. Connect/timeout failures
@@ -207,6 +230,43 @@ mod tests {
             JmapError::Method {
                 call_id: "0".into(),
                 error_type: "unknownMethod".into(),
+            }
+            .failure_class(),
+            FailureClass::Permanent
+        );
+    }
+
+    #[test]
+    fn a_concurrency_limit_is_a_throttle_even_though_it_arrives_as_a_400() {
+        // Observed against Stalwart when a body warm overlapped more downloads than the
+        // session advertised. Read as its bare status this is Permanent, and a body
+        // dropped as permanent is one no later pass fetches again.
+        let refused = JmapError::Status {
+            status: 400,
+            body: r#"{"type":"urn:ietf:params:jmap:error:limit","status":400,
+                     "detail":"The request exceeds the maximum number of concurrent requests.",
+                     "limit":"maxConcurrentRequests"}"#
+                .to_owned(),
+        };
+        assert_eq!(refused.failure_class(), FailureClass::RateLimited);
+    }
+
+    #[test]
+    fn the_other_request_limits_stay_permanent() {
+        // The same error type, and the opposite answer: these two describe the request
+        // that was sent, so re-sending it unchanged fails identically.
+        for limit in ["maxSizeRequest", "maxCallsInRequest"] {
+            let refused = JmapError::Status {
+                status: 400,
+                body: format!(r#"{{"type":"urn:ietf:params:jmap:error:limit","limit":"{limit}"}}"#),
+            };
+            assert_eq!(refused.failure_class(), FailureClass::Permanent, "{limit}");
+        }
+        // And a plain 400 with no problem details at all.
+        assert_eq!(
+            JmapError::Status {
+                status: 400,
+                body: "not json".to_owned(),
             }
             .failure_class(),
             FailureClass::Permanent
