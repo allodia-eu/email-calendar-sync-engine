@@ -314,6 +314,28 @@ mail is still readable. Two things a real server-authored invitation taught us
   *does* expose `recurringEventId` on an override — but override reconciliation is
   still staged, so `provider-google` drops a `recurringEventId` instance for now
   rather than mapping it. See `google.md` → "Google Calendar".)
+- **The rule renders back out through one shared function too.**
+  `engine_core::calendar::format_rrule` is the inverse of `parse_rrule` and the only
+  place an `RRULE` value string is built, for every transport that carries one
+  (iCalendar/CalDAV, Google's `recurrence` array). It emits a canonical spelling —
+  parts in a stable order, RFC 5545 defaults (`INTERVAL=1`, `WKST=MO`) omitted — so
+  the same rule always produces the same bytes.
+  `parse_rrule(format_rrule(rule, …)?)` is the identity; the reverse is **not**, and
+  is not meant to be, because the parser normalizes. Preserving the original bytes
+  stays the raw payload's job.
+
+  Two things it will not approximate, because either would store a *different*
+  series and report success:
+  - A **non-Gregorian** rule (`RSCALE`, RFC 7529) is an error. Dropping the `RSCALE`
+    would silently make it Gregorian, against this document's own "preserved raw,
+    never expanded" rule.
+  - **`UNTIL` is not rendered from the rule alone.** `RecurrenceBound::Until` holds a
+    wall clock in the event's zone, while RFC 5545 §3.3.10 requires UTC whenever
+    `DTSTART` is zoned or UTC — and resolving a wall clock through a zone needs
+    tzdata, which `engine-core` deliberately does not have. So the caller states the
+    form through `UntilForm` (`Date` / `Floating` / `Utc(instant)`) and resolves the
+    instant itself. A series ending on the wrong day for readers in another zone is
+    the bug that shape makes unrepresentable.
 - **Rule:** `RawIcal` and `RawJsCalendar` are preserved beside the projection
   (model invariant). Provider writes round-trip from raw plus targeted patches,
   never by re-serializing the lossy projection. The projection exists for
