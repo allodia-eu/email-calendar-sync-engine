@@ -115,13 +115,6 @@ impl Resource {
         })
     }
 
-    /// Where to splice a newly-split override `VEVENT`: immediately before
-    /// `END:VCALENDAR`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IcalError`] if the resource has no `END:VCALENDAR` — a
-    /// truncated document we must not "repair" by guessing.
     /// Every `RECURRENCE-ID` override in the resource.
     ///
     /// Removing the series' rule has to take these with it: an override whose master no
@@ -138,6 +131,13 @@ impl Resource {
             .filter(move |vevent| vevent.property(doc, "RECURRENCE-ID").is_some())
     }
 
+    /// Where to splice a newly-split override `VEVENT`: immediately before
+    /// `END:VCALENDAR`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IcalError`] if the resource has no `END:VCALENDAR` — a
+    /// truncated document we must not "repair" by guessing.
     pub(super) fn splice_point(&self) -> Result<usize, IcalError> {
         self.end_vcalendar
             .ok_or_else(|| IcalError::new("resource has no END:VCALENDAR to splice into"))
