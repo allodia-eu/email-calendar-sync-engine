@@ -163,6 +163,10 @@ idna = "1.1.0"
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
+# `Retry-After`'s HTTP-date form, which RFC 9110 §5.6.7 requires a recipient to accept in
+# all three syntaxes. Already in the lock via hyper, so declaring it compiles nothing new.
+httpdate = "1.0.3"
+
 engine-http = { path = "crates/engine-http" }
 engine-tls = { path = "crates/engine-tls" }
 engine-mime = { path = "crates/engine-mime" }
