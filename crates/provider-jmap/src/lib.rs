@@ -34,6 +34,7 @@
 mod auth;
 mod blob;
 mod calendar;
+mod calendar_patch;
 mod calendar_rsvp;
 mod calendar_rule;
 mod calendar_write;

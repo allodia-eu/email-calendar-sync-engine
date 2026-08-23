@@ -164,3 +164,110 @@ async fn a_rule_can_be_changed_and_removed() {
         .await
         .expect("delete the probe event");
 }
+
+/// Editing an occurrence of a series **nobody has overridden yet**, then editing it again.
+///
+/// The two shapes, in the only order that can tell them apart. RFC 8620 §5.3 lets a JSON
+/// pointer address only what already exists, so on a series with no `recurrenceOverrides`
+/// the pointer form is rejected *whole* — the edit is lost, not degraded. Nothing offline
+/// can see that: the fake answers `updated` to any object it is handed.
+#[tokio::test]
+async fn a_first_edit_of_an_occurrence_lands_and_so_does_the_second() {
+    use engine_core::calendar::{Frequency, RecurrenceOverride, RecurrenceRule};
+    use engine_provider::DraftRecurrence;
+
+    const UID: &str = "live-jmap-first-override@test.local";
+    const OCCURRENCE: &str = "2026-06-08T09:30:00";
+
+    let Some(provider) = setup("a_first_edit_of_an_occurrence_lands_and_so_does_the_second").await
+    else {
+        return;
+    };
+    pre_clean(&provider, UID).await;
+
+    provider
+        .create_event(
+            &account(),
+            &EventDraft::new(
+                calendar(&provider).await,
+                Uid::new(UID).unwrap(),
+                "Live first-override probe",
+                amsterdam("2026-06-01T09:30:00"),
+                amsterdam("2026-06-01T10:00:00"),
+                stamp(),
+            )
+            .repeating(DraftRecurrence::new(RecurrenceRule::new(Frequency::Weekly))),
+        )
+        .await
+        .expect("create a recurring event");
+
+    let title_at = |event: &engine_core::calendar::Event| -> Option<String> {
+        let RecurrenceOverride::Patch(patch) = event
+            .recurrence
+            .as_ref()?
+            .overrides
+            .get(&OCCURRENCE.parse().unwrap())?
+        else {
+            return None;
+        };
+        patch
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+
+    let series = require(&provider, UID).await;
+    assert!(
+        series
+            .recurrence
+            .as_ref()
+            .is_some_and(|r| r.overrides.is_empty()),
+        "the series starts with no overrides at all — the state the two shapes differ on"
+    );
+
+    // ---- First edit: there is no map for a pointer to address. ----
+    provider
+        .patch_event(
+            &account(),
+            &series,
+            &EventEdit::new(
+                &series,
+                PatchTarget::Instance(amsterdam(OCCURRENCE)),
+                EventPatch::new(stamp()).summary("Moved to the afternoon"),
+            ),
+        )
+        .await
+        .expect("the server accepts the first override of an occurrence");
+    let first = require(&provider, UID).await;
+    assert_eq!(
+        title_at(&first).as_deref(),
+        Some("Moved to the afternoon"),
+        "the override the server materialized carries the new title"
+    );
+
+    // ---- Second edit: now it does. ----
+    provider
+        .patch_event(
+            &account(),
+            &first,
+            &EventEdit::new(
+                &first,
+                PatchTarget::Instance(amsterdam(OCCURRENCE)),
+                EventPatch::new(stamp()).summary("Renamed again"),
+            ),
+        )
+        .await
+        .expect("the server accepts a pointer into the override it now holds");
+    let second = require(&provider, UID).await;
+    assert_eq!(title_at(&second).as_deref(), Some("Renamed again"));
+    assert_eq!(
+        second.recurrence.as_ref().unwrap().overrides.len(),
+        1,
+        "and the second edit patched that entry rather than adding another"
+    );
+
+    provider
+        .delete_event(&account(), &EventDeletion::of(&second))
+        .await
+        .expect("delete the probe event");
+}
