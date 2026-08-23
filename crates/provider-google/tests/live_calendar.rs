@@ -150,3 +150,101 @@ async fn live_calendar_create_patch_delete() {
     // precondition (a real Google finding; see tests/fixtures/README.md). The
     // 404/410-gone idempotency is covered offline (`cal_write` tests).
 }
+
+/// Creating a **recurring** event, and reading the rule back off the server.
+///
+/// The offline suite proves only the body we build — the fake answers canned bytes
+/// whatever it is sent (`AGENTS.md`). Only a real create says whether Google accepts the
+/// `RRULE` line this adapter renders, and only a real read-back says whether the rule that
+/// came home is the rule that went out.
+#[tokio::test]
+async fn live_calendar_creates_a_recurring_event() {
+    use engine_core::{
+        calendar::{Frequency, NDay, RecurrenceBound, RecurrenceRule, Weekday},
+        ids::Uid,
+        time::{CalendarDateTime, LocalDateTime, TimeZoneId, UtcDateTime},
+    };
+    use engine_provider::{DraftRecurrence, EventDeletion, EventDraft};
+
+    let Some(token) = token() else {
+        eprintln!("skipping live_calendar_creates_a_recurring_event: GOOGLE_ACCESS_TOKEN unset");
+        return;
+    };
+    let provider = calendar_provider(token);
+    let cal = CalendarId::try_from("primary").unwrap();
+    let stamp: UtcDateTime = "2026-08-23T10:00:00Z".parse().unwrap();
+    let zoned = |s: &str| CalendarDateTime::Zoned {
+        local: s.parse::<LocalDateTime>().unwrap(),
+        zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+    };
+
+    // Every Monday until 26 October — the "ends on this day" shape the product's repeat
+    // picker produces, and the one that obliges `UNTIL` in UTC (RFC 5545 §3.3.10). The
+    // resolved instant is stated because no adapter carries tzdata: 23:59:59 in
+    // Europe/Amsterdam is 22:59:59Z, CEST being UTC+2 on that date.
+    let mut rule = RecurrenceRule::new(Frequency::Weekly);
+    rule.by_day = vec![NDay {
+        day: Weekday::Mo,
+        nth_of_period: None,
+    }];
+    rule.bound = RecurrenceBound::Until("2026-10-26T23:59:59".parse().unwrap());
+
+    let draft = EventDraft::new(
+        cal.clone(),
+        Uid::new(format!("live-recur-{}@example.test", std::process::id())).unwrap(),
+        "Live recurrence probe",
+        zoned("2026-09-07T09:30:00"),
+        zoned("2026-09-07T10:00:00"),
+        stamp,
+    )
+    .repeating(DraftRecurrence::ending_at(
+        rule.clone(),
+        "2026-10-26T22:59:59Z".parse().unwrap(),
+    ));
+
+    let created = provider
+        .create_event(&account(), &draft)
+        .await
+        .expect("create a recurring event");
+
+    // Read it back through the adapter's own sync path: what a host would see.
+    let events = provider
+        .sync_events(&account(), None)
+        .await
+        .expect("sync events");
+    let SyncUpdate::Snapshot { objects, .. } = &events.update else {
+        panic!("expected an event snapshot");
+    };
+    let stored = objects
+        .iter()
+        .find(|e| e.id == created.event)
+        .expect("the created series is in the snapshot");
+
+    assert!(
+        stored.is_recurring(),
+        "the created event came back as a series master"
+    );
+    let stored_rule = &stored.recurrence.as_ref().unwrap().rules[0];
+    assert_eq!(stored_rule.frequency, rule.frequency);
+    assert_eq!(stored_rule.by_day, rule.by_day);
+    // Google echoes the UNTIL back as the UTC instant it was sent, which the shared parser
+    // reads as that instant's own wall clock — so the round trip lands on 22:59:59, not on
+    // the 23:59:59 Amsterdam clock it was authored from. Pinning it keeps the asymmetry
+    // visible: a host that wants the authored clock re-resolves through the event's zone.
+    assert_eq!(
+        stored_rule.bound,
+        RecurrenceBound::Until("2026-10-26T22:59:59".parse().unwrap()),
+    );
+
+    let mut base = engine_core::calendar::Event::new(
+        created.event.clone(),
+        created.uid.clone(),
+        engine_core::membership::Memberships::of_one(cal),
+        zoned("2026-09-07T09:30:00"),
+    );
+    base.revisions = created.revisions.clone();
+    provider
+        .delete_event(&account(), &EventDeletion::of(&base))
+        .await
+        .expect("delete the probe series");
+}

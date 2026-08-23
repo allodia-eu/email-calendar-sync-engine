@@ -19,6 +19,7 @@
 
 pub(crate) mod imip;
 pub(crate) mod reconcile;
+pub(crate) mod recurrence;
 pub(crate) mod write;
 
 use engine_core::{

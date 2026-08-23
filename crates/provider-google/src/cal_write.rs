@@ -9,14 +9,14 @@
 //! (`calendar-semantics.md`). A create is the one write built from scratch.
 
 use engine_core::{
-    calendar::Event,
+    calendar::{Event, RecurrenceBound, UntilForm, format_rrule},
     ids::EventId,
     time::CalendarDateTime,
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWriteReceipt, PatchTarget,
-    ProviderError, ProviderResult, RsvpResponse, TextEdit,
+    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp,
+    EventWriteReceipt, PatchTarget, ProviderError, ProviderResult, RsvpResponse, TextEdit,
 };
 use serde_json::{Map, Value, json};
 
@@ -227,7 +227,39 @@ fn build_create(draft: &EventDraft) -> ProviderResult<Value> {
     if let Some(location) = &draft.location {
         body.insert("location".to_owned(), json!(location));
     }
+    if let Some(recurrence) = &draft.recurrence {
+        // Google's `recurrence` is an array of raw iCalendar lines, so the rule goes
+        // through the shared `format_rrule` — the same bytes CalDAV writes.
+        body.insert(
+            "recurrence".to_owned(),
+            json!([format!("RRULE:{}", rrule_value(recurrence, &draft.start)?)]),
+        );
+    }
     Ok(Value::Object(body))
+}
+
+/// The `RRULE` value for a draft's recurrence, in the `UNTIL` form its own start requires.
+///
+/// Google stores iCalendar lines verbatim, so RFC 5545 §3.3.10 binds here exactly as it
+/// does on CalDAV: a zoned start obliges `UNTIL` in UTC, and the instant that takes is the
+/// caller's to resolve because no adapter carries tzdata (`DraftRecurrence`).
+fn rrule_value(recurrence: &DraftRecurrence, start: &CalendarDateTime) -> ProviderResult<String> {
+    let until = match (start, &recurrence.rule.bound) {
+        // No UNTIL to render at all; the form is irrelevant.
+        (_, RecurrenceBound::Unbounded | RecurrenceBound::Count(_))
+        | (CalendarDateTime::Floating(_), RecurrenceBound::Until(_)) => UntilForm::Floating,
+        (CalendarDateTime::Date(_), RecurrenceBound::Until(_)) => UntilForm::Date,
+        (CalendarDateTime::Zoned { .. }, RecurrenceBound::Until(_)) => {
+            UntilForm::Utc(recurrence.until.ok_or_else(|| {
+                ProviderError::invalid_state(
+                    "a recurrence ending at a wall clock on a zoned event needs that clock \
+                     resolved to an instant: RFC 5545 requires UNTIL in UTC when the start \
+                     carries a zone. Build the draft with DraftRecurrence::ending_at",
+                )
+            })?)
+        }
+    };
+    format_rrule(&recurrence.rule, until).map_err(|e| ProviderError::invalid_state(e.to_string()))
 }
 
 /// Builds the `events.patch` partial body from the neutral patch intent, checking that a

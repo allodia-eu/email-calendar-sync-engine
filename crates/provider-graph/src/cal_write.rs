@@ -10,7 +10,7 @@
 use engine_core::{
     calendar::Event,
     ids::EventId,
-    time::CalendarDateTime,
+    time::{CalendarDate, CalendarDateTime},
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
@@ -19,7 +19,9 @@ use engine_provider::{
 };
 use serde_json::{Map, Value, json};
 
-use crate::{error::GraphError, json::opt_str, transport::GraphClient};
+use crate::{
+    cal_recur_render::render_recurrence, error::GraphError, json::opt_str, transport::GraphClient,
+};
 
 /// Creates `draft` in the bound `calendar_path` (`/me/calendars/{id}`) via `POST …/events`.
 ///
@@ -193,7 +195,29 @@ fn build_create(draft: &EventDraft) -> ProviderResult<Value> {
     if let Some(location) = &draft.location {
         body.insert("location".to_owned(), json!({ "displayName": location }));
     }
+    if let Some(recurrence) = &draft.recurrence {
+        // Graph takes a structured pattern rather than an RRULE, so the rule is rendered
+        // by `cal_recur_render` — the inverse of the reader — and never as a string. The
+        // series start date is a parameter because Graph's absolute patterns require the
+        // `dayOfMonth`/`month` an RRULE leaves implicit in DTSTART.
+        body.insert(
+            "recurrence".to_owned(),
+            render_recurrence(&recurrence.rule, series_start_date(&draft.start))?,
+        );
+    }
     Ok(Value::Object(body))
+}
+
+/// The calendar date a draft's start falls on, in its own terms — the anchor Graph's
+/// recurrence range and its absolute patterns are stated against.
+fn series_start_date(start: &CalendarDateTime) -> CalendarDate {
+    match start {
+        CalendarDateTime::Date(date) => *date,
+        CalendarDateTime::Floating(local) | CalendarDateTime::Zoned { local, .. } => {
+            CalendarDate::new(local.year(), local.month(), local.day())
+                .unwrap_or_else(|_| unreachable!("a LocalDateTime always holds a valid date"))
+        }
+    }
 }
 
 /// Builds the `PATCH /events/{id}` partial body from the neutral patch intent, checking

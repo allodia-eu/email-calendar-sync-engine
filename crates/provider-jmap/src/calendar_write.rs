@@ -52,6 +52,7 @@ use engine_provider::{
 use serde_json::{Map, Value, json};
 
 use crate::{
+    calendar_rule::render_rule,
     error::JmapError,
     executor::Executor,
     request::{Request, capability},
@@ -277,6 +278,19 @@ fn draft_to_json(draft: &EventDraft) -> Result<Value, JmapError> {
         object.insert(key, value);
     }
     object.insert("duration".to_owned(), duration(&draft.start, &draft.end)?);
+    if let Some(recurrence) = &draft.recurrence {
+        // JSCalendar's `until` is a wall clock in the event's own zone, the same reading
+        // the engine model takes — so `DraftRecurrence::until` (which exists for
+        // iCalendar's UTC rule) is deliberately unused here.
+        //
+        // The property is the **singular** `recurrenceRule`, not RFC 8984 §4.3.3's
+        // `recurrenceRules` array. That is what Stalwart accepts, and measurably the only
+        // thing it accepts: a create carrying the array is `invalidProperties` whether or
+        // not the entries are `@type`-tagged, while the object form is stored and read back
+        // (`jmap.md` → "Recurrence property naming"). `parse_recurrence` already reads
+        // either spelling, so this only makes the write side agree with the read side.
+        object.insert("recurrenceRule".to_owned(), render_rule(&recurrence.rule)?);
+    }
     Ok(Value::Object(object))
 }
 

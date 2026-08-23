@@ -218,6 +218,19 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   accepted) with overrides, participants, locations, and virtual locations. The
   original JSCalendar payload is preserved as `RawJsCalendar` beside the lossy
   projection.
+- **Recurrence property naming — and why the write side is the singular.** RFC 8984 §4.3.3
+  defines `recurrenceRules`, an **array**. Stalwart implements the **singular**
+  `recurrenceRule`, an object, and on a write that is not merely its preference but the
+  only thing it takes: measured against the harness, a `CalendarEvent/set` create carrying
+  `recurrenceRules` comes back `invalidProperties` naming that property — with *and*
+  without the `@type` discriminators — while the same rule under `recurrenceRule` is stored
+  and reads back. So `calendar_rule::render_rule` builds the rule object and the create
+  writes it under the singular name, matching the reader, which already accepts either.
+
+  ⚠️ **The plural is therefore untested rather than unsupported.** A spec-conformant server
+  that takes only `recurrenceRules` would reject our create, and no JMAP server other than
+  Stalwart is exercised here. If Fastmail (or any other) is ever added, this is the first
+  thing to re-measure — the reader needs no change, only the writer.
 - **There is no JSCalendar version to negotiate. Read the shape, do not ask.** This is the
   durable answer to "which version does this server speak?", and the answer is that the
   question cannot be asked:
