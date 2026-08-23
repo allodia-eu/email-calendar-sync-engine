@@ -342,6 +342,7 @@ impl Provider for FakeMail {
     async fn delete_event(
         &self,
         _account: &AccountId,
+        _base: Option<&Event>,
         _deletion: &EventDeletion,
     ) -> ProviderResult<()> {
         if self.fails(Fault::WriteGuard) {

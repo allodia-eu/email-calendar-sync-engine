@@ -279,10 +279,15 @@ impl Engine {
         Ok(self.reconciling(provider, account, write).await)
     }
 
-    /// Deletes a calendar event through the durable outbox, guarded by the revision the
-    /// caller read it at, then reconciles the store — which **tombstones the local row**,
-    /// so the event is gone from every read (and every occurrence row) as soon as this
-    /// returns.
+    /// Deletes a calendar event — or **one of its occurrences** — through the durable outbox,
+    /// guarded by the revision the caller read it at, then reconciles the store. A whole-event
+    /// delete **tombstones the local row**, so the event is gone from every read (and every
+    /// occurrence row) as soon as this returns; removing one occurrence leaves the series and
+    /// re-expands it without that instance.
+    ///
+    /// `base` is the event as the caller read it, and only a
+    /// [`DeleteTarget::Occurrence`](engine_provider::DeleteTarget::Occurrence) needs it — see
+    /// [`delete_calendar_event`](engine_sync::delete_calendar_event).
     ///
     /// Recorded as a pending op (idempotent by `idempotency`, serialized on the event's
     /// `UID`, which the deletion carries) **before** the provider side effect, so a crash
@@ -301,6 +306,7 @@ impl Engine {
         provider: &P,
         account: &AccountId,
         idempotency: &str,
+        base: Option<&Event>,
         deletion: &EventDeletion,
     ) -> Result<CalendarDelete, ApiError> {
         let op = delete_calendar_event(
@@ -310,6 +316,7 @@ impl Engine {
             worker(),
             LEASE_TTL,
             idempotency,
+            base,
             deletion,
         )
         .await

@@ -429,9 +429,10 @@ impl Provider for CalDavProvider {
     async fn delete_event(
         &self,
         _account: &AccountId,
+        base: Option<&Event>,
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
-        Ok(crate::write::delete_event(self.executor.as_ref(), deletion).await?)
+        Ok(crate::write::delete_event(self.executor.as_ref(), base, deletion).await?)
     }
 }
 

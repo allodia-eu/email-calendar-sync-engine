@@ -22,7 +22,7 @@
 //! `…/<start>`, `…/<start>/title`, `…/<start>/excluded` — comes back `invalidProperties`,
 //! while assigning the map succeeds. With the map present, all three are accepted.
 
-use engine_core::calendar::Event;
+use engine_core::{calendar::Event, time::CalendarDateTime};
 use engine_provider::{EventEdit, PatchTarget, RecurrenceEdit, TextEdit};
 use serde_json::{Map, Value, json};
 
@@ -152,6 +152,48 @@ pub(crate) fn patch_to_json(
             }
         }
         PatchTarget::Instance(_) => {}
+    }
+    Ok(out)
+}
+
+/// The `update` that removes one occurrence from a series.
+///
+/// JSCalendar has no verb for it, because an occurrence is not an object: the occurrence is
+/// marked `excluded` in the series' `recurrenceOverrides` (RFC 8984 §4.3.3) — the same map an
+/// edit of one occurrence writes into, taking the same two shapes for the same reason (see
+/// the module docs).
+///
+/// An `excluded` override may carry nothing else, so an entry the user had edited is
+/// **replaced** rather than merged: the occurrence is gone, and what they had changed about
+/// it has nothing left to describe.
+///
+/// # Errors
+///
+/// Returns [`JmapError::Protocol`] if the occurrence is not named in the series' own time
+/// form, which would exclude no instance of it.
+pub(crate) fn exclusion(
+    base: &Event,
+    occurrence: &CalendarDateTime,
+) -> Result<Map<String, Value>, JmapError> {
+    if !base.start.has_same_form(occurrence) {
+        return Err(JmapError::protocol(format!(
+            "the occurrence must be named in the series' own time form ({}); naming it in \
+             another form excludes no instance",
+            base.start.form_name(),
+        )));
+    }
+    let start = local_date_time(occurrence)?;
+    let mut out = Map::new();
+    if is_overridden(base) {
+        out.insert(
+            format!("recurrenceOverrides/{}", escape_pointer(&start)),
+            json!({ "excluded": true }),
+        );
+    } else {
+        out.insert(
+            "recurrenceOverrides".to_owned(),
+            json!({ start: { "excluded": true } }),
+        );
     }
     Ok(out)
 }

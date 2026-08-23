@@ -172,9 +172,10 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
     async fn delete_event(
         &self,
         account: &AccountId,
+        base: Option<&Event>,
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
-        (**self).delete_event(account, deletion).await
+        (**self).delete_event(account, base, deletion).await
     }
 }
 

@@ -10,8 +10,8 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, PatchTarget,
-    RsvpResponse,
+    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, Occurrence,
+    PatchTarget, RsvpResponse,
 };
 use serde_json::json as sjson;
 
@@ -398,4 +398,40 @@ fn a_recurrence_change_is_significant() {
             .is_significant()
     );
     assert!(EventPatch::new(stamp()).clear_recurrence().is_significant());
+}
+
+#[test]
+fn an_occurrence_is_addressed_by_the_id_graph_uses_itself() {
+    // `OID.<seriesMasterId>.<local date>` is the shape Graph puts in the master's
+    // `cancelledOccurrences`, so it can be built rather than looked up — no `/instances`
+    // round trip at write time.
+    assert_eq!(
+        occurrence_id("evt-1", &zoned("2026-08-08T09:00:00")),
+        "OID.evt-1.2026-08-08"
+    );
+    assert_eq!(
+        occurrence_id(
+            "evt-1",
+            &CalendarDateTime::Date(CalendarDate::new(2026, 8, 8).unwrap())
+        ),
+        "OID.evt-1.2026-08-08",
+        "an all-day occurrence is named by the same date"
+    );
+}
+
+#[tokio::test]
+async fn removing_one_occurrence_deletes_that_occurrence_not_the_series() {
+    // The route is the assertion: a delete that fell back to the series id would find no
+    // route at all, and one that mis-derived the date would find the wrong one.
+    let base = base_event();
+    let deletion = EventDeletion::occurrence(
+        &base,
+        Occurrence::starting(zoned("2026-08-08T09:00:00")),
+        stamp(),
+    );
+    let client = fake_client_fallible(vec![(
+        "/events/OID.evt-1.2026-08-08",
+        Ok(serde_json::Value::Null),
+    )]);
+    delete_event(&client, &deletion).await.unwrap();
 }

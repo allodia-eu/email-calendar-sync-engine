@@ -175,7 +175,7 @@ pub(crate) async fn round_trip(provider: &CalDavProvider, account: &AccountId) {
     let mut as_written = made.clone();
     as_written.revisions = RevisionTokens::from_etag(etag_v2);
     provider
-        .delete_event(account, &EventDeletion::of(&as_written))
+        .delete_event(account, None, &EventDeletion::of(&as_written))
         .await
         .expect("delete the event using the receipt's ETag, with no refetch");
     assert!(
@@ -284,7 +284,7 @@ pub(crate) async fn patched_update_preserves_the_document(
     );
 
     provider
-        .delete_event(account, &EventDeletion::of(&after))
+        .delete_event(account, None, &EventDeletion::of(&after))
         .await
         .expect("delete the rich event");
 }
@@ -366,7 +366,7 @@ pub(crate) async fn stale_if_match_is_a_conflict(provider: &CalDavProvider, acco
 
     // ---- The stale delete: same precondition, same verdict. ----
     let error = provider
-        .delete_event(account, &EventDeletion::of(&stale))
+        .delete_event(account, None, &EventDeletion::of(&stale))
         .await
         .expect_err("a superseded guard must not delete the server copy");
     assert_eq!(error.class(), FailureClass::Conflict);
@@ -378,6 +378,7 @@ pub(crate) async fn stale_if_match_is_a_conflict(provider: &CalDavProvider, acco
     provider
         .delete_event(
             account,
+            None,
             &EventDeletion::unconditional(survivor.id, survivor.uid),
         )
         .await
@@ -473,7 +474,7 @@ pub(crate) async fn instance_override_split_is_accepted(
     );
 
     provider
-        .delete_event(account, &EventDeletion::of(&after))
+        .delete_event(account, None, &EventDeletion::of(&after))
         .await
         .expect("delete the series");
 }

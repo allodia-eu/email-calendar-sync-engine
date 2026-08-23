@@ -43,9 +43,9 @@ mod sync;
 mod watch;
 
 pub use calendar_write::{
-    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
-    EventWriteReceipt, PatchTarget, RecurrenceEdit, ReplyDelivery, RsvpResponse, TextEdit,
-    WritePrecondition,
+    DeleteTarget, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp,
+    EventWrite, EventWriteReceipt, Occurrence, PatchTarget, RecurrenceEdit, ReplyDelivery,
+    RsvpResponse, TextEdit, WritePrecondition,
 };
 pub use capability::Capabilities;
 pub use capability_calendar::{RsvpControls, WriteGuard};

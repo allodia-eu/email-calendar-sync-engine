@@ -49,9 +49,11 @@
 //! writing. Under [`WriteGuard::Absent`](crate::WriteGuard::Absent) a stale write silently
 //! wins, so "the write succeeded" does not mean "no concurrent edit was lost".
 
+mod delete;
 mod patch;
 mod rsvp;
 
+pub use delete::{DeleteTarget, EventDeletion, Occurrence};
 use engine_core::{
     calendar::{Event, RecurrenceRule},
     ids::{CalendarId, EventId, Uid},
@@ -293,43 +295,6 @@ impl EventWrite {
             uid,
             ical,
             guard: WritePrecondition::Unconditional,
-        }
-    }
-}
-
-/// A request to delete an event.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventDeletion {
-    /// The event to delete.
-    pub event: EventId,
-    /// Its cross-system `UID`. Carried here rather than passed alongside because the outbox
-    /// serializes every calendar op on it, and a caller that supplied it separately could
-    /// supply the *wrong* one — pairing a delete of event A with the lock on event B.
-    pub uid: Uid,
-    /// The revision the delete is guarded by — the one the caller read. `None` deletes
-    /// unconditionally.
-    pub guard: Option<RevisionTokens>,
-}
-
-impl EventDeletion {
-    /// Deletes `base` — the event as the caller read it — guarded by the revision it was
-    /// read at, so the delete cannot silently discard someone else's newer edit.
-    #[must_use]
-    pub fn of(base: &Event) -> Self {
-        Self {
-            event: base.id.clone(),
-            uid: base.uid.clone(),
-            guard: Some(base.revisions.clone()),
-        }
-    }
-
-    /// Deletes with **no** guard: the event goes, whatever the server holds.
-    #[must_use]
-    pub fn unconditional(event: EventId, uid: Uid) -> Self {
-        Self {
-            event,
-            uid,
-            guard: None,
         }
     }
 }

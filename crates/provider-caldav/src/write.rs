@@ -20,12 +20,13 @@ use engine_core::{
     calendar::Event,
     ids::EventId,
     raw::RawIcal,
+    time::{CalendarDateTime, UtcDateTime},
     version::{ETag, RevisionTokens},
 };
-use engine_ical::{build_event_ical, patch_event_ical};
+use engine_ical::{build_event_ical, exclude_occurrence_ical, patch_event_ical};
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, ReplyDelivery,
-    WritePrecondition,
+    DeleteTarget, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
+    ReplyDelivery, WritePrecondition,
 };
 
 use crate::{
@@ -236,7 +237,13 @@ pub(crate) async fn put_event(
         .map(|revisions| EventWriteReceipt::new(write.event.clone(), write.uid.clone(), revisions))
 }
 
-/// `DELETE`s an event, guarded by `If-Match` on the revision the caller read.
+/// Removes an event, or **one occurrence** of it.
+///
+/// The whole event is a `DELETE` of its resource. One occurrence is not — an occurrence is
+/// not a stored object here, the series is — so it is a `PUT` of the series with an `EXDATE`
+/// naming the occurrence ([`exclude_occurrence_ical`]), guarded exactly as a patch is. Which
+/// is why `base` is load-bearing for that case and unused for the other: the surgery runs
+/// over the document the caller read, never over a document rebuilt from the projection.
 ///
 /// `DELETE` is idempotent (RFC 7231 §4.3.5): a resource that is **already absent**
 /// (`404`/`410`) means the desired end state already holds, so it resolves as success — not
@@ -246,14 +253,24 @@ pub(crate) async fn put_event(
 /// still exists but its ETag moved) is a genuine
 /// [`Conflict`](engine_core::error::FailureClass::Conflict), surfaced for refetch.
 ///
+/// An occurrence removal is idempotent for a different reason: it rebuilds the same document
+/// from the same base, so a retry `PUT`s the bytes that already landed.
+///
 /// # Errors
 ///
-/// Returns [`CalDavError`] on a transport/HTTP failure; a failed `If-Match` is a `412`
-/// classified [`Conflict`](engine_core::error::FailureClass::Conflict).
+/// Returns [`CalDavError::Ical`] if an occurrence removal has no base, or a base with no
+/// stored `raw_ical`, or the patcher refuses it (a non-recurring event, an occurrence named
+/// in another time form). Returns [`CalDavError`] on a transport/HTTP failure; a failed
+/// `If-Match` is a `412` classified
+/// [`Conflict`](engine_core::error::FailureClass::Conflict).
 pub(crate) async fn delete_event(
     exec: &dyn DavExecutor,
+    base: Option<&Event>,
     deletion: &EventDeletion,
 ) -> Result<(), CalDavError> {
+    if let DeleteTarget::Occurrence { occurrence, stamp } = &deletion.target {
+        return exclude_occurrence(exec, base, deletion, &occurrence.start, *stamp).await;
+    }
     let precondition = deletion
         .guard
         .as_ref()
@@ -272,6 +289,36 @@ pub(crate) async fn delete_event(
         return Ok(());
     }
     response.into_write_etag()?;
+    Ok(())
+}
+
+/// Removes one occurrence: `PUT` the series back with an `EXDATE` naming it.
+///
+/// The guard is the caller's, as on a patch — this *is* a patch of the series, and a stale
+/// one must be refused rather than silently overwrite a newer edit of the other occurrences.
+async fn exclude_occurrence(
+    exec: &dyn DavExecutor,
+    base: Option<&Event>,
+    deletion: &EventDeletion,
+    occurrence: &CalendarDateTime,
+    stamp: UtcDateTime,
+) -> Result<(), CalDavError> {
+    let stored = base
+        .and_then(|base| base.raw_ical.as_ref())
+        .ok_or_else(|| {
+            CalDavError::ical(
+                "removing one occurrence rewrites the series, so it needs the stored iCalendar \
+             the caller read; pass the event as `base`, re-syncing the calendar first if it \
+             carries none. Rebuilding the document from the lossy projection would silently \
+             drop every property the engine does not model",
+            )
+        })?;
+    let ical = exclude_occurrence_ical(stored, occurrence, stamp)?;
+    let precondition = deletion
+        .guard
+        .as_ref()
+        .map_or(Precondition::None, |tokens| guard(tokens.etag.as_ref()));
+    put(exec, &deletion.event, &ical, precondition).await?;
     Ok(())
 }
 

@@ -116,6 +116,7 @@ async fn a_delete_tombstones_the_local_row_instead_of_waiting_for_the_next_sync(
             &server,
             &account(),
             "delete:evt-1",
+            None,
             &EventDeletion::of(&base),
         )
         .await

@@ -39,6 +39,10 @@
 //!   override itself, which is why the neutral `PatchTarget::Instance` does not promise the
 //!   start/end that a split needs here.
 //!
+//! Removing one occurrence is [`exclude_occurrence_ical`], and it is here for the same
+//! reason: there is no per-occurrence resource to `DELETE`, so it too is line surgery on the
+//! series.
+//!
 //! `THISANDFUTURE` (splitting a series at a point) is **not** implemented; it needs the
 //! master's `RRULE` rewritten with an `UNTIL`, which is a different operation from this
 //! one (`calendar-semantics.md` lists the `RECURRENCE-ID` range semantics as staged).
@@ -46,6 +50,8 @@
 mod plan;
 mod vevent;
 
+#[cfg(test)]
+mod exclude_tests;
 #[cfg(test)]
 mod guard_tests;
 #[cfg(test)]
@@ -56,7 +62,7 @@ mod test_support;
 use engine_core::{
     calendar::{RecurrenceBound, UntilForm, format_rrule},
     raw::RawIcal,
-    time::CalendarDateTime,
+    time::{CalendarDateTime, UtcDateTime},
 };
 use engine_provider::{DraftRecurrence, EventPatch, PatchTarget};
 
@@ -116,6 +122,32 @@ pub fn patch_event_ical(
             }
         }
     }
+    Ok(RawIcal::new(doc.render(&edits)))
+}
+
+/// Removes **one occurrence** from a stored series, returning the document to `PUT` back
+/// under `If-Match`.
+///
+/// CalDAV has no per-occurrence resource to `DELETE`: an occurrence is not a stored object,
+/// the series is. So removing one is an edit of the series — an `EXDATE` naming it (RFC 5545
+/// §3.8.5.1), and the loss of any `RECURRENCE-ID` override the user had made to it. Every
+/// other byte is preserved, exactly as in [`patch_event_ical`].
+///
+/// # Errors
+///
+/// Returns [`IcalError`] if the resource has no `VEVENT` or no master `VEVENT`; if the event
+/// does not recur (there is no occurrence to remove — delete the event); if it has no
+/// `DTSTART`; or if `occurrence` is named in a different time form from the series.
+pub fn exclude_occurrence_ical(
+    ical: &RawIcal,
+    occurrence: &CalendarDateTime,
+    stamp: UtcDateTime,
+) -> Result<RawIcal, IcalError> {
+    let doc = Document::parse(ical.as_str());
+    let resource = vevent::scan(&doc)?;
+    let master = resource.master(&doc)?;
+    let mut edits = Edits::new();
+    plan::exclude(&doc, master, &resource, occurrence, stamp, &mut edits)?;
     Ok(RawIcal::new(doc.render(&edits)))
 }
 

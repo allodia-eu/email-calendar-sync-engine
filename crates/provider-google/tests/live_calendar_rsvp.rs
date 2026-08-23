@@ -186,7 +186,7 @@ fn my_status(event: &Event) -> ParticipationStatus {
 
 async fn delete(provider: &GoogleCalendarProvider, event: &Event) {
     if let Err(error) = provider
-        .delete_event(&account(), &EventDeletion::of(event))
+        .delete_event(&account(), None, &EventDeletion::of(event))
         .await
     {
         eprintln!("cleanup delete gave up (leaving a throwaway event): {error}");

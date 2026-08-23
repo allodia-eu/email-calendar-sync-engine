@@ -462,6 +462,53 @@ this section fixes the *semantics* they share.
   host offering the usual three-way "this / this and following / all events" prompt has
   the first and third today.
 
+## Removing one occurrence
+
+**"Delete this" is two requests on a recurring event**, and only the user knows which, so
+`DeleteTarget` has no `Default` — the same rule, and the same reason, as `PatchTarget`.
+
+**On only two of the four transports is it a delete at all.** An occurrence is not a stored
+object; the series is. So CalDAV and JMAP *edit the series* to say the occurrence is gone,
+while Graph and Google address the occurrence by an id they **derive** and `DELETE` that.
+
+| | How it is expressed | The id, where there is one |
+|---|---|---|
+| **CalDAV** | `PUT` the series with an `EXDATE` (RFC 5545 §3.8.5.1), guarded by its `ETag` | — |
+| **JMAP** | `update` marking the occurrence `excluded` in `recurrenceOverrides` (RFC 8984 §4.3.3) | — |
+| **Graph** | `DELETE` the occurrence | `OID.<seriesMasterId>.<local date>` |
+| **Google** | `DELETE` the occurrence | `<eventId>_<original start, UTC basic>` |
+
+Three things follow, and each has bitten:
+
+- **The exclusion must take the user's override with it.** On CalDAV the `RECURRENCE-ID`
+  component has to be deleted alongside the `EXDATE`, and on JMAP the `excluded` entry
+  *replaces* whatever override was there (an excluded override may carry nothing else). An
+  override on an instant the rule no longer produces is not inert — the expander materializes
+  it as an **added** occurrence — so a leftover keeps drawing the occurrence the user just
+  deleted, at the time they had moved it to. Watched to fail: with the CalDAV half reverted,
+  the live suite reads the deleted occurrence back as a patch at 14:00.
+- **A derived id that names no occurrence answers `404`, which an idempotent delete reads as
+  "already gone".** So a mis-derived id reports a delete that never happened. Measured on
+  both: `DELETE OID.<master>.<a date the rule skips>` → `404 ErrorItemNotFound`; Google
+  likewise. That is why the live tests assert on what the server says changed, never on the
+  call returning `Ok` — and why Google's id is built from a **resolved instant** the caller
+  supplies (`Occurrence::at`), not from the wall clock: the two differ by the zone's offset,
+  so a wall clock written as UTC names a different occurrence, or none.
+- **The guard cannot travel to a derived id.** `EventDeletion::guard` is the *series'*
+  revision, and on Graph and Google the occurrence is a separate resource with a revision of
+  its own — sending it would fail the precondition on an occurrence nobody had touched. Those
+  two removals are therefore unconditional. CalDAV and JMAP, editing the series, keep the
+  guard the series has.
+
+⚠️ **Graph does not yet read its own cancellations back.** `calendarView/delta` reports a
+cancelled occurrence by re-sending the series and its *surviving* occurrences — there is no
+`@removed` entry, measured — and the reader keeps only masters and single events. The
+cancellation lives in the master's `cancelledOccurrences`, which is returned only when
+explicitly `$select`ed. Until that is folded into the override map, a Graph occurrence
+removal **lands on the server and keeps being drawn locally**. Google has no such gap: it
+reports the cancelled instance as a `status: "cancelled"` entry, which the reader already
+passes on as a removal.
+
 ## Supported recurrence subset
 
 The model stores recurrence structurally (all of RFC 5545 `RRULE`), but the

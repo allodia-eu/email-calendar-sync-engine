@@ -83,7 +83,7 @@ pub(crate) async fn calendar(provider: &JmapProvider) -> CalendarId {
 pub(crate) async fn pre_clean(provider: &JmapProvider, uid: &str) {
     if let Some(stale) = fetch(provider, uid).await {
         provider
-            .delete_event(&account(), &EventDeletion::of(&stale))
+            .delete_event(&account(), None, &EventDeletion::of(&stale))
             .await
             .expect("clean up a prior run's event");
     }

@@ -456,12 +456,18 @@ pub trait Provider: Send + Sync {
         ))
     }
 
-    /// Deletes an event, guarded by the revision the caller read.
+    /// Deletes an event, or one occurrence of it, guarded by the revision the caller read.
     ///
     /// Providers advertising [`Capabilities::calendar_writes`] override this; the default
     /// rejects. Outbox-mediated by the caller, like [`create_event`](Provider::create_event).
     /// An event that is **already gone** is a success, not an error: the delete is
     /// idempotent, so a retry of one that already landed resolves cleanly.
+    ///
+    /// `base` is the event as the caller read it, when the caller has it. A
+    /// [`Series`](crate::DeleteTarget::Series) delete needs nothing from it — the stored object
+    /// goes whole — which is why it is optional. Removing one **occurrence** is a rewrite of
+    /// the series on a document transport, so CalDAV needs the stored bytes and says so
+    /// rather than guessing; the other three derive what they need from the deletion itself.
     ///
     /// # Errors
     ///
@@ -472,9 +478,10 @@ pub trait Provider: Send + Sync {
     async fn delete_event(
         &self,
         account: &AccountId,
+        base: Option<&Event>,
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
-        let _ = (account, deletion);
+        let _ = (account, base, deletion);
         Err(ProviderError::invalid_state(
             "provider does not support calendar writes",
         ))

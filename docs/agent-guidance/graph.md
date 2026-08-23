@@ -228,6 +228,23 @@ shared mailboxes; verification awaits a work/school account.)
 
 ## Known limitations (documented, not bugs)
 
+- **Removing one occurrence: the id is derived, and the cancellation is write-only for now.**
+  Graph addresses an occurrence as `OID.<seriesMasterId>.<YYYY-MM-DD>` — the shape it uses
+  itself in the series master's `cancelledOccurrences` — so a removal needs no `/instances`
+  lookup at write time. Measured against the real account: `DELETE` on that id answers `204`,
+  the occurrence leaves `calendarView`, and it appears in `cancelledOccurrences`; a date the
+  rule does not produce answers `404 ErrorItemNotFound`.
+
+  ⚠️ **Reading it back is not wired.** The delta re-sends the series and its surviving
+  occurrences rather than a `@removed` entry (measured), and `cal_fetch::keep` projects only
+  `seriesMaster`/`singleInstance` — so nothing about the cancellation reaches the event's
+  override map and a host keeps drawing the occurrence. Closing it means getting
+  `cancelledOccurrences` onto the master, which `calendarView/delta` does not carry: either a
+  `$select` (which would then have to name *every* property the normalizer reads) or a second
+  request per series master. That choice is the reading work's, not the write's.
+
+  The `OID` id encodes a **date**, so it cannot name two occurrences on one day. Irrelevant
+  while the expander has no sub-daily frequencies, and the reason that stays a stated limit.
 - **Tier-1 metadata only.** The body/MIME and Graph `uniqueBody` are fetched on
   demand in a later store sub-step, not materialized here.
 - **No cross-folder orchestration yet.** The provider is folder-bound; syncing

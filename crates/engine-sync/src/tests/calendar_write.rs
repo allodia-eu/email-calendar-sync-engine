@@ -167,6 +167,7 @@ async fn delete_calendar_event_enqueues_then_deletes_and_records_success() {
         worker(),
         Duration::from_mins(1),
         "delete:evt-4",
+        None,
         &EventDeletion::of(&base),
     )
     .await
@@ -192,6 +193,7 @@ async fn a_failed_delete_is_recorded_too_not_just_a_failed_edit() {
         worker(),
         Duration::from_mins(1),
         "delete:evt-8",
+        None,
         &EventDeletion::of(&base),
     )
     .await

@@ -356,15 +356,16 @@ impl Provider for JmapProvider {
         Ok(crate::calendar_rsvp::rsvp_event(self.executor.as_ref(), &account, base, rsvp).await?)
     }
 
-    /// One `CalendarEvent/set` `destroy`. An already-gone event is a success, so a retried
-    /// delete resolves cleanly (`crate::calendar_write`).
+    /// One `CalendarEvent/set` `destroy`, or — for one occurrence — an `update` marking it
+    /// excluded. An already-gone event is a success (`crate::calendar_write`).
     async fn delete_event(
         &self,
         _account: &AccountId,
+        base: Option<&Event>,
         deletion: &engine_provider::EventDeletion,
     ) -> ProviderResult<()> {
-        let account = self.calendar_account()?;
-        Ok(crate::calendar_write::delete_event(self.executor.as_ref(), &account, deletion).await?)
+        let (executor, account) = (self.executor.as_ref(), self.calendar_account()?);
+        Ok(crate::calendar_write::delete_event(executor, &account, base, deletion).await?)
     }
 
     // `put_event` is deliberately **not** implemented: replacing a whole stored document is

@@ -361,7 +361,7 @@ pub(crate) async fn clean_up(parties: &Parties) {
     {
         let _ = parties
             .organizer
-            .delete_event(&organizer_account(), &EventDeletion::of(&event))
+            .delete_event(&organizer_account(), None, &EventDeletion::of(&event))
             .await;
     }
     for event in jmap_events(&parties.attendee, &attendee_account())
@@ -371,7 +371,7 @@ pub(crate) async fn clean_up(parties: &Parties) {
     {
         let _ = parties
             .attendee
-            .delete_event(&attendee_account(), &EventDeletion::of(&event))
+            .delete_event(&attendee_account(), None, &EventDeletion::of(&event))
             .await;
     }
     for who in [&parties.organizer_auth, &parties.attendee_auth] {

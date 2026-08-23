@@ -130,7 +130,7 @@ async fn round_trip() {
 
     // ---- Destroy. ----
     provider
-        .delete_event(&account(), &EventDeletion::of(&edited))
+        .delete_event(&account(), None, &EventDeletion::of(&edited))
         .await
         .expect("destroy the event");
     assert!(
@@ -141,7 +141,7 @@ async fn round_trip() {
     // And destroying it again is still a success: the desired end state already holds, which
     // is what makes an outbox retry of a delete whose response was lost safe.
     provider
-        .delete_event(&account(), &EventDeletion::of(&edited))
+        .delete_event(&account(), None, &EventDeletion::of(&edited))
         .await
         .expect("destroying an already-gone event is idempotent success");
 }
@@ -213,7 +213,7 @@ async fn partial_update_is_merged_by_the_server() {
     assert_eq!(after.calendars, before.calendars);
 
     provider
-        .delete_event(&account(), &EventDeletion::of(&after))
+        .delete_event(&account(), None, &EventDeletion::of(&after))
         .await
         .expect("clean up");
 }
@@ -310,7 +310,7 @@ async fn a_stale_edit_is_not_refused() {
     );
 
     provider
-        .delete_event(&account(), &EventDeletion::of(&survivor))
+        .delete_event(&account(), None, &EventDeletion::of(&survivor))
         .await
         .expect("clean up");
 }
