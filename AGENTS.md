@@ -220,6 +220,31 @@ Three things have each cost multiples here, none of them visible in a profiler:
   *healthy* target, not this. It regrows fast — two builds took the fresh 3.9 GB back to 7.0 GB and
   88 executables to 124 — so this is periodic, not permanent.
 
+## Stacked pull requests
+
+**Chained work goes in a stack, not in parallel PRs off `main`.** A PR that depends on another
+sets its base to that branch (`gh pr create --base <the-branch-below>`), and the stack merges
+bottom-up — GitHub retargets the rest as each one lands.
+
+The failure this prevents is invisible until the first merge. Branch B off A, open both against
+`main`, and B's diff silently contains A's commits: both PRs read fine and CI is green on both.
+Then A merges by rebase or squash, its commits get new SHAs, B is still carrying the old ones, and
+every PR above the one that landed conflicts at once — in changes their authors never touched.
+
+⚠️ **A correct `--base` is not a stack, and finishing there leaves a manual step behind.** GitHub
+does not infer the chain from base pointers: until it is told, the PRs are separate and someone
+has to press **Create stack** in the UI. Register it in the same step that opens them:
+
+```sh
+gh stack link <bottom-branch> <next> … <top-branch>   # bottom-up, trunk-most first
+```
+
+`link` (from the `github/gh-stack` extension) is the one to reach for whenever the branches were
+made by hand rather than by `gh stack add` — it needs no local tracking state, and it is
+idempotent, so re-running it after adding a branch is how the stack grows. Run every `gh stack`
+command non-interactively: `view` needs `--json`, `submit` needs `--auto`, and `init`/`add`/
+`checkout` need their branch names as arguments, or they hang on a prompt.
+
 ## Required Verification
 
 **Run this full gate and make it pass before every `git push`** (not only at final hand-off). It
