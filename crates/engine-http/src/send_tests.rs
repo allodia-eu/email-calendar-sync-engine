@@ -151,6 +151,60 @@ async fn the_servers_own_retry_after_decides_the_wait() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_retry_after_given_as_a_date_is_honoured_too() {
+    // The scripted server needs a real instant, because the date form is resolved against the
+    // system clock rather than the runtime's — which is the whole reason it is guarded.
+    let when = httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(20));
+    let header: &'static str = Box::leak(format!("Retry-After: {when}\r\n").into_boxed_str());
+    let (url, served) = scripted(vec![
+        Reply("429 Too Many Requests", header),
+        Reply("200 OK", ""),
+    ]);
+    let (retry, log) = recording();
+    let started = tokio::time::Instant::now();
+    let response = send_retrying(client().get(&url), &retry)
+        .await
+        .expect("sent");
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(served.load(Ordering::SeqCst), 2);
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_secs(19) && waited <= Duration::from_secs(22),
+        "waited {waited:?}, want the ~20s the date named",
+    );
+    assert!(
+        log.lock().unwrap()[0].3,
+        "reported as the server's own number"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_date_already_in_the_past_falls_back_to_the_backoff_schedule() {
+    // A device clock running fast turns a live quota window into a past instant. The wait
+    // must not collapse to nothing: that would spend every attempt inside one second.
+    let when = httpdate::fmt_http_date(std::time::SystemTime::now() - Duration::from_mins(10));
+    let header: &'static str = Box::leak(format!("Retry-After: {when}\r\n").into_boxed_str());
+    let (url, served) = scripted(vec![
+        Reply("429 Too Many Requests", header),
+        Reply("200 OK", ""),
+    ]);
+    let (retry, log) = recording();
+    let started = tokio::time::Instant::now();
+    send_retrying(client().get(&url), &retry)
+        .await
+        .expect("sent");
+    assert_eq!(served.load(Ordering::SeqCst), 2);
+    assert!(
+        started.elapsed() >= Duration::from_millis(250),
+        "it still backed off",
+    );
+    assert!(
+        !log.lock().unwrap()[0].3,
+        "and did not credit the server with a number it could not use",
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_retry_after_past_the_budget_hands_the_work_to_the_next_pass() {
     let (url, served) = scripted(vec![Reply("429 Too Many Requests", "Retry-After: 900\r\n")]);
     let (retry, log) = recording();

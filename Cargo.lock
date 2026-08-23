@@ -410,6 +410,7 @@ name = "engine-http"
 version = "0.1.0"
 dependencies = [
  "engine-tls",
+ "httpdate",
  "reqwest",
  "tokio",
 ]

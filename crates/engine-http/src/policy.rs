@@ -1,7 +1,7 @@
 //! How long to wait, and whether to wait at all — decided without a clock, a socket or a
 //! runtime, so the schedule can be asserted directly rather than inferred from timings.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// The bounds the engine puts on waiting out a throttle.
 ///
@@ -130,21 +130,44 @@ fn scale(spread: Duration, entropy: u64) -> Duration {
     Duration::from_nanos(entropy % nanos.saturating_add(1))
 }
 
-/// Parses a `Retry-After` value in its delta-seconds form.
+/// Parses a `Retry-After` value (RFC 9110 §10.2.3) into how long to wait from `now`.
 ///
-/// The HTTP-date form is legal (RFC 9110 §10.2.3) and is deliberately not read: none of these
-/// services sends it, and honouring a date means trusting a clock the engine has no reason to
-/// believe against a server's. An unparseable value falls through to the backoff schedule,
-/// which is the same answer as no header at all.
-pub(crate) fn retry_after_seconds(value: &str) -> Option<Duration> {
-    value.trim().parse::<u64>().ok().map(Duration::from_secs)
+/// Both forms are read. Delta-seconds is what these services actually send; the HTTP-date form
+/// is equally legal, and RFC 9110 §5.6.7 requires a recipient to accept **all three** date
+/// syntaxes — IMF-fixdate and the two obsolete ones — which is why this defers to `httpdate`
+/// rather than matching the preferred one.
+///
+/// **A date is honoured only if it is strictly in the future.** That is a real guard, not a
+/// formality: an HTTP-date names an absolute instant and is always GMT, so there is no zone to
+/// get wrong, but the delay it implies is measured against *this device's* clock rather than
+/// the server's. A device an hour slow would otherwise read "available at 07:28 GMT" as an
+/// hour of sleeping. `duration_since` fails on a past instant, which is exactly that check.
+///
+/// A date far in the *future* needs no separate guard: it becomes a large delay, and the
+/// policy's total-wait budget declines it the same way it declines a large delta-seconds.
+///
+/// A zero wait is treated as no answer at all — from either form, so `Retry-After: 0` and a
+/// date of exactly now behave alike. Having just been refused, retrying in the same instant
+/// spends an attempt to learn nothing; the backoff schedule's quarter-second is the better
+/// reading of "now". Anything unparseable falls through to that schedule too.
+pub(crate) fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+    let value = value.trim();
+    let asked = if let Ok(seconds) = value.parse::<u64>() {
+        Duration::from_secs(seconds)
+    } else {
+        httpdate::parse_http_date(value)
+            .ok()?
+            .duration_since(now)
+            .ok()?
+    };
+    (!asked.is_zero()).then_some(asked)
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use super::{Attempt, RetryPolicy, retry_after_seconds};
+    use super::{Attempt, RetryPolicy, retry_after};
 
     fn refused(status: u16) -> Attempt {
         Attempt {
@@ -296,13 +319,81 @@ mod tests {
         );
     }
 
+    /// `Wed, 21 Oct 2015 07:28:00 GMT` — RFC 9110's own example — as seconds since the epoch.
+    const EXAMPLE: u64 = 1_445_412_480;
+
+    fn at(epoch_secs: u64) -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(epoch_secs)
+    }
+
     #[test]
-    fn retry_after_reads_delta_seconds_and_ignores_the_date_form() {
-        assert_eq!(retry_after_seconds("30"), Some(Duration::from_secs(30)));
-        assert_eq!(retry_after_seconds("  7 "), Some(Duration::from_secs(7)));
-        assert_eq!(retry_after_seconds("0"), Some(Duration::ZERO));
-        assert_eq!(retry_after_seconds("Wed, 21 Oct 2026 07:28:00 GMT"), None);
-        assert_eq!(retry_after_seconds(""), None);
-        assert_eq!(retry_after_seconds("-5"), None);
+    fn retry_after_reads_delta_seconds() {
+        let now = at(EXAMPLE);
+        assert_eq!(retry_after("30", now), Some(Duration::from_secs(30)));
+        assert_eq!(retry_after("  7 ", now), Some(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn retry_after_reads_all_three_date_syntaxes() {
+        // RFC 9110 §5.6.7 requires a recipient to accept every one of these, not only the
+        // preferred form, so each is exercised rather than assumed.
+        let now = at(EXAMPLE - 90);
+        for value in [
+            "Wed, 21 Oct 2015 07:28:00 GMT", // IMF-fixdate, the preferred form
+            "Wednesday, 21-Oct-15 07:28:00 GMT", // obsolete RFC 850
+            "Wed Oct 21 07:28:00 2015",      // obsolete asctime
+        ] {
+            assert_eq!(
+                retry_after(value, now),
+                Some(Duration::from_secs(90)),
+                "{value}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_date_in_the_past_is_refused_rather_than_read_as_no_wait() {
+        // The delay is measured against *this device's* clock, so a skewed one is the
+        // failure mode. Backwards is the dangerous direction only because it silently
+        // becomes "retry now"; falling through to the backoff schedule is the safe read.
+        let value = "Wed, 21 Oct 2015 07:28:00 GMT";
+        assert_eq!(retry_after(value, at(EXAMPLE + 1)), None, "one second past");
+        assert_eq!(retry_after(value, at(EXAMPLE + 86_400)), None, "a day past");
+        assert_eq!(retry_after(value, at(EXAMPLE)), None, "exactly now");
+    }
+
+    #[test]
+    fn a_date_far_ahead_is_left_for_the_budget_to_decline() {
+        // Not rejected here — a genuine long quota window and a device clock stuck in the
+        // past look identical, and both want the same answer: hand the work to the next
+        // pass rather than park this one.
+        let asked = retry_after("Wed, 21 Oct 2015 07:28:00 GMT", at(EXAMPLE - 86_400));
+        assert_eq!(asked, Some(Duration::from_hours(24)));
+        let attempt = Attempt {
+            retry_after: asked,
+            ..refused(429)
+        };
+        assert!(
+            RetryPolicy::default()
+                .next_delay(&attempt, HALFWAY)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_zero_wait_from_either_form_falls_back_to_the_backoff_schedule() {
+        assert_eq!(retry_after("0", at(EXAMPLE)), None);
+        assert_eq!(
+            retry_after("Wed, 21 Oct 2015 07:28:00 GMT", at(EXAMPLE)),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unparseable_value_is_no_answer() {
+        let now = at(EXAMPLE);
+        for value in ["", "-5", "soon", "Wed, 32 Xxx 2015 07:28:00 GMT", "1e3"] {
+            assert_eq!(retry_after(value, now), None, "{value}");
+        }
     }
 }

@@ -13,6 +13,8 @@ license.workspace = true
 reqwest = { workspace = true }
 # `time` for the backoff sleep. No runtime is started here — the caller's is used.
 tokio = { workspace = true, features = ["time"] }
+# Parses `Retry-After`'s HTTP-date form, all three syntaxes RFC 9110 §5.6.7 requires.
+httpdate = { workspace = true }
 
 [dev-dependencies]
 # The client the providers actually build, so the tests send through the same stack (and

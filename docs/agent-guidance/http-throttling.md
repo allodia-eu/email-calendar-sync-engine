@@ -16,9 +16,17 @@ configures once and every provider inherits.
 | everything else | no | Including `5xx`: a failed pass is repeated by the sync above, and a blind retry of a write is not safe. |
 
 `Retry-After` wins where the server sends one — guessing shorter than a number the server
-named is what turns one throttle into several. Only the **delta-seconds** form is read; the
-HTTP-date form is legal (RFC 9110 §10.2.3), is not sent by any of these services, and would
-mean trusting the local clock against the server's.
+named is what turns one throttle into several. **Both** forms are read (RFC 9110 §10.2.3):
+delta-seconds, and the HTTP-date form in all three syntaxes RFC 9110 §5.6.7 requires a
+recipient to accept.
+
+A date is honoured **only if it is strictly in the future**. An HTTP-date is always GMT, so
+there is no zone to get wrong, but the delay it implies is measured against *this device's*
+clock rather than the server's — a device an hour slow would otherwise read "available at
+07:28 GMT" as an hour of sleeping. A date already past falls through to the backoff schedule;
+so does a zero wait from either form, because having just been refused, retrying in the same
+instant spends an attempt to learn nothing. A date far in the future needs no separate guard:
+the total-wait budget declines it exactly as it declines a large delta-seconds.
 
 Jitter is added either way, including on top of `Retry-After`. The requests being throttled
 are concurrent, and twenty of them backing off by an identical amount retry in lockstep.

@@ -5,14 +5,14 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use reqwest::{RequestBuilder, Response, header::RETRY_AFTER};
 
 use crate::{
     observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver},
-    policy::{Attempt, RetryPolicy, retry_after_seconds, retryable},
+    policy::{Attempt, RetryPolicy, retry_after, retryable},
 };
 
 /// How one adapter answers a throttle: the bounds, where to report, and who to report as.
@@ -119,7 +119,9 @@ pub async fn send_retrying(
             .headers()
             .get(RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
-            .and_then(retry_after_seconds);
+            // The device clock, which is only ever consulted for the HTTP-date form — and
+            // only to reject a date that has already passed.
+            .and_then(|value| retry_after(value, SystemTime::now()));
         let granted = retry.policy.next_delay(
             &Attempt {
                 status,
