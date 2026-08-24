@@ -304,16 +304,12 @@ mail is still readable. Two things a real server-authored invitation taught us
   Microsoft Graph uses a `patternedRecurrence` with series-master / occurrence /
   exception items and a separate cancelled-occurrence list. Normalization maps
   Graph's structured form, Google/iCalendar `RRULE` strings, and JSCalendar
-  `recurrenceRules` into one override/exclusion model; round-trips use raw. (For
-  Graph this is **implemented for the series master + rule**; its per-instance
-  `exception`/cancellation *overrides* are deferred — Graph v1.0 exposes no
-  recurrence-id to key them, and the master↔override dedup is itself staged, so a
-  Graph `exception` is dropped rather than mapped. See `graph.md` → "Calendar".)
-  **Google** is the same posture but *without* Graph's data-loss: it returns masters
-  with an `RRULE` (parsed by the shared `engine_core::calendar::parse_rrule`) and
-  *does* expose `recurringEventId` on an override — but override reconciliation is
-  still staged, so `provider-google` drops a `recurringEventId` instance for now
-  rather than mapping it. See `google.md` → "Google Calendar".)
+  `recurrenceRules` into one override/exclusion model; round-trips use raw. Graph
+  names an occurrence by its date in the series' own zone, which is why the adapter
+  reads a master in that zone (`graph.md` → "Calendar"). **Google** returns masters
+  with an `RRULE` (parsed by the shared `engine_core::calendar::parse_rrule`) and an
+  overridden occurrence as a separate entry carrying `recurringEventId`
+  (`google.md` → "Google Calendar").
 - **The rule renders back out through one shared function too.**
   `engine_core::calendar::format_rrule` is the inverse of `parse_rrule` and the only
   place an `RRULE` value string is built, for every transport that carries one
@@ -515,21 +511,25 @@ Three things follow, and each has bitten:
   two removals are therefore unconditional. CalDAV and JMAP, editing the series, keep the
   guard the series has.
 
-**Reading a changed occurrence back is a per-transport problem, and only Graph still has
-it.** CalDAV states one as a `RECURRENCE-ID` component and JMAP as a `recurrenceOverrides`
-entry, both inside the series' own object; Google states it as a **separate entry** carrying
-`recurringEventId` and `originalStartTime`, which `provider-google` folds onto the series once
-the pass is in (`google.md`). All three therefore reach the expander as the same
-`Recurrence::overrides` map, keyed by the occurrence's **original** start.
+**Reading a changed occurrence back is a per-transport problem, and every transport now
+solves it into the same map.** CalDAV states one as a `RECURRENCE-ID` component and JMAP as
+a `recurrenceOverrides` entry, both inside the series' own object; Google states it as a
+**separate entry** carrying `recurringEventId` and `originalStartTime`, which
+`provider-google` folds onto the series once the pass is in (`google.md`). Graph splits it in
+two — an edited occurrence is an `exception` entry naming itself in `occurrenceId`, a removed
+one is a string in the master's `cancelledOccurrences` and appears nowhere else — so
+`provider-graph` re-reads each series master to get the second half (`graph.md`). All four
+therefore reach the expander as the same `Recurrence::overrides` map, keyed by the
+occurrence's **original** start.
 
-⚠️ **Graph does not yet read its own cancellations back.** `calendarView/delta` reports a
-cancelled occurrence by re-sending the series and its *surviving* occurrences — there is no
-`@removed` entry, measured — and the reader keeps only masters and single events. The
-cancellation lives in the master's `cancelledOccurrences`, which is returned only when
-explicitly `$select`ed. Until that is folded into the override map, a Graph occurrence
-removal **lands on the server and keeps being drawn locally**. Google has no such gap: it
-reports the cancelled instance as a `status: "cancelled"` entry, which the reader already
-passes on as a removal.
+⚠️ **Graph's occurrence names are in the series' own zone, and the master is read in it.**
+`OID.<master>.<date>` does not follow `Prefer: outlook.timezone` while the event's `start`
+does, so a series read in one zone and named in another keys its overrides on the wrong day —
+by a whole day, for anything near midnight. No adapter can reconcile that itself (none carries
+tzdata, and a removed occurrence `404`s), so `provider-graph` asks for the master in its own
+`originalStartTimeZone` and the two agree by construction. The side effect is worth knowing:
+a recurring Graph event is stored in the zone it was **authored** in, unlike every
+non-recurring one, which carries the provider's display zone.
 
 ## Supported recurrence subset
 

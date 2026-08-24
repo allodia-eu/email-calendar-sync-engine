@@ -1,0 +1,17 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('00000000feedface')/calendar/events(start,end,cancelledOccurrences)/$entity",
+  "@odata.etag": "W/\"cal-etag-5\"",
+  "id": "AQMkADAwATNiZmYAZS1iNDJlLTExAGJjLTAwAi0wMAoARgAAA8Y2iiLYtTxBsRxgTMsTKQEHALAa3durJHZJuTkRfl5IiSEAAAIBDQAAALAa3durJHZJuTkRfl5IiSEAAAAO3QzYAAAA",
+  "cancelledOccurrences": [
+    "OID.AQMkADAwATNiZmYAZS1iNDJlLTExAGJjLTAwAi0wMAoARgAAA8Y2iiLYtTxBsRxgTMsTKQEHALAa3durJHZJuTkRfl5IiSEAAAIBDQAAALAa3durJHZJuTkRfl5IiSEAAAAO3QzYAAAA.2026-08-17",
+    "OID.AQMkADAwATNiZmYAZS1iNDJlLTExAGJjLTAwAi0wMAoARgAAA8Y2iiLYtTxBsRxgTMsTKQEHALAa3durJHZJuTkRfl5IiSEAAAIBDQAAALAa3durJHZJuTkRfl5IiSEAAAAO3QzYAAAA.2026-08-31"
+  ],
+  "start": {
+    "dateTime": "2026-08-03T09:00:00.0000000",
+    "timeZone": "W. Europe Standard Time"
+  },
+  "end": {
+    "dateTime": "2026-08-03T09:15:00.0000000",
+    "timeZone": "W. Europe Standard Time"
+  }
+}

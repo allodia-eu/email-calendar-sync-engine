@@ -10,7 +10,7 @@ use core::num::NonZeroU32;
 
 use common::*;
 use engine_core::{
-    calendar::{Frequency, NDay, RecurrenceBound, RecurrenceRule, Weekday},
+    calendar::{Frequency, NDay, RecurrenceBound, RecurrenceOverride, RecurrenceRule, Weekday},
     ids::{CalendarId, Uid},
     sync::SyncUpdate,
 };
@@ -258,19 +258,14 @@ async fn live_calendar_changes_and_removes_a_rule() {
 }
 
 /// Removing **one occurrence** of a series, at the id Graph derives rather than one it was
-/// handed.
+/// handed — and reading the removal back.
 ///
-/// ⚠️ **What this can prove, and what it cannot.** Graph reports a cancelled occurrence by
-/// re-sending the series and its *surviving* occurrences — measured; there is no `@removed`
-/// entry — and the reader keeps only masters and single events (`cal_fetch::keep`). So the
-/// cancellation reaches nothing this suite can read, and it will keep being drawn until the
-/// series' `cancelledOccurrences` is folded into its override map (`graph.md` → "Removing
-/// one occurrence").
-///
-/// What is asserted here is the failure that would actually cost the user their data: the
-/// derived id resolving to the **series**, taking every other occurrence with it. A wrong
-/// *date* is caught offline, where the id is pinned as a string; a wrong *shape* would take
-/// the whole event, and only a server can say.
+/// Two failures only a server can show. The derived id could resolve to the **series**,
+/// taking every other occurrence with it — a wrong *date* is caught offline, where the id
+/// is pinned as a string, but a wrong *shape* takes the whole event. And the removal has to
+/// come home: Graph reports it by re-sending the series and its *surviving* occurrences,
+/// with no `@removed` entry anywhere (measured), so the only thing that says the occurrence
+/// is gone is the master's own `cancelledOccurrences`.
 #[tokio::test]
 async fn live_calendar_removes_one_occurrence_and_keeps_the_series() {
     let Some(token) = token() else {
@@ -355,6 +350,15 @@ async fn live_calendar_removes_one_occurrence_and_keeps_the_series() {
         series.is_recurring(),
         "and it is still a series, with its rule intact"
     );
+    let overrides = &series.recurrence.as_ref().expect("a rule").overrides;
+    assert!(
+        matches!(
+            overrides.get(&"2026-09-14T09:30:00".parse().unwrap()),
+            Some(RecurrenceOverride::Excluded)
+        ),
+        "the removed occurrence must stop being drawn: {:?}",
+        overrides.keys().collect::<Vec<_>>()
+    );
 
     provider
         .delete_event(&account(), None, &EventDeletion::of(&base))
@@ -362,15 +366,14 @@ async fn live_calendar_removes_one_occurrence_and_keeps_the_series() {
         .expect("delete the probe series");
 }
 
-/// Editing **one occurrence** of a series, at the id Graph derives for it.
+/// Editing **one occurrence** of a series, at the id Graph derives for it — and reading the
+/// edit back.
 ///
-/// ⚠️ Same shape as the removal beside it, and the same limit: Graph returns an edited
-/// occurrence as an `exception` entry, and the reader keeps only masters and single events
-/// (`cal_fetch::keep`), so the edit is not yet visible through this suite.
-///
-/// What is asserted is the failure that would cost the user their series: an id resolving to
-/// the **master**, so that renaming one Tuesday renames every Tuesday. The id's *date* is
-/// pinned offline as a string; only a server can say what the id resolves to.
+/// Same shape as the removal beside it. The failure that would cost the user their series is
+/// an id resolving to the **master**, so that renaming one Monday renames every Monday; the
+/// id's *date* is pinned offline as a string, but only a server can say what it resolves to.
+/// The read-back has its own trap: once patched, Graph gives the occurrence an **opaque**
+/// id, so the date it keys on can only come from the `occurrenceId` it keeps beside it.
 #[tokio::test]
 async fn live_calendar_edits_one_occurrence_and_leaves_the_series_alone() {
     const TITLE: &str = "provider-graph live occurrence-edit probe";
@@ -460,6 +463,19 @@ async fn live_calendar_edits_one_occurrence_and_leaves_the_series_alone() {
          every occurrence"
     );
     assert!(series.is_recurring(), "and it is still a series");
+    let overrides = &series.recurrence.as_ref().expect("a rule").overrides;
+    let Some(RecurrenceOverride::Patch(patch)) =
+        overrides.get(&"2026-09-14T09:30:00".parse().unwrap())
+    else {
+        panic!(
+            "the edited occurrence must come home as an override of its series: {:?}",
+            overrides.keys().collect::<Vec<_>>()
+        );
+    };
+    assert_eq!(
+        patch.get("title").and_then(serde_json::Value::as_str),
+        Some("Moved to the afternoon")
+    );
 
     provider
         .delete_event(&account(), None, &EventDeletion::of(&base))

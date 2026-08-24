@@ -10,6 +10,7 @@ use crate::test_support::{fake_client, json, replay_server, retry, tls};
 
 const CALENDARS: &str = include_str!("../tests/fixtures/calendar/calendars.json");
 const DELTA: &str = include_str!("../tests/fixtures/calendar/events_delta.json");
+const MASTER: &str = include_str!("../tests/fixtures/calendar/event_master_cancellations.json");
 
 fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()
@@ -30,6 +31,8 @@ fn routes() -> Vec<(&'static str, serde_json::Value)> {
     vec![
         ("/calendars?$top", json(CALENDARS)),
         ("calendarView/delta", json(DELTA)),
+        // Every pass re-reads each series master for what the delta will not report.
+        ("$select=start,end,cancelledOccurrences", json(MASTER)),
     ]
 }
 
@@ -93,9 +96,15 @@ async fn syncs_the_calendar_list_and_an_event_snapshot() {
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
         panic!("expected an event snapshot");
     };
-    // Master + 2 singles kept; occurrences + exception dropped.
+    // Master + 2 singles kept; the server-expanded occurrences dropped.
     assert_eq!(objects.len(), 3);
-    assert_eq!(objects.iter().filter(|e| e.is_recurring()).count(), 1);
+    let series = objects
+        .iter()
+        .find(|e| e.is_recurring())
+        .expect("the series master");
+    // The exception is not an object of its own — it, and the two removals the master
+    // reports, are exceptions *of* the series.
+    assert_eq!(series.recurrence.as_ref().unwrap().overrides.len(), 3);
 }
 
 #[tokio::test]
@@ -115,7 +124,10 @@ async fn end_to_end_against_a_fixture_replay_server() {
 async fn sync_events_from_a_cursor_is_a_delta() {
     use crate::test_support::fake_client_fallible;
     let cursor = engine_core::sync::SyncState::new("https://graph.test/me/cursor-token");
-    let client = fake_client_fallible(vec![("cursor-token", Ok(json(DELTA)))]);
+    let client = fake_client_fallible(vec![
+        ("cursor-token", Ok(json(DELTA))),
+        ("$select=start,end,cancelledOccurrences", Ok(json(MASTER))),
+    ]);
     let events = provider(client)
         .sync_events(&account(), Some(&cursor))
         .await
@@ -136,6 +148,7 @@ async fn sync_events_restarts_as_a_snapshot_when_the_deltalink_expired() {
     let client = fake_client_fallible(vec![
         ("expired-token", Err((410, serde_json::json!({})))),
         ("calendarView/delta", Ok(json(DELTA))),
+        ("$select=start,end,cancelledOccurrences", Ok(json(MASTER))),
     ]);
     let events = provider(client)
         .sync_events(&account(), Some(&cursor))

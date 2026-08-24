@@ -29,6 +29,9 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 # `async-stream` builds the `stream_email` chunk stream with `try_stream!`.
 async-stream = { workspace = true }
+# `buffered` fans a calendar page's per-series-master re-reads out concurrently — the one
+# thing `calendarView/delta` will not report is an occurrence somebody removed (`cal_fetch`).
+futures-util = { workspace = true }
 # The generated `Date` header for the assembled `sendMail` message reads the wall clock
 # at submission (engine time types deliberately cannot), mirroring provider-imap's SMTP path.
 time = { workspace = true }
