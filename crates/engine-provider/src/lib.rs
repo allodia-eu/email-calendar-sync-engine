@@ -26,6 +26,7 @@
 //! the provider-neutral scopes.
 
 mod boxed;
+mod boxed_report;
 mod calendar_write;
 mod capability;
 mod capability_calendar;
