@@ -17,9 +17,18 @@
 //! - `login`   — open the sign-in URL, catch the loopback redirect, exchange the
 //!               code, and save `access_token` + `refresh_token` to the tokens file.
 //! - `refresh` — mint a fresh access token from the saved refresh token.
+//! - `token`   — print just the access token, refreshing first if it is close to
+//!               expiry, so a live test can capture it in a `$(...)`.
 //! - `get <graph-url> [outfile]` — refresh if needed, GET the Graph URL with the
 //!               bearer token, and pretty-print (and optionally save) the JSON. Use
 //!               this to capture real responses as fixtures.
+//!
+//! ## Profiles
+//!
+//! `--profile <name>` reads and writes `.local/tokens-<name>.json` instead of
+//! `.local/tokens.json`, so several accounts stay signed in side by side — which is
+//! what a scheduling test needs, since an invitation only exists if a second mailbox
+//! sent it. `GRAPH_TOKENS` still overrides the whole path and wins over `--profile`.
 //!
 //! Run from the repo root, e.g.:
 //!   cargo run --manifest-path tools/graph-oauth/Cargo.toml -- login --client-id <APP_ID>
@@ -27,6 +36,7 @@
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -74,7 +84,10 @@ fn main() {
 }
 
 fn run() -> Res<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--profile` is consumed here rather than by each command, so it can precede or
+    // follow the subcommand and never reaches a command's positional arguments.
+    let (args, profile) = take_profile(std::env::args().skip(1).collect());
+    let _ = TOKENS_PATH.set(resolve_tokens_path(profile.as_deref()));
     match args.first().map(String::as_str) {
         Some("login") => cmd_login(&args[1..]),
         Some("refresh") => {
@@ -82,15 +95,35 @@ fn run() -> Res<()> {
             println!("refreshed; saved to {}", tokens_path());
             Ok(())
         }
+        Some("token") => {
+            // Print only the access token, so a live test can capture it directly.
+            println!("{}", fresh_access_token()?);
+            Ok(())
+        }
         Some("get") => cmd_get(&args[1..]),
         Some("req") => cmd_req(&args[1..]),
         _ => {
             eprintln!(
-                "usage:\n  graph-oauth login --client-id <APP_ID> [--authority <URL>] [--port <N>] [--scopes \"<s1 s2 ...>\"]\n  graph-oauth refresh\n  graph-oauth get <graph-url-or-path> [outfile.json]\n  graph-oauth req <METHOD> <graph-url-or-path> [body-json|@file|-] [outfile.json]"
+                "usage (every command takes [--profile <name>]):\n  graph-oauth login --client-id <APP_ID> [--authority <URL>] [--port <N>] [--scopes \"<s1 s2 ...>\"]\n  graph-oauth refresh\n  graph-oauth token\n  graph-oauth get <graph-url-or-path> [outfile.json]\n  graph-oauth req <METHOD> <graph-url-or-path> [body-json|@file|-] [outfile.json]"
             );
             std::process::exit(2);
         }
     }
+}
+
+/// Splits `--profile <name>` (or `-p <name>`) out of the argument list.
+fn take_profile(args: Vec<String>) -> (Vec<String>, Option<String>) {
+    let Some(i) = args.iter().position(|a| a == "--profile" || a == "-p") else {
+        return (args, None);
+    };
+    let name = args.get(i + 1).cloned();
+    let rest = args
+        .into_iter()
+        .enumerate()
+        .filter(|(j, _)| *j != i && *j != i + 1)
+        .map(|(_, a)| a)
+        .collect();
+    (rest, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -379,9 +412,25 @@ fn build_tokens(resp: &Value, client_id: &str, authority: &str, scopes: &str) ->
     }))
 }
 
+/// This invocation's tokens file, decided once in [`run`].
+static TOKENS_PATH: OnceLock<String> = OnceLock::new();
+
+fn resolve_tokens_path(profile: Option<&str>) -> String {
+    if let Ok(path) = std::env::var("GRAPH_TOKENS") {
+        return path;
+    }
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/.local");
+    match profile {
+        Some(name) => format!("{dir}/tokens-{name}.json"),
+        None => format!("{dir}/tokens.json"),
+    }
+}
+
 fn tokens_path() -> String {
-    std::env::var("GRAPH_TOKENS")
-        .unwrap_or_else(|_| format!("{}/.local/tokens.json", env!("CARGO_MANIFEST_DIR")))
+    TOKENS_PATH
+        .get()
+        .cloned()
+        .unwrap_or_else(|| resolve_tokens_path(None))
 }
 
 fn load_tokens() -> Res<Value> {
