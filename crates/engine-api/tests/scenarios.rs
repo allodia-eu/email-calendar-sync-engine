@@ -272,3 +272,5 @@ fn responsive() -> StreamTuning {
 
 #[path = "scenarios/cases.rs"]
 mod cases;
+#[path = "scenarios/size_cap.rs"]
+mod size_cap;

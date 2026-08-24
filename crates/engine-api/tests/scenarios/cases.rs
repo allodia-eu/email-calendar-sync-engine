@@ -227,7 +227,11 @@ async fn missing_body_work_list_shrinks_as_a_warm_pass_fetches() {
 
 /// Fetches each row's body, resolving the whole message the fetch needs from its key — the shape
 /// a host's warming pass has, now that the work list is rows rather than objects.
-async fn warm(engine: &Engine, provider: &SimProvider, rows: &[engine_api::MailListRow]) {
+pub(super) async fn warm(
+    engine: &Engine,
+    provider: &SimProvider,
+    rows: &[engine_api::MailListRow],
+) {
     for row in rows {
         let message = engine
             .messages_by_keys(&account(), core::slice::from_ref(&row.mail.key))
@@ -245,7 +249,7 @@ fn key(value: &str) -> ProviderKey {
 }
 
 /// A no-op observer for syncs whose progress a test does not inspect.
-fn no_observer() -> impl engine_api::SyncObserver {
+pub(super) fn no_observer() -> impl engine_api::SyncObserver {
     engine_api::IgnoreCommits
 }
 
@@ -383,74 +387,8 @@ async fn narrowing_depth_reclaims_the_body_and_blob_of_the_mail_it_drops() {
     );
 }
 
-#[tokio::test]
-async fn lowering_a_size_cap_frees_the_bytes_and_re_queues_the_body() {
-    // The whole round trip a message-size cap needs: drop the heaviest sources, get the disk
-    // back, keep the mail readable — and come back as work when the cap goes up again.
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("engine.sqlite");
-    let engine = Engine::open(&db).unwrap();
-    let provider = SimProvider::new(messages(2), 2);
-    engine
-        .sync_mail(
-            core::slice::from_ref(&provider),
-            &account(),
-            responsive(),
-            &no_observer(),
-        )
-        .await;
-    let rows = engine.mail_missing_body(&[account()], 50).await.unwrap();
-    warm(&engine, &provider, &rows).await;
-    assert_eq!(source_blobs(&db), 2);
-    assert!(
-        engine
-            .mail_missing_body(&[account()], 50)
-            .await
-            .unwrap()
-            .is_empty(),
-        "both are warm to begin with"
-    );
-
-    // A cap nothing exceeds is a no-op, not an accidental wipe.
-    let untouched = engine
-        .drop_message_sources_over(&account(), 10 * 1024 * 1024)
-        .await
-        .unwrap();
-    assert_eq!(untouched.sources_removed, 0);
-    assert_eq!(untouched.octets_freed, 0);
-    assert_eq!(source_blobs(&db), 2);
-
-    // Lower it under every message and the cached sources go.
-    let dropped = engine
-        .drop_message_sources_over(&account(), 0)
-        .await
-        .unwrap();
-    assert_eq!(dropped.sources_removed, 2);
-    assert!(dropped.octets_freed > 0, "freed no bytes");
-
-    // The mail itself is untouched: still listed, and still readable offline from its text.
-    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
-
-    // And it is work again — the half that makes raising the cap fetch anything back.
-    assert_eq!(
-        engine
-            .mail_missing_body(&[account()], 50)
-            .await
-            .unwrap()
-            .len(),
-        2,
-        "a dropped source must re-queue the body, or a raised cap downloads nothing",
-    );
-
-    // Only now do the files actually go.
-    age_blobs(&db);
-    let swept = engine.sweep_unreferenced_blobs().await.unwrap();
-    assert_eq!(swept.blobs_removed, 2);
-    assert_eq!(source_blobs(&db), 0);
-}
-
 /// The raw-source blob files beside `db`.
-fn source_blobs(db: &std::path::Path) -> usize {
+pub(super) fn source_blobs(db: &std::path::Path) -> usize {
     let mut root = db.file_name().unwrap().to_os_string();
     root.push(".blobs");
     std::fs::read_dir(db.with_file_name(root).join("sources"))
@@ -461,7 +399,7 @@ fn source_blobs(db: &std::path::Path) -> usize {
 /// Backdates the blobs past the sweep's grace period — which exists because a blob is
 /// written before the row naming it, so one written moments ago may be mid-write. A test
 /// that did not do this would prove only that the grace period works.
-fn age_blobs(db: &std::path::Path) {
+pub(super) fn age_blobs(db: &std::path::Path) {
     let stale = std::time::SystemTime::now() - std::time::Duration::from_hours(1);
     let mut root = db.file_name().unwrap().to_os_string();
     root.push(".blobs");

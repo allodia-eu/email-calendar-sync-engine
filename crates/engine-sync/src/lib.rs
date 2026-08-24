@@ -324,7 +324,7 @@ mod threading;
 pub use attachment::{
     fetch_message_attachment, fetch_message_attachments, fetch_message_scheduling,
 };
-pub use body::{fetch_inline_parts, fetch_message_body};
+pub use body::{ensure_message_source, fetch_inline_parts, fetch_message_body};
 pub use calendar::{CalendarSyncReport, EventSyncReport, reconcile_calendar_events, sync_calendar};
 pub use contact::{
     ContactReconcileReport, ContactSourceReport, ContactSyncReport, PeopleRebuildReport,

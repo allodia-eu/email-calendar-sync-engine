@@ -124,6 +124,42 @@ where
     Ok(parts)
 }
 
+/// Ensures the raw source for `message` is cached, fetching it once if it is not — the half of
+/// a warm that [`fetch_message_body`] cannot do on its own.
+///
+/// A body fetch is **text-first**: once the extracted text is cached it returns without reading
+/// or fetching the bytes, which is right for an open and wrong for a warm. A message can hold
+/// one without the other — that is exactly what dropping cached sources over a size cap leaves
+/// behind — and such a message would otherwise sit on the work list for ever, looked at by every
+/// pass and fixed by none.
+///
+/// Cheap where there is nothing to do: one indexed metadata read, no blob read, no decode.
+///
+/// # Errors
+///
+/// Returns [`SyncError::Provider`] if the source fetch fails (a stale or expunged IMAP target is
+/// a `Conflict` — re-sync, then retry), or [`SyncError::Store`] if the cache **read** fails.
+pub async fn ensure_message_source<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    message: &Message,
+) -> Result<(), SyncError>
+where
+    P: Provider,
+    S: MessageSourceCache,
+{
+    let key = message.id.key();
+    if store.get_message_source(account, key).await?.is_some() {
+        return Ok(());
+    }
+    let raw = provider.fetch_message_source(account, message).await?;
+    // Best-effort, like every other cache write here: the caller asked for the bytes to be
+    // kept, not for a guarantee, and a failed write leaves the message on the work list.
+    let _ = store.put_message_source(account, key, raw).await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -139,7 +175,7 @@ mod tests {
     use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
     use store_sqlite::SqliteStore;
 
-    use super::{fetch_inline_parts, fetch_message_body};
+    use super::{ensure_message_source, fetch_inline_parts, fetch_message_body};
 
     /// A provider whose only ability is body fetch; it counts how often it is hit,
     /// so the cache-hit test can prove the second read never reaches the network.
@@ -348,6 +384,69 @@ mod tests {
             provider.hits.load(Ordering::SeqCst),
             0,
             "served from disk blob"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_source_fetches_only_when_the_blob_is_missing() {
+        let store = store();
+        let provider = CountingProvider::new(RAW);
+
+        ensure_message_source(&provider, &store, &account(), &message())
+            .await
+            .expect("first ensure");
+        assert_eq!(provider.hits.load(Ordering::SeqCst), 1, "fetched once");
+        assert!(
+            store
+                .get_message_source(&account(), message().id.key())
+                .await
+                .expect("read back")
+                .is_some(),
+            "and cached what it fetched",
+        );
+
+        ensure_message_source(&provider, &store, &account(), &message())
+            .await
+            .expect("second ensure");
+        assert_eq!(
+            provider.hits.load(Ordering::SeqCst),
+            1,
+            "a cached source costs no provider call",
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_source_restores_a_body_whose_text_outlived_its_bytes() {
+        // What a lowered size cap leaves: the extracted text, no blob. A body fetch is
+        // text-first, so it would return happily and fetch nothing — this is the call that
+        // puts the bytes back.
+        let store = store();
+        let seed = CountingProvider::new(RAW);
+        fetch_message_body(&seed, &store, &account(), &message())
+            .await
+            .expect("warm");
+        store
+            .drop_message_sources_over(&account(), 0)
+            .await
+            .expect("drop the source, keep the text");
+
+        let provider = CountingProvider::new(RAW);
+        fetch_message_body(&provider, &store, &account(), &message())
+            .await
+            .expect("body still reads");
+        assert_eq!(
+            provider.hits.load(Ordering::SeqCst),
+            0,
+            "text-first: the body read cannot notice the missing bytes",
+        );
+
+        ensure_message_source(&provider, &store, &account(), &message())
+            .await
+            .expect("ensure");
+        assert_eq!(
+            provider.hits.load(Ordering::SeqCst),
+            1,
+            "the bytes are back"
         );
     }
 
