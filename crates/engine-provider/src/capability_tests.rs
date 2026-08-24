@@ -25,7 +25,7 @@ fn full_capability_set() {
         .with_submission()
         .with_idle()
         .with_calendars()
-        .with_calendar_writes(WriteGuard::Enforced)
+        .with_calendar_writes(WriteGuard::Enforced, OverrideSurvival::kept())
         .with_calendar_scheduling()
         .with_contacts()
         .with_contact_writes(WriteGuard::Enforced)
@@ -51,7 +51,7 @@ fn answering_an_invitation_and_anyone_hearing_it_are_separate_promises() {
     // "can answer, nobody hears" is representable.
     let plain_caldav = Capabilities::none()
         .with_calendars()
-        .with_calendar_writes(WriteGuard::Enforced)
+        .with_calendar_writes(WriteGuard::Enforced, OverrideSurvival::kept())
         .with_calendar_rsvp(RsvpControls {
             comment: false,
             suppress_notification: false,
@@ -90,10 +90,10 @@ fn a_writable_calendar_states_how_strong_its_guard_is() {
     // writable-but-unguarded adapter (JMAP) is representable and says so.
     let caldav = Capabilities::none()
         .with_calendars()
-        .with_calendar_writes(WriteGuard::Enforced);
+        .with_calendar_writes(WriteGuard::Enforced, OverrideSurvival::kept());
     let jmap = Capabilities::none()
         .with_calendars()
-        .with_calendar_writes(WriteGuard::Absent);
+        .with_calendar_writes(WriteGuard::Absent, OverrideSurvival::kept());
 
     assert!(caldav.calendar_writes() && jmap.calendar_writes());
     assert_eq!(caldav.calendar_write_guard(), Some(WriteGuard::Enforced));

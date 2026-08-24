@@ -7,7 +7,7 @@
 //! capability URNs (`urn:ietf:params:jmap:mail` → [`Capabilities::mail`], etc.)
 //! and grows as protocol features are added.
 
-use crate::{ReportControls, RsvpControls, WriteGuard};
+use crate::{OverrideSurvival, ReportControls, RsvpControls, WriteGuard};
 
 /// The data domains a provider supports.
 ///
@@ -52,6 +52,11 @@ pub struct Capabilities {
     /// two surrounding controls it honours. One field rather than two, so "carries a
     /// comment but cannot RSVP" is unrepresentable.
     calendar_rsvp: Option<RsvpControls>,
+    /// `None` when the adapter cannot write calendars at all; otherwise what a series-level
+    /// edit does to the occurrences the user changed individually. Set by the same builder
+    /// step as `calendar_writes`, so "writes, but nobody said what an edit costs" is
+    /// unrepresentable.
+    override_survival: Option<OverrideSurvival>,
     calendar_scheduling: bool,
     contacts: bool,
     contact_writes: Option<WriteGuard>,
@@ -74,6 +79,7 @@ impl Capabilities {
             calendars: false,
             calendar_writes: None,
             calendar_rsvp: None,
+            override_survival: None,
             calendar_scheduling: false,
             contacts: false,
             contact_writes: None,
@@ -171,16 +177,28 @@ impl Capabilities {
     }
 
     /// Marks calendar **writes** (create/patch/delete events) as supported, stating
-    /// how strong a lost-update [`WriteGuard`] the transport can promise.
+    /// how strong a lost-update [`WriteGuard`] the transport can promise and what a
+    /// series-level edit does to the user's per-occurrence changes
+    /// ([`OverrideSurvival`]).
     ///
     /// Distinct from [`with_calendars`](Self::with_calendars), the read capability — a
     /// calendar the account can read but not write (a shared read-only CalDAV
     /// collection, or a calendar-read-only adapter) advertises
     /// [`calendars`](Self::calendars) without this, exactly as a mail adapter with no
     /// SMTP advertises [`mail`](Self::mail) without [`submission`](Self::submission).
+    ///
+    /// The survival rule rides this call rather than a builder step of its own so that an
+    /// adapter cannot advertise writes without saying what its series edit costs. Two of
+    /// the four transports throw a user's per-occurrence work away, and a host that was
+    /// never told cannot warn — which is a silence, not an error anyone would notice.
     #[must_use]
-    pub const fn with_calendar_writes(mut self, guard: WriteGuard) -> Self {
+    pub const fn with_calendar_writes(
+        mut self,
+        guard: WriteGuard,
+        overrides: OverrideSurvival,
+    ) -> Self {
         self.calendar_writes = Some(guard);
+        self.override_survival = Some(overrides);
         self
     }
 
@@ -330,6 +348,18 @@ impl Capabilities {
     #[must_use]
     pub const fn calendar_write_guard(self) -> Option<WriteGuard> {
         self.calendar_writes
+    }
+
+    /// What a **series-level** edit does to the occurrences the user changed individually,
+    /// or `None` if this transport cannot write calendars.
+    ///
+    /// Read this **before** offering the edit, and pair it with whether the series actually
+    /// has any overrides: on two of the four transports a series edit throws the user's
+    /// per-occurrence work away, and only a warning at that moment can save it
+    /// ([`OverrideSurvival`]). A series with no overrides needs no warning at all.
+    #[must_use]
+    pub const fn override_survival(self) -> Option<OverrideSurvival> {
+        self.override_survival
     }
 
     /// Which RSVP controls this transport honours, or `None` if it cannot answer an

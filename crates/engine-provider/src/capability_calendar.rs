@@ -1,10 +1,11 @@
 //! What a transport promises about a **calendar write**, beside performing it.
 //!
-//! Two post-connect facts a host reads off [`Capabilities`](crate::Capabilities)
+//! Three post-connect facts a host reads off [`Capabilities`](crate::Capabilities)
 //! *before* it writes: how strong a lost-update guard the transport can keep
-//! ([`WriteGuard`]), and which of the controls around an RSVP it honours
-//! ([`RsvpControls`]). They live beside the capability set rather than inside it so
-//! that file carries the set alone.
+//! ([`WriteGuard`]), which of the controls around an RSVP it honours
+//! ([`RsvpControls`]), and what a series-level edit does to the occurrences the user
+//! changed individually ([`OverrideSurvival`]). They live beside the capability set rather
+//! than inside it so that file carries the set alone.
 
 /// What a transport can promise about the **lost-update guard** on a calendar write.
 ///
@@ -124,5 +125,84 @@ impl RsvpControls {
             ));
         }
         Ok(())
+    }
+}
+
+/// What a **series-level** edit does to the occurrences the user changed individually.
+///
+/// Every transport folds a per-occurrence change into the same
+/// [`Recurrence::overrides`](engine_core::calendar::Recurrence) map, so the user sees one
+/// idea: "this Tuesday is different". What happens to that difference when the *series* is
+/// then edited is not one idea at all — it is four different server policies, and two of
+/// them throw the user's work away. So it is a post-connect fact a host reads **before** it
+/// offers the edit, exactly like [`WriteGuard`], rather than something the write API
+/// implies.
+///
+/// A host pairs this with whether *this* series actually has overrides. A clean series gets
+/// no warning at all, which is what keeps the warning worth reading.
+///
+/// Measured 2026-08-23 on all four transports with one experiment: create a weekly series,
+/// override occurrence #2 by giving it its own title and moving its time, then change each
+/// thing on the master in turn and read the occurrence back. A property the override never
+/// set follows the master everywhere — that is the JSCalendar patch model and it is not in
+/// question here. What differs:
+///
+/// | | CalDAV | JMAP | Graph | Google |
+/// |---|---|---|---|---|
+/// | [`survives_time_change`](Self::survives_time_change) | yes | yes | **no** | **no** |
+/// | [`survives_rule_change`](Self::survives_rule_change) | yes | yes | **no** | yes |
+/// | [`clobbers_own_fields`](Self::clobbers_own_fields) | no | no | no | **yes** |
+///
+/// The live suites re-run that experiment per transport and assert the adapter's own
+/// constant against what the server did, so a constant cannot quietly stop being true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverrideSurvival {
+    /// Moving the **master's** start or end keeps the occurrences the user moved.
+    ///
+    /// `false` on Graph and Google: both revert the occurrence to the pattern, so an edit
+    /// the user made weeks ago is gone with no further warning than the one a host gives
+    /// from this flag. CalDAV and JMAP keep it — on CalDAV by construction, since the
+    /// structural patcher rewrites only the master `VEVENT`'s own lines.
+    pub survives_time_change: bool,
+    /// Changing the **recurrence rule** keeps them.
+    ///
+    /// `false` on Graph alone, and deliberately verified with a rule change chosen so the
+    /// overridden date still exists in the new pattern — otherwise "the occurrence is gone"
+    /// would only mean it was no longer scheduled. Graph flipped it from `exception` back to
+    /// `occurrence`; Google's moved instance stayed where the user put it.
+    pub survives_rule_change: bool,
+    /// A master edit **overwrites** a property the override set for itself.
+    ///
+    /// `true` on Google alone: renaming the series renames the occurrence the user had
+    /// renamed. The other three leave an override's own fields alone. This is the one that
+    /// needs a *different* sentence from a host — nothing is unscheduled, something is
+    /// silently retitled.
+    pub clobbers_own_fields: bool,
+}
+
+impl OverrideSurvival {
+    /// A series edit costs the user nothing: every override survives it and keeps the
+    /// fields it set for itself.
+    ///
+    /// This is what a host has nothing to warn about, and it is the answer on CalDAV and
+    /// JMAP. Named so that the two transports that *do* destroy the user's work have to say
+    /// so field by field rather than by omitting a builder step.
+    #[must_use]
+    pub const fn kept() -> Self {
+        Self {
+            survives_time_change: true,
+            survives_rule_change: true,
+            clobbers_own_fields: false,
+        }
+    }
+
+    /// Whether a host has anything at all to say before a series-level edit.
+    ///
+    /// `false` is [`kept`](Self::kept). A host still pairs this with whether the series
+    /// actually *has* overrides — the warning is about the user's own work, so a clean
+    /// series is never warned about.
+    #[must_use]
+    pub const fn warns_on_series_edit(self) -> bool {
+        !self.survives_time_change || !self.survives_rule_change || self.clobbers_own_fields
     }
 }

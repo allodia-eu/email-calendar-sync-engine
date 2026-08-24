@@ -18,7 +18,7 @@
 //!   *own* advertised origin: a URL the server deliberately puts elsewhere is left alone
 //!   (`rebase_template`).
 
-use engine_provider::{RsvpControls, WriteGuard};
+use engine_provider::{OverrideSurvival, RsvpControls, WriteGuard};
 use reqwest::Url;
 use serde_json::Value;
 
@@ -47,6 +47,13 @@ pub(crate) const JMAP_RSVP: RsvpControls = RsvpControls {
     suppress_notification: true,
     guard: WriteGuard::Absent,
 };
+
+/// What a JMAP series edit costs the user: nothing.
+///
+/// A `/set` takes a `PatchObject`, so an edit names the master's own properties and the
+/// `recurrenceOverrides` map is not among them. Measured against Stalwart, and re-measured
+/// by `tests/live_calendar_survival.rs`.
+pub(crate) const JMAP_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival::kept();
 
 /// How to resolve the session's advertised URLs against the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,7 +225,7 @@ impl Session {
             // nothing would look exactly like one that scheduled. Contrast CalDAV, where
             // RFC 6638 §2 gives a discoverable answer and the adapter discovers it.
             capabilities = capabilities
-                .with_calendar_writes(WriteGuard::Absent)
+                .with_calendar_writes(WriteGuard::Absent, JMAP_OVERRIDE_SURVIVAL)
                 .with_calendar_rsvp(JMAP_RSVP)
                 .with_calendar_scheduling();
         }

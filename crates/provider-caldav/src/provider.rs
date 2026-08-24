@@ -24,8 +24,9 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion, EventDraft,
-    EventEdit, EventRsvp, EventWrite, EventWriteReceipt, IgnoreConnectSteps, Provider,
-    ProviderError, ProviderResult, ReportingProvider, RsvpControls, ScopeSync, WriteGuard,
+    EventEdit, EventRsvp, EventWrite, EventWriteReceipt, IgnoreConnectSteps, OverrideSurvival,
+    Provider, ProviderError, ProviderResult, ReportingProvider, RsvpControls, ScopeSync,
+    WriteGuard,
 };
 use engine_tls::TlsClientConfig;
 
@@ -48,6 +49,14 @@ const CALDAV_RSVP: RsvpControls = RsvpControls {
     suppress_notification: false,
     guard: WriteGuard::Enforced,
 };
+
+/// What a CalDAV series edit costs the user: nothing.
+///
+/// The client owns the bytes, and the structural patcher rewrites only the master
+/// `VEVENT`'s own lines — so a `RECURRENCE-ID` component is untouched by construction
+/// rather than by server policy. Measured, and re-measured by
+/// `tests/live_calendar_survival.rs` against both harness servers.
+const CALDAV_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival::kept();
 
 /// Connection settings for a CalDAV account.
 #[derive(Clone)]
@@ -240,7 +249,7 @@ impl CalDavProvider {
         // the transport that can actually promise it — contrast JMAP, which cannot.
         let capabilities = Capabilities::none()
             .with_calendars()
-            .with_calendar_writes(WriteGuard::Enforced)
+            .with_calendar_writes(WriteGuard::Enforced, CALDAV_OVERRIDE_SURVIVAL)
             .with_calendar_rsvp(CALDAV_RSVP);
         Ok(Self {
             executor,

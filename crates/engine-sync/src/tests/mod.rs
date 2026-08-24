@@ -26,8 +26,8 @@ use engine_core::{
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion, EventDraft,
     EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
-    PatchTarget, Provider, ProviderError, ProviderResult, RsvpResponse, ScopeSync,
-    SubmissionReceipt, WriteGuard,
+    OverrideSurvival, PatchTarget, Provider, ProviderError, ProviderResult, RsvpResponse,
+    ScopeSync, SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{
@@ -99,7 +99,7 @@ impl FakeMail {
                 .with_mail()
                 .with_submission()
                 .with_calendars()
-                .with_calendar_writes(WriteGuard::Enforced),
+                .with_calendar_writes(WriteGuard::Enforced, OverrideSurvival::kept()),
             mailboxes,
             messages,
             calendars: Vec::new(),
