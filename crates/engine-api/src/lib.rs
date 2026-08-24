@@ -55,6 +55,10 @@ pub use engine_core::calendar::{
     Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
     RecurrenceBound, RecurrenceOverride, RecurrenceRule, RecurrenceSkip, VirtualLocation, Weekday,
 };
+// The payload of a `RecurrenceOverride::Patch` — what one occurrence changed about itself.
+// The variant is re-exported above, so without this a host can match on it and then not name
+// what it is holding.
+pub use engine_core::patch::PatchObject;
 // The inbound-scheduling (iTIP/iMIP) layer. `Engine::message_scheduling` returns a
 // `SchedulingMessage`, so without these a host could not name what it received — and the
 // product rule that decides whether to offer an RSVP is written over `ScheduleMethod` plus
@@ -121,10 +125,10 @@ pub use engine_provider::{
     Capabilities, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader,
     DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition, DraftCalendar,
     DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
-    EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport, Occurrence, PatchTarget, Provider,
-    RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict,
-    ReportVerdicts, ReportingProvider, RsvpControls, RsvpResponse, SentCopy, SubmissionReceipt,
-    TextEdit, WriteGuard, WritePrecondition,
+    EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport, Occurrence, OverrideSurvival,
+    PatchTarget, Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence,
+    ReportReceipt, ReportVerdict, ReportVerdicts, ReportingProvider, RsvpControls, RsvpResponse,
+    SentCopy, SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,
