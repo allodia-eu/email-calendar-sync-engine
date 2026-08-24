@@ -127,6 +127,14 @@ pub(crate) fn read_contact_photo(root: &Path, hash: &str) -> Result<Option<Vec<u
     read_blob(root, "contact-photos", "blob", hash)
 }
 
+/// Where [`write_source`] puts (or would put) the blob named by `hash`.
+///
+/// Names the location without touching the filesystem, for a caller that only wants the file's
+/// size.
+pub(crate) fn source_path(root: &Path, hash: &str) -> PathBuf {
+    root.join("sources").join(format!("{hash}.eml"))
+}
+
 /// Where [`write_contact_photo`] puts (or would put) the blob named by `hash`.
 ///
 /// Names the location without touching the filesystem, for a caller that hands the

@@ -17,7 +17,9 @@ use engine_core::{
     mail::MessageBody,
     raw::RawMime,
 };
-use engine_store::{Clock, MailListRow, MessageBodyStore, MessageSourceCache, Result};
+use engine_store::{
+    Clock, MailListRow, MessageBodyStore, MessageSourceCache, Result, SourcesDropped,
+};
 use rusqlite::{Connection, Transaction};
 
 use crate::{SqliteStore, blob, convert::instant_to_text, mail_ops, sql};
@@ -44,6 +46,57 @@ impl<C: Clock> MessageSourceCache for SqliteStore<C> {
         let account = account.as_str().to_owned();
         let key = key.as_str().to_owned();
         self.call(move |conn| upsert_source(conn, &account, &key, &hash, &fetched_at, size))
+            .await
+    }
+
+    async fn drop_message_sources_over(
+        &self,
+        account: &AccountId,
+        octets: u64,
+    ) -> Result<SourcesDropped> {
+        let root = self.blobs.root().to_path_buf();
+        let id = account.as_str().to_owned();
+
+        // Sources cached before the size column existed carry no size, so they would survive
+        // every cap. Measure them from the blob and write the answer back — after this the
+        // column answers on its own.
+        let unsized_rows: Vec<(String, String)> = {
+            let id = id.clone();
+            self.read(move |conn| {
+                sql::query_all(
+                    conn,
+                    "SELECT provider_key, content_hash FROM message_source
+                     WHERE account = ?1 AND size_octets IS NULL",
+                    (id,),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .await?
+        };
+        if !unsized_rows.is_empty() {
+            let measured = {
+                let root = root.clone();
+                Self::block(move || {
+                    Ok(unsized_rows
+                        .into_iter()
+                        .map(|(key, hash)| {
+                            let size = std::fs::metadata(blob::source_path(&root, &hash))
+                                .ok()
+                                .map(|meta| i64::try_from(meta.len()).unwrap_or(i64::MAX));
+                            (key, size)
+                        })
+                        .collect::<Vec<_>>())
+                })
+                .await?
+            };
+            let id = id.clone();
+            self.call(move |conn| record_measured_sizes(conn, &id, &measured))
+                .await?;
+        }
+
+        let id = id.clone();
+        let cap = i64::try_from(octets).unwrap_or(i64::MAX);
+        self.call(move |conn| delete_sources_over(conn, &id, cap))
             .await
     }
 
@@ -235,4 +288,50 @@ pub(crate) fn drop_cached_content(tx: &Transaction<'_>, scope_key: &str, key: &s
         )?;
     }
     Ok(())
+}
+
+/// Writes back sizes measured from the blob area for rows that never recorded one. A blob that
+/// is gone leaves the row `NULL`: it occupies nothing, so no cap should remove it, and the
+/// sweep has already reclaimed whatever it held.
+fn record_measured_sizes(
+    conn: &Connection,
+    account: &str,
+    measured: &[(String, Option<i64>)],
+) -> Result<()> {
+    for (key, size) in measured {
+        let Some(size) = size else { continue };
+        sql::execute(
+            conn,
+            "UPDATE message_source SET size_octets = ?3
+             WHERE account = ?1 AND provider_key = ?2",
+            (account, key, size),
+        )?;
+    }
+    Ok(())
+}
+
+/// Removes the metadata rows for `account`'s cached sources over `cap` octets and reports what
+/// they held. The blobs themselves are left to the sweep, which is the one place that knows
+/// whether another row still names the same content.
+fn delete_sources_over(conn: &Connection, account: &str, cap: i64) -> Result<SourcesDropped> {
+    let sizes: Vec<i64> = sql::query_all(
+        conn,
+        "SELECT size_octets FROM message_source
+         WHERE account = ?1 AND size_octets IS NOT NULL AND size_octets > ?2",
+        (account, cap),
+        |r| r.get(0),
+    )?;
+    if sizes.is_empty() {
+        return Ok(SourcesDropped::default());
+    }
+    sql::execute(
+        conn,
+        "DELETE FROM message_source
+         WHERE account = ?1 AND size_octets IS NOT NULL AND size_octets > ?2",
+        (account, cap),
+    )?;
+    Ok(SourcesDropped {
+        sources_removed: sizes.len(),
+        octets_freed: sizes.iter().map(|s| u64::try_from(*s).unwrap_or(0)).sum(),
+    })
 }

@@ -620,6 +620,32 @@ returning a `PruneReport { messages_removed }` (`engine-store`).
   `sweep_unreferenced_blobs` (the files) and `vacuum` (the database pages) — the two halves of
   the space a prune frees, and the file half is far the larger one.
 
+## Dropping bytes without dropping mail
+
+A prune removes *mail*. `drop_message_sources_over(account, octets)`
+(`MessageSourceCache`, wrapped as `Engine::drop_message_sources_over`) removes only the cached
+**raw sources** above a size, for a host lowering a message-size cap. It returns
+`SourcesDropped { sources_removed, octets_freed }`.
+
+- The message row and its `message_body` text **stay**, so the list, the threads and body search
+  are unchanged. Dropping the text too would silently make old mail unsearchable to free bytes
+  that are not where the bytes are. A body fetch is text-first, so the message goes on **reading
+  offline**; what a later open re-fetches is the raw source itself — the attachments and inline
+  images sliced from it.
+- **`mail_missing_body` tests both halves for exactly this reason.** A dropped source leaves a
+  message that reads fine, so a text-only work list would call it warm for ever and a raised cap
+  would fetch nothing back.
+- `message_source.size_octets` is the byte count taken as the source was written, and blobs are
+  stored uncompressed, so it is the file's size on disk rather than an estimate of it. It is what
+  makes this one indexed-free scan of one row per cached body rather than a walk of the blob area.
+- A row cached **before that column existed** carries `NULL`, which is every row in a store that
+  predates it — so the pass measures those from their blobs and writes the answer back before
+  filtering. Without that, the first lowering on an installed copy would free nothing and read as
+  a bug. A row whose blob is already gone stays `NULL`: it occupies nothing.
+- Like a prune it frees no disk by itself. Follow with `sweep_unreferenced_blobs` and `vacuum`,
+  and note the sweep's five-minute grace period below — a body warmed moments ago waits for the
+  next pass.
+
 ## Reclaiming blobs: the delete is asymmetric
 
 A blob's name is the SHA-256 of its bytes, so two copies of one message share one file and **no

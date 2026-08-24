@@ -16,6 +16,16 @@ use engine_core::{
 
 use crate::{error::Result, store::MailListRow};
 
+/// What one [`MessageSourceCache::drop_message_sources_over`] pass forgot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourcesDropped {
+    /// How many cached sources were forgotten.
+    pub sources_removed: usize,
+    /// How many octets of blob they occupied. Exact rather than estimated: it is the byte
+    /// count taken as each was written, and blobs are stored uncompressed.
+    pub octets_freed: u64,
+}
+
 /// A content cache for raw message sources — the Tier-3 *bytes* a host fetches on
 /// demand (the whole RFC 5322 message, which carries its attachments).
 ///
@@ -51,6 +61,25 @@ pub trait MessageSourceCache {
         account: &AccountId,
         key: &ProviderKey,
     ) -> Result<Option<RawMime>>;
+
+    /// Forgets `account`'s cached raw sources larger than `octets`, leaving the messages and
+    /// their extracted body text in place — so lowering a size cap frees the megabytes without
+    /// making old mail unsearchable or unlistable. The bytes go at the next blob sweep; the
+    /// row naming them is what this removes.
+    ///
+    /// A row whose size was never recorded is measured from its blob and the answer written
+    /// back, so a store that predates the size column reclaims on its first pass instead of
+    /// silently freeing nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`](crate::StoreError) on a backend failure (database or
+    /// blob-area I/O).
+    async fn drop_message_sources_over(
+        &self,
+        account: &AccountId,
+        octets: u64,
+    ) -> Result<SourcesDropped>;
 }
 
 /// A cache for a message's extracted, displayable body *text* — the reading view and

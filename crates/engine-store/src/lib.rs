@@ -35,7 +35,7 @@ pub use lease::{
     Clock, FenceToken, LeaseRequest, ManualClock, OpLease, SyncClaim, SyncLease, WorkerId,
 };
 pub use outbox::{LeasedPendingOp, PendingOpState};
-pub use source::{MessageBodyStore, MessageSourceCache};
+pub use source::{MessageBodyStore, MessageSourceCache, SourcesDropped};
 pub use store::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, Store, StoreRead};
 
 /// The version of the engine's **normalization** — how providers decode wire data and
