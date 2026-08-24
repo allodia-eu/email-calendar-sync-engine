@@ -24,9 +24,8 @@
 use std::collections::BTreeMap;
 
 use engine_core::{
-    calendar::{Event, Recurrence, RecurrenceOverride},
+    calendar::{Event, OverrideBuilder, Recurrence, RecurrenceOverride},
     ids::ProviderKey,
-    patch::PatchObject,
     time::{CalendarDateTime, LocalDateTime},
 };
 use serde_json::Value;
@@ -80,13 +79,12 @@ pub(crate) fn pending_override(
     })
 }
 
-/// The patch an overridden occurrence carries: where it is, how long it runs, and what it is
-/// called.
+/// The patch an overridden occurrence carries: where it is, how long it runs, what it is
+/// called, and its own notes and room.
 ///
-/// Deliberately the **same** field set `engine_ical`'s `override_patch` folds out of a
-/// `RECURRENCE-ID` `VEVENT`, so the projection of a moved occurrence does not depend on which
-/// transport it arrived over. Google states the whole event rather than a patch, so what is
-/// read here is what the instance *is* — every one of these fields is present on it.
+/// The field set is [`OverrideBuilder`]'s rather than this module's, so the projection of a
+/// changed occurrence does not depend on which transport it arrived over. Google states the
+/// whole event rather than a patch, so what is read here is what the instance *is*.
 fn patch_of(value: &Value, default_zone: Option<&str>) -> Result<RecurrenceOverride, GoogleError> {
     let start = parse_endpoint(value, "start", default_zone)?;
     let end = parse_endpoint(value, "end", default_zone)?;
@@ -94,22 +92,18 @@ fn patch_of(value: &Value, default_zone: Option<&str>) -> Result<RecurrenceOverr
         .duration_until(&end)
         .map_err(|e| GoogleError::protocol(format!("bad override start/end: {e}")))?;
 
-    let mut fields = vec![(
-        "start".to_owned(),
-        Value::String(local_of(&start).to_string()),
-    )];
-    if let Some(zone) = start.zone() {
-        fields.push((
-            "timeZone".to_owned(),
-            Value::String(zone.as_str().to_owned()),
-        ));
-    }
-    fields.push(("duration".to_owned(), Value::String(duration.to_string())));
+    let mut builder = OverrideBuilder::new().start(&start).duration(duration);
     if let Some(title) = opt_str(value, "summary") {
-        fields.push(("title".to_owned(), Value::String(title.to_owned())));
+        builder = builder.title(title);
     }
-    PatchObject::new(fields)
-        .map(RecurrenceOverride::Patch)
+    if let Some(notes) = opt_str(value, "description").filter(|n| !n.is_empty()) {
+        builder = builder.description(notes);
+    }
+    if let Some(room) = opt_str(value, "location").filter(|l| !l.is_empty()) {
+        builder = builder.location_named(room);
+    }
+    builder
+        .build()
         .map_err(|e| GoogleError::protocol(format!("bad override patch: {e}")))
 }
 

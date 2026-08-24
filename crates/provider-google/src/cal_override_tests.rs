@@ -97,6 +97,36 @@ fn a_moved_occurrence_keeps_its_original_start_as_its_key() {
 }
 
 #[test]
+fn a_changed_occurrence_carries_its_own_notes_and_room() {
+    // Google states the whole instance, so the note and the room the user changed for this
+    // one occurrence are on the entry — and used to be dropped, leaving it showing the
+    // series' own.
+    let mut entry = moved();
+    entry["description"] = json!("Bring the printout");
+    entry["location"] = json!("Room 2");
+
+    let mut events = vec![series()];
+    fold_into(&mut events, vec![pending_override(&entry, None).unwrap()]);
+
+    let overrides = overrides_of(&events[0]);
+    let RecurrenceOverride::Patch(patch) = overrides
+        .get(&"2026-09-14T09:30:00".parse().unwrap())
+        .expect("keyed by the original start")
+    else {
+        panic!("expected a patch");
+    };
+    assert_eq!(patch.get("description").unwrap(), "Bring the printout");
+    // JSCalendar has no scalar location, so one piece of text still projects as a map —
+    // the shape the JMAP reader passes through for the same occurrence.
+    let room = patch
+        .get("locations")
+        .and_then(Value::as_object)
+        .and_then(|map| map.values().next())
+        .expect("a locations map");
+    assert_eq!(room.get("name").unwrap(), "Room 2");
+}
+
+#[test]
 fn a_cancelled_occurrence_is_an_exclusion_and_carries_nothing_else() {
     // RFC 8984 §4.3.3 makes that structural, and the entry has no `start` to read anyway.
     let mut events = vec![series()];
