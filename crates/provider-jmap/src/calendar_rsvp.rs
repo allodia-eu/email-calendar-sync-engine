@@ -14,7 +14,7 @@ use crate::{
     calendar::participant_address,
     calendar_write::{escape_pointer, set_error},
     error::JmapError,
-    provider::Executor,
+    executor::Executor,
     request::{Request, capability},
 };
 

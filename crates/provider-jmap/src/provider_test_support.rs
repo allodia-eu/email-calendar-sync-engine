@@ -21,7 +21,10 @@ use reqwest::Url;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::session::SessionUrlPolicy;
+use crate::{
+    request::Response,
+    session::{Session, SessionUrlPolicy},
+};
 
 /// An executor that replays canned response documents, FIFO — driving the
 /// orchestration with real captured Stalwart responses, offline. It also serves a

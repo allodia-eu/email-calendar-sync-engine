@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     error::JmapError,
-    provider::Executor,
+    executor::Executor,
     request::{Request, result_ref, with_back_reference},
     sync_ops::{
         Changes, clamp_limit, is_complete, key_set, keys, next_position, objects,

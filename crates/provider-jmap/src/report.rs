@@ -27,8 +27,8 @@ use serde_json::{Map, Value, json};
 use crate::{
     JmapProvider,
     error::JmapError,
+    executor::Executor,
     mutate::{check_set_result_for, keyword_pointer, update_args},
-    provider::Executor,
     request::{Request, capability},
 };
 

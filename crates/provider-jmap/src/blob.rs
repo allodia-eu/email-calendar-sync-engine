@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 
 use engine_core::{mail::Message, raw::RawMime};
 
-use crate::{error::JmapError, provider::Executor};
+use crate::{error::JmapError, executor::Executor};
 
 /// Percent-encodes one `downloadUrl` placeholder substitution.
 ///
