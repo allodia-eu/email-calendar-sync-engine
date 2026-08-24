@@ -24,9 +24,8 @@
 use std::collections::BTreeMap;
 
 use engine_core::{
-    calendar::{Event, Recurrence, RecurrenceOverride},
+    calendar::{Event, OverrideBuilder, Recurrence, RecurrenceOverride},
     ids::ProviderKey,
-    patch::PatchObject,
     time::{CalendarDate, CalendarDateTime, LocalDateTime},
 };
 use serde_json::Value;
@@ -110,12 +109,11 @@ fn occurrence_date(occurrence_id: &str) -> Result<CalendarDate, GraphError> {
 }
 
 /// The patch an overridden occurrence carries: where it is, how long it runs, what it is
-/// called, and whether the organizer called it off.
+/// called, its own notes and room, and whether the organizer called it off.
 ///
-/// Deliberately the **same** field set `engine_ical`'s `override_patch` folds out of a
-/// `RECURRENCE-ID` `VEVENT`, so a moved occurrence projects the same way whichever
-/// transport it arrived over. Graph states the whole event rather than a patch, so what is
-/// read here is what the instance *is*.
+/// The field set is [`OverrideBuilder`]'s rather than this module's, so a changed occurrence
+/// projects the same way whichever transport it arrived over. Graph states the whole event
+/// rather than a patch, so what is read here is what the instance *is*.
 fn patch_of(entry: &Value) -> Result<RecurrenceOverride, GraphError> {
     let all_day = bool_field(entry, "isAllDay");
     let start = parse_endpoint(entry, "start", all_day)?;
@@ -124,26 +122,52 @@ fn patch_of(entry: &Value) -> Result<RecurrenceOverride, GraphError> {
         .duration_until(&end)
         .map_err(|e| GraphError::protocol(format!("bad override start/end: {e}")))?;
 
-    let mut fields = vec![(
-        "start".to_owned(),
-        Value::String(local_of(&start).to_string()),
-    )];
-    if let Some(zone) = start.zone() {
-        fields.push((
-            "timeZone".to_owned(),
-            Value::String(zone.as_str().to_owned()),
-        ));
-    }
-    fields.push(("duration".to_owned(), Value::String(duration.to_string())));
+    let mut builder = OverrideBuilder::new().start(&start).duration(duration);
     if let Some(title) = opt_str(entry, "subject") {
-        fields.push(("title".to_owned(), Value::String(title.to_owned())));
+        builder = builder.title(title);
+    }
+    if let Some(notes) = notes_of(entry) {
+        builder = builder.description(notes);
+    }
+    if let Some(room) = location_name(entry) {
+        builder = builder.location_named(room);
     }
     if bool_field(entry, "isCancelled") {
-        fields.push(("status".to_owned(), Value::String("cancelled".to_owned())));
+        builder = builder.cancelled();
     }
-    PatchObject::new(fields)
-        .map(RecurrenceOverride::Patch)
+    builder
+        .build()
         .map_err(|e| GraphError::protocol(format!("bad override patch: {e}")))
+}
+
+/// The instance's own notes: the plain-text `body` when Graph sent text, else the
+/// server-computed `bodyPreview` — the same rule the whole-event normalizer uses, so a
+/// series and one of its occurrences describe themselves the same way.
+fn notes_of(entry: &Value) -> Option<&str> {
+    let body = entry.get("body");
+    let text = if body.and_then(|b| opt_str(b, "contentType")) == Some("text") {
+        body.and_then(|b| opt_str(b, "content"))
+    } else {
+        None
+    };
+    text.or_else(|| opt_str(entry, "bodyPreview"))
+        .filter(|notes| !notes.is_empty())
+}
+
+/// The instance's own location name, from the singular `location` or the first of the
+/// `locations` array Graph populates beside it.
+fn location_name(entry: &Value) -> Option<&str> {
+    entry
+        .get("location")
+        .and_then(|l| opt_str(l, "displayName"))
+        .or_else(|| {
+            entry
+                .get("locations")
+                .and_then(Value::as_array)
+                .and_then(|list| list.first())
+                .and_then(|l| opt_str(l, "displayName"))
+        })
+        .filter(|name| !name.is_empty())
 }
 
 /// Folds every collected override into the event it belongs to.

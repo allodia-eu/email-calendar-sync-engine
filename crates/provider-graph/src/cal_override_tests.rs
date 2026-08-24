@@ -110,6 +110,33 @@ fn an_exception_carries_where_it_moved_to_and_what_it_is_called() {
 }
 
 #[test]
+fn an_exception_carries_its_own_notes_and_room() {
+    // Graph states the whole instance, so a note or a room the user changed for one
+    // occurrence is right there on the entry — and used to be thrown away.
+    let mut entry = exception_entry();
+    entry["body"] = sjson!({ "contentType": "text", "content": "Bring the printout" });
+    entry["location"] = sjson!({ "displayName": "Room 2" });
+
+    let mut events = [weekly_master()];
+    fold_into(&mut events, vec![pending_override(&entry).unwrap()]);
+
+    let overrides = &events[0].recurrence.as_ref().unwrap().overrides;
+    let RecurrenceOverride::Patch(patch) = &overrides[&local("2026-08-10T09:00:00")] else {
+        panic!("expected a patch");
+    };
+    assert_eq!(
+        patch.get("description").and_then(Value::as_str),
+        Some("Bring the printout")
+    );
+    let room = patch
+        .get("locations")
+        .and_then(Value::as_object)
+        .and_then(|map| map.values().next())
+        .expect("a locations map");
+    assert_eq!(room.get("name").and_then(Value::as_str), Some("Room 2"));
+}
+
+#[test]
 fn an_organizer_cancelled_occurrence_is_marked_cancelled_in_its_patch() {
     // Graph's `isCancelled` is the organizer calling one occurrence off, which iCalendar
     // states as `STATUS:CANCELLED` on the override — not the same thing as the attendee

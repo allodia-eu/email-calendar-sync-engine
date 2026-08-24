@@ -9,11 +9,9 @@
 //! (the expander keys instances by `date + start-time`), not silently at midnight.
 
 use engine_core::{
-    calendar::{Event, Recurrence, RecurrenceOverride},
-    patch::PatchObject,
+    calendar::{Event, OverrideBuilder, Recurrence, RecurrenceOverride},
     time::{CalendarDateTime, Duration, LocalDateTime},
 };
-use serde_json::Value;
 
 use super::{
     component::Component,
@@ -75,36 +73,44 @@ pub(super) fn fold_override(master: &mut Event, vevent: &Component) -> Result<()
     Ok(())
 }
 
-/// Builds the override patch (JSCalendar-keyed, the form the expander reads) from
-/// a `RECURRENCE-ID` instance's moved start, length, title, and cancellation.
+/// Builds the override patch (JSCalendar-keyed, the form the expander reads) from what a
+/// `RECURRENCE-ID` instance says about itself.
+///
+/// The field set is [`OverrideBuilder`]'s rather than this module's, so an occurrence the
+/// user changed projects the same way whether it arrived as a `VEVENT` or as one of the API
+/// shapes the other transports return.
+///
+/// **An absent property means "unchanged", not "empty".** RFC 5545 stores a complete
+/// `VEVENT` per override, so a strict reading would have an override with no `DESCRIPTION`
+/// clear the description — but Stalwart's own JSCalendar projection of the same bytes reads
+/// it as a patch, and so does the expander. Following that keeps one interpretation of the
+/// same document rather than two (`calendar-semantics.md`).
 fn override_patch(vevent: &Component) -> Result<RecurrenceOverride, IcalError> {
-    let mut fields: Vec<(String, Value)> = Vec::new();
+    let mut builder = OverrideBuilder::new();
     if let Some(dtstart) = vevent.property("DTSTART") {
         let start = parse_calendar_date_time(dtstart)?;
-        if let Some(local) = start.local() {
-            fields.push(("start".to_owned(), Value::String(local.to_string())));
-        }
-        if let Some(zone) = start.zone() {
-            fields.push((
-                "timeZone".to_owned(),
-                Value::String(zone.as_str().to_owned()),
-            ));
-        }
+        builder = builder.start(&start);
         if let Some(duration) = override_duration(vevent, &start)? {
-            fields.push(("duration".to_owned(), Value::String(duration.to_string())));
+            builder = builder.duration(duration);
         }
     }
     if let Some(summary) = vevent.value("SUMMARY") {
-        fields.push(("title".to_owned(), Value::String(unescape_text(summary))));
+        builder = builder.title(unescape_text(summary));
+    }
+    if let Some(description) = vevent.value("DESCRIPTION") {
+        builder = builder.description(unescape_text(description));
+    }
+    if let Some(location) = vevent.value("LOCATION") {
+        builder = builder.location_named(unescape_text(location));
     }
     if vevent
         .value("STATUS")
         .is_some_and(|status| status.eq_ignore_ascii_case("CANCELLED"))
     {
-        fields.push(("status".to_owned(), Value::String("cancelled".to_owned())));
+        builder = builder.cancelled();
     }
-    PatchObject::new(fields)
-        .map(RecurrenceOverride::Patch)
+    builder
+        .build()
         .map_err(|e| IcalError::new(format!("bad override patch: {e}")))
 }
 
@@ -158,6 +164,7 @@ mod tests {
         ids::{CalendarId, EventId},
         raw::RawIcal,
     };
+    use serde_json::Value;
 
     use super::{
         super::{component::parse_components, event::event_from_vevent},
@@ -201,6 +208,62 @@ mod tests {
         );
         assert_eq!(patch.get("duration").and_then(Value::as_str), Some("PT30M"));
         assert_eq!(patch.get("title").and_then(Value::as_str), Some("Moved"));
+    }
+
+    #[test]
+    fn override_patch_carries_the_instance_s_own_notes_and_location() {
+        // These were dropped: an occurrence whose notes or room the user changed came back
+        // showing the series', with nothing to say the change had ever been made.
+        let vevent = &vevents(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:n@x\r\n\
+             RECURRENCE-ID;TZID=Europe/Amsterdam:20260126T093000\r\n\
+             DTSTART;TZID=Europe/Amsterdam:20260126T093000\r\n\
+             SUMMARY:Standup\r\nDESCRIPTION:Bring the printout\r\n\
+             LOCATION:Room 2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        )[0];
+        let RecurrenceOverride::Patch(patch) = override_patch(vevent).unwrap() else {
+            panic!("expected a patch");
+        };
+        assert_eq!(
+            patch.get("description").and_then(Value::as_str),
+            Some("Bring the printout")
+        );
+        // JSCalendar has no scalar location, so the text projects as a `Location` map —
+        // the same shape JMAP's pass-through produces for the same occurrence.
+        let location = patch
+            .get("locations")
+            .and_then(Value::as_object)
+            .and_then(|map| map.values().next())
+            .expect("a locations map");
+        assert_eq!(location.get("name").and_then(Value::as_str), Some("Room 2"));
+        assert_eq!(
+            location.get("@type").and_then(Value::as_str),
+            Some("Location")
+        );
+    }
+
+    #[test]
+    fn an_all_day_override_moved_to_another_date_keeps_the_date_it_moved_to() {
+        // An all-day value has no wall clock of its own, and reading one out answers
+        // `None` — so this wrote no `start` at all and the expander fell back to the
+        // recurrence id, putting the occurrence back on the day it was dragged off.
+        let vevent = &vevents(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a@x\r\n\
+             RECURRENCE-ID;VALUE=DATE:20260126\r\n\
+             DTSTART;VALUE=DATE:20260128\r\nDTEND;VALUE=DATE:20260129\r\n\
+             SUMMARY:Offsite\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        )[0];
+        let RecurrenceOverride::Patch(patch) = override_patch(vevent).unwrap() else {
+            panic!("expected a patch");
+        };
+        assert_eq!(
+            patch.get("start").and_then(Value::as_str),
+            Some("2026-01-28T00:00:00")
+        );
+        assert!(
+            patch.get("timeZone").is_none(),
+            "an all-day instance names no zone"
+        );
     }
 
     #[test]

@@ -545,6 +545,24 @@ one is a string in the master's `cancelledOccurrences` and appears nowhere else 
 therefore reach the expander as the same `Recurrence::overrides` map, keyed by the
 occurrence's **original** start.
 
+**The patch itself is assembled by one builder, not by each adapter.**
+`engine_core::calendar::OverrideBuilder` names the fields an occurrence may change about
+itself — where it is, how long it runs, what it is called, its own notes and room, and
+whether the organizer called it off — and spells each as its JSCalendar key. Three adapters
+had been assembling those keys by hand and had drifted: an occurrence's **notes and
+location** were dropped on CalDAV, Google and Graph, and an **all-day** occurrence moved to
+another date lost its move on CalDAV alone. A field added here reaches every transport at
+once, which is the only way "an override reads the same whichever door it came in" stays
+true. JMAP is deliberately not a caller: its server hands over a JSCalendar patch already,
+and passing it through carries strictly more than the builder knows how to name.
+
+Two consequences worth knowing. A transport with one scalar location still projects a
+JSCalendar `locations` **map** — RFC 8984 has no scalar — so it reads like the JMAP
+pass-through beside it. And an **absent** property means "unchanged", not "empty", even on
+CalDAV where RFC 5545 stores a complete `VEVENT` per override: Stalwart's own JSCalendar
+projection of those same bytes reads them as a patch, and so does the expander, so the
+engine follows that rather than keeping two readings of one document.
+
 ⚠️ **Graph's occurrence names are in the series' own zone, and the master is read in it.**
 `OID.<master>.<date>` does not follow `Prefer: outlook.timezone` while the event's `start`
 does, so a series read in one zone and named in another keys its overrides on the wrong day —
