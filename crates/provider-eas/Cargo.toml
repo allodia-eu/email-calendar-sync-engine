@@ -1,0 +1,88 @@
+[package]
+name = "provider-eas"
+description = "Exchange ActiveSync (EAS) protocol client: WBXML codec, command builders/parsers, transport with retry/redirect, Provision, Ping."
+version.workspace = true
+# Edition/rust-version stay explicit at the imported crate's values (P0-b Task 1
+# relocation): the workspace's 2024 edition does not compile this code yet. P0-b
+# Task 5 moves the crate to 2024 and flips both to `.workspace = true`.
+edition = "2021"
+rust-version = "1.77.2"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# temporary until the engine-tls switch (P0-b Task 8): the EAS transport was imported
+# on reqwest 0.12 + native-tls; the workspace reqwest is 0.13/rustls, which is not
+# feature-compatible with this crate's TLS path yet.
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+# Beyond the workspace's `macros`/`rt`/`rt-multi-thread`, the transport needs the
+# socket/time feature set the imported code was written against.
+tokio = { workspace = true, features = ["net", "io-util", "sync", "time"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+hickory-resolver = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+env_logger = { workspace = true }
+hex = { workspace = true }
+
+# TODO(P0-b Task 6): cleared when clippy pass lands.
+# The relocation (Task 1) imported this crate as-is; the imported 2021-era code
+# trips the workspace's lint policy at ~700 sites, and fixing code is out of scope
+# for a pure relocation. Cargo cannot mix `workspace = true` with per-lint
+# overrides, so this table restates `[workspace.lints]` verbatim (including its
+# five pedantic allows) and relaxes exactly the lints that fire, each with its
+# Task 1 diagnostic count. Task 6 clears the debt and restores the single-line
+# `[lints] workspace = true` inheritance.
+[lints.rust]
+unsafe_code = "forbid"
+# Fires on the imported code (~433 items):
+missing_docs = "allow" # ~430 undocumented public items
+missing_debug_implementations = "allow" # 3
+unreachable_pub = "allow" # 11
+unused_imports = "allow" # 1 (calendar_write.rs)
+[lints.rustdoc]
+all = { level = "deny", priority = -1 }
+# Fires on the imported code (Task 1 counts):
+private_intra_doc_links = "allow" # 6 (docs link to private items)
+invalid_html_tags = "allow" # 2 (unclosed <RemoteWipe>/<Data> in prose)
+unescaped_backticks = "allow" # 2
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+missing_panics_doc = "allow"
+# Fires on the imported code (Task 1 counts):
+missing_errors_doc = "allow" # 75
+uninlined_format_args = "allow" # 51
+single_match_else = "allow" # 34
+wildcard_imports = "allow" # 13
+match_same_arms = "allow" # 8
+redundant_closure_for_method_calls = "allow" # 8
+cast_possible_truncation = "allow" # 12
+cast_lossless = "allow" # 7
+semicolon_if_nothing_returned = "allow" # 6
+unnested_or_patterns = "allow" # 3
+map_unwrap_or = "allow" # 3
+format_push_string = "allow" # 3
+match_wildcard_for_single_variants = "allow" # 2
+cast_possible_wrap = "allow" # 2
+range_plus_one = "allow" # 2
+assigning_clones = "allow" # 2
+unnecessary_wraps = "allow" # 3
+unreadable_literal = "allow" # 2 (tests/commands_sync.rs)
+duration_suboptimal_units = "allow" # 5 (tests/commands_sync.rs)
+return_self_not_must_use = "allow" # 1
+needless_continue = "allow" # 1
+items_after_statements = "allow" # 1
+format_collect = "allow" # 1
+elidable_lifetime_names = "allow" # 1
+if_not_else = "allow" # 1

@@ -161,6 +161,27 @@ sha2 = { version = "0.11.0", default-features = false }
 # (`docs/agent-guidance/contacts.md`).
 idna = "1.1.0"
 
+# --- Imported with `provider-eas` (P0-b relocation, from kylins 0dc611d) ---------------
+# These seven are what the imported EAS client needs beyond the deps above; versions
+# are the ones the crate shipped with (same-or-newer than its old lockfile entries).
+# `reqwest` is deliberately NOT here: the crate still declares its own 0.12/native-tls
+# copy until the engine-tls switch (P0-b Task 8).
+# DNS resolution for the autodiscover SRV lookup; `system-config` + `tokio` mirror the
+# imported transport's resolver setup.
+hickory-resolver = { version = "0.26.1", default-features = false, features = ["system-config", "tokio"] }
+# Facade logging, as the imported crate logs it (later tasks migrate it to `tracing`).
+log = "0.4.33"
+# ServerIds / folder ids; `v4` is the only variant the crate mints.
+uuid = { version = "1.23.3", features = ["v4"] }
+# WBXML opaque blobs (TimeZone) and Basic auth encoding.
+base64 = "0.22.1"
+# dev: `#[tokio::test]` blocking support for the offline command tests.
+tokio-test = "0.4.5"
+# dev: test-local log capture for the live-server harness.
+env_logger = "0.11.10"
+# dev: WBXML fixture decoding in the codec tests.
+hex = "0.4.3"
+
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
 # `Retry-After`'s HTTP-date form, which RFC 9110 §5.6.7 requires a recipient to accept in
