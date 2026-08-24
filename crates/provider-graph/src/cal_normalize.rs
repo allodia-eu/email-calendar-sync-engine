@@ -12,10 +12,10 @@
 //! and recurrence is a structured `patternedRecurrence` (mapped in [`crate::cal_recur`]),
 //! not an `RRULE` string.
 //!
-//! Only `seriesMaster` and `singleInstance` events are projected; a server-expanded
-//! `occurrence` (the engine expands the master itself) and an `exception` (Graph v1.0
-//! exposes no recurrence-id to key an override on) are filtered out upstream in
-//! [`crate::cal_fetch`] — see the `graph.md` calendar limitations.
+//! Only `seriesMaster` and `singleInstance` events are projected. A server-expanded
+//! `occurrence` is dropped upstream in [`crate::cal_fetch`] (the engine expands the master
+//! itself), and an `exception` becomes an override of its series
+//! ([`crate::cal_override`]) rather than an event of its own.
 
 use engine_core::{
     calendar::{
@@ -126,7 +126,11 @@ pub(crate) fn event_from_json(value: &Value, calendar: &CalendarId) -> Result<Ev
 /// Parses a Graph `{ dateTime, timeZone }` endpoint into a [`CalendarDateTime`]: an
 /// all-day event is a zoneless [`Date`](CalendarDateTime::Date); a timed event is
 /// [`Zoned`](CalendarDateTime::Zoned) with the Windows zone mapped to IANA.
-fn parse_endpoint(value: &Value, key: &str, all_day: bool) -> Result<CalendarDateTime, GraphError> {
+pub(crate) fn parse_endpoint(
+    value: &Value,
+    key: &str,
+    all_day: bool,
+) -> Result<CalendarDateTime, GraphError> {
     let obj = value
         .get(key)
         .ok_or_else(|| GraphError::protocol(format!("event has no {key}")))?;
@@ -143,9 +147,10 @@ fn parse_endpoint(value: &Value, key: &str, all_day: bool) -> Result<CalendarDat
     Ok(CalendarDateTime::Zoned { local, zone })
 }
 
-/// Resolves a Graph zone name to a [`TimeZoneId`]. Graph returns a **Windows** name by
-/// default and the requested **IANA** name when the sync sent `Prefer: outlook.timezone`
-/// (an IANA zone — [`crate::cal_fetch`]), so both are accepted: a known Windows name maps
+/// Resolves a Graph zone name to a [`TimeZoneId`]. Graph echoes whatever name the request's
+/// `Prefer: outlook.timezone` asked for and returns a **Windows** name without one, so both
+/// are accepted — and a series master is deliberately asked for in its own authoring zone,
+/// which Outlook writes as a Windows name ([`crate::cal_fetch`]). A known Windows name maps
 /// through the CLDR table, an IANA name (`Region/City`) is used as-is, and anything else
 /// (a legacy `tzone://Microsoft/Custom`, or an unknown name) is preserved as a custom
 /// zone rather than guessed (`calendar-semantics.md`).

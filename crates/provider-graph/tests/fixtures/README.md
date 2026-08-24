@@ -126,7 +126,8 @@ public repo must not ship a working join link (see Finding 10).
 | `calendar/event_invitation.json` | the **invitee's** copy of a meeting a second account organized, after answering (`GET /me/events/{id}`) | the invitation shape only two accounts produce: `isOrganizer: false`, and the organizer named **both** as `organizer` and in `attendees` with `status.response: "none"` → one merged participant (Finding 20) |
 | `calendar/event_allday.json` | an all-day `singleInstance` | `isAllDay` → zoneless `Date` + one-day duration |
 | `calendar/event_online_meeting.json` | a Teams `singleInstance` from `calendarView` | the online-meeting shape (`isOnlineMeeting`, `onlineMeetingProvider`, `onlineMeeting.joinUrl`) preserved on `Event.extended` — captured ahead of online-meeting-provider support |
-| `calendar/events_delta.json` | `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` | the delta page shape: `seriesMaster`/`singleInstance` **kept**, `occurrence`/`exception` **dropped**, `@odata.deltaLink` cursor |
+| `calendar/events_delta.json` | `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` | the delta page shape: `seriesMaster`/`singleInstance` **kept**, `occurrence` **dropped**, `exception` folded onto its series (it carries `seriesMasterId` + `occurrenceId`), `@odata.deltaLink` cursor |
+| `calendar/event_master_cancellations.json` | `GET /me/events/{seriesMaster}?$select=start,end,cancelledOccurrences` with `Prefer: outlook.timezone="W. Europe Standard Time"` | the second request every series master costs: the two occurrences removed from the standup, and the master's start/end in its **own** authoring zone (see Finding 23) |
 
 6. **Event `start`/`end` default to UTC; the authoring zone needs `Prefer:
    outlook.timezone`.** A plain `GET` returns event times in UTC, which would expand a
@@ -138,11 +139,13 @@ public repo must not ship a working join link (see Finding 10).
    The initial delta carries the `seriesMaster` (with `patternedRecurrence`), every
    pre-expanded `occurrence` (a UTC instant, `seriesMasterId` set), any `exception`, and
    standalone `singleInstance`s, ending at an `@odata.deltaLink`. The engine expands the
-   master locally, so the provider keeps `seriesMaster`/`singleInstance` and drops
-   `occurrence`/`exception`.
-8. **Graph v1.0 exposes no `recurrenceId`/`originalStart` on an `exception`** (both are
-   `null`, even on a direct `GET`), so a per-instance override cannot be keyed — hence
-   exceptions are dropped, a documented limitation (`graph.md`).
+   master locally, so the provider stores `seriesMaster`/`singleInstance`, drops
+   `occurrence`, and folds `exception` onto the series it names.
+8. **`originalStart` is absent from an `exception` unless `$select`ed by name**, and a
+   `$select` on the delta strips everything the normalizer reads. What the delta *does*
+   carry is `occurrenceId` (`OID.<master>.<original date>`) and `seriesMasterId`, which is
+   enough to key the override with no extra request — see Finding 23 for the zone that
+   date is in.
 9. **A re-delete of a just-deleted event is `400 ErrorInvalidRequest`**, not a clean
    `404` — the item has moved to Deleted Items. Delete idempotency keys on `404` (a
    truly-gone event); the ambiguous-retry case is the outbox's `NeedsConfirmation`.
@@ -228,6 +231,16 @@ contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@od
 22. **Declining removes the event from the invitee's calendar** (Outlook's default), so a
     later `GET` of it is `404 ErrorItemNotFound` — not a stale-guard failure. A test that
     answers more than once must decline last.
+23. **An occurrence is named by its date in the series' own zone, and that name ignores
+    `Prefer: outlook.timezone`.** `cancelledOccurrences` and an exception's `occurrenceId`
+    are both `OID.<master>.<YYYY-MM-DD>`, and the date stays put whatever zone is asked for,
+    while the event's `start` follows the header. Read a 23:30 Amsterdam series in
+    `Pacific/Auckland` and it starts on the 6th while its ids still say the 5th. So the
+    master is re-read in its own `originalStartTimeZone` — the fixture is that request —
+    which is why its `start.timeZone` is a Windows name rather than the display zone's IANA
+    one. `cancelledOccurrences` is also **absent from every collection response** even when
+    `$select`ed by name (`/events` and the delta both), which is why it costs a request per
+    master rather than riding the page.
 
 16. **Photo routes are resource-kind specific, and every failure is a 404 except the
     one that is a 400.** `photos/{size}/$value` exists on `user`

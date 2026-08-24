@@ -2,7 +2,7 @@
 //! and provider orchestration run against the captured real responses without
 //! network. Shared by the `fetch` and `provider` test modules.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use engine_tls::TlsClientConfig;
@@ -39,7 +39,14 @@ struct Fake {
     /// URLs fetched without the OAuth token, so a test can assert that an off-origin
     /// photo URI never carries the account's credentials.
     unauthenticated: Mutex<Vec<String>>,
+    /// Every `(url, Prefer)` pair asked for, so a test can assert *which zone* a calendar
+    /// read requested — the fake answers the same fixture whatever the header says, so
+    /// nothing else here could tell a right header from a wrong one.
+    prefers: PreferLog,
 }
+
+/// The `(url, Prefer)` pairs a fake was asked for, shared with the test that built it.
+pub(crate) type PreferLog = Arc<Mutex<Vec<(String, Option<String>)>>>;
 
 impl Fake {
     fn route(&self, url: &str) -> Result<&FakeRoute, GraphError> {
@@ -53,6 +60,14 @@ impl Fake {
 
 #[async_trait]
 impl GraphTransport for Fake {
+    async fn get_with_prefer(&self, url: &str, prefer: Option<&str>) -> Result<Value, GraphError> {
+        self.prefers
+            .lock()
+            .expect("prefers lock")
+            .push((url.to_owned(), prefer.map(str::to_owned)));
+        GraphTransport::get(self, url).await
+    }
+
     async fn get(&self, url: &str) -> Result<Value, GraphError> {
         match self.route(url)? {
             Ok(doc) => Ok(doc.clone()),
@@ -132,17 +147,26 @@ pub(crate) fn fake_client(routes: Vec<(&str, Value)>) -> GraphClient {
 /// Builds a [`GraphClient`] whose routes may *fail* with an HTTP status, so an error-recovery
 /// path is drivable without a live server (see [`FakeRoute`]).
 pub(crate) fn fake_client_fallible(routes: Vec<(&str, FakeRoute)>) -> GraphClient {
+    fake_client_recording(routes).0
+}
+
+/// Like [`fake_client_fallible`], plus the log of what each request asked for in its
+/// `Prefer` header.
+pub(crate) fn fake_client_recording(routes: Vec<(&str, FakeRoute)>) -> (GraphClient, PreferLog) {
     let routes = routes
         .into_iter()
         .map(|(key, answer)| (key.to_owned(), answer))
         .collect();
-    GraphClient::with_transport(
+    let prefers: PreferLog = Arc::default();
+    let client = GraphClient::with_transport(
         Box::new(Fake {
             routes,
             unauthenticated: Mutex::new(Vec::new()),
+            prefers: Arc::clone(&prefers),
         }),
         "https://graph.test".to_owned(),
-    )
+    );
+    (client, prefers)
 }
 
 /// Parses a fixture string into JSON.

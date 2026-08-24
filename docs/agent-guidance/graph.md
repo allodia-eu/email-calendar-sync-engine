@@ -228,21 +228,28 @@ shared mailboxes; verification awaits a work/school account.)
 
 ## Known limitations (documented, not bugs)
 
-- **Editing one occurrence: the same derived id, and Graph flips its `type` to `exception`.** `PATCH /me/events/OID.<seriesMasterId>.<date>` applies to that occurrence alone — measured: `200`, the id survives, and the series keeps its own subject. The `ETag` the caller read is the *series'*, so it is not sent; the occurrence's own revision is not something a base of the series carries.
-- **Removing one occurrence: the id is derived, and the cancellation is write-only for now.**
+- **Editing one occurrence: the same derived id, and Graph flips its `type` to `exception`.** `PATCH /me/events/OID.<seriesMasterId>.<date>` applies to that occurrence alone — measured: `200`, and the series keeps its own subject. The `ETag` the caller read is the *series'*, so it is not sent; the occurrence's own revision is not something a base of the series carries.
+
+  ⚠️ **The patch makes `id` opaque, but `occurrenceId` keeps the derived form.** Once an
+  occurrence has been edited its `id` is a normal Graph id with no date in it, so nothing can
+  be parsed back out of it. The delta entry carries `occurrenceId` — still
+  `OID.<master>.<original date>` — beside `seriesMasterId`, and that is what the read keys on
+  (`cal_override`). Measured: an occurrence moved to the *previous day* still reads its own
+  original date there, so the key is the recurrence id rather than wherever it landed.
+- **Removing one occurrence: the id is derived, and reading it back costs one request.**
   Graph addresses an occurrence as `OID.<seriesMasterId>.<YYYY-MM-DD>` — the shape it uses
   itself in the series master's `cancelledOccurrences` — so a removal needs no `/instances`
   lookup at write time. Measured against the real account: `DELETE` on that id answers `204`,
   the occurrence leaves `calendarView`, and it appears in `cancelledOccurrences`; a date the
-  rule does not produce answers `404 ErrorItemNotFound`.
+  rule does not produce answers `404 ErrorItemNotFound`, and so does a date already removed.
 
-  ⚠️ **Reading it back is not wired.** The delta re-sends the series and its surviving
-  occurrences rather than a `@removed` entry (measured), and `cal_fetch::keep` projects only
-  `seriesMaster`/`singleInstance` — so nothing about the cancellation reaches the event's
-  override map and a host keeps drawing the occurrence. Closing it means getting
-  `cancelledOccurrences` onto the master, which `calendarView/delta` does not carry: either a
-  `$select` (which would then have to name *every* property the normalizer reads) or a second
-  request per series master. That choice is the reading work's, not the write's.
+  The delta re-sends the series and its surviving occurrences rather than a `@removed` entry
+  (measured), so the master's `cancelledOccurrences` is the only thing that says an
+  occurrence is gone — and it reaches no collection response. Measured: `$select`ing it on
+  `/events` or on the delta returns everything *but* that property, while the same `$select`
+  on a single event returns it. So each `seriesMaster` on a page is re-read on its own
+  (`cal_fetch::read_master`). A cancel and an edit both re-send the master in the next delta,
+  measured, so the read fires on the passes that matter.
 
   The `OID` id encodes a **date**, so it cannot name two occurrences on one day. Irrelevant
   while the expander has no sub-daily frequencies, and the reason that stays a stated limit.
@@ -285,19 +292,32 @@ shared mailboxes; verification awaits a work/school account.)
 one calendar (`SyncScope::GraphCalendar`), with the calendar list under the per-account
 `SyncScope::GraphCalendarList` — the same shape as the mail folder/folder-list split.
 Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normalize`
-(event/calendar JSON → model) + `cal_recur` (`patternedRecurrence` → `Recurrence`),
-`windows_zones` (Windows→IANA), `cal_write` (create/patch/delete), `calendar` (the
-provider). It advertises `calendars` **and** `calendar_writes(WriteGuard::Enforced)`.
+(event/calendar JSON → model) + `cal_recur` (`patternedRecurrence` → `Recurrence`) +
+`cal_override` (changed/removed occurrences → `Recurrence::overrides`), `windows_zones`
+(Windows→IANA), `cal_write` (create/patch/delete), `calendar` (the provider). It advertises
+`calendars` **and** `calendar_writes(WriteGuard::Enforced)`.
 
 - **`calendarView/delta` is the source, masters + local expansion.** Event delta is
   `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` (v1.0's only
   windowed delta; `/me/events` has no v1.0 delta). It returns the series `seriesMaster`
   (with `patternedRecurrence`), standalone `singleInstance`s, the server's pre-expanded
   `occurrence`s, and per-instance `exception`s, ending at an `@odata.deltaLink`. The
-  engine stores a master + rule and expands **locally**, so the adapter projects only
-  `seriesMaster`/`singleInstance` and **drops `occurrence`** (re-expanded from the master)
-  **and `exception`** (see the limitation below). This reuses the mail delta machinery
+  engine stores a master + rule and expands **locally**, so the adapter stores only
+  `seriesMaster`/`singleInstance` and **drops `occurrence`** (re-expanded from the master).
+  An `exception` is not an object of its own here — it is folded onto the series it names
+  (`cal_override`). This reuses the mail delta machinery
   (`@odata.nextLink`/`deltaLink`/`@removed`, `410`→snapshot restart).
+- **A series master is re-read on its own, in its own zone.** One
+  `GET /me/events/{id}?$select=start,end,cancelledOccurrences` per `seriesMaster` per page,
+  fanned out `MAX_CONCURRENT_MASTER_READS` at a time. It carries
+  `Prefer: outlook.timezone` set to the master's **`originalStartTimeZone`**, not the display
+  zone, and its `start`/`end` replace the delta's. The reason is that Graph names an
+  occurrence by its date in the zone the series was *authored* in, and that name does **not**
+  follow the header while `start` does — measured, a 23:30 Amsterdam series read in
+  `Pacific/Auckland` starts on the 6th while its own ids still say the 5th, so keying
+  overrides off the display-zone reading would miss by a day for any series near midnight.
+  Also measured: the header accepts the name Graph itself reported, IANA or Windows
+  (`W. Europe Standard Time`), and an all-day series' date does not move under any zone.
 - **Time-windowed, per calendar.** The mandatory date range comes from a host-supplied
   `CalendarWindow` (its recurrence-expansion horizon; `providers.md`); the `deltaLink`
   encodes it, so it is applied only to the initial request.
@@ -356,16 +376,11 @@ provider). It advertises `calendars` **and** `calendar_writes(WriteGuard::Enforc
 
 ### Calendar limitations (documented, not bugs)
 
-- **Per-instance overrides are not reconciled.** A moved/cancelled single occurrence is a
-  Graph `exception` object, but Graph v1.0 exposes **no `recurrenceId`/`originalStart`** on
-  it (both `null`, even on a direct `GET`), so the override cannot be keyed onto the
-  series — and the engine's cross-object master/override dedup is itself staged
-  (`calendar-semantics.md`). Exceptions are therefore **dropped**: the series expands by
-  its rule, and a per-occurrence edit is not yet reflected. (Also why `patch_event` supports
-  only `PatchTarget::Series`; a per-occurrence patch returns `InvalidState`.)
-- **One display zone per provider.** All events are read in the provider's `display_zone`
-  (Outlook's own behavior), so a recurring event *authored* in another zone expands in the
-  display zone — correct to the instant, but its DST transitions follow the display zone.
+- **One display zone per provider — except a series master.** All events are read in the
+  provider's `display_zone` (Outlook's own behavior), so a *non-recurring* event authored in
+  another zone is correct to the instant but carries the display zone's name. A
+  `seriesMaster` is re-read in its own `originalStartTimeZone` (above), so a recurring event
+  expands in the zone it was written in and its DST transitions are its own.
 - **Windowed coverage.** Sync covers the `CalendarWindow` only; events outside it are not
   synced (the `providers.md` "possibly-incomplete coverage" model). Coverage reporting is
   a follow-up.
@@ -382,8 +397,9 @@ provider). It advertises `calendars` **and** `calendar_writes(WriteGuard::Enforc
   delta/re-fetch/tombstone/pagination orchestration; a blocking mock HTTP server
   exercises the real reqwest transport and the status/transport classification.
   For the calendar slice, the same fake transport drives the calendar-list /
-  `calendarView`-delta orchestration (masters/singles kept, occurrences/exceptions
-  dropped, `@removed` tombstones), the `patternedRecurrence`→`Recurrence` and Windows/
+  `calendarView`-delta orchestration (masters/singles kept, occurrences dropped,
+  exceptions and the master's `cancelledOccurrences` folded onto the series, the zone the
+  master is re-read in, `@removed` tombstones), the `patternedRecurrence`→`Recurrence` and Windows/
   IANA-zone normalizers, and the create/patch/delete body shapes + form guard + `409`/
   `412` conflict mapping. The MIME `sendMail` request shape is asserted by a **capturing**
   mock server that decodes the posted base64 (`test_support::capturing_server`); the same
