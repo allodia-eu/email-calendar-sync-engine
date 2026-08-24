@@ -84,8 +84,9 @@ Projection decisions (settled with the user):
 
 External-content FTS5 (`fts_index`) over a reshaped `fts_doc` carrying a stable
 integer rowid and typed `subject`/`body`/`location` columns; triggers keep the
-index in sync with `fts_doc`. Tokenizer is **`porter unicode61`** (CJK/trigram
-later), ranked by **`bm25()`** (smaller = better; the executor orders ascending).
+index in sync with `fts_doc`. Tokenizer is chosen at creation — **`porter
+unicode61`** by default, `trigram` opt-in (next section) — ranked by **`bm25()`**
+(smaller = better; the executor orders ascending).
 The projection's field-tagged text folds onto the three columns: `subject` and
 `location` map by name, every other field (body, preview, future attachment text)
 folds into `body`, so unscoped free text still matches it. One shared index serves
@@ -100,6 +101,43 @@ and the only searchable identity is the address. The `unicode61` tokenizer split
 matches. This is in addition to the structured `mail_address` rows, which still
 back the exact, scoped `from:`/`to:`/`cc:` filters (the fold does not replace them).
 
+### Tokenizer: chosen at creation, never changed
+
+Both FTS tables (`fts_index`, `message_body_fts`) are created with one tokenizer,
+picked through `store-sqlite::OpenOptions { fts_tokenizer }` — a **creation-time
+choice** exposed to hosts as `Engine::open_with` / `open_in_memory_with`
+(`engine-api.md`). The default stays **`porter unicode61`**; `FtsTokenizer::Trigram`
+(FTS5 `trigram`) is the CJK option:
+
+- **Fresh databases only.** The option shapes a database the open itself creates.
+  An existing database carries the tokenizer it was made with: it is recorded once
+  into `meta.fts_tokenizer` (the `FtsTokenizer::sql()` string, read back by
+  `from_meta` on every later open), and an open that requests a different one is
+  refused with a `StoreError::Backend` naming both values and the recovery —
+  recreate the database and re-sync. A database created before the option existed
+  reads back as the default.
+- **No in-place re-tokenization, by design.** The token stream lives inside the
+  FTS index, not in any recoverable source table, so the engine never rebuilds it
+  over live data. Changing the tokenizer means recreating the database; its
+  contents re-derive by re-sync (sync is the derivation, the store is the cache).
+- **Trigram semantics: ≥3-character substring matching.** A mid-string query like
+  `会议纪` matches `会议纪要` — where `porter unicode61` cannot match mid-CJK at
+  all (a Han run is one token to it). The floor binds the executor's own query
+  form: every term is a `"term"*` phrase-prefix (see "Executor"), and under
+  trigram **a query shorter than 3 characters matches nothing** — the index's
+  entries are 3-grams, so 1–2-character search-as-you-type has no hits. These
+  behaviors are pinned by acceptance tests in `store-sqlite` (`tests.rs`).
+
+| | `porter unicode61` (default) | `trigram` |
+|---|---|---|
+| Latin search-as-you-type (`allo` → `allodia`) | prefix match | substring match |
+| English stemming (`porter`) | yes | no — raw 3-character substrings |
+| CJK mid-string (`会议纪` → `会议纪要`) | no | yes |
+| 1–2-character query (`al`) | hits (prefix form) | **no hits** |
+
+A CJK-facing host picks `Trigram` at first launch — before the database exists —
+and gates its own suggestion/autocomplete surface on ≥3 typed characters.
+
 ## Executor
 
 `store-sqlite::search_ops` compiles a query to:
@@ -111,7 +149,9 @@ back the exact, scoped `from:`/`to:`/`cc:` filters (the fold does not replace th
    (`"term"*`): the quoting keeps user input from injecting FTS operators, and the
    trailing `*` makes search-as-you-type match partial words (a typed `allo`
    matches `allodia`). Scoped terms carry a column filter (`subject:"allo"*`).
-   Ranked by `bm25()`.
+   Ranked by `bm25()`. Under the `trigram` tokenizer the same form is subject to
+   its ≥3-character floor: `"会议纪"*` matches mid-string, `"会议"*` matches
+   nothing (see "Tokenizer" above).
 
 Ranked candidate lists fuse with **RRF** (`engine_search::fuse`). For **mail**, free
 text matches **two** FTS sources fused together: the scope-derived `fts_index`

@@ -13,7 +13,9 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 
 - An [`Engine`] owns **one durable [`SqliteStore`]** driven by a host wall clock
   ([`SystemClock`]), and exposes high-level operations over it.
-- Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`; build a mailbox
+- Hosts call `Engine::open` / `open_in_memory` — or `open_with` / `open_in_memory_with`
+  with `OpenOptions { fts_tokenizer: FtsTokenizer::Trigram }` when the database must be
+  born with the CJK-friendly trigram FTS tokenizer — then `sync_mail` / `sync_calendar`; build a mailbox
   list with `mail_window` (the projected rows a list renders, across any set of accounts
   in one ordered answer), complete its conversations with `mail_on_threads` and resolve
   a named message with `mail_by_keys`; read `mailboxes` / `messages` /
@@ -101,6 +103,17 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   the `engine_store::Store` trait. The facade therefore holds a concrete
   `SqliteStore<SystemClock>`. Other stores are host adapters; if a second store
   ever ships, that is the point to introduce a store-selection seam, not before.
+- **Store-creation options are fresh-only: `open_with` / `open_in_memory_with`.**
+  `OpenOptions { fts_tokenizer }` selects the FTS5 tokenizer both FTS tables are
+  created with (`search.md`); the default (`porter unicode61`) is what `open` /
+  `open_in_memory` keep using. The options shape **a database the call itself
+  creates** — an existing one carries the tokenizer recorded in
+  `meta.fts_tokenizer` at its own creation, and an open that requests a different
+  tokenizer fails with `ApiError::Store` (a `StoreError::Backend` naming both
+  values and the recreate-and-re-sync recovery). There is no re-tokenization in
+  place anywhere in the engine, so a host switching tokenizers recreates the
+  database and lets sync re-derive its contents. Passing options is therefore a
+  first-launch decision, not a setting.
 - **The wall clock lives here.** `engine-store` ships only `ManualClock` for
   deterministic tests and never reads wall-clock time itself; the engine's time
   source stays one injected seam. `engine-api` supplies the real one
@@ -148,7 +161,9 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - **Re-export signature types.** Types that appear in the facade's own signatures
   (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,
-  `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `CalendarDate`) are
+  `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `CalendarDate`,
+  and the store-creation options `OpenOptions` / `FtsTokenizer` that
+  `open_with` / `open_in_memory_with` take) are
   re-exported so a host depends on `engine-api` alone. The concrete provider still
   comes from the adapter crate.
 - **Display-side timezone resolution.** `resolve_instant` / `resolve_instant_in` /
@@ -163,7 +178,9 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 
 Step 6 lands in small, tested slices. Order and status:
 
-1. **Lifecycle + provider-driven sync — _done_.** `open`/`open_in_memory`,
+1. **Lifecycle + provider-driven sync — _done_.** `open`/`open_in_memory`
+   (+ the creation-options variants `open_with`/`open_in_memory_with`, whose
+   fresh-only `OpenOptions` semantics are a key decision above),
    `sync_mail`, `sync_calendar`, `SystemClock`, and `ApiError`.
 2. **Per-account search — _done_.** `StoreRead::account_scopes(account)` enumerates
    an account's scopes (a `SELECT … WHERE account = ?` over `sync_scope`, each JSON
@@ -347,7 +364,11 @@ reads back `None`. A `sync_mail` with a closure observer then asserts
 one `SyncCommit` lands with `fetched == total == 2`. Run the standard gate (`AGENTS.md`):
 `cargo +nightly fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own
-lines are 100%-covered by these tests (no live provider needed).
+lines run ≈94% under the offline metric (no live provider needed); the uncovered
+remainder is the file-backed `Engine::open_with` shim — the store constructor it
+forwards to, including the tokenizer-mismatch refusal, is covered in
+`store-sqlite` — plus streaming stretches in `engine/sync.rs` that predate the
+open-options work.
 
 The fake `Provider` and object builders in `tests/sync.rs` are a third copy of a
 pattern `engine-sync` and `engine-provider` also hand-roll as crate-private test
