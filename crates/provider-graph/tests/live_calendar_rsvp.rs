@@ -23,7 +23,8 @@
 //!   cargo test -p provider-graph --test live_calendar_rsvp -- --nocapture
 //! ```
 //!
-//! (`--profile` keeps two accounts signed in side by side.) **This sends real mail** between
+//! (`--profile` keeps two accounts signed in side by side: it selects
+//! `.local/tokens-<name>.json`.) **This sends real mail** between
 //! the two accounts: the invitation, the reply the answer schedules, and a cancellation on
 //! cleanup. Both addresses are discovered from the tokens, so nothing is hardcoded, but do
 //! not point it at a mailbox whose owner would not expect that.
