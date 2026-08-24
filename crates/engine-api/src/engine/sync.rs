@@ -8,7 +8,7 @@ use engine_core::{
 };
 use engine_provider::{ContactsProvider, Provider};
 use engine_recurrence::Horizon;
-use engine_store::{PruneReport, Store, SweepReport};
+use engine_store::{MessageSourceCache, PruneReport, SourcesDropped, Store, SweepReport};
 use engine_sync::{
     CalendarSyncReport, ContactSourceReport, ContactSyncReport, EventSyncReport, HorizonExpansion,
     MailSyncReport, PeopleRebuildReport, StreamTuning, SyncObserver, ThreadRebuildReport,
@@ -286,6 +286,31 @@ impl Engine {
         Ok(self
             .store
             .prune_account_mail_outside_window(account, window)
+            .await?)
+    }
+
+    /// Forgets `account`'s cached raw sources over `octets`, for a host lowering a message-size
+    /// cap — the counterpart of the cap the same host applies when deciding what to pre-fetch.
+    ///
+    /// It removes **bytes, not mail**: the message rows and their extracted body text stay, so
+    /// the list, the threads and body search are all unchanged and only the offline copy of the
+    /// heaviest messages goes. Opening one re-fetches and re-caches it, exactly as it would have
+    /// before it was ever warmed. Follow with
+    /// [`sweep_unreferenced_blobs`](Self::sweep_unreferenced_blobs) and [`vacuum`](Self::vacuum)
+    /// to turn it into free disk — this drops the rows that *name* the files, and the sweep is
+    /// the only place that knows whether another row still names the same content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn drop_message_sources_over(
+        &self,
+        account: &AccountId,
+        octets: u64,
+    ) -> Result<SourcesDropped, ApiError> {
+        Ok(self
+            .store
+            .drop_message_sources_over(account, octets)
             .await?)
     }
 

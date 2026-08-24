@@ -245,3 +245,174 @@ async fn a_cached_body_belongs_to_exactly_one_account() {
         Some(theirs)
     );
 }
+
+/// A store on disk, so a test can reach the same database raw.
+fn on_disk() -> (TempDir, std::path::PathBuf) {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("store.sqlite");
+    (dir, path)
+}
+
+fn body(text: &str) -> MessageBody {
+    MessageBody::new(Some(text.to_owned()), None)
+}
+
+#[tokio::test]
+async fn lowering_the_cap_drops_the_heavy_sources_and_reports_their_bytes() {
+    let store = SqliteStore::open_in_memory(clock()).expect("open store");
+    let small = RawMime::new(vec![b'a'; 1_000]);
+    let heavy = RawMime::new(vec![b'b'; 100_000]);
+    store
+        .put_message_source(&account(), &key("imap:v1:u1@INBOX"), small)
+        .await
+        .expect("put small");
+    store
+        .put_message_source(&account(), &key("imap:v1:u2@INBOX"), heavy)
+        .await
+        .expect("put heavy");
+
+    let dropped = store
+        .drop_message_sources_over(&account(), 10_000)
+        .await
+        .expect("drop");
+
+    assert_eq!(dropped.sources_removed, 1);
+    assert_eq!(
+        dropped.octets_freed, 100_000,
+        "the report is the exact byte count, not an estimate",
+    );
+    assert!(
+        store
+            .get_message_source(&account(), &key("imap:v1:u1@INBOX"))
+            .await
+            .expect("get small")
+            .is_some(),
+        "a source under the cap is untouched",
+    );
+    assert!(
+        store
+            .get_message_source(&account(), &key("imap:v1:u2@INBOX"))
+            .await
+            .expect("get heavy")
+            .is_none(),
+        "the heavy one reads as a miss, so an open re-fetches it",
+    );
+}
+
+#[tokio::test]
+async fn dropping_a_source_leaves_the_body_text_searchable() {
+    // The point of dropping bytes rather than mail: the megabytes go, the message does not
+    // leave the list and its text stays in the search index.
+    let store = SqliteStore::open_in_memory(clock()).expect("open store");
+    store
+        .put_message_source(
+            &account(),
+            &key("imap:v1:u9@INBOX"),
+            RawMime::new(vec![b'x'; 50_000]),
+        )
+        .await
+        .expect("put");
+    store
+        .put_message_body(
+            &account(),
+            &key("imap:v1:u9@INBOX"),
+            &body("quarterly figures"),
+        )
+        .await
+        .expect("put body");
+
+    store
+        .drop_message_sources_over(&account(), 1_000)
+        .await
+        .expect("drop");
+
+    let kept = store
+        .get_message_body(&account(), &key("imap:v1:u9@INBOX"))
+        .await
+        .expect("get body");
+    assert_eq!(
+        kept.as_ref().and_then(|b| b.plain()),
+        Some("quarterly figures"),
+        "the extracted text outlives the bytes it came from",
+    );
+}
+
+#[tokio::test]
+async fn a_source_cached_before_sizes_were_recorded_is_measured_and_then_dropped() {
+    // Every source cached before the size column existed carries no size, which is every
+    // source on an installed copy. Without measuring them a lowered cap would free nothing.
+    let (_dir, path) = on_disk();
+    {
+        let store = SqliteStore::open(&path, clock()).expect("open store");
+        store
+            .put_message_source(
+                &account(),
+                &key("imap:v1:u3@INBOX"),
+                RawMime::new(vec![b'c'; 40_000]),
+            )
+            .await
+            .expect("put");
+    }
+    let conn = rusqlite::Connection::open(&path).expect("raw open");
+    conn.execute("UPDATE message_source SET size_octets = NULL", [])
+        .expect("blank the size");
+    drop(conn);
+
+    let store = SqliteStore::open(&path, clock()).expect("reopen store");
+    let dropped = store
+        .drop_message_sources_over(&account(), 10_000)
+        .await
+        .expect("drop");
+
+    assert_eq!(
+        dropped.sources_removed, 1,
+        "an unsized row is measured, not skipped"
+    );
+    assert_eq!(
+        dropped.octets_freed, 40_000,
+        "measured from the blob itself"
+    );
+}
+
+#[tokio::test]
+async fn an_unsized_row_whose_blob_is_gone_is_left_alone() {
+    // Nothing to reclaim, so no cap should remove it — and a size of zero would be a lie.
+    let (_dir, path) = on_disk();
+    {
+        let store = SqliteStore::open(&path, clock()).expect("open store");
+        store
+            .put_message_source(
+                &account(),
+                &key("imap:v1:u4@INBOX"),
+                RawMime::new(vec![b'd'; 30_000]),
+            )
+            .await
+            .expect("put");
+    }
+    let conn = rusqlite::Connection::open(&path).expect("raw open");
+    conn.execute("UPDATE message_source SET size_octets = NULL", [])
+        .expect("blank the size");
+    drop(conn);
+    let blobs = path.with_file_name(format!(
+        "{}.blobs",
+        path.file_name().expect("name").to_string_lossy()
+    ));
+    for entry in fs::read_dir(blobs.join("sources"))
+        .expect("blob dir")
+        .flatten()
+    {
+        fs::remove_file(entry.path()).expect("remove blob");
+    }
+
+    let store = SqliteStore::open(&path, clock()).expect("reopen store");
+    let dropped = store
+        .drop_message_sources_over(&account(), 1_000)
+        .await
+        .expect("drop");
+
+    assert_eq!(
+        dropped.sources_removed, 0,
+        "an unmeasurable row is not removed"
+    );
+    assert_eq!(dropped.octets_freed, 0);
+}

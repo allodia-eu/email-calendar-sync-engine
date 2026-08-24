@@ -148,9 +148,16 @@ pub(crate) fn mail_missing_body(
     newest(conn, accounts, MISSING_BODY, limit)
 }
 
-/// The body cache is keyed by `(account, provider_key)`, so the absence test needs no scope.
-const MISSING_BODY: &str = " AND NOT EXISTS (SELECT 1 FROM message_body cached \
-     WHERE cached.account = m.account AND cached.provider_key = m.provider_key)";
+/// A message needs warming if **either** half of its cached content is absent: the extracted
+/// text, or the raw source the attachments and inline images are sliced from. Testing only the
+/// text would leave a message whose source was dropped by a lowered size cap looking warm
+/// for ever — its text reads offline, so nothing would ever fetch its bytes back.
+///
+/// Both caches are keyed by `(account, provider_key)`, so neither absence test needs a scope.
+const MISSING_BODY: &str = " AND (NOT EXISTS (SELECT 1 FROM message_body cached \
+     WHERE cached.account = m.account AND cached.provider_key = m.provider_key) \
+     OR NOT EXISTS (SELECT 1 FROM message_source src \
+     WHERE src.account = m.account AND src.provider_key = m.provider_key))";
 
 /// The newest `limit` rows across `accounts` matching `extra` (an empty string for all of them):
 /// one statement, ordered by the index.
@@ -355,6 +362,8 @@ fn sql_limit(limit: usize) -> i64 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_warming;
 
 /// Whether the account holds a message that is in the graph but carries no thread.
 ///

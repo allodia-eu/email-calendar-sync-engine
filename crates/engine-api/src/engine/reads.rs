@@ -217,10 +217,17 @@ impl Engine {
             .await?)
     }
 
-    /// The newest `limit` messages across `accounts` **without a cached body text** — the work
-    /// list a host's background body-warming pass feeds through [`Engine::message_body`] so the
-    /// synced window becomes readable (and searchable) offline. Ordered exactly like
-    /// [`Engine::mail_window`].
+    /// The newest `limit` messages across `accounts` **missing either half of their cached
+    /// content** — the extracted body text, or the raw source its attachments and inline images
+    /// are sliced from. This is the work list a host's background body-warming pass feeds through
+    /// [`Engine::message_body`] so the synced window becomes readable (and searchable) offline.
+    /// Ordered exactly like [`Engine::mail_window`].
+    ///
+    /// Both halves are tested because
+    /// [`drop_message_sources_over`](Engine::drop_message_sources_over) deliberately leaves one
+    /// without the other: a message whose source a lowered size cap dropped still has its text,
+    /// and on a text-only test would look warm for ever — so raising the cap again would fetch
+    /// nothing back.
     ///
     /// # Errors
     ///

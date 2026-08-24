@@ -4,12 +4,12 @@ use rusqlite::Connection;
 
 use super::*;
 
-fn account(value: &str) -> AccountId {
+pub(super) fn account(value: &str) -> AccountId {
     AccountId::try_from(value).expect("valid account")
 }
 
 /// A migrated database with two accounts' scopes registered.
-fn open() -> Connection {
+pub(super) fn open() -> Connection {
     let mut conn = Connection::open_in_memory().expect("open");
     crate::migrations::migrate(&mut conn).expect("schema");
     for (scope, acct) in [("scope-a", "a"), ("scope-b", "b")] {
@@ -24,7 +24,7 @@ fn open() -> Connection {
 
 /// Seeds one message straight into the projected tables, which is what the apply path leaves.
 #[expect(clippy::too_many_arguments, reason = "one row's columns")]
-fn seed(
+pub(super) fn seed(
     conn: &Connection,
     scope: &str,
     acct: &str,
@@ -64,7 +64,7 @@ fn plan(conn: &Connection, sql: &str, params: &[Value]) -> String {
     .join(" | ")
 }
 
-fn keys(rows: &[MailListRow]) -> Vec<String> {
+pub(super) fn keys(rows: &[MailListRow]) -> Vec<String> {
     rows.iter()
         .map(|row| row.mail.key.as_str().to_owned())
         .collect()
@@ -337,61 +337,6 @@ fn named_keys_resolve_outside_any_window() {
     )
     .expect("list");
     assert_eq!(keys(&rows), vec!["m1"]);
-}
-
-#[test]
-fn the_body_warming_list_holds_only_messages_with_no_cached_text() {
-    let conn = open();
-    seed(
-        &conn,
-        "scope-a",
-        "a",
-        "warm",
-        Some("2026-01-02T00:00:00Z"),
-        None,
-        0,
-        &["inbox"],
-    );
-    seed(
-        &conn,
-        "scope-a",
-        "a",
-        "cold",
-        Some("2026-01-01T00:00:00Z"),
-        None,
-        0,
-        &["inbox"],
-    );
-    conn.execute(
-        "INSERT INTO message_body (account, provider_key, plain, fetched_at)
-         VALUES ('a', 'warm', 'text', '2026-01-02T00:00:00Z')",
-        [],
-    )
-    .expect("body");
-
-    // The same key on another account holds a body; the cache is keyed by account, so it says
-    // nothing about this one's.
-    seed(
-        &conn,
-        "scope-b",
-        "b",
-        "warm",
-        Some("2026-01-03T00:00:00Z"),
-        None,
-        0,
-        &["inbox"],
-    );
-
-    let rows = mail_missing_body(&conn, &[account("a")], usize::MAX).expect("missing");
-    assert_eq!(keys(&rows), vec!["cold"]);
-    let both =
-        mail_missing_body(&conn, &[account("a"), account("b")], usize::MAX).expect("missing");
-    assert_eq!(keys(&both), vec!["warm", "cold"]);
-    assert!(
-        mail_missing_body(&conn, &[], usize::MAX)
-            .expect("missing")
-            .is_empty()
-    );
 }
 
 #[test]
