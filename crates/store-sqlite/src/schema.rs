@@ -15,7 +15,7 @@
 //! no such constraint either. The object→derived tombstone cascade is therefore
 //! explicit (see `scope_ops::tombstone`), not a `FOREIGN KEY … ON DELETE CASCADE`.
 //!
-//! The search layer is migration [`V2`]: it reshapes `fts_doc` to carry a stable
+//! The search layer is migration [`v2`]: it reshapes `fts_doc` to carry a stable
 //! integer rowid and typed text columns (`subject`/`body`/`location`), builds the
 //! FTS5 external-content index over it, and adds the normalized structured-filter
 //! tables and junctions plus the per-chunk embedding table.
@@ -30,6 +30,8 @@
 //! generations and ids are `INTEGER`; opaque normalized payloads are `TEXT` JSON
 //! (never queried in SQL — structured filters use derived columns, not payload
 //! introspection — so JSONB would only cost debuggability and portability here).
+
+use crate::options::FtsTokenizer;
 
 /// Migration v1: the mechanical-store base schema.
 pub(crate) const V1: &str = "\
@@ -93,7 +95,13 @@ CREATE TABLE pending_op (
 /// `fts_doc` is a re-derivable cache, so the forward-only reshape drops and
 /// recreates it (a re-sync or re-index repopulates) rather than copying data — the
 /// discipline `migrations.rs` documents.
-pub(crate) const V2: &str = "\
+///
+/// The `tokenize=` clause of `fts_index` comes from `tokenizer`; the default
+/// (`PorterUnicode61`) output is byte-identical to the historical const, so an
+/// existing database re-opened under the default is unchanged.
+pub(crate) fn v2(tokenizer: FtsTokenizer) -> String {
+    format!(
+        "\
 DROP TABLE fts_doc;
 
 CREATE TABLE fts_doc (
@@ -110,7 +118,7 @@ CREATE VIRTUAL TABLE fts_index USING fts5 (
     subject, body, location,
     content = 'fts_doc',
     content_rowid = 'rowid',
-    tokenize = 'porter unicode61'
+    tokenize = '{}'
 );
 
 CREATE TRIGGER fts_doc_ai AFTER INSERT ON fts_doc BEGIN
@@ -190,7 +198,10 @@ CREATE TABLE embedding (
     vector       BLOB    NOT NULL,
     PRIMARY KEY (scope_key, provider_key, chunk_ix)
 ) STRICT, WITHOUT ROWID;
-";
+",
+        tokenizer.sql()
+    )
+}
 
 /// Migration v3: per-occurrence tzdata version.
 ///
@@ -237,7 +248,13 @@ CREATE TABLE meta (
 ///   messages are filtered at query time by joining to the live `mail_index`.
 ///
 /// Both are keyed by `(account, provider_key)`.
-pub(crate) const V5: &str = "\
+///
+/// The `tokenize=` clause of `message_body_fts` comes from `tokenizer`; the default
+/// (`PorterUnicode61`) output is byte-identical to the historical const, so an
+/// existing database re-opened under the default is unchanged.
+pub(crate) fn v5(tokenizer: FtsTokenizer) -> String {
+    format!(
+        "\
 CREATE TABLE message_source (
     account      TEXT NOT NULL,
     provider_key TEXT NOT NULL,
@@ -260,7 +277,7 @@ CREATE VIRTUAL TABLE message_body_fts USING fts5 (
     plain,
     content = 'message_body',
     content_rowid = 'rowid',
-    tokenize = 'porter unicode61'
+    tokenize = '{}'
 );
 
 CREATE TRIGGER message_body_ai AFTER INSERT ON message_body BEGIN
@@ -277,7 +294,10 @@ CREATE TRIGGER message_body_au AFTER UPDATE ON message_body BEGIN
     VALUES ('delete', old.rowid, old.plain);
     INSERT INTO message_body_fts (rowid, plain) VALUES (new.rowid, new.plain);
 END;
-";
+",
+        tokenizer.sql()
+    )
+}
 
 /// Migration v6: the per-scope **expansion window** — the horizon an event scope's
 /// occurrence rows are materialized over, and the zone they were resolved through.

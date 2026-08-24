@@ -144,7 +144,7 @@ impl<C: Clock> SqliteStore<C> {
         blobs: BlobArea,
     ) -> Result<Self> {
         pool::tune(&conn, path.is_some())?;
-        let schema = migrations::migrate(&mut conn)?;
+        let schema = migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61)?;
         reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;
         // After the migration, so a reader never sees a schema mid-step.
         let readers = match path {

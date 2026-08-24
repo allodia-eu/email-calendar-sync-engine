@@ -22,10 +22,12 @@
 //! (it has no `user_version`); the migration SQL stays per-store because the
 //! dialects differ, while the portable query layer lives in `engine-search`.
 
+use std::borrow::Cow;
+
 use engine_store::{Result, SchemaStatus, StoreError};
 use rusqlite::{Connection, Transaction};
 
-use crate::{backfill, convert::backend, schema};
+use crate::{backfill, convert::backend, options::FtsTokenizer, schema};
 
 /// One migration step: its DDL, and optionally a data move that must land with it.
 ///
@@ -34,21 +36,24 @@ use crate::{backfill, convert::backend, schema};
 /// version with the new table empty. The move is pinned to its own version rather than borrowing
 /// the live write path, which moves on.
 struct Migration {
-    sql: &'static str,
+    sql: Cow<'static, str>,
     fill: Option<fn(&Transaction<'_>) -> Result<()>>,
 }
 
 impl Migration {
     /// A step that is only DDL.
-    const fn sql(sql: &'static str) -> Self {
-        Self { sql, fill: None }
+    fn sql(sql: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            sql: sql.into(),
+            fill: None,
+        }
     }
 
     /// A step whose new shape is filled from what the store already holds, in the same
     /// transaction.
-    const fn filled(sql: &'static str, fill: fn(&Transaction<'_>) -> Result<()>) -> Self {
+    fn filled(sql: impl Into<Cow<'static, str>>, fill: fn(&Transaction<'_>) -> Result<()>) -> Self {
         Self {
-            sql,
+            sql: sql.into(),
             fill: Some(fill),
         }
     }
@@ -56,30 +61,34 @@ impl Migration {
 
 /// The ordered migration steps. Index `i` is schema version `i + 1`; the stored
 /// `user_version` is the count applied. **Append only** — never edit or reorder a
-/// shipped step.
-const MIGRATIONS: &[Migration] = &[
-    Migration::sql(schema::V1),
-    Migration::sql(schema::V2),
-    Migration::sql(schema::V3),
-    Migration::sql(schema::V4),
-    Migration::sql(schema::V5),
-    Migration::sql(schema::V6),
-    Migration::sql(schema::V7),
-    Migration::sql(schema::V8),
-    Migration::sql(schema::V9),
-    Migration::filled(schema::V10, backfill::msgid_refs),
-    Migration::sql(schema::V11),
-    Migration::sql(schema::V12),
-];
+/// shipped step. The two FTS-bearing steps (`v2`, `v5`) are built for `tokenizer`,
+/// which a database fixes at creation and never changes afterwards.
+fn migrations(tokenizer: FtsTokenizer) -> Vec<Migration> {
+    vec![
+        Migration::sql(schema::V1),
+        Migration::sql(schema::v2(tokenizer)),
+        Migration::sql(schema::V3),
+        Migration::sql(schema::V4),
+        Migration::sql(schema::v5(tokenizer)),
+        Migration::sql(schema::V6),
+        Migration::sql(schema::V7),
+        Migration::sql(schema::V8),
+        Migration::sql(schema::V9),
+        Migration::filled(schema::V10, backfill::msgid_refs),
+        Migration::sql(schema::V11),
+        Migration::sql(schema::V12),
+    ]
+}
 
-/// Brings `conn` up to the latest schema version.
+/// Brings `conn` up to the latest schema version, creating the two FTS-bearing
+/// steps with `tokenizer`.
 ///
 /// # Errors
 ///
 /// Returns [`StoreError::Backend`] if a step fails or the database is newer than
 /// this build understands.
-pub(crate) fn migrate(conn: &mut Connection) -> Result<SchemaStatus> {
-    run(conn, MIGRATIONS)
+pub(crate) fn migrate(conn: &mut Connection, tokenizer: FtsTokenizer) -> Result<SchemaStatus> {
+    run(conn, &migrations(tokenizer))
 }
 
 /// The version-driven runner, parameterized over the step list for testing.
@@ -97,7 +106,7 @@ fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<SchemaStatus> 
     for (index, step) in migrations.iter().enumerate().skip(applied) {
         let version = i64::try_from(index + 1).map_err(backend)?;
         let tx = conn.transaction().map_err(backend)?;
-        tx.execute_batch(step.sql).map_err(backend)?;
+        tx.execute_batch(&step.sql).map_err(backend)?;
         if let Some(fill) = step.fill {
             fill(&tx)?;
         }
@@ -126,7 +135,7 @@ mod tests {
 
     /// The version this build expects — the number of steps it knows.
     fn expected_version() -> u32 {
-        u32::try_from(MIGRATIONS.len()).unwrap()
+        u32::try_from(migrations(FtsTokenizer::PorterUnicode61).len()).unwrap()
     }
 
     fn version(conn: &Connection) -> i64 {
@@ -165,8 +174,8 @@ mod tests {
     #[test]
     fn fresh_database_applies_every_step_and_records_the_version() {
         let mut conn = Connection::open_in_memory().unwrap();
-        migrate(&mut conn).unwrap();
-        assert_eq!(version(&conn), i64::try_from(MIGRATIONS.len()).unwrap());
+        migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+        assert_eq!(version(&conn), i64::from(expected_version()));
         // The v1 tables exist.
         assert_eq!(table_count(&conn, "object"), 1);
         assert_eq!(table_count(&conn, "pending_op"), 1);
@@ -177,10 +186,10 @@ mod tests {
     #[test]
     fn rerunning_is_a_noop() {
         let mut conn = Connection::open_in_memory().unwrap();
-        migrate(&mut conn).unwrap();
+        migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
         let after_first = version(&conn);
         // A second run applies nothing and does not error on the existing tables.
-        migrate(&mut conn).unwrap();
+        migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
         assert_eq!(version(&conn), after_first);
     }
 
@@ -259,7 +268,7 @@ mod tests {
     #[test]
     fn photos_cached_before_v11_still_read_as_photos_after_it() {
         let mut conn = Connection::open_in_memory().unwrap();
-        run(&mut conn, &MIGRATIONS[..10]).unwrap();
+        run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)[..10]).unwrap();
         assert_eq!(version(&conn), 10);
         // Written the way a v10 build wrote it — the `missing` column does not exist yet.
         conn.execute(
@@ -270,7 +279,7 @@ mod tests {
         )
         .unwrap();
 
-        migrate(&mut conn).unwrap();
+        migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
         assert_eq!(version(&conn), i64::from(expected_version()));
         let (hash, missing): (String, i64) = conn
             .query_row(
@@ -289,7 +298,7 @@ mod tests {
     #[test]
     fn the_message_table_carries_a_messages_whole_mutable_state() {
         let mut conn = Connection::open_in_memory().unwrap();
-        migrate(&mut conn).unwrap();
+        migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
 
         assert_eq!(table_count(&conn, "mail_index"), 0, "v9 retires it");
 
@@ -340,7 +349,7 @@ mod tests {
     fn the_v10_step_fills_the_graph_from_the_payloads_already_stored() {
         let mut conn = Connection::open_in_memory().unwrap();
         // Bring the database up to v9 — everything before the graph existed.
-        run(&mut conn, &MIGRATIONS[..9]).unwrap();
+        run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)[..9]).unwrap();
         assert_eq!(version(&conn), 9);
 
         // A stored reply and its original, as v9 held them: a payload plus a message row. The
@@ -360,7 +369,7 @@ mod tests {
             .unwrap();
         }
 
-        run(&mut conn, MIGRATIONS).unwrap();
+        run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)).unwrap();
         assert_eq!(version(&conn), i64::from(expected_version()));
 
         let rows: i64 = conn
@@ -392,7 +401,7 @@ mod tests {
     #[test]
     fn an_undecodable_payload_does_not_fail_the_upgrade() {
         let mut conn = Connection::open_in_memory().unwrap();
-        run(&mut conn, &MIGRATIONS[..9]).unwrap();
+        run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)[..9]).unwrap();
         conn.execute(
             "INSERT INTO object (scope_key, provider_key, payload) VALUES ('s1', 'bad', 'not json')",
             [],
@@ -405,7 +414,7 @@ mod tests {
         )
         .unwrap();
 
-        run(&mut conn, MIGRATIONS).unwrap();
+        run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)).unwrap();
         assert_eq!(version(&conn), i64::from(expected_version()));
     }
 
@@ -413,9 +422,9 @@ mod tests {
     fn migrating_reports_the_version_it_moved_from() {
         let mut conn = Connection::open_in_memory().unwrap();
         // A store as an older build left it.
-        run(&mut conn, &MIGRATIONS[..4]).unwrap();
+        run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)[..4]).unwrap();
 
-        let status = migrate(&mut conn).unwrap();
+        let status = migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
 
         assert_eq!(status.migrated_from, Some(4), "where it came from");
         assert_eq!(status.version, expected_version(), "where it landed");
@@ -431,11 +440,11 @@ mod tests {
     fn a_fresh_or_current_store_reports_no_migration() {
         let mut conn = Connection::open_in_memory().unwrap();
 
-        let fresh = migrate(&mut conn).unwrap();
+        let fresh = migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
         assert_eq!(fresh.migrated_from, None, "nothing to migrate from");
         assert_eq!(fresh.version, expected_version());
 
-        let reopened = migrate(&mut conn).unwrap();
+        let reopened = migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
         assert_eq!(reopened.migrated_from, None, "already current");
         assert_eq!(reopened.version, expected_version());
     }

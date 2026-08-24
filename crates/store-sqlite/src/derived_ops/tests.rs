@@ -11,7 +11,10 @@ use engine_store::{FtsField, OccurrenceRow, TzdataVersion, WorkerId};
 use rusqlite::Connection;
 
 use super::*;
-use crate::scope_ops::{OwnedUpdate, apply, claim, maintenance};
+use crate::{
+    FtsTokenizer,
+    scope_ops::{OwnedUpdate, apply, claim, maintenance},
+};
 
 fn instant(text: &str) -> UtcDateTime {
     text.parse().expect("valid instant")
@@ -30,7 +33,7 @@ fn events_scope() -> SyncScope {
 
 fn open() -> (Connection, String) {
     let mut conn = Connection::open_in_memory().expect("open");
-    crate::migrations::migrate(&mut conn).expect("schema");
+    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).expect("schema");
     (conn, convert::scope_key(&events_scope()))
 }
 

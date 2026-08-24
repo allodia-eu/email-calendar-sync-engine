@@ -12,7 +12,7 @@ use engine_store::{ManualClock, PruneReport};
 use rusqlite::Connection;
 
 use super::prune_account_mail;
-use crate::{SqliteStore, convert};
+use crate::{FtsTokenizer, SqliteStore, convert};
 
 /// The floor date the tests prune against: `2026-04-01`, inclusive.
 fn floor() -> CalendarDate {
@@ -128,7 +128,7 @@ fn seed_caches(conn: &Connection, scope_key: &str, key: &str, subject: &str) {
 /// Returns the connection and the three scope keys under test.
 fn seed() -> (Connection, String, String, String) {
     let mut conn = Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn).unwrap();
+    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
 
     let a_mail = seed_scope(&conn, &mail_scope("a"));
     seed_mail(&conn, &a_mail, "old", Some("2026-01-15T09:00:00Z"), "alpha");

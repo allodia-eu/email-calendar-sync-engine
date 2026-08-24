@@ -4,6 +4,7 @@
 use engine_store::ManualClock;
 
 use super::SqliteStore;
+use crate::FtsTokenizer;
 
 #[test]
 fn debug_is_redacted() {
@@ -20,7 +21,7 @@ fn debug_is_redacted() {
 #[test]
 fn a_normalizer_version_change_clears_sync_cursors() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn).unwrap();
+    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
 
     // A synced scope carries a cursor; reconciling at the same version keeps it.
     super::reconcile_normalizer_version(&conn, 1).unwrap();
@@ -58,7 +59,7 @@ fn a_normalizer_version_change_clears_sync_cursors() {
 #[test]
 fn clear_one_cursor_clears_the_cursor_but_keeps_a_held_lease() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn).unwrap();
+    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
 
     // A scope mid-sync: a cursor plus a live lease (a fencing token and a future
     // expiry). The per-scope clear runs concurrently with such syncs, so unlike
@@ -189,4 +190,28 @@ async fn a_file_store_reads_through_a_connection_that_cannot_write() {
         })
         .await;
     assert_eq!(stored, "1", "a reader sees the writer's committed row");
+}
+
+#[test]
+fn fresh_database_uses_the_requested_tokenizer_for_both_fts_tables() {
+    for (tokenizer, clause) in [
+        (FtsTokenizer::Trigram, "trigram"),
+        (FtsTokenizer::PorterUnicode61, "porter unicode61"),
+    ] {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migrations::migrate(&mut conn, tokenizer).unwrap();
+        for table in ["fts_index", "message_body_fts"] {
+            let ddl: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                ddl.contains(&format!("tokenize = '{clause}'")),
+                "{table} under {clause}: {ddl}"
+            );
+        }
+    }
 }
