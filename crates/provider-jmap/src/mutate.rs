@@ -25,7 +25,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     error::JmapError,
-    provider::Executor,
+    executor::Executor,
     request::{Request, capability},
 };
 

@@ -21,8 +21,8 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     error::JmapError,
+    executor::Executor,
     mail::mailbox_from_json,
-    provider::Executor,
     request::{Request, capability},
     submit_body::body,
     sync_ops::objects,
