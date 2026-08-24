@@ -635,6 +635,13 @@ A prune removes *mail*. `drop_message_sources_over(account, octets)`
 - **`mail_missing_body` tests both halves for exactly this reason.** A dropped source leaves a
   message that reads fine, so a text-only work list would call it warm for ever and a raised cap
   would fetch nothing back.
+- **A warm needs `ensure_message_source` as well as `message_body`.** The body fetch is
+  text-first, so on a message whose text outlived its bytes it returns without a provider call
+  and cannot put them back — the message would sit on the work list, looked at by every pass and
+  fixed by none. `ensure_message_source` is that second half: one indexed metadata read where
+  there is nothing to do, a single fetch where there is. It is deliberately **not** folded into
+  `message_body`, because an *open* wants the text as fast as possible and re-caching bytes a
+  lowered cap just discarded is the opposite of what the user asked for.
 - `message_source.size_octets` is the byte count taken as the source was written, and blobs are
   stored uncompressed, so it is the file's size on disk rather than an estimate of it. It is what
   makes this one indexed-free scan of one row per cached body rather than a walk of the blob area.

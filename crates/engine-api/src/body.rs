@@ -12,7 +12,8 @@ use engine_core::{
 };
 use engine_provider::Provider;
 use engine_sync::{
-    fetch_inline_parts, fetch_message_attachment, fetch_message_attachments, fetch_message_body,
+    ensure_message_source, fetch_inline_parts, fetch_message_attachment, fetch_message_attachments,
+    fetch_message_body,
 };
 
 use crate::{ApiError, Engine, engine::map_sync_error};
@@ -41,6 +42,35 @@ impl Engine {
         message: &Message,
     ) -> Result<MessageBody, ApiError> {
         fetch_message_body(provider, &self.store, account, message)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Ensures `message`'s raw source is cached, fetching it once if it is not — what a body
+    /// **warm** needs beyond [`Engine::message_body`], which is text-first and returns without
+    /// touching the bytes once the extracted text is cached.
+    ///
+    /// A message can hold the text without the source: that is what
+    /// [`drop_message_sources_over`](Engine::drop_message_sources_over) leaves behind when a
+    /// size cap is lowered. Such a message stays on
+    /// [`mail_missing_body`](Engine::mail_missing_body) — correctly, since its attachments and
+    /// inline images are no longer local — and only this call takes it off again, so raising the
+    /// cap fetches something back rather than looping over it every pass.
+    ///
+    /// Costs one indexed metadata read where the source is already cached: no blob read, no
+    /// decode, no provider call. A host's warm can call it after every body without measuring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the fetch fails (a stale IMAP target is a `Conflict` —
+    /// re-sync via [`Engine::clear_mail_cursors`] then retry) or the cache read fails.
+    pub async fn ensure_message_source<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        message: &Message,
+    ) -> Result<(), ApiError> {
+        ensure_message_source(provider, &self.store, account, message)
             .await
             .map_err(map_sync_error)
     }
