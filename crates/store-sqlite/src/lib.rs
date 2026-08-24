@@ -49,6 +49,7 @@ mod search_ops;
 mod source_ops;
 mod sql;
 mod sweep;
+mod tokenizer_reconcile;
 mod window_ops;
 
 use core::fmt;
@@ -70,6 +71,11 @@ pub use options::{FtsTokenizer, OpenOptions};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
+// At the crate root so the tests reach the pair through `super::`; gated
+// because the `configure` wiring — the next commit on this branch — is the
+// production caller that makes the import unconditional.
+#[cfg(test)]
+use crate::tokenizer_reconcile::{FtsTokenizerKnown, reconcile_fts_tokenizer};
 use crate::{
     blob::BlobArea,
     convert::{backend, expiry_after, scope_key},

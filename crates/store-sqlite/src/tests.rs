@@ -1,5 +1,6 @@
-//! Unit tests for the crate-root store wiring: `Debug` redaction and the
-//! normalizer-version / per-scope cursor-clear reconciliation.
+//! Unit tests for the crate-root store wiring: `Debug` redaction, the
+//! normalizer-version / per-scope cursor-clear reconciliation, and the FTS
+//! tokenizer record-and-refuse reconciliation.
 
 use engine_store::ManualClock;
 
@@ -214,4 +215,70 @@ fn fresh_database_uses_the_requested_tokenizer_for_both_fts_tables() {
             );
         }
     }
+}
+
+/// `Fresh` = the meta table itself is absent (a database this open creates).
+#[test]
+fn a_fresh_database_records_the_requested_tokenizer() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
+    super::reconcile_fts_tokenizer(
+        super::FtsTokenizerKnown::Fresh,
+        &conn,
+        FtsTokenizer::Trigram,
+    )
+    .unwrap();
+    let v: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'fts_tokenizer'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(v, "trigram");
+}
+
+/// A database older than the option was necessarily created porter unicode61.
+#[test]
+fn a_pre_option_database_is_recorded_as_porter_and_refuses_trigram() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    // Simulate pre-option: the meta table exists, the row does not.
+    let recorded = super::reconcile_fts_tokenizer(
+        super::FtsTokenizerKnown::PreOption,
+        &conn,
+        FtsTokenizer::PorterUnicode61,
+    );
+    assert!(recorded.is_ok());
+    let refused = super::reconcile_fts_tokenizer(
+        super::FtsTokenizerKnown::PreOption,
+        &conn,
+        FtsTokenizer::Trigram,
+    );
+    let msg = format!("{}", refused.unwrap_err());
+    assert!(msg.contains("fts tokenizer mismatch"), "{msg}");
+}
+
+#[test]
+fn a_recorded_tokenizer_mismatching_the_request_is_refused() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('fts_tokenizer', 'trigram')",
+        [],
+    )
+    .unwrap();
+    let refused = super::reconcile_fts_tokenizer(
+        super::FtsTokenizerKnown::Known(FtsTokenizer::Trigram),
+        &conn,
+        FtsTokenizer::PorterUnicode61,
+    );
+    assert!(refused.is_err());
+    // Re-requesting the recorded value stays a no-op.
+    super::reconcile_fts_tokenizer(
+        super::FtsTokenizerKnown::Known(FtsTokenizer::Trigram),
+        &conn,
+        FtsTokenizer::Trigram,
+    )
+    .unwrap();
 }
