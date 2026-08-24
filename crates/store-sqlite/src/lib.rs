@@ -36,6 +36,7 @@ mod convert;
 mod derived_ops;
 mod mail_ops;
 mod migrations;
+mod options;
 mod outbox_ops;
 mod photo_ops;
 mod pool;
@@ -65,6 +66,7 @@ use engine_store::{
     ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, Result, SchemaStatus,
     Store, SyncApplied, SyncClaim, SyncLease,
 };
+pub use options::{FtsTokenizer, OpenOptions};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
