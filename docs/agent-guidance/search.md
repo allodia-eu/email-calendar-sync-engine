@@ -110,12 +110,17 @@ choice** exposed to hosts as `Engine::open_with` / `open_in_memory_with`
 (FTS5 `trigram`) is the CJK option:
 
 - **Fresh databases only.** The option shapes a database the open itself creates.
-  An existing database carries the tokenizer it was made with: it is recorded once
-  into `meta.fts_tokenizer` (the `FtsTokenizer::sql()` string, read back by
-  `from_meta` on every later open), and an open that requests a different one is
-  refused with a `StoreError::Backend` naming both values and the recovery —
-  recreate the database and re-sync. A database created before the option existed
-  reads back as the default.
+  An existing database carries the tokenizer its FTS index was made with, and an
+  open that requests a different one is refused with a `StoreError::Backend`
+  naming both values and the recovery — recreate the database and re-sync. The
+  index's own DDL is the ground truth: `fts_index` ships in migration V2 and the
+  `meta` table only in V4, so a database at any version that already has an
+  index has a tokenizer, and the open derives it from the `tokenize = '…'`
+  clause. `meta.fts_tokenizer` (the `FtsTokenizer::sql()` string, read back by
+  `from_meta`) is a cache of that answer, filled at creation and repaired by the
+  next open if a crash left it missing. The refusal runs **before** any
+  migration step, so a rejected open leaves the database exactly as it was — no
+  half-built trigram table, no record written over a refusal.
 - **No in-place re-tokenization, by design.** The token stream lives inside the
   FTS index, not in any recoverable source table, so the engine never rebuilds it
   over live data. Changing the tokenizer means recreating the database; its

@@ -76,7 +76,7 @@ use crate::{
     convert::{backend, expiry_after, scope_key},
     pool::Pool,
     scope_ops::OwnedUpdate,
-    tokenizer_reconcile::{classify, reconcile_fts_tokenizer},
+    tokenizer_reconcile::{classify, ensure_compatible, record},
 };
 
 /// A SQLite-backed [`Store`] + [`StoreRead`](engine_store::StoreRead), parameterized by an injected
@@ -159,9 +159,9 @@ impl<C: Clock> SqliteStore<C> {
         Self::configure(conn, clock, Some(path), blobs, options)
     }
 
-    /// Applies the pragmas, classifies the recorded FTS tokenizer against
-    /// `options`, migrates the schema under it, opens the reader pool, and
-    /// wraps them alongside the blob area.
+    /// Applies the pragmas, classifies the tokenizer the database's FTS index
+    /// already carries and refuses a mismatched request **before** migrating,
+    /// then migrates under the option, records it, and opens the reader pool.
     ///
     /// `path` is `Some` exactly when the database is file-backed — which is what
     /// decides both the WAL pragmas and whether readers can be opened at all.
@@ -173,12 +173,13 @@ impl<C: Clock> SqliteStore<C> {
         options: OpenOptions,
     ) -> Result<Self> {
         pool::tune(&conn, path.is_some())?;
-        // Before migrate: migrate() creates the meta table, erasing the
-        // fresh-vs-pre-option distinction the tokenizer record relies on.
+        // Before migrate: classify reads the pre-migrate catalog shape, and
+        // the refusal must land before a step mutates the database.
         let tokenizer_found = classify(&conn)?;
+        ensure_compatible(tokenizer_found, options.fts_tokenizer)?;
         let schema = migrations::migrate(&mut conn, options.fts_tokenizer)?;
         // After migrate (the record insert needs meta), before readers open.
-        reconcile_fts_tokenizer(tokenizer_found, &conn, options.fts_tokenizer)?;
+        record(&conn, options.fts_tokenizer)?;
         reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;
         // After the migration, so a reader never sees a schema mid-step.
         let readers = match path {

@@ -7,7 +7,7 @@ use engine_store::ManualClock;
 use super::SqliteStore;
 use crate::{
     options::{FtsTokenizer, OpenOptions},
-    tokenizer_reconcile::FtsTokenizerKnown,
+    tokenizer_reconcile::{FtsTokenizerKnown, classify, ensure_compatible, record},
 };
 
 #[test]
@@ -220,36 +220,37 @@ fn fresh_database_uses_the_requested_tokenizer_for_both_fts_tables() {
     }
 }
 
-/// `Fresh` = the meta table itself is absent (a database this open creates).
+/// `Fresh` ⇔ no FTS index exists yet (a v0 or v1 database this open shapes):
+/// anything is compatible, and the open records what it chose.
 #[test]
-fn a_fresh_database_records_the_requested_tokenizer() {
+fn a_fresh_database_accepts_any_request_and_records_it() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    let found = classify(&conn).unwrap();
+    assert!(matches!(found, FtsTokenizerKnown::Fresh));
+    ensure_compatible(found, FtsTokenizer::Trigram).unwrap();
     crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
-    super::reconcile_fts_tokenizer(FtsTokenizerKnown::Fresh, &conn, FtsTokenizer::Trigram).unwrap();
-    let v: String = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = 'fts_tokenizer'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(v, "trigram");
+    record(&conn, FtsTokenizer::Trigram).unwrap();
+    assert_eq!(recorded(&conn), "trigram");
 }
 
-/// A database older than the option was necessarily created porter unicode61.
+/// A database created before the option existed still has a porter `fts_index`;
+/// classify derives porter from the DDL, a porter open is accepted and fills the
+/// record, and a trigram open is refused.
 #[test]
-fn a_pre_option_database_is_recorded_as_porter_and_refuses_trigram() {
+fn a_pre_option_database_derives_porter_records_it_and_refuses_trigram() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
-    // Simulate pre-option: the meta table exists, the row does not.
-    let recorded = super::reconcile_fts_tokenizer(
-        FtsTokenizerKnown::PreOption,
-        &conn,
-        FtsTokenizer::PorterUnicode61,
-    );
-    assert!(recorded.is_ok());
-    let refused =
-        super::reconcile_fts_tokenizer(FtsTokenizerKnown::PreOption, &conn, FtsTokenizer::Trigram);
+    // The full schema, but no recorded row — exactly how a pre-option database
+    // meets this build.
+    let found = classify(&conn).unwrap();
+    assert!(matches!(
+        found,
+        FtsTokenizerKnown::Known(FtsTokenizer::PorterUnicode61)
+    ));
+    ensure_compatible(found, FtsTokenizer::PorterUnicode61).unwrap();
+    record(&conn, FtsTokenizer::PorterUnicode61).unwrap();
+    assert_eq!(recorded(&conn), "porter unicode61");
+    let refused = ensure_compatible(found, FtsTokenizer::Trigram);
     let msg = format!("{}", refused.unwrap_err());
     assert!(msg.contains("fts tokenizer mismatch"), "{msg}");
 }
@@ -263,19 +264,136 @@ fn a_recorded_tokenizer_mismatching_the_request_is_refused() {
         [],
     )
     .unwrap();
-    let refused = super::reconcile_fts_tokenizer(
-        FtsTokenizerKnown::Known(FtsTokenizer::Trigram),
-        &conn,
-        FtsTokenizer::PorterUnicode61,
+    let found = classify(&conn).unwrap();
+    assert!(matches!(
+        found,
+        FtsTokenizerKnown::Known(FtsTokenizer::Trigram)
+    ));
+    assert!(ensure_compatible(found, FtsTokenizer::PorterUnicode61).is_err());
+    // Re-requesting the recorded value stays accepted, and record leaves the
+    // row alone.
+    ensure_compatible(found, FtsTokenizer::Trigram).unwrap();
+    record(&conn, FtsTokenizer::Trigram).unwrap();
+    assert_eq!(recorded(&conn), "trigram");
+}
+
+/// Finding pin (v2/v3): a database stopped after migration V2 has a porter
+/// `fts_index` and no `meta` table (that arrives in V4). A trigram open must be
+/// refused off the DDL alone — not misread as fresh, which would silently build
+/// `message_body_fts` under trigram and record the mix as pure trigram.
+#[test]
+fn a_v2_database_classifies_porter_and_refuses_trigram_unmutated() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::V1).unwrap();
+    conn.execute_batch(&crate::schema::v2(FtsTokenizer::PorterUnicode61))
+        .unwrap();
+    conn.pragma_update(None, "user_version", 2).unwrap();
+
+    let found = classify(&conn).unwrap();
+    assert!(matches!(
+        found,
+        FtsTokenizerKnown::Known(FtsTokenizer::PorterUnicode61)
+    ));
+    assert!(ensure_compatible(found, FtsTokenizer::Trigram).is_err());
+    // The refusal path is read-only: the database stands where it did.
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    let meta: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'meta'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(meta, 0, "no meta table was conjured");
+}
+
+/// Finding pin (mutate-before-refuse): a v4 database (meta table, no
+/// `fts_tokenizer` row, porter `fts_index`, no `message_body_fts`) opened with
+/// the trigram option must fail **before** any migration step runs. Under the
+/// old ordering, v5 would build and commit a trigram `message_body_fts`
+/// (user_version 4→11) and only then refuse, leaving a mixed database that a
+/// later default open would record as porter.
+#[test]
+fn a_v4_database_refusing_trigram_is_left_unmutated() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("v4.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(crate::schema::V1).unwrap();
+        conn.execute_batch(&crate::schema::v2(FtsTokenizer::PorterUnicode61))
+            .unwrap();
+        conn.execute_batch(crate::schema::V3).unwrap();
+        conn.execute_batch(crate::schema::V4).unwrap();
+        conn.pragma_update(None, "user_version", 4).unwrap();
+    }
+    let refused = SqliteStore::open_with(
+        &path,
+        ManualClock::new("2026-01-01T00:00:00Z".parse().expect("valid instant")),
+        OpenOptions {
+            fts_tokenizer: FtsTokenizer::Trigram,
+        },
     );
-    assert!(refused.is_err());
-    // Re-requesting the recorded value stays a no-op.
-    super::reconcile_fts_tokenizer(
-        FtsTokenizerKnown::Known(FtsTokenizer::Trigram),
-        &conn,
-        FtsTokenizer::Trigram,
+    let msg = format!("{}", refused.unwrap_err());
+    assert!(msg.contains("fts tokenizer mismatch"), "{msg}");
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 4, "the refusal did not run or commit a step");
+    let body_fts: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'message_body_fts'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(body_fts, 0, "no trigram message_body_fts was built");
+    let row: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM meta WHERE key = 'fts_tokenizer'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(row, 0, "no tokenizer row was recorded over a refusal");
+}
+
+/// Finding pin (crash window): a trigram database whose migrate committed but
+/// whose record insert never did — process death in between. It must classify
+/// as trigram from the DDL, accept a trigram open (repairing the record), and
+/// refuse a default porter open instead of being misrecorded as porter.
+#[test]
+fn a_crashed_trigram_database_classifies_from_the_ddl_and_repairs_the_record() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
+    // ...and then the process died before `record` ran.
+
+    let found = classify(&conn).unwrap();
+    assert!(matches!(
+        found,
+        FtsTokenizerKnown::Known(FtsTokenizer::Trigram)
+    ));
+    ensure_compatible(found, FtsTokenizer::Trigram).unwrap();
+    assert!(
+        ensure_compatible(found, FtsTokenizer::PorterUnicode61).is_err(),
+        "a default open must not record porter over trigram tables"
+    );
+    record(&conn, FtsTokenizer::Trigram).unwrap();
+    assert_eq!(recorded(&conn), "trigram");
+}
+
+/// The recorded `meta.fts_tokenizer` value, as `record` leaves it.
+fn recorded(conn: &rusqlite::Connection) -> String {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = 'fts_tokenizer'",
+        [],
+        |r| r.get(0),
     )
-    .unwrap();
+    .unwrap()
 }
 
 /// The `_with` constructors must thread the option all the way through

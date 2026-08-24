@@ -107,13 +107,14 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `OpenOptions { fts_tokenizer }` selects the FTS5 tokenizer both FTS tables are
   created with (`search.md`); the default (`porter unicode61`) is what `open` /
   `open_in_memory` keep using. The options shape **a database the call itself
-  creates** — an existing one carries the tokenizer recorded in
-  `meta.fts_tokenizer` at its own creation, and an open that requests a different
-  tokenizer fails with `ApiError::Store` (a `StoreError::Backend` naming both
-  values and the recreate-and-re-sync recovery). There is no re-tokenization in
-  place anywhere in the engine, so a host switching tokenizers recreates the
-  database and lets sync re-derive its contents. Passing options is therefore a
-  first-launch decision, not a setting.
+  creates** — an existing one carries the tokenizer its FTS index was built with
+  (`meta.fts_tokenizer` caches it; the index DDL is the ground truth), and an
+  open that requests a different tokenizer fails with `ApiError::Store` (a
+  `StoreError::Backend` naming both values and the recreate-and-re-sync
+  recovery) **before any migration runs**, leaving the database unmutated. There
+  is no re-tokenization in place anywhere in the engine, so a host switching
+  tokenizers recreates the database and lets sync re-derive its contents.
+  Passing options is therefore a first-launch decision, not a setting.
 - **The wall clock lives here.** `engine-store` ships only `ManualClock` for
   deterministic tests and never reads wall-clock time itself; the engine's time
   source stays one injected seam. `engine-api` supplies the real one
