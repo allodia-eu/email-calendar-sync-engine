@@ -315,3 +315,56 @@ async fn open_in_memory_with_trigram_creates_and_records_the_trigram_index() {
     assert!(ddl.contains("tokenize = 'trigram'"), "{ddl}");
     assert_eq!(recorded, "trigram");
 }
+
+/// The kylins CJK acceptance case (spec P0 §4): a mid-string query must match
+/// under `trigram`. This is the search-as-you-type phrase-prefix form the
+/// search layer really issues (`fts_match`), not a hand-rolled MATCH.
+#[test]
+fn trigram_matches_mid_string_cjk_where_porter_cannot() {
+    let body = "请查收今天的会议纪要附件";
+    let query = "\"会议纪\"*";
+    for (tokenizer, expected) in [
+        (FtsTokenizer::Trigram, 1),
+        (FtsTokenizer::PorterUnicode61, 0),
+    ] {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migrations::migrate(&mut conn, tokenizer).unwrap();
+        conn.execute(
+            "INSERT INTO fts_doc (scope_key, provider_key, subject, body, location)
+             VALUES ('s', 'm1', '周报', ?1, '会议室 3A')",
+            [body],
+        )
+        .unwrap();
+        let hits: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM fts_index WHERE fts_index MATCH ?1",
+                [query],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, expected, "{tokenizer:?} on query {query}");
+    }
+}
+
+/// The ≥3-character rule is part of the contract: a 2-character query cannot
+/// use a trigram index (kylins' previous engine behaves the same way — no
+/// regression, now documented, spec P0 §4).
+#[test]
+fn trigram_two_character_queries_do_not_match() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
+    conn.execute(
+        "INSERT INTO fts_doc (scope_key, provider_key, subject, body, location)
+         VALUES ('s', 'm1', '周报', '请查收今天的会议纪要附件', '')",
+        [],
+    )
+    .unwrap();
+    let hits: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM fts_index WHERE fts_index MATCH ?1",
+            ["\"会议\"*"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 0);
+}
