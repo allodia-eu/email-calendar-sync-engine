@@ -314,7 +314,7 @@ fn a_reported_size_is_stored_and_a_silent_re_fetch_does_not_erase_it() {
     // same message through two adapters — or an adapter that starts reporting and stops —
     // must not lose the number a size cap decides on.
     let mut conn = Connection::open_in_memory().expect("open");
-    crate::migrations::migrate(&mut conn).expect("schema");
+    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).expect("schema");
 
     let tx = conn.transaction().expect("tx");
     mail::upsert_message(&tx, "s1", "acct", &sized_row("m1", Some(4_194_304))).expect("insert");
