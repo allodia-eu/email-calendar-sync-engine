@@ -142,6 +142,11 @@ pub use engine_sync::{
     SyncObserver, SyncTiming, ThreadRebuildReport, UnexpandableEvent,
 };
 pub use scheduling::InboundScheduling;
+// The store-creation options `Engine::open_with`/`Engine::open_in_memory_with` take.
+// Without the re-export a host could not construct the options — or name which FTS
+// tokenizer it is choosing — without depending on `store_sqlite` directly, the
+// reach-around the re-export blocks above exist to prevent.
+pub use store_sqlite::{FtsTokenizer, OpenOptions};
 
 /// An error from an [`Engine`] operation.
 ///

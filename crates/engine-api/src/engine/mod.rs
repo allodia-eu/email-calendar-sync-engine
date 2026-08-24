@@ -16,7 +16,7 @@ use engine_core::{
 };
 use engine_store::{StoreError, StoreRead, WorkerId};
 use engine_sync::SyncError;
-use store_sqlite::SqliteStore;
+use store_sqlite::{OpenOptions, SqliteStore};
 
 use crate::{ApiError, clock::SystemClock};
 
@@ -90,6 +90,34 @@ impl Engine {
         })
     }
 
+    /// Opens (creating if absent) a file-backed engine at `path`, created with
+    /// `options` — the FTS tokenizer, fixed at creation. The options only shape
+    /// a database this call creates; an existing database carries its recorded
+    /// tokenizer, and a mismatch is an error at open.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] if the database cannot be opened or migrated,
+    /// or its recorded tokenizer differs from the requested one.
+    pub fn open_with(path: impl AsRef<Path>, options: &OpenOptions) -> Result<Self, ApiError> {
+        Ok(Self {
+            store: SqliteStore::open_with(path, SystemClock, *options)?,
+        })
+    }
+
+    /// Opens an ephemeral in-memory engine (one connection is one database)
+    /// created with `options` — the FTS tokenizer, fixed at creation — for tests
+    /// and short-lived hosts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] if the database cannot be initialized.
+    pub fn open_in_memory_with(options: &OpenOptions) -> Result<Self, ApiError> {
+        Ok(Self {
+            store: SqliteStore::open_in_memory_with(SystemClock, *options)?,
+        })
+    }
+
     /// The account's scopes in one search domain: every scope the store knows for
     /// the account, filtered by [`SyncScope::search_domain`]. Enumerating instead
     /// of hard-coding keeps the facade from branching on protocol or naming a
@@ -136,7 +164,8 @@ fn decode_error(err: &serde_json::Error) -> ApiError {
 mod tests {
     use engine_core::mail::Mailbox;
 
-    use super::{ApiError, decode_error};
+    use super::{ApiError, Engine, decode_error};
+    use crate::{FtsTokenizer, OpenOptions};
 
     #[test]
     fn decode_error_maps_a_corrupt_payload_to_a_store_error() {
@@ -144,5 +173,16 @@ mod tests {
         // input, so the read methods surface it as `ApiError::Store`.
         let err = serde_json::from_str::<Mailbox>("not a mailbox").unwrap_err();
         assert!(matches!(decode_error(&err), ApiError::Store(_)));
+    }
+
+    #[test]
+    fn open_in_memory_with_trigram_constructs() {
+        // Reaches through the crate-root re-export, so it also proves a host can
+        // name the options without depending on `store_sqlite` itself.
+        let engine = Engine::open_in_memory_with(&OpenOptions {
+            fts_tokenizer: FtsTokenizer::Trigram,
+        })
+        .expect("engine");
+        assert!(format!("{engine:?}").contains("Engine"));
     }
 }
