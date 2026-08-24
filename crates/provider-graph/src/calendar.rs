@@ -21,8 +21,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
-    EventWriteReceipt, PageToken, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync,
-    SyncKind, WriteGuard,
+    EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError, ProviderResult,
+    RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
 
 use crate::{
@@ -46,6 +46,17 @@ const GRAPH_RSVP: RsvpControls = RsvpControls {
     comment: true,
     suppress_notification: true,
     guard: WriteGuard::Absent,
+};
+
+/// What a Graph series edit costs the user — the harshest of the four.
+///
+/// Moving the series' time **and** changing its rule each destroy every per-occurrence
+/// exception, reverting them to the pattern. Measured, and re-measured by
+/// `tests/live_calendar_survival.rs` against the real account.
+const GRAPH_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival {
+    survives_time_change: false,
+    survives_rule_change: false,
+    clobbers_own_fields: false,
 };
 
 /// A Microsoft Graph calendar read/sync/write provider bound to one calendar.
@@ -101,7 +112,7 @@ impl GraphCalendarProvider {
             display_zone,
             capabilities: Capabilities::none()
                 .with_calendars()
-                .with_calendar_writes(WriteGuard::Enforced)
+                .with_calendar_writes(WriteGuard::Enforced, GRAPH_OVERRIDE_SURVIVAL)
                 .with_calendar_rsvp(GRAPH_RSVP)
                 .with_calendar_scheduling(),
         }

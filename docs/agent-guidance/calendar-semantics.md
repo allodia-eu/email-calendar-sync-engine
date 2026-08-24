@@ -378,7 +378,30 @@ mail is still readable. Two things a real server-authored invitation taught us
   alone. Those record what the user did to individual occurrences, and on CalDAV, JMAP and
   Google they survive a rule change. **Graph is the exception and discards them** — Outlook's
   own behaviour, measured — which is a property of that transport rather than of the edit, so
-  it belongs in a host's confirmation copy rather than in a refusal here.
+  it belongs in a host's confirmation copy rather than in a refusal here. That, and the two
+  other ways a series edit can cost the user their per-occurrence work, is what
+  `Capabilities::override_survival` states (below).
+- **What a series edit does to the user's per-occurrence changes is four different policies,
+  so it is a capability rather than a rule.** Every transport folds a per-occurrence change
+  into the same `Recurrence::overrides` map, and on *every* one a property the override never
+  set still follows the master — that is the JSCalendar patch model, and it is not in
+  question. What differs is what happens to the override itself:
+
+  | | CalDAV | JMAP | Graph | Google |
+  |---|---|---|---|---|
+  | The master's **start/end** moved | survives | survives | **destroyed** | **destroyed** |
+  | The **rule** changed | survives | survives | **destroyed** | survives |
+  | A property the override **set for itself** (its title) | kept | kept | kept | **clobbered** |
+  | The master **deleted** | resource goes | object goes | occurrence `404`s | instances go `cancelled` |
+
+  `engine_provider::OverrideSurvival` is that table as an adapter constant, and each adapter's
+  live suite re-runs the experiment against its own server rather than trusting the row —
+  `OverrideSurvival::kept()` is the CalDAV/JMAP answer and the one a new transport should have
+  to depart from deliberately. A host reads it **before** offering the edit and pairs it with
+  whether the series actually has overrides: a clean series is never warned about, which is
+  what keeps the warning worth reading. Two of the three flags say "your work goes back to the
+  pattern"; `clobbers_own_fields` needs its own sentence, because nothing is unscheduled —
+  something is silently retitled.
 - **Rule:** `RawIcal` and `RawJsCalendar` are preserved beside the projection
   (model invariant). Provider writes round-trip from raw plus targeted patches,
   never by re-serializing the lossy projection. The projection exists for

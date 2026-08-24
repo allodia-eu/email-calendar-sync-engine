@@ -14,7 +14,8 @@ use engine_core::{
     time::{CalendarDate, CalendarDateTime},
 };
 use engine_provider::{
-    Capabilities, EventDeletion, EventDraft, EventRsvp, EventWrite, RsvpResponse, WriteGuard,
+    Capabilities, EventDeletion, EventDraft, EventRsvp, EventWrite, OverrideSurvival, RsvpResponse,
+    WriteGuard,
 };
 use serde_json::{Value, json};
 
@@ -206,7 +207,7 @@ async fn the_calendar_is_writable_but_reports_no_lost_update_guard() {
     // And CalDAV, the transport that *can* promise it, says so differently.
     assert_ne!(
         Capabilities::none()
-            .with_calendar_writes(WriteGuard::Enforced)
+            .with_calendar_writes(WriteGuard::Enforced, OverrideSurvival::kept())
             .calendar_write_guard(),
         caps.calendar_write_guard()
     );

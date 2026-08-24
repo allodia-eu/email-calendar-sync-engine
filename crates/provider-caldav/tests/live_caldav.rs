@@ -466,3 +466,16 @@ async fn caldav_an_occurrence_can_be_removed() {
     let _serial = common::serial_guard().await;
     common::recurrence::an_occurrence_can_be_removed(&provider, &account).await;
 }
+
+/// A series edit leaves the occurrences the user changed alone — what the adapter
+/// advertises, re-measured against the server.
+#[tokio::test]
+async fn caldav_override_survival_is_what_the_adapter_advertises() {
+    let Some((provider, account)) =
+        connect("caldav_override_survival_is_what_the_adapter_advertises").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::survival::survival_is_what_the_adapter_advertises(&provider, &account).await;
+}

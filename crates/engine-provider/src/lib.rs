@@ -49,7 +49,7 @@ pub use calendar_write::{
     RsvpResponse, TextEdit, WritePrecondition,
 };
 pub use capability::Capabilities;
-pub use capability_calendar::{RsvpControls, WriteGuard};
+pub use capability_calendar::{OverrideSurvival, RsvpControls, WriteGuard};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 pub use connection::{ConnectionInfo, HttpVersion, TlsVersion};
 #[cfg(feature = "http")]

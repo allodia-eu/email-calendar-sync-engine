@@ -373,3 +373,17 @@ async fn sabredav_an_occurrence_can_be_removed() {
     let _serial = common::serial_guard().await;
     common::recurrence::an_occurrence_can_be_removed(&provider, &account).await;
 }
+
+/// A series edit leaves the occurrences the user changed alone — the same claim the
+/// Stalwart suite makes, against the second server, because one server agreeing is not the
+/// same as CalDAV agreeing.
+#[tokio::test]
+async fn sabredav_override_survival_is_what_the_adapter_advertises() {
+    let Some((provider, account)) =
+        write_provider("sabredav_override_survival_is_what_the_adapter_advertises").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::survival::survival_is_what_the_adapter_advertises(&provider, &account).await;
+}

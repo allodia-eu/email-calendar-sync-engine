@@ -33,8 +33,9 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, Provider,
-    ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard, WritePrecondition,
+    Capabilities, ConnectionInfo, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
+    OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard,
+    WritePrecondition,
 };
 
 /// The account's own address — and deliberately **not** the one the invitation was sent to,
@@ -208,7 +209,7 @@ impl Provider for CalendarServer {
         ConnectionInfo::new(
             Capabilities::none()
                 .with_calendars()
-                .with_calendar_writes(WriteGuard::Enforced)
+                .with_calendar_writes(WriteGuard::Enforced, OverrideSurvival::kept())
                 .with_calendar_rsvp(SERVER_SCHEDULED),
         )
     }

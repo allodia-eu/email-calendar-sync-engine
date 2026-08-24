@@ -20,8 +20,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
-    EventWriteReceipt, PageToken, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync,
-    SyncKind, WriteGuard,
+    EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError, ProviderResult,
+    RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
 
 /// What a Google RSVP can and cannot control.
@@ -34,6 +34,18 @@ const GOOGLE_RSVP: RsvpControls = RsvpControls {
     comment: true,
     suppress_notification: true,
     guard: WriteGuard::Enforced,
+};
+
+/// What a Google series edit costs the user.
+///
+/// The only transport that **overwrites an override's own fields**: renaming the series
+/// renames the occurrence the user had renamed. Moving the series' time also destroys every
+/// override; changing the rule does not. Measured, and re-measured by
+/// `tests/live_calendar_survival.rs` against the real account.
+const GOOGLE_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival {
+    survives_time_change: false,
+    survives_rule_change: true,
+    clobbers_own_fields: true,
 };
 
 use crate::{
@@ -86,7 +98,7 @@ impl GoogleCalendarProvider {
             window: None,
             capabilities: Capabilities::none()
                 .with_calendars()
-                .with_calendar_writes(WriteGuard::Enforced)
+                .with_calendar_writes(WriteGuard::Enforced, GOOGLE_OVERRIDE_SURVIVAL)
                 .with_calendar_rsvp(GOOGLE_RSVP)
                 .with_calendar_scheduling(),
         }
