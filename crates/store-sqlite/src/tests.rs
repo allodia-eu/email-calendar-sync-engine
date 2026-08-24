@@ -5,7 +5,10 @@
 use engine_store::ManualClock;
 
 use super::SqliteStore;
-use crate::FtsTokenizer;
+use crate::{
+    options::{FtsTokenizer, OpenOptions},
+    tokenizer_reconcile::FtsTokenizerKnown,
+};
 
 #[test]
 fn debug_is_redacted() {
@@ -73,7 +76,7 @@ fn clear_one_cursor_clears_the_cursor_but_keeps_a_held_lease() {
     )
     .unwrap();
 
-    super::clear_one_cursor(&conn, "s").unwrap();
+    crate::scope_ops::clear_one_cursor(&conn, "s").unwrap();
 
     let (cursor, token, lease): (Option<String>, i64, Option<String>) = conn
         .query_row(
@@ -222,12 +225,7 @@ fn fresh_database_uses_the_requested_tokenizer_for_both_fts_tables() {
 fn a_fresh_database_records_the_requested_tokenizer() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
-    super::reconcile_fts_tokenizer(
-        super::FtsTokenizerKnown::Fresh,
-        &conn,
-        FtsTokenizer::Trigram,
-    )
-    .unwrap();
+    super::reconcile_fts_tokenizer(FtsTokenizerKnown::Fresh, &conn, FtsTokenizer::Trigram).unwrap();
     let v: String = conn
         .query_row(
             "SELECT value FROM meta WHERE key = 'fts_tokenizer'",
@@ -245,16 +243,13 @@ fn a_pre_option_database_is_recorded_as_porter_and_refuses_trigram() {
     crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
     // Simulate pre-option: the meta table exists, the row does not.
     let recorded = super::reconcile_fts_tokenizer(
-        super::FtsTokenizerKnown::PreOption,
+        FtsTokenizerKnown::PreOption,
         &conn,
         FtsTokenizer::PorterUnicode61,
     );
     assert!(recorded.is_ok());
-    let refused = super::reconcile_fts_tokenizer(
-        super::FtsTokenizerKnown::PreOption,
-        &conn,
-        FtsTokenizer::Trigram,
-    );
+    let refused =
+        super::reconcile_fts_tokenizer(FtsTokenizerKnown::PreOption, &conn, FtsTokenizer::Trigram);
     let msg = format!("{}", refused.unwrap_err());
     assert!(msg.contains("fts tokenizer mismatch"), "{msg}");
 }
@@ -269,16 +264,54 @@ fn a_recorded_tokenizer_mismatching_the_request_is_refused() {
     )
     .unwrap();
     let refused = super::reconcile_fts_tokenizer(
-        super::FtsTokenizerKnown::Known(FtsTokenizer::Trigram),
+        FtsTokenizerKnown::Known(FtsTokenizer::Trigram),
         &conn,
         FtsTokenizer::PorterUnicode61,
     );
     assert!(refused.is_err());
     // Re-requesting the recorded value stays a no-op.
     super::reconcile_fts_tokenizer(
-        super::FtsTokenizerKnown::Known(FtsTokenizer::Trigram),
+        FtsTokenizerKnown::Known(FtsTokenizer::Trigram),
         &conn,
         FtsTokenizer::Trigram,
     )
     .unwrap();
+}
+
+/// The `_with` constructors must thread the option all the way through
+/// `configure`: the FTS tables this open creates carry the requested tokenizer
+/// and the choice is recorded in `meta`. An in-memory database vanishes with
+/// its connection, so construction succeeding under a non-default option —
+/// with the schema and record to show for it — is this test's assertion; the
+/// mismatch refusal itself is covered at the connection level above.
+#[tokio::test]
+async fn open_in_memory_with_trigram_creates_and_records_the_trigram_index() {
+    let store = SqliteStore::open_in_memory_with(
+        ManualClock::new("2026-01-01T00:00:00Z".parse().expect("valid instant")),
+        OpenOptions {
+            fts_tokenizer: FtsTokenizer::Trigram,
+        },
+    )
+    .expect("open under the trigram option");
+    let (ddl, recorded): (String, String) = store
+        .read(|conn| {
+            let ddl = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = 'fts_index'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("fts_index exists");
+            let recorded = conn
+                .query_row(
+                    "SELECT value FROM meta WHERE key = 'fts_tokenizer'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("the tokenizer row is recorded");
+            (ddl, recorded)
+        })
+        .await;
+    assert!(ddl.contains("tokenize = 'trigram'"), "{ddl}");
+    assert_eq!(recorded, "trigram");
 }

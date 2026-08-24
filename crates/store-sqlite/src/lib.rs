@@ -71,16 +71,12 @@ pub use options::{FtsTokenizer, OpenOptions};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
-// At the crate root so the tests reach the pair through `super::`; gated
-// because the `configure` wiring — the next commit on this branch — is the
-// production caller that makes the import unconditional.
-#[cfg(test)]
-use crate::tokenizer_reconcile::{FtsTokenizerKnown, reconcile_fts_tokenizer};
 use crate::{
     blob::BlobArea,
     convert::{backend, expiry_after, scope_key},
     pool::Pool,
     scope_ops::OwnedUpdate,
+    tokenizer_reconcile::{classify, reconcile_fts_tokenizer},
 };
 
 /// A SQLite-backed [`Store`] + [`StoreRead`](engine_store::StoreRead), parameterized by an injected
@@ -110,36 +106,62 @@ impl<C> fmt::Debug for SqliteStore<C> {
 
 impl<C: Clock> SqliteStore<C> {
     /// Opens an ephemeral in-memory store (one connection = one database), driven
-    /// by `clock`. Each call is an isolated, empty database.
+    /// by `clock`, with default creation options (the porter unicode61 FTS
+    /// tokenizer). Each call is an isolated, empty database.
     ///
     /// # Errors
     ///
     /// Returns [`engine_store::StoreError::Backend`] if the database cannot be
     /// opened or the schema cannot be created.
     pub fn open_in_memory(clock: C) -> Result<Self> {
+        Self::open_in_memory_with(clock, OpenOptions::default())
+    }
+
+    /// Opens an ephemeral in-memory store with explicit creation options; see
+    /// [`Self::open_in_memory`] for the defaults this replaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`engine_store::StoreError::Backend`] if the database cannot be
+    /// opened or the schema cannot be created.
+    pub fn open_in_memory_with(clock: C, options: OpenOptions) -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(backend)?;
-        Self::configure(conn, clock, None, BlobArea::temporary()?)
+        Self::configure(conn, clock, None, BlobArea::temporary()?, options)
     }
 
     /// Opens (creating if absent) a file-backed store at `path`, driven by
-    /// `clock`. File databases run in WAL mode with a large mmap window.
+    /// `clock`, with default creation options (the porter unicode61 FTS
+    /// tokenizer). File databases run in WAL mode with a large mmap window.
     ///
     /// # Errors
     ///
     /// Returns [`engine_store::StoreError::Backend`] if the database cannot be
     /// opened or the schema cannot be created.
     pub fn open(path: impl AsRef<Path>, clock: C) -> Result<Self> {
+        Self::open_with(path, clock, OpenOptions::default())
+    }
+
+    /// Opens (creating if absent) a file-backed store with explicit creation
+    /// options. The tokenizer option only shapes a database this call creates;
+    /// an existing database records its own and a mismatch is an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`engine_store::StoreError::Backend`] if the database cannot be
+    /// opened or the schema cannot be created.
+    pub fn open_with(path: impl AsRef<Path>, clock: C, options: OpenOptions) -> Result<Self> {
         let path = path.as_ref();
         // Open the database first: an unusable path must fail here, before we would
         // otherwise create the blob directory (whose `create_dir_all` would mask the
         // bad path by materializing its missing parent).
         let conn = Connection::open(path).map_err(backend)?;
         let blobs = BlobArea::beside_db(path)?;
-        Self::configure(conn, clock, Some(path), blobs)
+        Self::configure(conn, clock, Some(path), blobs, options)
     }
 
-    /// Applies the pragmas, migrates the schema to the latest version, opens the
-    /// reader pool, and wraps them alongside the blob area.
+    /// Applies the pragmas, classifies the recorded FTS tokenizer against
+    /// `options`, migrates the schema under it, opens the reader pool, and
+    /// wraps them alongside the blob area.
     ///
     /// `path` is `Some` exactly when the database is file-backed — which is what
     /// decides both the WAL pragmas and whether readers can be opened at all.
@@ -148,9 +170,15 @@ impl<C: Clock> SqliteStore<C> {
         clock: C,
         path: Option<&Path>,
         blobs: BlobArea,
+        options: OpenOptions,
     ) -> Result<Self> {
         pool::tune(&conn, path.is_some())?;
-        let schema = migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61)?;
+        // Before migrate: migrate() creates the meta table, erasing the
+        // fresh-vs-pre-option distinction the tokenizer record relies on.
+        let tokenizer_found = classify(&conn)?;
+        let schema = migrations::migrate(&mut conn, options.fts_tokenizer)?;
+        // After migrate (the record insert needs meta), before readers open.
+        reconcile_fts_tokenizer(tokenizer_found, &conn, options.fts_tokenizer)?;
         reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;
         // After the migration, so a reader never sees a schema mid-step.
         let readers = match path {
@@ -267,7 +295,7 @@ impl<C: Clock> SqliteStore<C> {
     ///
     /// Returns [`engine_store::StoreError::Backend`] on a backend failure.
     pub async fn reset_sync(&self) -> Result<()> {
-        self.call(|conn| clear_sync_cursors(conn)).await
+        self.call(|conn| scope_ops::clear_sync_cursors(conn)).await
     }
 
     /// Clears one scope's sync cursor, so the next sync of that scope re-snapshots it
@@ -290,7 +318,8 @@ impl<C: Clock> SqliteStore<C> {
     /// Returns [`engine_store::StoreError::Backend`] on a backend failure.
     pub async fn clear_scope_cursor(&self, scope: &SyncScope) -> Result<()> {
         let key = scope_key(scope);
-        self.call(move |conn| clear_one_cursor(conn, &key)).await
+        self.call(move |conn| scope_ops::clear_one_cursor(conn, &key))
+            .await
     }
 
     /// Compacts the database, reclaiming the free pages that deletions leave behind —
@@ -322,30 +351,6 @@ impl<C: Clock> SqliteStore<C> {
     }
 }
 
-/// Clears every scope's cursor and lease so the next sync re-snapshots from scratch.
-/// Leaves the scope rows (and their stable `scope_key`s) and objects in place — the
-/// re-snapshot overwrites and tombstones them — so no object is orphaned.
-fn clear_sync_cursors(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "UPDATE sync_scope SET cursor = NULL, lease_expiry = NULL",
-        [],
-    )
-    .map_err(backend)?;
-    Ok(())
-}
-
-/// Clears one scope's cursor (by `scope_key`) so the next sync re-snapshots it. Leaves
-/// `lease_expiry` and the fencing token untouched, so a concurrent in-flight sync's
-/// lease is not stolen (see [`SqliteStore::clear_scope_cursor`]).
-fn clear_one_cursor(conn: &Connection, scope_key: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE sync_scope SET cursor = NULL WHERE scope_key = ?1",
-        [scope_key],
-    )
-    .map_err(backend)?;
-    Ok(())
-}
-
 /// On open, compares the stored `normalizer_version` to the build's `current`; on a
 /// mismatch (including a pre-V4 database with no row) it clears the sync cursors so the
 /// next sync re-normalizes everything, then records `current`. See
@@ -362,7 +367,7 @@ fn reconcile_normalizer_version(conn: &Connection, current: u32) -> Result<()> {
     if stored.as_deref() == Some(current.to_string().as_str()) {
         return Ok(());
     }
-    clear_sync_cursors(conn)?;
+    scope_ops::clear_sync_cursors(conn)?;
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('normalizer_version', ?1)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",

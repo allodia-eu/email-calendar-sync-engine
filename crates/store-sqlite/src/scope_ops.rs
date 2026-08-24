@@ -472,3 +472,28 @@ fn reconcile_op(tx: &Transaction<'_>, rec: &PendingReconciliation) -> Result<boo
     }
     Ok(matches)
 }
+
+/// Clears every scope's cursor and lease so the next sync re-snapshots from
+/// scratch. Leaves the scope rows (and their stable `scope_key`s) and objects
+/// in place — the re-snapshot overwrites and tombstones them. Backs the
+/// store's `reset_sync` and the normalizer reconciliation's cursor clear.
+pub(crate) fn clear_sync_cursors(conn: &Connection) -> Result<()> {
+    sql::execute(
+        conn,
+        "UPDATE sync_scope SET cursor = NULL, lease_expiry = NULL",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Clears one scope's cursor (by `scope_key`) so the next sync of that scope
+/// re-snapshots it, leaving `lease_expiry` and the fencing token untouched so
+/// a concurrent in-flight sync's lease is not stolen (`clear_scope_cursor`).
+pub(crate) fn clear_one_cursor(conn: &Connection, scope_key: &str) -> Result<()> {
+    sql::execute(
+        conn,
+        "UPDATE sync_scope SET cursor = NULL WHERE scope_key = ?1",
+        [scope_key],
+    )?;
+    Ok(())
+}
