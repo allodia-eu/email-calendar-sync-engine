@@ -25,7 +25,7 @@ use engine_core::{
 use engine_provider::{
     Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion, EventDraft,
     EventEdit, EventRsvp, EventWrite, EventWriteReceipt, IgnoreConnectSteps, Provider,
-    ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard,
+    ProviderError, ProviderResult, ReportingProvider, RsvpControls, ScopeSync, WriteGuard,
 };
 use engine_tls::TlsClientConfig;
 
@@ -311,6 +311,14 @@ impl CalDavProvider {
         CalendarId::new(self.collection.key().clone())
     }
 }
+
+/// A calendar collection has no mail, so this adapter reports nothing and takes the
+/// trait's rejecting default. It opts in at all so a host can hold every adapter it
+/// drives — mail and calendar alike — behind one `Box<dyn ReportingProvider>`; without
+/// the impl that boxing would not compile, and a host would need a second trait object
+/// for the calendar half. `Capabilities::mail_report` stays `None`, so a
+/// capability-checking caller never arrives here.
+impl ReportingProvider for CalDavProvider {}
 
 #[async_trait]
 impl Provider for CalDavProvider {
