@@ -25,9 +25,16 @@ fn ymd(year: i16, month: i8, day: i8) -> Result<Date, ExpandError> {
 }
 
 /// Adds `days` to a date.
+///
+/// The span is built **fallibly**. `Span::days` panics past the representable range rather than
+/// erroring, and `days` here is derived from a rule's `INTERVAL` — a number a server chooses and
+/// nothing upstream bounds. A step nobody can take is a rule this engine cannot expand, which the
+/// caller already knows how to report; a panic is a host process gone over one malformed RRULE.
 fn add_days(date: Date, days: i64) -> Result<Date, ExpandError> {
-    date.checked_add(Span::new().days(days))
-        .map_err(|_| ExpandError::OutOfRange)
+    let step = Span::new()
+        .try_days(days)
+        .map_err(|_| ExpandError::OutOfRange)?;
+    date.checked_add(step).map_err(|_| ExpandError::OutOfRange)
 }
 
 /// Maps an engine weekday to jiff's.
