@@ -60,6 +60,18 @@ If product pressure changes the order, the domain model tests still need JMAP an
   reads, groups, photos, and contact-write guard strength independently. JMAP and
   Graph are `WriteGuard::Absent`; Google and CardDAV are
   `WriteGuard::Enforced`.
+- **A new optional verb goes on `Provider` with a rejecting default, never on its own
+  sub-trait.** The default is what makes it optional: an adapter that cannot do it
+  implements nothing and says nothing, and `Capabilities` gates the caller before it
+  asks. A sub-trait is for a distinct data domain with its own methods — the
+  `ContactsProvider` above is the one that earns it, and its ten methods are why.
+
+  A one-method sub-trait costs what a rejecting default does not, and the cost lands
+  outside this repo. Rust will not upcast `dyn Provider` to `dyn Sub`, so a host that
+  wants the verb has to widen its trait object where the box is *built* and then through
+  every signature naming the bound. Measured on one host when `report_message` moved off
+  such a sub-trait onto `Provider`: 97 changed files became 36, with no behaviour
+  difference. Ask which half of that a new verb is before adding the trait.
 - The streaming primitive is `stream_email(account, cursor, window, fetch_batch, chunk_size) -> EmailStream`: a pull stream of `EmailChunk`s for one sync pass. Each chunk carries a `PassMode` (additive or reconcile, constant across the pass), its `changed` upserts and explicit `removed` keys, a `present` id set (reconcile only — the orchestrator accumulates it to tombstone at end of pass), an optional `total`, and an `advance_to` cursor disposition: additive chunks checkpoint the cursor on **every** commit (so a killed cold backfill resumes where it stopped), reconcile chunks hold it until a final tombstoning chunk. The two knobs are decoupled (`store-and-sync.md`): `fetch_batch` bounds each network round trip, `chunk_size` bounds how many messages a chunk commits/reports — a large batch with a small chunk gives *both* few round trips *and* row-as-it-arrives commits. `sync_email` is a **default drain** over the stream (one combined `SyncUpdate`), so a new adapter implements one streaming method and gets both incremental streaming and whole-scope fetch for free; it drains under `default_sync_window` (the provider's default depth, e.g. an IMAP/Graph `with_since`), while the streaming path takes its `window` **per sync** so a host changes depth without reconnecting.
 - `PageToken`/`SyncPage`/`SyncKind` are provider-**internal** paging helpers (an HTTP adapter re-chunks its own whole-page fetch into the stream with `split_page`), not trait surface. Whatever resumes an adapter's fetch — JMAP query position or `Email/changes` state, IMAP UID range, Gmail/Graph page token or delta link — the adapter encodes and decodes it itself; the engine only round-trips the opaque `SyncState` cursor.
 - Adapters own protocol pagination, retries, throttling, and provider quirks. Chunks should be ordered so the first ones are the most useful (mail newest-first), since a streaming host renders them as they commit.
