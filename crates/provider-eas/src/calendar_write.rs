@@ -30,12 +30,14 @@
 //!
 //! Recurrence: `Recurrence { Type, Interval?, DayOfWeek?, DayOfMonth?,
 //! WeekOfMonth?, MonthOfYear?, Until? XOR Occurrences? }` reusing the
-//! parse-model [`CalendarRecurrence`]. `no_end` is DERIVED, not a wire
+//! parse-model [`CalendarRecurrence`](crate::calendar::CalendarRecurrence).
+//! `no_end` is DERIVED, not a wire
 //! token ([MS-ASCAL] §2.2.2.37.1) — never emitted; `Until` wins when both
 //! end conditions are (invalidly) set, with a warning.
 //!
 //! Timezone: fixed-offset TZI blob only (design D6 — no DST rules on
-//! write); see [`build_fixed_offset_tzi_base64`].
+//! write); see
+//! [`build_fixed_offset_tzi_base64`](crate::calendar_write::build_fixed_offset_tzi_base64).
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
@@ -72,7 +74,8 @@ use crate::{
 ///
 /// `attendees`/`recurrence` REUSE the parse-model types so a downsynced
 /// item can round-trip: [`CalendarAttendee`] (`AttendeeStatus` is skipped
-/// on write — server-owned) and [`CalendarRecurrence`] (`no_end` is
+/// on write — server-owned) and
+/// [`CalendarRecurrence`] (`no_end` is
 /// derived, never a wire token).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CalendarEventWrite {
@@ -83,7 +86,8 @@ pub struct CalendarEventWrite {
     /// `AllDayEvent` — required ([MS-ASCAL] §2.2.2.1): `"1"`/`"0"`.
     pub all_day_event: bool,
     /// `Timezone` — required: the base64 [MS-ASDTYPE] §2.7.6 TZI blob
-    /// (build one with [`build_fixed_offset_tzi_base64`]).
+    /// (build one with
+    /// [`build_fixed_offset_tzi_base64`]).
     pub time_zone_base64: String,
     /// `Subject` ([MS-ASCAL] §2.2.2.43) — omitted from the wire when `None`.
     pub subject: Option<String>,
@@ -151,6 +155,11 @@ impl CalendarEventWrite {
     ///   accepted defensively, exactly like the parse side, and kept verbatim);
     /// * `time_zone_base64` must be non-empty;
     /// * `sensitivity` ≤ 3 and `busy_status` ≤ 4 when set.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first failed rule as a `CalendarWriteError` (datetime shape,
+    /// empty TimeZone blob, out-of-range enum, …).
     pub fn validate(&self) -> Result<(), CalendarWriteError> {
         if !is_valid_eas_datetime(&self.start_time) {
             return Err(CalendarWriteError::InvalidStartTime(
@@ -455,8 +464,8 @@ mod tests {
     use super::*;
     use crate::{
         calendar::{
-            CAL_ORGANIZER_EMAIL, CAL_ORGANIZER_NAME, TimeZoneBlob, TziTimeZone,
-            parse_calendar_application_data, parse_tzi_blob, tests::TZI_FLAT_UTC8,
+            TimeZoneBlob, TziTimeZone, parse_calendar_application_data, parse_tzi_blob,
+            tests::TZI_FLAT_UTC8,
         },
         wbxml::{WbxmlValue, deserialize_to_tree, serialize_tree},
     };

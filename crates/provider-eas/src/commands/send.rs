@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{
+    PAGE_COMPOSE, SendMailRequest, SmartForwardRequest, SmartReplyRequest, WbxmlElement,
+    WbxmlError, compose, text_value,
+};
 
 // ============================================================================
 // SendMail / SmartForward / SmartReply
@@ -30,12 +33,11 @@ use super::*;
 pub fn build_send_mail_request(req: &SendMailRequest) -> WbxmlElement {
     let mut children = Vec::with_capacity(3);
     let synthesized;
-    let cid = match &req.client_id {
-        Some(c) => c.as_str(),
-        None => {
-            synthesized = crate::types::new_send_client_id("SM");
-            synthesized.as_str()
-        }
+    let cid = if let Some(c) = &req.client_id {
+        c.as_str()
+    } else {
+        synthesized = crate::types::new_send_client_id("SM");
+        synthesized.as_str()
     };
     children.push(WbxmlElement::text(PAGE_COMPOSE, compose::CLIENT_ID, cid));
     if req.save_to_sent {
@@ -87,12 +89,11 @@ fn build_smart_send_children(
     // Synthesize when the caller passes None so the wire shape is always
     // spec-valid.
     let synthesized;
-    let cid = match client_id {
-        Some(c) => c,
-        None => {
-            synthesized = crate::types::new_send_client_id("SMRT-");
-            synthesized.as_str()
-        }
+    let cid = if let Some(c) = client_id {
+        c
+    } else {
+        synthesized = crate::types::new_send_client_id("SMRT-");
+        synthesized.as_str()
     };
     children.push(WbxmlElement::text(PAGE_COMPOSE, compose::CLIENT_ID, cid));
     children.push(WbxmlElement::container(
@@ -136,6 +137,11 @@ fn build_smart_send_children(
 /// Decodes `req.mime_base64` to the raw MIME entity (see
 /// `build_smart_send_children`); a decode failure is returned as
 /// `WbxmlError::InvalidContent` before anything reaches the wire.
+///
+/// # Errors
+///
+/// Returns `WbxmlError::InvalidContent` when `mime_base64` does not decode —
+/// nothing reaches the wire in that case.
 pub fn build_smart_forward_request(req: &SmartForwardRequest) -> Result<WbxmlElement, WbxmlError> {
     Ok(WbxmlElement::container(
         PAGE_COMPOSE,
@@ -153,6 +159,11 @@ pub fn build_smart_forward_request(req: &SmartForwardRequest) -> Result<WbxmlEle
 
 /// Build a SmartReply request. Same wire shape as SmartForward
 /// ([MS-ASCMD] 6.43) under the SmartReply root (page 21, 0x07).
+///
+/// # Errors
+///
+/// Returns `WbxmlError::InvalidContent` when `mime_base64` does not decode —
+/// nothing reaches the wire in that case.
 pub fn build_smart_reply_request(req: &SmartReplyRequest) -> Result<WbxmlElement, WbxmlError> {
     Ok(WbxmlElement::container(
         PAGE_COMPOSE,
@@ -171,6 +182,12 @@ pub fn build_smart_reply_request(req: &SmartReplyRequest) -> Result<WbxmlElement
 /// Parse a SendMail/SmartForward/SmartReply response. They share the same
 /// structure: an optional `<Status>` (token 0x12) child. An absent or empty
 /// body is treated as success (status 1) per [MS-ASCMD] 2.2.3.162.6.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_send_mail_response(root: &WbxmlElement) -> Result<u32, WbxmlError> {
     for child in &root.children {
         if child.page == PAGE_COMPOSE && child.token == compose::STATUS {

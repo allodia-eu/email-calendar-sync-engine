@@ -88,6 +88,7 @@ impl WbxmlElement {
     }
 
     /// Add a child to this element, returning `&mut Self` for chaining.
+    #[must_use]
     pub fn with_child(mut self, child: WbxmlElement) -> Self {
         self.children.push(child);
         self
@@ -101,16 +102,15 @@ impl WbxmlElement {
     /// (rate-limited by the caller's own log config; a malformed response
     /// floods only the failing command's log).
     pub fn tag_name(&self) -> &'static str {
-        match code_pages::code_page(self.page).and_then(|p| p.tag_name(self.token)) {
-            Some(n) => n,
-            None => {
-                log::warn!(
-                    "[wbxml] unregistered token 0x{:02X} on code page {} — possible misdecode or missing tag constant",
-                    self.token,
-                    self.page
-                );
-                "unknown"
-            }
+        if let Some(n) = code_pages::code_page(self.page).and_then(|p| p.tag_name(self.token)) {
+            n
+        } else {
+            log::warn!(
+                "[wbxml] unregistered token 0x{:02X} on code page {} — possible misdecode or missing tag constant",
+                self.token,
+                self.page
+            );
+            "unknown"
         }
     }
 

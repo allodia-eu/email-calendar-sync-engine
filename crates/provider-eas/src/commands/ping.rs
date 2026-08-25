@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{
+    PAGE_PING, PING_CLASS, PING_FOLDER, PING_FOLDERS, PING_HEARTBEAT_INTERVAL, PING_ID, PING_PING,
+    PING_STATUS, PingRequest, PingResult, WbxmlElement, WbxmlError, text_value,
+};
 
 // ============================================================================
 // Ping
@@ -34,6 +37,14 @@ pub fn build_ping_request(req: &PingRequest) -> WbxmlElement {
     WbxmlElement::container(PAGE_PING, PING_PING, children)
 }
 
+/// Parse a Ping response: map the wire status to its canonical string and
+/// collect the changed-folder ServerIds.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_ping_response(root: &WbxmlElement) -> Result<PingResult, WbxmlError> {
     let mut result = PingResult::default();
     for child in &root.children {

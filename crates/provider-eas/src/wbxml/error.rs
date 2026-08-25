@@ -23,7 +23,12 @@ pub enum WbxmlError {
     /// Attributes (`has_attributes` bit set) are unsupported.
     AttributesUnsupported(u8),
     /// The parser expected TEXT or OPAQUE data for a tag and saw something else.
-    UnexpectedToken { expected: &'static str, got: u8 },
+    UnexpectedToken {
+        /// What the parser expected (for the message).
+        expected: &'static str,
+        /// The token byte actually seen.
+        got: u8,
+    },
     /// Hit end-of-document while still inside a tag the caller was iterating.
     UnexpectedEndOfDocument,
     /// An mb_u_int32 encoding was longer than 5 bytes (malformed).
@@ -41,9 +46,13 @@ pub enum WbxmlError {
     InvalidContent(String),
     /// Expected a specific tag at the root or a child position and found a different one.
     UnexpectedTag {
+        /// Expected element's code page.
         expected_page: u8,
+        /// Expected element's token.
         expected_token: u8,
+        /// Actual element's code page.
         actual_page: u8,
+        /// Actual element's token.
         actual_token: u8,
     },
 }
@@ -54,18 +63,17 @@ impl fmt::Display for WbxmlError {
             WbxmlError::UnexpectedEof => write!(f, "unexpected end of WBXML input"),
             WbxmlError::EmptyStream => write!(f, "WBXML input stream is empty"),
             WbxmlError::StringTableUnsupported => write!(f, "WBXML string table unsupported"),
-            WbxmlError::UnknownCodePage(p) => write!(f, "unknown WBXML code page {}", p),
+            WbxmlError::UnknownCodePage(p) => write!(f, "unknown WBXML code page {p}"),
             WbxmlError::UnsupportedGlobalToken(t) => {
-                write!(f, "unsupported WBXML global token 0x{:02X}", t)
+                write!(f, "unsupported WBXML global token 0x{t:02X}")
             }
             WbxmlError::AttributesUnsupported(t) => {
-                write!(f, "WBXML attributes unsupported (token 0x{:02X})", t)
+                write!(f, "WBXML attributes unsupported (token 0x{t:02X})")
             }
             WbxmlError::UnexpectedToken { expected, got } => {
                 write!(
                     f,
-                    "unexpected WBXML token: expected {}, got 0x{:02X}",
-                    expected, got
+                    "unexpected WBXML token: expected {expected}, got 0x{got:02X}"
                 )
             }
             WbxmlError::UnexpectedEndOfDocument => {
@@ -81,7 +89,7 @@ impl fmt::Display for WbxmlError {
             }
             WbxmlError::InvalidUtf8 => write!(f, "WBXML opaque data is not valid UTF-8"),
             WbxmlError::InvalidContent(msg) => {
-                write!(f, "invalid WBXML content: {}", msg)
+                write!(f, "invalid WBXML content: {msg}")
             }
             WbxmlError::UnexpectedTag {
                 expected_page,
@@ -91,8 +99,7 @@ impl fmt::Display for WbxmlError {
             } => {
                 write!(
                     f,
-                    "unexpected WBXML tag: expected page {} token 0x{:02X}, got page {} token 0x{:02X}",
-                    expected_page, expected_token, actual_page, actual_token
+                    "unexpected WBXML tag: expected page {expected_page} token 0x{expected_token:02X}, got page {actual_page} token 0x{actual_token:02X}"
                 )
             }
         }
@@ -113,4 +120,5 @@ impl From<std::string::FromUtf8Error> for WbxmlError {
     }
 }
 
+/// `Result` alias for the WBXML codec.
 pub type WbxmlResult<T> = Result<T, WbxmlError>;

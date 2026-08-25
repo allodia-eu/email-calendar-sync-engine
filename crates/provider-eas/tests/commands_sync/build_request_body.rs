@@ -71,10 +71,7 @@ fn build_sync_request_emits_body_preference_type_2() {
     assert_eq!(type_el.tag_name(), "Type");
     match &type_el.value {
         WbxmlValue::Text(t) => assert_eq!(t, "2"),
-        other => panic!(
-            "expected Text value for BodyPreference/Type, got {:?}",
-            other
-        ),
+        other => panic!("expected Text value for BodyPreference/Type, got {other:?}"),
     }
 }
 
@@ -217,7 +214,7 @@ fn build_sync_request_emits_truncation_size_when_set() {
         window_size: 25,
         filter_age_days: 7,
         fetch_body: true,
-        truncation_size: Some(204800),
+        truncation_size: Some(204_800),
         mime_support: None,
         mime_truncation: None,
         supported: None,
@@ -234,10 +231,7 @@ fn build_sync_request_emits_truncation_size_when_set() {
     assert_eq!(trunc.tag_name(), "TruncationSize");
     match &trunc.value {
         WbxmlValue::Text(t) => assert_eq!(t, "204800"),
-        other => panic!(
-            "expected Text value for BodyPreference/TruncationSize, got {:?}",
-            other
-        ),
+        other => panic!("expected Text value for BodyPreference/TruncationSize, got {other:?}"),
     }
 }
 
@@ -285,7 +279,7 @@ fn build_sync_request_omits_truncation_size_when_fetch_body_false() {
         window_size: 25,
         filter_age_days: 7,
         fetch_body: false,
-        truncation_size: Some(204800),
+        truncation_size: Some(204_800),
         mime_support: None,
         mime_truncation: None,
         supported: None,

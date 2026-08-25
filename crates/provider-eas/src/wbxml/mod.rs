@@ -12,12 +12,19 @@
 //   * `tags` — tag id constants for common pages
 //   * `error` / `WbxmlError` — error enum used across the codec
 
+/// The 26 MS-ASWBXML code pages as `(token, tag_name)` tables.
 pub mod code_pages;
+/// Streaming WBXML byte decoder plus the tree-based shortcut.
 pub mod deserializer;
+/// `WbxmlError` / `WbxmlResult` for the whole codec.
 pub mod error;
+/// WBXML global tokens (switch page, end, etc.).
 pub mod global_tokens;
+/// Streaming WBXML byte encoder plus the tree-based shortcut.
 pub mod serializer;
+/// Tag id constants for the common code pages.
 pub mod tags;
+/// The `WbxmlElement` / `WbxmlValue` tree types both directions share.
 pub mod types;
 
 // Convenience re-exports at the module root so callers can write
@@ -57,7 +64,7 @@ mod round_trip_tests {
             tok,
             vec![
                 WbxmlElement::empty(page, tok),
-                WbxmlElement::text(page, tok, format!("page={} tag={}", page, name)),
+                WbxmlElement::text(page, tok, format!("page={page} tag={name}")),
                 WbxmlElement::opaque(page, tok, vec![page, tok, 0xAA, 0xBB]),
                 WbxmlElement::container(page, tok, vec![WbxmlElement::text(page, tok, "nested")]),
             ],
@@ -65,7 +72,7 @@ mod round_trip_tests {
 
         let bytes = serialize_tree(&root).expect("serialize");
         let back = deserialize_to_tree(&bytes).expect("deserialize");
-        assert_eq!(root, back, "page {} round trip mismatch", page);
+        assert_eq!(root, back, "page {page} round trip mismatch");
     }
 
     #[test]

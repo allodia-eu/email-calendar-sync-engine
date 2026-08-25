@@ -39,22 +39,35 @@ use serde::Deserialize;
 
 const MAX_REDIRECTS: u8 = 3;
 
+/// Errors of the autodiscover flow.
 #[derive(Debug, thiserror::Error)]
 pub enum AutoDiscoverError {
+    /// A candidate URL answered a non-2xx HTTP status.
     #[error("HTTP {status}: {body}")]
-    HttpStatus { status: u16, body: String },
+    HttpStatus {
+        /// The HTTP status code.
+        status: u16,
+        /// (Possibly truncated) response body for diagnostics.
+        body: String,
+    },
+    /// The HTTP request itself failed (DNS, TLS, timeout).
     #[error("transport: {0}")]
     Transport(String),
+    /// The response body could not be parsed as POX/JSON.
     #[error("parse: {0}")]
     Parse(String),
+    /// The redirect chain exceeded `MAX_REDIRECTS` hops.
     #[error("redirect loop exceeded {0} hops")]
     TooManyRedirects(u8),
+    /// No flow (V1 POX, V2 JSON, DNS SRV) yielded an EAS URL.
     #[error("no EAS URL found in any flow")]
     NotFound,
 }
 
+/// Successful autodiscover outcome: the resolved EAS endpoint.
 #[derive(Debug, Clone)]
 pub struct AutodiscoverResult {
+    /// The `Microsoft-Server-ActiveSync` URL to configure the client with.
     pub eas_url: String,
 }
 
@@ -82,6 +95,12 @@ pub enum PoxOutcome {
 /// the ORIGINAL candidate-URL error (not a synthetic "SRV failed"), with the
 /// full attempt list (including the SRV attempt) warn-logged — no path is
 /// silently swallowed.
+///
+/// # Errors
+///
+/// Returns `AutoDiscoverError` — the ORIGINAL candidate-URL error once every
+/// flow (V1 POX, V2 JSON, DNS SRV) has failed, never a synthetic "not found";
+/// all attempts are warn-logged.
 pub async fn autodiscover(
     email: &str,
     http: &reqwest::Client,
@@ -90,25 +109,22 @@ pub async fn autodiscover(
     let domain = email
         .rsplit_once('@')
         .map(|(_, d)| d)
-        .ok_or_else(|| AutoDiscoverError::Parse(format!("not an email: {}", email)))?;
+        .ok_or_else(|| AutoDiscoverError::Parse(format!("not an email: {email}")))?;
     let v1_candidates = [
-        format!("https://{}/autodiscover/autodiscover.xml", domain),
-        format!(
-            "https://autodiscover.{}/autodiscover/autodiscover.xml",
-            domain
-        ),
+        format!("https://{domain}/autodiscover/autodiscover.xml"),
+        format!("https://autodiscover.{domain}/autodiscover/autodiscover.xml"),
     ];
     let mut attempts: Vec<String> = Vec::new();
     let mut original_error: Option<AutoDiscoverError> = None;
     for base in v1_candidates {
         match try_v1_pox(base.clone(), email, http, creds).await {
             Ok(url) => {
-                log::info!("AutoDiscover resolved via candidate URL {}", base);
+                log::info!("AutoDiscover resolved via candidate URL {base}");
                 return Ok(AutodiscoverResult { eas_url: url });
             }
             Err(e) => {
-                log::debug!("AutoDiscover V1 {} failed: {}", base, e);
-                attempts.push(format!("V1 {}: {}", base, e));
+                log::debug!("AutoDiscover V1 {base} failed: {e}");
+                attempts.push(format!("V1 {base}: {e}"));
                 if original_error.is_none() {
                     original_error = Some(e);
                 }
@@ -122,8 +138,8 @@ pub async fn autodiscover(
             return Ok(AutodiscoverResult { eas_url: url });
         }
         Err(e) => {
-            log::debug!("AutoDiscover V2 failed: {}", e);
-            attempts.push(format!("V2: {}", e));
+            log::debug!("AutoDiscover V2 failed: {e}");
+            attempts.push(format!("V2: {e}"));
             if original_error.is_none() {
                 original_error = Some(e);
             }
@@ -131,25 +147,26 @@ pub async fn autodiscover(
     }
     // DNS SRV fallback — [MS-ASCMD] §4.2 step 7, LAST resort.
     match srv_lookup_records(domain).await {
-        Ok(records) => match srv_autodiscover_url(&records) {
-            Some(url) => match try_v1_pox(url.clone(), email, http, creds).await {
-                Ok(eas_url) => {
-                    log::info!("AutoDiscover resolved via DNS SRV target ({})", url);
-                    return Ok(AutodiscoverResult { eas_url });
+        Ok(records) => {
+            if let Some(url) = srv_autodiscover_url(&records) {
+                match try_v1_pox(url.clone(), email, http, creds).await {
+                    Ok(eas_url) => {
+                        log::info!("AutoDiscover resolved via DNS SRV target ({url})");
+                        return Ok(AutodiscoverResult { eas_url });
+                    }
+                    Err(e) => {
+                        log::warn!("AutoDiscover SRV-derived URL {url} failed: {e}");
+                        attempts.push(format!("SRV {url}: {e}"));
+                    }
                 }
-                Err(e) => {
-                    log::warn!("AutoDiscover SRV-derived URL {} failed: {}", url, e);
-                    attempts.push(format!("SRV {}: {}", url, e));
-                }
-            },
-            None => {
+            } else {
                 log::info!(
                     "AutoDiscover SRV {} returned no usable record",
                     srv_query_name(domain)
                 );
                 attempts.push(format!("SRV {}: no usable record", srv_query_name(domain)));
             }
-        },
+        }
         Err(e) => {
             log::warn!(
                 "AutoDiscover SRV lookup {} failed: {}",
@@ -171,8 +188,11 @@ pub async fn autodiscover(
 /// unit-testable without a DNS resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SrvRecordData {
+    /// RFC 2782 priority (lower wins).
     pub priority: u16,
+    /// RFC 2782 weight (within a priority class).
     pub weight: u16,
+    /// TCP port of the target (typically 443).
     pub port: u16,
     /// Target host, possibly with a trailing root dot (as DNS names arrive).
     pub target: String,
@@ -211,10 +231,9 @@ pub fn srv_autodiscover_url(records: &[SrvRecordData]) -> Option<String> {
         return None;
     }
     match best.port {
-        443 => Some(format!("https://{}/autodiscover/autodiscover.xml", host)),
+        443 => Some(format!("https://{host}/autodiscover/autodiscover.xml")),
         port => Some(format!(
-            "https://{}:{}/autodiscover/autodiscover.xml",
-            host, port
+            "https://{host}:{port}/autodiscover/autodiscover.xml"
         )),
     }
 }
@@ -226,14 +245,14 @@ pub fn srv_autodiscover_url(records: &[SrvRecordData]) -> Option<String> {
 /// in `srv_autodiscover_url` (unit-tested).
 async fn srv_lookup_records(domain: &str) -> Result<Vec<SrvRecordData>, AutoDiscoverError> {
     let resolver = hickory_resolver::Resolver::builder_tokio()
-        .map_err(|e| AutoDiscoverError::Transport(format!("DNS resolver init: {}", e)))?
+        .map_err(|e| AutoDiscoverError::Transport(format!("DNS resolver init: {e}")))?
         .build()
-        .map_err(|e| AutoDiscoverError::Transport(format!("DNS resolver build: {}", e)))?;
+        .map_err(|e| AutoDiscoverError::Transport(format!("DNS resolver build: {e}")))?;
     let name = srv_query_name(domain);
     let lookup = resolver
         .srv_lookup(&name)
         .await
-        .map_err(|e| AutoDiscoverError::Transport(format!("SRV {}: {}", name, e)))?;
+        .map_err(|e| AutoDiscoverError::Transport(format!("SRV {name}: {e}")))?;
     let records = lookup
         .answers()
         .iter()
@@ -260,10 +279,9 @@ pub fn build_v1_pox_body(email: &str) -> String {
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/mobilesync/requestschema/2006">
   <Request>
     <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema>
-    <EMailAddress>{}</EMailAddress>
+    <EMailAddress>{email}</EMailAddress>
   </Request>
-</Autodiscover>"#,
-        email
+</Autodiscover>"#
     )
 }
 
@@ -271,8 +289,7 @@ pub fn build_v1_pox_body(email: &str) -> String {
 /// the endpoint answers 400 Protocol_MissingProtocol.
 pub fn build_v2_url(email: &str) -> String {
     format!(
-        "https://autodiscover-s.outlook.com/autodiscover/autodiscover.json?Email={}&Protocol=ActiveSync",
-        email
+        "https://autodiscover-s.outlook.com/autodiscover/autodiscover.json?Email={email}&Protocol=ActiveSync"
     )
 }
 
@@ -282,7 +299,7 @@ pub fn same_host(a: &str, b: &str) -> bool {
     let host = |u: &str| {
         reqwest::Url::parse(u)
             .ok()
-            .and_then(|p| p.host_str().map(|h| h.to_ascii_lowercase()))
+            .and_then(|p| p.host_str().map(str::to_ascii_lowercase))
     };
     matches!((host(a), host(b)), (Some(x), Some(y)) if x == y)
 }
@@ -309,8 +326,8 @@ async fn try_v1_pox(
             .header("Content-Type", "text/xml")
             .body(body.clone());
         if use_auth && let Some((u, p)) = creds {
-            let value = B64.encode(format!("{}:{}", u, p));
-            req = req.header("Authorization", format!("Basic {}", value));
+            let value = B64.encode(format!("{u}:{p}"));
+            req = req.header("Authorization", format!("Basic {value}"));
         }
         let resp = req
             .send()
@@ -349,7 +366,6 @@ async fn try_v1_pox(
                     use_auth = false;
                 }
                 current_url = u;
-                continue;
             }
         }
     }
@@ -363,6 +379,11 @@ async fn try_v1_pox(
 /// - `<Action>redirect</Action>` (case-insensitive whitespace trim) → `Redirect(<Redirect><Url>)`.
 /// - Otherwise the first `<Url>` (the `<MobileSync><Server><Url>`) → `Server`.
 /// - None of the above → `NotFound`.
+///
+/// # Errors
+///
+/// Returns `AutoDiscoverError::Parse` when the body is neither a Settings
+/// response carrying a MobileSync URL nor a well-formed redirect.
 pub fn parse_v1_pox_response(body: &str) -> Result<PoxOutcome, AutoDiscoverError> {
     if find_tag(body, "Error").is_some() {
         return Err(AutoDiscoverError::Parse("server returned <Error>".into()));
@@ -414,9 +435,14 @@ fn default_protocol() -> String {
 
 /// Parse the V2 JSON response: `{"Url":"...","Protocol":"ActiveSync"}`. Only
 /// `Url` is required; `Protocol` is ignored (defaulted if absent).
+///
+/// # Errors
+///
+/// Returns `AutoDiscoverError::Parse` when the body is not the V2 JSON shape or
+/// carries an Error element.
 pub fn parse_v2_json_response(body: &str) -> Result<String, AutoDiscoverError> {
     let parsed: V2Response = serde_json::from_str(body)
-        .map_err(|e| AutoDiscoverError::Parse(format!("V2 JSON: {}", e)))?;
+        .map_err(|e| AutoDiscoverError::Parse(format!("V2 JSON: {e}")))?;
     Ok(parsed.url)
 }
 
@@ -429,8 +455,8 @@ pub fn parse_v2_json_response(body: &str) -> Result<String, AutoDiscoverError> {
 /// forward from `<tag` to the `>` that closes the opening tag; the inner text
 /// starts immediately after that `>`.
 fn find_tag(body: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}", tag);
-    let close = format!("</{}>", tag);
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
     let open_start = body.find(&open)?;
     // Text starts right after the `>` that closes the opening tag. The opening
     // tag may contain attributes (`<Url foo="bar">`) so we scan forward from
@@ -505,9 +531,9 @@ mod tests {
         let parsed = parse_v1_pox_response(body).unwrap();
         match parsed {
             PoxOutcome::Server(url) => {
-                assert_eq!(url, "https://mail.contoso.com/Microsoft-Server-ActiveSync")
+                assert_eq!(url, "https://mail.contoso.com/Microsoft-Server-ActiveSync");
             }
-            _ => panic!("expected Server outcome"),
+            PoxOutcome::Redirect(_) => panic!("expected Server outcome"),
         }
     }
 
@@ -519,7 +545,7 @@ mod tests {
         let parsed = parse_v1_pox_response(body).unwrap();
         match parsed {
             PoxOutcome::Redirect(url) => assert!(url.contains("contoso.onmicrosoft.com")),
-            _ => panic!("expected Redirect"),
+            PoxOutcome::Server(_) => panic!("expected Redirect"),
         }
     }
 
@@ -620,7 +646,7 @@ mod tests {
     fn srv_trailing_dot_on_target_stripped() {
         let records = [srv(0, 0, 443, "mail.contoso.com.")];
         let url = srv_autodiscover_url(&records).unwrap();
-        assert!(!url.contains("com.."), "double dot leaked: {}", url);
+        assert!(!url.contains("com.."), "double dot leaked: {url}");
         assert!(url.starts_with("https://mail.contoso.com/"));
     }
 

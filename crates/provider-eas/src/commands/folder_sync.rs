@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{
+    AS_STATUS, EasFolder, FH_ADD, FH_CHANGES, FH_DELETE, FH_DISPLAY_NAME, FH_FOLDER_SYNC,
+    FH_PARENT_ID, FH_SERVER_ID, FH_STATUS, FH_SYNC_KEY, FH_TYPE, FH_UPDATE, FolderSyncResult,
+    PAGE_AIRSYNC, PAGE_COMPOSE, PAGE_FOLDER, PAGE_ITEM_OPS, PAGE_PING, PING_STATUS, WbxmlElement,
+    WbxmlError, WbxmlValue, compose, expect_tag, tags, text_value, text_value_opt,
+};
 
 // ============================================================================
 // FolderSync
@@ -22,6 +27,12 @@ pub fn build_folder_sync_request(sync_key: &str) -> WbxmlElement {
 }
 
 /// Parse a FolderSync response.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_folder_sync_response(root: &WbxmlElement) -> Result<FolderSyncResult, WbxmlError> {
     expect_tag(root, PAGE_FOLDER, FH_FOLDER_SYNC)?;
 
@@ -50,6 +61,8 @@ pub fn parse_folder_sync_response(root: &WbxmlElement) -> Result<FolderSyncResul
     Ok(result)
 }
 
+/// Map a FolderSync status code ([MS-ASCMD] §2.2.3.177.6) to its
+/// human-readable meaning.
 pub fn folder_sync_status_message(status: u32) -> &'static str {
     match status {
         1 => "success",
@@ -178,11 +191,7 @@ fn parse_folder_changes(
 ) -> Result<(), WbxmlError> {
     for child in &changes.children {
         match (child.page, child.token) {
-            (PAGE_FOLDER, FH_ADD) => {
-                let folder = parse_folder_element(child)?;
-                result.changes.push(folder);
-            }
-            (PAGE_FOLDER, FH_UPDATE) => {
+            (PAGE_FOLDER, FH_ADD | FH_UPDATE) => {
                 let folder = parse_folder_element(child)?;
                 result.changes.push(folder);
             }
@@ -195,7 +204,7 @@ fn parse_folder_changes(
                 };
                 result.deletions.push(server_id);
             }
-            (PAGE_FOLDER, FH_COUNT) => {} // count metadata, ignore
+            // FH_COUNT (count metadata) and unknown elements: ignore
             _ => {}
         }
     }
@@ -209,7 +218,9 @@ fn find_child_text(el: &WbxmlElement, token: u8) -> Option<String> {
         .find(|c| c.token == token)
         .and_then(|c| match &c.value {
             WbxmlValue::Text(t) => Some(t.clone()),
-            WbxmlValue::Opaque(b) => std::str::from_utf8(b).ok().map(|s| s.to_string()),
+            WbxmlValue::Opaque(b) => std::str::from_utf8(b)
+                .ok()
+                .map(std::string::ToString::to_string),
             WbxmlValue::Empty => None,
         })
 }
@@ -237,11 +248,11 @@ fn parse_folder_element(folder_el: &WbxmlElement) -> Result<EasFolder, WbxmlErro
 /// 11=notes. We map journal/notes to Notes for now; MVP doesn't sync them.
 pub fn folder_type_to_class(type_str: &str) -> String {
     match type_str {
-        "1" | "2" | "3" | "4" | "5" | "6" | "12" | "19" => "Email".to_string(),
         "7" => "Tasks".to_string(),
         "8" => "Calendar".to_string(),
         "9" => "Contacts".to_string(),
         "10" | "11" => "Notes".to_string(),
+        // Mail folder types (1-6, 12, 19) and anything unrecognized.
         _ => "Email".to_string(),
     }
 }

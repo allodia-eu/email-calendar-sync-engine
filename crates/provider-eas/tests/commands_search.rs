@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
+//! Search-command tests: Mailbox and GAL request/response shapes.
 use provider_eas::commands::{tests_common::*, *};
 
 fn el_text(el: &WbxmlElement) -> &str {
     match &el.value {
         WbxmlValue::Text(t) => t,
-        other => panic!("expected text value, got {:?}", other),
+        other => panic!("expected text value, got {other:?}"),
     }
 }
 

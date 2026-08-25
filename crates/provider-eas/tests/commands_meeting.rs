@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+//! MeetingResponse tests: request tree and status parse.
 use provider_eas::commands::{tests_common::*, *};
 
 #[test]
@@ -78,8 +79,10 @@ fn meeting_response_request_golden_bytes_child_order() {
         after_root[from..]
             .iter()
             .position(|&b| b == token)
-            .map(|p| p + from)
-            .unwrap_or_else(|| panic!("token {token:#04x} missing from wire bytes"))
+            .map_or_else(
+                || panic!("token {token:#04x} missing from wire bytes"),
+                |p| p + from,
+            )
     };
     let i_request = pos(MREQ_REQUEST | 0x40, 0);
     let i_user_response = pos(MREQ_USER_RESPONSE | 0x40, i_request);
@@ -168,8 +171,10 @@ fn meeting_response_request_golden_bytes_with_instance_id() {
         after_root[from..]
             .iter()
             .position(|&b| b == token)
-            .map(|p| p + from)
-            .unwrap_or_else(|| panic!("token {token:#04x} missing from wire bytes"))
+            .map_or_else(
+                || panic!("token {token:#04x} missing from wire bytes"),
+                |p| p + from,
+            )
     };
     // The instance-id timestamp chars (digits, '-', 'T', ':', '.', 'Z')
     // cannot collide with the tokens searched here (0x4E, 0x12).

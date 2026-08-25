@@ -74,10 +74,11 @@ fn data_length(b: &[u8]) -> usize {
 /// vary the identity), hex-encode everything (uppercase, the §4.3 example
 /// output form).
 fn hex_uid_zeroing_instance_date(b: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(b.len() * 2);
     for (i, byte) in b.iter().enumerate() {
         let byte = if (16..20).contains(&i) { 0 } else { *byte };
-        out.push_str(&format!("{byte:02X}"));
+        let _ = write!(out, "{byte:02X}");
     }
     out
 }
@@ -152,13 +153,13 @@ mod tests {
     /// shape into the OutlookID arm, so no partial UID can ever escape.
     #[test]
     fn vcal_shape_with_overrunning_length_classifies_as_outlook_id() {
+        use base64::engine::general_purpose::STANDARD as B64;
         // 60 zero bytes with the marker spliced at 40..48 and a huge
         // little-endian length (0x0000FFFF = 65535) at 36..40.
         let mut b = vec![0u8; 60];
         b[40..48].copy_from_slice(b"vCal-Uid");
         b[36] = 0xFF;
         b[37] = 0xFF;
-        use base64::engine::general_purpose::STANDARD as B64;
         let raw = B64.encode(b);
         let uid = global_obj_id_to_uid(Some(&raw)).expect("OutlookID arm converts");
         assert_eq!(uid.len(), 120, "hex of the 60-byte payload");

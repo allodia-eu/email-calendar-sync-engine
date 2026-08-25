@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+//! Ping-command tests: request round trip and status mapping.
 use provider_eas::commands::{tests_common::*, *};
 
 #[test]

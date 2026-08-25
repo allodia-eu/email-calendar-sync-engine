@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Provision command (MS-ASPROV). Two-phase handshake:
 //!   Phase 1: client requests the policy → server returns a TEMP PolicyKey
-//!           and the policy XML in <Data>.
+//!           and the policy XML in `<Data>`.
 //!   Phase 2: client acknowledges with the temp PolicyKey and <Status>1</Status>
 //!           → server returns a PERMANENT PolicyKey that the client must send
 //!           in the X-MS-PolicyKey header on every subsequent command.
 //!
-//! RemoteWipe: if the server returns <RemoteWipe>, we surface it as a
+//! RemoteWipe: if the server returns `<RemoteWipe>`, we surface it as a
 //! permanent error — never auto-execute. The UI is a follow-up.
 
 use crate::wbxml::{
@@ -81,6 +81,8 @@ pub fn build_provision_phase2_request(temp_policy_key: &str) -> WbxmlElement {
     )
 }
 
+/// Result of the Provision command: policy status, the issued policy key,
+/// and the remote-wipe flag.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProvisionResult {
     /// Top-level Provision Status. 1 = success.
@@ -94,6 +96,12 @@ pub struct ProvisionResult {
 
 /// Parse a Provision response. Extracts the top-level Status, the nested
 /// Policy's PolicyKey, and detects a RemoteWipe element.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_provision_response(root: &WbxmlElement) -> Result<ProvisionResult, WbxmlError> {
     let mut out = ProvisionResult {
         status: 1,

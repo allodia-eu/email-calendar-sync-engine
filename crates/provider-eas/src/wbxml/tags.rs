@@ -13,157 +13,275 @@
 
 /// Code page indices (0..=25). Source: `Tags` constants in `tags.ts`.
 pub mod pages {
+    /// `AirSync` code-page index.
     pub const AIRSYNC: u8 = 0x00;
+    /// `Contacts` code-page index.
     pub const CONTACTS: u8 = 0x01;
+    /// `Email` code-page index.
     pub const EMAIL: u8 = 0x02;
+    /// `Calendar` code-page index.
     pub const CALENDAR: u8 = 0x04;
+    /// `Move` code-page index.
     pub const MOVE: u8 = 0x05;
+    /// `GetItemEstimate` code-page index.
     pub const GIE: u8 = 0x06;
+    /// `FolderHierarchy` code-page index.
     pub const FOLDER: u8 = 0x07;
+    /// `MeetingResponse` code-page index.
     pub const MREQ: u8 = 0x08;
+    /// `Tasks` code-page index.
     pub const TASK: u8 = 0x09;
+    /// `ResolveRecipients` code-page index.
     pub const RECIPIENTS: u8 = 0x0A;
+    /// `ValidateCert` code-page index.
     pub const VALIDATE: u8 = 0x0B;
+    /// `Contacts2` code-page index.
     pub const CONTACTS2: u8 = 0x0C;
+    /// `Ping` code-page index.
     pub const PING: u8 = 0x0D;
+    /// `Provision` code-page index.
     pub const PROVISION: u8 = 0x0E;
+    /// `Search` code-page index.
     pub const SEARCH: u8 = 0x0F;
+    /// `GAL` code-page index.
     pub const GAL: u8 = 0x10;
+    /// `AirSyncBase` code-page index.
     pub const BASE: u8 = 0x11;
+    /// `Settings` code-page index.
     pub const SETTINGS: u8 = 0x12;
+    /// `DocumentLibrary` code-page index.
     pub const DOCS: u8 = 0x13;
+    /// `ItemOperations` code-page index.
     pub const ITEMS: u8 = 0x14;
+    /// `ComposeMail` code-page index.
     pub const COMPOSE: u8 = 0x15;
+    /// `Email2` code-page index.
     pub const EMAIL2: u8 = 0x16;
+    /// `Notes` code-page index.
     pub const NOTES: u8 = 0x17;
+    /// `RightsManagement` code-page index.
     pub const RIGHTS: u8 = 0x18;
+    /// `Find` code-page index.
     pub const FIND: u8 = 0x19;
 }
 
 /// A few of the most-used AirSync (page 0) tag ids. Other pages are available
 /// via the `pages` module and the `code_pages::code_page()` lookup.
 pub mod airsync {
+    /// `Sync` (`AirSync` page-0 token 0x05).
     pub const SYNC: u8 = 0x05;
+    /// `Responses` (`AirSync` page-0 token 0x06).
     pub const RESPONSES: u8 = 0x06;
+    /// `Add` (`AirSync` page-0 token 0x07).
     pub const ADD: u8 = 0x07;
+    /// `Change` (`AirSync` page-0 token 0x08).
     pub const CHANGE: u8 = 0x08;
+    /// `Delete` (`AirSync` page-0 token 0x09).
     pub const DELETE: u8 = 0x09;
+    /// `Fetch` (`AirSync` page-0 token 0x0a).
     pub const FETCH: u8 = 0x0A;
+    /// `SyncKey` (`AirSync` page-0 token 0x0b).
     pub const SYNC_KEY: u8 = 0x0B;
+    /// `ClientId` (`AirSync` page-0 token 0x0c).
     pub const CLIENT_ID: u8 = 0x0C;
+    /// `ServerId` (`AirSync` page-0 token 0x0d).
     pub const SERVER_ID: u8 = 0x0D;
+    /// `Status` (`AirSync` page-0 token 0x0e).
     pub const STATUS: u8 = 0x0E;
+    /// `Collection` (`AirSync` page-0 token 0x0f).
     pub const COLLECTION: u8 = 0x0F;
+    /// `Collections` (`AirSync` page-0 token 0x1c).
     pub const COLLECTIONS: u8 = 0x1C;
+    /// `Class` (`AirSync` page-0 token 0x10).
     pub const CLASS: u8 = 0x10;
+    /// `CollectionId` (`AirSync` page-0 token 0x12).
     pub const COLLECTION_ID: u8 = 0x12;
+    /// `GetChanges` (`AirSync` page-0 token 0x13).
     pub const GET_CHANGES: u8 = 0x13;
+    /// `MoreAvailable` (`AirSync` page-0 token 0x14).
     pub const MORE_AVAILABLE: u8 = 0x14;
+    /// `WindowSize` (`AirSync` page-0 token 0x15).
     pub const WINDOW_SIZE: u8 = 0x15;
+    /// `Commands` (`AirSync` page-0 token 0x16).
     pub const COMMANDS: u8 = 0x16;
+    /// `Options` (`AirSync` page-0 token 0x17).
     pub const OPTIONS: u8 = 0x17;
+    /// `ApplicationData` (`AirSync` page-0 token 0x1d).
     pub const APPLICATION_DATA: u8 = 0x1D;
 }
 
 /// FolderHierarchy (page 7) tag ids.
 pub mod folder {
+    /// `Folders` (`FolderHierarchy` page-7 token 0x05).
     pub const FOLDERS: u8 = 0x05;
+    /// `Folder` (`FolderHierarchy` page-7 token 0x06).
     pub const FOLDER: u8 = 0x06;
+    /// `DisplayName` (`FolderHierarchy` page-7 token 0x07).
     pub const DISPLAY_NAME: u8 = 0x07;
+    /// `ServerId` (`FolderHierarchy` page-7 token 0x08).
     pub const SERVER_ID: u8 = 0x08;
+    /// `ParentId` (`FolderHierarchy` page-7 token 0x09).
     pub const PARENT_ID: u8 = 0x09;
+    /// `Type` (`FolderHierarchy` page-7 token 0x0a).
     pub const TYPE: u8 = 0x0A;
+    /// `Status` (`FolderHierarchy` page-7 token 0x0c).
     pub const STATUS: u8 = 0x0C;
+    /// `Changes` (`FolderHierarchy` page-7 token 0x0e).
     pub const CHANGES: u8 = 0x0E;
+    /// `Add` (`FolderHierarchy` page-7 token 0x0f).
     pub const ADD: u8 = 0x0F;
+    /// `Delete` (`FolderHierarchy` page-7 token 0x10).
     pub const DELETE: u8 = 0x10;
+    /// `Update` (`FolderHierarchy` page-7 token 0x11).
     pub const UPDATE: u8 = 0x11;
+    /// `SyncKey` (`FolderHierarchy` page-7 token 0x12).
     pub const SYNC_KEY: u8 = 0x12;
+    /// `FolderCreate` (`FolderHierarchy` page-7 token 0x13).
     pub const FOLDER_CREATE: u8 = 0x13;
+    /// `FolderDelete` (`FolderHierarchy` page-7 token 0x14).
     pub const FOLDER_DELETE: u8 = 0x14;
+    /// `FolderUpdate` (`FolderHierarchy` page-7 token 0x15).
     pub const FOLDER_UPDATE: u8 = 0x15;
+    /// `FolderSync` (`FolderHierarchy` page-7 token 0x16).
     pub const FOLDER_SYNC: u8 = 0x16;
+    /// `Count` (`FolderHierarchy` page-7 token 0x17).
     pub const COUNT: u8 = 0x17;
 }
 
 /// Ping (page 13) tag ids.
 pub mod ping {
+    /// `Ping` (`Ping` page-13 token 0x05).
     pub const PING: u8 = 0x05;
+    /// `Status` (`Ping` page-13 token 0x07).
     pub const STATUS: u8 = 0x07;
+    /// `HeartbeatInterval` (`Ping` page-13 token 0x08).
     pub const HEARTBEAT_INTERVAL: u8 = 0x08;
+    /// `Folders` (`Ping` page-13 token 0x09).
     pub const FOLDERS: u8 = 0x09;
+    /// `Folder` (`Ping` page-13 token 0x0a).
     pub const FOLDER: u8 = 0x0A;
+    /// `Id` (`Ping` page-13 token 0x0b).
     pub const ID: u8 = 0x0B;
+    /// `Class` (`Ping` page-13 token 0x0c).
     pub const CLASS: u8 = 0x0C;
+    /// `MaxFolders` (`Ping` page-13 token 0x0d).
     pub const MAX_FOLDERS: u8 = 0x0D;
 }
 
 /// Provision (page 14) tag ids.
 pub mod provision {
+    /// `Provision` (`Provision` page-14 token 0x05).
     pub const PROVISION: u8 = 0x05;
+    /// `Policies` (`Provision` page-14 token 0x06).
     pub const POLICIES: u8 = 0x06;
+    /// `Policy` (`Provision` page-14 token 0x07).
     pub const POLICY: u8 = 0x07;
+    /// `PolicyType` (`Provision` page-14 token 0x08).
     pub const POLICY_TYPE: u8 = 0x08;
+    /// `PolicyKey` (`Provision` page-14 token 0x09).
     pub const POLICY_KEY: u8 = 0x09;
+    /// `Data` (`Provision` page-14 token 0x0a).
     pub const DATA: u8 = 0x0A;
+    /// `Status` (`Provision` page-14 token 0x0b).
     pub const STATUS: u8 = 0x0B;
+    /// `RemoteWipe` (`Provision` page-14 token 0x0c).
     pub const REMOTE_WIPE: u8 = 0x0C;
+    /// `EASProvisionDoc` (`Provision` page-14 token 0x0d).
     pub const EAS_PROVISION_DOC: u8 = 0x0D;
 }
 
 /// ResolveRecipients (page 10) tag ids. Source: [MS-ASWBXML] §2.1.2.1.11,
 /// verified against `RECIPIENTS_TOKENS` in `code_pages.rs`.
 pub mod recipients {
+    /// `ResolveRecipients` (`ResolveRecipients` page-10 token 0x05).
     pub const RESOLVE_RECIPIENTS: u8 = 0x05;
+    /// `Response` (`ResolveRecipients` page-10 token 0x06).
     pub const RESPONSE: u8 = 0x06;
+    /// `Status` (`ResolveRecipients` page-10 token 0x07).
     pub const STATUS: u8 = 0x07;
+    /// `Type` (`ResolveRecipients` page-10 token 0x08).
     pub const TYPE: u8 = 0x08;
+    /// `Recipient` (`ResolveRecipients` page-10 token 0x09).
     pub const RECIPIENT: u8 = 0x09;
+    /// `DisplayName` (`ResolveRecipients` page-10 token 0x0a).
     pub const DISPLAY_NAME: u8 = 0x0A;
+    /// `EmailAddress` (`ResolveRecipients` page-10 token 0x0b).
     pub const EMAIL_ADDRESS: u8 = 0x0B;
+    /// `Certificates` (`ResolveRecipients` page-10 token 0x0c).
     pub const CERTIFICATES: u8 = 0x0C;
+    /// `Certificate` (`ResolveRecipients` page-10 token 0x0d).
     pub const CERTIFICATE: u8 = 0x0D;
+    /// `MiniCertificate` (`ResolveRecipients` page-10 token 0x0e).
     pub const MINI_CERTIFICATE: u8 = 0x0E;
+    /// `Options` (`ResolveRecipients` page-10 token 0x0f).
     pub const OPTIONS: u8 = 0x0F;
+    /// `To` (`ResolveRecipients` page-10 token 0x10).
     pub const TO: u8 = 0x10;
+    /// `CertificateRetrieval` (`ResolveRecipients` page-10 token 0x11).
     pub const CERTIFICATE_RETRIEVAL: u8 = 0x11;
+    /// `RecipientCount` (`ResolveRecipients` page-10 token 0x12).
     pub const RECIPIENT_COUNT: u8 = 0x12;
+    /// `MaxCertificates` (`ResolveRecipients` page-10 token 0x13).
     pub const MAX_CERTIFICATES: u8 = 0x13;
+    /// `MaxAmbiguousRecipients` (`ResolveRecipients` page-10 token 0x14).
     pub const MAX_AMBIGUOUS_RECIPIENTS: u8 = 0x14;
+    /// `CertificateCount` (`ResolveRecipients` page-10 token 0x15).
     pub const CERTIFICATE_COUNT: u8 = 0x15;
+    /// `Availability` (`ResolveRecipients` page-10 token 0x16).
     pub const AVAILABILITY: u8 = 0x16;
+    /// `StartTime` (`ResolveRecipients` page-10 token 0x17).
     pub const START_TIME: u8 = 0x17;
+    /// `EndTime` (`ResolveRecipients` page-10 token 0x18).
     pub const END_TIME: u8 = 0x18;
+    /// `MergedFreeBusy` (`ResolveRecipients` page-10 token 0x19).
     pub const MERGED_FREE_BUSY: u8 = 0x19;
+    /// `Picture` (`ResolveRecipients` page-10 token 0x1a).
     pub const PICTURE: u8 = 0x1A;
+    /// `MaxSize` (`ResolveRecipients` page-10 token 0x1b).
     pub const MAX_SIZE: u8 = 0x1B;
+    /// `Data` (`ResolveRecipients` page-10 token 0x1c).
     pub const DATA: u8 = 0x1C;
+    /// `MaxPictures` (`ResolveRecipients` page-10 token 0x1d).
     pub const MAX_PICTURES: u8 = 0x1D;
 }
 
 /// ValidateCert (page 11) tag ids. Source: [MS-ASWBXML] §2.1.2.1.12,
 /// verified against `VALIDATE_TOKENS` in `code_pages.rs`.
 pub mod validatecert {
+    /// `ValidateCert` (`ValidateCert` page-11 token 0x05).
     pub const VALIDATE_CERT: u8 = 0x05;
+    /// `Certificates` (`ValidateCert` page-11 token 0x06).
     pub const CERTIFICATES: u8 = 0x06;
+    /// `Certificate` (`ValidateCert` page-11 token 0x07).
     pub const CERTIFICATE: u8 = 0x07;
+    /// `CertificateChain` (`ValidateCert` page-11 token 0x08).
     pub const CERTIFICATE_CHAIN: u8 = 0x08;
+    /// `CheckCrl` (`ValidateCert` page-11 token 0x09).
     pub const CHECK_CRL: u8 = 0x09;
+    /// `Status` (`ValidateCert` page-11 token 0x0a).
     pub const STATUS: u8 = 0x0A;
 }
 
 /// Settings (page 18) tag ids.
 pub mod settings {
+    /// `Settings` (`Settings` page-18 token 0x05).
     pub const SETTINGS: u8 = 0x05;
+    /// `Status` (`Settings` page-18 token 0x06).
     pub const STATUS: u8 = 0x06;
+    /// `Get` (`Settings` page-18 token 0x07).
     pub const GET: u8 = 0x07;
+    /// `Set` (`Settings` page-18 token 0x08).
     pub const SET: u8 = 0x08;
+    /// `Oof` (`Settings` page-18 token 0x09).
     pub const OOF: u8 = 0x09;
     /// Oof child: 0 = disabled, 1 = global, 2 = time-based ([MS-ASCMD]
     /// §2.2.3.124; MUST be 2 when StartTime/EndTime are present).
     pub const OOF_STATE: u8 = 0x0A;
+    /// `StartTime` (`Settings` page-18 token 0x0b).
     pub const START_TIME: u8 = 0x0B;
+    /// `EndTime` (`Settings` page-18 token 0x0c).
     pub const END_TIME: u8 = 0x0C;
+    /// `OofMessage` (`Settings` page-18 token 0x0d).
     pub const OOF_MESSAGE: u8 = 0x0D;
     /// OofMessage audience marker — empty element ([MS-ASCMD] §2.2.3.14).
     pub const APPLIES_TO_INTERNAL: u8 = 0x0E;
@@ -173,33 +291,57 @@ pub mod settings {
     pub const APPLIES_TO_EXTERNAL_UNKNOWN: u8 = 0x10;
     /// OofMessage child: "1"/"0" string ([MS-ASCMD] §2.2.3.59).
     pub const ENABLED: u8 = 0x11;
+    /// `ReplyMessage` (`Settings` page-18 token 0x12).
     pub const REPLY_MESSAGE: u8 = 0x12;
+    /// `BodyType` (`Settings` page-18 token 0x13).
     pub const BODY_TYPE: u8 = 0x13;
+    /// `DevicePassword` (`Settings` page-18 token 0x14).
     pub const DEVICE_PASSWORD: u8 = 0x14;
+    /// `Password` (`Settings` page-18 token 0x15).
     pub const PASSWORD: u8 = 0x15;
+    /// `DeviceInformation` (`Settings` page-18 token 0x16).
     pub const DEVICE_INFORMATION: u8 = 0x16;
+    /// `Model` (`Settings` page-18 token 0x17).
     pub const MODEL: u8 = 0x17;
+    /// `IMEI` (`Settings` page-18 token 0x18).
     pub const IMEI: u8 = 0x18;
+    /// `FriendlyName` (`Settings` page-18 token 0x19).
     pub const FRIENDLY_NAME: u8 = 0x19;
+    /// `OS` (`Settings` page-18 token 0x1a).
     pub const OS: u8 = 0x1A;
+    /// `OSLanguage` (`Settings` page-18 token 0x1b).
     pub const OS_LANGUAGE: u8 = 0x1B;
+    /// `PhoneNumber` (`Settings` page-18 token 0x1c).
     pub const PHONE_NUMBER: u8 = 0x1C;
+    /// `UserInformation` (`Settings` page-18 token 0x1d).
     pub const USER_INFORMATION: u8 = 0x1D;
+    /// `EmailAddresses` (`Settings` page-18 token 0x1e).
     pub const EMAIL_ADDRESSES: u8 = 0x1E;
+    /// `SMTPAddress` (`Settings` page-18 token 0x1f).
     pub const SMTP_ADDRESS: u8 = 0x1F;
 }
 
 /// ItemOperations (page 20) tag ids.
 pub mod item_operations {
+    /// `ItemOperations` (`ItemOperations` page-20 token 0x05).
     pub const ITEM_OPERATIONS: u8 = 0x05;
+    /// `Fetch` (`ItemOperations` page-20 token 0x06).
     pub const FETCH: u8 = 0x06;
+    /// `Store` (`ItemOperations` page-20 token 0x07).
     pub const STORE: u8 = 0x07;
+    /// `Options` (`ItemOperations` page-20 token 0x08).
     pub const OPTIONS: u8 = 0x08;
+    /// `Range` (`ItemOperations` page-20 token 0x09).
     pub const RANGE: u8 = 0x09;
+    /// `Total` (`ItemOperations` page-20 token 0x0a).
     pub const TOTAL: u8 = 0x0A;
+    /// `Properties` (`ItemOperations` page-20 token 0x0b).
     pub const PROPERTIES: u8 = 0x0B;
+    /// `Data` (`ItemOperations` page-20 token 0x0c).
     pub const DATA: u8 = 0x0C;
+    /// `Status` (`ItemOperations` page-20 token 0x0d).
     pub const STATUS: u8 = 0x0D;
+    /// `Response` (`ItemOperations` page-20 token 0x0e).
     pub const RESPONSE: u8 = 0x0E;
     /// Part element ([MS-ASCMD] §2.2.3.130): multipart responses only.
     /// Child of airsyncbase:Body (or Properties for document-library
@@ -225,79 +367,141 @@ pub mod item_operations {
 
 /// ComposeMail (page 21) tag ids.
 pub mod compose {
+    /// `SendMail` (`ComposeMail` page-21 token 0x05).
     pub const SEND_MAIL: u8 = 0x05;
+    /// `SmartForward` (`ComposeMail` page-21 token 0x06).
     pub const SMART_FORWARD: u8 = 0x06;
+    /// `SmartReply` (`ComposeMail` page-21 token 0x07).
     pub const SMART_REPLY: u8 = 0x07;
+    /// `SaveInSentItems` (`ComposeMail` page-21 token 0x08).
     pub const SAVE_IN_SENT_ITEMS: u8 = 0x08;
+    /// `ReplaceMime` (`ComposeMail` page-21 token 0x09).
     pub const REPLACE_MIME: u8 = 0x09;
+    /// `Source` (`ComposeMail` page-21 token 0x0b).
     pub const SOURCE: u8 = 0x0B;
+    /// `FolderId` (`ComposeMail` page-21 token 0x0c).
     pub const FOLDER_ID: u8 = 0x0C;
+    /// `ItemId` (`ComposeMail` page-21 token 0x0d).
     pub const ITEM_ID: u8 = 0x0D;
+    /// `LongId` (`ComposeMail` page-21 token 0x0e).
     pub const LONG_ID: u8 = 0x0E;
+    /// `InstanceId` (`ComposeMail` page-21 token 0x0f).
     pub const INSTANCE_ID: u8 = 0x0F;
+    /// `Mime` (`ComposeMail` page-21 token 0x10).
     pub const MIME: u8 = 0x10;
+    /// `ClientId` (`ComposeMail` page-21 token 0x11).
     pub const CLIENT_ID: u8 = 0x11;
+    /// `Status` (`ComposeMail` page-21 token 0x12).
     pub const STATUS: u8 = 0x12;
+    /// `AccountId` (`ComposeMail` page-21 token 0x13).
     pub const ACCOUNT_ID: u8 = 0x13;
 }
 
 /// Search (page 15) tag ids.
 pub mod search {
+    /// `Search` code-page index.
     pub const PAGE: u8 = 15;
+    /// `Search` (`Search` page-15 token 0x05).
     pub const SEARCH: u8 = 0x05;
+    /// `Store` (`Search` page-15 token 0x07).
     pub const STORE: u8 = 0x07;
+    /// `Name` (`Search` page-15 token 0x08).
     pub const NAME: u8 = 0x08;
+    /// `Query` (`Search` page-15 token 0x09).
     pub const QUERY: u8 = 0x09;
+    /// `Options` (`Search` page-15 token 0x0a).
     pub const OPTIONS: u8 = 0x0A;
+    /// `Range` (`Search` page-15 token 0x0b).
     pub const RANGE: u8 = 0x0B;
+    /// `Status` (`Search` page-15 token 0x0c).
     pub const STATUS: u8 = 0x0C;
+    /// `Response` (`Search` page-15 token 0x0d).
     pub const RESPONSE: u8 = 0x0D;
+    /// `Result` (`Search` page-15 token 0x0e).
     pub const RESULT: u8 = 0x0E;
+    /// `Properties` (`Search` page-15 token 0x0f).
     pub const PROPERTIES: u8 = 0x0F;
+    /// `Total` (`Search` page-15 token 0x10).
     pub const TOTAL: u8 = 0x10;
+    /// `And` (`Search` page-15 token 0x13).
     pub const AND: u8 = 0x13;
+    /// `FreeText` (`Search` page-15 token 0x15).
     pub const FREE_TEXT: u8 = 0x15;
+    /// `DeepTraversal` (`Search` page-15 token 0x17).
     pub const DEEP_TRAVERSAL: u8 = 0x17;
+    /// `LongId` (`Search` page-15 token 0x18).
     pub const LONG_ID: u8 = 0x18;
+    /// `RebuildResults` (`Search` page-15 token 0x19).
     pub const REBUILD_RESULTS: u8 = 0x19;
 }
 
 /// GAL (page 16) tag ids.
 pub mod gal {
+    /// `GAL` code-page index.
     pub const PAGE: u8 = 16;
+    /// `DisplayName` (`GAL` page-16 token 0x05).
     pub const DISPLAY_NAME: u8 = 0x05;
+    /// `Phone` (`GAL` page-16 token 0x06).
     pub const PHONE: u8 = 0x06;
+    /// `Office` (`GAL` page-16 token 0x07).
     pub const OFFICE: u8 = 0x07;
+    /// `Title` (`GAL` page-16 token 0x08).
     pub const TITLE: u8 = 0x08;
+    /// `Company` (`GAL` page-16 token 0x09).
     pub const COMPANY: u8 = 0x09;
+    /// `Alias` (`GAL` page-16 token 0x0a).
     pub const ALIAS: u8 = 0x0A;
+    /// `FirstName` (`GAL` page-16 token 0x0b).
     pub const FIRST_NAME: u8 = 0x0B;
+    /// `LastName` (`GAL` page-16 token 0x0c).
     pub const LAST_NAME: u8 = 0x0C;
+    /// `HomePhone` (`GAL` page-16 token 0x0d).
     pub const HOME_PHONE: u8 = 0x0D;
+    /// `MobilePhone` (`GAL` page-16 token 0x0e).
     pub const MOBILE_PHONE: u8 = 0x0E;
+    /// `EmailAddress` (`GAL` page-16 token 0x0f).
     pub const EMAIL_ADDRESS: u8 = 0x0F;
 }
 
 /// AirSyncBase (page 17) tag ids.
 pub mod base {
+    /// `BodyPreference` (`AirSyncBase` page-17 token 0x05).
     pub const BODY_PREFERENCE: u8 = 0x05;
+    /// `Type` (`AirSyncBase` page-17 token 0x06).
     pub const TYPE: u8 = 0x06;
+    /// `TruncationSize` (`AirSyncBase` page-17 token 0x07).
     pub const TRUNCATION_SIZE: u8 = 0x07;
+    /// `AllOrNone` (`AirSyncBase` page-17 token 0x08).
     pub const ALL_OR_NONE: u8 = 0x08;
+    /// `Body` (`AirSyncBase` page-17 token 0x0a).
     pub const BODY: u8 = 0x0A;
+    /// `Data` (`AirSyncBase` page-17 token 0x0b).
     pub const DATA: u8 = 0x0B;
+    /// `EstimatedDataSize` (`AirSyncBase` page-17 token 0x0c).
     pub const ESTIMATED_DATA_SIZE: u8 = 0x0C;
+    /// `Truncated` (`AirSyncBase` page-17 token 0x0d).
     pub const TRUNCATED: u8 = 0x0D;
+    /// `Attachments` (`AirSyncBase` page-17 token 0x0e).
     pub const ATTACHMENTS: u8 = 0x0E;
+    /// `Attachment` (`AirSyncBase` page-17 token 0x0f).
     pub const ATTACHMENT: u8 = 0x0F;
+    /// `DisplayName` (`AirSyncBase` page-17 token 0x10).
     pub const DISPLAY_NAME: u8 = 0x10;
+    /// `FileReference` (`AirSyncBase` page-17 token 0x11).
     pub const FILE_REFERENCE: u8 = 0x11;
+    /// `Method` (`AirSyncBase` page-17 token 0x12).
     pub const METHOD: u8 = 0x12;
+    /// `ContentId` (`AirSyncBase` page-17 token 0x13).
     pub const CONTENT_ID: u8 = 0x13;
+    /// `ContentLocation` (`AirSyncBase` page-17 token 0x14).
     pub const CONTENT_LOCATION: u8 = 0x14;
+    /// `IsInline` (`AirSyncBase` page-17 token 0x15).
     pub const IS_INLINE: u8 = 0x15;
+    /// `NativeBodyType` (`AirSyncBase` page-17 token 0x16).
     pub const NATIVE_BODY_TYPE: u8 = 0x16;
+    /// `ContentType` (`AirSyncBase` page-17 token 0x17).
     pub const CONTENT_TYPE: u8 = 0x17;
+    /// `Preview` (`AirSyncBase` page-17 token 0x18).
     pub const PREVIEW: u8 = 0x18;
     /// `Location` = 0x20 (16.0/16.1 only; [MS-ASWBXML] §2.1.2.1.18 note —
     /// with 16.0/16.1 `airsyncbase:Location` replaces `calendar:Location`
@@ -313,15 +517,25 @@ pub mod base {
 /// Used by the Sync-response parser to extract well-known email fields
 /// out of `ApplicationData`.
 pub mod email {
+    /// `Email` code-page index.
     pub const PAGE: u8 = 2;
+    /// `DateReceived` (`Email` page-2 token 0x0f).
     pub const DATE_RECEIVED: u8 = 0x0F;
+    /// `Subject` (`Email` page-2 token 0x14).
     pub const SUBJECT: u8 = 0x14;
+    /// `Read` (`Email` page-2 token 0x15).
     pub const READ: u8 = 0x15;
+    /// `To` (`Email` page-2 token 0x16).
     pub const TO: u8 = 0x16;
+    /// `Cc` (`Email` page-2 token 0x17).
     pub const CC: u8 = 0x17;
+    /// `From` (`Email` page-2 token 0x18).
     pub const FROM: u8 = 0x18;
+    /// `ReplyTo` (`Email` page-2 token 0x19).
     pub const REPLY_TO: u8 = 0x19;
+    /// `Importance` (`Email` page-2 token 0x12).
     pub const IMPORTANCE: u8 = 0x12;
+    /// `Flag` (`Email` page-2 token 0x3a).
     pub const FLAG: u8 = 0x3A;
     // ---- Task 4: meeting-request tokens ([MS-ASEMAIL] §2.2.2) ----
     /// Outlook/Exchange message class (`IPM.Note`,
@@ -357,9 +571,13 @@ pub mod email {
 /// Conversations / drafts / BCC live here because they postdate the
 /// original Email code page.
 pub mod email2 {
+    /// `Email2` code-page index.
     pub const PAGE: u8 = 22;
+    /// `ConversationId` (`Email2` page-22 token 0x09).
     pub const CONVERSATION_ID: u8 = 0x09;
+    /// `IsDraft` (`Email2` page-22 token 0x15).
     pub const IS_DRAFT: u8 = 0x15;
+    /// `Bcc` (`Email2` page-22 token 0x16).
     pub const BCC: u8 = 0x16;
     /// [MS-ASEMAIL] §2.2.2.47 (v20220429): 0=silent update/unspecified,
     /// 1=initial meeting request, 2=full update, 3=informational update,

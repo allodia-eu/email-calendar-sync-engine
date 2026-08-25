@@ -172,7 +172,7 @@ fn sync_change_request_star_set_matches_golden_wire_bytes() {
         read: None,
         starred: Some(true),
     }];
-    let now = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_767_225_600_000);
+    let now = std::time::UNIX_EPOCH + std::time::Duration::from_hours(490_896);
     let tree = build_sync_change_request_at("5", "3", &changes, now);
     let bytes = provider_eas::wbxml::serialize_tree(&tree).expect("serialize");
     let start = b"2026-01-01T00:00:00.000Z";
@@ -222,7 +222,7 @@ fn sync_change_request_star_clear_matches_golden_wire_bytes() {
         read: None,
         starred: Some(false),
     }];
-    let now = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_767_225_600_000);
+    let now = std::time::UNIX_EPOCH + std::time::Duration::from_hours(490_896);
     let tree = build_sync_change_request_at("5", "3", &changes, now);
     let bytes = provider_eas::wbxml::serialize_tree(&tree).expect("serialize");
     let expected: &[u8] = &[
@@ -261,7 +261,7 @@ fn sync_change_request_read_and_star_emit_read_before_flag() {
         read: Some(true),
         starred: Some(true),
     }];
-    let now = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_767_225_600_000);
+    let now = std::time::UNIX_EPOCH + std::time::Duration::from_hours(490_896);
     let tree = build_sync_change_request_at("5", "3", &changes, now);
     let app_data = &tree.children[0].children[0].children[2].children[0].children[1];
     assert_eq!(
@@ -322,7 +322,7 @@ fn sync_change_request_starred_none_emits_no_flag_element() {
         read: Some(false),
         starred: None,
     }];
-    let now = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_767_225_600_000);
+    let now = std::time::UNIX_EPOCH + std::time::Duration::from_hours(490_896);
     let tree = build_sync_change_request_at("5", "3", &changes, now);
     let app_data = &tree.children[0].children[0].children[2].children[0].children[1];
     assert_eq!(app_data.children.len(), 1);
@@ -345,7 +345,7 @@ fn eas_datetime_utc_formats_epoch_round_midnight_and_leap_day() {
         "1970-01-01T00:00:00.000Z"
     );
     assert_eq!(
-        format_eas_datetime_utc(UNIX_EPOCH + Duration::from_millis(1_767_225_600_000)),
+        format_eas_datetime_utc(UNIX_EPOCH + Duration::from_hours(490_896)),
         "2026-01-01T00:00:00.000Z"
     );
     // 2024-02-29T23:59:59.999Z — leap day, end-of-day, max millis.

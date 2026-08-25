@@ -10,7 +10,16 @@ use base64::Engine;
 
 use crate::{
     commands,
-    types::*,
+    types::{
+        ConversationMoveRequest, ConversationMoveResult, DevicePasswordResult, EasConfig,
+        EasServerOptions, EmptyFolderContentsRequest, EmptyFolderContentsResult,
+        FolderCreateRequest, FolderDeleteRequest, FolderSyncResult, FolderUpdateRequest,
+        GetItemEstimateRequest, GetItemEstimateResult, ItemOperationsFetchRequest,
+        ItemOperationsFetchResult, OofResult, OofSettings, PingRequest, PingResult,
+        ResolveRecipientsRequest, ResolveRecipientsResult, SearchRequest, SearchResult,
+        SendMailRequest, SmartForwardRequest, SmartReplyRequest, SyncRequest, SyncResult,
+        UserInformationResult, ValidateCertRequest, ValidateCertResult,
+    },
     wbxml::{WbxmlElement, WbxmlError, deserialize_to_tree, serialize_tree},
 };
 
@@ -79,6 +88,7 @@ const SYNC_MAX_COMMANDS_PER_REQUEST: usize = 200;
 /// protocol-level errors (status codes).
 #[derive(Debug, thiserror::Error)]
 pub enum EasError {
+    /// The HTTP request itself failed (DNS, TLS, timeout).
     #[error("HTTP transport error: {0}")]
     Transport(String),
     /// Non-200 HTTP response. `retry_after` carries the parsed `Retry-After`
@@ -93,17 +103,35 @@ pub enum EasError {
     /// `None` for every other status and for a 451 that omits the header.
     #[error("HTTP {status}: {body}")]
     HttpStatus {
+        /// The HTTP status code.
         status: u16,
+        /// (Possibly truncated) response body for diagnostics.
         body: String,
+        /// Parsed `Retry-After` (delta-seconds → absolute epoch) on 429/503.
         retry_after: Option<i64>,
+        /// `X-MS-Location` target on a 451 mailbox-moved response.
         x_ms_location: Option<String>,
     },
+    /// The WBXML codec rejected the request/response bytes.
     #[error("WBXML codec error: {0}")]
     Wbxml(#[from] WbxmlError),
+    /// The response's root element is not the command's expected top tag.
     #[error("unexpected response root: page {page} token {token}")]
-    UnexpectedRoot { page: u8, token: u8 },
+    UnexpectedRoot {
+        /// The root element's code page.
+        page: u8,
+        /// The root element's token.
+        token: u8,
+    },
+    /// The server answered an in-body command status other than success
+    /// ([MS-ASCMD] §2.2.3.177).
     #[error("command status {status}: {message}")]
-    CommandStatus { status: u32, message: String },
+    CommandStatus {
+        /// The in-body status code.
+        status: u32,
+        /// Human-readable mapping of the code.
+        message: String,
+    },
     /// Client-side request validation failure — the request was rejected
     /// before ANY network I/O (distinct from `CommandStatus`, which means
     /// the SERVER actively rejected a request that went out).
@@ -205,7 +233,7 @@ enum RedirectHop<'a> {
     NoLocation,
 }
 
-fn redirect_hop_decision<'a>(hops: u32, location: Option<&'a str>) -> RedirectHop<'a> {
+fn redirect_hop_decision(hops: u32, location: Option<&str>) -> RedirectHop<'_> {
     if hops >= MAX_REDIRECT_HOPS {
         RedirectHop::HopCapReached
     } else {
@@ -272,7 +300,7 @@ fn command_chunks<T>(items: &[T], max_per_command: usize) -> Vec<&[T]> {
 }
 
 /// High-level EAS client. Cheap to clone (just wraps a `reqwest::Client` and config).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct EasClient {
     config: EasConfig,
     http: reqwest::Client,
@@ -289,9 +317,11 @@ pub struct EasClient {
 }
 
 impl EasClient {
+    /// Build a client for one account: configures the shared `reqwest::Client`
+    /// (timeouts, optional invalid-cert acceptance, user agent) from `config`.
     pub fn new(config: EasConfig) -> Self {
         let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_mins(2))
             .danger_accept_invalid_certs(config.accept_invalid_certs);
         // User-Agent
         let ua = config.user_agent.clone();
@@ -359,7 +389,7 @@ impl EasClient {
 
     /// Adopt an HTTP 451 `X-MS-Location` redirect target ([MS-ASHTTP]
     /// §2.2.1.1.2.4 / §3.1.5.2): validate the location via
-    /// [`endpoint_from_x_ms_location`], switch this client's base URL to the
+    /// `endpoint_from_x_ms_location`, switch this client's base URL to the
     /// derived endpoint, and record the adopted URL for the source layer to
     /// persist. Logs the hop (from → to) at info. An invalid location is
     /// logged at warn and surfaced as an error — the old URL stays untouched
@@ -368,6 +398,11 @@ impl EasClient {
     /// `pub` (not `pub(crate)`) because the host's source layer exercises it
     /// directly in redirect-persistence tests (kylins'
     /// `sync::eas_source::persist_eas_url_writes_adopted_url_against_current_row`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError` when `location` is not a usable absolute EAS endpoint;
+    /// the client keeps its previous URL in that case.
     pub fn adopt_redirect_location(&mut self, location: &str) -> Result<(), EasError> {
         let new_url = endpoint_from_x_ms_location(location).map_err(|e| {
             log::warn!("EAS HTTP 451 redirect not followed: {e}");
@@ -402,6 +437,12 @@ impl EasClient {
     /// `timeout` is an optional per-request timeout override (Ping passes
     /// heartbeat + margin; reqwest's `RequestBuilder::timeout` overrides the
     /// client-wide 120s default). `None` keeps the client default.
+    ///
+    /// # Errors
+    ///
+    /// Returns the final `EasError` after the retry layers: transport failures,
+    /// non-2xx HTTP (`HttpStatus`), WBXML decode failures, or a non-success in-body
+    /// `CommandStatus` (a provision-demanding status is retried once inside).
     pub async fn send_command_ex(
         &mut self,
         cmd_name: &str,
@@ -463,6 +504,12 @@ impl EasClient {
     /// Public entry: send an EAS command with classified retries.
     /// Empty bodies are always errors on this path — commands that treat an
     /// empty body as success (SendMail family) use `send_command_ex`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the final `EasError` after the retry layers: transport failures,
+    /// non-2xx HTTP (`HttpStatus`), WBXML decode failures, or a non-success in-body
+    /// `CommandStatus` (a provision-demanding status is retried once inside).
     pub async fn send_command(
         &mut self,
         cmd_name: &str,
@@ -474,6 +521,12 @@ impl EasClient {
     /// Like `send_command`, but applies a per-request timeout override that
     /// wins over the client's global 120s default. Used by Ping (heartbeat +
     /// margin); every other command goes through `send_command` (`None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the final `EasError` after the retry layers: transport failures,
+    /// non-2xx HTTP (`HttpStatus`), WBXML decode failures, or a non-success in-body
+    /// `CommandStatus` (a provision-demanding status is retried once inside).
     pub async fn send_command_timed(
         &mut self,
         cmd_name: &str,
@@ -536,8 +589,7 @@ impl EasClient {
                         .config
                         .auth
                         .as_ref()
-                        .map(|a| a.is_oauth())
-                        .unwrap_or(false);
+                        .is_some_and(super::auth::EasAuth::is_oauth);
                     match retry_decision_for_http_err(status, is_oauth) {
                         RetryDecision::RunProvision => {
                             // Re-provision, then retry the original command once.
@@ -690,13 +742,12 @@ impl EasClient {
         // historical Basic path built inline from username/password. The
         // fallback preserves the original byte-for-byte header value so
         // existing Basic-auth tests stay green.
-        let auth_header = match &self.config.auth {
-            Some(auth) => auth.authorization_header().await?,
-            None => {
-                let auth_value = base64::engine::general_purpose::STANDARD
-                    .encode(format!("{}:{}", self.config.username, self.config.password));
-                format!("Basic {}", auth_value)
-            }
+        let auth_header = if let Some(auth) = &self.config.auth {
+            auth.authorization_header().await?
+        } else {
+            let auth_value = base64::engine::general_purpose::STANDARD
+                .encode(format!("{}:{}", self.config.username, self.config.password));
+            format!("Basic {auth_value}")
         };
 
         // Query string per [MS-ASHTTP] section 2.1: Cmd + User + DeviceId + DeviceType.
@@ -759,8 +810,7 @@ impl EasClient {
         // immaterial for a >=60s backoff window).
         let now_epoch = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+            .map_or(0, |d| u64::cast_signed(d.as_secs()));
         let retry_after = response
             .headers()
             .get("Retry-After")
@@ -785,11 +835,7 @@ impl EasClient {
             .unwrap_or("")
             .to_string();
 
-        log::debug!(
-            "EAS response: status={}, content-type={}",
-            status,
-            content_type
-        );
+        log::debug!("EAS response: status={status}, content-type={content_type}");
 
         if status != 200 {
             let body = response.text().await.unwrap_or_default();
@@ -806,7 +852,7 @@ impl EasClient {
             if s != "0" {
                 return Err(EasError::CommandStatus {
                     status: s.parse().unwrap_or(0),
-                    message: format!("protocol error from server: {}", s),
+                    message: format!("protocol error from server: {s}"),
                 });
             }
         }
@@ -826,14 +872,13 @@ impl EasClient {
             let body = response.bytes().await.unwrap_or_default();
             let preview = String::from_utf8_lossy(&body[..body.len().min(200)]);
             return Err(EasError::Transport(format!(
-                "server returned non-WBXML content-type '{}'. First 200 bytes: {}",
-                content_type, preview
+                "server returned non-WBXML content-type '{content_type}'. First 200 bytes: {preview}"
             )));
         }
 
         let body = response.bytes().await?;
         if body.is_empty() {
-            log::debug!("EAS {} response: empty body", cmd_name);
+            log::debug!("EAS {cmd_name} response: empty body");
             // SendMail/SmartReply/SmartForward succeed with an empty body
             // (MS-ASCMD); every other command treats it as an error.
             return match empty_body_outcome(allow_empty) {
@@ -922,6 +967,12 @@ impl EasClient {
     /// empty body is always an error here. `timeout` is the per-request
     /// override threaded down to `send_command_no_retry` (`None` = client
     /// default; the Provision/Settings callers all pass `None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     async fn send_command_no_retry_tree(
         &self,
         cmd_name: &str,
@@ -945,20 +996,24 @@ impl EasClient {
     /// A response carrying NEITHER header is a `Transport` error (the server
     /// is almost certainly not an EAS endpoint); a single missing header
     /// yields an empty list for that side.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError::Transport`/`HttpStatus` when the HTTP round-trip fails
+    /// (no WBXML body is involved).
     pub async fn options(&self) -> Result<EasServerOptions, EasError> {
         // Same auth-header selection as send_command_no_retry: typed EasAuth
         // when set, else inline Basic from username/password.
-        let auth_header = match &self.config.auth {
-            Some(auth) => auth.authorization_header().await?,
-            None => {
-                let auth_value = base64::engine::general_purpose::STANDARD
-                    .encode(format!("{}:{}", self.config.username, self.config.password));
-                format!("Basic {}", auth_value)
-            }
+        let auth_header = if let Some(auth) = &self.config.auth {
+            auth.authorization_header().await?
+        } else {
+            let auth_value = base64::engine::general_purpose::STANDARD
+                .encode(format!("{}:{}", self.config.username, self.config.password));
+            format!("Basic {auth_value}")
         };
 
         let url = self.config.url.trim_end_matches('/').to_string();
-        log::debug!("EAS OPTIONS {}", url);
+        log::debug!("EAS OPTIONS {url}");
 
         let response = self
             .http
@@ -979,6 +1034,12 @@ impl EasClient {
     }
 
     /// FolderSync — full folder hierarchy sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn folder_sync(&mut self, sync_key: &str) -> Result<FolderSyncResult, EasError> {
         let req = commands::build_folder_sync_request(sync_key);
         let resp = self.send_command("FolderSync", &req).await?;
@@ -994,7 +1055,7 @@ impl EasClient {
             });
         }
         // Cache the hierarchy key — folder ops must echo it back per MS-ASCMD.
-        self.hierarchy_sync_key = result.sync_key.clone();
+        self.hierarchy_sync_key.clone_from(&result.sync_key);
         Ok(result)
     }
 
@@ -1007,6 +1068,12 @@ impl EasClient {
     /// `added` / `updated` path bit-for-bit. The REQUEST builder is
     /// class-agnostic either way (`build_sync_request` emits no Class
     /// element in 14.0+).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn sync(&mut self, req: &SyncRequest) -> Result<SyncResult, EasError> {
         let tree = commands::build_sync_request(req, &self.config.protocol_version);
         // allow_empty=true: Exchange returns an EMPTY HTTP body for Sync when
@@ -1039,7 +1106,7 @@ impl EasClient {
     ///
     /// Batch size: [MS-ASCMD] §3.1.5.10 SHOULD-limits the Sync command
     /// elements (Add + Change + Delete + Fetch) to
-    /// [`SYNC_MAX_COMMANDS_PER_REQUEST`] per request, so batches larger than
+    /// `SYNC_MAX_COMMANDS_PER_REQUEST` per request, so batches larger than
     /// the limit are split into sequential ≤200-change chunks. Each chunk's
     /// response rotates the collection sync key — the rotated key is the
     /// REQUIRED request key of the next Sync — so the chunks thread it:
@@ -1056,6 +1123,12 @@ impl EasClient {
     /// persists the rotated key on ANY path, so a mid-batch failure leaves
     /// the persisted cursor at the pre-upsync key — the next downsync
     /// re-syncs from there and self-heals; no impossible state is recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn sync_changes(
         &mut self,
         collection_id: &str,
@@ -1130,6 +1203,12 @@ impl EasClient {
     /// One ≤[`SYNC_MAX_COMMANDS_PER_REQUEST`]-change Sync round-trip. The
     /// chunk numbers are embedded in the surfaced `CommandStatus` message so
     /// a mid-batch failure is diagnosable from the caller's log alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     async fn sync_changes_chunk(
         &mut self,
         chunk_no: usize,
@@ -1158,6 +1237,12 @@ impl EasClient {
     /// SendMail — send a single MIME message. Success per MS-ASCMD is an
     /// HTTP 200 with an EMPTY body (we return status 1); a WBXML body is
     /// only present on failure and carries the Status.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn send_mail(&mut self, req: &SendMailRequest) -> Result<u32, EasError> {
         let tree = commands::build_send_mail_request(req);
         match self.send_command_ex("SendMail", &tree, true, None).await? {
@@ -1182,6 +1267,12 @@ impl EasClient {
     ///      `parse_send_mail_response` surfaces it as `Ok(status)`, NOT an Err, so it needs its own
     ///      arm. Transport / HTTP-status / WBXML errors are NOT degraded (the SmartForward may
     ///      still succeed on retry) and propagate unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn smart_forward(&mut self, req: &SmartForwardRequest) -> Result<u32, EasError> {
         let tree = commands::build_smart_forward_request(req)?;
         let result = match self
@@ -1245,6 +1336,12 @@ impl EasClient {
 
     /// SmartReply — reply to an existing server-side message with new MIME body.
     /// Same empty-body-success contract as SendMail (MS-ASCMD).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn smart_reply(&mut self, req: &SmartReplyRequest) -> Result<u32, EasError> {
         let tree = commands::build_smart_reply_request(req)?;
         match self
@@ -1264,6 +1361,12 @@ impl EasClient {
     /// `MS-ASAcceptMultiPart: T` and a multipart response ([MS-ASCMD]
     /// §2.2.1.10.1) is accepted and resolved inline before parsing, so the
     /// result shape is identical either way.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn item_operations(
         &mut self,
         req: &ItemOperationsFetchRequest,
@@ -1292,6 +1395,12 @@ impl EasClient {
     /// Status, overridden by the EmptyFolderContents-level Status when
     /// present — the parser's more-specific-wins rule). Non-1 is surfaced
     /// as a typed CommandStatus error, mirroring the Settings family.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn empty_folder_contents(
         &mut self,
         req: &EmptyFolderContentsRequest,
@@ -1324,6 +1433,12 @@ impl EasClient {
     /// itemoperations Status, overridden by the Move-level Status when
     /// present — the parser's more-specific-wins rule). Non-1 is surfaced
     /// as a typed CommandStatus error, mirroring the Settings family.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn conversation_move(
         &mut self,
         req: &ConversationMoveRequest,
@@ -1351,7 +1466,7 @@ impl EasClient {
     /// request order on full success.
     ///
     /// Batch size: [MS-ASCMD] §3.1.5.10 SHOULD-limits a MoveItems request to
-    /// [`MOVE_ITEMS_MAX_PER_COMMAND`] Move elements, so batches larger than
+    /// `MOVE_ITEMS_MAX_PER_COMMAND` Move elements, so batches larger than
     /// the limit are split into sequential ≤1000-move commands and the
     /// per-move results merged in order (`command_chunks` covers the input
     /// contiguously, keeping merged results aligned with the request tuples).
@@ -1367,6 +1482,12 @@ impl EasClient {
     /// other command: **3 is the success code** (returned with a valid
     /// DstMsgId — Exchange 15.2 live evidence, F10-2), and 1 means "invalid
     /// source collection/item ID".
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn move_items(
         &mut self,
         moves: &[(String, String, String)],
@@ -1411,6 +1532,12 @@ impl EasClient {
     /// send, parse, and gate the per-move statuses. The chunk numbers are
     /// embedded in the surfaced `CommandStatus` message so a mid-batch
     /// failure is diagnosable from the caller's log alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     async fn move_items_chunk(
         &mut self,
         chunk_no: usize,
@@ -1457,6 +1584,12 @@ impl EasClient {
     /// the IPC layer gates it). A non-1 Result Status surfaces as
     /// `EasError::CommandStatus` (decoded by
     /// `meeting_response_status_message` — [MS-ASCMD] 2.2.3.177.9).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn meeting_response(
         &mut self,
         collection_id: &str,
@@ -1488,6 +1621,12 @@ impl EasClient {
     }
 
     /// GetItemEstimate — count of pending items for a collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn get_item_estimate(
         &mut self,
         req: &GetItemEstimateRequest,
@@ -1500,6 +1639,12 @@ impl EasClient {
     }
 
     /// Search — mailbox or GAL search ([MS-ASCMD] §2.2.1.16).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn search(&mut self, req: &SearchRequest) -> Result<SearchResult, EasError> {
         let tree = commands::build_search_request(req);
         let resp = self.send_command("Search", &tree).await?;
@@ -1515,6 +1660,12 @@ impl EasClient {
     /// failures causing strikes → drop to poll. Both the initial request and
     /// the status-5 retry pass `heartbeat + 60s` via `ping_request_timeout`
     /// (the retry uses the server-adopted interval).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn ping(&mut self, req: &PingRequest) -> Result<PingResult, EasError> {
         let started = std::time::Instant::now();
         let collections: Vec<&str> = req
@@ -1575,6 +1726,12 @@ impl EasClient {
     }
 
     /// FolderCreate — create a new folder under a parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn folder_create(
         &mut self,
         req: &FolderCreateRequest,
@@ -1588,6 +1745,12 @@ impl EasClient {
     }
 
     /// FolderDelete — delete a folder by server id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn folder_delete(
         &mut self,
         req: &FolderDeleteRequest,
@@ -1601,6 +1764,12 @@ impl EasClient {
     }
 
     /// FolderUpdate — rename or move a folder.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn folder_update(
         &mut self,
         req: &FolderUpdateRequest,
@@ -1618,6 +1787,12 @@ impl EasClient {
     /// key, and the next folder op must send the new one — without this a
     /// create→delete sequence goes out with a stale key (live evidence:
     /// eas_folder_debug 2026-08-02, delete with pre-create key → status 110).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     fn adopt_folder_op_sync_key(&mut self, resp: &WbxmlElement) {
         if let Some(key) = commands::folder_op_response_sync_key(resp)
             && !key.is_empty()
@@ -1631,6 +1806,12 @@ impl EasClient {
     /// Sent on demand when Provision answers 165 (DeviceInformationRequired).
     /// Uses `send_command_no_retry` for the same anti-recursion invariant as
     /// `provision()` (it is called FROM `provision()`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn settings_device_information(&mut self) -> Result<(), EasError> {
         let req = commands::build_settings_device_information_request(
             &self.config.device_type,
@@ -1671,6 +1852,12 @@ impl EasClient {
     /// `send_command_no_retry_tree` because it is called FROM `provision()` —
     /// this is a standalone user-facing command, so it uses the normal retry
     /// path like every other frontend-invoked command.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn settings_user_information(&mut self) -> Result<UserInformationResult, EasError> {
         let req = commands::build_settings_user_information_request();
         let resp = self.send_command("Settings", &req).await?;
@@ -1706,6 +1893,12 @@ impl EasClient {
     /// travels to the server over TLS only and is NEVER logged, persisted,
     /// or interpolated into any log or error message here; errors carry only
     /// the protocol status code. Do not add logging that could include it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn settings_device_password(
         &mut self,
         password: &str,
@@ -1745,6 +1938,12 @@ impl EasClient {
     /// content. They are never logged here; the transport layer's DEBUG
     /// body dump is redacted for the Settings command (see
     /// `body_dump_allowed` in this module).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn settings_oof_get(&mut self, body_type: &str) -> Result<OofSettings, EasError> {
         let req = commands::build_settings_oof_get_request(body_type);
         let resp = self.send_command("Settings", &req).await?;
@@ -1780,6 +1979,12 @@ impl EasClient {
     /// or interpolated into any log or error message here; errors carry
     /// only the protocol status code. The transport layer's DEBUG body dump
     /// is redacted for the Settings command (see `body_dump_allowed`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn settings_oof_set(
         &mut self,
         settings: &OofSettings,
@@ -1828,6 +2033,12 @@ impl EasClient {
     /// interpolated into any log or error message here; errors carry only
     /// the protocol status code. The transport layer's DEBUG body dumps are
     /// redacted for this command (see `body_dump_allowed`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn validate_cert(
         &mut self,
         request: &ValidateCertRequest,
@@ -1876,6 +2087,12 @@ impl EasClient {
     /// free/busy data. None of it is logged here — errors carry the
     /// protocol status code only — and the transport layer's DEBUG body
     /// dumps are redacted for this command (see `body_dump_allowed`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn resolve_recipients(
         &mut self,
         request: &ResolveRecipientsRequest,
@@ -1946,6 +2163,12 @@ impl EasClient {
     /// returns a `<RemoteWipe>` element — we surface, NEVER auto-execute
     /// (per Global Constraints). Other non-1 statuses surface as
     /// `CommandStatus` with the protocol status code.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip fails,
+    /// `Wbxml` when the response bytes do not decode, and `CommandStatus` when the
+    /// server answers a non-success status.
     pub async fn provision(&mut self) -> Result<(), EasError> {
         // Phase 1: request the policy. Server returns a temp PolicyKey + the
         // policy XML in <Data>.
@@ -2035,7 +2258,7 @@ pub fn pick_protocol_version(server_list: &str, client_known: &[&str]) -> Option
         .split(',')
         .map(str::trim)
         .rfind(|v| !v.is_empty() && client_known.contains(v))
-        .map(|v| v.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Pure half of `EasClient::options()`: split the two MS-ASHTTP OPTIONS
@@ -2057,7 +2280,7 @@ fn parse_options_headers(
             .split(',')
             .map(str::trim)
             .filter(|p| !p.is_empty())
-            .map(|p| p.to_string())
+            .map(std::string::ToString::to_string)
             .collect()
     };
     Ok(EasServerOptions {
@@ -2069,13 +2292,14 @@ fn parse_options_headers(
 /// Hex-dump helper for wire-level request/response logs, capped so a large
 /// Sync body can't flood the log file (Ping bodies are ~20-120 bytes).
 fn hex_capped(bytes: &[u8], cap: usize) -> String {
+    use std::fmt::Write as _;
     let n = bytes.len().min(cap);
-    let mut s = bytes[..n]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let mut s = String::with_capacity(2 * n + 16);
+    for b in &bytes[..n] {
+        let _ = write!(s, "{b:02x}");
+    }
     if bytes.len() > cap {
-        s.push_str(&format!("…(+{}B)", bytes.len() - cap));
+        let _ = write!(s, "…(+{}B)", bytes.len() - cap);
     }
     s
 }
@@ -2170,7 +2394,8 @@ fn urlencode(s: &str) -> String {
                 out.push(*b as char);
             }
             _ => {
-                out.push_str(&format!("%{:02X}", b));
+                use std::fmt::Write as _;
+                let _ = write!(out, "%{b:02X}");
             }
         }
     }
@@ -2273,7 +2498,7 @@ fn endpoint_from_x_ms_location(location: &str) -> Result<String, EasError> {
 /// per-request `RequestBuilder::timeout` overrides that default. Saturating:
 /// a u32::MAX heartbeat must not overflow the margin add.
 fn ping_request_timeout(heartbeat_secs: u32) -> std::time::Duration {
-    std::time::Duration::from_secs(heartbeat_secs.saturating_add(60) as u64)
+    std::time::Duration::from_secs(u64::from(heartbeat_secs.saturating_add(60)))
 }
 
 /// MS-ASPing: status 5 = requested heartbeat out of range; the response's
@@ -2417,15 +2642,12 @@ mod tests {
     #[test]
     fn ping_request_timeout_is_heartbeat_plus_margin() {
         // Normal tuned heartbeat: 480s + 60s margin.
-        assert_eq!(
-            ping_request_timeout(480),
-            std::time::Duration::from_secs(540)
-        );
+        assert_eq!(ping_request_timeout(480), std::time::Duration::from_mins(9));
     }
 
     #[test]
     fn ping_request_timeout_zero_heartbeat_is_margin_only() {
-        assert_eq!(ping_request_timeout(0), std::time::Duration::from_secs(60));
+        assert_eq!(ping_request_timeout(0), std::time::Duration::from_mins(1));
     }
 
     #[test]
@@ -2433,7 +2655,7 @@ mod tests {
         // u32::MAX + 60 must not overflow — saturating_add keeps u32::MAX.
         assert_eq!(
             ping_request_timeout(u32::MAX),
-            std::time::Duration::from_secs(u32::MAX as u64)
+            std::time::Duration::from_secs(u64::from(u32::MAX))
         );
     }
 
@@ -2969,9 +3191,7 @@ mod tests {
 
     #[test]
     fn move_items_one_over_limit_splits_1000_plus_1() {
-        let moves: Vec<_> = (0..MOVE_ITEMS_MAX_PER_COMMAND + 1)
-            .map(move_tuple)
-            .collect();
+        let moves: Vec<_> = (0..=MOVE_ITEMS_MAX_PER_COMMAND).map(move_tuple).collect();
         let chunks = command_chunks(&moves, MOVE_ITEMS_MAX_PER_COMMAND);
         assert_eq!(chunks.len(), 2, "1001 moves must split into two commands");
         assert_eq!(chunks[0].len(), MOVE_ITEMS_MAX_PER_COMMAND);
@@ -3011,7 +3231,7 @@ mod tests {
 
     #[test]
     fn sync_changes_one_over_limit_splits_200_plus_1() {
-        let changes: Vec<_> = (0..SYNC_MAX_COMMANDS_PER_REQUEST + 1)
+        let changes: Vec<_> = (0..=SYNC_MAX_COMMANDS_PER_REQUEST)
             .map(flag_change)
             .collect();
         let chunks = command_chunks(&changes, SYNC_MAX_COMMANDS_PER_REQUEST);

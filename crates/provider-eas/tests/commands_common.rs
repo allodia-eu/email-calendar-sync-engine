@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+//! Shared helpers for the command integration tests (round trip, text value, base64).
 use provider_eas::commands::*;
 
 #[test]

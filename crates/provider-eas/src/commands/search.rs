@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{
+    AS_CLASS, AS_COLLECTION_ID, EasItem, GalEntry, PAGE_AIRSYNC, SearchRequest, SearchResult,
+    SearchResultItem, WbxmlElement, WbxmlError, parse_application_data, tags, text_value,
+    text_value_opt,
+};
 
 // ============================================================================
 // Search (code page 15) + GAL (code page 16)
@@ -91,6 +95,12 @@ pub fn build_search_request(req: &SearchRequest) -> WbxmlElement {
 /// Mailbox `Properties` reuse `parse_application_data`; GAL `Properties` are
 /// parsed by tag name into `GalEntry`. A command-level error (no `Response`)
 /// yields empty results with the status surfaced.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_search_response(root: &WbxmlElement) -> Result<SearchResult, WbxmlError> {
     use tags::search as sr;
 
@@ -102,17 +112,16 @@ pub fn parse_search_response(root: &WbxmlElement) -> Result<SearchResult, WbxmlE
     for child in &root.children {
         if child.page == sr::PAGE && child.token == sr::STATUS {
             let raw = text_value(child).unwrap_or_default();
-            result.status = match raw.parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    log::warn!("Search: malformed top-level Status \"{raw}\"; defaulting to 1");
-                    1
-                }
+            result.status = if let Ok(n) = raw.parse() {
+                n
+            } else {
+                log::warn!("Search: malformed top-level Status \"{raw}\"; defaulting to 1");
+                1
             };
         } else if child.page == sr::PAGE && child.token == sr::RESPONSE {
             for resp_child in &child.children {
                 if resp_child.page == sr::PAGE && resp_child.token == sr::STORE {
-                    parse_search_store(resp_child, &mut result)?;
+                    parse_search_store(resp_child, &mut result);
                 }
             }
         }
@@ -121,23 +130,22 @@ pub fn parse_search_response(root: &WbxmlElement) -> Result<SearchResult, WbxmlE
     Ok(result)
 }
 
-fn parse_search_store(store: &WbxmlElement, result: &mut SearchResult) -> Result<(), WbxmlError> {
+fn parse_search_store(store: &WbxmlElement, result: &mut SearchResult) {
     use tags::search as sr;
 
     for child in &store.children {
         match (child.page, child.token) {
             (sr::PAGE, sr::STATUS) => {
                 let raw = text_value(child).unwrap_or_default();
-                result.store_status = match raw.parse() {
-                    Ok(n) => Some(n),
-                    Err(_) => {
-                        log::warn!("Search Store: malformed Status \"{raw}\"; ignoring");
-                        None
-                    }
+                result.store_status = if let Ok(n) = raw.parse() {
+                    Some(n)
+                } else {
+                    log::warn!("Search Store: malformed Status \"{raw}\"; ignoring");
+                    None
                 };
             }
             (sr::PAGE, sr::RESULT) => {
-                result.results.push(parse_search_result(child)?);
+                result.results.push(parse_search_result(child));
             }
             (sr::PAGE, sr::RANGE) => {
                 result.range = text_value_opt(child);
@@ -148,10 +156,9 @@ fn parse_search_store(store: &WbxmlElement, result: &mut SearchResult) -> Result
             _ => {}
         }
     }
-    Ok(())
 }
 
-fn parse_search_result(result_el: &WbxmlElement) -> Result<SearchResultItem, WbxmlError> {
+fn parse_search_result(result_el: &WbxmlElement) -> SearchResultItem {
     use tags::{gal, search as sr};
 
     let mut item = SearchResultItem::default();
@@ -198,5 +205,5 @@ fn parse_search_result(result_el: &WbxmlElement) -> Result<SearchResultItem, Wbx
         }
     }
 
-    Ok(item)
+    item
 }

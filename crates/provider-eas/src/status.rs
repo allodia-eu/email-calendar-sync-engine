@@ -41,7 +41,8 @@ pub fn recovery_action_for_common(status: u32) -> RecoveryAction {
     match status {
         1 => RecoveryAction::Ok,
         142..=144 => RecoveryAction::RetryProvision,
-        140 | 126 => RecoveryAction::SurfacePermanent,
+        // 140 (remote wipe), 126 (unknown status), and everything
+        // unrecognized: surface permanently.
         _ => RecoveryAction::SurfacePermanent,
     }
 }
@@ -132,10 +133,9 @@ pub fn recovery_action_for_http(status: u16, is_oauth: bool) -> RecoveryAction {
         200 => RecoveryAction::Ok,
         401 if is_oauth => RecoveryAction::RefreshToken,
         401 | 403 => RecoveryAction::SurfaceAuth,
-        429 => RecoveryAction::RetryTransient,
+        429 | 500..=599 => RecoveryAction::RetryTransient,
         449 => RecoveryAction::RetryProvision,
         451 => RecoveryAction::FollowRedirect,
-        500..=599 => RecoveryAction::RetryTransient,
         _ => RecoveryAction::SurfacePermanent,
     }
 }

@@ -5,8 +5,8 @@
 //! `Basic` is the historical default. `OAuth` is required for Exchange Online
 //! modern-auth tenants. OAuth token storage, caching, expiry tracking, and
 //! IdP refresh are deliberately NOT in this crate: the host application
-//! supplies a [`TokenProvider`] and the crate just asks it for a token. This
-//! keeps `provider-eas` free of kylins' `crate::oauth` / keyring / DB
+//! supplies a [`TokenProvider`](crate::auth::TokenProvider) and the crate just asks it for a token.
+//! This keeps `provider-eas` free of kylins' `crate::oauth` / keyring / DB
 //! dependencies. Kylins' implementation is `KylinsTokenProvider`
 //! (`src/provider/eas/token_provider.rs`).
 
@@ -55,8 +55,11 @@ pub trait TokenProvider: Send + Sync {
 /// persisted.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum EasAuth {
+    /// Basic auth ([MS-ASHTTP] §2.2.2): base64 `user:password`.
     Basic {
+        /// Basic-auth username (`DOMAIN\user` or `user@domain`).
         username: String,
+        /// Basic-auth password (plaintext in memory; see the module docs).
         password: String,
     },
     /// OAuth via a host-supplied token provider. Wrap in `Arc` so `EasAuth`
@@ -79,6 +82,7 @@ impl EasAuth {
         EasAuth::OAuth(Arc::from(provider))
     }
 
+    /// Whether this strategy is OAuth (vs Basic).
     pub fn is_oauth(&self) -> bool {
         matches!(self, EasAuth::OAuth(_))
     }
@@ -88,16 +92,21 @@ impl EasAuth {
     /// Async because the OAuth branch pulls a token from the provider (which
     /// may refresh against the IdP). Basic never fails; OAuth propagates the
     /// provider's [`EasError::Auth`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError::Auth` when the OAuth token provider fails to produce a
+    /// token; the Basic branch never fails.
     pub async fn authorization_header(&self) -> Result<String, EasError> {
         match self {
             EasAuth::Basic { username, password } => {
                 let encoded = base64::engine::general_purpose::STANDARD
-                    .encode(format!("{}:{}", username, password));
-                Ok(format!("Basic {}", encoded))
+                    .encode(format!("{username}:{password}"));
+                Ok(format!("Basic {encoded}"))
             }
             EasAuth::OAuth(provider) => {
                 let token = provider.access_token().await?;
-                Ok(format!("Bearer {}", token))
+                Ok(format!("Bearer {token}"))
             }
         }
     }
@@ -108,6 +117,11 @@ impl EasAuth {
     /// returned here — the transport rebuilds the header via
     /// [`Self::authorization_header`] after this succeeds, so the provider is
     /// expected to have updated its cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError::Auth` when the OAuth provider's forced refresh fails;
+    /// Basic is a no-op success.
     pub async fn refresh(&self) -> Result<(), EasError> {
         match self {
             EasAuth::Basic { .. } => Ok(()),
@@ -249,14 +263,10 @@ mod tests {
     #[test]
     fn debug_redacts_password_and_provider() {
         let basic = EasAuth::basic("alice", "s3cret");
-        let dbg = format!("{:?}", basic);
+        let dbg = format!("{basic:?}");
         assert!(dbg.contains("alice"));
-        assert!(
-            !dbg.contains("s3cret"),
-            "password must be redacted: {}",
-            dbg
-        );
+        assert!(!dbg.contains("s3cret"), "password must be redacted: {dbg}");
         let oauth = EasAuth::oauth(Box::new(StaticToken("tok-123")));
-        assert!(!format!("{:?}", oauth).contains("tok-123"));
+        assert!(!format!("{oauth:?}").contains("tok-123"));
     }
 }

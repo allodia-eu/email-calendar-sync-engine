@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+//! SendMail/SmartForward/SmartReply tests: request trees and status parsing.
 use provider_eas::commands::{tests_common::*, *};
 
 #[test]
@@ -23,7 +24,7 @@ fn send_mail_request_minimal() {
     assert_eq!(tree.children[2].token, compose::MIME);
     match &tree.children[2].value {
         WbxmlValue::Opaque(_) => {}
-        other => panic!("expected Opaque Mime, got {:?}", other),
+        other => panic!("expected Opaque Mime, got {other:?}"),
     }
 }
 
@@ -252,7 +253,7 @@ fn smart_forward_request_emits_raw_mime_not_base64() {
             bytes, &raw,
             "Mime must carry the decoded raw MIME entity, not the base64 text"
         ),
-        other => panic!("expected Opaque Mime, got {:?}", other),
+        other => panic!("expected Opaque Mime, got {other:?}"),
     }
 }
 
@@ -332,6 +333,6 @@ fn smart_reply_request_emits_spec_order_and_raw_mime() {
     );
     match &tree.children[2].value {
         WbxmlValue::Opaque(bytes) => assert_eq!(bytes, &raw),
-        other => panic!("expected Opaque Mime, got {:?}", other),
+        other => panic!("expected Opaque Mime, got {other:?}"),
     }
 }

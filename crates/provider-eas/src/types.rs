@@ -12,6 +12,8 @@ use crate::{auth::EasAuth, calendar::CalendarEventProps, contacts::ContactsConta
 
 // ---------- Configuration ----------
 
+/// Connection/auth configuration for one EAS account — what the host layer
+/// builds from its stored account record and hands to `EasClient`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EasConfig {
     /// Full URL to the Exchange ActiveSync endpoint, e.g.
@@ -131,10 +133,16 @@ pub struct EasServerOptions {
 
 // ---------- Folders (FolderSync) ----------
 
+/// One folder from a FolderSync change entry ([MS-ASFD]): the server's
+/// folder-tree delta, addressed by ServerId.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EasFolder {
+    /// Server-assigned folder id (FolderHierarchy:ServerId) — stable across
+    /// renames and moves.
     pub server_id: String,
+    /// Parent folder's ServerId ("0" for the root).
     pub parent_id: String,
+    /// Folder name exactly as the server stores it (locale-dependent).
     pub display_name: String,
     /// `"Email"`, `"Calendar"`, `"Contacts"`, `"Tasks"`, `"Notes"`, etc.
     pub class: String,
@@ -147,6 +155,8 @@ pub struct EasFolder {
     pub folder_type: Option<u8>,
 }
 
+/// Result of the FolderSync command ([MS-ASFD] §2.2.1.1): the next sync key
+/// plus the folder-tree delta since the previous one.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FolderSyncResult {
     /// Command status per [MS-ASCMD] common + FolderSync codes; 1 = success.
@@ -181,9 +191,14 @@ pub struct SupportedElement {
     pub token: u8,
 }
 
+/// One collection of a Sync request ([MS-ASSYNC] §2.2.1): the sync key to
+/// resume from, the class being synced, and the Options shaping the
+/// response bodies.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SyncRequest {
+    /// Collection (folder) ServerId to sync.
     pub collection_id: String,
+    /// Server-issued sync key from the previous round ("0" starts fresh).
     pub sync_key: String,
     /// `"Email"`, `"Calendar"`, `"Contacts"`.
     pub class: String,
@@ -251,19 +266,29 @@ fn default_true() -> bool {
     true
 }
 
+/// Result of one Sync round-trip: the next sync key plus per-class item
+/// deltas — Email items in `added`/`updated`, Calendar and Contacts items in
+/// their class-specific vectors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResult {
+    /// Next sync key — persist it and send it back on the following Sync.
     pub sync_key: String,
+    /// Email-class items added since the previous key.
     pub added: Vec<EasItem>,
+    /// Email-class items updated since the previous key.
     pub updated: Vec<EasItem>,
+    /// ServerIds deleted since the previous key (shared by every class —
+    /// deletes are class-agnostic on the wire).
     pub deleted_server_ids: Vec<String>,
     /// Calendar-class items (populated only when the request class is
     /// "Calendar"; Email syncs keep these empty). ServerId travels in the
     /// wrapper so the engine can key rows without touching props.
     /// Deletes stay class-agnostic on the wire — they share
     /// `deleted_server_ids` for every class (M8 Task 4 seam).
+    /// Calendar items added since the previous key.
     #[serde(default)]
     pub calendar_added: Vec<CalendarItemWithId>,
+    /// Calendar items updated since the previous key.
     #[serde(default)]
     pub calendar_updated: Vec<CalendarItemWithId>,
     /// Contacts-class items (populated only when the request class is
@@ -271,8 +296,10 @@ pub struct SyncResult {
     /// Calendar seam: ServerId travels in the wrapper so the engine can key
     /// rows without touching props. Deletes stay class-agnostic on the wire
     /// — they share `deleted_server_ids` for every class (M8-C task 1 seam).
+    /// Contacts items added since the previous key.
     #[serde(default)]
     pub contacts_added: Vec<ContactsItemWithId>,
+    /// Contacts items updated since the previous key.
     #[serde(default)]
     pub contacts_updated: Vec<ContactsItemWithId>,
     /// True if more items are available — caller should re-issue Sync with the new sync_key.
@@ -319,7 +346,9 @@ impl Default for SyncResult {
 /// per the Task-1 ruling) without touching the typed props.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CalendarItemWithId {
+    /// Server-assigned item id — the engine's store-row key.
     pub server_id: String,
+    /// The parsed calendar properties.
     pub props: CalendarEventProps,
 }
 
@@ -330,7 +359,9 @@ pub struct CalendarItemWithId {
 /// can key store rows (uid = ServerId) without touching the typed props.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ContactsItemWithId {
+    /// Server-assigned item id — the engine's store-row key.
     pub server_id: String,
+    /// The parsed contact properties.
     pub props: ContactsContactProps,
 }
 
@@ -341,18 +372,33 @@ pub struct ContactsItemWithId {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct EasItem {
+    /// Server-assigned item id (AirSync:ServerId).
     pub server_id: String,
+    /// `email:Subject`, when present.
     pub subject: Option<String>,
+    /// `email:From`, when present.
     pub from: Option<String>,
+    /// `email:To` recipients, when present.
     pub to: Option<String>,
+    /// `email:Cc` recipients, when present.
     pub cc: Option<String>,
+    /// `email2:Bcc` recipients, when present.
     pub bcc: Option<String>,
+    /// `email:Reply-To`, when present.
     pub reply_to: Option<String>,
+    /// `email:DateReceived` (xs:dateTime string, verbatim), when present.
     pub date_received: Option<String>,
+    /// `email:Read` ("1"/"0" on the wire), when present.
     pub read: Option<bool>,
+    /// `email:Flag` follow-up state (`Some(true)` only for an active flag —
+    /// see the parser's Flag.Status rule), when a Flag element was present.
     pub flag: Option<bool>,
+    /// `email:Importance` (0=low, 1=normal, 2=high), when present.
     pub importance: Option<u8>,
+    /// `airsyncbase:Body` Type 2 (HTML) content, when requested and present.
     pub body_html: Option<String>,
+    /// `airsyncbase:Body` Type 1 (plain text) content, when requested and
+    /// present.
     pub body_text: Option<String>,
     /// Raw MIME body (`AirSyncBase:Body` Type 4, [MS-ASCMD] §2.2.3.110.3):
     /// the full RFC 5322 message as a MIME BLOB, returned when the sync
@@ -360,12 +406,20 @@ pub struct EasItem {
     /// slot — a Type-4 body never also fills `body_html`/`body_text`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_mime: Option<String>,
+    /// `airsyncbase:Truncated` ("1"/"0") — the body was cut at
+    /// TruncationSize, when present.
     pub body_truncated: Option<bool>,
+    /// `airsyncbase:Preview` text, when present.
     pub preview: Option<String>,
+    /// True when the item carried at least one `airsyncbase:Attachment`.
     pub has_attachments: bool,
+    /// Attachment metadata parsed from the `airsyncbase:Attachments` subtree.
     pub attachments: Vec<EasAttachment>,
+    /// `email2:ConversationId` — opaque server bytes, carried verbatim.
     pub conversation_id: Option<Vec<u8>>,
+    /// `email2:IsDraft` ("1"/"0"), when present.
     pub is_draft: Option<bool>,
+    /// `email:MessageID` (RFC 5322), when present.
     pub message_id: Option<String>,
     /// `email:MessageClass` ([MS-ASEMAIL] §2.2.2.46): the Outlook/Exchange
     /// message class — `IPM.Note` for ordinary mail,
@@ -431,12 +485,20 @@ pub struct MeetingRequestInfo {
     pub uid: Option<String>,
 }
 
+/// One attachment's metadata from a Sync response
+/// (`airsyncbase:Attachment`, [MS-ASAIRS]) — the bytes are fetched
+/// separately via ItemOperations using `file_reference`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct EasAttachment {
+    /// `airsyncbase:FileReference` — the handle an ItemOperations fetch
+    /// uses to download the bytes.
     pub file_reference: String,
+    /// `airsyncbase:DisplayName` (file name).
     pub display_name: String,
+    /// `airsyncbase:ContentId` (inline attachments), when present.
     pub content_id: Option<String>,
+    /// `airsyncbase:IsInline` ("1"/"0").
     pub is_inline: bool,
     /// EAS `AirSyncBase:EstimatedDataSize`. Typed as `Option<u32>` so the
     /// parser can distinguish "server omitted it" from "zero". Replaces the
@@ -453,6 +515,8 @@ pub struct EasAttachment {
 
 // ---------- ItemOperations ----------
 
+/// ItemOperations → Fetch request ([MS-ASCMD] §2.2.1.10): one item body or
+/// attachment, addressed by ServerId, FileReference, or search LongId.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ItemOperationsFetchRequest {
     /// Server ID of the item to fetch.
@@ -496,11 +560,15 @@ pub struct ItemOperationsFetchRequest {
     pub accept_multipart: bool,
 }
 
+/// Result of an ItemOperations → Fetch: the inline payload plus its
+/// content type and status.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ItemOperationsFetchResult {
+    /// `itemoperations:Status` (1 = success).
     pub status: u8,
     /// Raw base64-encoded bytes for attachment fetches, or item fields for item fetches.
     pub data: Option<String>,
+    /// `airsyncbase:ContentType` of the fetched data, when present.
     pub content_type: Option<String>,
 }
 
@@ -597,11 +665,17 @@ pub struct ConversationMoveResult {
 
 // ---------- GetItemEstimate ----------
 
+/// GetItemEstimate request ([MS-ASCMD] §2.2.1.7): asks how many items a
+/// Sync would bring for one collection, without transferring them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetItemEstimateRequest {
+    /// Collection (folder) ServerId to estimate.
     pub collection_id: String,
+    /// Current sync key for the collection.
     pub sync_key: String,
+    /// Item class within the collection (`"Email"`, `"Calendar"`, …).
     pub class: String,
+    /// FilterType day window that would scope the sync (0 = no filter).
     pub filter_age_days: u32,
 }
 
@@ -609,9 +683,13 @@ fn default_gie_status() -> u32 {
     1
 }
 
+/// Result of the GetItemEstimate command: the estimated item count for the
+/// requested collection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GetItemEstimateResult {
+    /// Estimated number of items the next Sync would return.
     pub count: u32,
+    /// CollectionId echoed back — which collection the count is for.
     pub collection_id: String,
     /// GIE command status (MS-ASCMD). 1 = success; 3 = sync state not primed
     /// (a Sync must run for the collection first). Defaults to 1 so
@@ -688,8 +766,13 @@ fn default_oof_result_status() -> u32 {
 /// Serialized as the plain variant name, which the frontend passes through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OofAppliesTo {
+    /// Same-organization senders (`AppliesToInternal`).
     Internal,
+    /// Outside senders already in the user's contacts
+    /// (`AppliesToExternalKnown`).
     ExternalKnown,
+    /// Outside senders not in the user's contacts
+    /// (`AppliesToExternalUnknown`).
     ExternalUnknown,
 }
 
@@ -699,14 +782,18 @@ pub enum OofAppliesTo {
 /// the wire format string ("Text" / "HTML", §2.2.3.17).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OofMessage {
+    /// Which audience this message replies to (one of the AppliesTo*
+    /// markers).
     pub applies_to: OofAppliesTo,
     /// None when the Enabled element is absent or malformed (§2.2.3.59
     /// allows only "1"/"0"; anything else is warn-logged and kept as None
     /// rather than coerced).
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// The auto-reply body, when set.
     #[serde(default)]
     pub reply_message: Option<String>,
+    /// Wire format of the reply body ("Text" / "HTML"), when set.
     #[serde(default)]
     pub body_type: Option<String>,
 }
@@ -719,10 +806,13 @@ pub struct OofMessage {
 /// ISO-8601 strings exactly as they appear on the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OofSettings {
+    /// `settings:OofState`: 0 = disabled, 1 = global, 2 = time-based.
     #[serde(default)]
     pub state: Option<u32>,
+    /// Scheduled-window start (ISO-8601, wire form), when time-based.
     #[serde(default)]
     pub start_time: Option<String>,
+    /// Scheduled-window end (ISO-8601, wire form), when time-based.
     #[serde(default)]
     pub end_time: Option<String>,
     /// One entry per audience, wire order. The Set form MUST NOT repeat an
@@ -816,6 +906,9 @@ pub struct ValidateCertResult {
 
 // ---------- Ping ----------
 
+/// Ping request ([MS-ASPING] §2.2.1): the long-poll change-notification
+/// command — the server holds the connection for the heartbeat interval or
+/// until a monitored collection changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PingRequest {
     /// Heartbeat interval in seconds (60-3540). Server will hold the connection
@@ -825,12 +918,17 @@ pub struct PingRequest {
     pub monitored_collections: Vec<PingCollection>,
 }
 
+/// One collection named in a Ping request's `Folders` list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PingCollection {
+    /// ServerId of the folder to monitor.
     pub collection_id: String,
+    /// Item class to monitor within the folder (`"Email"`, `"Calendar"`, …).
     pub class: String,
 }
 
+/// Result of the Ping command: the wire status mapped to its canonical
+/// string plus, on change, the folders that changed.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PingResult {
     /// `"Expired"` (wire status 1 — heartbeat elapsed with NO changes),
@@ -862,6 +960,8 @@ pub struct PingResult {
 
 // ---------- Search ----------
 
+/// Search request ([MS-ASCMD] §2.2.1.17): a Mailbox or GAL query with a
+/// paged result window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchRequest {
     /// search:Name — "Mailbox" or "GAL".
@@ -878,43 +978,75 @@ pub struct SearchRequest {
     pub deep_traversal: bool,
 }
 
+/// One GAL directory entry from a Search response (the `gal:Properties`
+/// block, [MS-ASGAL]).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GalEntry {
+    /// `gal:DisplayName`, when present.
     pub display_name: Option<String>,
+    /// `gal:Phone` (business), when present.
     pub phone: Option<String>,
+    /// `gal:Office`, when present.
     pub office: Option<String>,
+    /// `gal:Title`, when present.
     pub title: Option<String>,
+    /// `gal:Company`, when present.
     pub company: Option<String>,
+    /// `gal:Alias`, when present.
     pub alias: Option<String>,
+    /// `gal:FirstName`, when present.
     pub first_name: Option<String>,
+    /// `gal:LastName`, when present.
     pub last_name: Option<String>,
+    /// `gal:HomePhone`, when present.
     pub home_phone: Option<String>,
+    /// `gal:MobilePhone`, when present.
     pub mobile_phone: Option<String>,
+    /// `gal:EmailAddress` (SMTP), when present.
     pub email_address: Option<String>,
 }
 
+/// One result row of a Search response: a Mailbox hit wraps an
+/// [`EasItem`]; a GAL hit wraps a [`GalEntry`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SearchResultItem {
+    /// Result class (`"Email"` for Mailbox rows, `"GAL"` for directory
+    /// rows), when present.
     pub class: Option<String>,
+    /// `search:LongId` — the handle an ItemOperations LongId fetch uses,
+    /// when present.
     pub long_id: Option<String>,
+    /// `airsync:CollectionId` of the hit's folder (Mailbox rows), when
+    /// present.
     pub collection_id: Option<String>,
+    /// The Mailbox item properties, for Mailbox rows.
     #[serde(default)]
     pub item: Option<EasItem>,
+    /// The GAL directory properties, for GAL rows.
     #[serde(default)]
     pub gal: Option<GalEntry>,
 }
 
+/// Result of the Search command: the status pair, the result window, and
+/// the rows in that window.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SearchResult {
+    /// Command-level `search:Status` (1 = success).
     pub status: u32,
+    /// Store-level `search:Status` (1 = success), when present.
     pub store_status: Option<u32>,
+    /// The `"m-n"` window these results occupy, when the server echoed it.
     pub range: Option<String>,
+    /// Total matches server-side (across all pages), when present.
     pub total: Option<u32>,
+    /// Result rows, in wire order.
     pub results: Vec<SearchResultItem>,
 }
 
 // ---------- SendMail / SmartForward / SmartReply ----------
 
+/// SendMail request ([MS-ASCMD] §2.2.1.19): one raw RFC 5322 message,
+/// uploaded as an opaque MIME blob.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendMailRequest {
     /// Raw RFC 5322 message bytes. Emitted on the wire as a WBXML OPAQUE
@@ -969,13 +1101,17 @@ pub fn new_calendar_client_id() -> String {
     new_send_client_id("CalAdd-")
 }
 
+/// SmartForward request ([MS-ASCMD] §2.2.1.18): forward the message named
+/// by `source_server_id`, sending the forwarded MIME built by the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmartForwardRequest {
+    /// The forwarded message's MIME, base64-encoded.
     pub mime_base64: String,
     /// Server ID of the message being forwarded.
     pub source_server_id: String,
     /// Collection ID (folder) containing the source message.
     pub source_collection_id: String,
+    /// If true, emit `<SaveInSentItems/>` so the server stores a Sent copy.
     #[serde(default = "default_true")]
     pub save_to_sent: bool,
     /// If true, replace the source MIME rather than appending to it.
@@ -989,13 +1125,20 @@ pub struct SmartForwardRequest {
     pub client_id: Option<String>,
 }
 
+/// SmartReply request ([MS-ASCMD] §2.2.1.20): reply to the message named
+/// by `source_server_id`, sending the reply MIME built by the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmartReplyRequest {
+    /// The reply's MIME, base64-encoded.
     pub mime_base64: String,
+    /// Server ID of the message being replied to.
     pub source_server_id: String,
+    /// Collection ID (folder) containing the source message.
     pub source_collection_id: String,
+    /// If true, emit `<SaveInSentItems/>` so the server stores a Sent copy.
     #[serde(default = "default_true")]
     pub save_to_sent: bool,
+    /// If true, replace the source MIME rather than appending to it.
     #[serde(default)]
     pub replace_mime: bool,
     /// See `SmartForwardRequest::client_id`.
@@ -1005,22 +1148,36 @@ pub struct SmartReplyRequest {
 
 // ---------- Folder create/update/delete ----------
 
+/// FolderCreate request ([MS-ASCMD] §2.2.1.4): create one folder under
+/// `parent_id`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderCreateRequest {
+    /// ServerId of the parent folder ("0" = root).
     pub parent_id: String,
+    /// The new folder's name.
     pub display_name: String,
+    /// Folder content class (`"Email"`, `"Calendar"`, `"Contacts"`,
+    /// `"Tasks"`, `"Notes"`).
     pub class: String,
 }
 
+/// FolderUpdate request ([MS-ASCMD] §2.2.1.6): rename and/or move one
+/// folder; `None` fields are omitted (left unchanged).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderUpdateRequest {
+    /// ServerId of the folder to update.
     pub server_id: String,
+    /// New parent ServerId ("0" = root), when moving.
     pub parent_id: Option<String>,
+    /// New display name, when renaming.
     pub display_name: Option<String>,
 }
 
+/// FolderDelete request ([MS-ASCMD] §2.2.1.3): delete one folder (and its
+/// subtree) by ServerId.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderDeleteRequest {
+    /// ServerId of the folder to delete.
     pub server_id: String,
 }
 

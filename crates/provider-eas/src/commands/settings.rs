@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{
+    DevicePasswordResult, OofAppliesTo, OofMessage, OofResult, OofSettings, UserInformationResult,
+    WbxmlElement, WbxmlError, expect_tag, text_value,
+};
 
 // ============================================================================
 // Settings (DeviceInformation)
@@ -57,6 +60,12 @@ pub fn build_settings_device_information_request(
 
 /// Parse a Settings response. Returns (top-level Status, DeviceInformation
 /// Status); each defaults to 1 (success) when its element is absent.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_settings_response(root: &WbxmlElement) -> Result<(u32, u32), WbxmlError> {
     use crate::wbxml::tags::{pages, settings};
     expect_tag(root, pages::SETTINGS, settings::SETTINGS)?;
@@ -121,6 +130,12 @@ pub fn build_settings_user_information_request() -> WbxmlElement {
 /// UserInformation-level Status overrides it when present (more specific
 /// wins). Both stay surfaced: the specific one on `user_information_status`.
 /// A missing Status defaults to 1 (success), mirroring GetItemEstimate.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_settings_user_information_response(
     root: &WbxmlElement,
 ) -> Result<UserInformationResult, WbxmlError> {
@@ -135,14 +150,13 @@ pub fn parse_settings_user_information_response(
     for child in &root.children {
         if child.page == pages::SETTINGS && child.token == settings::STATUS {
             let raw = text_value(child).unwrap_or_default();
-            result.status = match raw.parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    log::warn!(
-                        "Settings UserInformation: malformed top-level Status \"{raw}\"; defaulting to 1"
-                    );
-                    1
-                }
+            result.status = if let Ok(n) = raw.parse() {
+                n
+            } else {
+                log::warn!(
+                    "Settings UserInformation: malformed top-level Status \"{raw}\"; defaulting to 1"
+                );
+                1
             };
         }
     }
@@ -152,14 +166,13 @@ pub fn parse_settings_user_information_response(
                 match (ui_child.page, ui_child.token) {
                     (pages::SETTINGS, settings::STATUS) => {
                         let raw = text_value(ui_child).unwrap_or_default();
-                        let n: u32 = match raw.parse() {
-                            Ok(n) => n,
-                            Err(_) => {
-                                log::warn!(
-                                    "Settings UserInformation: malformed UserInformation Status \"{raw}\"; defaulting to 1"
-                                );
-                                1
-                            }
+                        let n: u32 = if let Ok(n) = raw.parse() {
+                            n
+                        } else {
+                            log::warn!(
+                                "Settings UserInformation: malformed UserInformation Status \"{raw}\"; defaulting to 1"
+                            );
+                            1
                         };
                         result.user_information_status = Some(n);
                         result.status = n; // more specific wins
@@ -261,6 +274,12 @@ pub fn build_settings_device_password_request(password: &str) -> WbxmlElement {
 /// over a spec ambiguity. DevicePassword Set element-level statuses
 /// (§4.22): 1 success, 2 protocol error, 5 invalid arguments (password too
 /// long), 7 denied by policy (password recovery disabled).
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_settings_device_password_response(
     root: &WbxmlElement,
 ) -> Result<DevicePasswordResult, WbxmlError> {
@@ -275,14 +294,13 @@ pub fn parse_settings_device_password_response(
     for child in &root.children {
         if child.page == pages::SETTINGS && child.token == settings::STATUS {
             let raw = text_value(child).unwrap_or_default();
-            result.status = match raw.parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    log::warn!(
-                        "Settings DevicePassword: malformed top-level Status \"{raw}\"; defaulting to 1"
-                    );
-                    1
-                }
+            result.status = if let Ok(n) = raw.parse() {
+                n
+            } else {
+                log::warn!(
+                    "Settings DevicePassword: malformed top-level Status \"{raw}\"; defaulting to 1"
+                );
+                1
             };
         }
     }
@@ -293,14 +311,13 @@ pub fn parse_settings_device_password_response(
                     // §2.2.3.177.15: Status may sit directly under DevicePassword.
                     (pages::SETTINGS, settings::STATUS) => {
                         let raw = text_value(dp_child).unwrap_or_default();
-                        let n: u32 = match raw.parse() {
-                            Ok(n) => n,
-                            Err(_) => {
-                                log::warn!(
-                                    "Settings DevicePassword: malformed DevicePassword Status \"{raw}\"; defaulting to 1"
-                                );
-                                1
-                            }
+                        let n: u32 = if let Ok(n) = raw.parse() {
+                            n
+                        } else {
+                            log::warn!(
+                                "Settings DevicePassword: malformed DevicePassword Status \"{raw}\"; defaulting to 1"
+                            );
+                            1
                         };
                         result.device_password_status = Some(n);
                         result.status = n; // more specific wins
@@ -312,14 +329,13 @@ pub fn parse_settings_device_password_response(
                                 && set_child.token == settings::STATUS
                             {
                                 let raw = text_value(set_child).unwrap_or_default();
-                                let n: u32 = match raw.parse() {
-                                    Ok(n) => n,
-                                    Err(_) => {
-                                        log::warn!(
-                                            "Settings DevicePassword: malformed DevicePassword Set Status \"{raw}\"; defaulting to 1"
-                                        );
-                                        1
-                                    }
+                                let n: u32 = if let Ok(n) = raw.parse() {
+                                    n
+                                } else {
+                                    log::warn!(
+                                        "Settings DevicePassword: malformed DevicePassword Set Status \"{raw}\"; defaulting to 1"
+                                    );
+                                    1
                                 };
                                 result.device_password_status = Some(n);
                                 result.status = n; // more specific wins
@@ -496,6 +512,12 @@ pub fn build_settings_oof_set_request(settings: &OofSettings) -> WbxmlElement {
 /// attributed by guessing, never swallowed). Oof Get operation statuses
 /// (§2.2.3.177.15): 1 success, 2 protocol error, 5 invalid arguments,
 /// 6 conflicting arguments.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_settings_oof_get_response(
     root: &WbxmlElement,
 ) -> Result<(OofSettings, u32), WbxmlError> {
@@ -508,14 +530,13 @@ pub fn parse_settings_oof_get_response(
     for child in &root.children {
         if child.page == pages::SETTINGS && child.token == settings::STATUS {
             let raw = text_value(child).unwrap_or_default();
-            status = match raw.parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    log::warn!(
-                        "Settings Oof Get: malformed top-level Status \"{raw}\"; defaulting to 1"
-                    );
-                    1
-                }
+            status = if let Ok(n) = raw.parse() {
+                n
+            } else {
+                log::warn!(
+                    "Settings Oof Get: malformed top-level Status \"{raw}\"; defaulting to 1"
+                );
+                1
             };
         }
     }
@@ -527,14 +548,13 @@ pub fn parse_settings_oof_get_response(
             match (oof_child.page, oof_child.token) {
                 (pages::SETTINGS, settings::STATUS) => {
                     let raw = text_value(oof_child).unwrap_or_default();
-                    let n: u32 = match raw.parse() {
-                        Ok(n) => n,
-                        Err(_) => {
-                            log::warn!(
-                                "Settings Oof Get: malformed Oof Status \"{raw}\"; defaulting to 1"
-                            );
-                            1
-                        }
+                    let n: u32 = if let Ok(n) = raw.parse() {
+                        n
+                    } else {
+                        log::warn!(
+                            "Settings Oof Get: malformed Oof Status \"{raw}\"; defaulting to 1"
+                        );
+                        1
                     };
                     status = n; // more specific wins
                 }
@@ -608,7 +628,7 @@ fn parse_oof_message(elem: &WbxmlElement) -> Option<OofMessage> {
             settings::APPLIES_TO_INTERNAL => applies_to = Some(OofAppliesTo::Internal),
             settings::APPLIES_TO_EXTERNAL_KNOWN => applies_to = Some(OofAppliesTo::ExternalKnown),
             settings::APPLIES_TO_EXTERNAL_UNKNOWN => {
-                applies_to = Some(OofAppliesTo::ExternalUnknown)
+                applies_to = Some(OofAppliesTo::ExternalUnknown);
             }
             settings::ENABLED => {
                 let raw = text_value(child).unwrap_or_default();
@@ -674,6 +694,12 @@ fn parse_oof_message(elem: &WbxmlElement) -> Option<OofMessage> {
 /// the spec never nests it under Oof/Set). Oof Set operation statuses
 /// (§2.2.3.177.15): 1 success, 2 protocol error, 5 invalid arguments,
 /// 6 conflicting arguments.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_settings_oof_set_response(root: &WbxmlElement) -> Result<OofResult, WbxmlError> {
     use crate::wbxml::tags::{pages, settings};
     expect_tag(root, pages::SETTINGS, settings::SETTINGS)?;
@@ -686,14 +712,13 @@ pub fn parse_settings_oof_set_response(root: &WbxmlElement) -> Result<OofResult,
     for child in &root.children {
         if child.page == pages::SETTINGS && child.token == settings::STATUS {
             let raw = text_value(child).unwrap_or_default();
-            result.status = match raw.parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    log::warn!(
-                        "Settings Oof Set: malformed top-level Status \"{raw}\"; defaulting to 1"
-                    );
-                    1
-                }
+            result.status = if let Ok(n) = raw.parse() {
+                n
+            } else {
+                log::warn!(
+                    "Settings Oof Set: malformed top-level Status \"{raw}\"; defaulting to 1"
+                );
+                1
             };
         }
     }
@@ -702,14 +727,13 @@ pub fn parse_settings_oof_set_response(root: &WbxmlElement) -> Result<OofResult,
             for oof_child in &child.children {
                 if oof_child.page == pages::SETTINGS && oof_child.token == settings::STATUS {
                     let raw = text_value(oof_child).unwrap_or_default();
-                    let n: u32 = match raw.parse() {
-                        Ok(n) => n,
-                        Err(_) => {
-                            log::warn!(
-                                "Settings Oof Set: malformed Oof Status \"{raw}\"; defaulting to 1"
-                            );
-                            1
-                        }
+                    let n: u32 = if let Ok(n) = raw.parse() {
+                        n
+                    } else {
+                        log::warn!(
+                            "Settings Oof Set: malformed Oof Status \"{raw}\"; defaulting to 1"
+                        );
+                        1
                     };
                     result.oof_status = Some(n);
                     result.status = n; // more specific wins

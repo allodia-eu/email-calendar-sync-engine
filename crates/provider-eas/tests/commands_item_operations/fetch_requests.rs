@@ -3,6 +3,14 @@
 
 use super::*;
 
+/// Whether any element in the tree is the AirSync-page MIMESupport token.
+fn contains_mime_support(el: &WbxmlElement) -> bool {
+    if el.page == PAGE_AIRSYNC && el.token == 0x22 {
+        return true;
+    }
+    el.children.iter().any(contains_mime_support)
+}
+
 // ---- ItemOperations spec-shape tests (MS-ASWBXML §2.1.2.1.21 page 20) ----
 //
 // Page-20 table: ItemOperations=0x05, Fetch=0x06, Store=0x07, Options=0x08,
@@ -344,12 +352,6 @@ fn item_operations_request_default_fetch_has_no_mime_support() {
     assert_eq!(text_value(&body_pref.children[0]).unwrap(), "2"); // HTML, unchanged
 
     // No MIMESupport token anywhere in the tree.
-    fn contains_mime_support(el: &WbxmlElement) -> bool {
-        if el.page == PAGE_AIRSYNC && el.token == 0x22 {
-            return true;
-        }
-        el.children.iter().any(contains_mime_support)
-    }
     assert!(
         !contains_mime_support(&tree),
         "MIMESupport must NOT appear when mime=false"

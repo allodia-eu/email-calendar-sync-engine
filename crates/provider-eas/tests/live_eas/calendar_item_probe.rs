@@ -22,6 +22,18 @@ async fn calendar_location_wire_probe() {
         },
     };
 
+    // 4th-variant base: organizer fields present (the engine's Replace path
+    // carries them from the downsynced row — suspected status-6 trigger).
+    fn probe_props() -> CalendarEventWrite {
+        CalendarEventWrite {
+            start_time: "20300101T020000Z".to_string(),
+            end_time: "20300101T030000Z".to_string(),
+            all_day_event: false,
+            time_zone_base64: build_fixed_offset_tzi_base64(480),
+            ..Default::default()
+        }
+    }
+
     let Some(mut config) = live_config() else {
         eprintln!("live gates unset (KYLINS_EAS_LIVE_URL/USER/PASS) — skipping");
         return;
@@ -45,7 +57,7 @@ async fn calendar_location_wire_probe() {
     let calendars: Vec<_> = folders
         .changes
         .iter()
-        .filter(|f| matches!(f.folder_type, Some(8) | Some(13)))
+        .filter(|f| matches!(f.folder_type, Some(8 | 13)))
         .collect();
     eprintln!(
         "PROBE negotiated {negotiated}, calendar folders {:?}",
@@ -78,17 +90,6 @@ async fn calendar_location_wire_probe() {
         let mut key = page.sync_key.clone();
         assert!(!key.is_empty() && key != "0", "key did not advance");
 
-        // 4th variant: organizer fields present (the engine's Replace path
-        // carries them from the downsynced row — suspected status-6 trigger).
-        fn probe_props() -> CalendarEventWrite {
-            CalendarEventWrite {
-                start_time: "20300101T020000Z".to_string(),
-                end_time: "20300101T030000Z".to_string(),
-                all_day_event: false,
-                time_zone_base64: build_fixed_offset_tzi_base64(480),
-                ..Default::default()
-            }
-        }
         let mut variant_props: Vec<(&str, &str, CalendarEventWrite)> = vec![
             ("leaf-4-0x17", "14.1", {
                 let mut p = probe_props();
@@ -149,10 +150,10 @@ async fn calendar_location_wire_probe() {
                             );
                             match client.send_command("Sync", &del).await {
                                 Ok(_) => {
-                                    eprintln!("PROBE {folder_label} {label}: cleaned up {sid}")
+                                    eprintln!("PROBE {folder_label} {label}: cleaned up {sid}");
                                 }
                                 Err(e) => {
-                                    eprintln!("PROBE {folder_label} {label}: cleanup FAILED {e}")
+                                    eprintln!("PROBE {folder_label} {label}: cleanup FAILED {e}");
                                 }
                             }
                         }

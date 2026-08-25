@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{WbxmlElement, WbxmlError, common_status_message, expect_tag, text_value};
 
 // ============================================================================
 // MeetingResponse (code page 8)
@@ -11,16 +11,27 @@ use super::*;
 //   InstanceId=0x0E (14.1+), ProposedStartTime=0x10 / ProposedEndTime=0x11
 //   (16.1), SendResponse=0x12 (16.0/16.1 only).
 
+/// `MeetingResponse` code-page index (8).
 pub const PAGE_MREQ: u8 = 8;
+/// `CalendarId` (`MeetingResponse` page-8 token 0x05).
 pub const MREQ_CALENDAR_ID: u8 = 0x05;
+/// `CollectionId` (`MeetingResponse` page-8 token 0x06).
 pub const MREQ_COLLECTION_ID: u8 = 0x06;
+/// `MeetingResponse` (`MeetingResponse` page-8 token 0x07).
 pub const MREQ_MEETING_RESPONSE: u8 = 0x07;
+/// `RequestId` (`MeetingResponse` page-8 token 0x08).
 pub const MREQ_REQUEST_ID: u8 = 0x08;
+/// `Request` (`MeetingResponse` page-8 token 0x09).
 pub const MREQ_REQUEST: u8 = 0x09;
+/// `Result` (`MeetingResponse` page-8 token 0x0a).
 pub const MREQ_RESULT: u8 = 0x0A;
+/// `Status` (`MeetingResponse` page-8 token 0x0b).
 pub const MREQ_STATUS: u8 = 0x0B;
+/// `UserResponse` (`MeetingResponse` page-8 token 0x0c).
 pub const MREQ_USER_RESPONSE: u8 = 0x0C;
+/// `InstanceId` (`MeetingResponse` page-8 token 0x0e).
 pub const MREQ_INSTANCE_ID: u8 = 0x0E; // 14.1+ per §2.1.2.1.9
+/// `SendResponse` (`MeetingResponse` page-8 token 0x12).
 pub const MREQ_SEND_RESPONSE: u8 = 0x12; // 16.0/16.1 only per §2.1.2.1.9
 
 /// Build a MeetingResponse request ([MS-ASCMD] §2.2.1.11).
@@ -95,6 +106,12 @@ pub fn build_meeting_response_request(
 /// matching the convention of the other parsers in this file. Non-success
 /// statuses are data, not parse failures — the client call site surfaces them
 /// as `EasError::CommandStatus`.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_meeting_response_response(root: &WbxmlElement) -> Result<u32, WbxmlError> {
     expect_tag(root, PAGE_MREQ, MREQ_MEETING_RESPONSE)?;
 

@@ -110,7 +110,7 @@ async fn calendar_folder_create_delta_probe() {
         .iter()
         .map(|f| (f.server_id.as_str(), f.folder_type, f.display_name.as_str()))
         .collect();
-    eprintln!("DELTA-PROBE delta round changes: {:?}", adds);
+    eprintln!("DELTA-PROBE delta round changes: {adds:?}");
     assert_eq!(delta.changes.len(), 1, "exactly one Add expected");
     assert_eq!(
         delta.changes[0].folder_type,
@@ -227,7 +227,7 @@ async fn calendar_folder_truth_probe() {
         names.len(),
         names
             .iter()
-            .filter(|(_, t, _)| matches!(t, Some(8) | Some(13)))
+            .filter(|(_, t, _)| matches!(t, Some(8 | 13)))
             .collect::<Vec<_>>()
     );
 }
@@ -271,7 +271,7 @@ async fn calendar_folder_drill_cleanup() {
     let left: Vec<_> = after
         .changes
         .iter()
-        .filter(|f| matches!(f.folder_type, Some(8) | Some(13)))
+        .filter(|f| matches!(f.folder_type, Some(8 | 13)))
         .map(|f| (f.server_id.as_str(), f.display_name.as_str()))
         .collect();
     eprintln!("CLEANUP remaining calendar folders: {left:?}");

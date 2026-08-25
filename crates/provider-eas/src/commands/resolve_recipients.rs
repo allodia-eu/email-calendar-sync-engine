@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{
+    ResolveRecipientsRequest, ResolveRecipientsResponse, ResolveRecipientsResult,
+    ResolvedRecipient, WbxmlElement, WbxmlError, expect_tag, text_value, text_value_opt,
+};
 
 // ============================================================================
 // ResolveRecipients (code page 10)
@@ -113,6 +116,12 @@ pub fn build_resolve_recipients_request(req: &ResolveRecipientsRequest) -> Wbxml
 /// PRIVACY: recipient DisplayName/EmailAddress are directory PII. Parse
 /// warnings here carry element NAMES and raw numeric text only — never
 /// recipient identities.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_resolve_recipients_response(
     root: &WbxmlElement,
 ) -> Result<ResolveRecipientsResult, WbxmlError> {
@@ -126,14 +135,13 @@ pub fn parse_resolve_recipients_response(
         match (child.page, child.token) {
             (pages::RECIPIENTS, rr::STATUS) => {
                 let raw = text_value(child).unwrap_or_default();
-                result.status = match raw.parse() {
-                    Ok(n) => n,
-                    Err(_) => {
-                        log::warn!(
-                            "ResolveRecipients: malformed top-level Status \"{raw}\"; defaulting to 1"
-                        );
-                        1
-                    }
+                result.status = if let Ok(n) = raw.parse() {
+                    n
+                } else {
+                    log::warn!(
+                        "ResolveRecipients: malformed top-level Status \"{raw}\"; defaulting to 1"
+                    );
+                    1
                 };
             }
             (pages::RECIPIENTS, rr::RESPONSE) => {
@@ -163,26 +171,24 @@ fn parse_recipients_response_element(resp: &WbxmlElement) -> ResolveRecipientsRe
             }
             (pages::RECIPIENTS, rr::STATUS) => {
                 let raw = text_value(child).unwrap_or_default();
-                out.status = match raw.parse() {
-                    Ok(n) => n,
-                    Err(_) => {
-                        log::warn!(
-                            "ResolveRecipients: malformed Response Status \"{raw}\"; defaulting to 1"
-                        );
-                        1
-                    }
+                out.status = if let Ok(n) = raw.parse() {
+                    n
+                } else {
+                    log::warn!(
+                        "ResolveRecipients: malformed Response Status \"{raw}\"; defaulting to 1"
+                    );
+                    1
                 };
             }
             (pages::RECIPIENTS, rr::RECIPIENT_COUNT) => {
                 let raw = text_value(child).unwrap_or_default();
-                out.recipient_count = match raw.parse() {
-                    Ok(n) => Some(n),
-                    Err(_) => {
-                        log::warn!(
-                            "ResolveRecipients: malformed RecipientCount \"{raw}\"; leaving unset"
-                        );
-                        None
-                    }
+                out.recipient_count = if let Ok(n) = raw.parse() {
+                    Some(n)
+                } else {
+                    log::warn!(
+                        "ResolveRecipients: malformed RecipientCount \"{raw}\"; leaving unset"
+                    );
+                    None
                 };
             }
             (pages::RECIPIENTS, rr::RECIPIENT) => {
@@ -203,12 +209,11 @@ fn parse_recipient_element(rec: &WbxmlElement) -> ResolvedRecipient {
         match (child.page, child.token) {
             (pages::RECIPIENTS, rr::TYPE) => {
                 let raw = text_value(child).unwrap_or_default();
-                out.recipient_type = match raw.parse() {
-                    Ok(n) => Some(n),
-                    Err(_) => {
-                        log::warn!("ResolveRecipients: malformed Type \"{raw}\"; leaving unset");
-                        None
-                    }
+                out.recipient_type = if let Ok(n) = raw.parse() {
+                    Some(n)
+                } else {
+                    log::warn!("ResolveRecipients: malformed Type \"{raw}\"; leaving unset");
+                    None
                 };
             }
             (pages::RECIPIENTS, rr::DISPLAY_NAME) => {
@@ -222,14 +227,13 @@ fn parse_recipient_element(rec: &WbxmlElement) -> ResolvedRecipient {
                     match (avail.page, avail.token) {
                         (pages::RECIPIENTS, rr::STATUS) => {
                             let raw = text_value(avail).unwrap_or_default();
-                            out.availability_status = match raw.parse() {
-                                Ok(n) => Some(n),
-                                Err(_) => {
-                                    log::warn!(
-                                        "ResolveRecipients: malformed Availability Status \"{raw}\"; leaving unset"
-                                    );
-                                    None
-                                }
+                            out.availability_status = if let Ok(n) = raw.parse() {
+                                Some(n)
+                            } else {
+                                log::warn!(
+                                    "ResolveRecipients: malformed Availability Status \"{raw}\"; leaving unset"
+                                );
+                                None
                             };
                         }
                         (pages::RECIPIENTS, rr::MERGED_FREE_BUSY) => {
@@ -247,26 +251,24 @@ fn parse_recipient_element(rec: &WbxmlElement) -> ResolvedRecipient {
                     match (cert.page, cert.token) {
                         (pages::RECIPIENTS, rr::STATUS) => {
                             let raw = text_value(cert).unwrap_or_default();
-                            out.certificates_status = match raw.parse() {
-                                Ok(n) => Some(n),
-                                Err(_) => {
-                                    log::warn!(
-                                        "ResolveRecipients: malformed Certificates Status \"{raw}\"; leaving unset"
-                                    );
-                                    None
-                                }
+                            out.certificates_status = if let Ok(n) = raw.parse() {
+                                Some(n)
+                            } else {
+                                log::warn!(
+                                    "ResolveRecipients: malformed Certificates Status \"{raw}\"; leaving unset"
+                                );
+                                None
                             };
                         }
                         (pages::RECIPIENTS, rr::CERTIFICATE_COUNT) => {
                             let raw = text_value(cert).unwrap_or_default();
-                            out.certificate_count = match raw.parse() {
-                                Ok(n) => Some(n),
-                                Err(_) => {
-                                    log::warn!(
-                                        "ResolveRecipients: malformed CertificateCount \"{raw}\"; leaving unset"
-                                    );
-                                    None
-                                }
+                            out.certificate_count = if let Ok(n) = raw.parse() {
+                                Some(n)
+                            } else {
+                                log::warn!(
+                                    "ResolveRecipients: malformed CertificateCount \"{raw}\"; leaving unset"
+                                );
+                                None
                             };
                         }
                         // Certificate / MiniCertificate / the certificates'
@@ -293,11 +295,13 @@ fn parse_recipient_element(rec: &WbxmlElement) -> ResolvedRecipient {
 /// std-only civil-date math so no `chrono` runtime dependency is introduced.
 pub fn format_eas_datetime_utc(t: std::time::SystemTime) -> String {
     let millis: i128 = match t.duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_millis() as i128,
-        Err(e) => -(e.duration().as_millis() as i128),
+        Ok(d) => u128::cast_signed(d.as_millis()),
+        Err(e) => -u128::cast_signed(e.duration().as_millis()),
     };
-    let days = millis.div_euclid(86_400_000) as i64;
-    let ms_of_day = millis.rem_euclid(86_400_000) as u64;
+    let days = i64::try_from(millis.div_euclid(86_400_000))
+        .expect("millis since the epoch fits i64 whole days");
+    let ms_of_day =
+        u64::try_from(millis.rem_euclid(86_400_000)).expect("rem_euclid yields [0, 86_400_000)");
     let (y, m, d) = civil_from_days(days);
     let hour = ms_of_day / 3_600_000;
     let min = (ms_of_day % 3_600_000) / 60_000;
@@ -311,13 +315,13 @@ pub fn format_eas_datetime_utc(t: std::time::SystemTime) -> String {
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097) as u64; // [0, 146096]
+    let doe = u64::try_from(z.rem_euclid(146_097)).expect("rem_euclid yields [0, 146_096]");
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
+    let y = i64::try_from(yoe).expect("year-of-era is [0, 399]") + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let d = u32::try_from(doy - (153 * mp + 2) / 5 + 1).expect("day of month is [1, 31]");
+    let m = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).expect("month is [1, 12]");
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 

@@ -29,7 +29,9 @@ const PAGE_ITEM_OPS: u8 = 20;
 /// PartCount + two 8-byte PartMetaData entries).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PartMetaData {
+    /// Byte offset of the part, from the START of the whole structure.
     pub offset: u32,
+    /// Part length in bytes.
     pub length: u32,
 }
 
@@ -37,7 +39,9 @@ pub struct PartMetaData {
 /// sliced out of the buffer. `parts[i]` corresponds to `metadata[i]`.
 #[derive(Debug, Clone)]
 pub struct MultipartParts {
+    /// Per-part offset/length table, part order.
     pub metadata: Vec<PartMetaData>,
+    /// Part bytes sliced out of the buffer, part order.
     pub parts: Vec<Vec<u8>>,
 }
 
@@ -52,6 +56,12 @@ pub struct MultipartParts {
 /// Every bound is checked with u64 arithmetic so a malicious or corrupt
 /// buffer (huge PartCount, wrapping offset+length, ranges overlapping the
 /// header/metadata) yields a descriptive error, never a panic or a wrap.
+///
+/// # Errors
+///
+/// Returns `EasError::Transport` describing the inconsistency for a truncated
+/// or corrupt buffer (bad PartCount, out-of-bounds or header-overlapping part
+/// ranges) — every bound is checked, so a hostile body can never panic.
 pub fn parse_multipart_response(bytes: &[u8]) -> Result<MultipartParts, EasError> {
     if bytes.len() < 4 {
         return Err(EasError::Transport(format!(
@@ -59,7 +69,7 @@ pub fn parse_multipart_response(bytes: &[u8]) -> Result<MultipartParts, EasError
             bytes.len()
         )));
     }
-    let count = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64;
+    let count = u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
     let metadata_end = 4u64
         .checked_add(count.checked_mul(8).ok_or_else(|| {
             EasError::Transport(format!(
@@ -77,10 +87,13 @@ pub fn parse_multipart_response(bytes: &[u8]) -> Result<MultipartParts, EasError
             bytes.len()
         )));
     }
-    let metadata_end = metadata_end as usize;
-    let mut metadata = Vec::with_capacity(count as usize);
-    let mut parts = Vec::with_capacity(count as usize);
-    for i in 0..count as usize {
+    // Both are bounded by bytes.len() by the check above, so both fit
+    // usize on every target width.
+    let metadata_end = usize::try_from(metadata_end).expect("checked ≤ bytes.len()");
+    let count = usize::try_from(count).expect("count < metadata_end ≤ bytes.len()");
+    let mut metadata = Vec::with_capacity(count);
+    let mut parts = Vec::with_capacity(count);
+    for i in 0..count {
         let base = 4 + i * 8;
         let offset = u32::from_le_bytes([
             bytes[base],
@@ -94,21 +107,24 @@ pub fn parse_multipart_response(bytes: &[u8]) -> Result<MultipartParts, EasError
             bytes[base + 6],
             bytes[base + 7],
         ]);
-        let start = offset as u64;
-        let end = start + length as u64;
+        let start = u64::from(offset);
+        let end = start + u64::from(length);
         if end > bytes.len() as u64 {
             return Err(EasError::Transport(format!(
                 "multipart part {i} out of bounds: offset {offset} + length {length} = {end} exceeds buffer of {} bytes",
                 bytes.len()
             )));
         }
-        if (start as usize) < metadata_end {
+        if usize::try_from(start).expect("start < end ≤ bytes.len() (checked above)") < metadata_end
+        {
             return Err(EasError::Transport(format!(
                 "multipart part {i} overlaps the header/metadata: offset {offset} is inside the first {metadata_end} bytes"
             )));
         }
         metadata.push(PartMetaData { offset, length });
-        parts.push(bytes[start as usize..end as usize].to_vec());
+        let start = usize::try_from(start).expect("start < end ≤ bytes.len() (checked above)");
+        let end = usize::try_from(end).expect("end ≤ bytes.len() (checked above)");
+        parts.push(bytes[start..end].to_vec());
     }
     Ok(MultipartParts { metadata, parts })
 }
@@ -125,6 +141,12 @@ pub fn parse_multipart_response(bytes: &[u8]) -> Result<MultipartParts, EasError
 /// or an index beyond the parts vector is a descriptive error — a server
 /// that sent us a multipart envelope we cannot reconcile must fail loudly,
 /// not silently drop the body.
+///
+/// # Errors
+///
+/// Returns `EasError::Transport` when a `Part` index is non-numeric or beyond
+/// the parsed parts vector — an unreconcilable envelope fails loudly rather
+/// than silently dropping the body.
 pub fn resolve_part_elements(root: &mut WbxmlElement, parts: &[Vec<u8>]) -> Result<(), EasError> {
     if root.page == pages::BASE
         && root.token == tags::base::BODY

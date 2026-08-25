@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+//! ValidateCert-command tests: request tree and response parsing.
 use provider_eas::commands::{tests_common::*, *};
 
 #[test]

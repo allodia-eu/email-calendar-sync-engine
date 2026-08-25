@@ -28,6 +28,7 @@ const HEADER: [u8; 4] = [0x03, 0x01, 0x6A, 0x00];
 /// The serializer is purely synchronous and owns its output `Vec<u8>`. This
 /// matches the ArkTS `SyncWritableStream` contract; for async callers, wrap
 /// calls in `spawn_blocking` or use `serialize_tree` which is one-shot.
+#[derive(Debug)]
 pub struct Serializer {
     output: Vec<u8>,
     /// `(page, token)` of the tag waiting for its first child/value, or `None`.
@@ -97,6 +98,11 @@ impl Serializer {
 
     /// Mark the document complete. Fails if there are unclosed tags or a
     /// dangling `start` without matching `end`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WbxmlError::UnclosedTags` when tags remain open or a `start` is
+    /// still pending.
     pub fn done(mut self) -> WbxmlResult<Vec<u8>> {
         if self.depth != 0 || self.pending.is_some() {
             return Err(WbxmlError::UnclosedTags);
@@ -109,22 +115,27 @@ impl Serializer {
 
     /// Begin a tag. Must be matched by a later `end()`. The `page` is the
     /// code page index (0..26); the `token` is the tag id within that page.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WbxmlError` propagated from flushing the previous pending tag.
     pub fn start(&mut self, page: u8, token: u8) -> WbxmlResult<&mut Self> {
         self.flush_pending(false)?;
         if !code_pages::is_valid_tag(page, token) {
             // Unknown tag — still serialize, but mark that callers may want
             // to know. The ArkTS serializer logs and continues.
-            log::debug!(
-                "WBXML serializer: unrecognized tag page={} token={}",
-                page,
-                token
-            );
+            log::debug!("WBXML serializer: unrecognized tag page={page} token={token}");
         }
         self.pending = Some((page, token));
         Ok(self)
     }
 
     /// Close the most recently opened tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WbxmlError::UnbalancedEnd` when no tag is open (or the error of
+    /// flushing a degenerated tag).
     pub fn end(&mut self) -> WbxmlResult<&mut Self> {
         if let Some((page, token)) = self.pending.take() {
             // The tag had no children — emit as degenerated (`<Foo/>`).
@@ -141,6 +152,10 @@ impl Serializer {
     }
 
     /// Write an empty (`<Foo/>`) tag in one call.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `WbxmlError` of the underlying `start`/`end` calls.
     pub fn empty_tag(&mut self, page: u8, token: u8) -> WbxmlResult<&mut Self> {
         self.start(page, token)?;
         self.end()?;
@@ -148,6 +163,10 @@ impl Serializer {
     }
 
     /// Write a tag containing an inline string value.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `WbxmlError` of the underlying `start`/`text`/`end` calls.
     pub fn data<S: AsRef<str>>(&mut self, page: u8, token: u8, value: S) -> WbxmlResult<&mut Self> {
         self.start(page, token)?;
         self.text(value)?;
@@ -157,6 +176,11 @@ impl Serializer {
 
     /// Write an inline string (STR_I token) into the currently-open tag.
     /// Cannot be called outside of a tag context.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WbxmlError` propagated from flushing the pending tag; never fails
+    /// otherwise.
     pub fn text<S: AsRef<str>>(&mut self, text: S) -> WbxmlResult<&mut Self> {
         let s = text.as_ref();
         self.flush_pending(false)?;
@@ -166,13 +190,18 @@ impl Serializer {
 
     /// Write opaque data (OPAQUE token + mb_u_int32 length + raw bytes).
     /// Length 0 is a no-op (matches the ArkTS behavior of skipping the header).
+    ///
+    /// # Errors
+    ///
+    /// Returns `WbxmlError` propagated from flushing the pending tag.
     pub fn opaque(&mut self, data: &[u8]) -> WbxmlResult<&mut Self> {
         if data.is_empty() {
             return Ok(self);
         }
         self.flush_pending(false)?;
         self.output.push(OPAQUE);
-        self.write_multibyte_uint(data.len() as u32);
+        let len = u32::try_from(data.len()).expect("opaque payload fits u32");
+        self.write_multibyte_uint(len);
         self.output.extend_from_slice(data);
         Ok(self)
     }
@@ -241,6 +270,11 @@ impl Serializer {
 
 /// Serialize a `WbxmlElement` tree into a complete WBXML document (header
 /// included). Convenience wrapper around `Serializer`.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the tree cannot be encoded (unbalanced or unclosed
+/// tags).
 pub fn serialize_tree(root: &WbxmlElement) -> WbxmlResult<Vec<u8>> {
     let mut s = Serializer::new();
     serialize_element(&mut s, root)?;
@@ -249,11 +283,7 @@ pub fn serialize_tree(root: &WbxmlElement) -> WbxmlResult<Vec<u8>> {
 
 fn serialize_element(s: &mut Serializer, el: &WbxmlElement) -> WbxmlResult<()> {
     s.start(el.page, el.token)?;
-    if !el.children.is_empty() {
-        for child in &el.children {
-            serialize_element(s, child)?;
-        }
-    } else {
+    if el.children.is_empty() {
         match &el.value {
             WbxmlValue::Empty => {}
             WbxmlValue::Text(t) => {
@@ -262,6 +292,10 @@ fn serialize_element(s: &mut Serializer, el: &WbxmlElement) -> WbxmlResult<()> {
             WbxmlValue::Opaque(b) => {
                 s.opaque(b)?;
             }
+        }
+    } else {
+        for child in &el.children {
+            serialize_element(s, child)?;
         }
     }
     s.end()?;

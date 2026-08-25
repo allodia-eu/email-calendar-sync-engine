@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{
+    AS_COLLECTION_ID, AS_MIME_SUPPORT, AS_SERVER_ID, ConversationMoveRequest,
+    ConversationMoveResult, EmptyFolderContentsRequest, EmptyFolderContentsResult,
+    ItemOperationsFetchRequest, ItemOperationsFetchResult, PAGE_AIRSYNC, PAGE_ITEM_OPS,
+    WbxmlElement, WbxmlError, WbxmlValue, base64_encode, expect_tag, pages, tags, text_value,
+    text_value_opt,
+};
 
 // ============================================================================
 // ItemOperations (fetch attachments / items)
@@ -151,6 +157,12 @@ pub fn build_item_operations_request(req: &ItemOperationsFetchRequest) -> WbxmlE
 /// ```
 /// The fetch-level Status overrides the top-level one (more specific wins),
 /// mirroring the Sync parser's collection-status rule.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_item_operations_response(
     root: &WbxmlElement,
 ) -> Result<ItemOperationsFetchResult, WbxmlError> {
@@ -327,6 +339,12 @@ pub fn build_empty_folder_contents_request(req: &EmptyFolderContentsRequest) -> 
 /// one on `empty_status`. A missing Status defaults to 1 (success),
 /// mirroring GetItemEstimate. Malformed Status values are warn-logged and
 /// defaulted — never swallowed.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_empty_folder_contents_response(
     root: &WbxmlElement,
 ) -> Result<EmptyFolderContentsResult, WbxmlError> {
@@ -342,14 +360,13 @@ pub fn parse_empty_folder_contents_response(
     for child in &root.children {
         if child.page == PAGE_ITEM_OPS && child.token == io::STATUS {
             let raw = text_value(child).unwrap_or_default();
-            result.status = match raw.parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    log::warn!(
-                        "ItemOperations EmptyFolderContents: malformed top-level Status \"{raw}\"; defaulting to 1"
-                    );
-                    1
-                }
+            result.status = if let Ok(n) = raw.parse() {
+                n
+            } else {
+                log::warn!(
+                    "ItemOperations EmptyFolderContents: malformed top-level Status \"{raw}\"; defaulting to 1"
+                );
+                1
             };
         }
     }
@@ -362,14 +379,13 @@ pub fn parse_empty_folder_contents_response(
                         match (efc_child.page, efc_child.token) {
                             (PAGE_ITEM_OPS, io::STATUS) => {
                                 let raw = text_value(efc_child).unwrap_or_default();
-                                let n: u32 = match raw.parse() {
-                                    Ok(n) => n,
-                                    Err(_) => {
-                                        log::warn!(
-                                            "ItemOperations EmptyFolderContents: malformed EmptyFolderContents Status \"{raw}\"; defaulting to 1"
-                                        );
-                                        1
-                                    }
+                                let n: u32 = if let Ok(n) = raw.parse() {
+                                    n
+                                } else {
+                                    log::warn!(
+                                        "ItemOperations EmptyFolderContents: malformed EmptyFolderContents Status \"{raw}\"; defaulting to 1"
+                                    );
+                                    1
                                 };
                                 result.empty_status = Some(n);
                                 result.status = n; // more specific wins
@@ -485,6 +501,12 @@ pub fn build_conversation_move_request(req: &ConversationMoveRequest) -> WbxmlEl
 /// bytes verbatim (never decoded), the same convention as the email2
 /// ConversationId path. A missing or empty echo maps to `None` (not
 /// `Some(vec![])`), since empty != absent.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_conversation_move_response(
     root: &WbxmlElement,
 ) -> Result<ConversationMoveResult, WbxmlError> {
@@ -500,14 +522,13 @@ pub fn parse_conversation_move_response(
     for child in &root.children {
         if child.page == PAGE_ITEM_OPS && child.token == io::STATUS {
             let raw = text_value(child).unwrap_or_default();
-            result.status = match raw.parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    log::warn!(
-                        "ItemOperations Move: malformed top-level Status \"{raw}\"; defaulting to 1"
-                    );
-                    1
-                }
+            result.status = if let Ok(n) = raw.parse() {
+                n
+            } else {
+                log::warn!(
+                    "ItemOperations Move: malformed top-level Status \"{raw}\"; defaulting to 1"
+                );
+                1
             };
         }
     }
@@ -519,14 +540,13 @@ pub fn parse_conversation_move_response(
                         match (move_child.page, move_child.token) {
                             (PAGE_ITEM_OPS, io::STATUS) => {
                                 let raw = text_value(move_child).unwrap_or_default();
-                                let n: u32 = match raw.parse() {
-                                    Ok(n) => n,
-                                    Err(_) => {
-                                        log::warn!(
-                                            "ItemOperations Move: malformed Move Status \"{raw}\"; defaulting to 1"
-                                        );
-                                        1
-                                    }
+                                let n: u32 = if let Ok(n) = raw.parse() {
+                                    n
+                                } else {
+                                    log::warn!(
+                                        "ItemOperations Move: malformed Move Status \"{raw}\"; defaulting to 1"
+                                    );
+                                    1
                                 };
                                 result.move_status = Some(n);
                                 result.status = n; // more specific wins

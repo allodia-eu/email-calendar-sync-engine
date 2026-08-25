@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{
+    FH_DISPLAY_NAME, FH_FOLDER_CREATE, FH_FOLDER_DELETE, FH_FOLDER_UPDATE, FH_PARENT_ID,
+    FH_SERVER_ID, FH_STATUS, FH_SYNC_KEY, FH_TYPE, FolderCreateRequest, FolderDeleteRequest,
+    FolderUpdateRequest, PAGE_FOLDER, WbxmlElement, WbxmlError, common_status_message, expect_tag,
+    text_value, text_value_opt,
+};
 
 // ============================================================================
 // Folder create / update / delete
 // ============================================================================
 
+/// Build a FolderCreate request tree from `req` and the hierarchy sync key.
 pub fn build_folder_create_request(req: &FolderCreateRequest, sync_key: &str) -> WbxmlElement {
     WbxmlElement::container(
         PAGE_FOLDER,
@@ -19,6 +25,7 @@ pub fn build_folder_create_request(req: &FolderCreateRequest, sync_key: &str) ->
     )
 }
 
+/// Build a FolderUpdate request tree (see the ParentId-required note inside).
 pub fn build_folder_update_request(req: &FolderUpdateRequest, sync_key: &str) -> WbxmlElement {
     // MS-ASCMD §6.16 schema order: SyncKey, ServerId, ParentId, DisplayName.
     // ParentId is REQUIRED (1...1) even for a pure rename — §2.2.3.129.3
@@ -43,6 +50,7 @@ pub fn build_folder_update_request(req: &FolderUpdateRequest, sync_key: &str) ->
     WbxmlElement::container(PAGE_FOLDER, FH_FOLDER_UPDATE, children)
 }
 
+/// Build a FolderDelete request tree from `req` and the hierarchy sync key.
 pub fn build_folder_delete_request(req: &FolderDeleteRequest, sync_key: &str) -> WbxmlElement {
     WbxmlElement::container(
         PAGE_FOLDER,
@@ -57,6 +65,12 @@ pub fn build_folder_delete_request(req: &FolderDeleteRequest, sync_key: &str) ->
 
 /// Parse a FolderCreate/Update/Delete response. All three return a Status code;
 /// Create also returns a new ServerId.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_folder_op_response(root: &WbxmlElement) -> Result<(u32, Option<String>), WbxmlError> {
     let mut status: u32 = 1;
     let mut new_server_id: Option<String> = None;
@@ -171,6 +185,12 @@ pub fn build_move_items_request(moves: &[(String, String, String)]) -> WbxmlElem
 /// A missing Status defaults to 1 (success), matching the convention of the
 /// other parsers in this file; `DstMsgId` is `None` when absent (non-success
 /// responses omit it).
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_move_items_response(
     root: &WbxmlElement,
 ) -> Result<Vec<(u32, Option<String>)>, WbxmlError> {
@@ -213,7 +233,7 @@ pub fn parse_move_items_response(
 ///     treated as failure: we cannot hand the caller the moved item's new id, so surfacing it is
 ///     safer than a silent "success".
 pub fn move_status_succeeded(status: u32, dst_msg_id: Option<&str>) -> bool {
-    status == 1 || (status == 3 && dst_msg_id.map(|s| !s.is_empty()).unwrap_or(false))
+    status == 1 || (status == 3 && dst_msg_id.is_some_and(|s| !s.is_empty()))
 }
 
 /// The per-Move status gate the client applies after parsing: the FIRST

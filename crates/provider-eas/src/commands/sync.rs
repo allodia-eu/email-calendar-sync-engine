@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 use serde::{Deserialize, Serialize};
 
-use super::*;
+use super::{
+    AS_ADD, AS_APPLICATION_DATA, AS_CHANGE, AS_CLIENT_ID, AS_COLLECTION, AS_COLLECTION_ID,
+    AS_COLLECTIONS, AS_COMMANDS, AS_DELETE, AS_DELETES_AS_MOVES, AS_FILTER_TYPE, AS_GET_CHANGES,
+    AS_MIME_SUPPORT, AS_MIME_TRUNCATION, AS_MORE_AVAILABLE, AS_OPTIONS, AS_RESPONSES, AS_SERVER_ID,
+    AS_STATUS, AS_SUPPORTED, AS_SYNC, AS_SYNC_KEY, AS_WINDOW_SIZE, CalendarItemWithId,
+    ContactsItemWithId, EasAttachment, EasItem, GetItemEstimateRequest, GetItemEstimateResult,
+    MeetingRequestInfo, PAGE_AIRSYNC, SyncRequest, SyncResult, WbxmlElement, WbxmlError,
+    WbxmlValue, expect_tag, format_eas_datetime_utc, tags, text_value, text_value_opt,
+};
 use crate::{
     calendar::{CalendarEventProps, parse_location_16x},
     calendar_write::{CalendarEventWrite, build_calendar_application_data},
@@ -181,20 +189,18 @@ pub fn build_sync_request(req: &SyncRequest, protocol_version: &str) -> WbxmlEle
     )
 }
 
-/// Deprecated helper retained for callers that still import it. Returns the
-/// single-collection token — `Collections` is now its own constant.
-#[allow(non_snake_case)]
-#[deprecated(note = "use AS_COLLECTIONS constant directly")]
-fn AS_COLLECTIONS_CONTAINER() -> u8 {
-    AS_COLLECTIONS
-}
-
 /// Parse a Sync response.
 ///
 /// The class-unaware default entry: behaves exactly like
 /// [`parse_sync_response_for_class`] called with an empty class — i.e. the
 /// Email-shaped `ApplicationData` path (`added` / `updated`), calendar
 /// vectors empty. Existing callers and tests keep this signature untouched.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_sync_response(root: &WbxmlElement) -> Result<SyncResult, WbxmlError> {
     parse_sync_response_for_class(root, "")
 }
@@ -218,6 +224,12 @@ pub fn parse_sync_response(root: &WbxmlElement) -> Result<SyncResult, WbxmlError
 /// - Deletes are class-agnostic on the wire ([MS-ASSYNC] §2.2.2.4) and always land in
 ///   `deleted_server_ids`.
 /// - `sync_key` / `more_available` / `status` parse identically for every class.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_sync_response_for_class(
     root: &WbxmlElement,
     class: &str,
@@ -339,7 +351,7 @@ fn walk_sync_commands(
 ) -> Result<(), WbxmlError> {
     for cmd in &commands_el.children {
         match (cmd.page, cmd.token) {
-            (PAGE_AIRSYNC, AS_ADD) | (PAGE_AIRSYNC, AS_CHANGE) => {
+            (PAGE_AIRSYNC, AS_ADD | AS_CHANGE) => {
                 on_add_change(cmd.token == AS_ADD, cmd)?;
             }
             (PAGE_AIRSYNC, AS_DELETE) => {
@@ -554,9 +566,10 @@ pub fn parse_application_data(app_data: &WbxmlElement, item: &mut EasItem) {
             // item as a non-respondable meeting message, never as a crash).
             "MeetingMessageType" => {
                 let raw = text_value_opt(child);
-                item.meeting_message_type = raw.as_deref().and_then(|s| match s.parse() {
-                    Ok(n) => Some(n),
-                    Err(_) => {
+                item.meeting_message_type = raw.as_deref().and_then(|s| {
+                    if let Ok(n) = s.parse() {
+                        Some(n)
+                    } else {
                         log::warn!(
                             "ApplicationData: malformed MeetingMessageType \"{s}\"; ignoring"
                         );
@@ -567,12 +580,11 @@ pub fn parse_application_data(app_data: &WbxmlElement, item: &mut EasItem) {
             // [MS-ASEMAIL] §2.2.2.48 — container of the meeting logistics
             // (children are Email-page tokens too; dispatch by tag name).
             "MeetingRequest" => item.meeting = Some(parse_meeting_request(child)),
-            // Tags we deliberately ignore for MVP — they are either metadata
-            // we don't model yet, or already consumed at a higher level
-            // (e.g. Status on ApplicationData belongs to the Sync command,
-            // not the item).
-            "InternetCPID" | "ContentClass" | "ThreadTopic" | "Status" => {}
-            _ => {} // unknown tags: ignore
+            // Tags we deliberately ignore for MVP — metadata we don't model
+            // yet or already consumed at a higher level (e.g. Status on
+            // ApplicationData belongs to the Sync command, not the item) —
+            // plus unknown tags: ignore.
+            _ => {}
         }
     }
 }
@@ -598,7 +610,7 @@ fn parse_meeting_request(elem: &WbxmlElement) -> MeetingRequestInfo {
             // the M8-L1 shape, shared with the Calendar parse.
             "Location" => match (child.page, child.token) {
                 (pages::BASE, base::LOCATION) => {
-                    info.location = parse_location_16x("email MeetingRequest", child)
+                    info.location = parse_location_16x("email MeetingRequest", child);
                 }
                 _ => info.location = text_value_opt(child),
             },
@@ -609,9 +621,10 @@ fn parse_meeting_request(elem: &WbxmlElement) -> MeetingRequestInfo {
             "AllDayEvent" => info.all_day_event = text_value_opt(child).map(|s| s == "1"),
             "InstanceType" => {
                 let raw = text_value_opt(child);
-                info.instance_type = raw.as_deref().and_then(|s| match s.parse() {
-                    Ok(n) => Some(n),
-                    Err(_) => {
+                info.instance_type = raw.as_deref().and_then(|s| {
+                    if let Ok(n) = s.parse() {
+                        Some(n)
+                    } else {
                         log::warn!("MeetingRequest: malformed InstanceType \"{s}\"; ignoring");
                         None
                     }
@@ -652,7 +665,8 @@ fn parse_body(elem: &WbxmlElement, item: &mut EasItem) {
             "Data" => data = text_value_opt(child),
             "Truncated" => truncated = text_value_opt(child).as_deref() == Some("1"),
             "Preview" => preview = text_value_opt(child),
-            "EstimatedDataSize" => {} // not surfaced on EasItem
+            // EstimatedDataSize (not surfaced on EasItem) and unknown tags:
+            // ignore.
             _ => {}
         }
     }
@@ -666,7 +680,7 @@ fn parse_body(elem: &WbxmlElement, item: &mut EasItem) {
         _ => {
             // Unknown / missing type: write to both slots so the UI can still
             // render something. Prefer HTML for display, plain for search.
-            item.body_html = data.clone();
+            item.body_html.clone_from(&data);
             item.body_text = data;
         }
     }
@@ -715,8 +729,11 @@ fn parse_attachments(elem: &WbxmlElement, item: &mut EasItem) {
 /// dates), `Some(false)` an empty `<Flag/>`, `None` no Flag element.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EasChange {
+    /// Wire ServerId of the item to change.
     pub server_id: String,
+    /// New `email:Read` state, when changing it.
     pub read: Option<bool>,
+    /// New `email:Flag` state, when changing it.
     pub starred: Option<bool>,
 }
 
@@ -738,7 +755,8 @@ pub enum CalendarChange {
         /// Client-generated correlation id (≤ 40 chars, [MS-ASCMD];
         /// Exchange 15.2 rejects over-cap ids with in-body Status 103 —
         /// task-11 live evidence). Synthesize with
-        /// [`new_calendar_client_id`], which guarantees the cap.
+        /// [`new_calendar_client_id`](crate::types::new_calendar_client_id),
+        /// which guarantees the cap.
         client_id: String,
         /// The event payload, serialized via
         /// [`build_calendar_application_data`] (M8 Task 1).
@@ -768,11 +786,15 @@ pub enum CalendarChange {
 /// the server. Empty when the response carries no Commands.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncChangeOutcome {
+    /// The rotated sync key the server issued for the next round.
     pub new_key: String,
     /// Collection status (MS-ASSYNC §2.2.3.23); 1 = success.
     pub status: u32,
+    /// Server-side `Commands` piggybacked on the response: items added.
     pub piggybacked_added: Vec<EasItem>,
+    /// Server-side `Commands` piggybacked on the response: items updated.
     pub piggybacked_updated: Vec<EasItem>,
+    /// Server-side `Commands` piggybacked on the response: ServerIds deleted.
     pub piggybacked_deleted: Vec<String>,
     /// Per-item Add acknowledgements from the response Collection's
     /// `Responses` element ([MS-ASCMD] §2.2.3.154): the server echoes each
@@ -943,12 +965,11 @@ pub fn build_sync_change_request(
 /// `build_sync_change_request` with an injectable clock for the Flag dates.
 ///
 /// Flag emission (Android EasSync.java:295-315):
-/// - `starred: Some(true)` → full container: `email:Flag > email:Status "2" + email:FlagType
-///   "FollowUp"
-///   + tasks:StartDate/UtcStartDate = now UTC
-///   + tasks:DueDate/UtcDueDate = now + 7 days UTC`
-///   (dates ISO-8601 `yyyy-MM-dd'T'HH:mm:ss.fff'Z'`). The tasks-page date
-///     elements switch the code page email(2) → tasks(9) mid-container.
+/// - `starred: Some(true)` → full container: `email:Flag` > `email:Status "2"` + `email:FlagType
+///   "FollowUp"` + `tasks:StartDate`/`tasks:UtcStartDate` = now UTC +
+///   `tasks:DueDate`/`tasks:UtcDueDate` = now + 7 days UTC (dates ISO-8601
+///   `yyyy-MM-dd'T'HH:mm:ss.fff'Z'`). The tasks-page date elements switch the code page email(2) →
+///   tasks(9) mid-container.
 /// - `starred: Some(false)` → an empty `<email:Flag/>` element (no children).
 /// - `starred: None` → no Flag element.
 pub fn build_sync_change_request_at(
@@ -1060,8 +1081,9 @@ pub fn build_sync_change_request_at(
 /// - Same element gates as the email builder: NO `airsync:Class` (14.0+ rejects it — CollectionId
 ///   identifies the collection) and NO `GetChanges` (invalid in 16.1).
 /// - Infallible like the email precedent: callers run [`CalendarEventWrite::validate`] first, and
-///   supply the Add `client_id` themselves (synthesize with [`new_calendar_client_id`], which
-///   guarantees the [MS-ASCMD] 40-char cap) — the builder never synthesizes or clamps ids.
+///   supply the Add `client_id` themselves (synthesize with
+///   [`new_calendar_client_id`](crate::types::new_calendar_client_id), which guarantees the
+///   [MS-ASCMD] 40-char cap) — the builder never synthesizes or clamps ids.
 pub fn build_calendar_change_request(
     collection_id: &str,
     sync_key: &str,
@@ -1147,6 +1169,12 @@ pub fn build_calendar_change_request(
 /// downsync uses and surfaced on the outcome's `piggybacked_*` vectors —
 /// discarding them while adopting the rotated key would silently diverge
 /// from the server.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_sync_change_response(root: &WbxmlElement) -> Result<SyncChangeOutcome, WbxmlError> {
     expect_tag(root, PAGE_AIRSYNC, AS_SYNC)?;
 
@@ -1273,7 +1301,7 @@ fn parse_sync_responses(
                     },
                 });
             }
-            (PAGE_AIRSYNC, AS_CHANGE) | (PAGE_AIRSYNC, AS_DELETE) => {
+            (PAGE_AIRSYNC, AS_CHANGE | AS_DELETE) => {
                 let kind = if item.token == AS_CHANGE {
                     ResponseItemKind::Change
                 } else {
@@ -1291,9 +1319,8 @@ fn parse_sync_responses(
                                 match s.parse::<u32>() {
                                     Ok(n) => status = n,
                                     Err(_) => log::warn!(
-                                        "Sync Responses: malformed {:?} Status \"{s}\"; \
-                                         keeping the default of 1",
-                                        kind
+                                        "Sync Responses: malformed {kind:?} Status \"{s}\"; \
+                                         keeping the default of 1"
                                     ),
                                 }
                             }
@@ -1303,9 +1330,8 @@ fn parse_sync_responses(
                 }
                 if server_id.is_empty() {
                     log::warn!(
-                        "Sync Responses: {:?} response without ServerId — the status cannot be \
-                         correlated, skipping",
-                        kind
+                        "Sync Responses: {kind:?} response without ServerId — the status cannot be \
+                         correlated, skipping"
                     );
                     continue;
                 }
@@ -1357,11 +1383,11 @@ fn parse_sync_responses(
 /// - FilterType 0 means "all items" (the server default), so the whole Options element is omitted
 ///   when `filter_age_days == 0`.
 pub fn build_get_item_estimate_request(req: &GetItemEstimateRequest) -> WbxmlElement {
-    pub const PAGE_GIE: u8 = 6;
-    pub const GIE_GET_ITEM_ESTIMATE: u8 = 0x05;
-    pub const GIE_COLLECTIONS: u8 = 0x07;
-    pub const GIE_COLLECTION: u8 = 0x08;
-    pub const GIE_COLLECTION_ID: u8 = 0x0A;
+    pub(crate) const PAGE_GIE: u8 = 6;
+    pub(crate) const GIE_GET_ITEM_ESTIMATE: u8 = 0x05;
+    pub(crate) const GIE_COLLECTIONS: u8 = 0x07;
+    pub(crate) const GIE_COLLECTION: u8 = 0x08;
+    pub(crate) const GIE_COLLECTION_ID: u8 = 0x0A;
 
     let mut collection_children = vec![
         WbxmlElement::text(PAGE_AIRSYNC, AS_SYNC_KEY, req.sync_key.clone()),
@@ -1408,15 +1434,21 @@ pub fn build_get_item_estimate_request(req: &GetItemEstimateRequest) -> WbxmlEle
 /// 3 = sync state not primed); an absent Status defaults to 1. Live evidence
 /// 2026-08-02: Exchange 2019 answers Status 3 for a collection that has never
 /// been Synced — callers must read it, not assume count-0 means "up to date".
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_get_item_estimate_response(
     root: &WbxmlElement,
 ) -> Result<GetItemEstimateResult, WbxmlError> {
-    pub const PAGE_GIE: u8 = 6;
-    pub const GIE_RESPONSE: u8 = 0x0D;
-    pub const GIE_STATUS: u8 = 0x0E;
-    pub const GIE_COLLECTION: u8 = 0x08;
-    pub const GIE_COLLECTION_ID: u8 = 0x0A;
-    pub const GIE_ESTIMATE: u8 = 0x0C;
+    pub(crate) const PAGE_GIE: u8 = 6;
+    pub(crate) const GIE_RESPONSE: u8 = 0x0D;
+    pub(crate) const GIE_STATUS: u8 = 0x0E;
+    pub(crate) const GIE_COLLECTION: u8 = 0x08;
+    pub(crate) const GIE_COLLECTION_ID: u8 = 0x0A;
+    pub(crate) const GIE_ESTIMATE: u8 = 0x0C;
 
     let mut result = GetItemEstimateResult {
         status: 1, // success default per [MS-ASCMD] §6.21 when Status absent

@@ -30,12 +30,14 @@ pub enum DeserializerEvent {
     End,
     /// Inline string or opaque data for the current element.
     Text,
+    /// OPAQUE data for the current element (length-prefixed bytes).
     Opaque,
     /// The document has been fully consumed.
     Done,
 }
 
 /// Low-level WBXML deserializer. Operates on a `&[u8]` slice.
+#[derive(Debug)]
 pub struct Deserializer<'a> {
     input: &'a [u8],
     pos: usize,
@@ -59,6 +61,12 @@ impl<'a> Deserializer<'a> {
     /// Construct a new deserializer over `input`. Reads the 4-byte header on
     /// construction; returns an error if the header is malformed or the input
     /// is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WbxmlError` when the 4-byte header cannot be read or is wrong
+    /// (`EmptyStream`, `UnexpectedEof`, `InvalidMultibyteInteger`) or the charset
+    /// is not UTF-8 (`InvalidUtf8`).
     pub fn new(input: &'a [u8]) -> WbxmlResult<Self> {
         let mut d = Self {
             input,
@@ -113,22 +121,30 @@ impl<'a> Deserializer<'a> {
         &self.opaque_bytes
     }
 
-    /// Return the most recent event, or `None` before the first `next()` call.
+    /// Return the most recent event, or `None` before the first `next_event()` call.
     pub fn last_event(&self) -> Option<DeserializerEvent> {
         self.last_event
     }
 
     /// Return the current depth (number of open elements).
+    ///
+    /// # Errors
+    ///
+    /// Returns `WbxmlError` when the response tree is malformed — an unexpected
+    /// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+    /// required.
     pub fn depth(&self) -> usize {
         self.open_stack.len()
     }
 
     /// Advance to the next event. Returns `Done` when the document is exhausted.
-    // Intentionally named `next` to mirror a pull-parser cursor. It returns a
-    // `Result<DeserializerEvent>`, not `Option<Item>`, so it is not an
-    // `Iterator::next`; renaming would churn every call site for no gain.
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> WbxmlResult<DeserializerEvent> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `WbxmlError` on malformed input: `UnexpectedEof`, `UnknownCodePage`,
+    /// `UnsupportedGlobalToken`, `AttributesUnsupported`, `StringTableUnsupported`,
+    /// `InvalidMultibyteInteger`, or `InvalidUtf8`.
+    pub fn next_event(&mut self) -> WbxmlResult<DeserializerEvent> {
         // Clear scratch state.
         self.text.clear();
         self.opaque_bytes.clear();
@@ -164,7 +180,7 @@ impl<'a> Deserializer<'a> {
 
         let event = match id {
             END => {
-                self.pop_tag()?;
+                self.pop_tag();
                 DeserializerEvent::End
             }
             STR_I => {
@@ -187,7 +203,7 @@ impl<'a> Deserializer<'a> {
                 }
                 let token = id & 0x3F;
                 let has_content = (id & 0x40) != 0;
-                self.push_tag(token)?;
+                self.push_tag(token);
                 self.no_content = !has_content;
                 if !has_content {
                     // Degenerated — we'll emit END on the next next() call,
@@ -195,7 +211,7 @@ impl<'a> Deserializer<'a> {
                     // tag on the stack across the synthetic END — see `getNext()`
                     // branch `if (this.noContent) { this.startTagArray.popFirst(); ... }`
                     // which DOES pop. So we pop now.
-                    self.pop_tag()?;
+                    self.pop_tag();
                 }
                 DeserializerEvent::Start
             }
@@ -206,18 +222,16 @@ impl<'a> Deserializer<'a> {
 
     // ---- internal helpers ---------------------------------------------------
 
-    fn push_tag(&mut self, token: u8) -> WbxmlResult<()> {
+    fn push_tag(&mut self, token: u8) {
         let pair = (self.current_page, token);
         self.current_tag = pair;
         self.open_stack.push(pair);
-        Ok(())
     }
 
-    fn pop_tag(&mut self) -> WbxmlResult<()> {
+    fn pop_tag(&mut self) {
         if let Some(popped) = self.open_stack.pop() {
             self.current_tag = popped;
         }
-        Ok(())
     }
 
     fn read_byte(&mut self) -> WbxmlResult<u8> {
@@ -239,7 +253,7 @@ impl<'a> Deserializer<'a> {
                 return Err(WbxmlError::InvalidMultibyteInteger);
             }
             let b = self.read_byte()?;
-            result = (result << 7) | (b & 0x7F) as u32;
+            result = (result << 7) | u32::from(b & 0x7F);
             count += 1;
             if (b & 0x80) == 0 {
                 break;
@@ -276,6 +290,11 @@ impl<'a> Deserializer<'a> {
 ///
 /// The root element is returned unwrapped (i.e. the document's outermost
 /// element becomes the returned `WbxmlElement`).
+///
+/// # Errors
+///
+/// Propagates `WbxmlError` from the event loop (see
+/// [`Deserializer::next_event`]).
 pub fn deserialize_to_tree(input: &[u8]) -> WbxmlResult<WbxmlElement> {
     let mut d = Deserializer::new(input)?;
     // Stack of elements whose children we're currently filling. When an
@@ -285,7 +304,7 @@ pub fn deserialize_to_tree(input: &[u8]) -> WbxmlResult<WbxmlElement> {
     let mut root: Option<WbxmlElement> = None;
 
     loop {
-        match d.next()? {
+        match d.next_event()? {
             DeserializerEvent::Done => break,
             DeserializerEvent::Start => {
                 let (page, token) = d.current_tag();
@@ -370,12 +389,12 @@ mod tests {
         // + SWITCH_PAGE 0x01 + Contacts:Anniversary (page 1, token 0x05, degenerated)
         let bytes = [0x03, 0x01, 0x6A, 0x00, 0x0B, SWITCH_PAGE, 0x01, 0x05];
         let mut d = Deserializer::new(&bytes).unwrap();
-        let ev1 = d.next().unwrap();
+        let ev1 = d.next_event().unwrap();
         assert_eq!(ev1, DeserializerEvent::Start);
         assert_eq!(d.current_tag(), (0, 0x0B));
-        let ev2 = d.next().unwrap(); // synthetic END for no_content tag
+        let ev2 = d.next_event().unwrap(); // synthetic END for no_content tag
         assert_eq!(ev2, DeserializerEvent::End);
-        let ev3 = d.next().unwrap();
+        let ev3 = d.next_event().unwrap();
         assert_eq!(ev3, DeserializerEvent::Start);
         assert_eq!(d.current_tag(), (1, 0x05));
     }
@@ -485,7 +504,7 @@ mod tests {
         let root = deserialize_to_tree(&bytes).unwrap();
         match &root.children[0].value {
             WbxmlValue::Opaque(b) => assert_eq!(b.len(), 128),
-            other => panic!("expected Opaque, got {:?}", other),
+            other => panic!("expected Opaque, got {other:?}"),
         }
     }
 }

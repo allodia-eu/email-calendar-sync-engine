@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+//! FolderSync-command tests: hierarchy request/response round trips.
 use provider_eas::commands::{tests_common::*, *};
 
 #[test]

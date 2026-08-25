@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+//! ResolveRecipients tests: ANR resolution and free/busy parsing.
 use provider_eas::commands::{tests_common::*, *};
 
 #[test]

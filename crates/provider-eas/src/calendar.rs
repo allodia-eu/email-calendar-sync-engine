@@ -74,7 +74,7 @@ pub const CAL_DELETED: u8 = 0x15;
 /// DateTime ([MS-ASCAL] §2.2.2.23).
 pub const CAL_EXCEPTION_START_TIME: u8 = 0x16;
 /// `Location` = 0x17. In 16.0/16.1 the server sends `airsyncbase:Location`
-/// (page 17, [`BASE_LOCATION`]) instead — [MS-ASWBXML] §2.1.2.1.5 note 2 and
+/// (page 17, `BASE_LOCATION`) instead — [MS-ASWBXML] §2.1.2.1.5 note 2 and
 /// [MS-ASCAL] §2.2.2.27. Both forms are accepted.
 pub const CAL_LOCATION: u8 = 0x17;
 /// `MeetingStatus` = 0x18 (all versions). Bit flags M/R/C; wire values
@@ -295,10 +295,15 @@ pub struct CalendarException {
     /// replaced ([MS-ASCAL] §2.2.2.23); required in 2.5-14.1.
     pub exception_start_time: Option<String>,
     /// Modified-occurrence fields (subset of the top-level event props).
+    /// Modified occurrence start (`calendar:StartTime`, when present).
     pub start_time: Option<String>,
+    /// Modified occurrence end (`calendar:EndTime`, when present).
     pub end_time: Option<String>,
+    /// Modified occurrence subject (`calendar:Subject`, when present).
     pub subject: Option<String>,
+    /// Modified occurrence location (`calendar:Location`, when present).
     pub location: Option<String>,
+    /// Modified occurrence body (`calendar:Body`, plain text, when present).
     pub body_plain: Option<String>,
     /// `AllDayEvent` — OPTIONAL inside an Exception ([MS-ASCAL] §2.2.2.21).
     /// `Some(true)` / `Some(false)` when the wire carried `"1"` / `"0"`;
@@ -376,6 +381,12 @@ pub struct TziRule {
 /// The `Err` arm exists for API symmetry with the sync parsers (which return
 /// `Result<_, WbxmlError>`); today every malformed shape degrades to a
 /// warning + default, so this always returns `Ok`.
+///
+/// # Errors
+///
+/// Does not error: every element is either mapped or warn/debug-logged and
+/// skipped (the permissive ApplicationData contract). The `Result` keeps the
+/// parse-family signature so the Sync dispatcher stays uniform.
 pub fn parse_calendar_application_data(
     app_data: &WbxmlElement,
 ) -> Result<CalendarEventProps, WbxmlError> {
@@ -402,7 +413,7 @@ pub fn parse_calendar_application_data(
             // AirSyncBase CONTAINER — the value is its DisplayName child
             // (M8-L1).
             (pages::BASE, BASE_LOCATION) => {
-                props.location = parse_location_16x("calendar ApplicationData", child)
+                props.location = parse_location_16x("calendar ApplicationData", child);
             }
             // 12.0+ calendar bodies arrive as airsyncbase:Body
             // ([MS-ASWBXML] §2.1.2.1.5 note 1).
@@ -516,7 +527,9 @@ pub fn parse_calendar_application_data(
 fn text_value_opt(elem: &WbxmlElement) -> Option<String> {
     match &elem.value {
         WbxmlValue::Text(s) => Some(s.clone()),
-        WbxmlValue::Opaque(b) => std::str::from_utf8(b).ok().map(|s| s.to_string()),
+        WbxmlValue::Opaque(b) => std::str::from_utf8(b)
+            .ok()
+            .map(std::string::ToString::to_string),
         WbxmlValue::Empty => None,
     }
 }
@@ -526,7 +539,7 @@ fn text_value_opt(elem: &WbxmlElement) -> Option<String> {
 fn parse_bool_field(name: &'static str, elem: &WbxmlElement) -> bool {
     match text_value_opt(elem).as_deref() {
         Some("1") => true,
-        Some("0") => false,
+        Some("0") | None => false,
         Some(other) => {
             log::warn!(
                 "calendar ApplicationData: malformed {name} \"{other}\"; \
@@ -534,7 +547,6 @@ fn parse_bool_field(name: &'static str, elem: &WbxmlElement) -> bool {
             );
             false
         }
-        None => false,
     }
 }
 
@@ -688,35 +700,31 @@ pub(crate) fn parse_location_16x(ctx: &'static str, elem: &WbxmlElement) -> Opti
     let mut display_seen = false;
     let mut other_children = 0usize;
     for child in &elem.children {
-        match (child.page, child.token) {
-            (pages::BASE, base::DISPLAY_NAME) => {
-                if display_seen {
-                    log::warn!(
-                        "{ctx}: Location carries more than one \
-                         DisplayName child — [MS-ASAIRS] §2.2.2.22.3 allows at most one; \
-                         keeping the last"
-                    );
-                }
-                display_seen = true;
-                display = text_value_opt(child);
-            }
-            _ => {
-                other_children += 1;
-                log::debug!(
-                    "{ctx}: Location: skipping unmodeled child {} \
-                     (page {} token 0x{:02X}) — v1 models only the DisplayName",
-                    tag_label(child),
-                    child.page,
-                    child.token
+        if let (pages::BASE, base::DISPLAY_NAME) = (child.page, child.token) {
+            if display_seen {
+                log::warn!(
+                    "{ctx}: Location carries more than one \
+                     DisplayName child — [MS-ASAIRS] §2.2.2.22.3 allows at most one; \
+                     keeping the last"
                 );
             }
+            display_seen = true;
+            display = text_value_opt(child);
+        } else {
+            other_children += 1;
+            log::debug!(
+                "{ctx}: Location: skipping unmodeled child {} \
+                 (page {} token 0x{:02X}) — v1 models only the DisplayName",
+                tag_label(child),
+                child.page,
+                child.token
+            );
         }
     }
     if !display_seen {
         log::debug!(
             "{ctx}: Location container without a DisplayName child \
-             ({} other child(ren)); location stays unset",
-            other_children
+             ({other_children} other child(ren)); location stays unset"
         );
     }
     display
@@ -916,7 +924,7 @@ fn parse_exception(elem: &WbxmlElement) -> CalendarException {
             // AirSyncBase container (M8-L1).
             (PAGE_CALENDAR, CAL_LOCATION) => exc.location = text_value_opt(child),
             (pages::BASE, BASE_LOCATION) => {
-                exc.location = parse_location_16x("calendar ApplicationData", child)
+                exc.location = parse_location_16x("calendar ApplicationData", child);
             }
             // 12.0+ exceptions carry airsyncbase:Body (§2.2.2.21).
             (pages::BASE, base::BODY) => exc.body_plain = parse_calendar_body(child),
@@ -1016,23 +1024,20 @@ fn parse_attendee(elem: &WbxmlElement) -> CalendarAttendee {
 /// warn + `None`.
 fn parse_attendee_status(elem: &WbxmlElement) -> Option<u8> {
     let raw = text_value_opt(elem)?;
-    match raw.parse::<u8>() {
-        Ok(n) => {
-            if !matches!(n, 0 | 2 | 3 | 4 | 5) {
-                log::warn!(
-                    "calendar Attendee: AttendeeStatus {n} outside the [MS-ASCAL] \
-                     §2.2.2.5 enum {{0,2,3,4,5}}; keeping raw"
-                );
-            }
-            Some(n)
-        }
-        Err(_) => {
+    if let Ok(n) = raw.parse::<u8>() {
+        if !matches!(n, 0 | 2 | 3 | 4 | 5) {
             log::warn!(
-                "calendar Attendee: malformed AttendeeStatus \"{raw}\"; expected a \
-                 number, ignoring"
+                "calendar Attendee: AttendeeStatus {n} outside the [MS-ASCAL] \
+                 §2.2.2.5 enum {{0,2,3,4,5}}; keeping raw"
             );
-            None
         }
+        Some(n)
+    } else {
+        log::warn!(
+            "calendar Attendee: malformed AttendeeStatus \"{raw}\"; expected a \
+             number, ignoring"
+        );
+        None
     }
 }
 
@@ -1230,7 +1235,7 @@ fn is_rfc3339_datetime(b: &[u8]) -> bool {
     }
     match b.get(i) {
         Some(b'Z') => i + 1 == b.len(),
-        Some(b'+') | Some(b'-') => {
+        Some(b'+' | b'-') => {
             let off = &b[i + 1..];
             off.len() == 5
                 && off[..2].iter().all(u8::is_ascii_digit)
@@ -1245,7 +1250,7 @@ fn is_rfc3339_datetime(b: &[u8]) -> bool {
 
 /// Decode two ASCII digit bytes as a number (callers check digit-ness first).
 fn two_digits(b: &[u8]) -> u32 {
-    ((b[0] - b'0') * 10 + (b[1] - b'0')) as u32
+    u32::from((b[0] - b'0') * 10 + (b[1] - b'0'))
 }
 
 /// Human-readable tag name for log lines — unlike `WbxmlElement::tag_name()`

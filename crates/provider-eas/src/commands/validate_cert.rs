@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
-use super::*;
+use super::{
+    ValidateCertRequest, ValidateCertResult, WbxmlElement, WbxmlError, expect_tag, text_value,
+};
 
 // ============================================================================
 // ValidateCert (code page 11)
@@ -82,6 +84,12 @@ pub fn build_validate_cert_request(req: &ValidateCertRequest) -> WbxmlElement {
 /// by position would be a guess, and fabricating success (1) for a
 /// malformed validation verdict is a security hazard — never swallow, never
 /// invent.
+///
+/// # Errors
+///
+/// Returns `WbxmlError` when the response tree is malformed — an unexpected
+/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
+/// required.
 pub fn parse_validate_cert_response(root: &WbxmlElement) -> Result<ValidateCertResult, WbxmlError> {
     use crate::wbxml::tags::{pages, validatecert as vc};
     expect_tag(root, pages::VALIDATE, vc::VALIDATE_CERT)?;
@@ -92,14 +100,11 @@ pub fn parse_validate_cert_response(root: &WbxmlElement) -> Result<ValidateCertR
     for child in &root.children {
         if child.page == pages::VALIDATE && child.token == vc::STATUS {
             let raw = text_value(child).unwrap_or_default();
-            result.status = match raw.parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    log::warn!(
-                        "ValidateCert: malformed top-level Status \"{raw}\"; defaulting to 1"
-                    );
-                    1
-                }
+            result.status = if let Ok(n) = raw.parse() {
+                n
+            } else {
+                log::warn!("ValidateCert: malformed top-level Status \"{raw}\"; defaulting to 1");
+                1
             };
         }
     }

@@ -5,13 +5,13 @@ use super::*;
 
 #[test]
 fn build_settings_device_information_tree_is_spec_shaped() {
+    use provider_eas::wbxml::tags::{pages, settings};
     let tree = build_settings_device_information_request(
         "KylinsMail",
         "Kylins Mail desktop",
         "windows",
         "en-US",
     );
-    use provider_eas::wbxml::tags::{pages, settings};
     assert_eq!(
         (tree.page, tree.token),
         (pages::SETTINGS, settings::SETTINGS)

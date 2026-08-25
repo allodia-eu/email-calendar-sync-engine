@@ -3,7 +3,7 @@
 //! M8-C plan calls MS-ASAIRCONT; `docs/Exchange/[MS-ASCNTC].pdf`) +
 //! downsync parse of a Contacts-class `ApplicationData` element.
 //!
-//! Token fidelity red line: every token value lives in the [`tokens`]
+//! Token fidelity red line: every token value lives in the `tokens`
 //! submodule (split out for the 500-line rule, re-exported below so
 //! `contacts::CON_*` paths stay stable) with its [MS-ASWBXML] /
 //! [MS-ASCNTC] citations — never from memory.
@@ -184,7 +184,7 @@ pub struct ContactsContactProps {
 /// Malformed values → `log::warn!` (element name + offending text) then the
 /// field's default; unmodeled tokens → `log::debug!` skip. Never panics.
 ///
-/// Unmodeled BY DESIGN: the canonical skip list lives in the [`tokens`]
+/// Unmodeled BY DESIGN: the canonical skip list lives in the `tokens`
 /// submodule header (M8-C task 2 decided those elements carry no value the
 /// v1 contact model can use); the `_` arm below debug-skips them, pinned
 /// by `exotic_contact_elements_are_skipped` in tests/commands_contacts.rs.
@@ -192,6 +192,12 @@ pub struct ContactsContactProps {
 /// The `Err` arm exists for API symmetry with the sync parsers (which return
 /// `Result<_, WbxmlError>`); today every malformed shape degrades to a
 /// warning + default, so this always returns `Ok`.
+///
+/// # Errors
+///
+/// Does not error: every element is either mapped or warn/debug-logged and
+/// skipped (the permissive ApplicationData contract). The `Result` keeps the
+/// parse-family signature so the Sync dispatcher stays uniform.
 pub fn parse_contacts_application_data(
     app_data: &WbxmlElement,
 ) -> Result<ContactsContactProps, WbxmlError> {
@@ -324,7 +330,9 @@ pub fn parse_contacts_application_data(
 fn text_value_opt(elem: &WbxmlElement) -> Option<String> {
     match &elem.value {
         WbxmlValue::Text(s) => Some(s.clone()),
-        WbxmlValue::Opaque(b) => std::str::from_utf8(b).ok().map(|s| s.to_string()),
+        WbxmlValue::Opaque(b) => std::str::from_utf8(b)
+            .ok()
+            .map(std::string::ToString::to_string),
         WbxmlValue::Empty => None,
     }
 }
@@ -337,26 +345,23 @@ fn text_value_opt(elem: &WbxmlElement) -> Option<String> {
 /// element without a text value where text is expected, warns and
 /// degrades to `None` (loud, never silent, never panic).
 fn parse_email_field(name: &'static str, elem: &WbxmlElement) -> Option<String> {
-    match text_value_opt(elem) {
-        Some(raw) => {
-            let bare = extract_bare_address(&raw);
-            if bare.contains('@') && !bare.contains('<') && !bare.contains('>') {
-                Some(bare)
-            } else {
-                log::warn!(
-                    "contacts ApplicationData: malformed {name} \"{raw}\"; expected an \
-                     e-mail address, ignoring"
-                );
-                None
-            }
-        }
-        None => {
+    if let Some(raw) = text_value_opt(elem) {
+        let bare = extract_bare_address(&raw);
+        if bare.contains('@') && !bare.contains('<') && !bare.contains('>') {
+            Some(bare)
+        } else {
             log::warn!(
-                "contacts ApplicationData: {name} element without a text value; \
-                 treating it as absent"
+                "contacts ApplicationData: malformed {name} \"{raw}\"; expected an \
+                 e-mail address, ignoring"
             );
             None
         }
+    } else {
+        log::warn!(
+            "contacts ApplicationData: {name} element without a text value; \
+             treating it as absent"
+        );
+        None
     }
 }
 

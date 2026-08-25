@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+//! Folder create/update/delete tests: request trees and shared response parse.
 use provider_eas::commands::{tests_common::*, *};
 
 #[test]
