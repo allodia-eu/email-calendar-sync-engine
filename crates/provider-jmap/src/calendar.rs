@@ -219,6 +219,28 @@ fn parse_rule(rule: &Value) -> Result<RecurrenceRule, JmapError> {
     }
     parsed.by_month_day = int_list(rule, "byMonthDay");
     parsed.by_month = str_list(rule, "byMonth");
+    parsed.by_year_day = int_list(rule, "byYearDay");
+    parsed.by_week_no = int_list(rule, "byWeekNo");
+    parsed.by_set_position = int_list(rule, "bySetPosition");
+    parsed.by_hour = uint_list(rule, "byHour");
+    parsed.by_minute = uint_list(rule, "byMinute");
+    parsed.by_second = uint_list(rule, "bySecond");
+    // Every part above is one the expander refuses (`calendar-semantics.md`), which stores
+    // the event with no occurrences and reports it as unexpandable. That check only fires on
+    // what reaches it: a part dropped here is not a rule missing a detail, it is a *different
+    // rule* — expanded as though the part had never been asked for, so the series generates
+    // the wrong dates and presents them as right. `rscale` is the same trap at its worst, a
+    // Hebrew-calendar rule landing on Gregorian dates.
+    parsed.rscale = opt_str(rule, "rscale").map(str::to_owned);
+    if let Some(skip) = rule
+        .get("skip")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| JmapError::protocol(format!("bad skip: {e}")))?
+    {
+        parsed.skip = skip;
+    }
     if let Some(first_day) = rule
         .get("firstDayOfWeek")
         .cloned()
@@ -397,6 +419,21 @@ fn int_list(value: &Value, key: &str) -> Vec<i32> {
             list.iter()
                 .filter_map(Value::as_i64)
                 .filter_map(|n| i32::try_from(n).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A small-unsigned list field (`byHour` 0–23, `byMinute` 0–59, `bySecond` 0–60), dropping
+/// entries outside the component's range along with non-integer ones.
+fn uint_list(value: &Value, key: &str) -> Vec<u8> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_u64)
+                .filter_map(|n| u8::try_from(n).ok())
                 .collect()
         })
         .unwrap_or_default()

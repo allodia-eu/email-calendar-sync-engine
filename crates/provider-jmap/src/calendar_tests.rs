@@ -1,9 +1,12 @@
+use engine_core::calendar::RecurrenceSkip;
 use serde_json::json;
 
 use super::*;
 
 const CALENDAR_GET: &str = include_str!("../tests/fixtures/calendar_get.json");
 const EVENT_GET: &str = include_str!("../tests/fixtures/calendarevent_get.json");
+const EVENT_GET_RULE_PARTS: &str =
+    include_str!("../tests/fixtures/calendarevent_get_rule_parts.json");
 
 fn events() -> Vec<Event> {
     let doc: Value = serde_json::from_str(EVENT_GET).unwrap();
@@ -258,4 +261,87 @@ fn malformed_event_errors_without_panicking() {
             event_from_json(&serde_json::json!({ "id": "e", "uid": "x", "calendarIds": {}, "start": "2026-01-01T00:00:00" }))
                 .is_err()
         );
+}
+
+#[test]
+fn every_by_part_jscalendar_carries_reaches_the_rule() {
+    // A part dropped here does not read as missing downstream — it reads as a *different
+    // rule*. The expander refuses BYSETPOS/BYWEEKNO/BYYEARDAY/BYHOUR-and-finer and reports
+    // the event as unexpandable (`calendar-semantics.md`); a rule that arrives without them
+    // sails past that check and is expanded as if the part had never been asked for, so the
+    // series silently generates the wrong dates instead of declining to generate any.
+    let event = event_from_json(&base_event(serde_json::json!({
+        "recurrenceRule": {
+            "frequency": "monthly", "byDay": [{ "day": "we" }], "bySetPosition": [4],
+            "byWeekNo": [3, -1], "byYearDay": [100, -5],
+            "byHour": [9, 17], "byMinute": [0, 30], "bySecond": [15]
+        }
+    })))
+    .unwrap();
+    let rule = &event.recurrence.unwrap().rules[0];
+    assert_eq!(rule.by_set_position, vec![4]);
+    assert_eq!(rule.by_week_no, vec![3, -1]);
+    assert_eq!(rule.by_year_day, vec![100, -5]);
+    assert_eq!(rule.by_hour, vec![9, 17]);
+    assert_eq!(rule.by_minute, vec![0, 30]);
+    assert_eq!(rule.by_second, vec![15]);
+}
+
+#[test]
+fn a_non_gregorian_rule_keeps_its_rscale_and_skip() {
+    // Dropping `rscale` is the worst case of the same defect: a Hebrew-calendar rule that
+    // arrives as Gregorian is not refused, it is expanded onto the wrong dates entirely.
+    let event = event_from_json(&base_event(serde_json::json!({
+        "recurrenceRule": { "frequency": "yearly", "rscale": "hebrew", "skip": "forward" }
+    })))
+    .unwrap();
+    let rule = &event.recurrence.unwrap().rules[0];
+    assert_eq!(rule.rscale.as_deref(), Some("hebrew"));
+    assert_eq!(rule.skip, RecurrenceSkip::Forward);
+}
+
+#[test]
+fn rendering_a_rule_and_reading_it_back_returns_the_same_rule() {
+    // The guard the dropped parts got past. `calendar_rule.rs` renders every part this
+    // adapter can express and `parse_rule` reads them back, so the two halves cannot drift
+    // apart again without this failing — which is how six of them drifted in the first
+    // place, each half correct on its own and only the pair wrong.
+    let mut rule = RecurrenceRule::new(Frequency::Monthly);
+    rule.interval = NonZeroU32::new(3).unwrap();
+    rule.first_day_of_week = Weekday::Su;
+    rule.by_day = vec![NDay {
+        day: Weekday::We,
+        nth_of_period: NonZeroI32::new(-1),
+    }];
+    rule.by_month_day = vec![1, -1];
+    rule.by_month = vec!["3".to_owned(), "6L".to_owned()];
+    rule.by_year_day = vec![100, -5];
+    rule.by_week_no = vec![3, -1];
+    rule.by_hour = vec![9, 17];
+    rule.by_minute = vec![0, 30];
+    rule.by_second = vec![15];
+    rule.by_set_position = vec![4];
+    rule.bound = RecurrenceBound::Count(NonZeroU32::new(12).unwrap());
+
+    let rendered = crate::calendar_rule::render_rule(&rule).unwrap();
+    assert_eq!(parse_rule(&rendered).unwrap(), rule);
+}
+
+#[test]
+fn a_captured_by_set_position_series_parses_as_the_server_sent_it() {
+    // Real `CalendarEvent/get` bytes from the Stalwart harness, for an event PUT over CalDAV
+    // and read back over JMAP — the path the dropped parts were found on. The hand-written
+    // tests above prove the parser reads the keys it is given; this proves those are the keys
+    // a real server actually sends, which no fake executor can establish (`AGENTS.md`).
+    let args: Value = serde_json::from_str(EVENT_GET_RULE_PARTS).unwrap();
+    let event = event_from_json(&args["list"][0]).unwrap();
+    assert_eq!(event.uid.as_str(), "setpos-2007@test.local");
+    let rule = &event.recurrence.as_ref().unwrap().rules[0];
+    assert_eq!(rule.frequency, Frequency::Monthly);
+    assert_eq!(rule.by_day[0].day, Weekday::We);
+    assert_eq!(
+        rule.by_set_position,
+        vec![4],
+        "the fourth Wednesday; without this the same rule reads as every Wednesday"
+    );
 }
