@@ -275,3 +275,29 @@ fn moved_instance_outside_horizon_is_dropped() {
     // Only the un-moved 2026-06-02 instance remains; the moved one is past the window.
     assert_eq!(starts(&expand_ok(&ev, horizon)), ["2026-06-02T09:00:00Z"]);
 }
+
+#[test]
+fn an_interval_past_the_representable_span_is_an_error_not_an_abort() {
+    // That such a rule produces nothing is not the point. The step it asks for is a span of
+    // days outside what the date arithmetic can hold, and **building** that span panics rather
+    // than failing — so one malformed RRULE from a server takes the host process with it, on a
+    // read, with no write of ours involved.
+    //
+    // Weekly reaches the bound first, at seven days to the step; daily needs seven times more.
+    let mut weekly = event(utc("2026-06-02T09:00:00"));
+    let mut r = rule(Frequency::Weekly);
+    r.interval = NonZeroU32::new(1_043_498).expect("non-zero");
+    weekly.recurrence = Some(Recurrence::from_rule(r));
+
+    let mut daily = event(utc("2026-06-02T09:00:00"));
+    let mut r = rule(Frequency::Daily);
+    r.interval = NonZeroU32::new(u32::MAX).expect("non-zero");
+    daily.recurrence = Some(Recurrence::from_rule(r));
+
+    for (what, ev) in [("weekly", weekly), ("daily", daily)] {
+        assert!(
+            matches!(expand(&ev, &wide(), &host()), Err(ExpandError::OutOfRange)),
+            "{what}: an unrepresentable step is an error a caller can report"
+        );
+    }
+}
