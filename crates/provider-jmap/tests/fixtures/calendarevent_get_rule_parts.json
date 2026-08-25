@@ -1,0 +1,34 @@
+{
+  "accountId": "c",
+  "state": "spq",
+  "list": [
+    {
+      "title": "Fourth-Wednesday series",
+      "updated": "2026-01-01T00:00:00Z",
+      "uid": "setpos-2007@test.local",
+      "@type": "Event",
+      "duration": "PT30M",
+      "start": "2026-06-24T09:30:00",
+      "recurrenceRule": {
+        "frequency": "monthly",
+        "count": 12,
+        "byDay": [
+          {
+            "day": "we"
+          }
+        ],
+        "bySetPosition": [
+          4
+        ]
+      },
+      "timeZone": "Europe/Amsterdam",
+      "id": "2",
+      "calendarIds": {
+        "b": true
+      },
+      "isDraft": false,
+      "isOrigin": true
+    }
+  ],
+  "notFound": []
+}

@@ -32,6 +32,7 @@ tests driven through a fake executor.
 | `email_set_report_notfound_response.json` | `[Email/set]` response for an unknown id | The `notFound` `SetError` a stale report target produces → `Conflict`. |
 | `calendar_get.json` | `Calendar/get` result | Calendar-container normalization. |
 | `calendarevent_get.json` | `CalendarEvent/get` result (all 6 seed events) | JSCalendar normalization: zoned/floating/all-day time model, recurrence rule + overrides, participants, virtual location. |
+| `calendarevent_get_rule_parts.json` | `CalendarEvent/get` result for a `BYSETPOS` series PUT over CalDAV | That a real server really sends `bySetPosition`, so the rule parts deciding *which dates* a series generates are read rather than dropped. Its own capture rather than a seventh seed event, because the file above is asserted on wholesale as "all 6". |
 | `calendar_snapshot_response.json` | `[Calendar/get]` response | Calendar container snapshot orchestration. |
 | `event_snapshot_response.json` | `[CalendarEvent/query, CalendarEvent/get(#ids)]` response | Event member snapshot orchestration. |
 

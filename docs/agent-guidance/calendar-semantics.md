@@ -609,6 +609,27 @@ master expands its inline overrides, a standalone override-instance object
 expands to its own occurrence; deduplicating a master against sibling override
 objects is the sync layer's job).
 
+**The staged list only protects parts an adapter actually parses, so a normalizer must
+carry every part its wire format can express — including ones the expander refuses.** The
+rejection above is a safety valve, and it can only fire on what reaches it. A part dropped
+during normalization does not arrive as a rule missing a detail; it arrives as a *different
+rule*, one the expander is willing to expand, and the series is generated onto dates nobody
+asked for and reported as fine. `provider-jmap` read six of them — `bySetPosition`,
+`byWeekNo`, `byYearDay`, `byHour`, `byMinute`, `bySecond` — as absent for as long as it had
+been rendering them on write, so "the fourth Wednesday of the month" synced as *every*
+Wednesday: no error, no `unexpandable` entry, twelve occurrences replaced by fifty-seven.
+
+Two habits follow, both cheap:
+
+- **Parse what you render.** A normalizer and its renderer are one round trip, and a test
+  that asserts exactly that (`render_rule` → `parse_rule` is the identity on a fully
+  populated rule) is what catches a half that drifted. Neither half looked wrong on its own;
+  only the pair did.
+- **Carrying a part you cannot expand is the point, not waste.** `rscale` is the sharpest
+  case — the model preserves it, the expander refuses it, and the renderer will not write
+  one. An adapter that drops it on read turns a Hebrew-calendar series into a Gregorian one
+  that expands perfectly well, onto the wrong dates entirely.
+
 ## Required tests
 
 - A `VTIMEZONE` that disagrees with IANA for the same `TZID` expands using the
@@ -617,6 +638,13 @@ objects is the sync layer's job).
   ones byte-stable.
 - A floating event resolves to different instants under two host zones; an
   all-day event is zone-invariant.
+- **A rule survives its adapter's round trip with every part it arrived with.** Render a
+  fully populated rule, read it back, and assert the identity — the guard the six dropped
+  JMAP parts got past, since each half was self-consistently wrong. Beside it, a live check
+  that a real server stores and returns a `BYSETPOS` rule, which is the claim the parser's
+  correctness rests on and which no fake executor can make
+  (`provider-jmap/tests/live_calendar_rule_parts.rs`, plus the captured
+  `calendarevent_get_rule_parts.json`).
 - iMIP `REQUEST` → `REPLY` → `CANCEL` reconcile by `UID`/`SEQUENCE`/
   `RECURRENCE-ID`; a stale lower-`SEQUENCE` `REQUEST` does not override a newer
   one.
