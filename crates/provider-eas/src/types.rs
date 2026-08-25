@@ -1155,10 +1155,10 @@ mod tests {
     fn user_param_prefers_user_then_falls_back_to_username() {
         let mut cfg = EasConfig {
             username: "DOMAIN\\felix".into(),
-            user: "felixzhou@kylins.com".into(),
+            user: "felixzhou@example.org".into(),
             ..Default::default()
         };
-        assert_eq!(cfg.user_param(), "felixzhou@kylins.com");
+        assert_eq!(cfg.user_param(), "felixzhou@example.org");
         cfg.user.clear();
         assert_eq!(cfg.user_param(), "DOMAIN\\felix");
     }

@@ -165,7 +165,7 @@ fn search_mailbox_response_parses_results() {
         0x0F, // Properties
         vec![
             WbxmlElement::text(2, 0x14, "Sales Totals for April"), // email:Subject
-            WbxmlElement::text(2, 0x18, "\"deviceuser2\" <chris@contoso.com>"), // email:From
+            WbxmlElement::text(2, 0x18, "\"deviceuser2\" <chris@example.com>"), // email:From
             WbxmlElement::text(2, 0x15, "1"),                      // email:Read
         ],
     );
@@ -212,7 +212,7 @@ fn search_mailbox_response_parses_results() {
     assert_eq!(item.subject.as_deref(), Some("Sales Totals for April"));
     assert_eq!(
         item.from.as_deref(),
-        Some("\"deviceuser2\" <chris@contoso.com>")
+        Some("\"deviceuser2\" <chris@example.com>")
     );
     assert_eq!(item.read, Some(true));
     assert!(r.gal.is_none());
@@ -233,7 +233,7 @@ fn search_gal_response_parses_entries() {
             WbxmlElement::text(16, 0x0B, "Anat"),       // gal:FirstName
             WbxmlElement::text(16, 0x0C, "Kerry"),      // gal:LastName
             WbxmlElement::text(16, 0x0E, "+1 (953) 5550167"), // gal:MobilePhone
-            WbxmlElement::text(16, 0x0F, "anatk@contoso.com"), // gal:EmailAddress
+            WbxmlElement::text(16, 0x0F, "anatk@example.com"), // gal:EmailAddress
         ],
     );
     let result = WbxmlElement::container(15, 0x0E, vec![properties]);
@@ -272,7 +272,7 @@ fn search_gal_response_parses_entries() {
     assert_eq!(gal.first_name.as_deref(), Some("Anat"));
     assert_eq!(gal.last_name.as_deref(), Some("Kerry"));
     assert_eq!(gal.mobile_phone.as_deref(), Some("+1 (953) 5550167"));
-    assert_eq!(gal.email_address.as_deref(), Some("anatk@contoso.com"));
+    assert_eq!(gal.email_address.as_deref(), Some("anatk@example.com"));
     assert!(parsed.results[0].item.is_none());
 }
 

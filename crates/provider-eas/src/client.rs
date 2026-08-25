@@ -2770,10 +2770,10 @@ mod tests {
     #[test]
     fn x_ms_location_userinfo_is_rejected() {
         for bad in [
-            "https://user:pass@mail.contoso.com/Microsoft-Server-ActiveSync",
-            "https://user@mail.contoso.com/Microsoft-Server-ActiveSync", // user, no password
-            "https://user:pass@mail.contoso.com",                        // bare authority
-            "https://user:pass@mail.contoso.com:8443/",                  // userinfo + port
+            "https://user:pass@mail.example.com/Microsoft-Server-ActiveSync",
+            "https://user@mail.example.com/Microsoft-Server-ActiveSync", // user, no password
+            "https://user:pass@mail.example.com",                        // bare authority
+            "https://user:pass@mail.example.com:8443/",                  // userinfo + port
         ] {
             let err = endpoint_from_x_ms_location(bad)
                 .expect_err("location with userinfo in the authority must be rejected");

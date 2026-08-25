@@ -455,14 +455,14 @@ mod tests {
         // [MS-OXDISCO]: a mobilesync autodiscover request's document xmlns
         // must be the MOBILESYNC request schema — the outlook request schema
         // makes Exchange answer 600 Invalid Request (live-probed).
-        let body = build_v1_pox_body("alice@contoso.com");
+        let body = build_v1_pox_body("alice@example.com");
         assert!(body.contains(
             r#"xmlns="http://schemas.microsoft.com/exchange/autodiscover/mobilesync/requestschema/2006""#
         ));
         assert!(body.contains(
             "http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006"
         ));
-        assert!(body.contains("<EMailAddress>alice@contoso.com</EMailAddress>"));
+        assert!(body.contains("<EMailAddress>alice@example.com</EMailAddress>"));
         assert!(!body.contains("outlook/requestschema"));
     }
 
@@ -470,8 +470,8 @@ mod tests {
     fn v2_url_declares_activesync_protocol() {
         // Without &Protocol=ActiveSync the V2 endpoint 400s
         // (Protocol_MissingProtocol — live-probed).
-        let url = build_v2_url("alice@contoso.com");
-        assert!(url.contains("Email=alice@contoso.com"));
+        let url = build_v2_url("alice@example.com");
+        assert!(url.contains("Email=alice@example.com"));
         assert!(url.contains("Protocol=ActiveSync"));
     }
 
@@ -494,7 +494,7 @@ mod tests {
         let body = r#"<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
   <Response>
-    <User><AutoDiscoverEmail>alice@contoso.com</AutoDiscoverEmail></User>
+    <User><AutoDiscoverEmail>alice@example.com</AutoDiscoverEmail></User>
     <Action>Settings</Action>
     <MobileSync>
       <Server>

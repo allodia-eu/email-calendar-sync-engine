@@ -6,8 +6,8 @@ fn resolve_recipients_request_uses_spec_shape() {
     use provider_eas::wbxml::tags::{pages, recipients as rr};
     let req = ResolveRecipientsRequest {
         to: vec![
-            "all@contoso.com".to_string(),
-            "chris@contoso.com".to_string(),
+            "all@example.com".to_string(),
+            "chris@example.com".to_string(),
             "Anat".to_string(),
         ],
         max_ambiguous_recipients: Some(2),
@@ -123,7 +123,7 @@ fn resolve_recipients_request_max_ambiguous_only_omits_availability() {
 #[test]
 fn resolve_recipients_request_round_trips() {
     let req = ResolveRecipientsRequest {
-        to: vec!["all@contoso.com".to_string(), "Anat".to_string()],
+        to: vec!["all@example.com".to_string(), "Anat".to_string()],
         max_ambiguous_recipients: Some(2),
         availability: Some((
             "2008-12-01T08:00:00.000Z".to_string(),
@@ -182,24 +182,24 @@ fn resolve_recipients_response_parses_multi_response_fixture() {
         vec![
             WbxmlElement::text(pages::RECIPIENTS, rr::STATUS, "1"),
             response(
-                "all@contoso.com",
+                "all@example.com",
                 "1",
                 "1",
                 vec![recipient(
                     "1",
                     "All Contoso Full Time Employees",
-                    "all@contoso.com",
+                    "all@example.com",
                     Some(("162", None)),
                 )],
             ),
             response(
-                "ryan@contoso.com",
+                "ryan@example.com",
                 "1",
                 "1",
                 vec![recipient(
                     "1",
                     "Chris Gray",
-                    "chris@contoso.com",
+                    "chris@example.com",
                     Some((
                         "1",
                         Some("002000000000000000000000001002002200000010000000"),
@@ -211,8 +211,8 @@ fn resolve_recipients_response_parses_multi_response_fixture() {
                 "3",
                 "30",
                 vec![
-                    recipient("2", "Anat Kerry", "anatk@contoso.com", None),
-                    recipient("1", "Anat Reding", "anetr@contoso.com", None),
+                    recipient("2", "Anat Kerry", "anatk@example.com", None),
+                    recipient("1", "Anat Reding", "anetr@example.com", None),
                 ],
             ),
             response(
@@ -222,15 +222,15 @@ fn resolve_recipients_response_parses_multi_response_fixture() {
                 vec![
                     recipient(
                         "2",
-                        "chris@fourthcoffee.com",
-                        "chris@fourthcoffee.com",
+                        "chris@example.net",
+                        "chris@example.net",
                         Some(("162", None)),
                     ),
-                    recipient("1", "Anet Reding", "anetr@contoso.com", Some(("161", None))),
+                    recipient("1", "Anet Reding", "anetr@example.com", Some(("161", None))),
                     recipient(
                         "2",
                         "Dag Rovik",
-                        "dag@contoso.com",
+                        "dag@example.com",
                         Some((
                             "1",
                             Some("333333333333333333330000001002002200000010000000"),
@@ -238,8 +238,8 @@ fn resolve_recipients_response_parses_multi_response_fixture() {
                     ),
                     recipient(
                         "2",
-                        "fabrice@fourthcoffee.com",
-                        "fabrice@fourthcoffee.com",
+                        "fabrice@example.net",
+                        "fabrice@example.net",
                         Some(("162", None)),
                     ),
                 ],
@@ -253,7 +253,7 @@ fn resolve_recipients_response_parses_multi_response_fixture() {
     // Response 1: exact match, free/busy retrieval FAILED (162) — the
     // failure code is data, not an error, and no MergedFreeBusy rides.
     let r0 = &parsed.responses[0];
-    assert_eq!(r0.to, "all@contoso.com");
+    assert_eq!(r0.to, "all@example.com");
     assert_eq!(r0.status, 1);
     assert_eq!(r0.recipient_count, Some(1));
     assert_eq!(r0.recipients.len(), 1);
@@ -263,13 +263,13 @@ fn resolve_recipients_response_parses_multi_response_fixture() {
         rec.display_name.as_deref(),
         Some("All Contoso Full Time Employees")
     );
-    assert_eq!(rec.email_address.as_deref(), Some("all@contoso.com"));
+    assert_eq!(rec.email_address.as_deref(), Some("all@example.com"));
     assert_eq!(rec.availability_status, Some(162));
     assert_eq!(rec.merged_free_busy, None);
 
     // Response 2: free/busy retrieved — MergedFreeBusy preserved VERBATIM.
     let r1 = &parsed.responses[1];
-    assert_eq!(r1.to, "ryan@contoso.com");
+    assert_eq!(r1.to, "ryan@example.com");
     assert_eq!(r1.recipients.len(), 1);
     let rec = &r1.recipients[0];
     assert_eq!(rec.availability_status, Some(1));
@@ -291,7 +291,7 @@ fn resolve_recipients_response_parses_multi_response_fixture() {
     assert_eq!(r2.recipients[1].recipient_type, Some(1));
     assert_eq!(
         r2.recipients[1].email_address.as_deref(),
-        Some("anetr@contoso.com")
+        Some("anetr@example.com")
     );
     for rec in &r2.recipients {
         assert_eq!(

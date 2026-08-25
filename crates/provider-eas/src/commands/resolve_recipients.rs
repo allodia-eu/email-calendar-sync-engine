@@ -22,7 +22,7 @@ use super::*;
 /// schema §6.31 — `xs:choice`: To children, then an optional Options):
 /// ```xml
 /// <ResolveRecipients>                       <!-- page 10, 0x05 -->
-///   <To>all@contoso.com</To>                <!-- page 10, 0x10 — 1..N -->
+///   <To>all@example.com</To>                <!-- page 10, 0x10 — 1..N -->
 ///   <Options>                               <!-- page 10, 0x0F — optional -->
 ///     <MaxAmbiguousRecipients>2</…>         <!-- page 10, 0x14 — optional -->
 ///     <Availability>                        <!-- page 10, 0x16 — optional -->
