@@ -229,12 +229,12 @@ pub fn parse_sync_response_for_class(
     // precedes Collections on the wire per [MS-ASSYNC]; apply it first so a
     // collection-level Status (the more specific signal) overrides it below.
     for child in &root.children {
-        if child.page == PAGE_AIRSYNC && child.token == AS_STATUS {
-            if let Ok(s) = text_value(child) {
-                if let Ok(n) = s.parse::<u32>() {
-                    result.status = n;
-                }
-            }
+        if child.page == PAGE_AIRSYNC
+            && child.token == AS_STATUS
+            && let Ok(s) = text_value(child)
+            && let Ok(n) = s.parse::<u32>()
+        {
+            result.status = n;
         }
     }
     for child in &root.children {
@@ -265,10 +265,10 @@ fn parse_sync_collection(
                 // on it. The wire value is a decimal string; a non-numeric or
                 // missing value leaves the default success status in place
                 // rather than aborting the whole parse.
-                if let Ok(s) = text_value(child) {
-                    if let Ok(n) = s.parse::<u32>() {
-                        result.status = n;
-                    }
+                if let Ok(s) = text_value(child)
+                    && let Ok(n) = s.parse::<u32>()
+                {
+                    result.status = n;
                 }
             }
             (PAGE_AIRSYNC, AS_COMMANDS) => {
@@ -1159,12 +1159,12 @@ pub fn parse_sync_change_response(root: &WbxmlElement) -> Result<SyncChangeOutco
     // applies first; a collection-level Status (the more specific signal)
     // overrides it — same rule as `parse_sync_response`.
     for child in &root.children {
-        if child.page == PAGE_AIRSYNC && child.token == AS_STATUS {
-            if let Ok(s) = text_value(child) {
-                if let Ok(n) = s.parse::<u32>() {
-                    outcome.status = n;
-                }
-            }
+        if child.page == PAGE_AIRSYNC
+            && child.token == AS_STATUS
+            && let Ok(s) = text_value(child)
+            && let Ok(n) = s.parse::<u32>()
+        {
+            outcome.status = n;
         }
     }
     for child in &root.children {
@@ -1179,10 +1179,10 @@ pub fn parse_sync_change_response(root: &WbxmlElement) -> Result<SyncChangeOutco
                 match (c.page, c.token) {
                     (PAGE_AIRSYNC, AS_SYNC_KEY) => outcome.new_key = text_value(c)?,
                     (PAGE_AIRSYNC, AS_STATUS) => {
-                        if let Ok(s) = text_value(c) {
-                            if let Ok(n) = s.parse::<u32>() {
-                                outcome.status = n;
-                            }
+                        if let Ok(s) = text_value(c)
+                            && let Ok(n) = s.parse::<u32>()
+                        {
+                            outcome.status = n;
                         }
                     }
                     (PAGE_AIRSYNC, AS_COMMANDS) => {

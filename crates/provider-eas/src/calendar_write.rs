@@ -163,15 +163,15 @@ impl CalendarEventWrite {
         if self.time_zone_base64.is_empty() {
             return Err(CalendarWriteError::EmptyTimeZone);
         }
-        if let Some(s) = self.sensitivity {
-            if s > 3 {
-                return Err(CalendarWriteError::SensitivityOutOfRange(s));
-            }
+        if let Some(s) = self.sensitivity
+            && s > 3
+        {
+            return Err(CalendarWriteError::SensitivityOutOfRange(s));
         }
-        if let Some(b) = self.busy_status {
-            if b > 4 {
-                return Err(CalendarWriteError::BusyStatusOutOfRange(b));
-            }
+        if let Some(b) = self.busy_status
+            && b > 4
+        {
+            return Err(CalendarWriteError::BusyStatusOutOfRange(b));
         }
         Ok(())
     }

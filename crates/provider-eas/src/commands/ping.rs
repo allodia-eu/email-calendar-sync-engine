@@ -57,12 +57,12 @@ pub fn parse_ping_response(root: &WbxmlElement) -> Result<PingResult, WbxmlError
             // changes occurred — collect them regardless of the Status value
             // (defense for servers that mislabel).
             for folder in &child.children {
-                if folder.page == PAGE_PING && folder.token == PING_FOLDER {
-                    if let Ok(id) = text_value(folder) {
-                        if !id.is_empty() {
-                            result.folders.push(id);
-                        }
-                    }
+                if folder.page == PAGE_PING
+                    && folder.token == PING_FOLDER
+                    && let Ok(id) = text_value(folder)
+                    && !id.is_empty()
+                {
+                    result.folders.push(id);
                 }
             }
         }

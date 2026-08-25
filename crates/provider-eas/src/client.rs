@@ -438,26 +438,24 @@ impl EasClient {
             .await?;
         // The in-body top-level-status provision retry only inspects
         // `Some(tree)` — `None` (empty-body success) passes through unchanged.
-        if let Some(ref tree) = root {
-            if let Some(status) = commands::top_level_status(tree) {
-                if crate::status::recovery_action_for_common(status)
-                    == crate::status::RecoveryAction::RetryProvision
-                {
-                    log::info!(
-                        "EAS {cmd_name} returned status {status} — running Provision and retrying once"
-                    );
-                    self.provision().await?;
-                    return self
-                        .send_command_no_retry(
-                            cmd_name,
-                            request_root,
-                            allow_empty,
-                            timeout,
-                            accept_multipart,
-                        )
-                        .await;
-                }
-            }
+        if let Some(ref tree) = root
+            && let Some(status) = commands::top_level_status(tree)
+            && crate::status::recovery_action_for_common(status)
+                == crate::status::RecoveryAction::RetryProvision
+        {
+            log::info!(
+                "EAS {cmd_name} returned status {status} — running Provision and retrying once"
+            );
+            self.provision().await?;
+            return self
+                .send_command_no_retry(
+                    cmd_name,
+                    request_root,
+                    allow_empty,
+                    timeout,
+                    accept_multipart,
+                )
+                .await;
         }
         Ok(root)
     }
@@ -1621,10 +1619,10 @@ impl EasClient {
     /// create→delete sequence goes out with a stale key (live evidence:
     /// eas_folder_debug 2026-08-02, delete with pre-create key → status 110).
     fn adopt_folder_op_sync_key(&mut self, resp: &WbxmlElement) {
-        if let Some(key) = commands::folder_op_response_sync_key(resp) {
-            if !key.is_empty() {
-                self.hierarchy_sync_key = key;
-            }
+        if let Some(key) = commands::folder_op_response_sync_key(resp)
+            && !key.is_empty()
+        {
+            self.hierarchy_sync_key = key;
         }
     }
 

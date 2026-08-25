@@ -479,7 +479,7 @@ mod tests {
             0x81,
             0x00, // length 128
         ];
-        bytes.extend(std::iter::repeat(0xAAu8).take(128));
+        bytes.extend(std::iter::repeat_n(0xAAu8, 128));
         bytes.push(END);
         bytes.push(END);
         let root = deserialize_to_tree(&bytes).unwrap();

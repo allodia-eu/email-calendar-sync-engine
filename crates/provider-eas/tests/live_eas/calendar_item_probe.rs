@@ -136,25 +136,23 @@ async fn calendar_location_wire_probe() {
                             "PROBE {folder_label} {label}: collection status {}, acks {:?}",
                             outcome.status, outcome.add_acks
                         );
-                        if let Some(ack) = outcome.add_acks.first() {
-                            if let Some(sid) = ack.server_id.clone() {
-                                let del = build_calendar_change_request(
-                                    &calendar.server_id,
-                                    &outcome.new_key,
-                                    &[CalendarChange::Remove {
-                                        server_id: sid.clone(),
-                                    }],
-                                    "16.1",
-                                );
-                                match client.send_command("Sync", &del).await {
-                                    Ok(_) => {
-                                        eprintln!("PROBE {folder_label} {label}: cleaned up {sid}")
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "PROBE {folder_label} {label}: cleanup FAILED {e}"
-                                        )
-                                    }
+                        if let Some(ack) = outcome.add_acks.first()
+                            && let Some(sid) = ack.server_id.clone()
+                        {
+                            let del = build_calendar_change_request(
+                                &calendar.server_id,
+                                &outcome.new_key,
+                                &[CalendarChange::Remove {
+                                    server_id: sid.clone(),
+                                }],
+                                "16.1",
+                            );
+                            match client.send_command("Sync", &del).await {
+                                Ok(_) => {
+                                    eprintln!("PROBE {folder_label} {label}: cleaned up {sid}")
+                                }
+                                Err(e) => {
+                                    eprintln!("PROBE {folder_label} {label}: cleanup FAILED {e}")
                                 }
                             }
                         }

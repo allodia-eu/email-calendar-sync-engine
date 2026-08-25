@@ -308,11 +308,9 @@ async fn try_v1_pox(
             .post(&current_url)
             .header("Content-Type", "text/xml")
             .body(body.clone());
-        if use_auth {
-            if let Some((u, p)) = creds {
-                let value = B64.encode(format!("{}:{}", u, p));
-                req = req.header("Authorization", format!("Basic {}", value));
-            }
+        if use_auth && let Some((u, p)) = creds {
+            let value = B64.encode(format!("{}:{}", u, p));
+            req = req.header("Authorization", format!("Basic {}", value));
         }
         let resp = req
             .send()
@@ -324,18 +322,17 @@ async fn try_v1_pox(
             use_auth = true;
             continue;
         }
-        if status == 301 || status == 302 || status == 303 {
-            if let Some(loc) = resp
+        if (status == 301 || status == 302 || status == 303)
+            && let Some(loc) = resp
                 .headers()
                 .get(reqwest::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
-            {
-                if !same_host(&current_url, loc) {
-                    use_auth = false;
-                }
-                current_url = loc.to_string();
-                continue;
+        {
+            if !same_host(&current_url, loc) {
+                use_auth = false;
             }
+            current_url = loc.to_string();
+            continue;
         }
         if status != 200 {
             let b = resp.text().await.unwrap_or_default();
@@ -370,12 +367,12 @@ pub fn parse_v1_pox_response(body: &str) -> Result<PoxOutcome, AutoDiscoverError
     if find_tag(body, "Error").is_some() {
         return Err(AutoDiscoverError::Parse("server returned <Error>".into()));
     }
-    if let Some(action) = find_tag(body, "Action") {
-        if action.trim().eq_ignore_ascii_case("redirect") {
-            let url = find_tag(body, "Url")
-                .ok_or_else(|| AutoDiscoverError::Parse("redirect without <Url>".into()))?;
-            return Ok(PoxOutcome::Redirect(url));
-        }
+    if let Some(action) = find_tag(body, "Action")
+        && action.trim().eq_ignore_ascii_case("redirect")
+    {
+        let url = find_tag(body, "Url")
+            .ok_or_else(|| AutoDiscoverError::Parse("redirect without <Url>".into()))?;
+        return Ok(PoxOutcome::Redirect(url));
     }
     // MobileSync Server Url — the first <Url> in the document.
     if let Some(url) = find_tag(body, "Url") {

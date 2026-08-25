@@ -2,11 +2,8 @@
 name = "provider-eas"
 description = "Exchange ActiveSync (EAS) protocol client: WBXML codec, command builders/parsers, transport with retry/redirect, Provision, Ping."
 version.workspace = true
-# Edition/rust-version stay explicit at the imported crate's values (P0-b Task 1
-# relocation): the workspace's 2024 edition does not compile this code yet. P0-b
-# Task 5 moves the crate to 2024 and flips both to `.workspace = true`.
-edition = "2021"
-rust-version = "1.77.2"
+edition.workspace = true
+rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 

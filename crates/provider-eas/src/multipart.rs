@@ -126,38 +126,38 @@ pub fn parse_multipart_response(bytes: &[u8]) -> Result<MultipartParts, EasError
 /// that sent us a multipart envelope we cannot reconcile must fail loudly,
 /// not silently drop the body.
 pub fn resolve_part_elements(root: &mut WbxmlElement, parts: &[Vec<u8>]) -> Result<(), EasError> {
-    if root.page == pages::BASE && root.token == tags::base::BODY {
-        if let Some(pos) = root
+    if root.page == pages::BASE
+        && root.token == tags::base::BODY
+        && let Some(pos) = root
             .children
             .iter()
             .position(|c| c.page == PAGE_ITEM_OPS && c.token == tags::item_operations::PART)
-        {
-            let part_el = root.children.remove(pos);
-            let index_text = match &part_el.value {
-                WbxmlValue::Text(t) => t.trim().to_string(),
-                other => {
-                    return Err(EasError::Transport(format!(
-                        "multipart itemoperations:Part must be integer text, got {other:?}"
-                    )));
-                }
-            };
-            let index: usize = index_text.parse().map_err(|_| {
-                EasError::Transport(format!(
-                    "multipart itemoperations:Part value '{index_text}' is not a valid part index"
-                ))
-            })?;
-            let part_bytes = parts.get(index).ok_or_else(|| {
+    {
+        let part_el = root.children.remove(pos);
+        let index_text = match &part_el.value {
+            WbxmlValue::Text(t) => t.trim().to_string(),
+            other => {
+                return Err(EasError::Transport(format!(
+                    "multipart itemoperations:Part must be integer text, got {other:?}"
+                )));
+            }
+        };
+        let index: usize = index_text.parse().map_err(|_| {
+            EasError::Transport(format!(
+                "multipart itemoperations:Part value '{index_text}' is not a valid part index"
+            ))
+        })?;
+        let part_bytes = parts.get(index).ok_or_else(|| {
                 EasError::Transport(format!(
                     "multipart itemoperations:Part references part {index} but the response carries {} part(s)",
                     parts.len()
                 ))
             })?;
-            root.children.push(WbxmlElement::text(
-                pages::BASE,
-                tags::base::DATA,
-                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, part_bytes),
-            ));
-        }
+        root.children.push(WbxmlElement::text(
+            pages::BASE,
+            tags::base::DATA,
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, part_bytes),
+        ));
     }
     for child in &mut root.children {
         resolve_part_elements(child, parts)?;

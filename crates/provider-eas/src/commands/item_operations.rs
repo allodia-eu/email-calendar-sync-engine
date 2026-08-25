@@ -160,12 +160,12 @@ pub fn parse_item_operations_response(
     // Top-level Status first (command-level rejection, e.g. 143 device not
     // provisioned); a fetch-level Status below overrides it.
     for child in &root.children {
-        if child.page == PAGE_ITEM_OPS && child.token == io::STATUS {
-            if let Ok(s) = text_value(child) {
-                if let Ok(n) = s.parse::<u8>() {
-                    result.status = n;
-                }
-            }
+        if child.page == PAGE_ITEM_OPS
+            && child.token == io::STATUS
+            && let Ok(s) = text_value(child)
+            && let Ok(n) = s.parse::<u8>()
+        {
+            result.status = n;
         }
     }
     for child in &root.children {
@@ -175,10 +175,10 @@ pub fn parse_item_operations_response(
                     for fetch_child in &resp_child.children {
                         match (fetch_child.page, fetch_child.token) {
                             (PAGE_ITEM_OPS, io::STATUS) => {
-                                if let Ok(s) = text_value(fetch_child) {
-                                    if let Ok(n) = s.parse::<u8>() {
-                                        result.status = n;
-                                    }
+                                if let Ok(s) = text_value(fetch_child)
+                                    && let Ok(n) = s.parse::<u8>()
+                                {
+                                    result.status = n;
                                 }
                             }
                             (PAGE_ITEM_OPS, io::PROPERTIES) => {
