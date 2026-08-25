@@ -6,16 +6,19 @@
 //! that instead receive a *structured* recurrence (Microsoft Graph's
 //! `patternedRecurrence`) build the [`RecurrenceRule`] directly and do not use this.
 //!
-//! The rule is stored in full (every `BY*` part), even where the `engine-recurrence`
-//! expander does not yet expand it — an unsupported rule is preserved and simply
-//! materializes no occurrences (`calendar-semantics.md`), so the parser never drops
-//! structure it understood. `FREQ` is required; the rest default. `COUNT` and `UNTIL`
-//! are mutually exclusive (RFC 5545); `COUNT` wins if both somehow appear.
+//! The rule is stored in full — every `BY*` part, plus RFC 7529's `RSCALE` and `SKIP` —
+//! even where the `engine-recurrence` expander does not expand it. That is the point
+//! rather than an oversight: an unsupported rule is preserved and materializes no
+//! occurrences (`calendar-semantics.md`), and the expander's refusal only fires on a part
+//! that survived parsing. A part dropped here is not a rule missing a detail, it is a
+//! *different rule* — one the expander will happily expand, onto dates the series was
+//! never on. `FREQ` is required; the rest default. `COUNT` and `UNTIL` are mutually
+//! exclusive (RFC 5545); `COUNT` wins if both somehow appear.
 
 use core::num::{NonZeroI32, NonZeroU32};
 
 use crate::{
-    calendar::{Frequency, NDay, RecurrenceBound, RecurrenceRule, Weekday},
+    calendar::{Frequency, NDay, RecurrenceBound, RecurrenceRule, RecurrenceSkip, Weekday},
     time::LocalDateTime,
 };
 
@@ -90,7 +93,27 @@ pub fn parse_rrule(value: &str) -> Result<RecurrenceRule, RruleParseError> {
     if let Some(wkst) = get("WKST").and_then(weekday) {
         rule.first_day_of_week = wkst;
     }
+    // RFC 7529, and the parts with the sharpest teeth here. The expander refuses a
+    // non-Gregorian rule outright, so carrying `RSCALE` is what turns a Hebrew-calendar
+    // series into an event reported as unexpandable rather than one quietly expanded onto
+    // Gregorian dates. Lowercased because CLDR's identifier is the lowercase one and
+    // iCalendar conventionally shouts it — a rule must mean the same thing whether it
+    // arrived as `RSCALE=HEBREW` or as JSCalendar's `"rscale": "hebrew"`.
+    rule.rscale = get("RSCALE").map(str::to_ascii_lowercase);
+    if let Some(skip) = get("SKIP").and_then(skip) {
+        rule.skip = skip;
+    }
     Ok(rule)
+}
+
+/// The `SKIP` token (RFC 7529), or `None` for anything else — leaving the `OMIT` default.
+fn skip(value: &str) -> Option<RecurrenceSkip> {
+    match value.to_ascii_uppercase().as_str() {
+        "OMIT" => Some(RecurrenceSkip::Omit),
+        "BACKWARD" => Some(RecurrenceSkip::Backward),
+        "FORWARD" => Some(RecurrenceSkip::Forward),
+        _ => None,
+    }
 }
 
 /// Splits the `;`-separated `KEY=value` parts, uppercasing keys.
@@ -268,5 +291,53 @@ mod tests {
             parse_rrule("FREQ=DAILY;UNTIL=nonsense"),
             Err(RruleParseError::Until(_))
         ));
+    }
+
+    #[test]
+    fn carries_rscale_and_skip_so_a_non_gregorian_rule_is_not_read_as_gregorian() {
+        // RFC 7529. Dropping these does not produce a rule missing a detail — it produces a
+        // Gregorian rule, which the expander is perfectly willing to expand, onto dates the
+        // series was never on. Carried, `RSCALE` reaches the expander's refusal and the event
+        // is reported as unexpandable instead of drawn wrong.
+        //
+        // These are the bytes a Stalwart harness actually returned for such an event, part
+        // order and all — it reserializes what it stores, so `RSCALE` arrives after the `BY*`
+        // parts rather than first, where RFC 7529's examples put it.
+        let rule =
+            parse_rrule("FREQ=YEARLY;BYMONTHDAY=1;BYMONTH=1;RSCALE=HEBREW;SKIP=FORWARD").unwrap();
+        assert_eq!(rule.rscale.as_deref(), Some("hebrew"));
+        assert_eq!(rule.skip, RecurrenceSkip::Forward);
+        assert_eq!(rule.by_month_day, vec![1]);
+    }
+
+    #[test]
+    fn an_rscale_is_stored_as_its_lowercase_cldr_name_whatever_the_wire_said() {
+        // Not hypothetical: one server, one event, two transports. Read over CalDAV it is
+        // `RSCALE=HEBREW`; read over JMAP the same event is `"rscale": "hebrew"`. CLDR's own
+        // identifier is the lowercase one, so that is what both are stored as — keeping the
+        // wire's casing would make one calendar system two values that never compare equal.
+        for spelling in ["HEBREW", "hebrew", "Hebrew"] {
+            let rule = parse_rrule(&format!("RSCALE={spelling};FREQ=YEARLY")).unwrap();
+            assert_eq!(rule.rscale.as_deref(), Some("hebrew"), "{spelling}");
+        }
+    }
+
+    #[test]
+    fn skip_defaults_to_omit_and_an_unknown_value_does_not_change_it() {
+        // `SKIP` has meaning only under an `RSCALE`, and RFC 7529 makes `OMIT` the default. An
+        // unparseable value leaves the default rather than failing the rule: the parser rejects
+        // only what RFC 5545 says must be well-formed (FREQ, COUNT, UNTIL).
+        assert_eq!(
+            parse_rrule("FREQ=DAILY").unwrap().skip,
+            RecurrenceSkip::Omit
+        );
+        assert_eq!(
+            parse_rrule("FREQ=DAILY;SKIP=sideways").unwrap().skip,
+            RecurrenceSkip::Omit
+        );
+        assert_eq!(
+            parse_rrule("FREQ=DAILY;SKIP=backward").unwrap().skip,
+            RecurrenceSkip::Backward
+        );
     }
 }

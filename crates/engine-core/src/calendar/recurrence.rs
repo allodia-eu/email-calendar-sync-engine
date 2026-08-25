@@ -98,7 +98,10 @@ pub struct RecurrenceRule {
     /// The interval between recurrences (default 1, never 0).
     pub interval: NonZeroU32,
     /// The CLDR calendar system, if non-Gregorian (RFC 7529 `RSCALE`); `None`
-    /// means Gregorian.
+    /// means Gregorian. Held as the **lowercase** CLDR identifier (`"hebrew"`)
+    /// whatever casing the wire used — iCalendar conventionally shouts
+    /// `RSCALE=HEBREW` where JSCalendar sends `"hebrew"`, and one calendar system
+    /// must not become two values by the transport it arrived on.
     pub rscale: Option<String>,
     /// How to handle invalid dates under a non-Gregorian `rscale`.
     pub skip: RecurrenceSkip,

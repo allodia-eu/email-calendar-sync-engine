@@ -93,7 +93,11 @@ expansion, or scheduling.
   adapter pairs the wall clock (the RFC 3339 `dateTime` stripped of its offset) with
   that zone.
 - **Out of scope:** `RSCALE` / non-Gregorian recurrence (RFC 7529) is preserved
-  raw, not expanded.
+  raw, not expanded. **Preserved means every reader carries it** — the expander's refusal is
+  what keeps such a series from being drawn on Gregorian dates, and it only fires on an
+  `rscale` that survived normalization. Stored as the **lowercase** CLDR identifier
+  whatever the wire said: the same event reads `RSCALE=HEBREW` over CalDAV and
+  `"rscale": "hebrew"` over JMAP, and one calendar system must not become two values.
 
 ## Inbound scheduling (iTIP/iMIP)
 
