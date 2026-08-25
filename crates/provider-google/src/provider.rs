@@ -267,10 +267,7 @@ impl Provider for GmailProvider {
     ) -> ProviderResult<SubmissionReceipt> {
         submit::send(&self.client, draft).await
     }
-}
 
-#[async_trait]
-impl engine_provider::ReportingProvider for GmailProvider {
     async fn report_message(
         &self,
         _account: &AccountId,

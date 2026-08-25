@@ -25,7 +25,7 @@ use engine_core::{
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
     MessageReport, Provider, ProviderError, ProviderResult, ReportControls, ReportEvidence,
-    ReportReceipt, ReportVerdict, ReportVerdicts, ReportingProvider, ScopeSync, SubmissionReceipt,
+    ReportReceipt, ReportVerdict, ReportVerdicts, ScopeSync, SubmissionReceipt,
 };
 use tokio::sync::oneshot;
 
@@ -363,14 +363,11 @@ impl Provider for SubmittingProvider {
         }
         Ok(MailEditReceipt::new(edit.target().clone()))
     }
-}
 
-/// The reporting half, so the outbox path for a report is exercised through the same
-/// fake as an edit. `accept` is what the real adapters do with the capability *before*
-/// they touch the network, so a verdict the controls exclude must be refused here too —
-/// otherwise the test would prove the outbox records an op no provider would accept.
-#[async_trait::async_trait]
-impl ReportingProvider for SubmittingProvider {
+    /// The reporting half, so the outbox path for a report is exercised through the same
+    /// fake as an edit. `accept` is what the real adapters do with the capability *before*
+    /// they touch the network, so a verdict the controls exclude must be refused here too —
+    /// otherwise the test would prove the outbox records an op no provider would accept.
     async fn report_message(
         &self,
         _account: &AccountId,

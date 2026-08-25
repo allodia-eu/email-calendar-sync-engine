@@ -18,8 +18,9 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, PageToken, PassMode, Provider,
-    ProviderResult, ScopeSync, SubmissionReceipt, SyncKind, split_page,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MessageReport, PageToken,
+    PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SubmissionReceipt, SyncKind,
+    split_page,
 };
 use serde_json::json;
 
@@ -417,6 +418,20 @@ impl Provider for JmapProvider {
             draft,
         )
         .await?)
+    }
+
+    async fn report_message(
+        &self,
+        _account: &AccountId,
+        report: &MessageReport,
+    ) -> ProviderResult<ReportReceipt> {
+        // Refuse a verdict this session did not advertise rather than filing it as
+        // something else — the shared rule, so the adapter cannot drop what it claims.
+        if let Some(controls) = self.connection_info().capabilities.mail_report() {
+            controls.accept(report)?;
+        }
+        let account = self.mail_account()?;
+        Ok(crate::report::report_message(self.executor.as_ref(), &account, report).await?)
     }
 }
 

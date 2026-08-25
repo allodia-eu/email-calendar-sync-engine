@@ -5,8 +5,8 @@ use engine_core::{
 
 use super::*;
 use crate::{
-    Capabilities, ConnectionInfo, Provider, ReportControls, ReportEvidence, ReportVerdict,
-    ReportVerdicts,
+    Capabilities, ConnectionInfo, MessageReport, Provider, ProviderResult, ReportControls,
+    ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };
 
 fn account() -> AccountId {
@@ -33,10 +33,7 @@ impl Provider for Reports {
             evidence: ReportEvidence::Convention,
         }))
     }
-}
 
-#[async_trait]
-impl ReportingProvider for Reports {
     async fn report_message(
         &self,
         _account: &AccountId,
@@ -56,12 +53,11 @@ impl Provider for Silent {
     }
 }
 
-impl ReportingProvider for Silent {}
-
 /// Mirrors `engine-api`'s `Engine::report_message`, the only shape that needs the
 /// blanket impl. A plain `boxed.report_message(..)` call would auto-deref to
-/// `<dyn ReportingProvider>::report_message` and pass with no impl at all.
-async fn as_engine_would<P: ReportingProvider>(
+/// `<dyn Provider>::report_message` — reaching the inner adapter's override — and pass
+/// with the forward deleted.
+async fn as_engine_would<P: Provider>(
     provider: &P,
     report: &MessageReport,
 ) -> ProviderResult<ReportReceipt> {
@@ -70,7 +66,7 @@ async fn as_engine_would<P: ReportingProvider>(
 
 #[tokio::test]
 async fn a_boxed_adapter_reports_through_to_the_one_inside() {
-    let boxed: Box<dyn ReportingProvider> = Box::new(Reports);
+    let boxed: Box<dyn Provider> = Box::new(Reports);
 
     let receipt = as_engine_would(&boxed, &report())
         .await
@@ -81,7 +77,7 @@ async fn a_boxed_adapter_reports_through_to_the_one_inside() {
 
 #[tokio::test]
 async fn a_boxed_adapter_that_cannot_report_still_rejects() {
-    let boxed: Box<dyn ReportingProvider> = Box::new(Silent);
+    let boxed: Box<dyn Provider> = Box::new(Silent);
 
     let err = as_engine_would(&boxed, &report())
         .await

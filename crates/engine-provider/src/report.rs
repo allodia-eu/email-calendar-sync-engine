@@ -34,11 +34,10 @@
 //! provider that blocks is ever added, that becomes a third field here, because it is
 //! a promise the user has to be shown before they press the button — not a detail.
 
-use async_trait::async_trait;
-use engine_core::ids::{AccountId, MailboxId, ProviderKey};
+use engine_core::ids::{MailboxId, ProviderKey};
 use serde::{Deserialize, Serialize};
 
-use crate::{Provider, ProviderError, ProviderResult};
+use crate::ProviderError;
 
 /// What the user is saying about the message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,39 +222,6 @@ impl ReportReceipt {
     #[must_use]
     pub fn new(message_key: ProviderKey) -> Self {
         Self { message_key }
-    }
-}
-
-/// Reporting a message to its provider — an optional capability over [`Provider`].
-///
-/// A sub-trait rather than a method on [`Provider`] for the same reason
-/// [`ContactsProvider`](crate::ContactsProvider) is one: it is optional, gated by its
-/// own capability, and an adapter that cannot do it should not have to say so.
-#[async_trait]
-pub trait ReportingProvider: Provider {
-    /// Reports `report.target` to the provider.
-    ///
-    /// Providers advertising
-    /// [`Capabilities::mail_report`](crate::Capabilities::mail_report) override this;
-    /// the default rejects, so a capability-checking caller never relies on it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a classified [`ProviderError`].
-    /// [`InvalidState`](engine_core::error::FailureClass::InvalidState) for a verdict
-    /// the transport cannot express (via [`ReportControls::accept`]); a stale target —
-    /// an IMAP UID under a changed `UIDVALIDITY` — is
-    /// [`Conflict`](engine_core::error::FailureClass::Conflict), so the caller
-    /// re-syncs and retries.
-    async fn report_message(
-        &self,
-        account: &AccountId,
-        report: &MessageReport,
-    ) -> ProviderResult<ReportReceipt> {
-        let _ = (account, report);
-        Err(ProviderError::invalid_state(
-            "provider does not support reporting a message",
-        ))
     }
 }
 

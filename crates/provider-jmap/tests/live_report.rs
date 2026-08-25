@@ -24,7 +24,7 @@ use engine_core::{
     mail::{Keyword, MailboxRole, Message, SystemKeyword},
     sync::SyncUpdate,
 };
-use engine_provider::{MessageReport, Provider, ReportEvidence, ReportVerdict, ReportingProvider};
+use engine_provider::{MessageReport, Provider, ReportEvidence, ReportVerdict};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::Harness;
 

@@ -9,7 +9,7 @@ use engine_core::{
     error::FailureClass,
     ids::{AccountId, MailboxId, ProviderKey},
 };
-use engine_provider::{MessageReport, Provider, ReportVerdict, ReportingProvider};
+use engine_provider::{MessageReport, Provider, ReportVerdict};
 use serde_json::Value;
 
 use super::{provider_test_support::*, *};

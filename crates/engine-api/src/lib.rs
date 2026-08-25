@@ -127,8 +127,8 @@ pub use engine_provider::{
     DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
     EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport, Occurrence, OverrideSurvival,
     PatchTarget, Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence,
-    ReportReceipt, ReportVerdict, ReportVerdicts, ReportingProvider, RsvpControls, RsvpResponse,
-    SentCopy, SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
+    ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse, SentCopy,
+    SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,

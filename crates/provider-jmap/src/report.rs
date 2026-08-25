@@ -17,15 +17,10 @@
 //! of the two a server's classifier then believes is not something a client should be
 //! deciding by accident.
 
-use async_trait::async_trait;
-use engine_core::ids::AccountId;
-use engine_provider::{
-    MessageReport, Provider, ProviderResult, ReportReceipt, ReportVerdict, ReportingProvider,
-};
+use engine_provider::{MessageReport, ReportReceipt, ReportVerdict};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    JmapProvider,
     error::JmapError,
     executor::Executor,
     mutate::{check_set_result_for, keyword_pointer, update_args},
@@ -83,23 +78,6 @@ fn patch(report: &MessageReport) -> Value {
         json!({ report.destination.as_str(): true }),
     );
     Value::Object(patch)
-}
-
-#[async_trait]
-impl ReportingProvider for JmapProvider {
-    async fn report_message(
-        &self,
-        _account: &AccountId,
-        report: &MessageReport,
-    ) -> ProviderResult<ReportReceipt> {
-        // Refuse a verdict this session did not advertise rather than filing it as
-        // something else — the shared rule, so the adapter cannot drop what it claims.
-        if let Some(controls) = self.connection_info().capabilities.mail_report() {
-            controls.accept(report)?;
-        }
-        let account = self.mail_account()?;
-        Ok(report_message(self.executor.as_ref(), &account, report).await?)
-    }
 }
 
 #[cfg(test)]

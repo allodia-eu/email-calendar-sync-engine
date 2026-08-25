@@ -320,10 +320,7 @@ impl Provider for GraphProvider {
     ) -> ProviderResult<MailEditReceipt> {
         crate::mutate::edit_mail(&self.client, edit).await
     }
-}
 
-#[async_trait]
-impl engine_provider::ReportingProvider for GraphProvider {
     async fn report_message(
         &self,
         _account: &AccountId,

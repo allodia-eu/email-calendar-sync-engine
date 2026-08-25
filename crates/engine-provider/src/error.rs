@@ -175,6 +175,14 @@ impl std::error::Error for ProviderError {
 /// The result type provider methods return.
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
+/// The error every unimplemented [`Provider`](crate::Provider) default returns: the
+/// adapter does not speak this part of the trait. `what` names the missing half —
+/// "mail writes", "calendar sync" — and reads as
+/// `provider does not support {what}`.
+pub(crate) fn unsupported(what: &str) -> ProviderError {
+    ProviderError::invalid_state(format!("provider does not support {what}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
