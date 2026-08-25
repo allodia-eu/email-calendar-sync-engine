@@ -19,7 +19,7 @@ use engine_core::{
     mail::{MailboxRole, Message},
     sync::SyncUpdate,
 };
-use engine_provider::{MessageReport, Provider, ReportEvidence, ReportVerdict, ReportingProvider};
+use engine_provider::{MessageReport, Provider, ReportEvidence, ReportVerdict};
 use provider_graph::{GraphClient, GraphProvider};
 
 fn account() -> AccountId {

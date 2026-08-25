@@ -21,11 +21,11 @@ use engine_core::{
     unused_imports,
     reason = "named by intra-doc links on the trait's methods"
 )]
-use crate::{Capabilities, EmailChunk, PageToken, PassMode, RsvpControls};
+use crate::{Capabilities, EmailChunk, PageToken, PassMode, ReportControls, RsvpControls};
 use crate::{
     ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, EventDeletion, EventDraft, EventEdit,
-    EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, ProviderError,
-    ProviderResult, ScopeSync, SubmissionReceipt,
+    EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport,
+    ProviderError, ProviderResult, ReportReceipt, ScopeSync, SubmissionReceipt, error::unsupported,
 };
 
 /// A read/sync provider adapter for one account's mail (and, as slices land,
@@ -88,9 +88,7 @@ pub trait Provider: Send + Sync {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
         let _ = (account, cursor);
-        Err(ProviderError::invalid_state(
-            "provider does not support mail sync",
-        ))
+        Err(unsupported("mail sync"))
     }
 
     /// The default sync window the **whole-scope** [`Provider::sync_email`]
@@ -133,9 +131,7 @@ pub trait Provider: Send + Sync {
     ) -> EmailStream<'a> {
         let _ = (account, cursor, window, fetch_batch, chunk_size);
         Box::pin(futures_util::stream::once(async {
-            Err(ProviderError::invalid_state(
-                "provider does not support mail sync",
-            ))
+            Err(unsupported("mail sync"))
         }))
     }
 
@@ -185,9 +181,7 @@ pub trait Provider: Send + Sync {
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
         let _ = (account, draft);
-        Err(ProviderError::invalid_state(
-            "provider does not support mail submission",
-        ))
+        Err(unsupported("mail submission"))
     }
 
     /// Files the sender's copy of an **already-delivered** message, repairing a submission
@@ -236,9 +230,7 @@ pub trait Provider: Send + Sync {
         edit: &MailEdit,
     ) -> ProviderResult<MailEditReceipt> {
         let _ = (account, edit);
-        Err(ProviderError::invalid_state(
-            "provider does not support mail writes",
-        ))
+        Err(unsupported("mail writes"))
     }
 
     /// Fetches the raw RFC 5322 source of an already-synced `message` — the lossless
@@ -268,9 +260,31 @@ pub trait Provider: Send + Sync {
         message: &Message,
     ) -> ProviderResult<RawMime> {
         let _ = (account, message);
-        Err(ProviderError::invalid_state(
-            "provider does not support message source fetch",
-        ))
+        Err(unsupported("message source fetch"))
+    }
+
+    /// Reports `report.target` to the provider as junk, not junk, or phishing.
+    ///
+    /// A report is not a move: the provider files the message itself, so a caller that
+    /// reports must not also move. Providers advertising
+    /// [`Capabilities::mail_report`] override this; the default rejects, so a
+    /// capability-checking caller never relies on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`].
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState)
+    /// for a verdict the transport cannot express (via [`ReportControls::accept`]); a
+    /// stale target — an IMAP UID under a changed `UIDVALIDITY` — is
+    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict), so the
+    /// caller re-syncs and retries.
+    async fn report_message(
+        &self,
+        account: &AccountId,
+        report: &MessageReport,
+    ) -> ProviderResult<ReportReceipt> {
+        let _ = (account, report);
+        Err(unsupported("reporting a message"))
     }
 
     /// The scope the account's calendars sync under. Defaults to the JMAP
@@ -304,9 +318,7 @@ pub trait Provider: Send + Sync {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Calendar>> {
         let _ = (account, cursor);
-        Err(ProviderError::invalid_state(
-            "provider does not support calendar sync",
-        ))
+        Err(unsupported("calendar sync"))
     }
 
     /// Fetches the account's calendar events since `cursor` (JSCalendar). Providers
@@ -322,9 +334,7 @@ pub trait Provider: Send + Sync {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         let _ = (account, cursor);
-        Err(ProviderError::invalid_state(
-            "provider does not support calendar sync",
-        ))
+        Err(unsupported("calendar sync"))
     }
 
     /// Creates a new event from an [`EventDraft`].
@@ -351,9 +361,7 @@ pub trait Provider: Send + Sync {
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
         let _ = (account, draft);
-        Err(ProviderError::invalid_state(
-            "provider does not support calendar writes",
-        ))
+        Err(unsupported("calendar writes"))
     }
 
     /// Applies an [`EventEdit`] to an already-stored event.
@@ -388,9 +396,7 @@ pub trait Provider: Send + Sync {
         edit: &EventEdit,
     ) -> ProviderResult<EventWriteReceipt> {
         let _ = (account, base, edit);
-        Err(ProviderError::invalid_state(
-            "provider does not support calendar writes",
-        ))
+        Err(unsupported("calendar writes"))
     }
 
     /// Replaces an event's whole stored document (CalDAV `PUT`).
@@ -415,9 +421,7 @@ pub trait Provider: Send + Sync {
         write: &EventWrite,
     ) -> ProviderResult<EventWriteReceipt> {
         let _ = (account, write);
-        Err(ProviderError::invalid_state(
-            "provider does not support whole-document calendar writes",
-        ))
+        Err(unsupported("whole-document calendar writes"))
     }
 
     /// Answers an invitation: sets **the account's own** participation status, and lets the
@@ -451,9 +455,7 @@ pub trait Provider: Send + Sync {
         rsvp: &EventRsvp,
     ) -> ProviderResult<EventWriteReceipt> {
         let _ = (account, base, rsvp);
-        Err(ProviderError::invalid_state(
-            "provider does not support answering invitations",
-        ))
+        Err(unsupported("answering invitations"))
     }
 
     /// Deletes an event, or one occurrence of it, guarded by the revision the caller read.
@@ -482,8 +484,6 @@ pub trait Provider: Send + Sync {
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
         let _ = (account, base, deletion);
-        Err(ProviderError::invalid_state(
-            "provider does not support calendar writes",
-        ))
+        Err(unsupported("calendar writes"))
     }
 }

@@ -26,7 +26,6 @@
 //! the provider-neutral scopes.
 
 mod boxed;
-mod boxed_report;
 mod calendar_write;
 mod capability;
 mod capability_calendar;
@@ -64,7 +63,6 @@ pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;
 pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
-    ReportingProvider,
 };
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};
 pub use submit::{

@@ -10,7 +10,7 @@ use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey},
     write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
 };
-use engine_provider::{Draft, MailEdit, MessageReport, Provider, ReportingProvider, SentCopy};
+use engine_provider::{Draft, MailEdit, MessageReport, Provider, SentCopy};
 use engine_store::{Store, WorkerId};
 
 use super::{enqueue_and_claim, record_failure};
@@ -237,7 +237,7 @@ pub async fn report_message<P, S>(
     report: &MessageReport,
 ) -> Result<ReportOutcome, SyncError>
 where
-    P: ReportingProvider,
+    P: Provider,
     S: Store,
 {
     let payload = serde_json::to_value(report)

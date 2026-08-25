@@ -26,7 +26,7 @@ use engine_core::{
     mail::EmailAddress,
     sync::{SyncState, SyncUpdate},
 };
-use engine_provider::{Draft, MailEdit, MessageReport, Provider, ReportVerdict, ReportingProvider};
+use engine_provider::{Draft, MailEdit, MessageReport, Provider, ReportVerdict};
 use provider_google::{GmailProvider, GoogleClient};
 
 fn account() -> AccountId {

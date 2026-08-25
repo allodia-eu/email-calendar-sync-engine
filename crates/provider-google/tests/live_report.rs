@@ -30,9 +30,7 @@ use engine_core::{
     mail::EmailAddress,
     sync::SyncUpdate,
 };
-use engine_provider::{
-    Draft, MailEdit, MessageReport, Provider, ReportEvidence, ReportVerdict, ReportingProvider,
-};
+use engine_provider::{Draft, MailEdit, MessageReport, Provider, ReportEvidence, ReportVerdict};
 use provider_google::{GmailProvider, GoogleClient};
 
 fn account() -> AccountId {

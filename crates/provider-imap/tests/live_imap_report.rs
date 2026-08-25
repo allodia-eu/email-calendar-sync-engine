@@ -28,7 +28,7 @@ use engine_core::{
     mail::{Keyword, Message, SystemKeyword},
     sync::SyncUpdate,
 };
-use engine_provider::{MessageReport, Provider, ReportVerdict, ReportingProvider};
+use engine_provider::{MessageReport, Provider, ReportVerdict};
 use imap_live::{LiveProvider, SERVERS, connect_to};
 
 /// The mailbox holding this suite's own messages (seeded by both harnesses).

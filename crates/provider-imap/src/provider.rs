@@ -20,7 +20,7 @@ use engine_core::{
 use engine_provider::{
     Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, Draft, EmailStream, MailEdit,
     MailEditReceipt, MessageReport, Provider, ProviderResult, ReportControls, ReportEvidence,
-    ReportReceipt, ReportVerdicts, ReportingProvider, ScopeSync, SubmissionReceipt, TlsVersion,
+    ReportReceipt, ReportVerdicts, ScopeSync, SubmissionReceipt, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -459,13 +459,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         let mut connection = self.connection.lock().await;
         crate::fetch::fetch_message_source(&mut connection, message.id.key()).await
     }
-}
 
-#[async_trait]
-impl<S> ReportingProvider for ImapProvider<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
     /// Reports a message as junk / not junk / phishing.
     ///
     /// A thin lock-and-call, like [`Provider::edit_mail`]: the keyword choice, the

@@ -117,10 +117,8 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `P: Provider`. A host that picks a concrete adapter at runtime can hold a
   `Box<dyn Provider>` and still call them: `engine-provider` provides a blanket
   `impl<P: Provider + ?Sized> Provider for Box<P>` that delegates every method to the
-  box's contents — kept there, not special-cased in `engine-api`. The optional
-  sub-traits `ContactsProvider` and `ReportingProvider` have the same blanket impl, and
-  need it for the same reason: `report_message` is generic over `P: ReportingProvider`,
-  so without one a boxed adapter cannot reach it.)
+  box's contents — kept there, not special-cased in `engine-api`. `ContactsProvider`
+  has the same blanket impl, and needs it for the same reason.)
 - **Host-config is hardcoded in this slice, by design (deferred seams).** An
   `Engine` stamps a fixed `WorkerId` (`"engine-api"`), uses a fixed `LEASE_TTL`
   (5 min — a generous safety bound, not a deadline; the sync loop re-claims and

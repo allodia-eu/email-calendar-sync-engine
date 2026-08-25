@@ -1,7 +1,8 @@
-use engine_core::error::FailureClass;
+use async_trait::async_trait;
+use engine_core::{error::FailureClass, ids::AccountId};
 
 use super::*;
-use crate::Capabilities;
+use crate::{Capabilities, Provider};
 
 fn key() -> ProviderKey {
     ProviderKey::new("imap:v1:u42@INBOX").unwrap()
@@ -103,7 +104,6 @@ async fn the_default_provider_impl_rejects_rather_than_pretending() {
             crate::ConnectionInfo::new(Capabilities::none())
         }
     }
-    impl ReportingProvider for Unsupported {}
 
     let account = AccountId::try_from("account").unwrap();
     let err = Unsupported

@@ -7,7 +7,7 @@ use engine_core::{
     ids::{AccountId, ProviderKey},
     write::PendingOpId,
 };
-use engine_provider::{Draft, MailEdit, MessageReport, Provider, ReportingProvider};
+use engine_provider::{Draft, MailEdit, MessageReport, Provider};
 use engine_store::{PendingOpState, StoreRead};
 use engine_sync::{
     MailEditOutcome, ReportOutcome, SubmitOutcome, SyncError, edit_mail, report_message,
@@ -134,7 +134,7 @@ impl Engine {
     /// Returns [`ApiError::Sync`] if the report fails: the op is first recorded `Failed`
     /// (with the failure class), and the error then returns. A store failure also
     /// surfaces as [`ApiError::Sync`].
-    pub async fn report_message<P: ReportingProvider>(
+    pub async fn report_message<P: Provider>(
         &self,
         provider: &P,
         account: &AccountId,
