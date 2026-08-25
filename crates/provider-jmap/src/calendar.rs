@@ -231,7 +231,9 @@ fn parse_rule(rule: &Value) -> Result<RecurrenceRule, JmapError> {
     // rule* — expanded as though the part had never been asked for, so the series generates
     // the wrong dates and presents them as right. `rscale` is the same trap at its worst, a
     // Hebrew-calendar rule landing on Gregorian dates.
-    parsed.rscale = opt_str(rule, "rscale").map(str::to_owned);
+    // Lowercased for the same reason the RRULE parser does it: CLDR's identifier is the
+    // lowercase one, and a calendar system must compare equal whichever transport carried it.
+    parsed.rscale = opt_str(rule, "rscale").map(str::to_ascii_lowercase);
     if let Some(skip) = rule
         .get("skip")
         .cloned()
