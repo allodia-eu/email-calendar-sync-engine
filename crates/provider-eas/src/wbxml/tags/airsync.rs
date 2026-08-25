@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: MPL-2.0
+// Ported from mailkit_arkts (user-owned; confirmed 2026-08-12). See ATTRIBUTIONS.md.
+
+/// `Sync` (`AirSync` page-0 token 0x05).
+pub const SYNC: u8 = 0x05;
+/// `Responses` (`AirSync` page-0 token 0x06).
+pub const RESPONSES: u8 = 0x06;
+/// `Add` (`AirSync` page-0 token 0x07).
+pub const ADD: u8 = 0x07;
+/// `Change` (`AirSync` page-0 token 0x08).
+pub const CHANGE: u8 = 0x08;
+/// `Delete` (`AirSync` page-0 token 0x09).
+pub const DELETE: u8 = 0x09;
+/// `Fetch` (`AirSync` page-0 token 0x0a).
+pub const FETCH: u8 = 0x0A;
+/// `SyncKey` (`AirSync` page-0 token 0x0b).
+pub const SYNC_KEY: u8 = 0x0B;
+/// `ClientId` (`AirSync` page-0 token 0x0c).
+pub const CLIENT_ID: u8 = 0x0C;
+/// `ServerId` (`AirSync` page-0 token 0x0d).
+pub const SERVER_ID: u8 = 0x0D;
+/// `Status` (`AirSync` page-0 token 0x0e).
+pub const STATUS: u8 = 0x0E;
+/// `Collection` (`AirSync` page-0 token 0x0f).
+pub const COLLECTION: u8 = 0x0F;
+/// `Collections` (`AirSync` page-0 token 0x1c).
+pub const COLLECTIONS: u8 = 0x1C;
+/// `Class` (`AirSync` page-0 token 0x10).
+pub const CLASS: u8 = 0x10;
+/// `CollectionId` (`AirSync` page-0 token 0x12).
+pub const COLLECTION_ID: u8 = 0x12;
+/// `GetChanges` (`AirSync` page-0 token 0x13).
+pub const GET_CHANGES: u8 = 0x13;
+/// `MoreAvailable` (`AirSync` page-0 token 0x14).
+pub const MORE_AVAILABLE: u8 = 0x14;
+/// `WindowSize` (`AirSync` page-0 token 0x15).
+pub const WINDOW_SIZE: u8 = 0x15;
+/// `Commands` (`AirSync` page-0 token 0x16).
+pub const COMMANDS: u8 = 0x16;
+/// `Options` (`AirSync` page-0 token 0x17).
+pub const OPTIONS: u8 = 0x17;
+/// `ApplicationData` (`AirSync` page-0 token 0x1d).
+pub const APPLICATION_DATA: u8 = 0x1D;
