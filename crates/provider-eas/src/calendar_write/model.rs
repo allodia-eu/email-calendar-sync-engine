@@ -34,7 +34,7 @@ pub struct CalendarEventWrite {
     pub all_day_event: bool,
     /// `Timezone` — required: the base64 [MS-ASDTYPE] §2.7.6 TZI blob
     /// (build one with
-    /// [`build_fixed_offset_tzi_base64`]).
+    /// [`build_fixed_offset_tzi_base64`](crate::calendar_write::build_fixed_offset_tzi_base64)).
     pub time_zone_base64: String,
     /// `Subject` ([MS-ASCAL] §2.2.2.43) — omitted from the wire when `None`.
     pub subject: Option<String>,
@@ -92,7 +92,8 @@ pub enum CalendarWriteError {
 }
 
 impl CalendarEventWrite {
-    /// Pre-flight check before [`build_calendar_application_data`].
+    /// Pre-flight check before
+    /// [`build_calendar_application_data`](crate::calendar_write::build_calendar_application_data).
     ///
     /// The builder itself is infallible (the email write precedent), so a
     /// caller that skips this simply ships what it set — this method is the

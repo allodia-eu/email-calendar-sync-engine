@@ -47,7 +47,8 @@ pub enum CalendarChange {
         /// which guarantees the cap.
         client_id: String,
         /// The event payload, serialized via
-        /// [`build_calendar_application_data`] (M8 Task 1).
+        /// [`build_calendar_application_data`](crate::calendar_write::build_calendar_application_data)
+        /// (M8 Task 1).
         props: CalendarEventWrite,
     },
     /// Update an existing event (wire: `airsync:Change` with ServerId).
@@ -55,7 +56,8 @@ pub enum CalendarChange {
         /// Wire identifier of the existing item.
         server_id: String,
         /// The event payload, serialized via
-        /// [`build_calendar_application_data`] (M8 Task 1).
+        /// [`build_calendar_application_data`](crate::calendar_write::build_calendar_application_data)
+        /// (M8 Task 1).
         props: CalendarEventWrite,
     },
     /// Delete an existing event (wire: `airsync:Delete` with ServerId).

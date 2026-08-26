@@ -170,12 +170,14 @@ pub fn build_sync_change_request_at(
 /// </Sync>
 /// ```
 ///
-/// - `ApplicationData` is [`build_calendar_application_data`]'s output VERBATIM — this builder adds
-///   no calendar properties.
+/// - `ApplicationData` is
+///   [`build_calendar_application_data`](crate::calendar_write::build_calendar_application_data)'s
+///   output VERBATIM — this builder adds no calendar properties.
 /// - Same element gates as the email builder: NO `airsync:Class` (14.0+ rejects it — CollectionId
 ///   identifies the collection) and NO `GetChanges` (invalid in 16.1).
-/// - Infallible like the email precedent: callers run [`CalendarEventWrite::validate`] first, and
-///   supply the Add `client_id` themselves (synthesize with
+/// - Infallible like the email precedent: callers run
+///   [`CalendarEventWrite::validate`](crate::calendar_write::CalendarEventWrite::validate) first,
+///   and supply the Add `client_id` themselves (synthesize with
 ///   [`new_calendar_client_id`](crate::types::new_calendar_client_id), which guarantees the
 ///   [MS-ASCMD] 40-char cap) — the builder never synthesizes or clamps ids.
 pub fn build_calendar_change_request(
