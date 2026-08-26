@@ -11,7 +11,7 @@ use crate::auth::EasAuth;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EasConfig {
     /// Full URL to the Exchange ActiveSync endpoint, e.g.
-    /// `https://mail.kylins.com/Microsoft-Server-ActiveSync`.
+    /// `https://mail.example.com/Microsoft-Server-ActiveSync`.
     pub url: String,
     /// Username for Basic auth. For domain accounts use `DOMAIN\user` or `user@domain`.
     pub username: String,

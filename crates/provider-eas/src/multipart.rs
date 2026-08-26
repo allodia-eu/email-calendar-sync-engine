@@ -200,13 +200,18 @@ mod tests {
     /// prints it as a wrapped hex dump; this is the exact byte sequence,
     /// verified against the spec's own interpretation: PartCount=2,
     /// PartsMetaData[0]={offset 20, length 500},
-    /// PartsMetaData[1]={offset 520, length 19}).
+    /// PartsMetaData[1]={offset 520, length 19}). One same-length
+    /// substitution from the spec bytes: the To/Cc display addresses use a
+    /// reserved example.net mailbox instead of the spec's contoso.com one —
+    /// contoso.com is a real registered domain, and fixture identifiers
+    /// stay reserved (RFC 2606); the lengths match so every recorded part
+    /// offset/length above still holds.
     const SPEC_HEX: &str = concat!(
         "0200000014000000F4010000080200001300000003016A000014454D03310001",
         "4E464D03310001000052033500014D03353A3100015003456D61696C00010014",
-        "4B0002560322446576696365205573657222203C646576696365757365724063",
-        "6F6E746F736F2E636F6D3E0001580322446576696365205573657222203C6465",
-        "766963657573657240636F6E746F736F2E636F6D3E0001540354657374204D75",
+        "4B0002560322446576696365205573657222203C646576696365757365724065",
+        "78616D706C652E6E65743E0001580322446576696365205573657222203C6465",
+        "7669636575736572406578616D706C652E6E65743E0001540354657374204D75",
         "6C74697061727420526573706F6E736500014F03323031322D30352D30385432",
         "303A31353A34352E3231315A0001510344657669636520557365720001750354",
         "657374204D756C74697061727420526573706F6E736500015203310001550330",

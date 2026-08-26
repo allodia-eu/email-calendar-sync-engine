@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! M8-C task 2 (C2): MS-ASCNTC Contacts-class ApplicationData — per-field
 //! tests for the extended field set (address sets, remaining practical
 //! phones, anniversary/birthday raw dates, assistant/manager, web page,

@@ -199,9 +199,9 @@ mod tests {
     fn x_ms_location_https_location_yields_fixed_eas_endpoint() {
         // Full EAS URL form (the common shape per [MS-ASHTTP]).
         assert_eq!(
-            endpoint_from_x_ms_location("https://mail.contoso.com/Microsoft-Server-ActiveSync")
+            endpoint_from_x_ms_location("https://mail.example.com/Microsoft-Server-ActiveSync")
                 .expect("valid https location must derive an endpoint"),
-            "https://mail.contoso.com/Microsoft-Server-ActiveSync"
+            "https://mail.example.com/Microsoft-Server-ActiveSync"
         );
         // Bare host: the fixed EAS path is appended.
         assert_eq!(
@@ -211,9 +211,9 @@ mod tests {
         );
         // Port is preserved; a foreign path is replaced by the fixed EAS path.
         assert_eq!(
-            endpoint_from_x_ms_location("https://mail.contoso.com:8443/some/other/path")
+            endpoint_from_x_ms_location("https://mail.example.com:8443/some/other/path")
                 .expect("valid https location must derive an endpoint"),
-            "https://mail.contoso.com:8443/Microsoft-Server-ActiveSync"
+            "https://mail.example.com:8443/Microsoft-Server-ActiveSync"
         );
     }
 
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn x_ms_location_http_downgrade_is_rejected() {
         let err =
-            endpoint_from_x_ms_location("http://mail.contoso.com/Microsoft-Server-ActiveSync")
+            endpoint_from_x_ms_location("http://mail.example.com/Microsoft-Server-ActiveSync")
                 .expect_err("plaintext http:// location must be rejected");
         let msg = err.to_string();
         assert!(
@@ -269,8 +269,8 @@ mod tests {
             "",
             "not a url",
             "Microsoft-Server-ActiveSync", // relative
-            "ftp://mail.contoso.com/",     // wrong scheme
-            "//mail.contoso.com/Microsoft-Server-ActiveSync", // scheme-relative
+            "ftp://mail.example.com/",     // wrong scheme
+            "//mail.example.com/Microsoft-Server-ActiveSync", // scheme-relative
         ] {
             assert!(
                 endpoint_from_x_ms_location(bad).is_err(),
@@ -329,9 +329,9 @@ mod tests {
     #[test]
     fn x_ms_location_scheme_case_insensitive_authority_preserved() {
         assert_eq!(
-            endpoint_from_x_ms_location("HTTPS://Mail.Contoso.COM/owa")
+            endpoint_from_x_ms_location("HTTPS://Mail.Example.COM/owa")
                 .expect("valid https location must derive an endpoint"),
-            "https://Mail.Contoso.COM/Microsoft-Server-ActiveSync"
+            "https://Mail.Example.COM/Microsoft-Server-ActiveSync"
         );
     }
 

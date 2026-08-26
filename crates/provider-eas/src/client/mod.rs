@@ -132,7 +132,7 @@ fn command_chunks<T>(items: &[T], max_per_command: usize) -> Vec<&[T]> {
 }
 
 /// High-level EAS client. Cheap to clone (just wraps a `reqwest::Client` and config).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EasClient {
     config: EasConfig,
     http: reqwest::Client,
@@ -146,6 +146,20 @@ pub struct EasClient {
     /// successful round to persist the adopted endpoint into
     /// `accounts.eas_url`, mirroring the policy-key persistence.
     adopted_url: Option<String>,
+}
+
+/// Manual redacting Debug — the `EasAuth` precedent: `config` carries the
+/// Basic username/password in plaintext and must NEVER render, not even in
+/// debug/panic inspection. The remaining fields carry no secrets.
+impl std::fmt::Debug for EasClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EasClient")
+            .field("config", &"<redacted: contains credentials>")
+            .field("http", &self.http)
+            .field("hierarchy_sync_key", &self.hierarchy_sync_key)
+            .field("adopted_url", &self.adopted_url)
+            .finish()
+    }
 }
 
 impl EasClient {

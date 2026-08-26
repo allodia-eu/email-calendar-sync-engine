@@ -35,15 +35,15 @@ fn v2_url_declares_activesync_protocol() {
 #[test]
 fn same_host_compares_url_hosts() {
     assert!(same_host(
-        "https://mail.contoso.com/autodiscover/autodiscover.xml",
-        "https://mail.contoso.com/other/path"
+        "https://mail.example.com/autodiscover/autodiscover.xml",
+        "https://mail.example.com/other/path"
     ));
     assert!(!same_host(
-        "https://mail.contoso.com/autodiscover/autodiscover.xml",
-        "https://contoso.onmicrosoft.com/autodiscover/autodiscover.xml"
+        "https://mail.example.com/autodiscover/autodiscover.xml",
+        "https://example.net/autodiscover/autodiscover.xml"
     ));
     // Unparseable URLs never match — fail closed (drop auth).
-    assert!(!same_host("not a url", "https://mail.contoso.com/"));
+    assert!(!same_host("not a url", "https://mail.example.com/"));
 }
 
 #[test]
@@ -56,8 +56,8 @@ fn parse_v1_pox_extracts_server_url() {
     <MobileSync>
       <Server>
         <Type>MobileSync</Type>
-        <Url>https://mail.contoso.com/Microsoft-Server-ActiveSync</Url>
-        <Name>https://mail.contoso.com/Microsoft-Server-ActiveSync</Name>
+        <Url>https://mail.example.com/Microsoft-Server-ActiveSync</Url>
+        <Name>https://mail.example.com/Microsoft-Server-ActiveSync</Name>
       </Server>
     </MobileSync>
   </Response>
@@ -65,7 +65,7 @@ fn parse_v1_pox_extracts_server_url() {
     let parsed = parse_v1_pox_response(body).unwrap();
     match parsed {
         PoxOutcome::Server(url) => {
-            assert_eq!(url, "https://mail.contoso.com/Microsoft-Server-ActiveSync");
+            assert_eq!(url, "https://mail.example.com/Microsoft-Server-ActiveSync");
         }
         PoxOutcome::Redirect(_) => panic!("expected Server outcome"),
     }
@@ -74,11 +74,11 @@ fn parse_v1_pox_extracts_server_url() {
 #[test]
 fn parse_v1_pox_returns_redirect_when_action_redirect() {
     let body = r#"<Autodiscover xmlns="...">
-      <Response><Action>redirect</Action><Redirect><Url>https://contoso.onmicrosoft.com/autodiscover/autodiscover.xml</Url></Redirect></Response>
+      <Response><Action>redirect</Action><Redirect><Url>https://example.net/autodiscover/autodiscover.xml</Url></Redirect></Response>
     </Autodiscover>"#;
     let parsed = parse_v1_pox_response(body).unwrap();
     match parsed {
-        PoxOutcome::Redirect(url) => assert!(url.contains("contoso.onmicrosoft.com")),
+        PoxOutcome::Redirect(url) => assert!(url.contains("example.net")),
         PoxOutcome::Server(_) => panic!("expected Redirect"),
     }
 }
@@ -122,24 +122,24 @@ fn srv_empty_record_list_yields_none() {
 #[test]
 fn srv_lowest_priority_wins() {
     let records = [
-        srv(10, 100, 443, "mail-a.contoso.com."),
-        srv(5, 0, 443, "mail-b.contoso.com."),
+        srv(10, 100, 443, "mail-a.example.com."),
+        srv(5, 0, 443, "mail-b.example.com."),
     ];
     assert_eq!(
         srv_autodiscover_url(&records),
-        Some("https://mail-b.contoso.com/autodiscover/autodiscover.xml".to_string())
+        Some("https://mail-b.example.com/autodiscover/autodiscover.xml".to_string())
     );
 }
 
 #[test]
 fn srv_same_priority_highest_weight_wins() {
     let records = [
-        srv(10, 10, 443, "mail-a.contoso.com."),
-        srv(10, 50, 443, "mail-b.contoso.com."),
+        srv(10, 10, 443, "mail-a.example.com."),
+        srv(10, 50, 443, "mail-b.example.com."),
     ];
     assert_eq!(
         srv_autodiscover_url(&records),
-        Some("https://mail-b.contoso.com/autodiscover/autodiscover.xml".to_string())
+        Some("https://mail-b.example.com/autodiscover/autodiscover.xml".to_string())
     );
 }
 
@@ -149,39 +149,39 @@ fn srv_full_tie_picks_first() {
     // the first record in the list wins (real RFC 2782 weighting is
     // randomized; we pick determinism for reproducibility).
     let records = [
-        srv(10, 10, 443, "mail-a.contoso.com."),
-        srv(10, 10, 443, "mail-b.contoso.com."),
+        srv(10, 10, 443, "mail-a.example.com."),
+        srv(10, 10, 443, "mail-b.example.com."),
     ];
     assert_eq!(
         srv_autodiscover_url(&records),
-        Some("https://mail-a.contoso.com/autodiscover/autodiscover.xml".to_string())
+        Some("https://mail-a.example.com/autodiscover/autodiscover.xml".to_string())
     );
 }
 
 #[test]
 fn srv_port_443_omitted_from_url() {
-    let records = [srv(0, 0, 443, "mail.contoso.com.")];
+    let records = [srv(0, 0, 443, "mail.example.com.")];
     assert_eq!(
         srv_autodiscover_url(&records),
-        Some("https://mail.contoso.com/autodiscover/autodiscover.xml".to_string())
+        Some("https://mail.example.com/autodiscover/autodiscover.xml".to_string())
     );
 }
 
 #[test]
 fn srv_custom_port_included_in_url() {
-    let records = [srv(0, 0, 8443, "mail.contoso.com.")];
+    let records = [srv(0, 0, 8443, "mail.example.com.")];
     assert_eq!(
         srv_autodiscover_url(&records),
-        Some("https://mail.contoso.com:8443/autodiscover/autodiscover.xml".to_string())
+        Some("https://mail.example.com:8443/autodiscover/autodiscover.xml".to_string())
     );
 }
 
 #[test]
 fn srv_trailing_dot_on_target_stripped() {
-    let records = [srv(0, 0, 443, "mail.contoso.com.")];
+    let records = [srv(0, 0, 443, "mail.example.com.")];
     let url = srv_autodiscover_url(&records).unwrap();
     assert!(!url.contains("com.."), "double dot leaked: {url}");
-    assert!(url.starts_with("https://mail.contoso.com/"));
+    assert!(url.starts_with("https://mail.example.com/"));
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn srv_root_target_means_service_unavailable() {
 #[test]
 fn srv_query_name_is_autodiscover_tcp_domain() {
     assert_eq!(
-        srv_query_name("contoso.com"),
-        "_autodiscover._tcp.contoso.com."
+        srv_query_name("example.com"),
+        "_autodiscover._tcp.example.com."
     );
 }

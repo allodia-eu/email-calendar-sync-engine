@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Gated live tests against a real Exchange/O365 account.
 //!
 //! These tests are `#[ignore]`d by default and additionally no-op when the

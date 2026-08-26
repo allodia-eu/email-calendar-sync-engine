@@ -127,12 +127,6 @@ impl<'a> Deserializer<'a> {
     }
 
     /// Return the current depth (number of open elements).
-    ///
-    /// # Errors
-    ///
-    /// Returns `WbxmlError` when the response tree is malformed — an unexpected
-    /// root or child tag, non-UTF-8 content, or non-numeric text where a number is
-    /// required.
     pub fn depth(&self) -> usize {
         self.open_stack.len()
     }

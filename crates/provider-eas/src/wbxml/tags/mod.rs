@@ -10,6 +10,10 @@
 // Only the most commonly-used tags are enumerated here. The full table lives
 // in `code_pages`; for ad-hoc tags, construct `WbxmlElement::empty(page, token)`
 // directly.
+//
+// Visibility ruling: the tag constants stay `pub` — they are the crate's
+// [MS-ASWBXML] protocol reference surface, and every one is live (reached by
+// a builder, parser, or test), so none are private-and-dead.
 /// Code page indices (0..=25). Source: `Tags` constants in `tags.ts`.
 pub mod pages;
 
