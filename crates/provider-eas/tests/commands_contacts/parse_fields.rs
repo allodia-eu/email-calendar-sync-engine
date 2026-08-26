@@ -340,7 +340,7 @@ fn empty_valued_new_fields_degrade_to_none() {
 /// Spouse, Children/Child, Department, OfficeLocation, YomiFirstName,
 /// Alias, WeightedRank (page 1) and CustomerId, GovernmentId, IMAddress,
 /// AccountName, NickName, MMS (Contacts2 page 12). Documented skip list —
-/// see `src/contacts.rs` parse-entry doc.
+/// see the parse-entry doc in `src/contacts/parse.rs`.
 #[test]
 fn exotic_contact_elements_are_skipped() {
     let tree = app_data(vec![

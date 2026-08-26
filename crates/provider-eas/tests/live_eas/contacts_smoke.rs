@@ -8,14 +8,14 @@ use super::*;
 /// path (the M8-C task-1 seam: `SyncResult::contacts_added`) against a real
 /// server. Cheap window, no bodies needed. An EMPTY contacts folder still
 /// passes: transport/status/key-advance is the proof here, item-level
-/// parsing is covered by the unit goldens in contacts.rs.
+/// parsing is covered by the unit goldens in `src/contacts/tests.rs`.
 ///
 /// Wire expectations cited: folder Type 9 = Contacts per [MS-ASFD]
 /// `FolderHierarchy:Type` (see the `EasFolder.folder_type` doc comment in
-/// crates/provider-eas/src/types.rs); the collection's items arrive as
+/// crates/provider-eas/src/types/folder.rs); the collection's items arrive as
 /// Contacts-class ApplicationData per [MS-ASCNTC] §2.2 (FileAs/FirstName/
 /// Email1Address are §2.2.2.30/§2.2.2.31/§2.2.2.27 — see the
-/// `ContactsContactProps` field docs in contacts.rs).
+/// `ContactsContactProps` field docs in `contacts/model.rs`).
 #[tokio::test]
 #[ignore = "live Exchange account required"]
 async fn contacts_first_page_smoke() {

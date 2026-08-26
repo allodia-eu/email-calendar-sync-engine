@@ -39,7 +39,7 @@ async fn sync_first_page_smoke() {
 
     // Bootstrap hierarchy; locate the Inbox by its EAS folder Type byte.
     // 2 = Inbox per MS-ASFD FolderHierarchy:Type (see EasFolder.folder_type
-    // doc comment in crates/provider-eas/src/types.rs — re-verify there if
+    // doc comment in crates/provider-eas/src/types/folder.rs — re-verify there if
     // this assertion ever fails).
     let folders = client.folder_sync("0").await.expect("FolderSync failed");
     let inbox = folders
@@ -52,7 +52,7 @@ async fn sync_first_page_smoke() {
     // fetch_body = false (headers only — bodies are ItemOperations' job and
     // are already covered by the probe harness). `SyncRequest` has NO
     // Default derive — every field is listed explicitly (same pattern as the
-    // crate's own tests in types.rs).
+    // crate's own tests in `types/sync.rs`).
     let req = SyncRequest {
         collection_id: inbox.server_id.clone(),
         sync_key: "0".to_string(),

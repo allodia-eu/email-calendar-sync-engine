@@ -87,8 +87,9 @@ pub struct SyncRequest {
 /// Serde default for [`SyncRequest::window_size`]: 100, the [MS-ASCMD]
 /// §3.1.5.4 / §2.2.3.199 optimum — the server behaves as if an omitted
 /// WindowSize were 100, values below 100 cost extra round-trips and battery,
-/// values above risk oversized, error-prone responses. The engine's own
-/// drain loop (sync_engine/eas_source.rs) overrides this with its
+/// values above risk oversized, error-prone responses. The upstream drain
+/// loop (`sync_engine/eas_source.rs` in the kylins-client tree) overrides
+/// this with its
 /// 10→512 doubling ladder; the default lands on the wire only for the
 /// direct `eas_sync` command path and other serde-default constructions.
 fn default_window_size() -> u32 {

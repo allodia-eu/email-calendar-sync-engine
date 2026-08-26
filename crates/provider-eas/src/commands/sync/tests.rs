@@ -37,7 +37,7 @@ fn all_day_app_data() -> WbxmlElement {
 }
 
 /// Golden props for [`fixture_full_app_data`] — mirrors the
-/// `parse_full_core_item` assertion in calendar.rs so the seam test
+/// `parse_full_core_item` assertion in `calendar/parse.rs` so the seam test
 /// locks the FULL props fidelity end-to-end through the Sync envelope.
 fn expected_full_props() -> CalendarEventProps {
     CalendarEventProps {

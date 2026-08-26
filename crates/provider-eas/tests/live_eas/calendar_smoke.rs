@@ -10,7 +10,7 @@ use super::*;
 ///
 /// Wire expectations cited: folder Type 8 = Calendar per [MS-ASFD]
 /// `FolderHierarchy:Type` (see the `EasFolder.folder_type` doc comment in
-/// crates/provider-eas/src/types.rs); the collection's items arrive as
+/// crates/provider-eas/src/types/folder.rs); the collection's items arrive as
 /// Calendar-class ApplicationData per [MS-ASCAL] §2.2 (StartTime/DtStamp/
 /// EndTime are the spec-required core, §2.2.2.42/§2.2.2.18/§2.2.2.20).
 #[tokio::test]
