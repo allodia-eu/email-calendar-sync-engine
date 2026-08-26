@@ -162,10 +162,10 @@ sha2 = { version = "0.11.0", default-features = false }
 idna = "1.1.0"
 
 # --- Imported with `provider-eas` (P0-b relocation, from kylins 0dc611d) ---------------
-# These seven are what the imported EAS client needs beyond the deps above; versions
+# These are what the imported EAS client needs beyond the deps above; versions
 # are the ones the crate shipped with (same-or-newer than its old lockfile entries).
-# `reqwest` is deliberately NOT here: the crate still declares its own 0.12/native-tls
-# copy until the engine-tls switch (P0-b Task 8).
+# (TLS/HTTP: since P0-b Task 8 the crate rides the workspace `reqwest` +
+# `engine-tls` like every other provider — no crate-local reqwest copy.)
 # DNS resolution for the autodiscover SRV lookup; `system-config` + `tokio` mirror the
 # imported transport's resolver setup.
 hickory-resolver = { version = "0.26.1", default-features = false, features = ["system-config", "tokio"] }

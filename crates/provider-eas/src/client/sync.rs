@@ -317,6 +317,8 @@ impl EasClient {
 
 #[cfg(test)]
 mod tests {
+    use engine_tls::TlsClientConfig;
+
     use super::*;
     use crate::types::EasConfig;
 
@@ -324,7 +326,8 @@ mod tests {
     /// SyncKey; the client must adopt it or the next folder op goes out stale.
     #[test]
     fn folder_op_response_sync_key_is_adopted() {
-        let mut client = EasClient::new(EasConfig::default());
+        let mut client = EasClient::new(EasConfig::default(), &TlsClientConfig::bundled())
+            .expect("bundled-roots client build");
         client.hierarchy_sync_key = "1".to_string(); // as if FolderSync ran
         let resp = WbxmlElement::container(
             PAGE_FOLDER,
@@ -342,7 +345,8 @@ mod tests {
     /// Error responses may omit SyncKey — the cached key must survive.
     #[test]
     fn folder_op_response_without_sync_key_keeps_existing_key() {
-        let mut client = EasClient::new(EasConfig::default());
+        let mut client = EasClient::new(EasConfig::default(), &TlsClientConfig::bundled())
+            .expect("bundled-roots client build");
         client.hierarchy_sync_key = "1".to_string();
         let resp = WbxmlElement::container(
             PAGE_FOLDER,

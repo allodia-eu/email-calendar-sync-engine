@@ -202,10 +202,9 @@ mod tests {
     /// PartsMetaData[0]={offset 20, length 500},
     /// PartsMetaData[1]={offset 520, length 19}). One same-length
     /// substitution from the spec bytes: the To/Cc display addresses use a
-    /// reserved example.net mailbox instead of the spec's contoso.com one —
-    /// contoso.com is a real registered domain, and fixture identifiers
-    /// stay reserved (RFC 2606); the lengths match so every recorded part
-    /// offset/length above still holds.
+    /// reserved example.net mailbox instead of the spec's own example
+    /// domain — fixture identifiers stay reserved (RFC 2606), and the
+    /// lengths match so every recorded part offset/length above still holds.
     const SPEC_HEX: &str = concat!(
         "0200000014000000F4010000080200001300000003016A000014454D03310001",
         "4E464D03310001000052033500014D03353A3100015003456D61696C00010014",

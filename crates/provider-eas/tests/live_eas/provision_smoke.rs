@@ -16,7 +16,7 @@ async fn options_provision_foldersync_smoke() {
     };
 
     // 1. OPTIONS: the server advertises its protocol versions; negotiate ours.
-    let probe = EasClient::new(config.clone());
+    let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS round-trip failed");
     assert!(
         !server.protocol_versions.is_empty(),
@@ -29,7 +29,7 @@ async fn options_provision_foldersync_smoke() {
 
     // 2. Provision: two-phase handshake; a permanent policy key must result. A server requesting
     //    RemoteWipe surfaces as an error here — we never auto-execute one.
-    let mut client = EasClient::new(config);
+    let mut client = live_client(config);
     client
         .provision()
         .await

@@ -8,10 +8,12 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-# temporary until the engine-tls switch (P0-b Task 8): the EAS transport was imported
-# on reqwest 0.12 + native-tls; the workspace reqwest is 0.13/rustls, which is not
-# feature-compatible with this crate's TLS path yet.
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+# One TLS trust policy for every provider (`docs/agent-guidance/tls.md`): the
+# transport builds its `reqwest::Client` from the host-supplied `TlsClientConfig`,
+# exactly like Graph/JMAP. `reqwest` enables the preconfigured-client builder
+# (`tls_backend_preconfigured`); the workspace reqwest is 0.13/rustls-configured.
+engine-tls = { workspace = true, features = ["reqwest"] }
+reqwest = { workspace = true }
 # Beyond the workspace's `macros`/`rt`/`rt-multi-thread`, the transport needs the
 # socket/time feature set the imported code was written against.
 tokio = { workspace = true, features = ["net", "io-util", "sync", "time"] }
@@ -25,6 +27,10 @@ log = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# The gated live tests' self-signed-server gate (`KYLINS_EAS_LIVE_INSECURE`) needs
+# the test-only accept-any config — the production `accept_invalid_certs` escape is
+# gone (trust is the host's `TlsPolicy`, see `docs/agent-guidance/eas.md`).
+engine-tls = { workspace = true, features = ["dangerous-testing"] }
 tokio-test = { workspace = true }
 env_logger = { workspace = true }
 hex = { workspace = true }

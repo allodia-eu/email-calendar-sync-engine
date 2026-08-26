@@ -39,13 +39,13 @@ async fn calendar_location_wire_probe() {
         return;
     };
     config.device_id = "KYLINSLIVETEST04".to_string();
-    let probe = EasClient::new(config.clone());
+    let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS round-trip failed");
     let negotiated =
         pick_protocol_version(&server.protocol_versions.join(","), CLIENT_KNOWN_VERSIONS)
             .expect("no common EAS protocol version");
     config.protocol_version = negotiated.clone();
-    let mut client = EasClient::new(config);
+    let mut client = live_client(config);
     client
         .provision()
         .await

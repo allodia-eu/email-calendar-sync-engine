@@ -108,22 +108,46 @@ table behind every verdict here.
   rejects over-cap with in-body status 103) is derived from the draft's
   `Message-ID` so a lost-response retry does not double-send.
 
-## TLS decision record (spike ruling; Task 8 implements)
+## TLS decision record (landed — P0-b Task 8)
 
-The crate currently builds its own `reqwest::Client` with
-`danger_accept_invalid_certs` from `EasConfig`. **Ruling: adopt the engine's
-`engine-tls` + `reqwest`/rustls path** — construct from the host's
-`TlsClientConfig` exactly like the Graph/JMAP/CalDAV transports, and take
-`engine_http::send_retrying` for 429 waits if the retry posture fits.
+The EAS transport builds on the engine's unified TLS policy, exactly like the
+Graph/JMAP/CalDAV transports: `EasClient::new(config, &tls)` takes the host's
+`engine_tls::TlsClientConfig` and constructs its `reqwest::Client` via
+`tls.reqwest_builder()` (workspace `reqwest` 0.13 + preconfigured ring-backed
+rustls), finished with the EAS-specific non-TLS settings only (the client-wide
+120 s timeout and the User-Agent). The crate's crate-local
+`reqwest = 0.12 + native-tls` declaration is gone, and `EasConfig`'s
+`accept_invalid_certs` field with it — a per-provider invalid-cert escape is
+not expressible on the shared-policy path by design.
 
-The historical motivation for native-tls in the Kylins client — **enterprise root
-CAs and intercepting proxies** — is *not* lost: `TlsPolicy::bundled_and_system()`
-picks up OS/enterprise roots with zero configuration, `TlsPolicy::pinned` trusts
-exactly a private CA, and `TlsPolicy::PlatformVerifier` delegates wholly to the OS
-verifier (MDM-installed roots on Android). The debug-only
-`accept_invalid_certs` escape becomes "pin the lab CA as a custom root", which is
-stronger and non-footgunny. No engine change is needed — this is an
-adapter-construction change plus a config migration.
+**What a host passes in**: one `TlsClientConfig` per account, built once from
+its `TlsPolicy` via `engine_tls::client_config(&policy)?` and shared (a cheap
+`Arc` clone) with the account's other providers — the same wiring as
+`docs/agent-guidance/tls.md`'s "How each provider consumes it". The
+autodiscover flow's `http` client is the caller's `reqwest::Client` and must
+come from the same `reqwest_builder()`.
+
+The historical motivation for native-tls in the Kylins client — **enterprise
+root CAs and intercepting proxies** — remains expressible through the policy's
+opt-ins (`crates/engine-tls/src/policy.rs`): `TlsPolicy::bundled_and_system()`
+picks up OS/enterprise roots with zero configuration, `TlsPolicy::pinned`
+trusts exactly a private CA, and `TlsPolicy::PlatformVerifier` delegates
+wholly to the OS verifier (MDM-installed roots on Android). The old
+`accept_invalid_certs` lab-server escape becomes "pin the lab CA as a custom
+root"; the crate's own gated live tests use the test-builds-only
+`TlsClientConfig::dangerous_accept_any()` (`KYLINS_EAS_LIVE_INSECURE`), which
+never compiles into a production build.
+
+Two notes on the switched transport. (1) The shared builder advertises ALPN
+`h2` then `http/1.1`, so EAS may now ride HTTP/2 where the server offers it;
+the transport's explicit `Connection: keep-alive` header is illegal in h2 and
+hyper strips it there (harmless; EAS semantics don't depend on it). (2) The
+EAS retry layers are unchanged: 449→Provision, 401→OAuth refresh, 451→
+`X-MS-Location` adoption, in-body status retries, and the transport's own
+`Retry-After` parsing into `EasError::HttpStatus`. `engine_http::send_retrying`
+(spike option) was judged not to fit: EAS already promotes 429/503 windows
+through `HttpStatus.retry_after`, and the engine's 60 s poll loop is the retry
+for transient failures — revisit only if a live deployment shows a gap.
 
 ## Per-verb mapping table (trait → EAS), with verdicts
 
@@ -176,7 +200,7 @@ for the full table):
 
 ## EAS-local work items (crate/adapter side, no engine involvement)
 
-- Adopt `engine-tls`/`TlsClientConfig` (Task 8) and drop `accept_invalid_certs`.
+- ~~Adopt `engine-tls`/`TlsClientConfig` (Task 8) and drop `accept_invalid_certs`.~~ — landed (see the TLS decision record above).
 - `Options>Range` pagination for ItemOperations Fetch (large attachments).
 - Retain contact `Picture` bytes (currently presence-only) for
   `fetch_contact_photo`.

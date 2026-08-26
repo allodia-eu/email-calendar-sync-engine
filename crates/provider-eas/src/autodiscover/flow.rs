@@ -12,6 +12,11 @@ use super::{
 /// `autodiscover.<domain>`, then V2 JSON fallback for Exchange Online, then
 /// the DNS SRV fallback ([MS-ASCMD] §4.2 step 7) as the LAST resort.
 ///
+/// `http` must be the host's shared client — built from its
+/// `TlsClientConfig::reqwest_builder` (`docs/agent-guidance/tls.md`) — so
+/// autodiscover resolves under the same TLS trust policy as the EAS commands
+/// that follow against the discovered URL.
+///
 /// V1 is tried first because on-prem Exchange won't be reachable via the V2
 /// Outlook Online endpoint; V2 is the reliable fallback for M365 mailboxes.
 ///

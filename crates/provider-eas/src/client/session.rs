@@ -159,12 +159,15 @@ fn endpoint_from_x_ms_location(location: &str) -> Result<String, EasError> {
 
 #[cfg(test)]
 mod tests {
+    use engine_tls::TlsClientConfig;
+
     use super::*;
     use crate::types::EasConfig;
 
     #[test]
     fn hierarchy_key_falls_back_to_zero_before_first_folder_sync() {
-        let client = EasClient::new(EasConfig::default());
+        let client = EasClient::new(EasConfig::default(), &TlsClientConfig::bundled())
+            .expect("bundled-roots client build");
         assert_eq!(client.hierarchy_key(), "0");
     }
 
@@ -173,7 +176,8 @@ mod tests {
     /// Pre-FolderSync it yields the same "0" fallback as `hierarchy_key()`.
     #[test]
     fn hierarchy_sync_key_str_returns_cached_key_or_zero_fallback() {
-        let mut client = EasClient::new(EasConfig::default());
+        let mut client = EasClient::new(EasConfig::default(), &TlsClientConfig::bundled())
+            .expect("bundled-roots client build");
         assert_eq!(
             client.hierarchy_sync_key_str(),
             "0",
@@ -188,7 +192,8 @@ mod tests {
     /// an empty string is ignored (the "0" bootstrap fallback must survive).
     #[test]
     fn set_hierarchy_sync_key_primes_cache_and_ignores_empty() {
-        let mut client = EasClient::new(EasConfig::default());
+        let mut client = EasClient::new(EasConfig::default(), &TlsClientConfig::bundled())
+            .expect("bundled-roots client build");
         client.set_hierarchy_sync_key(String::new());
         assert_eq!(client.hierarchy_key(), "0", "empty prime must be a no-op");
         client.set_hierarchy_sync_key("hier-7".to_string());
@@ -340,10 +345,14 @@ mod tests {
 
     #[test]
     fn adopt_redirect_location_switches_base_url_and_records_it() {
-        let mut client = EasClient::new(EasConfig {
-            url: "https://old.example.com/Microsoft-Server-ActiveSync".into(),
-            ..EasConfig::default()
-        });
+        let mut client = EasClient::new(
+            EasConfig {
+                url: "https://old.example.com/Microsoft-Server-ActiveSync".into(),
+                ..EasConfig::default()
+            },
+            &TlsClientConfig::bundled(),
+        )
+        .expect("bundled-roots client build");
         assert_eq!(client.adopted_url(), None);
         client
             .adopt_redirect_location("https://new.example.com/Microsoft-Server-ActiveSync")
@@ -362,10 +371,14 @@ mod tests {
     /// an adoption — the error surfaces to the caller.
     #[test]
     fn adopt_redirect_location_invalid_keeps_old_url() {
-        let mut client = EasClient::new(EasConfig {
-            url: "https://old.example.com/Microsoft-Server-ActiveSync".into(),
-            ..EasConfig::default()
-        });
+        let mut client = EasClient::new(
+            EasConfig {
+                url: "https://old.example.com/Microsoft-Server-ActiveSync".into(),
+                ..EasConfig::default()
+            },
+            &TlsClientConfig::bundled(),
+        )
+        .expect("bundled-roots client build");
         assert!(
             client
                 .adopt_redirect_location("http://evil.example.com/Microsoft-Server-ActiveSync")
@@ -384,10 +397,14 @@ mod tests {
     /// is persisted or recorded, and the error surfaces to the caller.
     #[test]
     fn adopt_redirect_location_userinfo_keeps_old_url() {
-        let mut client = EasClient::new(EasConfig {
-            url: "https://old.example.com/Microsoft-Server-ActiveSync".into(),
-            ..EasConfig::default()
-        });
+        let mut client = EasClient::new(
+            EasConfig {
+                url: "https://old.example.com/Microsoft-Server-ActiveSync".into(),
+                ..EasConfig::default()
+            },
+            &TlsClientConfig::bundled(),
+        )
+        .expect("bundled-roots client build");
         for bad in [
             "https://user:pass@new.example.com/Microsoft-Server-ActiveSync",
             "https://user@new.example.com/Microsoft-Server-ActiveSync", // user, no password

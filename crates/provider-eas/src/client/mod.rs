@@ -21,6 +21,8 @@ mod settings;
 mod sync;
 mod transport;
 
+use engine_tls::TlsClientConfig;
+
 use crate::{
     types::EasConfig,
     wbxml::{WbxmlElement, WbxmlError},
@@ -163,24 +165,35 @@ impl std::fmt::Debug for EasClient {
 }
 
 impl EasClient {
-    /// Build a client for one account: configures the shared `reqwest::Client`
-    /// (timeouts, optional invalid-cert acceptance, user agent) from `config`.
-    pub fn new(config: EasConfig) -> Self {
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_mins(2))
-            .danger_accept_invalid_certs(config.accept_invalid_certs);
+    /// Build a client for one account on the host's TLS trust policy
+    /// (`docs/agent-guidance/tls.md`): the shared `reqwest::Client` comes from
+    /// [`TlsClientConfig::reqwest_builder`] — one `TlsPolicy` for every
+    /// provider, realized as rustls — finished with the EAS-specific non-TLS
+    /// settings (the client-wide 120s timeout and an optional User-Agent).
+    /// Enterprise roots and intercepting proxies are the host's policy choice
+    /// (`TlsPolicy::bundled_and_system` / `pinned` / `PlatformVerifier`), not
+    /// per-provider flags; see the TLS decision record in
+    /// `docs/agent-guidance/eas.md`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EasError::Transport`] if the HTTP client cannot be built.
+    pub fn new(config: EasConfig, tls: &TlsClientConfig) -> Result<Self, EasError> {
+        let mut builder = tls
+            .reqwest_builder()
+            .timeout(std::time::Duration::from_mins(2));
         // User-Agent
         let ua = config.user_agent.clone();
         if !ua.is_empty() {
             builder = builder.user_agent(&ua);
         }
-        let http = builder.build().unwrap_or_else(|_| reqwest::Client::new());
-        Self {
+        let http = builder.build()?;
+        Ok(Self {
             config,
             http,
             hierarchy_sync_key: String::new(),
             adopted_url: None,
-        }
+        })
     }
 }
 

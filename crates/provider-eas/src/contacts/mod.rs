@@ -10,11 +10,11 @@
 //!
 //! Downsync only: v1 never BUILDS Contacts-class items for upload.
 //!
-//! Parse policy (the Email `parse_application_data` precedent in
-//! `commands/sync.rs` and the `calendar.rs` twin): malformed values →
-//! `log::warn!` with the element name + offending text, then default —
-//! never panic, never swallow silently; tokens this task does not model →
-//! `log::debug!` skip.
+//! Parse policy (the Email `parse_application_data` precedent in the
+//! `commands/sync/` module, `parse_item.rs`, and the `calendar/` twin):
+//! malformed values → `log::warn!` with the element name + offending text,
+//! then default — never panic, never swallow silently; tokens this task
+//! does not model → `log::debug!` skip.
 
 mod model;
 mod parse;

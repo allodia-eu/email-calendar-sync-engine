@@ -12,10 +12,10 @@
 //!
 //! Downsync only: v1 never BUILDS Calendar-class items for upload.
 //!
-//! Parse policy (the Email `parse_application_data` precedent in
-//! `commands/sync.rs`): malformed values → `log::warn!` with the element
-//! name + offending text, then default — never panic, never swallow
-//! silently; tokens this task does not model → `log::debug!` skip.
+//! Parse policy (the Email `parse_application_data` precedent in the
+//! `commands/sync/` module, `parse_item.rs`): malformed values → `log::warn!`
+//! with the element name + offending text, then default — never panic, never
+//! swallow silently; tokens this task does not model → `log::debug!` skip.
 
 mod attendees;
 mod datetime;

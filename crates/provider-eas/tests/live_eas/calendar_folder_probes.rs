@@ -20,7 +20,7 @@ async fn calendar_folder_create_delta_probe() {
         return;
     };
     config.device_id = "KYLINSLIVETEST05".to_string();
-    let probe = EasClient::new(config.clone());
+    let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS failed");
     let negotiated =
         pick_protocol_version(&server.protocol_versions.join(","), CLIENT_KNOWN_VERSIONS)
@@ -28,7 +28,7 @@ async fn calendar_folder_create_delta_probe() {
     config.protocol_version = negotiated;
 
     // Client A (observer): bootstrap the hierarchy, hold the warm key.
-    let mut client_a = EasClient::new(config.clone());
+    let mut client_a = live_client(config.clone());
     client_a.provision().await.expect("Provision A failed");
     let boot = client_a
         .folder_sync("0")
@@ -41,7 +41,7 @@ async fn calendar_folder_create_delta_probe() {
         .iter()
         .filter(|f| f.display_name == "Cal-13-Delta")
     {
-        let mut janitor = EasClient::new(config.clone());
+        let mut janitor = live_client(config.clone());
         janitor.provision().await.expect("Provision janitor failed");
         let _ = janitor
             .folder_delete(&provider_eas::types::FolderDeleteRequest {
@@ -85,7 +85,7 @@ async fn calendar_folder_create_delta_probe() {
     // rotates B's key, not A's, so A's warm key must learn it via delta.
     let mut config_b = config.clone();
     config_b.device_id = "KYLINSLIVETEST06".to_string();
-    let mut client_b = EasClient::new(config_b);
+    let mut client_b = live_client(config_b);
     client_b.provision().await.expect("Provision B failed");
     let _ = client_b.folder_sync("0").await.expect("B bootstrap");
     let (fc_status, fc_sid) = client_b
@@ -133,14 +133,14 @@ async fn calendar_folder_delete_delta_probe() {
         return;
     };
     config.device_id = "KYLINSLIVETEST05".to_string();
-    let probe = EasClient::new(config.clone());
+    let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS failed");
     let negotiated =
         pick_protocol_version(&server.protocol_versions.join(","), CLIENT_KNOWN_VERSIONS)
             .expect("no common version");
     config.protocol_version = negotiated;
 
-    let mut client_a = EasClient::new(config.clone());
+    let mut client_a = live_client(config.clone());
     client_a.provision().await.expect("Provision A failed");
     let boot = client_a.folder_sync("0").await.expect("bootstrap");
     let parent = boot
@@ -156,7 +156,7 @@ async fn calendar_folder_delete_delta_probe() {
     // B (different device) creates the probe folder.
     let mut config_b = config.clone();
     config_b.device_id = "KYLINSLIVETEST06".to_string();
-    let mut client_b = EasClient::new(config_b);
+    let mut client_b = live_client(config_b);
     client_b.provision().await.expect("Provision B failed");
     let _ = client_b.folder_sync("0").await;
     client_b
@@ -210,11 +210,11 @@ async fn calendar_folder_truth_probe() {
         return;
     };
     config.device_id = "KYLINSLIVETEST07".to_string();
-    let probe = EasClient::new(config.clone());
+    let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS");
     config.protocol_version =
         pick_protocol_version(&server.protocol_versions.join(","), CLIENT_KNOWN_VERSIONS).unwrap();
-    let mut c = EasClient::new(config);
+    let mut c = live_client(config);
     c.provision().await.expect("provision");
     let boot = c.folder_sync("0").await.expect("fs");
     let names: Vec<_> = boot
@@ -244,11 +244,11 @@ async fn calendar_folder_drill_cleanup() {
         return;
     };
     config.device_id = "KYLINSLIVETEST07".to_string();
-    let probe = EasClient::new(config.clone());
+    let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS");
     config.protocol_version =
         pick_protocol_version(&server.protocol_versions.join(","), CLIENT_KNOWN_VERSIONS).unwrap();
-    let mut c = EasClient::new(config);
+    let mut c = live_client(config);
     c.provision().await.expect("provision");
     let boot = c.folder_sync("0").await.expect("fs");
     for f in boot

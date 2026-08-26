@@ -8,7 +8,9 @@
 //! ```sh
 //! # KYLINS_EAS_LIVE_USERNAME — optional: Basic-auth identity when it differs
 //! # from the mailbox address (EAS `User` param); unset → identity = USER.
-//! # KYLINS_EAS_LIVE_INSECURE — optional: set to 1 to accept self-signed certs.
+//! # KYLINS_EAS_LIVE_INSECURE — optional: set to 1 to trust the self-signed
+//! # test server (test-builds-only accept-any TLS config; production builds
+//! # never ship this path — trust comes from the host's `TlsPolicy`).
 //! KYLINS_EAS_LIVE_URL=https://mail.example.com/Microsoft-Server-ActiveSync \
 //! KYLINS_EAS_LIVE_USER=user@example.com \
 //! KYLINS_EAS_LIVE_PASS=app-password \
@@ -54,9 +56,6 @@ fn live_config() -> Option<EasConfig> {
     // test server: auth felixzhou@kylins.local, User felixzhou@example.org).
     // Unset → identity equals User (the common case).
     let username = std::env::var("KYLINS_EAS_LIVE_USERNAME").unwrap_or_else(|_| user.clone());
-    // Self-signed test servers (e.g. the on-prem Exchange at
-    // mail.example.org): opt in explicitly — default stays secure.
-    let insecure = std::env::var("KYLINS_EAS_LIVE_INSECURE").is_ok();
     Some(EasConfig {
         url,
         username,
@@ -64,7 +63,27 @@ fn live_config() -> Option<EasConfig> {
         password: pass,
         // Alphanumeric, <= 16 chars per MS-ASHTTP DeviceId constraints.
         device_id: "KYLINSLIVETEST01".to_string(),
-        accept_invalid_certs: insecure,
         ..Default::default()
     })
+}
+
+/// The harness TLS config. Verifying bundled Mozilla roots by default; the
+/// `KYLINS_EAS_LIVE_INSECURE` gate swaps in the test-builds-only accept-any
+/// config for the self-signed on-prem test server. (The production
+/// `accept_invalid_certs` escape is gone — trust is the host's `TlsPolicy`,
+/// realized per account via `engine_tls::client_config`; see
+/// `docs/agent-guidance/eas.md`. The `dangerous-testing` feature exists only
+/// in this crate's dev builds.)
+fn live_tls() -> engine_tls::TlsClientConfig {
+    if std::env::var("KYLINS_EAS_LIVE_INSECURE").is_ok() {
+        engine_tls::TlsClientConfig::dangerous_accept_any()
+    } else {
+        engine_tls::TlsClientConfig::bundled()
+    }
+}
+
+/// Build a live `EasClient` on the harness TLS config — every probe/smoke
+/// test's one construction path, so none can drift off the shared policy.
+fn live_client(config: EasConfig) -> EasClient {
+    EasClient::new(config, &live_tls()).expect("live EAS client build")
 }

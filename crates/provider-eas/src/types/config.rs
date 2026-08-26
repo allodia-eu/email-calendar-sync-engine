@@ -8,7 +8,7 @@ use crate::auth::EasAuth;
 
 /// Connection/auth configuration for one EAS account — what the host layer
 /// builds from its stored account record and hands to `EasClient`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EasConfig {
     /// Full URL to the Exchange ActiveSync endpoint, e.g.
     /// `https://mail.example.com/Microsoft-Server-ActiveSync`.
@@ -25,8 +25,9 @@ pub struct EasConfig {
     /// Default `"16.1"` for Exchange 2016/2019/Online.
     #[serde(default = "default_protocol_version")]
     pub protocol_version: String,
-    /// Device ID — alphanumeric, max 16 chars. Generated once per install, persisted
-    /// in keyring alongside the master key. See `client::device_id()`.
+    /// Device ID — alphanumeric, max 16 chars. Generated once per install by
+    /// the host (persisted alongside its account secrets) and threaded in
+    /// here; the crate itself never mints one.
     pub device_id: String,
     /// Device type — `"KylinsMail"` by convention. Sent in the X-MS-DeviceType header.
     #[serde(default = "default_device_type")]
@@ -39,9 +40,6 @@ pub struct EasConfig {
     /// to the user as a "policy required" error.
     #[serde(default)]
     pub policy_key: String,
-    /// Accept invalid TLS certs (self-signed Exchange servers). Default false.
-    #[serde(default)]
-    pub accept_invalid_certs: bool,
     /// Auth strategy selector. `"basic"` (default, historical) uses
     /// `username` / `password`. `"oauth"` means the source layer also fills
     /// `auth` with an `EasAuth::OAuth { .. }` built from the account's stored
@@ -89,10 +87,31 @@ impl Default for EasConfig {
             device_type: default_device_type(),
             user_agent: default_user_agent(),
             policy_key: String::default(),
-            accept_invalid_certs: false,
             auth_type: String::default(),
             auth: None,
         }
+    }
+}
+
+/// Manual redacting `Debug` — the `EasAuth` precedent: `password` is plaintext
+/// in memory and must NEVER render, not even in debug/panic inspection. `auth`
+/// may render because `EasAuth`'s own `Debug` redacts its Basic password and
+/// the OAuth token provider; the remaining fields carry no secrets.
+impl std::fmt::Debug for EasConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EasConfig")
+            .field("url", &self.url)
+            .field("username", &self.username)
+            .field("user", &self.user)
+            .field("password", &"<redacted>")
+            .field("protocol_version", &self.protocol_version)
+            .field("device_id", &self.device_id)
+            .field("device_type", &self.device_type)
+            .field("user_agent", &self.user_agent)
+            .field("policy_key", &self.policy_key)
+            .field("auth_type", &self.auth_type)
+            .field("auth", &self.auth)
+            .finish()
     }
 }
 
@@ -147,5 +166,30 @@ mod tests {
         let cfg: EasConfig = serde_json::from_str(json).expect("deserialize");
         assert_eq!(cfg.user, "");
         assert_eq!(cfg.user_param(), "u");
+    }
+
+    /// Manual-redaction guard (the `EasAuth::Debug` precedent): neither the
+    /// config's own `password` nor an embedded Basic `EasAuth` password may
+    /// ever reach a Debug render — debug/panic output is log-adjacent.
+    #[test]
+    fn debug_redacts_config_and_auth_passwords() {
+        let cfg = EasConfig {
+            username: "alice".into(),
+            password: "s3cret-config".into(),
+            auth: Some(EasAuth::basic("alice", "s3cret-auth")),
+            ..Default::default()
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(
+            !dbg.contains("s3cret-config"),
+            "config password must be redacted: {dbg}"
+        );
+        assert!(
+            !dbg.contains("s3cret-auth"),
+            "EasAuth password must be redacted: {dbg}"
+        );
+        assert!(dbg.contains("<redacted>"));
+        // Non-secret fields stay visible so the render stays useful.
+        assert!(dbg.contains("alice"));
     }
 }

@@ -340,6 +340,8 @@ impl EasClient {
 
 #[cfg(test)]
 mod tests {
+    use engine_tls::TlsClientConfig;
+
     use super::*;
     use crate::types::EasConfig;
 
@@ -349,7 +351,8 @@ mod tests {
     /// command so the caller's log alone diagnoses the misuse.
     #[tokio::test]
     async fn resolve_recipients_rejects_empty_to_list() {
-        let mut client = EasClient::new(EasConfig::default());
+        let mut client = EasClient::new(EasConfig::default(), &TlsClientConfig::bundled())
+            .expect("bundled-roots client build");
         let req = ResolveRecipientsRequest {
             to: vec![],
             max_ambiguous_recipients: Some(5),
