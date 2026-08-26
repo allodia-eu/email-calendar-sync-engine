@@ -14,6 +14,7 @@ Read before relevant work:
 - `docs/agent-guidance/jmap.md` before touching the JMAP client (`engine-provider`, `provider-jmap`, `engine-sync`).
 - `docs/agent-guidance/imap-smtp.md` before touching the IMAP/SMTP client (`provider-imap`, and the submission paths in `engine-provider`/`engine-sync`).
 - `docs/agent-guidance/caldav.md` before touching the CalDAV calendar client (`provider-caldav`, the calendar sync path in `engine-provider`/`engine-sync`, or the SabreDAV fixture under `docker/sabredav/`).
+- `docs/agent-guidance/eas.md` before touching the EAS client (`provider-eas`).
 - `docs/agent-guidance/graph.md` before touching the Microsoft Graph mail client (`provider-graph`, the Graph mail sync path, or the OAuth/capture tool under `tools/graph-oauth/`).
 - `docs/agent-guidance/google.md` before touching the Google (Gmail + Google Calendar) client (`provider-google`, the Gmail/Calendar sync paths, or the OAuth/capture tool under `tools/google-oauth/`).
 - `docs/agent-guidance/http-throttling.md` before touching how an HTTP provider answers a `429` (`engine-http`, a provider's transport send path, or a host's throttle reporting).
@@ -140,6 +141,7 @@ impractical:
 | CalDAV (a second implementation) | the **SabreDAV** fixture (`docker/sabredav`) | `crates/provider-caldav/tests/live_sabredav.rs` |
 | Gmail · Google Calendar · Google People | a **throwaway Google test account** | `tools/google-oauth` mints the token; `crates/provider-google/tests/live_*.rs` |
 | Microsoft Graph | a **test Microsoft account** | `tools/graph-oauth` mints the token; `crates/provider-graph/tests/live_*.rs` |
+| Exchange ActiveSync | a **test Microsoft/O365 account** (the 8–11 D5 test resource) | env-gated `crates/provider-eas/tests/live_eas` (`EAS_LIVE_URL`/`USER`/`PASSWORD`) |
 
 The live tests are env-gated so the offline suite stays green without credentials — which makes them
 easy to forget. Forgetting is the failure mode this rule exists to prevent:

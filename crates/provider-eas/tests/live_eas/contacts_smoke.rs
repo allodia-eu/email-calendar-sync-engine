@@ -20,7 +20,7 @@ use super::*;
 #[ignore = "live Exchange account required"]
 async fn contacts_first_page_smoke() {
     let Some(mut config) = live_config() else {
-        eprintln!("live gates unset (KYLINS_EAS_LIVE_URL/USER/PASS) — skipping");
+        eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
 

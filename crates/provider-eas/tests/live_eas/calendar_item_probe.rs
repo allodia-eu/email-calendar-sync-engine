@@ -35,7 +35,7 @@ async fn calendar_location_wire_probe() {
     }
 
     let Some(mut config) = live_config() else {
-        eprintln!("live gates unset (KYLINS_EAS_LIVE_URL/USER/PASS) — skipping");
+        eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
     config.device_id = "KYLINSLIVETEST04".to_string();

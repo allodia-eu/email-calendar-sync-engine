@@ -16,7 +16,7 @@ use super::*;
 #[ignore = "live Exchange account required"]
 async fn calendar_folder_create_delta_probe() {
     let Some(mut config) = live_config() else {
-        eprintln!("live gates unset — skipping");
+        eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
     config.device_id = "KYLINSLIVETEST05".to_string();
@@ -129,7 +129,7 @@ async fn calendar_folder_create_delta_probe() {
 #[ignore = "live Exchange account required"]
 async fn calendar_folder_delete_delta_probe() {
     let Some(mut config) = live_config() else {
-        eprintln!("live gates unset — skipping");
+        eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
     config.device_id = "KYLINSLIVETEST05".to_string();
@@ -207,6 +207,7 @@ async fn calendar_folder_delete_delta_probe() {
 #[ignore = "live Exchange account required"]
 async fn calendar_folder_truth_probe() {
     let Some(mut config) = live_config() else {
+        eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
     config.device_id = "KYLINSLIVETEST07".to_string();
@@ -241,6 +242,7 @@ async fn calendar_folder_truth_probe() {
 #[ignore = "live Exchange account required"]
 async fn calendar_folder_drill_cleanup() {
     let Some(mut config) = live_config() else {
+        eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
     config.device_id = "KYLINSLIVETEST07".to_string();

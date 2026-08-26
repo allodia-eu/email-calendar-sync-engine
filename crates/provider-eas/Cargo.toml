@@ -27,7 +27,7 @@ log = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-# The gated live tests' self-signed-server gate (`KYLINS_EAS_LIVE_INSECURE`) needs
+# The gated live tests' self-signed-server gate (`EAS_LIVE_INSECURE`) needs
 # the test-only accept-any config — the production `accept_invalid_certs` escape is
 # gone (trust is the host's `TlsPolicy`, see `docs/agent-guidance/eas.md`).
 engine-tls = { workspace = true, features = ["dangerous-testing"] }

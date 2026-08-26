@@ -135,7 +135,7 @@ trusts exactly a private CA, and `TlsPolicy::PlatformVerifier` delegates
 wholly to the OS verifier (MDM-installed roots on Android). The old
 `accept_invalid_certs` lab-server escape becomes "pin the lab CA as a custom
 root"; the crate's own gated live tests use the test-builds-only
-`TlsClientConfig::dangerous_accept_any()` (`KYLINS_EAS_LIVE_INSECURE`), which
+`TlsClientConfig::dangerous_accept_any()` (`EAS_LIVE_INSECURE`), which
 never compiles into a production build.
 
 Two notes on the switched transport. (1) The shared builder advertises ALPN
@@ -148,6 +148,42 @@ EAS retry layers are unchanged: 449→Provision, 401→OAuth refresh, 451→
 (spike option) was judged not to fit: EAS already promotes 429/503 windows
 through `HttpStatus.retry_after`, and the engine's 60 s poll loop is the retry
 for transient failures — revisit only if a live deployment shows a gap.
+
+## Live testing (env-gated)
+
+The live suite (`tests/live_eas.rs` + the split modules under `tests/live_eas/`)
+runs against the real test accounts — the 8–11 D5 test resource (O365/Exchange) —
+with the same skip-when-unset convention as the Google/Graph live suites
+(`GOOGLE_ACCESS_TOKEN` / `GRAPH_ACCESS_TOKEN`), the gates named `EAS_LIVE_*`.
+Gating is two-layered: every test carries `#[ignore = "live Exchange account
+required"]`, and each additionally no-ops when a required gate is unset, so even
+an explicit `--include-ignored` run without credentials skips cleanly (one
+"live gates unset" line per test, exit 0).
+
+| Gate | Required | Covers |
+| --- | --- | --- |
+| `EAS_LIVE_URL` | yes | the `Microsoft-Server-ActiveSync` endpoint |
+| `EAS_LIVE_USER` | yes | mailbox address (the EAS `User` query param) |
+| `EAS_LIVE_PASSWORD` | yes | the account password / app password |
+| `EAS_LIVE_USERNAME` | no | Basic-auth identity when it differs from the mailbox address; unset → identity = `USER` |
+| `EAS_LIVE_INSECURE` | no | set to `1` to trust the self-signed on-prem test server (the test-builds-only `dangerous_accept_any`, see the TLS record above) |
+
+The exact invocation lives in the header of `tests/live_eas.rs`. The scaffold
+exercises the Basic-auth path only (OAuth accounts need `EasConfig::auth`). Two
+operational rules learned live: every test uses its own `DeviceId` (concurrent
+Provision phase-1 handshakes from one device identity race server-side, status
+135), and EAS `FolderSync` ServerIds are per-device-partnership (never compare
+them across devices).
+
+**Fixtures**: anything learned from a live run (a wire shape, a status quirk, a
+version-specific behaviour) must be captured as a **scrubbed fixture** wired into
+the offline suite — observed bytes with every identifier moved to a reserved
+name (`example.com`/`.net`/`.org`, `.test`, `.local`), keeping the byte shape,
+per AGENTS.md "Identifiers in fixtures and docs use reserved names" and the
+fixture rules the sibling providers' `tests/fixtures/` record. There is no CI
+harness (no live account in CI): the suite is an occasional drift check, and it
+is excluded from the offline coverage metric like the other providers' live
+tests.
 
 ## Per-verb mapping table (trait → EAS), with verdicts
 
