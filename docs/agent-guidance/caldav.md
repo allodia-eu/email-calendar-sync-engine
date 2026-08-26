@@ -205,8 +205,14 @@ are split escape-aware so the writer and the parser agree.
   and return absent properties in a separate `404` `propstat`; the parser matches
   on **local element names** and keeps only `2xx` `propstat` properties. CDATA
   (the `calendar-data` payload) and entity-escaped text are handled by `quick-xml`.
-  A document truncated mid-stream (elements still open at EOF) is a hard error, so
-  a short snapshot can never wrongly tombstone resources.
+  A `multistatus` carries no DTD, so only the five predefined entities resolve and an
+  undeclared one is an **error**, never a silently dropped character — swallowing it
+  would hand the caller a truncated href or a mangled iCalendar. Line endings are
+  deliberately **not** XML-normalized (`quick-xml` offers `xml10_content()` for that):
+  a `calendar-data`/`address-data` payload is an iCalendar/vCard object whose CRLF is
+  significant and which we hand back to a server verbatim, so its bytes are kept as
+  the server sent them. A document truncated mid-stream (elements still open at EOF)
+  is a hard error, so a short snapshot can never wrongly tombstone resources.
 - **Time model.** `DTSTART` + `TZID`/`Z`/neither → zoned/UTC/floating, and a
   `VALUE=DATE` (or bare 8-digit) value → all-day, all mapped to the engine's
   four-case `CalendarDateTime`. The length is `DTEND − DTSTART` (a new
