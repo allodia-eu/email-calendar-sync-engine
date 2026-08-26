@@ -11,7 +11,10 @@ provider trust store. Before this, IMAP/SMTP verified against bundled `webpki-ro
 while the reqwest providers (CalDAV/JMAP/Graph) silently used reqwest 0.13's default
 `rustls-platform-verifier` — two trust sources and two crypto backends
 (`ring` + `aws-lc-rs`) in one app, and the platform verifier's Android OCSP behavior
-broke CalDAV against Let's Encrypt certs. `engine-tls` removes that split.
+broke CalDAV against Let's Encrypt certs. `engine-tls` removes that split. EAS
+joined later: it was imported on a crate-local `reqwest` 0.12 + `native-tls`
+transport with an `accept_invalid_certs` escape, and the same relocation series
+switched it onto this policy (`eas.md` → "TLS decision record").
 
 ## The policy (`engine_tls::TlsPolicy`)
 
@@ -60,6 +63,10 @@ shares it (cloning is a cheap `Arc` bump):
   `JmapConfig::with_tls`), defaulting to bundled. `connect` reads `config.tls`.
 - **Graph** (token-based, no config struct) takes it as a parameter:
   `GraphClient::connect(token, &tls)` / `for_mailbox` / `with_base`.
+- **EAS** takes it as a parameter at `EasClient::new(config, &tls)`, which
+  builds its `reqwest::Client` via `tls.reqwest_builder()`; the autodiscover
+  flow's `http` client is the caller's and must come from the same builder
+  (`eas.md` → "TLS decision record").
 - **IMAP/SMTP** keep taking a `tokio_rustls::TlsConnector` (the host builds it via
   `tls.connector()`); the library bakes in no root store.
 
@@ -76,8 +83,9 @@ own, so it is set here. The shared connector (IMAP/SMTP) carries no ALPN.
   `rustls::crypto::ring::default_provider()`; `aws-lc-rs` is out of the tree.
 - **TLS 1.2 floor, uniform across providers.** The shared config uses
   `with_safe_default_protocol_versions()` (rustls's safe defaults, TLS 1.2 + 1.3;
-  rustls implements nothing older), so every provider — the reqwest HTTP three and
-  the IMAP/SMTP connector — has the same 1.2 minimum by construction. Do **not**
+  rustls implements nothing older), so every provider — the reqwest HTTP
+  providers (CalDAV/JMAP/Graph/EAS) and the IMAP/SMTP connector — has the same
+  1.2 minimum by construction. Do **not**
   reach for reqwest's `min_tls_version`: it has no effect on the preconfigured-TLS
   path, so the floor must live in the shared config (which is why it is uniform).
 - reqwest uses the **`rustls-no-provider`** feature (not `rustls`), which gives the

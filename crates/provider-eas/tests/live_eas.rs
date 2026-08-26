@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Gated live tests against a real Exchange/O365 account — the 8–11 D5 test
-//! resource (O365/Exchange test accounts), same skip-when-unset convention as
+//! Gated live tests against the shared O365/Exchange test account, same
+//! skip-when-unset convention as
 //! the provider-google/graph live suites (`GOOGLE_ACCESS_TOKEN` /
 //! `GRAPH_ACCESS_TOKEN`), with the gates named `EAS_LIVE_*`.
 //!

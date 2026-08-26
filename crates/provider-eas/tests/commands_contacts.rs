@@ -6,7 +6,7 @@
 //!
 //! The golden full-contact fixture + whole-struct equality test live in
 //! `src/contacts_testutil.rs` (`#[cfg(test)] pub(crate)`, shared with the
-//! Sync seam tests in `commands/sync.rs` — one source of truth). This file
+//! Sync seam tests in `src/commands/sync/tests.rs` — one source of truth). This file
 //! builds small, focused wire trees through the pub parser API.
 //!
 //! Token fidelity: every (page, token) pair used below is verified against

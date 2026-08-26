@@ -80,5 +80,5 @@ pub struct FolderDeleteRequest {
 // NOTE: The legacy `pub struct EasError { status, message, command }` that
 // previously lived here was dead code — every live EAS error in the codebase
 // flows through `crate::client::EasError` (the `thiserror` enum declared
-// in `client.rs`). It was removed in Phase 3b Task 1. If you need to surface
+// in `client/mod.rs`). It was removed in Phase 3b Task 1. If you need to surface
 // an EAS error, use `client::EasError`.

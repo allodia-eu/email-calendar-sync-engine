@@ -4,7 +4,7 @@
 //! the code is byte-for-byte the C1/task-2 fixture, only the home moved).
 //!
 //! `#[cfg(test)] pub(crate)`: consumed by the class-aware Sync seam tests
-//! in `commands/sync.rs` and by the golden test below — one source of
+//! in `commands/sync/tests.rs` and by the golden test below — one source of
 //! truth for the golden wire shape, no duplication.
 
 use crate::{
@@ -85,7 +85,7 @@ use crate::{
 ///         └── Data        (17, 0x0B) = "Prefers plain-text bodies."
 /// ```
 /// `pub(crate)` (M8-C task 1) so the class-aware Sync seam tests in
-/// `commands/sync.rs` build their Add fixture from this exact tree —
+/// `commands/sync/tests.rs` build their Add fixture from this exact tree —
 /// one source of truth for the golden wire shape.
 pub(crate) fn fixture_full_contact_app_data() -> WbxmlElement {
     WbxmlElement::container(

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Shared golden fixtures — `pub(crate)` so the class-aware Sync seam
-//! tests in `commands/sync.rs` and the `calendar_write` tests reuse the SAME
+//! tests in `commands/sync/tests.rs` and the `calendar_write` tests reuse the SAME
 //! blobs and wire tree instead of transcribing copies.
 
 use super::*;
@@ -118,7 +118,7 @@ fn calendar_token_constants_match_spec() {
 /// (a) Flat UTC+8 (China Standard Time shape): Bias = -480
 /// (`20 FE FF FF`), both SYSTEMTIMEs zeroed (no DST), both rule biases
 /// 0, names zeroed. `pub(crate)` (M8 Task 4) so the class-aware Sync
-/// seam tests in `commands/sync.rs` reuse the SAME golden blob — no
+/// seam tests in `commands/sync/tests.rs` reuse the SAME golden blob — no
 /// transcription copy.
 pub(crate) const TZI_FLAT_UTC8: &str = "IP7//wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 
@@ -155,7 +155,7 @@ pub(crate) const TZI_FLAT_UTC8: &str = "IP7//wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 ///                                   AllDayEvent 0 }
 /// ```
 /// `pub(crate)` (M8 Task 4) so the class-aware Sync seam tests in
-/// `commands/sync.rs` build their Add fixture from this exact tree —
+/// `commands/sync/tests.rs` build their Add fixture from this exact tree —
 /// one source of truth for the golden wire shape.
 pub(crate) fn fixture_full_app_data() -> WbxmlElement {
     WbxmlElement::container(

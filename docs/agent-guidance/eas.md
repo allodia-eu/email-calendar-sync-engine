@@ -1,16 +1,19 @@
 # EAS (Exchange ActiveSync) Client Guidance
 
-> **Spike-time draft.** This skeleton was drafted from the trait-shape spike (Plan B
-> Task 3, 2026-08-24) before any `engine_provider` work on `provider-eas` landed. The
-> protocol facts and per-verb verdicts below are read from the imported crate and are
-> stable; everything marked *fork decision* or *P2* is unimplemented until Plan C/P2
-> says otherwise. Update this file as the adapter lands — it is intended to become
-> authoritative for `provider-eas`, peer of `imap-smtp.md` / `graph.md`.
+> **Protocol client landed; adapter pending.** The per-verb verdicts below come
+> from the trait-shape spike (Plan B Task 3, 2026-08-24) and are stable. The
+> relocation series has since brought the crate to engine quality — edition 2024,
+> workspace lints, module split under the 500-line cap, the engine-tls transport,
+> normalized live gating — but nothing in it implements `engine_provider` traits
+> yet: everything marked *fork decision* or *P2* stays unimplemented until Plan
+> C/P2 says otherwise. Update this file as the adapter lands — it is intended to
+> become authoritative for `provider-eas`, peer of `imap-smtp.md` / `graph.md`.
 
 This document covers the **Exchange ActiveSync 16.1 (negotiated down to 12.0) mail +
 calendar + contacts provider** — the `provider-eas` crate imported from the Kylins
-client at `f7db44d` ("pre-engineering": a standalone protocol client with no
-`engine_provider` dependency yet). Read it alongside `providers.md` (the Provider
+client (upstream commit `0dc611d`, engine import commit `f7db44d`) and since
+retrofitted to engine standards: a standalone protocol client with no
+`engine_provider` dependency yet. Read it alongside `providers.md` (the Provider
 Contract), `store-and-sync.md` (scopes/cursors/apply), `tls.md` (trust policy), and
 the spike findings in the Kylins repo
 (`docs/superpowers/research/p0-eas-trait-spike.md`), which carries the full evidence
@@ -19,13 +22,13 @@ table behind every verdict here.
 ## The crate
 
 - **`provider-eas`** — a hand-rolled EAS client over `reqwest` POSTs of WBXML
-  documents, imported verbatim from Kylins (`crates/provider-eas/src/`, 34 files).
+  documents, imported from Kylins and split to the engine's 500-line cap.
   Layers: `wbxml/` (codec: parser/serializer, code pages, token tables),
-  `commands/` (per-command request builders + response parsers), `client.rs` (the
-  transport: headers, retry layers, per-command typed methods), `status.rs` (status
-  classification), `provision.rs`, `auth.rs`, `autodiscover.rs`, `types.rs`
-  (wire-shaped request/result structs), plus `calendar.rs` / `calendar_write.rs` /
-  `contacts.rs` (class-typed conversion) and `meeting_uid.rs` / `multipart.rs`.
+  `commands/` (per-command request builders + response parsers), `client/` (the
+  transport: headers, retry layers, per-command typed methods), `status.rs`
+  (status classification), `provision.rs`, `auth.rs`, `autodiscover/`, `types/`
+  (wire-shaped request/result structs), plus `calendar/` / `calendar_write/` /
+  `contacts/` (class-typed conversion) and `meeting_uid.rs` / `multipart.rs`.
 - It is **not yet an adapter**: nothing in it implements `Provider`,
   `ContactsProvider`, or `Watch`. The spike's job was to decide whether it *can*
   without engine API changes. Answer: **one required engine change (new
@@ -36,7 +39,7 @@ table behind every verdict here.
 - **EAS 16.1** ([MS-ASHTTP] + family), negotiated down per server via the `OPTIONS`
   round: the server advertises `MS-ASProtocolVersions` / `MS-ASProtocolCommands`
   headers, and `pick_protocol_version` chooses the highest mutually known
-  (`client.rs`, `options()` / `pick_protocol_version`). Wire format is WBXML
+  (`client/options.rs`, `options()` / `pick_protocol_version`). Wire format is WBXML
   (binary XML with per-namespace code pages) for every command body except
   SendMail's `<Mime>`, which rides as a WBXML OPAQUE blob so binary MIME survives.
 - Every request is `POST <endpoint>?Cmd=<Command>&User=<user>&DeviceId=<id>`
@@ -53,18 +56,18 @@ table behind every verdict here.
 
 | Command | Where | Purpose (engine verb it feeds) |
 | --- | --- | --- |
-| `OPTIONS` | `client.rs` | version/command negotiation at connect |
-| `Provision` | `provision.rs`, `client.rs` retry layer | policy handshake; policy key rides `X-MS-PolicyKey` on every command |
-| `Settings` (DeviceInformation / UserInformation / OOF / device password) | `client.rs` | bootstrap facts, OOF (no engine verb yet) |
-| `FolderSync` / `FolderCreate` / `FolderUpdate` / `FolderDelete` | `client.rs`, `commands/folder_sync.rs`, `commands/folder_ops.rs` | container sync (`sync_mailboxes`) + folder writes |
-| `Sync` (down) | `client.rs::sync`, `commands/sync.rs` | per-collection item sync, classes Email/Calendar/Contacts (`stream_email`, `sync_events`, `sync_contacts`) |
-| `Sync` (up: Commands Add/Change/Delete) | `client.rs::sync_changes`, `commands/sync.rs` | client-side mutations (flags, calendar/contact writes) |
-| `SendMail` / `SmartForward` / `SmartReply` | `client.rs`, `commands/send.rs` | submission (`submit_email`); SmartForward degrades to SendMail on rejection |
-| `MoveItems` | `client.rs::move_items` | per-message move (`MailEdit::MoveTo`) |
-| `ItemOperations` (Fetch / EmptyFolderContents / Move-conversation) | `client.rs`, `commands/item_operations.rs` | body/MIME/attachment fetch (`fetch_message_source`), destructive extras (no engine verbs) |
-| `MeetingResponse` | `client.rs`, `commands/meeting.rs` | invitation answer (`rsvp_event`) |
-| `Ping` | `client.rs`, `commands/ping.rs` | push (`Watch`) |
-| `GetItemEstimate` / `Search` / `ResolveRecipients` / `ValidateCert` | `client.rs` | counts, GAL/mailbox search, cert validation (no engine verbs yet) |
+| `OPTIONS` | `client/options.rs` | version/command negotiation at connect |
+| `Provision` | `provision.rs`, `client/` retry layers | policy handshake; policy key rides `X-MS-PolicyKey` on every command |
+| `Settings` (DeviceInformation / UserInformation / OOF / device password) | `client/settings.rs` | bootstrap facts, OOF (no engine verb yet) |
+| `FolderSync` / `FolderCreate` / `FolderUpdate` / `FolderDelete` | `client/sync.rs`, `commands/folder_sync.rs`, `commands/folder_ops.rs` | container sync (`sync_mailboxes`) + folder writes |
+| `Sync` (down) | `client/sync.rs::sync`, `commands/sync/` | per-collection item sync, classes Email/Calendar/Contacts (`stream_email`, `sync_events`, `sync_contacts`) |
+| `Sync` (up: Commands Add/Change/Delete) | `client/sync.rs::sync_changes`, `commands/sync/` | client-side mutations (flags, calendar/contact writes) |
+| `SendMail` / `SmartForward` / `SmartReply` | `client/compose.rs`, `commands/send.rs` | submission (`submit_email`); SmartForward degrades to SendMail on rejection |
+| `MoveItems` | `client/items.rs::move_items` | per-message move (`MailEdit::MoveTo`) |
+| `ItemOperations` (Fetch / EmptyFolderContents / Move-conversation) | `client/items.rs`, `commands/item_operations/` | body/MIME/attachment fetch (`fetch_message_source`), destructive extras (no engine verbs) |
+| `MeetingResponse` | `client/items.rs`, `commands/meeting.rs` | invitation answer (`rsvp_event`) |
+| `Ping` | `client/items.rs`, `commands/ping.rs` | push (`Watch`) |
+| `GetItemEstimate` / `Search` / `ResolveRecipients` / `ValidateCert` | `client/items.rs` / `client/settings.rs` | counts, GAL/mailbox search, cert validation (no engine verbs yet) |
 
 ## Capability / quirk notes
 
@@ -74,7 +77,7 @@ table behind every verdict here.
   adapter-internal (hosts do not branch on it — `providers.md`).
 - **Provision/policy**: servers may demand the two-phase Provision handshake at any
   time (HTTP 449, or in-body Common/FolderSync status 142–144). The transport
-  retries once after re-provisioning (`client.rs::send_command_ex`); `RemoteWipe`
+  retries once after re-provisioning (`client/transport.rs::send_command_ex`); `RemoteWipe`
   is surfaced as a permanent error, never executed.
 - **Status classification** (`status.rs`): one `RecoveryAction` classifier per
   command family. Engine mapping: `ResetSyncKey` (Sync 3, FolderSync 9) →
@@ -95,7 +98,7 @@ table behind every verdict here.
     mid-pass than JMAP/Graph, not less).
   - `WindowSize` (items per round) follows the Android ladder 10→512
     (`next_window_size`); ≤200 upsync commands per request are chunked and
-    key-threaded automatically (`client.rs::sync_changes`).
+    key-threaded automatically (`client/sync.rs::sync_changes`).
   - `FilterType` (days-back ladder: 1/3/5/7/14/30/45/90/180) is the only server
     window; a `SyncWindow::since` date maps to the smallest covering rung and the
     engine's `SyncWindow::admits` tightens the delta on apply — the composition
@@ -152,7 +155,7 @@ for transient failures — revisit only if a live deployment shows a gap.
 ## Live testing (env-gated)
 
 The live suite (`tests/live_eas.rs` + the split modules under `tests/live_eas/`)
-runs against the real test accounts — the 8–11 D5 test resource (O365/Exchange) —
+runs against the shared O365/Exchange test account,
 with the same skip-when-unset convention as the Google/Graph live suites
 (`GOOGLE_ACCESS_TOKEN` / `GRAPH_ACCESS_TOKEN`), the gates named `EAS_LIVE_*`.
 Gating is two-layered: every test carries `#[ignore = "live Exchange account

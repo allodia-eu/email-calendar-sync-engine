@@ -5,7 +5,7 @@
 //   - `build_*_request(input) -> WbxmlElement` — build the request tree
 //   - `parse_*_response(tree) -> Result<output, WbxmlError>` — parse the response tree
 //
-// HTTP transport lives in `client.rs` (Phase 8) and wraps these in POST requests.
+// HTTP transport lives in `client/` (Phase 8) and wraps these in POST requests.
 //
 // Code-page tag constants below are deliberately exhaustive: they mirror the
 // EAS protocol spec so command builders can reach for any tag without

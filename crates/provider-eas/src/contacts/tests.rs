@@ -5,7 +5,7 @@
 // `pub(crate)` (M8-C task 1): visibility only. M8-C task 2 fix r1 moved
 // the golden fixture pair + the golden whole-struct test to
 // `crate::contacts_testutil` (shared with the Sync seam tests in
-// `commands/sync.rs`) and the token-spec test to
+// `commands/sync/tests.rs`) and the token-spec test to
 // tests/commands_contacts.rs; the per-behavior parser tests stay here.
 
 use super::{parse::extract_bare_address, *};

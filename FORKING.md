@@ -15,6 +15,7 @@ disciplined patch series on top of `upstream/main`, rebased periodically.
 | Patch | Why |
 |---|---|
 | FTS tokenizer option — creation-time `porter unicode61` / `trigram` choice, `meta.fts_tokenizer` recording, mismatch refusal, CJK substring acceptance pins (8 commits + 1 upstream-adaptation commit) | kylins needs CJK substring search; spec: kylins-client `docs/superpowers/specs/2026-08-23-p0-engine-preparation-design.md` §4 |
+| EAS provider relocation — import of the Kylins Exchange ActiveSync protocol client at provenance `0dc611d` plus an engine-quality retrofit (edition 2024, workspace lints, 500-line module split, transport on `engine-tls`, env-gated live suite, guidance docs) (13 commits) | kylins P0: the engine needs an EAS provider; spec: kylins-client `docs/superpowers/specs/2026-08-23-p0-engine-preparation-design.md` §3. Protocol client only — the `Provider` trait impl follows in the next series (Plan C) |
 
 Every fork-only change must appear here with its motivation, or it will surprise
 the next rebase.

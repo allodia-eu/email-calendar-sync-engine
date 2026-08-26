@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-//! EAS authentication strategies. The transport (`client.rs`) calls
+//! EAS authentication strategies. The transport (`client/`) calls
 //! `auth.authorization_header().await` to populate the `Authorization` header.
 //!
 //! `Basic` is the historical default. `OAuth` is required for Exchange Online
@@ -8,7 +8,7 @@
 //! supplies a [`TokenProvider`](crate::auth::TokenProvider) and the crate just asks it for a token.
 //! This keeps `provider-eas` free of kylins' `crate::oauth` / keyring / DB
 //! dependencies. Kylins' implementation is `KylinsTokenProvider`
-//! (`src/provider/eas/token_provider.rs`).
+//! (`src/provider/eas/token_provider.rs` in the upstream kylins-client tree).
 
 use std::{fmt, sync::Arc};
 

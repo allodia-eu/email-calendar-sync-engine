@@ -141,7 +141,7 @@ impractical:
 | CalDAV (a second implementation) | the **SabreDAV** fixture (`docker/sabredav`) | `crates/provider-caldav/tests/live_sabredav.rs` |
 | Gmail · Google Calendar · Google People | a **throwaway Google test account** | `tools/google-oauth` mints the token; `crates/provider-google/tests/live_*.rs` |
 | Microsoft Graph | a **test Microsoft account** | `tools/graph-oauth` mints the token; `crates/provider-graph/tests/live_*.rs` |
-| Exchange ActiveSync | a **test Microsoft/O365 account** (the 8–11 D5 test resource) | env-gated `crates/provider-eas/tests/live_eas` (`EAS_LIVE_URL`/`USER`/`PASSWORD`) |
+| Exchange ActiveSync | a **shared O365/Exchange test account** | env-gated `crates/provider-eas/tests/live_eas` (`EAS_LIVE_URL`/`USER`/`PASSWORD`) |
 
 The live tests are env-gated so the offline suite stays green without credentials — which makes them
 easy to forget. Forgetting is the failure mode this rule exists to prevent:

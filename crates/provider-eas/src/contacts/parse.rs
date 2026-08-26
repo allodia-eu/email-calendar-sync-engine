@@ -176,7 +176,7 @@ pub fn parse_contacts_application_data(
 
 // ============================================================================
 // Field-parse helpers (permissive: warn + default, never panic — the
-// calendar.rs / commands::sync ApplicationData precedent)
+// `calendar/` / `commands::sync` ApplicationData precedent)
 // ============================================================================
 
 /// Permissive text extraction — the `calendar::text_value_opt` twin:

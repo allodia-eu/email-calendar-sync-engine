@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Typed EAS status enums + the single source-of-truth mapping from a status
-//! code to a `RecoveryAction`. Pure / no I/O — callers in `client.rs` and
-//! `eas_source.rs` consult this instead of open-coding recovery decisions.
+//! code to a `RecoveryAction`. Pure / no I/O — callers in the `client/`
+//! transport (upstream: `eas_source.rs` in the Kylins client) consult this
+//! instead of open-coding recovery decisions.
 
 /// The set of actions a caller can take in response to an EAS status code.
 /// Ordered roughly from "no-op" to "fatal". Every classifier in this module

@@ -20,8 +20,8 @@ use crate::commands::{
 /// BodyType is the only child of Get in an Oof Get request (§2.2.3.83); the
 /// server returns all OOF settings and messages formatted for that body
 /// type. SECURITY: the Get RESPONSE carries the user's OOF reply messages —
-/// private content that must never be logged (see `client.rs` body-dump
-/// redaction).
+/// private content that must never be logged (see `client/redaction.rs`
+/// body-dump redaction).
 pub fn build_settings_oof_get_request(body_type: &str) -> WbxmlElement {
     use crate::wbxml::tags::{pages, settings};
     WbxmlElement::container(

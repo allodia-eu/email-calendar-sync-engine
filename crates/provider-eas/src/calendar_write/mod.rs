@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Write-direction Calendar `ApplicationData` serialization ([MS-ASCAL]
-//! §2.2) — the upload twin of `calendar.rs`'s downsync parse. M8 calendar
+//! §2.2) — the upload twin of `calendar/`'s downsync parse. M8 calendar
 //! upsync Task 1; Tasks 2-3 wrap this into Sync Add/Change Commands.
 //!
 //! Token fidelity red line: every page-4 token below is REUSED from
-//! `calendar.rs` (whose values were verified against
+//! `calendar/` (whose values were verified against
 //! `docs/Exchange/MS-ASWBXML.txt` §2.1.2.1.5) — no token value is invented
 //! here. Element value semantics per [MS-ASCAL] §2.2.2 and [MS-ASDTYPE]
 //! (§2.1 boolean `"0"`/`"1"`, §2.7.2 Compact DateTime, §2.7.6 TimeZone).

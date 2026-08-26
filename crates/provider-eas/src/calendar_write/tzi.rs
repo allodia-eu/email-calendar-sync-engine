@@ -37,7 +37,7 @@ mod tests {
     use crate::calendar::{TziTimeZone, parse_tzi_blob, tests::TZI_FLAT_UTC8};
 
     /// UTC+8 (local_minus_utc = 480 ⇒ Bias −480) must byte-for-byte equal
-    /// the golden flat fixture from `calendar.rs` — one source of truth for
+    /// the golden flat fixture from `calendar/tests.rs` — one source of truth for
     /// the 172-byte layout — and decode to a rule-less TziTimeZone.
     #[test]
     fn tzi_utc8_matches_golden_flat_fixture() {

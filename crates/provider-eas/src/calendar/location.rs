@@ -19,7 +19,7 @@ use crate::wbxml::{
 /// container's own (always empty) text via `text_value_opt`, silently
 /// dropping LOCATION for every real-Exchange-16.x event — hence the
 /// DisplayName-first shape here. M8-L1 variant: the email `MeetingRequest`
-/// parse (`commands/sync.rs`) reads the same page-17 container through
+/// parse (`commands/sync/parse_item.rs`) reads the same page-17 container through
 /// this helper with `ctx = "email MeetingRequest"` — calendar and email
 /// share one Location parse policy.
 ///

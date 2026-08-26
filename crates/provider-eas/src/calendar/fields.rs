@@ -5,7 +5,7 @@ use crate::wbxml::{WbxmlElement, WbxmlValue};
 
 // ============================================================================
 // Field-parse helpers (permissive: warn + default, never panic — the
-// ApplicationData precedent from commands/sync.rs)
+// ApplicationData precedent from `commands/sync/parse_item.rs`)
 // ============================================================================
 
 /// Permissive text extraction — the `commands::text_value_opt` twin:
