@@ -34,6 +34,15 @@ engine-tls = { workspace = true, features = ["dangerous-testing"] }
 tokio-test = { workspace = true }
 env_logger = { workspace = true }
 hex = { workspace = true }
+# The offline transport harness (tests/transport_harness.rs) stands up an
+# in-process TLS listener for the HTTP 451 `X-MS-Location` redirect and the
+# autodiscover scenarios (both need genuine https:// — the client refuses
+# http:// redirect locations and builds autodiscover URLs as https:// by
+# spec). `rcgen` mints the self-signed cert and `rustls` serves it — the
+# engine-tls dev-deps precedent; both are pure Rust and already in the
+# workspace lock via engine-tls's own dev-deps.
+rcgen = "0.13"
+rustls = { workspace = true }
 
 [lints]
 workspace = true
