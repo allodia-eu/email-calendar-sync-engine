@@ -6,7 +6,7 @@
 //! `docs/Exchange/MS-ASWBXML.txt` §2.1.2.1.5 ("Code Page 4: Calendar",
 //! v20220429) and cross-checked against the same table in
 //! `docs/Exchange/[MS-ASWBXML].pdf` — never from memory. The values match
-//! `CALENDAR_TOKENS` in `wbxml/code_pages.rs`. Element value semantics per
+//! `CALENDAR_TOKENS` in `wbxml/code_pages/pages_00_09.rs`. Element value semantics per
 //! [MS-ASCAL] §2.2.2 (`docs/Exchange/[MS-ASCAL].pdf`) and [MS-ASDTYPE]
 //! (§2.1 boolean `"0"`/`"1"`, §2.7.2 Compact DateTime, §2.7.6 TimeZone).
 //!

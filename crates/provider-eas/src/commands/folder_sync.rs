@@ -165,7 +165,7 @@ pub fn common_status_message(status: u32) -> Option<&'static str> {
 /// missing/non-numeric Status elements — callers treat `None` as "no
 /// top-level status information" and behave as before.
 ///
-/// Status-token table per code_pages.rs / tags.rs (spec values). The
+/// Status-token table per the code_pages/ and tags/ tables (spec values). The
 /// ItemOperations entry uses `tags::item_operations::STATUS` (0x0D) — the
 /// old file-local `IO_STATUS` constant (0x0A, actually `Total` on page 20)
 /// was off-spec and has been deleted along with the rest of the IO_* block.

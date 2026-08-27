@@ -389,7 +389,7 @@ fn settings_oof_set_response_defaults_status_when_absent() {
 // ---- ValidateCert ([MS-ASCMD] §2.2.1.22, §4.20; WBXML code page 11) ----
 //
 // Token table verified against [MS-ASWBXML] §2.1.2.1.12 (page 11) via
-// code_pages.rs VALIDATE_TOKENS: ValidateCert=0x05, Certificates=0x06,
+// code_pages/pages_10_17.rs VALIDATE_TOKENS: ValidateCert=0x05, Certificates=0x06,
 // Certificate=0x07, CertificateChain=0x08, CheckCrl=0x09, Status=0x0A.
 // Request shape per §4.20.1 / §6.47; response shape per §4.20.2 / §6.48.
 // Certificate values are opaque base64 DER payloads — the tests use

@@ -109,6 +109,6 @@ fn folder_sync_status_message_falls_back_to_common_table() {
 // NOTE on constants: the ItemOperations and ComposeMail rows use
 // `tags::item_operations::STATUS` (0x0D) and `compose::STATUS` (0x12) —
 // the spec-correct values. The old file-local `IO_STATUS` constant (0x0A,
-// actually `Total` per code_pages.rs ITEMS_TOKENS) and the wrong `CM_*`
-// aliases were deleted for being off-spec; `top_level_status` matches on
-// the tags.rs values so real server responses are found.
+// actually `Total` per code_pages/pages_18_25.rs ITEMS_TOKENS) and the wrong
+// `CM_*` aliases were deleted for being off-spec; `top_level_status` matches
+// on the tags/ values so real server responses are found.

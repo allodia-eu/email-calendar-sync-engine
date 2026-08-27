@@ -81,9 +81,9 @@ pub const AS_COMMANDS: u8 = 0x16;
 /// `Options` (`AirSync` page-0 token 0x17).
 pub const AS_OPTIONS: u8 = 0x17; // Options (per [MS-ASSYNC] 2.2.3.25); matches tags::airsync::OPTIONS
 const AS_FILTER_TYPE: u8 = 0x18; // FilterType (per [MS-ASWBXML] §2.1.2.1.1 page-0 table; 0x11 is unassigned)
-const AS_DELETES_AS_MOVES: u8 = 0x1E; // DeletesAsMoves (per [MS-ASWBXML] §2.1.2.1.1 page-0 table; verified in code_pages.rs AIRSYNC_TOKENS)
-const AS_SUPPORTED: u8 = 0x20; // Supported (per [MS-ASWBXML] §2.1.2.1.1 page-0 table; verified in code_pages.rs AIRSYNC_TOKENS)
-const AS_MIME_SUPPORT: u8 = 0x22; // MIMESupport (per [MS-ASWBXML] §2.1.2.1.1 page-0 table; verified in code_pages.rs AIRSYNC_TOKENS)
+const AS_DELETES_AS_MOVES: u8 = 0x1E; // DeletesAsMoves (per [MS-ASWBXML] §2.1.2.1.1 page-0 table; verified in code_pages/pages_00_09.rs AIRSYNC_TOKENS)
+const AS_SUPPORTED: u8 = 0x20; // Supported (per [MS-ASWBXML] §2.1.2.1.1 page-0 table; verified in code_pages/pages_00_09.rs AIRSYNC_TOKENS)
+const AS_MIME_SUPPORT: u8 = 0x22; // MIMESupport (per [MS-ASWBXML] §2.1.2.1.1 page-0 table; verified in code_pages/pages_00_09.rs AIRSYNC_TOKENS)
 const AS_MIME_TRUNCATION: u8 = 0x23; // MIMETruncation (same page-0 table)
 /// `ApplicationData` (`AirSync` page-0 token 0x1d).
 pub const AS_APPLICATION_DATA: u8 = 0x1D;

@@ -217,7 +217,7 @@ fn item_operations_request_file_reference_beats_long_id() {
 //   all messages. This builder emits level 2 when `mime` is set: the caller asked for raw MIME, so
 //   the server must send it for ALL messages, not just S/MIME ones.
 // - MIMESupport is an AirSync-page (0) token 0x22, also inside ItemOperations Options (verified in
-//   code_pages.rs AIRSYNC_TOKENS).
+//   code_pages/pages_00_09.rs AIRSYNC_TOKENS).
 
 /// MIME item fetch ([MS-ASCMD] §4.10.2.1): ItemOperations(20,0x05) >
 /// Fetch(20,0x06) > { Store(20,0x07)="Mailbox", airsync:CollectionId(0,0x12),

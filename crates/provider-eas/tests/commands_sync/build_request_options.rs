@@ -168,7 +168,7 @@ fn build_sync_request_default_shape_has_deletes_as_moves_and_no_filter_type() {
 //   messages; absent defaults to 0.
 // - §2.2.3.111 MIMETruncation: levels 0-8 (0 = truncate all … 8 = send complete MIME data).
 // - Both are AirSync-page (0) tokens: MIMESupport 0x22, MIMETruncation 0x23 (verified in
-//   code_pages.rs AIRSYNC_TOKENS).
+//   code_pages/pages_00_09.rs AIRSYNC_TOKENS).
 
 /// With a filter AND bodies, Options children must be exactly
 /// [FilterType, BodyPreference, MIMESupport, MIMETruncation] in that
@@ -332,9 +332,9 @@ fn collection_child_tokens_of_options(options: &WbxmlElement) -> Vec<(u8, u8)> {
 //   DeletesAsMoves, GetChanges, WindowSize, ConversationMode, Options, Commands — Supported sits
 //   BETWEEN CollectionId and DeletesAsMoves.
 // - Tokens: Supported = page 0, 0x20 (AIRSYNC_TOKENS); JobTitle = page 1, 0x28 and OfficeLocation =
-//   page 1, 0x2C (CONTACTS_TOKENS), both verified in code_pages.rs.
+//   page 1, 0x2C (CONTACTS_TOKENS), both verified in code_pages/pages_00_09.rs.
 
-/// Contacts code page index (code_pages.rs page 1).
+/// Contacts code page index (code_pages/pages_00_09.rs page 1).
 const PAGE_CONTACTS: u8 = 1;
 /// Contacts `JobTitle` token (page 1, 0x28 — CONTACTS_TOKENS).
 const CONTACTS_JOB_TITLE: u8 = 0x28;

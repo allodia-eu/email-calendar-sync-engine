@@ -9,7 +9,7 @@ use super::{
 // ============================================================================
 //
 // Token table verified against [MS-ASWBXML] §2.1.2.1.11 (page 10) via
-// code_pages.rs RECIPIENTS_TOKENS:
+// code_pages/pages_10_17.rs RECIPIENTS_TOKENS:
 //   ResolveRecipients=0x05, Response=0x06, Status=0x07, Type=0x08,
 //   Recipient=0x09, DisplayName=0x0A, EmailAddress=0x0B, Certificates=0x0C,
 //   Certificate=0x0D, MiniCertificate=0x0E, Options=0x0F, To=0x10,

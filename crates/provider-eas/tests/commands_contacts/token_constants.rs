@@ -9,7 +9,7 @@ use super::*;
 // ============================================================================
 
 /// Cross-check every constant against its [MS-ASWBXML] §2.1.2.1.2 value
-/// AND against the `code_pages.rs` registration (tag_name resolution),
+/// AND against the `code_pages/` registration (tag_name resolution),
 /// so a drifted constant fails loudly.
 #[test]
 fn contacts_token_constants_match_spec() {
@@ -61,8 +61,8 @@ fn contacts_token_constants_match_spec() {
     assert_eq!(CON2_MANAGER_NAME, 0x0A);
     assert_eq!(CON2_COMPANY_MAIN_PHONE, 0x0B);
 
-    // tag_name() resolution — cross-checks code_pages.rs CONTACTS_TOKENS
-    // (and CONTACTS2_TOKENS for the page-12 pair).
+    // tag_name() resolution — cross-checks the code_pages/ tables
+    // CONTACTS_TOKENS (and CONTACTS2_TOKENS for the page-12 pair).
     let cases: &[(u8, u8, &str)] = &[
         (PAGE_CONTACTS, CON_FILE_AS, "FileAs"),
         (PAGE_CONTACTS, CON_FIRST_NAME, "FirstName"),

@@ -31,11 +31,11 @@ pub mod ping;
 pub mod provision;
 
 /// ResolveRecipients (page 10) tag ids. Source: [MS-ASWBXML] §2.1.2.1.11,
-/// verified against `RECIPIENTS_TOKENS` in `code_pages.rs`.
+/// verified against `RECIPIENTS_TOKENS` in `code_pages/pages_10_17.rs`.
 pub mod recipients;
 
 /// ValidateCert (page 11) tag ids. Source: [MS-ASWBXML] §2.1.2.1.12,
-/// verified against `VALIDATE_TOKENS` in `code_pages.rs`.
+/// verified against `VALIDATE_TOKENS` in `code_pages/pages_10_17.rs`.
 pub mod validatecert;
 
 /// Settings (page 18) tag ids.

@@ -9,7 +9,7 @@
 //! `docs/Exchange/MS-ASWBXML.txt` — §2.1.2.1.2 ("Code Page 1: Contacts")
 //! and §2.1.2.1.13 ("Code Page 12: Contacts2"), v20220429 — and
 //! cross-checked against the `CONTACTS_TOKENS` / `CONTACTS2_TOKENS`
-//! tables in `wbxml/code_pages.rs` (the `contacts_token_constants_match_spec`
+//! tables in `wbxml/code_pages/` (the `contacts_token_constants_match_spec`
 //! test in tests/commands_contacts.rs pins both directions). Never from
 //! memory. Element value semantics per [MS-ASCNTC] §2.2.2 (all modeled
 //! fields are string data type, [MS-ASDTYPE] §2.7, except Anniversary/

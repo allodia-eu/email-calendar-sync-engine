@@ -8,7 +8,7 @@ use super::{
 // ============================================================================
 //
 // Token table verified against [MS-ASWBXML] §2.1.2.1.12 (page 11) via
-// code_pages.rs VALIDATE_TOKENS:
+// code_pages/pages_10_17.rs VALIDATE_TOKENS:
 //   ValidateCert=0x05, Certificates=0x06, Certificate=0x07,
 //   CertificateChain=0x08, CheckCrl=0x09, Status=0x0A.
 

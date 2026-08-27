@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Cross-check every constant against its [MS-ASWBXML] §2.1.2.1.5 /
-/// §2.1.2.1.18 value AND against the `code_pages.rs` registration
+/// §2.1.2.1.18 value AND against the `code_pages/` registration
 /// (tag_name resolution), so a drifted constant fails loudly.
 #[test]
 fn calendar_token_constants_match_spec() {
@@ -50,7 +50,7 @@ fn calendar_token_constants_match_spec() {
     assert_eq!(CAL_UID, 0x28);
     assert_eq!(BASE_LOCATION, 0x20);
 
-    // tag_name() resolution — cross-checks code_pages.rs CALENDAR_TOKENS.
+    // tag_name() resolution — cross-checks code_pages/pages_00_09.rs CALENDAR_TOKENS.
     let cases: &[(u8, u8, &str)] = &[
         (PAGE_CALENDAR, CAL_TIMEZONE, "Timezone"),
         (PAGE_CALENDAR, CAL_ALL_DAY_EVENT, "AllDayEvent"),

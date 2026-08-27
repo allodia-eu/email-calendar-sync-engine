@@ -48,7 +48,7 @@ table behind every verdict here.
   for the SendMail family; for Sync it means "no changes" and must echo the
   request's sync key.
 - **Auth**: Basic (`DOMAIN\user`) or OAuth (`auth.rs`, token refresh on 401 is one
-  of the transport retry layers). **Autodiscover** (`autodiscover.rs`) resolves the
+  of the transport retry layers). **Autodiscover** (`autodiscover/`) resolves the
   endpoint; an HTTP 451 `X-MS-Location` redirect is followed in-transport
   (hop-capped) and the adopted URL surfaces for the host to persist.
 
