@@ -446,7 +446,7 @@ impl Engine {
     /// enumerated and filtered by [`SyncScope::object_kind`] — so the facade never
     /// hard-codes or branches on which scopes a provider uses. One batch read per scope
     /// (no per-key round trip).
-    async fn objects_of(
+    pub(super) async fn objects_of(
         &self,
         account: &AccountId,
         kind: ObjectKind,

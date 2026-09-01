@@ -441,3 +441,6 @@ mod edges;
 
 #[path = "contact_cases/photos.rs"]
 mod photos;
+
+#[path = "contact_cases/reads.rs"]
+mod reads;

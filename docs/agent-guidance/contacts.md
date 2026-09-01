@@ -187,6 +187,14 @@ mail/calendar/identity scopes.
   only `FN` would delete the structured name from the server's card. `N`'s two
   separator levels (`;` between slots, `,` within one) are split escape-aware,
   so what the writer emits is what the parser recovers.
+- `ORG` and `TITLE`/`ROLE` are writable, so the CardDAV field set matches what the
+  JMAP, Graph, and Google destinations already accept. Two traps, both silent: an
+  organisation's units are `;`-joined **after** each component is escaped (escaping
+  the joined string would send one name containing literal semicolons), and a value
+  read from `ROLE` is written back as `ROLE` — writing both properties as `TITLE`
+  promotes every role to a job title on the next sync. Parsing `ORG` splits
+  escape-aware for the same reason `N` does: a plain `split(';')` reads
+  `ORG:Babbage\; Sons` as a firm called `Babbage\` with a department called ` Sons`.
 - Writability comes from `Props::grants_member_writes`, shared with the CalDAV
   calendar path: `DAV:all`, `DAV:write`, or `DAV:write-content` (never
   `DAV:write-properties`), and an unreported privilege set means writable.
@@ -199,7 +207,10 @@ mail/calendar/identity scopes.
 
 The Stalwart fixture writes the shared person/group cards over CardDAV; the
 gated `provider-caldav/tests/live_contacts.rs` reads them through both JMAP and
-CardDAV and compares normalized identity, kind, names, emails, and members.
+CardDAV and compares normalized identity, kind, names, emails, and members. The
+same file drives the **write** round trip against Stalwart (create → read back →
+patch → read back), which is what the offline fakes cannot vouch for: they answer
+canned bytes whatever vCard they are handed.
 
 ## Writable-field capabilities and write lifecycle
 

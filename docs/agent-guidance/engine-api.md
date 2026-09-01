@@ -36,7 +36,11 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`.
   Contact hosts use `sync_address_books`, source-bound `sync_contact_cards`, or
   combined `sync_contacts`; browse via generation-bound `people_page` and
-  `person`; write one explicit destination with `create_contact` /
+  `person`; list one account's books with `address_books` and one person's live
+  source cards with `person_sources` (the two reads a host needs *before* a write:
+  where a new card may go, and which stored card a person's values live in, since a
+  person is several cards and a merged person's values must not be written back into
+  one account's book); write one explicit destination with `create_contact` /
   `patch_contact` / `delete_contact`; fetch authenticated media with
   `contact_photo`; and compose recipients with `recipient_suggestions` plus the
   history-forget/clear methods. Unsupported destination fields are rejected

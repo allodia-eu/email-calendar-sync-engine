@@ -23,6 +23,7 @@ use crate::{ApiError, clock::SystemClock};
 mod calendar_writes;
 mod contact_photo;
 mod contact_query;
+mod contact_reads;
 mod contacts;
 mod reads;
 mod sync;

@@ -2,7 +2,7 @@ use engine_core::{
     contact::{
         ContactCard, ContactEmail, ContactField, ContactKind, ContactName, ContactNote,
         ContactPatch, ContactPhone, ContactProperty, ContactResource, FieldPatch, NameComponent,
-        NameComponentKind, PropertyId,
+        NameComponentKind, Organization, OrganizationUnit, PropertyId, Title,
     },
     ids::{AddressBookId, ContactId},
     membership::Memberships,
@@ -164,6 +164,25 @@ fn writable_card() -> ContactCard {
             ..ContactPhone::default()
         }),
     );
+    card.organizations.insert(
+        id("organization"),
+        ContactProperty::new(Organization {
+            name: "Analytical Engines".into(),
+            units: vec![OrganizationUnit {
+                name: "Research".into(),
+                ..OrganizationUnit::default()
+            }],
+            ..Organization::default()
+        }),
+    );
+    card.titles.insert(
+        id("title"),
+        ContactProperty::new(Title {
+            name: "Mathematician".into(),
+            kind: Some("title".into()),
+            ..Title::default()
+        }),
+    );
     card.notes.insert(
         id("note"),
         ContactProperty::new(ContactNote::new("First programmer")),
@@ -189,6 +208,8 @@ fn create_vcard_includes_every_advertised_field() {
         "FN:Ada Lovelace",
         "EMAIL:ada@example.test",
         "TEL:+44 123",
+        "ORG:Analytical Engines;Research",
+        "TITLE:Mathematician",
         "NOTE:First programmer",
         "URL:https://ada.example",
         "CATEGORIES:mathematician,programmer",
@@ -386,4 +407,93 @@ fn create_writes_structured_name_components_and_escapes_separators() {
         ..ContactName::default()
     });
     assert!(!build_vcard(&plain).contains("\r\nN:"));
+}
+
+/// `ORG` and `TITLE` are the two fields the contacts editor shows and every other adapter
+/// already accepts, so CardDAV writes them too. Both carry a trap the assertions pin: an
+/// organisation's units are `;`-joined **after** each component is escaped, and a value read
+/// from `ROLE` is written back as `ROLE` rather than promoted to a job title.
+#[test]
+fn create_and_patch_write_organizations_and_titles() {
+    let mut card = writable_card();
+    card.organizations.insert(
+        id("awkward"),
+        ContactProperty::new(Organization {
+            name: "Babbage; Sons".into(),
+            ..Organization::default()
+        }),
+    );
+    card.titles.insert(
+        id("role"),
+        ContactProperty::new(Title {
+            name: "Analyst".into(),
+            kind: Some("role".into()),
+            ..Title::default()
+        }),
+    );
+    let raw = build_vcard(&card);
+    assert!(raw.contains("ORG:Babbage\\; Sons\r\n"), "{raw}");
+    assert!(raw.contains("ROLE:Analyst"), "{raw}");
+
+    let reparsed = parse_vcard(
+        &raw,
+        ContactId::try_from("/contacts/ada.vcf").unwrap(),
+        AddressBookId::try_from("/contacts/").unwrap(),
+        true,
+    )
+    .unwrap();
+    let organizations: Vec<_> = reparsed
+        .organizations
+        .values()
+        .map(|entry| entry.value.clone())
+        .collect();
+    assert!(
+        organizations
+            .iter()
+            .any(|organization| organization.name == "Babbage; Sons"
+                && organization.units.is_empty()),
+        "{organizations:?}"
+    );
+    assert!(
+        organizations
+            .iter()
+            .any(|organization| organization.name == "Analytical Engines"
+                && organization
+                    .units
+                    .iter()
+                    .any(|unit| unit.name == "Research")),
+        "{organizations:?}"
+    );
+    let titles: Vec<_> = reparsed
+        .titles
+        .values()
+        .map(|entry| (entry.value.name.clone(), entry.value.kind.clone()))
+        .collect();
+    assert!(
+        titles.contains(&("Analyst".to_owned(), Some("role".to_owned()))),
+        "{titles:?}"
+    );
+
+    // The patch path replaces both properties and leaves nothing of the old ones behind — a
+    // `ROLE` the card carried included, since `TITLE` and `ROLE` are one field here.
+    let mut base = writable_card();
+    base.raw_vcard = Some(RawVcard::new(
+        "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada\r\nORG:Old Firm\r\nROLE:Clerk\r\nEND:VCARD\r\n",
+    ));
+    let mut patch = ContactPatch::default();
+    patch
+        .set_properties(ContactField::Organizations, &card.organizations)
+        .unwrap();
+    patch
+        .set_properties(ContactField::Titles, &card.titles)
+        .unwrap();
+    let patched = patch_vcard(&base, &patch).unwrap();
+    assert!(!patched.contains("Old Firm"), "{patched}");
+    assert!(!patched.contains("Clerk"), "{patched}");
+    assert!(
+        patched.contains("ORG:Analytical Engines;Research"),
+        "{patched}"
+    );
+    assert!(patched.contains("TITLE:Mathematician"), "{patched}");
+    assert!(patched.contains("ROLE:Analyst"), "{patched}");
 }
