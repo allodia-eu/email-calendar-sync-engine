@@ -308,6 +308,8 @@ pub(crate) fn supported_fields() -> ContactFieldSet {
         ContactField::Name,
         ContactField::Emails,
         ContactField::Phones,
+        ContactField::Organizations,
+        ContactField::Titles,
         ContactField::Notes,
         ContactField::Urls,
         ContactField::Keywords,

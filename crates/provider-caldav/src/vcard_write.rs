@@ -8,7 +8,7 @@
 
 use engine_core::contact::{
     ContactCard, ContactEmail, ContactKind, ContactName, ContactNote, ContactPatch, ContactPhone,
-    ContactProperty, ContactResource, FieldPatch, PropertyId,
+    ContactProperty, ContactResource, FieldPatch, Organization, PropertyId, Title,
 };
 
 use crate::{
@@ -45,6 +45,31 @@ fn structured_name_line(name: &ContactName) -> Option<String> {
         .then(|| format!("N:{}", fields.join(";")))
 }
 
+/// Serializes one `ORG` line: the organization name, then each nested unit.
+///
+/// Each component is escaped and the `;` separators added afterwards, never the other way
+/// round: `escape` encodes `;` itself, so escaping a pre-joined string would reach the server
+/// as a single organisation name with literal semicolons in it.
+fn organization_line(organization: &Organization) -> String {
+    let mut parts = vec![escape(&organization.name)];
+    parts.extend(organization.units.iter().map(|unit| escape(&unit.name)));
+    format!("ORG:{}", parts.join(";"))
+}
+
+/// Serializes one title as the property it was read from.
+///
+/// RFC 6350 has two: `TITLE` is a job title, `ROLE` is a function performed. The parser
+/// records which one a value came from in `kind`, and writing both back as `TITLE` would
+/// silently promote every role to a job title on the next sync.
+fn title_line(title: &Title) -> String {
+    let property = if title.kind.as_deref() == Some("role") {
+        "ROLE"
+    } else {
+        "TITLE"
+    };
+    format!("{property}:{}", escape(&title.name))
+}
+
 pub(crate) fn build_vcard(card: &ContactCard) -> String {
     let mut lines = vec!["BEGIN:VCARD".into(), "VERSION:4.0".into()];
     if let Some(uid) = &card.uid {
@@ -62,6 +87,12 @@ pub(crate) fn build_vcard(card: &ContactCard) -> String {
     }
     for phone in card.phones.values() {
         lines.push(format!("TEL:{}", escape(&phone.value.number)));
+    }
+    for organization in card.organizations.values() {
+        lines.push(organization_line(&organization.value));
+    }
+    for title in card.titles.values() {
+        lines.push(title_line(&title.value));
     }
     for note in card.notes.values() {
         lines.push(format!("NOTE:{}", escape(&note.value.note)));
@@ -94,6 +125,10 @@ pub(crate) fn patch_vcard(base: &ContactCard, patch: &ContactPatch) -> Result<St
             engine_core::contact::ContactField::Name => &["FN", "N"],
             engine_core::contact::ContactField::Emails => &["EMAIL"],
             engine_core::contact::ContactField::Phones => &["TEL"],
+            // Both, because the two are one field here and the parser reads either into
+            // `titles`: removing only `TITLE` would leave a stale `ROLE` beside the new value.
+            engine_core::contact::ContactField::Titles => &["TITLE", "ROLE"],
+            engine_core::contact::ContactField::Organizations => &["ORG"],
             engine_core::contact::ContactField::Notes => &["NOTE"],
             engine_core::contact::ContactField::Urls => &["URL"],
             engine_core::contact::ContactField::Keywords => &["CATEGORIES"],
@@ -162,6 +197,20 @@ fn insert_patch_lines(
                 decode(value)?;
             for phone in values.values() {
                 insert_before_end(lines, format!("TEL:{}", escape(&phone.value.number)));
+            }
+        }
+        ContactField::Organizations => {
+            let values: std::collections::BTreeMap<PropertyId, ContactProperty<Organization>> =
+                decode(value)?;
+            for organization in values.values() {
+                insert_before_end(lines, organization_line(&organization.value));
+            }
+        }
+        ContactField::Titles => {
+            let values: std::collections::BTreeMap<PropertyId, ContactProperty<Title>> =
+                decode(value)?;
+            for title in values.values() {
+                insert_before_end(lines, title_line(&title.value));
             }
         }
         ContactField::Notes => {

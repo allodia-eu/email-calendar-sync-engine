@@ -3,8 +3,12 @@
 use std::time::Duration;
 
 use engine_core::{
-    contact::{ContactCard, ContactKind},
-    ids::AccountId,
+    contact::{
+        ContactCard, ContactDraft, ContactEmail, ContactField, ContactKind, ContactName,
+        ContactPatch, ContactProperty, Organization, OrganizationUnit, PropertyId, Title,
+    },
+    ids::{AccountId, ContactId},
+    membership::Memberships,
     sync::SyncUpdate,
 };
 use engine_provider::{ContactSourceSync, ContactsProvider};
@@ -191,4 +195,163 @@ async fn a_seeded_photo_arrives_and_a_missing_one_is_an_absence_not_a_failure() 
         group.media.is_empty(),
         "a card with no PHOTO advertises no media"
     );
+}
+
+/// The write path against a real CardDAV server, for the two properties the offline suite
+/// cannot vouch for: `ORG` and `TITLE`.
+///
+/// The offline fakes answer canned bytes whatever vCard they are sent, so a create that the
+/// server would reject, or an organisation whose units it stores as one run-on name, passes
+/// every offline test. What this pins is the whole round trip through Stalwart: create, read
+/// back, patch, read back again.
+#[tokio::test]
+async fn a_created_card_keeps_its_organization_and_title_through_a_patch() {
+    let Some(harness) = Harness::from_env() else {
+        eprintln!("skipping contact write: STALWART_HTTP_ADDR unset");
+        return;
+    };
+    harness
+        .wait_until_ready(Duration::from_secs(30))
+        .expect("harness ready");
+    let provider = CardDavProvider::connect(CardDavConfig::new(
+        format!("http://{}", harness.http_addr),
+        Credentials::Basic {
+            username: harness.account.clone(),
+            password: harness.password.clone(),
+        },
+    ))
+    .await
+    .expect("CardDAV connect");
+    let account = AccountId::try_from("contact-write").unwrap();
+    let destination = provider
+        .contact_destination()
+        .expect("writable destination");
+
+    let mut card = ContactCard::new(
+        ContactId::try_from("ignored-on-create").unwrap(),
+        Memberships::of_one(destination.address_book.clone()),
+    );
+    // A fresh uid per run: a create is `If-None-Match: *`, so a run that aborted before its
+    // cleanup would otherwise leave a card that 412s every later run.
+    let uid = format!(
+        "live-org-title-{}@test.local",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_nanos()
+    );
+    card.uid = Some(uid);
+    card.kind = ContactKind::Individual;
+    card.name = Some(ContactName {
+        full: Some("Grace Hopper".into()),
+        ..ContactName::default()
+    });
+    card.emails.insert(
+        PropertyId::new("email").unwrap(),
+        ContactProperty::new(ContactEmail::new("grace@test.local")),
+    );
+    card.organizations.insert(
+        PropertyId::new("organization").unwrap(),
+        ContactProperty::new(Organization {
+            name: "Babbage; Sons".into(),
+            units: vec![OrganizationUnit {
+                name: "Research".into(),
+                ..OrganizationUnit::default()
+            }],
+            ..Organization::default()
+        }),
+    );
+    card.titles.insert(
+        PropertyId::new("title").unwrap(),
+        ContactProperty::new(Title {
+            name: "Rear Admiral".into(),
+            kind: Some("title".into()),
+            ..Title::default()
+        }),
+    );
+
+    let created = provider
+        .create_contact(
+            &account,
+            &ContactDraft {
+                address_book: destination.address_book.clone(),
+                card: card.clone(),
+            },
+        )
+        .await
+        .expect("create");
+    let stored = provider
+        .fetch_contact(&account, &created.contact)
+        .await
+        .expect("read the created card back");
+    let organization = stored
+        .organizations
+        .values()
+        .next()
+        .expect("the server kept the organisation");
+    // The escaped `;` inside the name survives as one name, and the unit stays a unit: a
+    // writer that escaped the joined string, or a parser that split on every `;`, breaks
+    // exactly here and nowhere the offline fakes can see.
+    assert_eq!(organization.value.name, "Babbage; Sons");
+    assert_eq!(
+        organization
+            .value
+            .units
+            .iter()
+            .map(|unit| unit.name.clone())
+            .collect::<Vec<_>>(),
+        vec!["Research".to_owned()]
+    );
+    let title = stored
+        .titles
+        .values()
+        .next()
+        .expect("the server kept the title");
+    assert_eq!(title.value.name, "Rear Admiral");
+
+    let mut replacement = std::collections::BTreeMap::new();
+    replacement.insert(
+        PropertyId::new("title").unwrap(),
+        ContactProperty::new(Title {
+            name: "Commodore".into(),
+            kind: Some("title".into()),
+            ..Title::default()
+        }),
+    );
+    let mut patch = ContactPatch::default();
+    patch
+        .set_properties(ContactField::Titles, &replacement)
+        .unwrap();
+    provider
+        .patch_contact(&account, &stored, &patch)
+        .await
+        .expect("patch");
+    let patched = provider
+        .fetch_contact(&account, &created.contact)
+        .await
+        .expect("read the patched card back");
+    assert_eq!(
+        patched
+            .titles
+            .values()
+            .map(|entry| entry.value.name.clone())
+            .collect::<Vec<_>>(),
+        vec!["Commodore".to_owned()]
+    );
+    // The organisation was not in the patch, so the raw-preserving edit must have left it.
+    assert_eq!(
+        patched
+            .organizations
+            .values()
+            .next()
+            .expect("the patch kept the organisation")
+            .value
+            .name,
+        "Babbage; Sons"
+    );
+
+    provider
+        .delete_contact(&account, &patched)
+        .await
+        .expect("clean up");
 }

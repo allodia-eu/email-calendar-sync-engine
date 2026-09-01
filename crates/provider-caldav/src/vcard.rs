@@ -254,7 +254,11 @@ fn organization(
     parameters: &[&str],
     index: usize,
 ) -> Result<(), CalDavError> {
-    let mut parts = value.split(';').map(unescape);
+    // `split_escaped_list`, not `split(';')`: `;` separates an organisation's units *and* is
+    // a character an organisation name may contain, escaped as `\;` (RFC 6350 §3.4). A plain
+    // split reads "Babbage\; Sons" as a firm called `Babbage\` with a department called
+    // ` Sons`, and the next write files that back.
+    let mut parts = split_escaped_list(value, ';').into_iter();
     let organization = Organization {
         name: parts.next().unwrap_or_default(),
         units: parts
