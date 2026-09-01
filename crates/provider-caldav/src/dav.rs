@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use quick_xml::{Reader, escape::unescape, events::Event};
+use quick_xml::{Reader, escape::resolve_predefined_entity, events::Event, name::LocalName};
 
 use crate::error::CalDavError;
 
@@ -133,7 +133,7 @@ pub(crate) fn has_precondition(body: &str, local: &str) -> bool {
     loop {
         match reader.read_event() {
             Ok(Event::Start(e) | Event::Empty(e)) => {
-                if local_name(e.name().as_ref()) == local {
+                if local_name(e.local_name()) == local {
                     return true;
                 }
             }
@@ -169,7 +169,7 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                 break;
             }
             Event::Start(start) => {
-                let name = local_name(start.name().as_ref());
+                let name = local_name(start.local_name());
                 if name == "response" {
                     response = Some(DavResponse::default());
                 } else if name == "propstat" {
@@ -185,28 +185,37 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                 // push state; only `<resourcetype>`'s and `<privilege>`'s children
                 // carry meaning here — plus an empty `<current-user-privilege-set/>`,
                 // which is a server saying "no privileges", not "no answer".
-                let name = local_name(empty.name().as_ref());
+                let name = local_name(empty.local_name());
                 record_resourcetype_child(&path, &name, &mut propstat);
                 record_privilege(&path, &name, &mut propstat);
             }
-            Event::Text(bytes) => {
-                let decoded = bytes
-                    .decode()
+            // A `Text` run is already the literal characters: the reader hands every
+            // `&…;` back separately as `GeneralRef`, so the run itself can never hold
+            // one. Line endings are deliberately *not* normalized (`xml10_content()`):
+            // the payload here is an iCalendar/vCard object whose CRLF is significant
+            // and which we hand back to a server verbatim, so the bytes are kept.
+            Event::Text(chunk) => text.push_str(&chunk),
+            Event::GeneralRef(reference) => {
+                let resolved = reference
+                    .resolve_char_ref()
                     .map_err(|e| CalDavError::xml(e.to_string()))?;
-                let unescaped = unescape(&decoded).map_err(|e| CalDavError::xml(e.to_string()))?;
-                text.push_str(&unescaped);
+                match resolved {
+                    Some(character) => text.push(character),
+                    // Only the five predefined entities are resolvable: a `multistatus`
+                    // carries no DTD, so anything else is undeclared and the document is
+                    // not well-formed.
+                    None => match resolve_predefined_entity(&reference) {
+                        Some(expansion) => text.push_str(expansion),
+                        None => {
+                            return Err(CalDavError::xml(format!(
+                                "undeclared entity `&{};` in multistatus document",
+                                &*reference
+                            )));
+                        }
+                    },
+                }
             }
-            Event::GeneralRef(bytes) => {
-                let decoded = bytes
-                    .decode()
-                    .map_err(|e| CalDavError::xml(e.to_string()))?;
-                let entity = format!("&{decoded};");
-                let unescaped = unescape(&entity).map_err(|e| CalDavError::xml(e.to_string()))?;
-                text.push_str(&unescaped);
-            }
-            Event::CData(bytes) => {
-                text.push_str(&String::from_utf8_lossy(&bytes));
-            }
+            Event::CData(chunk) => text.push_str(&chunk),
             Event::End(_) => {
                 route_closed_element(
                     &path,
@@ -352,14 +361,10 @@ fn commit_propstat(
     }
 }
 
-/// The local part of a possibly-prefixed XML name, lowercased
+/// An element's already-unprefixed local name, lowercased
 /// (`D:calendar-home-set` → `calendar-home-set`).
-fn local_name(qualified: &[u8]) -> String {
-    let local = qualified
-        .iter()
-        .rposition(|&b| b == b':')
-        .map_or(qualified, |i| &qualified[i + 1..]);
-    String::from_utf8_lossy(local).to_ascii_lowercase()
+fn local_name(local: LocalName<'_>) -> String {
+    local.as_ref().to_ascii_lowercase()
 }
 
 /// Extracts the numeric code from an HTTP status line (`HTTP/1.1 200 OK` → 200).

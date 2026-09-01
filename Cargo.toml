@@ -142,7 +142,7 @@ rustls-platform-verifier = "0.7.0"
 # right tool for hostile input (calendar data is untrusted — `north-star.md`
 # security), and hand-rolling one would be a correctness/safety risk for no gain.
 # No C dependency, so it cross-compiles to mobile like the rest of the stack.
-quick-xml = "0.40.1"
+quick-xml = "0.42.0"
 # Pure-Rust MIME/RFC 5322 parser (`engine-mime`), by the same authors as our
 # Stalwart test target. Mail bodies are hostile input (`north-star.md` security),
 # and charset/encoded-word/nested-multipart decoding is spec-heavy and a known

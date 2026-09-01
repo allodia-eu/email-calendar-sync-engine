@@ -132,6 +132,41 @@ fn unescapes_entity_escaped_property_text() {
 }
 
 #[test]
+fn resolves_numeric_and_hex_character_references_in_property_text() {
+    // A server may spell a character as a numeric reference rather than a named
+    // entity — `&#38;` / `&#x26;` for `&`, and `&#13;` for the CR that XML
+    // end-of-line normalization would otherwise eat out of a folded value.
+    let xml = "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/cal/</D:href><D:propstat><D:prop><D:displayname>R&#38;D&#x26;More&#13;&#10;next</D:displayname></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>";
+    let parsed = parse_multistatus(xml).unwrap();
+    assert_eq!(
+        parsed.responses[0].props.get("displayname"),
+        Some("R&D&More\r\nnext")
+    );
+}
+
+#[test]
+fn an_out_of_range_character_reference_is_an_error_not_a_panic() {
+    // `&#x110000;` is past the last Unicode scalar. Hostile input must come back
+    // as a classified error, never a panic — the whole point of this parser.
+    let xml = "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/cal/&#x110000;/</D:href></D:response></D:multistatus>";
+    assert!(parse_multistatus(xml).is_err());
+}
+
+#[test]
+fn an_undeclared_entity_is_an_error_not_a_silent_hole() {
+    // A `multistatus` carries no DTD, so only the five predefined entities are
+    // declared. Dropping an unknown one would hand a *truncated* value to the
+    // caller — a shortened href or a mangled iCalendar — which is worse than
+    // refusing the document.
+    let xml = "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/cal/&nbsp;/</D:href><D:propstat><D:prop><D:displayname>x</D:displayname></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>";
+    let err = parse_multistatus(xml).unwrap_err();
+    assert!(
+        err.to_string().contains("&nbsp;"),
+        "the error should name the entity it could not resolve: {err}"
+    );
+}
+
+#[test]
 fn parses_sync_collection_with_etags_and_cdata_calendar_data() {
     let xml = include_str!("../tests/fixtures/sync-initial.xml");
     let parsed = parse_multistatus(xml).unwrap();
