@@ -44,8 +44,12 @@
 //! - `mutate` — applying a [`MailEdit`](engine_provider::MailEdit) (`UID STORE`/`MOVE`/`EXPUNGE`)
 //!   to the bound mailbox.
 //! - `filing` — SMTP submission + `APPEND` filing of sent copies and drafts.
-//! - `config` — [`ImapConfig`]: the dial settings (address, TLS server name, credentials, SMTP
+//! - `config` — [`ImapConfig`]: the dial settings (address, TLS server name, [`Credentials`], SMTP
 //!   submission, sync depth, connect observer).
+//! - `credentials` / `sasl` — [`Credentials`] (a password, or an OAuth 2.0 access token) and the
+//!   two SASL mechanisms that carry a token: `OAUTHBEARER` (RFC 7628) and `XOAUTH2`. Which one is
+//!   negotiated from the server's advertised `AUTH=` set, so a host never has to know which
+//!   provider it is talking to.
 //! - `provider` — [`ImapProvider`], the [`Provider`](engine_provider::Provider) impl.
 //! - `idle` / `watch` — push via `IDLE` (RFC 2177): [`ImapWatcher`] holds a dedicated standing
 //!   connection and turns the `IDLE`/`DONE` keep-alive loop into a
@@ -59,7 +63,9 @@ mod base64;
 mod bodystructure;
 mod capability;
 mod config;
+mod credentials;
 mod cursor;
+mod dial;
 mod encoded_word;
 mod error;
 mod fetch;
@@ -74,7 +80,9 @@ mod place;
 mod provider;
 mod qresync;
 mod report;
+mod sasl;
 mod smtp;
+mod smtp_auth;
 mod stream;
 mod sync;
 mod target;
@@ -82,6 +90,7 @@ mod tls_info;
 mod tokenize;
 mod transport;
 mod transport_append;
+mod transport_auth;
 mod transport_command;
 mod transport_session;
 mod transport_starttls;
@@ -95,6 +104,7 @@ mod integration;
 mod mock;
 
 pub use config::ImapConfig;
+pub use credentials::Credentials;
 pub use error::ImapError;
 pub use provider::ImapProvider;
 pub use watch::{DEFAULT_IDLE_KEEPALIVE, ImapWatcher};

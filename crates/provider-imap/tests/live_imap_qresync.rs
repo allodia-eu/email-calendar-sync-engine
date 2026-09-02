@@ -24,7 +24,7 @@ use engine_core::{
 use engine_provider::{MailEdit, Provider};
 use engine_store::{MailListRow, MailSelector, ManualClock, StoreRead, WorkerId};
 use engine_sync::{IgnoreCommits, StreamTuning, sync_mail};
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
 use tokio_rustls::{TlsConnector, client::TlsStream};
@@ -49,8 +49,7 @@ async fn connect(
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        harness.account.as_str(),
-        harness.password.as_str(),
+        Credentials::password(harness.account.as_str(), harness.password.as_str()),
     );
     ImapProvider::connect(
         &config,
