@@ -1,9 +1,13 @@
-//! Dialing an IMAP session: TCP + implicit TLS, `LOGIN`, and the capability
-//! negotiation both the provider and the watcher build on.
+//! Opening an authenticated IMAP session: TCP, TLS (implicit or `STARTTLS`),
+//! authentication, and capability negotiation.
 //!
-//! Beside [`provider`](crate::provider) rather than inside it because the `Provider`
-//! impl is one trait impl block and cannot be split, so a file at the line limit
-//! splits here, along the line between dialing a session and serving one.
+//! Split from [`crate::provider`] (which is at the file-size limit) because it answers a
+//! different question: that module is the [`Provider`](engine_provider::Provider)
+//! surface a host drives, this one is how a session comes to exist at all. Two callers
+//! share it, which is why it is not a method —
+//! [`ImapProvider::connect`](crate::ImapProvider::connect) and
+//! [`ImapWatcher::connect`](crate::ImapWatcher::connect), the latter needing its **own**
+//! connection because a socket in `IDLE` cannot also `FETCH`.
 
 use engine_provider::{ConnectObserver, ConnectStep, TlsVersion};
 use tokio::{
@@ -14,17 +18,19 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::{ImapConfig, ImapSecurity},
+    credentials::Credentials,
     error::ImapError,
     tls_info,
     transport::Connection,
 };
 
-/// Opens a TCP + implicit-TLS connection, logs in, and negotiates capabilities
-/// (ENABLE QRESYNC + record IDLE) — the shared dial both [`ImapProvider::connect`]
-/// and [`ImapWatcher::connect`](crate::watch::ImapWatcher::connect) build their session
-/// on. Factored out so a watcher opens its **own** dedicated connection (push needs a
+/// Opens a TCP + implicit-TLS connection, authenticates, and negotiates capabilities
+/// (ENABLE QRESYNC + record IDLE) — the shared dial both
+/// [`ImapProvider::connect`](crate::ImapProvider::connect) and
+/// [`ImapWatcher::connect`](crate::watch::ImapWatcher::connect) build their session on.
+/// Factored out so a watcher opens its **own** dedicated connection (push needs a
 /// standing IDLE socket separate from the sync socket) without duplicating the
-/// connect/login/negotiate sequence or exposing the config's private fields.
+/// connect/authenticate/negotiate sequence or exposing the config's private fields.
 ///
 /// Returns the session together with the TLS version its handshake agreed — the one
 /// point where the concrete stream type is still visible, before it is erased behind
@@ -32,7 +38,7 @@ use crate::{
 ///
 /// # Errors
 ///
-/// [`ImapError`] on a TCP/TLS/login failure or a bad server name.
+/// [`ImapError`] on a TCP/TLS/authentication failure or a bad server name.
 pub(crate) async fn connect_session(
     config: &ImapConfig,
     connector: &TlsConnector,
@@ -65,7 +71,7 @@ pub(crate) async fn connect_session(
     Ok((connection, tls_version))
 }
 
-/// Greets over an already-established `stream`, then logs in and negotiates
+/// Greets over an already-established `stream`, then authenticates and negotiates
 /// capabilities via [`finish_session`]. The implicit-TLS / mock path (the STARTTLS
 /// path uses [`finish_session`] directly, its greeting already read).
 ///
@@ -75,7 +81,7 @@ pub(crate) async fn connect_session(
 ///
 /// # Errors
 ///
-/// [`ImapError`] on a greeting, login, or capability-negotiation failure.
+/// [`ImapError`] on a greeting, authentication, or capability-negotiation failure.
 pub(crate) async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     stream: S,
     tls_version: Option<TlsVersion>,
@@ -84,15 +90,15 @@ pub(crate) async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     finish_session(Connection::open(stream).await?, tls_version, config).await
 }
 
-/// Logs in and negotiates the dialect over an already-greeted `connection`, reporting
-/// [`ConnectStep::TlsEstablished`] (when the handshake agreed a version), then
+/// Authenticates and negotiates the dialect over an already-greeted `connection`,
+/// reporting [`ConnectStep::TlsEstablished`] (when the handshake agreed a version), then
 /// [`ConnectStep::Authenticated`], then [`ConnectStep::Negotiated`] to the config's
 /// observer. Shared by the implicit-TLS path ([`open_session`]) and the STARTTLS resume,
 /// so both emit the same step order.
 ///
 /// # Errors
 ///
-/// [`ImapError`] on a login or capability-negotiation failure.
+/// [`ImapError`] on an authentication or capability-negotiation failure.
 async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     mut connection: Connection<S>,
     tls_version: Option<TlsVersion>,
@@ -102,7 +108,25 @@ async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     if let Some(version) = tls_version {
         observer.step(&ConnectStep::TlsEstablished(version));
     }
-    connection.login(&config.username, &config.password).await?;
+    // A password logs in; an access token goes over SASL, with the mechanism chosen
+    // from what this server advertises (`crate::sasl`). Either way the next line is the
+    // same: the observer is told the session is authenticated, not *how*.
+    match &config.credentials {
+        Credentials::Password { username, password } => {
+            connection.login(username, password).await?;
+        }
+        Credentials::OAuth2 {
+            username,
+            access_token,
+        } => {
+            // `server_name` (not the dial `addr`) is the host an `OAUTHBEARER` response
+            // names: it is the server's own name, which is what a loopback-mapped
+            // fixture and a real deployment agree on.
+            connection
+                .authenticate_oauth2(username, access_token, &config.server_name, config.port())
+                .await?;
+        }
+    }
     observer.step(&ConnectStep::Authenticated);
     // Settle the dialect and the extension set: `CAPABILITY`, then one `ENABLE` for
     // IMAP4rev2 where offered and for anything else that needs announcing. A server that
@@ -115,3 +139,7 @@ async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     observer.step(&ConnectStep::negotiated(dialect, &extensions));
     Ok(connection)
 }
+
+#[cfg(test)]
+#[path = "dial_tests.rs"]
+mod tests;

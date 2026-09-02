@@ -140,6 +140,7 @@ impractical:
 | CalDAV (a second implementation) | the **SabreDAV** fixture (`docker/sabredav`) | `crates/provider-caldav/tests/live_sabredav.rs` |
 | Gmail · Google Calendar · Google People | a **throwaway Google test account** | `tools/google-oauth` mints the token; `crates/provider-google/tests/live_*.rs` |
 | Microsoft Graph | a **test Microsoft account** | `tools/graph-oauth` mints the token; `crates/provider-graph/tests/live_*.rs` |
+| IMAP/SMTP **SASL OAuth** (`OAUTHBEARER`, `XOAUTH2`) | a **throwaway Gmail account**; a **Yahoo test account** once its mail scope is approved | `tools/google-oauth token` (its default scope is already `https://mail.google.com/`) and `tools/yahoo-oauth` mint the tokens; `crates/provider-imap/tests/live_imap_oauth.rs`. Gmail advertises **both** mechanisms and so does Yahoo (observed — Yahoo's docs say otherwise), so the target does not pick the mechanism; the client's preference does. |
 
 The live tests are env-gated so the offline suite stays green without credentials — which makes them
 easy to forget. Forgetting is the failure mode this rule exists to prevent:

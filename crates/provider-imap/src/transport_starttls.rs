@@ -45,8 +45,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// [`ImapError::Protocol`] if the server does not advertise `STARTTLS`, or the
     /// classified failure of the `CAPABILITY`/`STARTTLS` command.
     pub(crate) async fn start_tls(&mut self) -> ImapResult<()> {
-        let response = self.command("CAPABILITY").await?;
-        let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
+        let capabilities = self.capabilities().await?;
         if !capabilities
             .iter()
             .any(|cap| cap.eq_ignore_ascii_case("STARTTLS"))

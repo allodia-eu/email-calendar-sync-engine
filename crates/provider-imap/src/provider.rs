@@ -31,7 +31,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream};
 
 use crate::{
     config::ImapConfig,
-    connect::connect_session,
+    dial::connect_session,
     error::ImapError,
     filing::{Redial, SmtpSender, resolve_smtp},
     mail::mailbox_from_list,
@@ -76,7 +76,9 @@ impl<S> core::fmt::Debug for ImapProvider<S> {
 }
 
 impl ImapProvider<TlsStream<TcpStream>> {
-    /// Connects over implicit TLS, logs in, and binds `mailbox` for the email scope.
+    /// Connects over implicit TLS, authenticates with the config's
+    /// [`Credentials`](crate::Credentials) — a password or an OAuth 2.0 access token —
+    /// and binds `mailbox` for the email scope.
     ///
     /// The `connector` carries the host's trust policy — the library never bakes in
     /// a root store, so a mobile host (or the self-signed test fixture) injects its
@@ -84,7 +86,7 @@ impl ImapProvider<TlsStream<TcpStream>> {
     ///
     /// # Errors
     ///
-    /// [`ImapError`] on a TCP/TLS/login failure or a bad server name.
+    /// [`ImapError`] on a TCP/TLS/authentication failure or a bad server name.
     pub async fn connect(
         config: &ImapConfig,
         connector: TlsConnector,

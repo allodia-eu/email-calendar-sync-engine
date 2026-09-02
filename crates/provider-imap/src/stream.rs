@@ -44,9 +44,9 @@ use tokio::{
 use crate::{
     cursor::MailboxCursor,
     mail::message_from_fetch,
-    provider::format_imap_date,
     sync::{FETCH_ITEMS, effective_uid_next, sync_page_selected, uid_set_spec},
     transport::Connection,
+    transport_command::format_imap_date,
 };
 
 /// Streams the bound mailbox's email for one pass. See the module docs.
