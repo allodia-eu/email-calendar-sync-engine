@@ -50,6 +50,10 @@
 //!   two SASL mechanisms that carry a token: `OAUTHBEARER` (RFC 7628) and `XOAUTH2`. Which one is
 //!   negotiated from the server's advertised `AUTH=` set, so a host never has to know which
 //!   provider it is talking to.
+//! - `probe` — [`probe_imap_auth`] / [`probe_smtp_auth`]: what a server accepts, read off its
+//!   pre-authentication `CAPABILITY`/`EHLO` **before** a credential exists. The question account
+//!   setup asks first; no credential is sent, and nothing is attempted that a provider would record
+//!   as a failed sign-in.
 //! - `provider` — [`ImapProvider`], the [`Provider`](engine_provider::Provider) impl.
 //! - `idle` / `watch` — push via `IDLE` (RFC 2177): [`ImapWatcher`] holds a dedicated standing
 //!   connection and turns the `IDLE`/`DONE` keep-alive loop into a
@@ -78,6 +82,7 @@ mod parse;
 mod parse_body;
 mod parse_qresync;
 mod place;
+mod probe;
 mod provider;
 mod qresync;
 mod report;
@@ -104,8 +109,9 @@ mod integration;
 #[cfg(test)]
 mod mock;
 
-pub use config::ImapConfig;
+pub use config::{ImapConfig, ImapSecurity};
 pub use credentials::Credentials;
 pub use error::ImapError;
+pub use probe::{AuthOffer, probe_imap_auth, probe_smtp_auth};
 pub use provider::ImapProvider;
 pub use watch::{DEFAULT_IDLE_KEEPALIVE, ImapWatcher};

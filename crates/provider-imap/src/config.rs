@@ -14,10 +14,17 @@ use crate::credentials::Credentials;
 
 /// How the IMAP session is secured: TLS from the first byte (port 993), or a
 /// cleartext connection upgraded in place with `STARTTLS` (port 143). Both present
-/// [`ImapConfig::server_name`] for the handshake; the difference is only *when* the
+/// the config's TLS server name for the handshake; the difference is only *when* the
 /// handshake runs (`docs/agent-guidance/imap-smtp.md`).
+///
+/// Public because [`probe_imap_auth`](crate::probe_imap_auth) and
+/// [`probe_smtp_auth`](crate::probe_smtp_auth) take it: a probe runs before there is a
+/// credential, so it has no [`ImapConfig`] to read it off. It names the submission
+/// transport too, as the rest of this crate's SMTP surface does
+/// ([`ImapConfig::with_smtp_starttls`]): the two secured shapes are identical on both
+/// protocols, and a second enum for them would only make them look different.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ImapSecurity {
+pub enum ImapSecurity {
     /// Implicit TLS: the socket is TLS-wrapped before the greeting (port 993).
     ImplicitTls,
     /// STARTTLS: connect in the clear, negotiate the TLS upgrade, then log in

@@ -125,7 +125,7 @@ where
 /// Read **per line**, never from the joined reply text: the extension keyword is only
 /// meaningful at the start of its own line, so joining first lets a mechanism name in
 /// one line's prose be read as another's.
-fn advertised_mechanisms(extensions: &[String]) -> Vec<&str> {
+pub(crate) fn advertised_mechanisms(extensions: &[String]) -> Vec<&str> {
     extensions
         .iter()
         .filter_map(|line| {
