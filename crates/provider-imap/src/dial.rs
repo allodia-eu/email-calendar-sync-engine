@@ -43,13 +43,41 @@ pub(crate) async fn connect_session(
     config: &ImapConfig,
     connector: &TlsConnector,
 ) -> Result<(Connection<TlsStream<TcpStream>>, Option<TlsVersion>), ImapError> {
-    let tcp = TcpStream::connect(&config.addr).await?;
-    let server_name = ServerName::try_from(config.server_name.clone())
+    let (connection, tls_version) = open_secured(
+        &config.addr,
+        &config.server_name,
+        config.security,
+        connector,
+    )
+    .await?;
+    let connection = finish_session(connection, tls_version, config).await?;
+    Ok((connection, tls_version))
+}
+
+/// Connects to `addr`, secures the socket, and reads the greeting: the half of a dial
+/// that happens **before anyone says who they are**.
+///
+/// Split from [`connect_session`] because two callers need exactly this much and no
+/// more. That one goes on to authenticate; [`crate::probe`] deliberately does not,
+/// because "what would this server accept?" is asked at account setup, when there is no
+/// credential to present yet.
+///
+/// # Errors
+///
+/// [`ImapError`] on a TCP/TLS/greeting failure or a bad server name.
+pub(crate) async fn open_secured(
+    addr: &str,
+    server_name: &str,
+    security: ImapSecurity,
+    connector: &TlsConnector,
+) -> Result<(Connection<TlsStream<TcpStream>>, Option<TlsVersion>), ImapError> {
+    let tcp = TcpStream::connect(addr).await?;
+    let server_name = ServerName::try_from(server_name.to_owned())
         .map_err(|e| ImapError::bad(format!("invalid TLS server name: {e}")))?;
     // Implicit TLS wraps the socket now; STARTTLS runs the plaintext handshake command
     // first and upgrades the raw socket in place. Either way the result is one
     // `TlsStream`, so the rest of the dial — and every downstream type — is identical.
-    let (tls, resumed) = match config.security {
+    let (tls, resumed) = match security {
         ImapSecurity::ImplicitTls => (connector.connect(server_name, tcp).await?, false),
         ImapSecurity::StartTls => {
             let mut plain = Connection::open(tcp).await?;
@@ -64,42 +92,27 @@ pub(crate) async fn connect_session(
     // STARTTLS already consumed the one greeting on the plaintext connection, so it
     // resumes without reading another; implicit TLS reads its greeting here.
     let connection = if resumed {
-        finish_session(Connection::resume(tls), tls_version, config).await?
+        Connection::resume(tls)
     } else {
-        open_session(tls, tls_version, config).await?
+        Connection::open(tls).await?
     };
     Ok((connection, tls_version))
-}
-
-/// Greets over an already-established `stream`, then authenticates and negotiates
-/// capabilities via [`finish_session`]. The implicit-TLS / mock path (the STARTTLS
-/// path uses [`finish_session`] directly, its greeting already read).
-///
-/// Generic over the stream, so the offline suite asserts the exact step sequence over
-/// a `MockStream` — the handshake has already happened by the time this is called, so
-/// passing `tls_version` in keeps the emitted order identical to the live dial's.
-///
-/// # Errors
-///
-/// [`ImapError`] on a greeting, authentication, or capability-negotiation failure.
-pub(crate) async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
-    stream: S,
-    tls_version: Option<TlsVersion>,
-    config: &ImapConfig,
-) -> Result<Connection<S>, ImapError> {
-    finish_session(Connection::open(stream).await?, tls_version, config).await
 }
 
 /// Authenticates and negotiates the dialect over an already-greeted `connection`,
 /// reporting [`ConnectStep::TlsEstablished`] (when the handshake agreed a version), then
 /// [`ConnectStep::Authenticated`], then [`ConnectStep::Negotiated`] to the config's
-/// observer. Shared by the implicit-TLS path ([`open_session`]) and the STARTTLS resume,
-/// so both emit the same step order.
+/// observer.
+///
+/// Generic over the stream, which is what lets the offline suite assert the exact step
+/// sequence over a `MockStream`: the handshake has already happened by the time this is
+/// called, so passing `tls_version` in keeps the emitted order identical to a live
+/// dial's.
 ///
 /// # Errors
 ///
 /// [`ImapError`] on an authentication or capability-negotiation failure.
-async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
+pub(crate) async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     mut connection: Connection<S>,
     tls_version: Option<TlsVersion>,
     config: &ImapConfig,

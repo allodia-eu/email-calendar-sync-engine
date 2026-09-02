@@ -38,6 +38,7 @@ is authoritative for the `provider-caldav` calendar client.
   shared by `ImapProvider::connect` and the watcher's own connection),
   `credentials`/`sasl` (a password or an OAuth 2.0 access token, and the two SASL
   mechanisms that carry a token — see **Authentication** below),
+  `probe` (what a server accepts, read *before* there is a credential to present),
   `transport_auth`/`smtp_auth` (the `AUTHENTICATE`/`AUTH` exchanges those drive),
   `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
   `ENABLE`/`SELECT [(CONDSTORE)]`/`UID FETCH [(CHANGEDSINCE … VANISHED)]`/`LIST`/
@@ -318,6 +319,40 @@ would exercise it rested on a documentation claim the server disproves.
   prints the scopes a token actually carries, which is the first thing to look at when
   IMAP answers `AUTHENTICATE` with `NO`: a token minted without approved mail scope looks
   perfectly valid and opens nothing.
+
+### Asking before there is a credential: `probe_imap_auth` / `probe_smtp_auth`
+
+A host setting up an account has to decide **which credential to ask the user for**, and
+that decision is only the server's to make. `probe_imap_auth(addr, server_name, security,
+connector)` and `probe_smtp_auth(…, ehlo_domain, connector)` (`probe.rs`) dial, read the
+pre-authentication `CAPABILITY` / `EHLO`, and return an `AuthOffer`: the advertised
+mechanisms verbatim, plus `password` and `oauth`. They share `dial::open_secured` with
+the real connect, so a probe is byte-for-byte the dial an account would make, minus the
+credential.
+
+- **Nothing is presented, and nothing is recorded against the account.** RFC 7628 §3.2.2
+  lets a server describe its OAuth configuration — an `openid-configuration` URL
+  included — in the challenge it returns when it *rejects* a token, so a client could
+  discover the authorization server by sending a deliberately invalid one. This does not.
+  It would leave a failed authentication on the user's account before they had signed in
+  once, on the screen where they are most likely to give up, and the field is optional:
+  Stalwart answers a bad token with a bare `NO [AUTHENTICATIONFAILED]` and no challenge.
+  A host discovers the authorization server over HTTPS instead.
+- **On a STARTTLS dial, the reading is the post-upgrade one.** A server commonly withholds
+  its mechanism list, or advertises `LOGINDISABLED`, until the link is secured, so the
+  cleartext capability describes a session nobody will use. Same on SMTP: the `EHLO` that
+  negotiated the upgrade is not the one whose `AUTH` line counts.
+- **`LOGINDISABLED` and "no `AUTH=` mechanism" are different answers.** The capability
+  withdraws the `LOGIN` *command* (RFC 3501 §6.2.3), not the password: a server may
+  disable it and still take `AUTH=PLAIN`, and a server advertising no mechanism at all
+  still takes `LOGIN`. Reading either as "no password" hides the only route that works.
+  Microsoft 365 is the case where both are true at once, and where the honest answer is
+  that a password field would be a dead end.
+- **SMTP has no such fallback.** Submission authenticates over SASL or not at all
+  (RFC 4954), so an `AUTH` line naming no password mechanism means no password.
+- **Every failure means one thing to a caller: the question went unanswered.** A refused
+  dial, a bad server name, an unadvertised `STARTTLS` — a host offers what works
+  everywhere (a password) rather than a sign-in that may not exist.
 
 ## SMTP submission
 
@@ -789,6 +824,13 @@ behaviour broke; if the answer is none, the test is not proving what it claims.
   real server even though only one runs through the adapter. Yahoo is the same three
   environment variables via `tools/yahoo-oauth`, once Yahoo approves developer access to
   the mail scope.
+- **Live auth probe (`tests/live_imap_probe.rs`, harness-gated):** the offline suite pins
+  the classification against captured capability lines; only a live server shows that a
+  **STARTTLS** probe reads the post-upgrade capability rather than the cleartext one, on
+  both protocols. It also probes ten times in a row against one server, because Stalwart
+  caps concurrent connections per account: a probe that leaked a session would surface
+  there as a refused dial rather than as a leak nobody notices until a user has retyped
+  their address a few times.
 - **Real-provider exploration:** `examples/imap_explore.rs` connects to a *real*
   IMAP server over a verifying TLS connector (Mozilla roots) and lists folders +
   recent mail (read-only; opt-in `IMAP_QRESYNC` verifies the CONDSTORE/QRESYNC delta,

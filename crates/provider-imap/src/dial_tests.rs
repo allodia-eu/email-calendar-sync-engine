@@ -1,21 +1,36 @@
 //! Offline tests for the dial — the connect sequence and the steps it reports.
 //!
 //! Driven over a `MockStream`, so the exact `ConnectStep` order is asserted without a
-//! socket: the handshake has already happened by the time [`open_session`] is called,
+//! socket: the handshake has already happened by the time [`finish_session`] is called,
 //! which is why the TLS version is passed in rather than read off the stream.
 
 use engine_provider::TlsVersion;
+use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::open_session;
+use super::finish_session;
 use crate::{
     config::ImapConfig,
     credentials::Credentials,
+    error::ImapError,
     mock::{MockStream, script, written},
     sasl::Mechanism,
+    transport::Connection,
 };
 
 const GREETING: &str = "* OK ready\r\n";
 const LOGIN_OK: &str = "a1 OK LOGIN ok\r\n";
+
+/// Greets over `stream`, then runs the dial's authenticate-and-negotiate half. The live
+/// path reaches [`finish_session`] the same way, through `open_secured`'s greeting; this
+/// is that pairing over a mock, where the greeting is scripted rather than read from a
+/// socket.
+async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
+    stream: S,
+    tls_version: Option<TlsVersion>,
+    config: &ImapConfig,
+) -> Result<Connection<S>, ImapError> {
+    finish_session(Connection::open(stream).await?, tls_version, config).await
+}
 
 /// Records connect steps as the log lines a host would emit.
 #[derive(Default)]

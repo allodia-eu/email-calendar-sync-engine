@@ -107,6 +107,61 @@ where
     converse(&mut smtp, ehlo_domain, from, to, message, auth).await
 }
 
+/// Reads what a submission server advertises and nothing else: the greeting, `EHLO`,
+/// then `QUIT`. No envelope, no credential, no message.
+///
+/// The [`send`] of the probe path ([`crate::probe`]), and paired with
+/// [`extensions_after_starttls`] exactly as `send` is with [`send_after_starttls`],
+/// because the greeting is read on one and already consumed on the other.
+///
+/// # Errors
+///
+/// [`ImapError::Protocol`] if the greeting is not a `220` or `EHLO`/`HELO` is refused.
+pub(crate) async fn extensions<S>(stream: S, ehlo_domain: &str) -> ImapResult<Vec<String>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut smtp = SmtpStream::new(stream);
+    read_greeting(&mut smtp).await?;
+    finish_probe(&mut smtp, ehlo_domain).await
+}
+
+/// [`extensions`] over a stream already past its greeting and a `STARTTLS` upgrade.
+///
+/// This is the reading that counts for a STARTTLS server: `AUTH` is commonly withheld
+/// until the link is secured, so the cleartext `EHLO` that negotiated the upgrade lists
+/// mechanisms the account cannot actually use.
+///
+/// # Errors
+///
+/// [`ImapError::Protocol`] if `EHLO`/`HELO` is refused.
+pub(crate) async fn extensions_after_starttls<S>(
+    stream: S,
+    ehlo_domain: &str,
+) -> ImapResult<Vec<String>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut smtp = SmtpStream::new(stream);
+    finish_probe(&mut smtp, ehlo_domain).await
+}
+
+/// `EHLO`, then `QUIT`: the shared tail of both probe entries.
+///
+/// The `QUIT` is not politeness. A submission server logs an abandoned socket as a
+/// dropped connection, and an account whose setup is being diagnosed should not have a
+/// row of those in its provider's log before it has connected once. Its reply is
+/// discarded: the answer is already in hand, and a server that closes without one has
+/// still answered.
+async fn finish_probe<S>(smtp: &mut SmtpStream<S>, ehlo_domain: &str) -> ImapResult<Vec<String>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let (_esmtp, extensions) = ehlo(smtp, ehlo_domain).await?;
+    let _ = smtp.write_line("QUIT").await;
+    Ok(extensions)
+}
+
 /// The plaintext half of a `STARTTLS` submission (RFC 3207): reads the greeting,
 /// `EHLO`s, confirms the server advertises `STARTTLS` (refusing otherwise — so
 /// credentials never cross an un-upgradable link), issues `STARTTLS`, and on the `220`
