@@ -353,6 +353,11 @@ credential.
 - **Every failure means one thing to a caller: the question went unanswered.** A refused
   dial, a bad server name, an unadvertised `STARTTLS` — a host offers what works
   everywhere (a password) rather than a sign-in that may not exist.
+- **The `EHLO` domain is screened for CR/LF/NUL in `ehlo` itself**, not in each caller:
+  the probe is the first thing a setup screen runs, and it takes the domain straight from
+  a host, so the guard belongs where the command line is built (`converse` already
+  screened the envelope addresses it owns). One CR would append a second SMTP command
+  (RFC 5321 §2.3.8).
 
 ## SMTP submission
 

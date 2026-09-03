@@ -135,6 +135,23 @@ pub(crate) fn select<'a>(offered: impl IntoIterator<Item = &'a str>) -> Option<M
     })
 }
 
+/// The mechanism name in an IMAP `AUTH=<mech>` capability atom, or `None` for any other
+/// atom — `AUTHENTICATE`, or a bare `AUTH=` naming nothing. Case-insensitive, because a
+/// capability atom is one.
+///
+/// Lives here rather than beside either caller because both
+/// ([`Connection::authenticate_oauth2`](crate::transport::Connection::authenticate_oauth2)
+/// choosing a mechanism, and [`crate::probe`] reporting what was on offer) must read the
+/// same atom the same way: a probe that classified `AUTH=` differently from the dial
+/// would offer a screen the dial then refuses.
+pub(crate) fn advertised_mechanism(atom: &str) -> Option<&str> {
+    let (prefix, mechanism) = atom.split_at_checked("AUTH=".len())?;
+    prefix
+        .eq_ignore_ascii_case("AUTH=")
+        .then_some(mechanism)
+        .filter(|mechanism| !mechanism.is_empty())
+}
+
 /// Renders a server error challenge as failure detail.
 ///
 /// The challenge is base64 JSON (`{"status":"invalid_token",…}`) and is the only place
