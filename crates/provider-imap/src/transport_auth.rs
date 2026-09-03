@@ -72,7 +72,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let capabilities = self.capabilities().await?;
         let offered: Vec<&str> = capabilities
             .iter()
-            .filter_map(|atom| offered_mechanism(atom))
+            .filter_map(|atom| sasl::advertised_mechanism(atom))
             .collect();
         let mechanism = sasl::select(offered.iter().copied()).ok_or_else(|| {
             ImapError::auth(format!(
@@ -193,13 +193,6 @@ fn complete(status: &str, detail: &str, challenge: &str) -> ImapResult<()> {
             "unknown AUTHENTICATE completion {other}"
         ))),
     }
-}
-
-/// The mechanism name in an `AUTH=<mech>` capability atom, or `None` for any other
-/// capability. Matching is ASCII-case-insensitive: capabilities are protocol atoms.
-fn offered_mechanism(atom: &str) -> Option<&str> {
-    let (prefix, mechanism) = atom.split_at_checked("AUTH=".len())?;
-    prefix.eq_ignore_ascii_case("AUTH=").then_some(mechanism)
 }
 
 /// The payload of a `+` continuation line, or `None` if the line is not one.

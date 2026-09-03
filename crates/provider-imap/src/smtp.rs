@@ -326,6 +326,12 @@ async fn ehlo<S>(smtp: &mut SmtpStream<S>, ehlo_domain: &str) -> ImapResult<(boo
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    // The domain goes verbatim into the `EHLO`/`HELO` command line, so screen it here
+    // rather than in each caller: `converse` guards the envelope addresses it owns, and
+    // the probe entries ([`extensions`]/[`extensions_after_starttls`]) take the domain
+    // straight from a host that has not yet authenticated anything. One CR would append
+    // a second command to the line (RFC 5321 §2.3.8).
+    let ehlo_domain = reject_control("EHLO domain", ehlo_domain)?;
     smtp.write_line(&format!("EHLO {ehlo_domain}")).await?;
     let (code, lines) = smtp.read_reply_lines().await?;
     if code == 250 {
@@ -465,3 +471,7 @@ mod tests;
 #[cfg(test)]
 #[path = "smtp_starttls_tests.rs"]
 mod starttls_tests;
+
+#[cfg(test)]
+#[path = "smtp_probe_tests.rs"]
+mod probe_tests;

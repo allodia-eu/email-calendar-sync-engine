@@ -88,7 +88,7 @@ pub async fn probe_imap_auth(
     server_name: &str,
     security: ImapSecurity,
     connector: &TlsConnector,
-) -> ImapResult<AuthOffer> {
+) -> Result<AuthOffer, ImapError> {
     let (mut connection, _tls) = open_secured(addr, server_name, security, connector).await?;
     let capabilities = connection.capabilities().await?;
     // Leave the server a closed session rather than a dropped socket; its reply is
@@ -115,7 +115,7 @@ pub async fn probe_smtp_auth(
     security: ImapSecurity,
     ehlo_domain: &str,
     connector: &TlsConnector,
-) -> ImapResult<AuthOffer> {
+) -> Result<AuthOffer, ImapError> {
     let tcp = TcpStream::connect(addr).await?;
     let extensions = match security {
         ImapSecurity::ImplicitTls => {
@@ -154,7 +154,7 @@ async fn wrap_tls(
 fn imap_offer(capabilities: &[String]) -> AuthOffer {
     let mechanisms: Vec<String> = capabilities
         .iter()
-        .filter_map(|atom| strip_auth_prefix(atom))
+        .filter_map(|atom| sasl::advertised_mechanism(atom))
         .map(str::to_owned)
         .collect();
     let login_disabled = capabilities
@@ -192,16 +192,6 @@ fn names_a_password(mechanisms: &[String]) -> bool {
             .iter()
             .any(|password| mechanism.eq_ignore_ascii_case(password))
     })
-}
-
-/// The mechanism name in an IMAP `AUTH=<mech>` capability atom, or `None` for any other
-/// atom. Case-insensitive, because a capability atom is one.
-fn strip_auth_prefix(atom: &str) -> Option<&str> {
-    let (prefix, mechanism) = atom.split_at_checked("AUTH=".len())?;
-    prefix
-        .eq_ignore_ascii_case("AUTH=")
-        .then_some(mechanism)
-        .filter(|mechanism| !mechanism.is_empty())
 }
 
 #[cfg(test)]
