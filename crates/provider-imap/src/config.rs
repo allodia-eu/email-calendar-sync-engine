@@ -24,6 +24,13 @@ use crate::credentials::Credentials;
 /// ([`ImapConfig::with_smtp_starttls`]): the two secured shapes are identical on both
 /// protocols, and a second enum for them would only make them look different.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+// A host constructs these two and passes them to a probe; it has no reason to match
+// exhaustively on one, and this crate has every reason to be able to add a third
+// transport (a server needing something neither shape covers) without that being a
+// breaking change. Matches the neighbouring `AuthOffer`, which is `#[non_exhaustive]`
+// for the same reason: both cross the public boundary as *descriptions of a server*,
+// and servers grow shapes we did not anticipate.
+#[non_exhaustive]
 pub enum ImapSecurity {
     /// Implicit TLS: the socket is TLS-wrapped before the greeting (port 993).
     ImplicitTls,
