@@ -1,5 +1,5 @@
 //! Offline coverage of the IMAP `STARTTLS` connect path
-//! ([`connect_session`](crate::provider::connect_session)) against an in-process TLS
+//! ([`connect_session`](crate::dial::connect_session)) against an in-process TLS
 //! server, mirroring `tls_info`'s implicit-TLS harness.
 //!
 //! `MockStream` bypasses TLS, so the STARTTLS arm's real sequence — plaintext preamble
@@ -97,8 +97,12 @@ async fn starttls_connect_upgrades_and_reports_the_negotiated_version() {
     let (cert, port) = imap_starttls_server().await;
     let tls = engine_tls::client_config(&engine_tls::TlsPolicy::pinned(vec![cert]))
         .expect("client config");
-    let config =
-        ImapConfig::new(format!("127.0.0.1:{port}"), "127.0.0.1", "alice", "pw").with_starttls();
+    let config = ImapConfig::new(
+        format!("127.0.0.1:{port}"),
+        "127.0.0.1",
+        crate::credentials::Credentials::password("alice", "pw"),
+    )
+    .with_starttls();
     let provider: ImapProvider<TlsStream<TcpStream>> = ImapProvider::connect(
         &config,
         tls.connector(),

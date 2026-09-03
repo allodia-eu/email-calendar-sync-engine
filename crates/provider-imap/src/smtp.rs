@@ -15,17 +15,22 @@
 //! Three transports, all through this one conversation core ([`converse`]):
 //! - **plaintext** ([`send`], no auth) — the fixture's local MX (port 25);
 //! - **implicit TLS** ([`send`] with `auth`) — the caller hands an already-secured stream (port
-//!   465), and `AUTH PLAIN` runs after `EHLO`;
+//!   465), and `AUTH` runs after `EHLO`;
 //! - **STARTTLS** ([`negotiate_starttls`] then [`send_after_starttls`]) — this module negotiates
 //!   the cleartext upgrade (port 587) and the caller TLS-wraps the socket between the two calls;
-//!   `AUTH PLAIN` then runs over the established TLS.
+//!   `AUTH` then runs over the established TLS.
 //!
-//! `AUTH PLAIN` is only ever sent once the stream is secured (implicit TLS, or after
-//! the STARTTLS upgrade) — never in the clear.
+//! Authentication ([`crate::smtp_auth`]) is only ever sent once the stream is secured
+//! (implicit TLS, or after the STARTTLS upgrade) — never in the clear. Which mechanism
+//! runs there follows from the credential: `AUTH PLAIN` for a password, `AUTH
+//! OAUTHBEARER`/`AUTH XOAUTH2` for an OAuth 2.0 access token.
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
-use crate::error::{ImapError, ImapResult};
+use crate::{
+    error::{ImapError, ImapResult},
+    smtp_auth::{self, SmtpAuth},
+};
 
 /// One recipient's disposition from its `RCPT TO` reply (before `DATA`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,15 +69,15 @@ pub(crate) struct SmtpResult {
 
 /// Runs the SMTP conversation over a **fresh** `stream`: reads the greeting, then
 /// `EHLO → [AUTH] → MAIL → RCPT* → DATA`, identifying as `ehlo_domain`. When `auth` is
-/// `Some`, authenticates with `AUTH PLAIN` after `EHLO` (only meaningful over TLS — the
-/// caller supplies an already-secured stream). The plaintext / implicit-TLS entry.
+/// `Some`, authenticates after `EHLO` (only meaningful over TLS — the caller supplies an
+/// already-secured stream). The plaintext / implicit-TLS entry.
 pub(crate) async fn send<S>(
     stream: S,
     ehlo_domain: &str,
     from: &str,
     to: &[String],
     message: &[u8],
-    auth: Option<(&str, &str)>,
+    auth: Option<SmtpAuth<'_>>,
 ) -> ImapResult<SmtpResult>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -84,7 +89,7 @@ where
 
 /// Runs the conversation over a stream already **past** its greeting and a `STARTTLS`
 /// upgrade: the client sends `EHLO` directly (a server sends no fresh greeting after
-/// `STARTTLS`), so this is [`converse`] with `AUTH PLAIN` over the now-established TLS.
+/// `STARTTLS`), so this is [`converse`] with `AUTH` over the now-established TLS.
 /// Paired with [`negotiate_starttls`], which the caller runs (and TLS-wraps the socket)
 /// before this.
 pub(crate) async fn send_after_starttls<S>(
@@ -93,13 +98,68 @@ pub(crate) async fn send_after_starttls<S>(
     from: &str,
     to: &[String],
     message: &[u8],
-    auth: Option<(&str, &str)>,
+    auth: Option<SmtpAuth<'_>>,
 ) -> ImapResult<SmtpResult>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let mut smtp = SmtpStream::new(stream);
     converse(&mut smtp, ehlo_domain, from, to, message, auth).await
+}
+
+/// Reads what a submission server advertises and nothing else: the greeting, `EHLO`,
+/// then `QUIT`. No envelope, no credential, no message.
+///
+/// The [`send`] of the probe path ([`crate::probe`]), and paired with
+/// [`extensions_after_starttls`] exactly as `send` is with [`send_after_starttls`],
+/// because the greeting is read on one and already consumed on the other.
+///
+/// # Errors
+///
+/// [`ImapError::Protocol`] if the greeting is not a `220` or `EHLO`/`HELO` is refused.
+pub(crate) async fn extensions<S>(stream: S, ehlo_domain: &str) -> ImapResult<Vec<String>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut smtp = SmtpStream::new(stream);
+    read_greeting(&mut smtp).await?;
+    finish_probe(&mut smtp, ehlo_domain).await
+}
+
+/// [`extensions`] over a stream already past its greeting and a `STARTTLS` upgrade.
+///
+/// This is the reading that counts for a STARTTLS server: `AUTH` is commonly withheld
+/// until the link is secured, so the cleartext `EHLO` that negotiated the upgrade lists
+/// mechanisms the account cannot actually use.
+///
+/// # Errors
+///
+/// [`ImapError::Protocol`] if `EHLO`/`HELO` is refused.
+pub(crate) async fn extensions_after_starttls<S>(
+    stream: S,
+    ehlo_domain: &str,
+) -> ImapResult<Vec<String>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut smtp = SmtpStream::new(stream);
+    finish_probe(&mut smtp, ehlo_domain).await
+}
+
+/// `EHLO`, then `QUIT`: the shared tail of both probe entries.
+///
+/// The `QUIT` is not politeness. A submission server logs an abandoned socket as a
+/// dropped connection, and an account whose setup is being diagnosed should not have a
+/// row of those in its provider's log before it has connected once. Its reply is
+/// discarded: the answer is already in hand, and a server that closes without one has
+/// still answered.
+async fn finish_probe<S>(smtp: &mut SmtpStream<S>, ehlo_domain: &str) -> ImapResult<Vec<String>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let (_esmtp, extensions) = ehlo(smtp, ehlo_domain).await?;
+    let _ = smtp.write_line("QUIT").await;
+    Ok(extensions)
 }
 
 /// The plaintext half of a `STARTTLS` submission (RFC 3207): reads the greeting,
@@ -121,10 +181,11 @@ where
     let mut smtp = SmtpStream::new(stream);
     read_greeting(&mut smtp).await?;
     let (_esmtp, extensions) = ehlo(&mut smtp, ehlo_domain).await?;
-    if !extensions
-        .split_whitespace()
-        .any(|word| word.eq_ignore_ascii_case("STARTTLS"))
-    {
+    if !extensions.iter().any(|line| {
+        line.split_whitespace()
+            .next()
+            .is_some_and(|keyword| keyword.eq_ignore_ascii_case("STARTTLS"))
+    }) {
         return Err(ImapError::protocol(
             "server does not advertise STARTTLS; refusing to authenticate in the clear",
         ));
@@ -165,7 +226,7 @@ async fn converse<S>(
     from: &str,
     to: &[String],
     message: &[u8],
-    auth: Option<(&str, &str)>,
+    auth: Option<SmtpAuth<'_>>,
 ) -> ImapResult<SmtpResult>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -177,20 +238,13 @@ where
         reject_control("RCPT TO address", address)?;
     }
 
-    let (esmtp, _extensions) = ehlo(smtp, ehlo_domain).await?;
+    let (esmtp, extensions) = ehlo(smtp, ehlo_domain).await?;
 
-    if let Some((user, pass)) = auth {
+    if let Some(auth) = auth {
         if !esmtp {
             return Err(ImapError::protocol("SMTP AUTH requires ESMTP (EHLO)"));
         }
-        smtp.write_line(&format!("AUTH PLAIN {}", auth_plain_token(user, pass)))
-            .await?;
-        let (code, text) = smtp.read_reply().await?;
-        if code != 235 {
-            return Err(ImapError::auth(format!(
-                "SMTP AUTH rejected: {code} {text}"
-            )));
-        }
+        smtp_auth::authenticate(smtp, &auth, &extensions).await?;
     }
 
     smtp.write_line(&format!("MAIL FROM:<{from}>")).await?;
@@ -261,24 +315,35 @@ where
 }
 
 /// Sends `EHLO`, falling back to `HELO` for a non-ESMTP server. Returns whether ESMTP
-/// was accepted and the reply text (its advertised extensions — `negotiate_starttls`
-/// checks it for `STARTTLS`).
-async fn ehlo<S>(smtp: &mut SmtpStream<S>, ehlo_domain: &str) -> ImapResult<(bool, String)>
+/// was accepted and the reply's lines — one advertised extension each (RFC 5321
+/// §4.1.1.1), the first being the greeting text.
+///
+/// Line by line rather than joined, because an extension keyword only means anything at
+/// the **start** of its own line. Reading `AUTH` or `STARTTLS` out of a flattened reply
+/// lets a server's greeting prose ("… ready, no STARTTLS here") answer a question it was
+/// never asked — the same trap `Response::untagged` exists for on the IMAP side.
+async fn ehlo<S>(smtp: &mut SmtpStream<S>, ehlo_domain: &str) -> ImapResult<(bool, Vec<String>)>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    // The domain goes verbatim into the `EHLO`/`HELO` command line, so screen it here
+    // rather than in each caller: `converse` guards the envelope addresses it owns, and
+    // the probe entries ([`extensions`]/[`extensions_after_starttls`]) take the domain
+    // straight from a host that has not yet authenticated anything. One CR would append
+    // a second command to the line (RFC 5321 §2.3.8).
+    let ehlo_domain = reject_control("EHLO domain", ehlo_domain)?;
     smtp.write_line(&format!("EHLO {ehlo_domain}")).await?;
-    let (code, text) = smtp.read_reply().await?;
+    let (code, lines) = smtp.read_reply_lines().await?;
     if code == 250 {
-        return Ok((true, text));
+        return Ok((true, lines));
     }
     // Fall back to HELO for a server without ESMTP.
     smtp.write_line(&format!("HELO {ehlo_domain}")).await?;
-    let (code, text) = smtp.read_reply().await?;
+    let (code, lines) = smtp.read_reply_lines().await?;
     if code != 250 {
         return Err(ImapError::protocol(format!("EHLO/HELO refused: {code}")));
     }
-    Ok((false, text))
+    Ok((false, lines))
 }
 
 fn is_success(code: u16) -> bool {
@@ -295,8 +360,10 @@ fn classify(code: u16, text: String) -> Disposition {
     }
 }
 
-/// A line-based SMTP stream with multiline-reply assembly.
-struct SmtpStream<S> {
+/// A line-based SMTP stream with multiline-reply assembly. `pub(crate)` so
+/// [`crate::smtp_auth`] can drive the `AUTH` exchange over the same stream (it is split
+/// out only to keep this file under the size limit).
+pub(crate) struct SmtpStream<S> {
     inner: BufReader<S>,
 }
 
@@ -322,12 +389,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
         Ok(self.inner.into_inner())
     }
 
-    /// Reads a (possibly multiline) reply, returning its code and joined text. The
-    /// continuation-line count is capped so a server emitting an endless stream of
-    /// `NNN-...` lines cannot hang the submission or grow `text` without bound.
-    async fn read_reply(&mut self) -> ImapResult<(u16, String)> {
+    /// Reads a (possibly multiline) reply, returning its code and joined text — for
+    /// every reply whose content is prose (a greeting, an acceptance, a rejection).
+    /// [`read_reply_lines`](Self::read_reply_lines) is the form to use when the content
+    /// is a *list* (`EHLO`'s extensions).
+    pub(crate) async fn read_reply(&mut self) -> ImapResult<(u16, String)> {
+        let (code, lines) = self.read_reply_lines().await?;
+        Ok((code, lines.join(" ")))
+    }
+
+    /// Reads a (possibly multiline) reply, returning its code and one string per line
+    /// (each stripped of its `NNN`/`NNN-` prefix). The continuation-line count is capped
+    /// so a server emitting an endless stream of `NNN-...` lines cannot hang the
+    /// submission or grow the reply without bound.
+    pub(crate) async fn read_reply_lines(&mut self) -> ImapResult<(u16, Vec<String>)> {
         const MAX_REPLY_LINES: usize = 256;
-        let mut text = String::new();
+        let mut lines = Vec::new();
         for _ in 0..MAX_REPLY_LINES {
             let mut line = String::new();
             if self.inner.read_line(&mut line).await? == 0 {
@@ -341,12 +418,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
                 .get(0..3)
                 .and_then(|c| c.parse().ok())
                 .ok_or_else(|| ImapError::protocol(format!("malformed SMTP reply: {trimmed}")))?;
-            if !text.is_empty() {
-                text.push(' ');
-            }
-            text.push_str(trimmed.get(4..).unwrap_or(""));
+            lines.push(trimmed.get(4..).unwrap_or("").to_owned());
             if trimmed.as_bytes().get(3) != Some(&b'-') {
-                return Ok((code, text));
+                return Ok((code, lines));
             }
         }
         Err(ImapError::protocol(
@@ -354,7 +428,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
         ))
     }
 
-    async fn write_line(&mut self, line: &str) -> ImapResult<()> {
+    pub(crate) async fn write_line(&mut self, line: &str) -> ImapResult<()> {
         self.inner.write_all(line.as_bytes()).await?;
         self.inner.write_all(b"\r\n").await?;
         self.inner.flush().await?;
@@ -390,15 +464,6 @@ fn dot_stuff(message: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The `AUTH PLAIN` SASL token: base64 of `\0user\0password` (RFC 4616).
-fn auth_plain_token(user: &str, password: &str) -> String {
-    let mut creds = vec![0u8];
-    creds.extend_from_slice(user.as_bytes());
-    creds.push(0);
-    creds.extend_from_slice(password.as_bytes());
-    crate::base64::encode(&creds)
-}
-
 #[cfg(test)]
 #[path = "smtp_tests.rs"]
 mod tests;
@@ -406,3 +471,7 @@ mod tests;
 #[cfg(test)]
 #[path = "smtp_starttls_tests.rs"]
 mod starttls_tests;
+
+#[cfg(test)]
+#[path = "smtp_probe_tests.rs"]
+mod probe_tests;

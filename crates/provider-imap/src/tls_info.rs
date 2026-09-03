@@ -7,7 +7,7 @@
 //! Captured at connect and stored on the provider, not read from the live stream
 //! later: [`ImapProvider`](crate::ImapProvider) is generic over its stream `S` (the
 //! offline tests drive it over an in-memory mock), so only the concrete TLS dial in
-//! [`connect_session`](crate::provider::connect_session) can observe it.
+//! [`connect_session`](crate::dial::connect_session) can observe it.
 
 use engine_provider::TlsVersion;
 use tokio::net::TcpStream;
@@ -138,7 +138,11 @@ mod tests {
     ) -> ImapProvider<TlsStream<TcpStream>> {
         let tls = engine_tls::client_config(&engine_tls::TlsPolicy::pinned(vec![cert]))
             .expect("client config");
-        let config = ImapConfig::new(format!("127.0.0.1:{port}"), "127.0.0.1", "u", "pw");
+        let config = ImapConfig::new(
+            format!("127.0.0.1:{port}"),
+            "127.0.0.1",
+            crate::credentials::Credentials::password("u", "pw"),
+        );
         ImapProvider::connect(
             &config,
             tls.connector(),
