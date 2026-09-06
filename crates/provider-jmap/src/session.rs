@@ -208,10 +208,12 @@ impl Session {
         // shortcut: a `CalendarEvent` carries no per-object revision to guard with, and the
         // only precondition RFC 8620 §5.3 offers (`ifInState`) is scoped to the account's
         // whole event state rather than the object — so it would reject a write because an
-        // *unrelated* event changed. Stalwart does not enforce it either
-        // (`crate::calendar_write`). A host that must detect a concurrent edit on this
-        // transport has to do it above the engine, and `calendar_write_guard` is what tells
-        // it so before it writes.
+        // *unrelated* event changed. Stalwart enforcing it *correctly* since v0.16.14 is
+        // what makes that concrete rather than theoretical (`crate::calendar_write`): an
+        // inbound invitation moves the account's event state while the user sits idle, so
+        // the guard would refuse a write nothing conflicted with. A host that must detect a
+        // concurrent edit on this transport has to do it above the engine, and
+        // `calendar_write_guard` is what tells it so before it writes.
         if capabilities.calendars() && !account_is_read_only(value, calendar_account_id.as_deref())
         {
             // Scheduling is advertised because the adapter *asks* for it: every calendar

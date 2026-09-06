@@ -259,10 +259,14 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     draft-24 and draft-27** — verified by diffing the two drafts in full. Nothing in the
     session distinguishes them, by design rather than oversight.
   - **The only in-band signal is the object's own `version`** (JSCalendar 2.0 /
-    jscalendarbis §3.1.2, value `"2.0"`). **Do not send it.** Stalwart v0.16.15 neither
-    emits it nor accepts it: a `CalendarEvent/set` create carrying `version` is rejected
-    with `invalidProperties: ["version"]`, and asking for it in `properties` returns
-    nothing. So "support the latest draft" cannot mean "emit the 2.0 markers".
+    jscalendarbis §3.1.2, value `"2.0"`). **Do not send it.** Stalwart neither emits it nor
+    honours it, and how it refuses it *moved between pins*: on v0.16.15 a
+    `CalendarEvent/set` create carrying `version` was rejected with
+    `invalidProperties: ["version"]`; on v0.16.21 the same create is **accepted and the
+    property silently dropped** — never echoed back, and asking for it in `properties` still
+    returns nothing (both observed). That makes the signal weaker, not stronger: a client
+    that sent `version` to announce its dialect would now get a success that means nothing.
+    So "support the latest draft" cannot mean "emit the 2.0 markers".
   - **What differs in practice is one spelling**, and it is fallback-shaped rather than
     switch-shaped. A participant's address is `calendarAddress` in 2.0 and `sendTo`
     (a map of *method* → URI; `imip` is the mail one) in 1.0 — and 2.0 **reserves**
@@ -361,7 +365,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   decision. v0.16.11–v0.16.13 parsed it and never compared it (a stale-state `/set` was applied
   and returned a fresh `newState`, where RFC 8620 §5.3 requires a `stateMismatch`; a *malformed*
   state string still `400`s, so it was parsed, just never checked). v0.16.14 fixed it, and the
-  harness now pins **v0.16.15**, so enforcement is what our live runs meet: a stale-but-
+  harness now pins **v0.16.21**, so enforcement is what our live runs meet: a stale-but-
   well-formed token is refused with `stateMismatch` and the write does not land. That only
   sharpens reason 2 — the probe's state had moved because of an edit to a *different* property
   of a *different* event, which is precisely the spurious rejection a per-event guard must not
@@ -373,7 +377,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
 
   Be precise about what that test can and cannot catch. It drives the **adapter**, which sends
   no precondition, so server-side `ifInState` enforcement can never fail it — and did not: it
-  passes unchanged on v0.16.15. It is a tripwire for *the writes we actually send* losing their
+  passes unchanged on v0.16.15 and on v0.16.21. It is a tripwire for *the writes we actually send*
+  losing their
   ability to clobber, which is what `WriteGuard::Absent` claims; it is **not** a tripwire for
   Stalwart gaining a precondition. A host that must not lose a concurrent edit has to detect it
   above the engine. The one thing that must not happen is a neutral write API that *looks* like
@@ -414,6 +419,25 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `AGENTS.md` fake-request-shape trap if you only send one shape. Both directions are now
   pinned (`tests/live_calendar_scheduling.rs`), and each was verified to fail with the flag
   removed.
+
+  **Asking for scheduling is no longer free (v0.16.21).** Stalwart used to ignore
+  `sendSchedulingMessages` on an account that could not act on it and store the change
+  anyway. From v0.16.21 it resolves the request first, and three outcomes fail the whole
+  `/set` entry with a `forbidden` `SetError` carrying a description: iTIP disabled
+  server-wide, the account having **no calendar address**, and the account lacking the
+  `CalendarSchedulingSend` permission. (A fourth, the event lying in the past, is only
+  logged — a past event still writes.) Read from the upstream commit `1e493560`, not
+  measured here: the harness accounts can schedule, which is why the whole gated suite
+  passes unchanged on both pins.
+
+  This reaches the engine because create/patch/destroy send `true` **unconditionally**, so
+  on such an account *every* calendar write now fails — including one to an event with no
+  participants, where scheduling was never relevant. `forbidden` maps to `Permanent`, so a
+  host sees an unretryable failure and no way forward. The engine also advertises
+  `with_calendar_scheduling()` for any writable calendar account, which on that account is
+  now wrong. Neither is a harness problem and neither is fixed by this pin; the shape of a
+  fix has to be provider-neutral (CalDAV discovers the same fact from `OPTIONS`, per #107),
+  so it is tracked separately rather than patched into the JMAP adapter.
 
 ## Known limitations (documented, not bugs)
 

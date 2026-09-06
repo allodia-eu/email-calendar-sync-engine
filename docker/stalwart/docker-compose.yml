@@ -23,15 +23,31 @@ name: stalwart-harness
 
 services:
   stalwart:
-    # stalwartlabs/stalwart v0.16.15, pinned by multi-arch digest (linux/amd64 +
+    # stalwartlabs/stalwart v0.16.21, pinned by multi-arch digest (linux/amd64 +
     # linux/arm64). Bump deliberately: re-resolve the digest and update CI too.
     #
-    # Bumped from v0.16.11 in its own change, after running the whole gated suite on both
-    # (see docs/agent-guidance/stalwart-harness.md → "The pinned version"). The one
-    # behaviour change that reaches this repo is v0.16.14 enforcing `CalendarEvent/set`'s
-    # `ifInState`, which the engine never sends; the JMAP RSVP gap the harness is often
-    # blamed for is unchanged through v0.16.15.
-    image: stalwartlabs/stalwart:v0.16.15@sha256:4f926193e5dd9ceb1e24ba48160702310381b12e51972c2fb0cc9de020388136
+    # Bumped from v0.16.15 in its own change, after running the whole gated suite on both
+    # (see docs/agent-guidance/stalwart-harness.md → "The pinned version"). Every live
+    # test passed unchanged on both pins, so nothing the engine sends today behaves
+    # differently. What v0.16.16–v0.16.21 changed *near* this repo:
+    #
+    #   - v0.16.21 rejects a `CalendarEvent/set` that asks for scheduling with a
+    #     `forbidden` `SetError` when the account cannot schedule (iTIP disabled, no
+    #     calendar address, or no `CalendarSchedulingSend`) — where earlier versions
+    #     ignored the request and stored the change. `provider-jmap` asks on *every*
+    #     calendar write, so on such an account every write now fails; the harness
+    #     accounts can schedule, which is why the suite is unaffected. Tracked as an
+    #     engine-side exposure, not a harness one (`docs/agent-guidance/jmap.md`).
+    #   - v0.16.18 made `CalendarEvent/set` schedule when an event is *created* with
+    #     participants. Unreachable from here: `EventDraft` cannot name one.
+    #   - v0.16.17 moved the server's own iTIP `text/calendar` part inside the
+    #     `multipart/alternative`, and stopped sending raw UTF-8 in IMAP `ENVELOPE`/
+    #     `BODYSTRUCTURE` to sessions that never enabled `UTF8=ACCEPT`. `engine-mime`
+    #     and `provider-imap` already read both shapes.
+    #
+    # `ifInState` enforcement (v0.16.14) is unchanged through v0.16.21, and the engine
+    # still sends no precondition.
+    image: stalwartlabs/stalwart:v0.16.21@sha256:93c574e52249c1ebf90061da2c4c0756a7b72abfcc1fec34506a03c2e38b5977
     # Self-bootstrapping wrapper: bootstrap via API, restart to full server,
     # create accounts, seed, then run the server in the foreground.
     entrypoint: ["/bin/sh", "/harness/entrypoint.sh"]

@@ -44,7 +44,7 @@
 //! adapter. [`jmap_cancelling_a_meeting_reaches_the_attendee`] does the same job for the
 //! write verbs, which carry the flag unconditionally.
 //!
-//! The full history is #102 (which inverts #93). The harness pins **v0.16.15**.
+//! The full history is #102 (which inverts #93). The harness pins **v0.16.21**.
 //!
 //! Every scenario leaves the harness exactly as it found it.
 

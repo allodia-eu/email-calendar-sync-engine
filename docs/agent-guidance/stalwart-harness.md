@@ -85,7 +85,7 @@ These were confirmed before/with implementation; do not relitigate without cause
   **A bump is its own PR.** The pin decides what *every* live test in this repo is
   evidence about, so it must not ride along inside a change that is really about
   something else — a provider fix and a server change landing together leave neither
-  attributable. Currently pinned: **v0.16.15**. What a bump owes:
+  attributable. Currently pinned: **v0.16.21**. What a bump owes:
 
   1. Re-resolve the **index** digest (`docker buildx imagetools inspect
      stalwartlabs/stalwart:<tag>` → the top-level `Digest:`, not a per-platform one, or
@@ -103,6 +103,25 @@ These were confirmed before/with implementation; do not relitigate without cause
      Stalwart's — `provider-jmap` had simply never sent `sendSchedulingMessages`, and two
      version bumps were taken partly in the hope of fixing a defect that did not exist
      (#102).
+
+  **The v0.16.15 → v0.16.21 bump, recorded so it is not re-investigated.** All 754 gated
+  tests passed unchanged on both pins, so nothing the engine sends today behaves
+  differently. Two observed changes near this repo, neither of which the suite can see:
+
+  - `Calendar/get` with `properties` omitted now returns `isVisible`,
+    `includeInAvailability`, `shareWith` and the two `defaultAlerts*` maps as well
+    (`AddressBook/get` gains `shareWith`) — the v0.16.21 "return every property" fix. The
+    neutral `Calendar` already has an `is_visible` field that **no** provider populates, so
+    this is newly-available data rather than a defect; tracked separately, because filling it
+    is a cross-provider question, not a JMAP one.
+  - A `CalendarEvent/set` carrying JSCalendar `version` went from `invalidProperties` to
+    accepted-and-silently-dropped. The "do not send it" conclusion is unchanged (`jmap.md`).
+
+  What it did **not** change: JMAP still exposes no per-object write precondition, still has
+  no JSCalendar version negotiation, and still cannot send an iMIP scheduling message from
+  the adapter (#105). The one thing it made *worse* for a host is written up under
+  `jmap.md` → scheduling: asking for scheduling on an account that cannot schedule is now a
+  hard `forbidden` instead of a silent no-op.
 - **Transport:** **plaintext HTTP on 8080** (JMAP + CalDAV + management) and
   **plaintext SMTP on 25**; **IMAP is implicit-TLS on 993**. Stalwart **supports**
   STARTTLS on the standard IMAP (143) and submission (587) ports, but its
