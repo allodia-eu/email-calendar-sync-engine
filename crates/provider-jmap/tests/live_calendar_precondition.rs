@@ -14,7 +14,7 @@
 //!
 //! # What it proves, and why it argues *against* sending `ifInState`
 //!
-//! Stalwart v0.16.14+ (the harness pins **v0.16.15**) enforces `ifInState` correctly: a
+//! Stalwart v0.16.14+ (the harness pins **v0.16.21**) enforces `ifInState` correctly: a
 //! superseded token is refused with `stateMismatch` and the write does not land. So the
 //! objection is **not** "the server ignores it" — it honours it exactly as RFC 8620 §5.3
 //! specifies, and that is the problem.

@@ -350,9 +350,13 @@ fn participant_from_json(participant: &Value) -> Participant {
 /// its account-level properties are byte-identical between draft-24 and draft-27, so
 /// nothing in the session says which JSCalendar a server serves. JSCalendar 2.0 does define
 /// a `version` property (jscalendarbis §3.1.2) — the only in-band signal that exists — but
-/// Stalwart neither emits it nor accepts it (`invalidProperties` on a create, observed on
-/// v0.16.15). So the adapter reads the shape rather than asking, and the shape is
-/// unambiguous:
+/// Stalwart neither emits it nor honours it, and how it *refuses* it moved between the two
+/// pins this repo has run: v0.16.15 rejected a create carrying `version` with
+/// `invalidProperties: ["version"]`, while v0.16.21 accepts the create and silently drops the
+/// property (never echoed back, and asking for it in `properties` still returns nothing —
+/// both observed). The conclusion is unchanged and if anything firmer: a signal that can be
+/// swallowed without a word is no signal. So the adapter reads the shape rather than asking,
+/// and the shape is unambiguous:
 ///
 /// - **2.0** (jscalendarbis §3.4.6): a scalar `calendarAddress`.
 /// - **1.0** ([RFC 8984] §4.4.6): `sendTo`, a map of *method* → URI.
