@@ -592,8 +592,20 @@ holder changing it is not a smaller version of the same operation. There is no
   to `userPrincipalName` — the same fallback the rest of this workspace already applies
   to a Graph address, so the two agree.
 
-⚠️ **Unverified against a live tenant.** Offline-tested only; run
-`crates/provider-graph/tests/live_*` with a test account before trusting it.
+- **`$select` is acknowledged and not applied**, at least on a personal (MSA) account.
+  `GET /me?$select=displayName` comes back with `@odata.context` naming
+  `#users(displayName)/$entity` and a body carrying all twelve default `user` properties
+  anyway: `ageGroup`, `businessPhones`, `givenName`, `preferredLanguage`, `surname` and the
+  rest. Measured; a bare `GET /me` returns the same twelve. So the `$select` documents intent
+  and may narrow a work/school response, but **nothing may assume the payload is narrow**:
+  the normalizer picks its three properties out of whatever arrives, and the captured
+  fixture is the full response precisely so an offline test shows that.
+- **`User.Read` is enough**, the scope every Graph account here already grants. Reading the
+  mailbox's own name therefore costs a host no new consent.
+
+✅ **Live-verified** (`tests/live_identity.rs`, against a throwaway personal account): the
+read returns the mailbox's own address with a directory `displayName`, and the rename is
+refused locally rather than attempted.
 
 ## Reporting a message (junk / not junk / phishing)
 

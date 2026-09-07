@@ -415,6 +415,25 @@ async fn replay_server_404s_an_unrouted_path() {
 /// "the server holds none", which is indistinguishable from a correct empty answer.
 const IDENTITY_URL: &str = "/me?$select=displayName,mail,userPrincipalName";
 
+const ME_IDENTITY: &str = include_str!("../tests/fixtures/mail/me_identity.json");
+
+#[tokio::test]
+async fn the_captured_principal_yields_one_identity_out_of_a_full_default_payload() {
+    // The bytes a real personal account returned. `$select` is acknowledged in
+    // `@odata.context` and **not applied** (measured, `graph.md`), so what actually arrives is
+    // every default `user` property: `ageGroup`, `businessPhones`, `givenName`, `preferredLanguage`
+    // and the rest. The normalizer has to pick its three out of that and ignore the noise,
+    // which the hand-written three-field cases above cannot show.
+    let client = fake_client(vec![(IDENTITY_URL, json(ME_IDENTITY))]);
+    let provider = GraphProvider::new(client, MailboxId::try_from("inbox").unwrap());
+
+    let identities = provider.sender_identities(&account()).await.unwrap();
+
+    assert_eq!(identities.len(), 1);
+    assert_eq!(identities[0].address.email, "testuser@example.test");
+    assert_eq!(identities[0].address.name.as_deref(), Some("Test User"));
+}
+
 #[tokio::test]
 async fn the_sender_identity_is_read_from_the_mailbox_principal() {
     let client = fake_client(vec![(

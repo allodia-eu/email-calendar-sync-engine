@@ -470,10 +470,10 @@ the shape this mapping invites — and for the three junk keywords the error nam
   normalizer treats empty as "no name", which is what lets a host tell *ask* from *we
   already know*; a check for the property's absence alone would report a blank name.
 
-⚠️ **The write is still unverified against a live account.** The read, the path encoding and
-the response shape are all measured (`tests/live_identity.rs`, and the captured fixture);
-`sendAs.patch` needs a token carrying `gmail.settings.basic`, which no throwaway account
-here has yet. Re-run that suite with one before trusting the write.
+✅ **Live-verified, both verbs** (`tests/live_identity.rs`, against a throwaway account): the
+read, the path encoding, the response shape, and a rename that reaches Gmail and is put back.
+Each was proven able to fail; patching a property Gmail does not accept on that resource is
+rejected outright rather than silently ignored, so a wrong patch cannot pass as a success.
 
 ## Spam and Trash are not optional in the snapshot
 

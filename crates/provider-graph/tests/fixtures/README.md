@@ -20,6 +20,7 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 
 | Fixture | Real Graph call | Protects |
 | --- | --- | --- |
+| `mail/me_identity.json` | `GET /me?$select=displayName,mail,userPrincipalName` | that `$select` is **not applied** on a personal account: the real payload carries all twelve default `user` properties, so the normalizer must pick its three out of the noise |
 | `mail/mailfolders.json` | `GET /me/mailFolders?$top=50` | folder → `Mailbox` normalization (8 folders) |
 | `mail/mailfolders_delta.json` | `GET /me/mailFolders/delta` | folder container delta + `deltaLink` cursor |
 | `mail/messages_delta_snapshot.json` | `GET /me/mailFolders/inbox/messages/delta?$select=…` | **initial** sync: full message objects + `deltaLink` |
