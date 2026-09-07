@@ -18,8 +18,11 @@ drive the interactive flow locally.
    test account as a **Test user**. Add the scopes `https://mail.google.com/` and
    `https://www.googleapis.com/auth/calendar`,
    `https://www.googleapis.com/auth/contacts`,
-   `https://www.googleapis.com/auth/contacts.other.readonly`, and (for Workspace
-   directory fixtures) `https://www.googleapis.com/auth/directory.readonly`.
+   `https://www.googleapis.com/auth/contacts.other.readonly`, (for Workspace
+   directory fixtures) `https://www.googleapis.com/auth/directory.readonly`, and (for the
+   send-as **write** in `live_identity`) `https://www.googleapis.com/auth/gmail.settings.basic`.
+   Reading the send-as list needs none of these; `https://mail.google.com/` covers it
+   (measured, see `docs/agent-guidance/google.md`).
 3. Create an **OAuth client ID** of type **Desktop app**. Note the **client ID**
    and **client secret** (for a Desktop app the secret is embedded in the app, not
    confidential).

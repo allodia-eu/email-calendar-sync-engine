@@ -49,9 +49,14 @@ type Res<T> = Result<T, Box<dyn Error>>;
 const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 /// Google's OAuth 2.0 token endpoint.
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
-/// Default scopes — full mail, calendar read/write, owned-contact read/write,
-/// Other Contacts read, Workspace directory read, plus identity.
+/// Default scopes — full mail, Gmail settings write, calendar read/write, owned-contact
+/// read/write, Other Contacts read, Workspace directory read, plus identity.
+///
+/// `gmail.settings.basic` is here for the send-as **write** alone. Reading the send-as list
+/// needs nothing beyond `https://mail.google.com/` (measured; `google.md`), so this scope is
+/// what `live_identity`'s rename test wants and no shipped host has to request.
 const DEFAULT_SCOPES: &str = "https://mail.google.com/ \
+    https://www.googleapis.com/auth/gmail.settings.basic \
     https://www.googleapis.com/auth/calendar \
     https://www.googleapis.com/auth/contacts \
     https://www.googleapis.com/auth/contacts.other.readonly \
