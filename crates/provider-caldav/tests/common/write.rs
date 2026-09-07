@@ -31,8 +31,8 @@ use engine_core::{
     version::RevisionTokens,
 };
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, Occurrence, PatchTarget,
-    Provider, WriteGuard,
+    CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, Occurrence,
+    PatchTarget, Provider, WriteGuard,
 };
 use provider_caldav::CalDavProvider;
 

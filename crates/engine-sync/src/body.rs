@@ -171,7 +171,7 @@ mod tests {
         membership::Memberships,
         raw::RawMime,
     };
-    use engine_provider::{Capabilities, ConnectionInfo, Provider, ProviderResult};
+    use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
     use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
     use store_sqlite::SqliteStore;
 
@@ -210,6 +210,8 @@ mod tests {
             Ok(RawMime::new(self.body.clone()))
         }
     }
+
+    impl CalendarWrites for CountingProvider {}
 
     fn account() -> AccountId {
         AccountId::try_from("acct").expect("account")
@@ -318,6 +320,8 @@ mod tests {
                 ConnectionInfo::new(self.caps)
             }
         }
+
+        impl CalendarWrites for Unsupported {}
         let provider = Unsupported {
             caps: Capabilities::none().with_mail(),
         };
@@ -461,6 +465,8 @@ mod tests {
                 ConnectionInfo::new(self.caps)
             }
         }
+
+        impl CalendarWrites for Unsupported {}
         let provider = Unsupported {
             caps: Capabilities::none().with_mail(),
         };

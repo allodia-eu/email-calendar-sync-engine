@@ -162,6 +162,24 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   taxonomy. Sending is outbox-mediated by `engine-sync::submit_mail`: a durable
   `PendingOp` (carrying the serialized draft, idempotent by `Message-ID`) precedes
   the provider call; the result is recorded under the op lease.
+- **Sender identities.** `Identity/get` and `Identity/set` (RFC 8621 §6) back the
+  neutral `sender_identities`/`set_sender_name` verbs (`providers.md`). They belong to
+  the **submission** capability, not to mail, so every request names
+  `urn:ietf:params:jmap:submission` and is addressed to the *submission* account id —
+  a different `primaryAccounts` entry from the mail one, which happens to coincide on
+  the harness and is not required to. The capability therefore rides the submission URN
+  and is `IdentityControls::Writable`.
+
+  A rename patches `name` **only**: naming `email` would ask the server to change which
+  address the account sends as, which is a different act. Captured from the harness:
+  `Identity/get` returns `{id, name, email, replyTo, bcc, textSignature, htmlSignature,
+  mayDelete}` and an acknowledged `Identity/set` answers `updated: {"<id>": null}`,
+  which the shared `check_set_result_for` already reads as applied. **Nothing in the
+  session, and nothing on the object, says whether `Identity/set` is permitted** —
+  `mayDelete` is the only "may" property there is — so the write is claimed and a
+  refusal arrives as a classified error. An empty `name` is the server holding nothing,
+  and reaches a host as `None` rather than as an empty string: that is the difference
+  between "we already know it" and "ask the user".
 - **Draft attachments.** A draft's attachment bytes are uploaded first (RFC 8620
   §6.1 blob upload — a `POST` of the raw bytes with the part's `Content-Type` to the
   session `uploadUrl` with `{accountId}` substituted), then referenced from the

@@ -15,8 +15,8 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::{
-    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget,
-    Provider,
+    CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence,
+    PatchTarget, Provider,
 };
 
 /// Creating a **recurring** event, and reading the rule back off the server.

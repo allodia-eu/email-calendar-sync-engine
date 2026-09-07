@@ -20,7 +20,7 @@ use engine_core::{
     time::TimeZoneId,
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
+    CalendarWrites, Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
     EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError, ProviderResult,
     RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
@@ -223,7 +223,10 @@ impl Provider for GraphCalendarProvider {
         };
         Ok(ScopeSync::new(update, next_cursor))
     }
+}
 
+#[async_trait]
+impl CalendarWrites for GraphCalendarProvider {
     async fn create_event(
         &self,
         _account: &AccountId,

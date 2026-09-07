@@ -18,9 +18,9 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, Draft, EmailStream, MailEdit,
-    MailEditReceipt, MessageReport, Provider, ProviderResult, ReportControls, ReportEvidence,
-    ReportReceipt, ReportVerdicts, ScopeSync, SubmissionReceipt, TlsVersion,
+    CalendarWrites, Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, Draft, EmailStream,
+    MailEdit, MailEditReceipt, MessageReport, Provider, ProviderResult, ReportControls,
+    ReportEvidence, ReportReceipt, ReportVerdicts, ScopeSync, SubmissionReceipt, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -474,6 +474,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         crate::report::report_message(&mut connection, report).await
     }
 }
+
+impl<S: AsyncRead + AsyncWrite + Unpin + Send> CalendarWrites for ImapProvider<S> {}
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]

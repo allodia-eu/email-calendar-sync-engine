@@ -19,7 +19,7 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
+    CalendarWrites, Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
     EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError, ProviderResult,
     RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
@@ -215,7 +215,10 @@ impl Provider for GoogleCalendarProvider {
         };
         Ok(ScopeSync::new(update, next_cursor))
     }
+}
 
+#[async_trait]
+impl CalendarWrites for GoogleCalendarProvider {
     async fn create_event(
         &self,
         _account: &AccountId,

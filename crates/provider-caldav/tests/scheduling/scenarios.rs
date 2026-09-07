@@ -10,7 +10,7 @@ use engine_core::{
     ids::Uid,
     scheduling::{ScheduleMethod, addresses_match},
 };
-use engine_provider::{EventRsvp, EventWrite, Provider, RsvpResponse};
+use engine_provider::{CalendarWrites, EventRsvp, EventWrite, Provider, RsvpResponse};
 use provider_caldav::imip;
 
 use super::{
@@ -239,7 +239,7 @@ pub(crate) async fn an_rsvp_reaches_the_organizer(parties: &Parties) {
 
 const NEUTRAL_RSVP_UID: &str = "caldav-schedule-rsvp-verb@test.local";
 
-/// The attendee answers through `Provider::rsvp_event` — the neutral verb — and the
+/// The attendee answers through `CalendarWrites::rsvp_event` — the neutral verb — and the
 /// **organizer's separate copy** shows it.
 ///
 /// [`an_rsvp_reaches_the_organizer`] above drives the *primitive* (`set_my_partstat` plus a

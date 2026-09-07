@@ -17,8 +17,8 @@ use engine_core::{
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
 use engine_provider::{
-    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget,
-    Provider,
+    CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence,
+    PatchTarget,
 };
 use provider_caldav::CalDavProvider;
 

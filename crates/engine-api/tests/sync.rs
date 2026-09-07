@@ -23,9 +23,9 @@ use engine_core::{
     time::{CalendarDateTime, LocalDateTime},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
-    MessageReport, Provider, ProviderError, ProviderResult, ReportControls, ReportEvidence,
-    ReportReceipt, ReportVerdict, ReportVerdicts, ScopeSync, SubmissionReceipt,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit,
+    MailEditReceipt, MessageReport, Provider, ProviderError, ProviderResult, ReportControls,
+    ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, ScopeSync, SubmissionReceipt,
 };
 use tokio::sync::oneshot;
 
@@ -238,6 +238,8 @@ impl Provider for FakeProvider {
     }
 }
 
+impl CalendarWrites for FakeProvider {}
+
 /// Wraps a [`FakeProvider`] and, inside `sync_mailboxes` (i.e. while the mailbox
 /// scope's lease is held), signals `on_claim` then blocks on `until_release` — so a
 /// test can deterministically hold a live lease while a second sync races for it.
@@ -291,6 +293,8 @@ impl Provider for GateProvider {
             .stream_email(account, cursor, window, fetch_batch, chunk_size)
     }
 }
+
+impl CalendarWrites for GateProvider {}
 
 /// Wraps a [`FakeProvider`] and overrides `submit_email` to succeed (filing the
 /// sent copy under a fixed key, echoing the draft's `Message-ID`) or fail, so the
@@ -381,6 +385,8 @@ impl Provider for SubmittingProvider {
     }
 }
 
+impl CalendarWrites for SubmittingProvider {}
+
 /// A provider that reports every verdict but acknowledges none — the JMAP/IMAP shape.
 fn report_controls() -> ReportControls {
     ReportControls {
@@ -455,3 +461,5 @@ impl Provider for ReconcilingProvider {
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
 }
+
+impl CalendarWrites for ReconcilingProvider {}

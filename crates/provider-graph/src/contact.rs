@@ -13,9 +13,9 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, ContactDestination, ContactPhoto, ContactSourceSync,
-    ContactUnavailable, ContactWriteReceipt, ContactsProvider, Provider, ProviderResult, ScopeSync,
-    WriteGuard,
+    CalendarWrites, Capabilities, ConnectionInfo, ContactDestination, ContactPhoto,
+    ContactSourceSync, ContactUnavailable, ContactWriteReceipt, ContactsProvider, Provider,
+    ProviderResult, ScopeSync, WriteGuard,
 };
 use serde_json::Value;
 
@@ -263,6 +263,8 @@ impl Provider for GraphContactProvider {
         }
     }
 }
+
+impl CalendarWrites for GraphContactProvider {}
 
 #[async_trait]
 impl ContactsProvider for GraphContactProvider {

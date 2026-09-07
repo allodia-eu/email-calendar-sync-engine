@@ -10,7 +10,9 @@ use engine_core::{
 };
 
 use super::*;
-use crate::test_support::{fake_client, fake_client_fallible, json};
+use crate::test_support::{
+    capturing_replay_server, fake_client, fake_client_fallible, json, retry, tls,
+};
 
 const LABELS: &str = include_str!("../tests/fixtures/mail/labels.json");
 const PROFILE: &str = include_str!("../tests/fixtures/mail/profile.json");
@@ -222,4 +224,67 @@ async fn fetch_message_source_fetches_and_decodes_the_raw() {
         .unwrap();
     let text = String::from_utf8(raw.as_bytes().to_vec()).unwrap();
     assert!(text.contains("Fixture: first message"));
+}
+
+#[tokio::test]
+async fn send_as_settings_are_read_as_the_account_identities() {
+    // Routing on the settings path is the request assertion: reading the mail API's
+    // profile instead would return the address with no name and read as "Gmail holds
+    // none", which is indistinguishable from a correct empty answer.
+    let client = fake_client(vec![(
+        "/gmail/v1/users/me/settings/sendAs",
+        json(
+            r#"{"sendAs":[
+                {"sendAsEmail":"alice@example.com","displayName":"Alice Smith","isPrimary":true},
+                {"sendAsEmail":"sales@example.com","displayName":"Sales"}
+            ]}"#,
+        ),
+    )]);
+    let provider = GmailProvider::new(client);
+
+    let identities = provider.sender_identities(&account()).await.unwrap();
+
+    assert_eq!(identities.len(), 2, "every alias, not just the primary");
+    assert_eq!(identities[0].address.name.as_deref(), Some("Alice Smith"));
+}
+
+#[tokio::test]
+async fn setting_a_name_patches_the_send_as_resource_and_nothing_else() {
+    let (base, rx) = capturing_replay_server(vec![(
+        "/settings/sendAs/",
+        json(r#"{"sendAsEmail":"alice@example.com","displayName":"Alice Smith"}"#),
+    )]);
+    let client = GoogleClient::with_base("tok", base, tls(), retry()).unwrap();
+    let provider = GmailProvider::new(client);
+
+    provider
+        .set_sender_name(
+            &account(),
+            &SenderIdentityId::new("alice@example.com"),
+            "Alice Smith",
+        )
+        .await
+        .unwrap();
+
+    let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    // The address is a path segment, and an address may legally carry characters that
+    // would otherwise reshape the path, so it goes on the wire percent-encoded.
+    assert!(
+        request.starts_with("PATCH /gmail/v1/users/me/settings/sendAs/alice%40example.com "),
+        "{request}"
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body["displayName"], "Alice Smith");
+    // Naming `sendAsEmail` would ask Gmail to change which address the alias is.
+    assert_eq!(body.as_object().unwrap().len(), 1, "{body}");
+}
+
+#[test]
+fn gmail_advertises_a_writable_sender_name() {
+    let provider = GmailProvider::new(fake_client(vec![]));
+    assert_eq!(
+        provider.connection_info().capabilities.sender_identities(),
+        Some(IdentityControls::Writable)
+    );
 }

@@ -22,8 +22,8 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::{
-    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget,
-    Provider,
+    CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence,
+    PatchTarget, Provider,
 };
 use provider_graph::GraphCalendarProvider;
 

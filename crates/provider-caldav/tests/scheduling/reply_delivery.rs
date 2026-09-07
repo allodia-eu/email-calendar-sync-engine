@@ -22,7 +22,7 @@
 //! and delivers nothing, so silence here cannot be read as either outcome.
 
 use engine_core::{calendar::ParticipationStatus, ids::Uid};
-use engine_provider::{EventRsvp, Provider, ReplyDelivery, RsvpResponse};
+use engine_provider::{CalendarWrites, EventRsvp, ReplyDelivery, RsvpResponse};
 
 use super::{Parties, clean_up, invite, participant, poll_until};
 

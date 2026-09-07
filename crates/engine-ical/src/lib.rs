@@ -56,7 +56,7 @@ use event::{event_from_vevent, vevent_uid};
 // line, leave every other byte alone", shared by the structural patcher and the CalDAV
 // `imip` RSVP primitive.
 pub use lines::{Document, Edit, Edits, LineEdit};
-// The structural patcher is an *implementation detail* of `Provider::patch_event`: a
+// The structural patcher is an *implementation detail* of `CalendarWrites::patch_event`: a
 // host states the neutral `EventPatch`/`PatchTarget` intent (`engine-provider`) and never
 // reaches for the iCalendar surgery itself.
 pub use patch::{exclude_occurrence_ical, patch_event_ical};

@@ -429,6 +429,33 @@ error, not a silent drop — a `$junk` write that reported success and did nothi
 the shape this mapping invites — and for the three junk keywords the error names
 `report_message` as the way to say it.
 
+## Sender identities (send-as settings)
+
+`users.settings.sendAs` backs the neutral `sender_identities`/`set_sender_name` verbs
+(`providers.md`), and Gmail is one of the two transports that advertise
+`IdentityControls::Writable`.
+
+- **It is a settings endpoint, not a mail one, so it needs its own OAuth scope**:
+  `gmail.settings.basic`. The mail scope this adapter otherwise runs on does not reach
+  it. A token short that scope fails **here and nowhere else**, which is why the refusal
+  has to surface as a classified error rather than an empty list: an account whose token
+  is missing a scope must not look like an account with no identities.
+- **The list is genuinely a list.** Gmail returns every send-as alias, verified or not,
+  where the Graph adapter's is always one entry. A caller finds the account's own
+  identity by matching an address, never by taking the first.
+- **The resource is keyed by the address**, so `SenderIdentityId` *is* the send-as
+  address and it becomes a path segment on the write. It goes on the wire
+  percent-encoded (`encode_query_value`): an address may legally carry `+` or `/`, which
+  spliced raw would reshape the path.
+- **The patch names `displayName` alone.** Naming `sendAsEmail` would ask Gmail to change
+  which address the alias *is*.
+
+⚠️ **Unverified against a live account.** Both calls are offline-tested against the
+documented shapes, and this repo's rule is that a fake proves parsing and nothing about
+whether a real server accepts the request. Run `crates/provider-google/tests/live_*` with
+a throwaway account carrying `gmail.settings.basic` before trusting either — in
+particular that a percent-encoded `@` is accepted in the path segment.
+
 ## Spam and Trash are not optional in the snapshot
 
 `messages.list` omits `SPAM` and `TRASH` unless `includeSpamTrash=true`. `history.list`

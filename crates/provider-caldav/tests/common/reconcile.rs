@@ -17,7 +17,9 @@ use engine_core::{
     ids::{AccountId, Uid},
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
-use engine_provider::{EventDeletion, EventDraft, EventPatch, PatchTarget, Provider};
+use engine_provider::{
+    CalendarWrites, EventDeletion, EventDraft, EventPatch, PatchTarget, Provider,
+};
 use engine_recurrence::Horizon;
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::{

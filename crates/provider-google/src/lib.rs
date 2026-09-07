@@ -37,6 +37,7 @@ mod contact_write;
 mod error;
 mod fetch;
 mod http_transport;
+mod identity;
 mod json;
 mod mutate;
 mod normalize;

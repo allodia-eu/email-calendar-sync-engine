@@ -15,10 +15,11 @@ use engine_core::{
 };
 
 use crate::{
-    ConnectionInfo, ContactDestination, ContactPhoto, ContactSourceSync, ContactWriteReceipt,
-    ContactsProvider, Draft, EmailStream, EventDeletion, EventDraft, EventEdit, EventRsvp,
-    EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport, Provider,
-    ProviderResult, ReportReceipt, ScopeSync, SubmissionReceipt,
+    CalendarWrites, ConnectionInfo, ContactDestination, ContactPhoto, ContactSourceSync,
+    ContactWriteReceipt, ContactsProvider, Draft, EmailStream, EventDeletion, EventDraft,
+    EventEdit, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport,
+    Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
+    SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -119,6 +120,19 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         (**self).report_message(account, report).await
     }
 
+    async fn sender_identities(&self, account: &AccountId) -> ProviderResult<Vec<SenderIdentity>> {
+        (**self).sender_identities(account).await
+    }
+
+    async fn set_sender_name(
+        &self,
+        account: &AccountId,
+        identity: &SenderIdentityId,
+        name: &str,
+    ) -> ProviderResult<()> {
+        (**self).set_sender_name(account, identity, name).await
+    }
+
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
         (**self).calendar_scope(account)
     }
@@ -142,7 +156,13 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
     ) -> ProviderResult<ScopeSync<Event>> {
         (**self).sync_events(account, cursor).await
     }
+}
 
+/// The calendar-write half, delegated for the same reason and under the same `?Sized`
+/// bound as the [`Provider`] impl above: a boxed adapter's overrides must be the ones
+/// that run, never the rejecting defaults.
+#[async_trait]
+impl<P: CalendarWrites + ?Sized> CalendarWrites for Box<P> {
     async fn create_event(
         &self,
         account: &AccountId,

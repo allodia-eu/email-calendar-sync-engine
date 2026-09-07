@@ -5,8 +5,8 @@
 //! changes what one mailbox row says; reporting tells the *provider* something about
 //! the message, and on one transport it leaves the account entirely. The same split
 //! the calendar side draws between
-//! [`patch_event`](crate::Provider::patch_event) and
-//! [`rsvp_event`](crate::Provider::rsvp_event): an edit changes an object, an answer
+//! [`patch_event`](crate::CalendarWrites::patch_event) and
+//! [`rsvp_event`](crate::CalendarWrites::rsvp_event): an edit changes an object, an answer
 //! makes the server tell someone.
 //!
 //! The four transports disagree about almost everything around it, so the capability

@@ -36,7 +36,7 @@ use engine_core::{
     sync::{SyncObject, SyncUpdate},
     time::CalendarDateTime,
 };
-use engine_provider::Provider;
+use engine_provider::{CalendarWrites, Provider};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 
 #[tokio::main]

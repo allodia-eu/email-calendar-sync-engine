@@ -8,7 +8,7 @@ mod common;
 
 use common::*;
 use engine_core::{ids::CalendarId, sync::SyncUpdate};
-use engine_provider::Provider;
+use engine_provider::{CalendarWrites, Provider};
 
 /// Creating a **recurring** event, and reading the rule back off the server.
 ///

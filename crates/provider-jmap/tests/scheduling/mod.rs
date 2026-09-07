@@ -25,7 +25,7 @@ use engine_core::{
     scheduling::addresses_match,
     sync::SyncUpdate,
 };
-use engine_provider::{EventDeletion, EventWrite, Provider};
+use engine_provider::{CalendarWrites, EventDeletion, EventWrite, Provider};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials as DavCredentials};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::{Harness, ScratchAccount};

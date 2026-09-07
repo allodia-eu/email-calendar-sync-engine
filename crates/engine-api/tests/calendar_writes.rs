@@ -33,9 +33,9 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
-    OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard,
-    WritePrecondition,
+    CalendarWrites, Capabilities, ConnectionInfo, EventEdit, EventRsvp, EventWrite,
+    EventWriteReceipt, OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls,
+    ScopeSync, WriteGuard, WritePrecondition,
 };
 
 /// The account's own address — and deliberately **not** the one the invitation was sent to,
@@ -269,7 +269,10 @@ impl Provider for CalendarServer {
             .collect();
         Ok(ScopeSync::new(SyncUpdate::delta(changed, removed), next))
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarWrites for CalendarServer {
     async fn create_event(
         &self,
         _account: &AccountId,

@@ -45,7 +45,9 @@ use engine_core::{
     ids::{CalendarId, EventId, Uid},
     sync::SyncUpdate,
 };
-use engine_provider::{EventDeletion, EventDraft, EventRsvp, Provider, RsvpResponse};
+use engine_provider::{
+    CalendarWrites, EventDeletion, EventDraft, EventRsvp, Provider, RsvpResponse,
+};
 use provider_google::{GoogleCalendarProvider, GoogleClient};
 
 /// The test account's own address — the attendee every answer here is given as.

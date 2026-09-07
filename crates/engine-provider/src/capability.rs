@@ -7,7 +7,7 @@
 //! capability URNs (`urn:ietf:params:jmap:mail` → [`Capabilities::mail`], etc.)
 //! and grows as protocol features are added.
 
-use crate::{OverrideSurvival, ReportControls, RsvpControls, WriteGuard};
+use crate::{IdentityControls, OverrideSurvival, ReportControls, RsvpControls, WriteGuard};
 
 /// The data domains a provider supports.
 ///
@@ -40,6 +40,11 @@ pub struct Capabilities {
     /// than several, so "acknowledged but cannot report" is unrepresentable.
     mail_report: Option<ReportControls>,
     message_source: bool,
+    /// `None` when the provider has no identity object at all, so the sender name is
+    /// the host's alone (IMAP/SMTP); otherwise whether the account holder may change
+    /// the server's copy. One field rather than a read flag beside a write flag, so
+    /// "writable but unreadable" is unrepresentable.
+    sender_identities: Option<IdentityControls>,
     submission: bool,
     scheduling_submission: bool,
     idle: bool,
@@ -73,6 +78,7 @@ impl Capabilities {
             mail_writes: false,
             mail_report: None,
             message_source: false,
+            sender_identities: None,
             submission: false,
             scheduling_submission: false,
             idle: false,
@@ -131,6 +137,20 @@ impl Capabilities {
     #[must_use]
     pub const fn with_message_source(mut self) -> Self {
         self.message_source = true;
+        self
+    }
+
+    /// Marks the account's **sender identities** as readable, stating whether the
+    /// account holder may also change the name the server holds
+    /// ([`IdentityControls`]).
+    ///
+    /// Distinct from [`with_submission`](Self::with_submission): being able to send is
+    /// not being able to say who the mail is from. Every transport here can submit;
+    /// IMAP/SMTP has no identity object to read, and Graph has one nobody outside the
+    /// directory may write.
+    #[must_use]
+    pub const fn with_sender_identities(mut self, controls: IdentityControls) -> Self {
+        self.sender_identities = Some(controls);
         self
     }
 
@@ -283,6 +303,16 @@ impl Capabilities {
     #[must_use]
     pub const fn message_source(self) -> bool {
         self.message_source
+    }
+
+    /// What this provider lets a host do with the account's sender identities, or
+    /// `None` if it has no identity object at all and the name is the host's alone.
+    ///
+    /// Read this **before** offering a "your name" editor: on a read-only directory an
+    /// editor offers an edit that cannot land.
+    #[must_use]
+    pub const fn sender_identities(self) -> Option<IdentityControls> {
+        self.sender_identities
     }
 
     /// Whether mail submission is supported.

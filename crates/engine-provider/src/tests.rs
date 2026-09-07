@@ -11,6 +11,7 @@ use engine_core::{
 };
 
 use super::*;
+use crate::CalendarWrites;
 
 /// A trivial in-memory provider, proving the trait is implementable and that
 /// the scope accessors + connection info + ScopeSync compose as intended.
@@ -73,6 +74,8 @@ impl Provider for FakeJmap {
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
 }
+
+impl CalendarWrites for FakeJmap {}
 
 fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()
@@ -172,6 +175,8 @@ impl Provider for BareProvider {
         self.info
     }
 }
+
+impl CalendarWrites for BareProvider {}
 
 #[tokio::test]
 async fn box_dyn_provider_delegates_overrides_and_defaults() {

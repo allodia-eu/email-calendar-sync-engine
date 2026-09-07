@@ -5,11 +5,11 @@
 //! Split from `calendar_write_tests` to keep both files under the 500-line cap.
 
 use engine_provider::{
-    DraftRecurrence, EventDeletion, EventDraft, EventPatch, Occurrence, PatchTarget,
+    CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventPatch, Occurrence, PatchTarget,
 };
 use serde_json::json;
 
-use super::{calendar_write_support::*, provider_test_support::*, *};
+use super::{calendar_write_support::*, provider_test_support::*};
 
 // ---------------------------------------------------------------------------
 

@@ -153,7 +153,7 @@ mod tests {
         membership::Memberships,
         raw::RawMime,
     };
-    use engine_provider::{Capabilities, ConnectionInfo, Provider, ProviderResult};
+    use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
 
     use crate::Engine;
 
@@ -177,6 +177,8 @@ mod tests {
             ))
         }
     }
+
+    impl CalendarWrites for BodyProvider {}
 
     #[tokio::test]
     async fn message_body_fetches_and_extracts_plain_text() {
@@ -218,6 +220,8 @@ mod tests {
             Ok(RawMime::new(self.raw.clone()))
         }
     }
+
+    impl CalendarWrites for RelatedProvider {}
 
     #[tokio::test]
     async fn message_inline_parts_decodes_cid_referenced_images() {

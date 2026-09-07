@@ -9,7 +9,7 @@ mod common;
 use common::*;
 use engine_core::ids::Uid;
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget, Provider,
+    CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget,
 };
 
 /// Creating a **recurring** event through the neutral draft, and reading the rule back.

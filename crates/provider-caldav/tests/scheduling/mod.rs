@@ -51,7 +51,7 @@ use engine_core::{
     ids::{AccountId, Uid},
     scheduling::addresses_match,
 };
-use engine_provider::{EventDeletion, EventWrite, Provider};
+use engine_provider::{CalendarWrites, EventDeletion, EventWrite};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 use stalwart_harness::{Harness, ScratchAccount};
 

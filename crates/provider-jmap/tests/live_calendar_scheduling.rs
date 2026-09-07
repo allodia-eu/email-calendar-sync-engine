@@ -51,7 +51,9 @@
 mod scheduling;
 
 use engine_core::{calendar::ParticipationStatus, error::FailureClass};
-use engine_provider::{EventDeletion, EventRsvp, Provider, RsvpResponse, WriteGuard};
+use engine_provider::{
+    CalendarWrites, EventDeletion, EventRsvp, Provider, RsvpResponse, WriteGuard,
+};
 use scheduling::*;
 
 /// The attendee answers over JMAP: the patch lands, it merges — and the organizer is told.

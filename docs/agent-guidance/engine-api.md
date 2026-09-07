@@ -326,6 +326,18 @@ facade"*).
   which `map_sync_error` classifies as `ApiError::Busy` (a retryable race, not a
   failure) — classification, not restringing. Add similar classifications there if
   another error class deserves a distinct host signal.
+- **Not every facade method needs the store.** `sender_identities`/`set_sender_name`
+  (`providers.md`) are the first pair that touches neither the store nor the outbox: a
+  sender name is a *host preference*, not synced PIM state, and the `From` a send carries
+  is assembled from the caller's `Draft`. What the engine owns there is the protocol.
+  Passing a call straight to the provider is legitimate when the answer is not ours to
+  keep; reach for the outbox when a side effect must survive a crash.
+- **Reject host input at the facade, before any request.** `set_sender_name` refuses a
+  name carrying a control character or longer than 128 characters, as
+  `ApiError::InvalidInput`. The RFC 5322 assembler refuses the same bytes, but by then
+  the user has a mailbox that cannot send and no idea why — and the error message names
+  the offending codepoint rather than echoing it, since an error travels into logs and
+  dialogs and would carry the injected payload with it.
 - **The clock is a wall clock, not monotonic.** `now()` is whole-second and can
   step backward (NTP); do not write code or tests that assume monotonic `now()`.
   Lease safety across a step rests on the TTL + `StaleLease` reclaim in the sync

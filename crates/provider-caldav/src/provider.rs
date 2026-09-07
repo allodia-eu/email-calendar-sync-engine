@@ -23,9 +23,9 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion, EventDraft,
-    EventEdit, EventRsvp, EventWrite, EventWriteReceipt, IgnoreConnectSteps, OverrideSurvival,
-    Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard,
+    CalendarWrites, Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion,
+    EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, IgnoreConnectSteps,
+    OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard,
 };
 use engine_tls::TlsClientConfig;
 
@@ -286,7 +286,7 @@ impl CalDavProvider {
     /// client choose the resource name). The `uid` is percent-encoded as a single path
     /// segment, so an unusual `UID` still yields a valid href.
     ///
-    /// [`create_event`](Provider::create_event) mints this itself, so a host does not need
+    /// [`create_event`](CalendarWrites::create_event) mints this itself, so a host does not need
     /// it — a create states an [`EventDraft`] and learns the resulting id from the receipt.
     /// It stays public for the operations that address a resource *before* it has been
     /// synced: pre-cleaning a throwaway event, or the iMIP RSVP path
@@ -378,7 +378,10 @@ impl Provider for CalDavProvider {
         )
         .await?)
     }
+}
 
+#[async_trait]
+impl CalendarWrites for CalDavProvider {
     /// Mints the href from the draft's `UID` inside the **bound** collection, then `PUT`s
     /// the built document there.
     ///

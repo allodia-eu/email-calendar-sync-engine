@@ -3,6 +3,7 @@
 //! re-claim-and-recompute. Uses the shared fakes and helpers from the parent
 //! module via `use super::*`.
 
+use engine_provider::CalendarWrites;
 use futures_util::StreamExt;
 
 use super::*;
@@ -223,6 +224,8 @@ impl Provider for LeaseStealer {
         })
     }
 }
+
+impl CalendarWrites for LeaseStealer {}
 
 #[tokio::test]
 async fn stale_lease_triggers_reclaim_and_recompute() {

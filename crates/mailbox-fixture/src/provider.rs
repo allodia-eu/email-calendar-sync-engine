@@ -15,7 +15,8 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider, ProviderResult, ScopeSync,
+    CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider,
+    ProviderResult, ScopeSync,
 };
 
 /// How many messages one streamed chunk carries during population.
@@ -115,6 +116,8 @@ impl Provider for FolderProvider {
         ))
     }
 }
+
+impl CalendarWrites for FolderProvider {}
 
 impl FolderProvider {
     /// The chunks this pass yields.

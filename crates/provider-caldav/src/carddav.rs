@@ -12,8 +12,9 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, ContactDestination, ContactPhoto, ContactSourceSync,
-    ContactWriteReceipt, ContactsProvider, Provider, ProviderResult, ScopeSync, WriteGuard,
+    CalendarWrites, Capabilities, ConnectionInfo, ContactDestination, ContactPhoto,
+    ContactSourceSync, ContactWriteReceipt, ContactsProvider, Provider, ProviderResult, ScopeSync,
+    WriteGuard,
 };
 use engine_tls::TlsClientConfig;
 
@@ -201,6 +202,8 @@ impl Provider for CardDavProvider {
         }
     }
 }
+
+impl CalendarWrites for CardDavProvider {}
 
 #[async_trait]
 impl ContactsProvider for CardDavProvider {

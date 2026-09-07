@@ -19,8 +19,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MessageReport, PageToken,
-    PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SubmissionReceipt, SyncKind,
-    split_page,
+    PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
+    SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
@@ -142,7 +142,7 @@ impl JmapProvider {
     }
 
     /// The JMAP (server-side) calendar account id for calendar method arguments.
-    fn calendar_account(&self) -> Result<String, JmapError> {
+    pub(crate) fn calendar_account(&self) -> Result<String, JmapError> {
         Ok(self.executor.session().calendar_account_id()?.to_owned())
     }
 }
@@ -317,58 +317,6 @@ impl Provider for JmapProvider {
         .await?)
     }
 
-    /// One `CalendarEvent/set` `create`. The **server** assigns the id, so the receipt is
-    /// the only place the caller learns it (`crate::calendar_write`).
-    async fn create_event(
-        &self,
-        _account: &AccountId,
-        draft: &engine_provider::EventDraft,
-    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
-        let account = self.calendar_account()?;
-        Ok(crate::calendar_write::create_event(self.executor.as_ref(), &account, draft).await?)
-    }
-
-    /// One `CalendarEvent/set` `update`, whose PatchObject the **server** merges — so there
-    /// is no document surgery on this transport, and no JSCalendar serializer to keep in
-    /// step with the parser (`crate::calendar_write`).
-    async fn patch_event(
-        &self,
-        _account: &AccountId,
-        base: &Event,
-        edit: &engine_provider::EventEdit,
-    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
-        let account = self.calendar_account()?;
-        Ok(
-            crate::calendar_write::patch_event(self.executor.as_ref(), &account, base, edit)
-                .await?,
-        )
-    }
-
-    /// One `CalendarEvent/set` `update` of *my* participant's `participationStatus`, which
-    /// is what makes the server schedule the iTIP `REPLY` (`crate::calendar_write`).
-    async fn rsvp_event(
-        &self,
-        _account: &AccountId,
-        base: &Event,
-        rsvp: &engine_provider::EventRsvp,
-    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
-        crate::session::JMAP_RSVP.accept(rsvp)?;
-        let account = self.calendar_account()?;
-        Ok(crate::calendar_rsvp::rsvp_event(self.executor.as_ref(), &account, base, rsvp).await?)
-    }
-
-    /// One `CalendarEvent/set` `destroy`, or — for one occurrence — an `update` marking it
-    /// excluded. An already-gone event is a success (`crate::calendar_write`).
-    async fn delete_event(
-        &self,
-        _account: &AccountId,
-        base: Option<&Event>,
-        deletion: &engine_provider::EventDeletion,
-    ) -> ProviderResult<()> {
-        let (executor, account) = (self.executor.as_ref(), self.calendar_account()?);
-        Ok(crate::calendar_write::delete_event(executor, &account, base, deletion).await?)
-    }
-
     // `put_event` is deliberately **not** implemented: replacing a whole stored document is
     // the verb of a document-oriented transport, and JMAP has none — a JSCalendar object is
     // not a file the client owns the bytes of, and `/set` `update` is already a patch. It
@@ -420,6 +368,22 @@ impl Provider for JmapProvider {
         .await?)
     }
 
+    async fn sender_identities(&self, _acct: &AccountId) -> ProviderResult<Vec<SenderIdentity>> {
+        let account = self.executor.session().submission_account_id()?.to_owned();
+        Ok(crate::identity::list(self.executor.as_ref(), &account).await?)
+    }
+
+    async fn set_sender_name(
+        &self,
+        _acct: &AccountId,
+        identity: &SenderIdentityId,
+        name: &str,
+    ) -> ProviderResult<()> {
+        let account = self.executor.session().submission_account_id()?.to_owned();
+        let executor = self.executor.as_ref();
+        Ok(crate::identity::set_name(executor, &account, identity, name).await?)
+    }
+
     async fn report_message(
         &self,
         _account: &AccountId,
@@ -462,6 +426,10 @@ mod calendar_write_tests;
 #[cfg(test)]
 #[path = "report_provider_tests.rs"]
 mod report_provider_tests;
+
+#[cfg(test)]
+#[path = "identity_tests.rs"]
+mod identity_tests;
 
 #[cfg(test)]
 #[path = "calendar_patch_tests.rs"]

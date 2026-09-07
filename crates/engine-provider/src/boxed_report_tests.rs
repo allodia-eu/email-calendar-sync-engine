@@ -5,8 +5,8 @@ use engine_core::{
 
 use super::*;
 use crate::{
-    Capabilities, ConnectionInfo, MessageReport, Provider, ProviderResult, ReportControls,
-    ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
+    CalendarWrites, Capabilities, ConnectionInfo, MessageReport, Provider, ProviderResult,
+    ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };
 
 fn account() -> AccountId {
@@ -43,6 +43,8 @@ impl Provider for Reports {
     }
 }
 
+impl CalendarWrites for Reports {}
+
 /// An adapter that reports nothing, taking the rejecting default.
 struct Silent;
 
@@ -52,6 +54,8 @@ impl Provider for Silent {
         ConnectionInfo::new(Capabilities::none())
     }
 }
+
+impl CalendarWrites for Silent {}
 
 /// Mirrors `engine-api`'s `Engine::report_message`, the only shape that needs the
 /// blanket impl. A plain `boxed.report_message(..)` call would auto-deref to

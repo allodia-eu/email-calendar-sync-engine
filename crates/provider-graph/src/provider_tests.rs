@@ -408,3 +408,56 @@ async fn replay_server_404s_an_unrouted_path() {
     .unwrap();
     assert!(client.get(&client.url("/me/nope")).await.is_err());
 }
+
+/// The one URL this read may send. The fake routes by substring and errors on a miss,
+/// so keying the route on the whole path **is** the request assertion: a `$select` that
+/// dropped `displayName` would return a user resource with no name in it and read as
+/// "the server holds none", which is indistinguishable from a correct empty answer.
+const IDENTITY_URL: &str = "/me?$select=displayName,mail,userPrincipalName";
+
+#[tokio::test]
+async fn the_sender_identity_is_read_from_the_mailbox_principal() {
+    let client = fake_client(vec![(
+        IDENTITY_URL,
+        jval!({
+            "displayName": "Alice Smith",
+            "mail": "alice@example.com",
+            "userPrincipalName": "alice@tenant.example.test"
+        }),
+    )]);
+    let provider = GraphProvider::new(client, MailboxId::try_from("inbox").unwrap());
+
+    let identities = provider.sender_identities(&account()).await.unwrap();
+
+    assert_eq!(identities.len(), 1, "one principal, one identity");
+    assert_eq!(identities[0].address.name.as_deref(), Some("Alice Smith"));
+    assert_eq!(identities[0].address.email, "alice@example.com");
+}
+
+#[tokio::test]
+async fn a_shared_mailbox_reads_its_own_identity_not_the_signed_in_user() {
+    // Each mailbox is a separate engine account differing only by its principal
+    // (`crate::MailboxPrincipal`), so the name must follow the principal — otherwise
+    // every shared mailbox would be labelled with the delegate's own name.
+    let client = fake_client(vec![(
+        "/users/info@example.org?$select=displayName",
+        jval!({ "displayName": "Info Desk", "mail": "info@example.org" }),
+    )])
+    .with_principal(crate::MailboxPrincipal::user("info@example.org"));
+    let provider = GraphProvider::new(client, MailboxId::try_from("inbox").unwrap());
+
+    let identities = provider.sender_identities(&account()).await.unwrap();
+
+    assert_eq!(identities[0].address.name.as_deref(), Some("Info Desk"));
+}
+
+#[test]
+fn graph_advertises_a_read_only_directory_name() {
+    // A host reads this to decide whether to draw an editor. Claiming `Writable` here
+    // would offer an edit only a tenant administrator can make.
+    let provider = GraphProvider::new(fake_client(vec![]), MailboxId::try_from("inbox").unwrap());
+    assert_eq!(
+        provider.connection_info().capabilities.sender_identities(),
+        Some(IdentityControls::ReadOnly)
+    );
+}
