@@ -24,6 +24,7 @@ on the account.
 
 | Fixture | Real call | Protects |
 | --- | --- | --- |
+| `mail/settings_send_as.json` | `users.settings.sendAs.list` | The shape a real account's send-as list has: `displayName` is present and **empty** on a mailbox nobody has named, which is what the adapter reads as "no name" rather than as a blank one. |
 | `mail/profile.json` | `GET /gmail/v1/users/me/profile` | the account cursor (`historyId`) a snapshot persists |
 | `mail/labels.json` | `GET /users/me/labels` | label → `Mailbox` role/keyword/membership mapping (system + a custom label) |
 | `mail/messages_list.json` | `GET /users/me/messages` | the `{id, threadId}` enumeration a snapshot pages |

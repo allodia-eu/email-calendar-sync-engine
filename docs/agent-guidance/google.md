@@ -435,11 +435,23 @@ the shape this mapping invites — and for the three junk keywords the error nam
 (`providers.md`), and Gmail is one of the two transports that advertise
 `IdentityControls::Writable`.
 
-- **It is a settings endpoint, not a mail one, so it needs its own OAuth scope**:
-  `gmail.settings.basic`. The mail scope this adapter otherwise runs on does not reach
-  it. A token short that scope fails **here and nowhere else**, which is why the refusal
-  has to surface as a classified error rather than an empty list: an account whose token
-  is missing a scope must not look like an account with no identities.
+- **Reading needs no scope beyond the mail one; writing does.** Measured against a real
+  account holding `https://mail.google.com/` and nothing from the settings family:
+
+  | Call | With `https://mail.google.com/` alone |
+  |---|---|
+  | `GET …/settings/sendAs` | **200** |
+  | `PATCH …/settings/sendAs/{addr}` | **403** `ACCESS_TOKEN_SCOPE_INSUFFICIENT` |
+
+  So a host can *seed* a "your name" field from Gmail for free, and only pushing a change
+  back costs `gmail.settings.basic` and the re-consent that adding a scope forces on every
+  existing grant. That split is worth preserving: it is the difference between a feature
+  every current user gets silently and one that interrupts all of them. Do not read the
+  documented scope list as the answer here; the docs list the settings scopes for both
+  verbs, and the read plainly does not require them.
+- **A token short the settings scope fails on the write and nowhere else**, which is why the
+  refusal surfaces as a classified error rather than an empty list: an account whose token
+  cannot write must not look like an account with no identities.
 - **The list is genuinely a list.** Gmail returns every send-as alias, verified or not,
   where the Graph adapter's is always one entry. A caller finds the account's own
   identity by matching an address, never by taking the first.
@@ -450,11 +462,18 @@ the shape this mapping invites — and for the three junk keywords the error nam
 - **The patch names `displayName` alone.** Naming `sendAsEmail` would ask Gmail to change
   which address the alias *is*.
 
-⚠️ **Unverified against a live account.** Both calls are offline-tested against the
-documented shapes, and this repo's rule is that a fake proves parsing and nothing about
-whether a real server accepts the request. Run `crates/provider-google/tests/live_*` with
-a throwaway account carrying `gmail.settings.basic` before trusting either — in
-particular that a percent-encoded `@` is accepted in the path segment.
+- **The percent-encoded path segment is accepted.** Measured: both `allodia…%40gmail.com`
+  and the fully-encoded form `encode_query_value` actually emits (`.` → `%2E`) resolve to
+  the same resource and answer 200. The encoding is not cosmetic, an address may carry `+`
+  or `/`, so this had to be confirmed rather than assumed.
+- **`displayName` is present and empty on a mailbox nobody has named**, not absent. The
+  normalizer treats empty as "no name", which is what lets a host tell *ask* from *we
+  already know*; a check for the property's absence alone would report a blank name.
+
+⚠️ **The write is still unverified against a live account.** The read, the path encoding and
+the response shape are all measured (`tests/live_identity.rs`, and the captured fixture);
+`sendAs.patch` needs a token carrying `gmail.settings.basic`, which no throwaway account
+here has yet. Re-run that suite with one before trusting the write.
 
 ## Spam and Trash are not optional in the snapshot
 

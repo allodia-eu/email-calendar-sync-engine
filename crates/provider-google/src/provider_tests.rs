@@ -226,6 +226,23 @@ async fn fetch_message_source_fetches_and_decodes_the_raw() {
     assert!(text.contains("Fixture: first message"));
 }
 
+const SEND_AS: &str = include_str!("../tests/fixtures/mail/settings_send_as.json");
+
+#[tokio::test]
+async fn the_captured_send_as_list_reads_as_an_account_with_no_name_yet() {
+    // The bytes a real account returned. `displayName` is **present and empty** on a mailbox
+    // nobody has named, so a normalizer that only checked for the property's absence would
+    // report a blank name where a host has to report "ask".
+    let client = fake_client(vec![("/gmail/v1/users/me/settings/sendAs", json(SEND_AS))]);
+    let provider = GmailProvider::new(client);
+
+    let identities = provider.sender_identities(&account()).await.unwrap();
+
+    assert_eq!(identities.len(), 1);
+    assert_eq!(identities[0].address.email, "testuser@example.test");
+    assert_eq!(identities[0].address.name, None);
+}
+
 #[tokio::test]
 async fn send_as_settings_are_read_as_the_account_identities() {
     // Routing on the settings path is the request assertion: reading the mail API's
