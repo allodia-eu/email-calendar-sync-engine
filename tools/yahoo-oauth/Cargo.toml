@@ -1,0 +1,24 @@
+# Standalone dev tool — NOT part of the engine workspace (its own `[workspace]`
+# table detaches it from `crates/*`), so it never affects the engine's
+# fmt/clippy/coverage gates. It exists only to drive the interactive Yahoo
+# OAuth 2.0 flow against a test account, so the gated IMAP/SMTP OAuth live tests
+# (`crates/provider-imap/tests/live_imap_oauth.rs`) have a real access token.
+[package]
+name = "yahoo-oauth"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "yahoo-oauth"
+path = "src/main.rs"
+
+[dependencies]
+# Blocking HTTP keeps the tool runtime-free; rustls so there is no OpenSSL
+# requirement (mirrors the engine's TLS posture). `basic_auth` covers the token
+# endpoint's client authentication, so no base64 crate is needed here.
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls", "form"] }
+serde_json = "1.0.150"
+
+# Detach from the engine workspace above this directory.
+[workspace]

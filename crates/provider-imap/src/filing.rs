@@ -30,11 +30,14 @@ use tokio::{
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
 use crate::{
-    config::{ImapConfig, SmtpSecurity, SmtpSettings},
+    config::{ImapConfig, SmtpSecurity, SmtpSettings, port_of},
+    credentials::Credentials,
+    dial::connect_session,
     error::ImapError,
     place::{Filing, append_to_role_folder, place_if_absent, placed_key},
-    provider::{ImapProvider, connect_session},
+    provider::ImapProvider,
     smtp::{self, Disposition, SmtpResult},
+    smtp_auth::SmtpAuth,
 };
 
 /// The resolved SMTP transport a provider holds after `connect`: plaintext, implicit
@@ -48,16 +51,42 @@ pub(crate) enum SmtpSender {
         addr: String,
         server_name: String,
         connector: TlsConnector,
-        username: String,
-        password: String,
+        credentials: Credentials,
     },
     StartTls {
         addr: String,
         server_name: String,
         connector: TlsConnector,
-        username: String,
-        password: String,
+        credentials: Credentials,
     },
+}
+
+impl SmtpSender {
+    /// The authentication this transport presents, or `None` for the unauthenticated
+    /// plaintext MX. `host`/`port` name the **SMTP** server, not the IMAP one: a SASL
+    /// `OAUTHBEARER` response describes the connection it rides on (RFC 7628 §3.1), and
+    /// submission is a different host and port from the mailbox it files into.
+    fn auth(&self) -> Option<SmtpAuth<'_>> {
+        match self {
+            Self::Plaintext { .. } => None,
+            Self::ImplicitTls {
+                addr,
+                server_name,
+                credentials,
+                ..
+            }
+            | Self::StartTls {
+                addr,
+                server_name,
+                credentials,
+                ..
+            } => Some(SmtpAuth {
+                credentials,
+                host: server_name,
+                port: port_of(addr),
+            }),
+        }
+    }
 }
 
 /// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,
@@ -75,15 +104,13 @@ pub(crate) fn resolve_smtp(
             addr: settings.addr.clone(),
             server_name: server_name.clone(),
             connector: connector.clone(),
-            username: config.username.clone(),
-            password: config.password.clone(),
+            credentials: config.credentials.clone(),
         },
         SmtpSecurity::StartTls { server_name } => SmtpSender::StartTls {
             addr: settings.addr.clone(),
             server_name: server_name.clone(),
             connector: connector.clone(),
-            username: config.username.clone(),
-            password: config.password.clone(),
+            credentials: config.credentials.clone(),
         },
     }
 }
@@ -153,25 +180,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
                 addr,
                 server_name,
                 connector,
-                username,
-                password,
+                ..
             } => {
                 let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
                 let tls = tls_connect(connector, server_name, tcp).await?;
-                self.submit_over(tls, draft, Some((username, password)))
-                    .await
+                self.submit_over(tls, draft, sender.auth()).await
             }
             SmtpSender::StartTls {
                 addr,
                 server_name,
                 connector,
-                username,
-                password,
+                ..
             } => {
                 let sub = Self::prepare(draft)?;
                 let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
                 // Cleartext STARTTLS handshake, then upgrade the socket and transmit
-                // (with `AUTH PLAIN`) over the now-established TLS.
+                // (authenticating) over the now-established TLS.
                 let tcp = smtp::negotiate_starttls(tcp, &sub.ehlo).await?;
                 let tls = tls_connect(connector, server_name, tcp).await?;
                 let result = smtp::send_after_starttls(
@@ -180,7 +204,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
                     &sub.from,
                     &sub.to,
                     &sub.message,
-                    Some((username, password)),
+                    sender.auth(),
                 )
                 .await?;
                 self.file_result(result, &sub, draft).await
@@ -200,7 +224,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         &self,
         smtp: W,
         draft: &Draft,
-        auth: Option<(&str, &str)>,
+        auth: Option<SmtpAuth<'_>>,
     ) -> ProviderResult<SubmissionReceipt>
     where
         W: AsyncRead + AsyncWrite + Unpin + Send,

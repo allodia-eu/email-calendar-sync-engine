@@ -178,8 +178,12 @@ fn provider_with_smtp(sender: SmtpSender) -> ImapProvider<MockStream> {
 #[tokio::test]
 async fn submit_over_implicit_tls_dials_wraps_and_delivers() {
     let (cert, port) = implicit_tls_server().await;
-    let config = ImapConfig::new("h:993", "127.0.0.1", "alice", "pw")
-        .with_smtp_tls(format!("127.0.0.1:{port}"), "127.0.0.1");
+    let config = ImapConfig::new(
+        "h:993",
+        "127.0.0.1",
+        crate::credentials::Credentials::password("alice", "pw"),
+    )
+    .with_smtp_tls(format!("127.0.0.1:{port}"), "127.0.0.1");
     let sender = resolve_smtp(
         config.smtp.as_ref().unwrap(),
         &trusting_connector(cert),
@@ -196,8 +200,12 @@ async fn submit_over_implicit_tls_dials_wraps_and_delivers() {
 #[tokio::test]
 async fn submit_over_starttls_negotiates_upgrades_and_delivers() {
     let (cert, port) = starttls_server().await;
-    let config = ImapConfig::new("h:993", "127.0.0.1", "alice", "pw")
-        .with_smtp_starttls(format!("127.0.0.1:{port}"), "127.0.0.1");
+    let config = ImapConfig::new(
+        "h:993",
+        "127.0.0.1",
+        crate::credentials::Credentials::password("alice", "pw"),
+    )
+    .with_smtp_starttls(format!("127.0.0.1:{port}"), "127.0.0.1");
     let sender = resolve_smtp(
         config.smtp.as_ref().unwrap(),
         &trusting_connector(cert),

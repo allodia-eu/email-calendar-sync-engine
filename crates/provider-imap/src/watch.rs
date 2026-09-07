@@ -36,7 +36,7 @@ use tokio::{
 };
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
-use crate::{ImapConfig, idle, provider::connect_session, transport::Connection};
+use crate::{ImapConfig, dial::connect_session, idle, transport::Connection};
 
 /// The recommended IMAP `IDLE` keep-alive interval (28 minutes) — a margin under
 /// RFC 2177's guidance to re-issue `IDLE` at least every 29 minutes so the server does

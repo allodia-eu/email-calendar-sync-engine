@@ -225,8 +225,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     ///
     /// [`ImapError::Io`] or another non-refusal failure of `CAPABILITY`/`ENABLE`.
     pub(crate) async fn negotiate(&mut self) -> ImapResult<()> {
-        let response = self.command("CAPABILITY").await?;
-        let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
+        let capabilities = self.capabilities().await?;
         self.negotiated = Negotiated::from_capabilities(&capabilities);
 
         let arguments = self.negotiated.enable_arguments();
