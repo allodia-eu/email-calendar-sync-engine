@@ -574,6 +574,39 @@ coverable against a contact someone set up by hand. `live_a_saved_contact_with_a
 walks whatever the account has rather than naming them, so renaming is fine; removing the
 one with a picture is what would silently uncover the path.
 
+## The mailbox's sender identity (read-only)
+
+`GET {principal}?$select=displayName,mail,userPrincipalName` backs the neutral
+`sender_identities` verb (`providers.md`). Graph is the one transport that advertises
+`IdentityControls::ReadOnly`, and not because this adapter is unfinished: a mailbox's
+display name is a **directory attribute a tenant administrator owns**, so an account
+holder changing it is not a smaller version of the same operation. There is no
+`set_sender_name` path here at all.
+
+- **One identity, never a list.** The principal *is* the mailbox, and a shared mailbox
+  the signed-in user also reaches is a separate engine account with its own provider, so
+  a `/users/{…}` principal correctly reads *that* mailbox's name rather than the
+  delegate's. That also means it needs the directory-read scope the shared-mailbox setup
+  already grants.
+- **`mail` is null on a mailbox the tenant gave no SMTP address**, so the read falls back
+  to `userPrincipalName` — the same fallback the rest of this workspace already applies
+  to a Graph address, so the two agree.
+
+- **`$select` is acknowledged and not applied**, at least on a personal (MSA) account.
+  `GET /me?$select=displayName` comes back with `@odata.context` naming
+  `#users(displayName)/$entity` and a body carrying all twelve default `user` properties
+  anyway: `ageGroup`, `businessPhones`, `givenName`, `preferredLanguage`, `surname` and the
+  rest. Measured; a bare `GET /me` returns the same twelve. So the `$select` documents intent
+  and may narrow a work/school response, but **nothing may assume the payload is narrow**:
+  the normalizer picks its three properties out of whatever arrives, and the captured
+  fixture is the full response precisely so an offline test shows that.
+- **`User.Read` is enough**, the scope every Graph account here already grants. Reading the
+  mailbox's own name therefore costs a host no new consent.
+
+✅ **Live-verified** (`tests/live_identity.rs`, against a throwaway personal account): the
+read returns the mailbox's own address with a directory `displayName`, and the rename is
+refused locally rather than attempted.
+
 ## Reporting a message (junk / not junk / phishing)
 
 `POST {beta}/messages/{id}/reportMessage`, in `crate::report`. Four facts, each

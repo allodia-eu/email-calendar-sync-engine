@@ -12,7 +12,9 @@ use engine_core::{
     sync::SyncUpdate,
     time::CalendarDateTime,
 };
-use engine_provider::{EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider};
+use engine_provider::{
+    CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider,
+};
 
 #[tokio::test]
 async fn live_calendar_lists_syncs_and_writes() {

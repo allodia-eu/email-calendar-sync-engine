@@ -19,9 +19,10 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
-    PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    ScopeSync, SubmissionReceipt, SyncKind, split_page,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
+    MailEdit, MailEditReceipt, PageToken, PassMode, Provider, ProviderResult, ReportControls,
+    ReportEvidence, ReportVerdicts, ScopeSync, SenderIdentity, SenderIdentityId, SubmissionReceipt,
+    SyncKind, split_page,
 };
 
 use crate::{fetch, mutate, submit, transport::GoogleClient};
@@ -79,7 +80,12 @@ impl GmailProvider {
                 // rather than a calendar file (RFC 6047 §2.4). Contrast JMAP, which hands the
                 // server a body structure and cannot.
                 .with_submission()
-                .with_scheduling_submission(),
+                .with_scheduling_submission()
+                // Gmail's send-as settings are readable and writable by the account
+                // holder. Whether *this* token may reach them is a scope question no
+                // capability can answer, so a refusal surfaces as an error
+                // (`crate::identity`).
+                .with_sender_identities(IdentityControls::Writable),
             since: None,
         }
     }
@@ -268,6 +274,19 @@ impl Provider for GmailProvider {
         submit::send(&self.client, draft).await
     }
 
+    async fn sender_identities(&self, _account: &AccountId) -> ProviderResult<Vec<SenderIdentity>> {
+        Ok(crate::identity::list(&self.client).await?)
+    }
+
+    async fn set_sender_name(
+        &self,
+        _account: &AccountId,
+        identity: &SenderIdentityId,
+        name: &str,
+    ) -> ProviderResult<()> {
+        Ok(crate::identity::set_name(&self.client, identity, name).await?)
+    }
+
     async fn report_message(
         &self,
         _account: &AccountId,
@@ -276,6 +295,8 @@ impl Provider for GmailProvider {
         crate::report::report_message(&self.client, report).await
     }
 }
+
+impl CalendarWrites for GmailProvider {}
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]

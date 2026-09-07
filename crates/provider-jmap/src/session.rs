@@ -459,7 +459,12 @@ fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabiliti
         caps = caps.with_mail();
     }
     if has(capability::SUBMISSION) {
-        caps = caps.with_submission();
+        // `Identity` is defined by the submission spec (RFC 8621 §6), so the URN that
+        // says "this account can send" is the one that says it has identities
+        // (`crate::identity`).
+        caps = caps
+            .with_submission()
+            .with_sender_identities(engine_provider::IdentityControls::Writable);
     }
     if has(capability::CALENDARS) {
         caps = caps.with_calendars();

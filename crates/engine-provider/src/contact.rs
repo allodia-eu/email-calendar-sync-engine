@@ -241,7 +241,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Capabilities, ConnectionInfo};
+    use crate::{CalendarWrites, Capabilities, ConnectionInfo};
 
     struct Unsupported;
 
@@ -251,6 +251,8 @@ mod tests {
             ConnectionInfo::new(Capabilities::none())
         }
     }
+
+    impl CalendarWrites for Unsupported {}
 
     #[async_trait]
     impl ContactsProvider for Unsupported {}

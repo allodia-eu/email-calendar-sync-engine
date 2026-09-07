@@ -51,7 +51,7 @@ use engine_core::{
     sync::SyncUpdate,
     time::{CalendarDate, TimeZoneId},
 };
-use engine_provider::{EventRsvp, Provider, RsvpResponse};
+use engine_provider::{CalendarWrites, EventRsvp, Provider, RsvpResponse};
 use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";

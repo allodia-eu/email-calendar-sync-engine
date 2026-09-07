@@ -8,7 +8,7 @@ use engine_core::{
     membership::Memberships,
     sync::SyncUpdate,
 };
-use engine_provider::{ContactSourceSync, ContactUnavailable, ContactsProvider};
+use engine_provider::{CalendarWrites, ContactSourceSync, ContactUnavailable, ContactsProvider};
 use engine_store::SyncApplied;
 
 use super::*;
@@ -22,6 +22,8 @@ impl Provider for FakeContacts {
         ConnectionInfo::new(Capabilities::none().with_contacts())
     }
 }
+
+impl CalendarWrites for FakeContacts {}
 
 #[async_trait::async_trait]
 impl ContactsProvider for FakeContacts {

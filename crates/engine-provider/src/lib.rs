@@ -33,6 +33,7 @@ mod connect_observer;
 mod connection;
 mod contact;
 mod error;
+mod identity;
 mod mail_edit;
 mod page;
 mod provider;
@@ -43,9 +44,9 @@ mod sync;
 mod watch;
 
 pub use calendar_write::{
-    DeleteTarget, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp,
-    EventWrite, EventWriteReceipt, Occurrence, PatchTarget, RecurrenceEdit, ReplyDelivery,
-    RsvpResponse, TextEdit, WritePrecondition,
+    CalendarWrites, DeleteTarget, DraftRecurrence, EventDeletion, EventDraft, EventEdit,
+    EventPatch, EventRsvp, EventWrite, EventWriteReceipt, Occurrence, PatchTarget, RecurrenceEdit,
+    ReplyDelivery, RsvpResponse, TextEdit, WritePrecondition,
 };
 pub use capability::Capabilities;
 pub use capability_calendar::{OverrideSurvival, RsvpControls, WriteGuard};
@@ -58,6 +59,7 @@ pub use contact::{
     ContactsProvider,
 };
 pub use error::{ProviderError, ProviderResult};
+pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;

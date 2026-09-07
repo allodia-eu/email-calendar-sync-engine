@@ -21,9 +21,10 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit, MailEditReceipt,
-    PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    ScopeSync, SubmissionReceipt, SyncKind, split_page,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
+    MailEdit, MailEditReceipt, PageToken, PassMode, Provider, ProviderResult, ReportControls,
+    ReportEvidence, ReportVerdicts, ScopeSync, SenderIdentity, SubmissionReceipt, SyncKind,
+    split_page,
 };
 
 use crate::{fetch, transport::GraphClient};
@@ -87,7 +88,11 @@ impl GraphProvider {
                 // rather than a calendar file (RFC 6047 §2.4). Contrast JMAP, which hands the
                 // server a body structure and cannot.
                 .with_submission()
-                .with_scheduling_submission(),
+                .with_scheduling_submission()
+                // Readable, never writable: the mailbox's display name is a directory
+                // attribute a tenant administrator owns, so an editor here would offer an
+                // edit that cannot land (`crate::identity`).
+                .with_sender_identities(IdentityControls::ReadOnly),
             since: None,
         }
     }
@@ -321,6 +326,10 @@ impl Provider for GraphProvider {
         crate::mutate::edit_mail(&self.client, edit).await
     }
 
+    async fn sender_identities(&self, _account: &AccountId) -> ProviderResult<Vec<SenderIdentity>> {
+        Ok(crate::identity::sender_identity(&self.client).await?)
+    }
+
     async fn report_message(
         &self,
         _account: &AccountId,
@@ -329,6 +338,8 @@ impl Provider for GraphProvider {
         crate::report::report_message(&self.client, report).await
     }
 }
+
+impl CalendarWrites for GraphProvider {}
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]

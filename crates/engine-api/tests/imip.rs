@@ -26,7 +26,7 @@ use engine_core::{
     raw::RawMime,
     scheduling::{ScheduleMethod, addresses_match},
 };
-use engine_provider::{Capabilities, ConnectionInfo, Provider, ProviderResult};
+use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
 
 /// The captured invitation, byte-for-byte as committed.
 const INVITATION: &[u8] = include_bytes!("fixtures/stalwart-invitation.eml");
@@ -48,6 +48,8 @@ impl Provider for SourceProvider {
         Ok(RawMime::new(self.0.to_vec()))
     }
 }
+
+impl CalendarWrites for SourceProvider {}
 
 /// The engine, a provider serving the captured invitation, and a message to read it as.
 fn fixture() -> (Engine, SourceProvider, AccountId, Message) {

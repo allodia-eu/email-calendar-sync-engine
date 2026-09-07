@@ -1,7 +1,8 @@
-//! Unit tests for [`Capabilities`](super::Capabilities) and the two promises it
-//! carries beside a plain flag ([`WriteGuard`](super::WriteGuard),
-//! [`RsvpControls`](super::RsvpControls)). A sibling file so `capability.rs` stays
-//! under the line limit.
+//! Unit tests for [`Capabilities`](super::Capabilities) and the promises it carries
+//! beside a plain flag ([`WriteGuard`](super::WriteGuard),
+//! [`RsvpControls`](super::RsvpControls),
+//! [`IdentityControls`](super::IdentityControls)). A sibling file so `capability.rs`
+//! stays under the line limit.
 
 use super::*;
 
@@ -137,4 +138,34 @@ fn mail_writes_is_independent_of_read() {
     // read-only calendar advertises `calendars` without `calendar_writes`.
     let read_only = Capabilities::none().with_mail();
     assert!(read_only.mail() && !read_only.mail_writes());
+}
+
+#[test]
+fn sender_identities_is_independent_of_submission() {
+    // Being able to send is not being able to say who the mail is from: IMAP/SMTP
+    // submits perfectly well and has no identity object to read.
+    let smtp = Capabilities::none().with_mail().with_submission();
+    assert!(smtp.submission() && smtp.sender_identities().is_none());
+}
+
+#[test]
+fn a_read_only_directory_is_readable_and_not_writable() {
+    // The Graph shape: the name is the tenant's, so a host may show it and may not
+    // offer to change it. "Cannot write" must not read as "cannot read".
+    let graph = Capabilities::none()
+        .with_mail()
+        .with_sender_identities(IdentityControls::ReadOnly);
+    let controls = graph.sender_identities().expect("readable");
+    assert!(!controls.writable());
+}
+
+#[test]
+fn a_writable_identity_is_both_readable_and_writable() {
+    let jmap = Capabilities::none()
+        .with_mail()
+        .with_sender_identities(IdentityControls::Writable);
+    assert!(
+        jmap.sender_identities()
+            .is_some_and(IdentityControls::writable)
+    );
 }

@@ -19,7 +19,7 @@ use engine_core::{
     ids::{AccountId, Uid},
     raw::RawIcal,
 };
-use engine_provider::{EventDeletion, EventWrite, Provider};
+use engine_provider::{CalendarWrites, EventDeletion, EventWrite, Provider};
 use provider_caldav::CalDavProvider;
 
 use super::{fetch, pre_clean};

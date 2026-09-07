@@ -1,0 +1,16 @@
+{
+    "methodResponses": [
+        [
+            "Identity/set",
+            {
+                "accountId": "c",
+                "newState": "sfu",
+                "updated": {
+                    "b": null
+                }
+            },
+            "0"
+        ]
+    ],
+    "sessionState": "907c0c14"
+}

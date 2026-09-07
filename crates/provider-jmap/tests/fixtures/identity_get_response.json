@@ -1,0 +1,26 @@
+{
+    "methodResponses": [
+        [
+            "Identity/get",
+            {
+                "accountId": "c",
+                "state": "sfq",
+                "list": [
+                    {
+                        "id": "b",
+                        "name": "Alice Tester",
+                        "email": "alice@test.local",
+                        "replyTo": null,
+                        "bcc": null,
+                        "textSignature": "",
+                        "htmlSignature": "",
+                        "mayDelete": true
+                    }
+                ],
+                "notFound": []
+            },
+            "0"
+        ]
+    ],
+    "sessionState": "907c0c14"
+}

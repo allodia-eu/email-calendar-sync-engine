@@ -7,6 +7,8 @@
 //!
 //! A sibling file so `calendar_writes.rs` stays under the line limit.
 
+use engine_provider::CalendarWrites;
+
 use super::*;
 
 /// A provider whose event fetch parks until it is released, so a test can hold the event
@@ -49,6 +51,8 @@ impl Provider for BlockingSync {
     }
 }
 
+impl CalendarWrites for BlockingSync {}
+
 /// A provider whose writes land but whose event fetch is broken, so the post-write
 /// reconcile fails on its own rather than on a held lease.
 pub(super) struct UnreadableEvents(pub(super) CalendarServer);
@@ -74,7 +78,10 @@ impl Provider for UnreadableEvents {
     ) -> ProviderResult<ScopeSync<Event>> {
         Err(ProviderError::retryable("the event fetch is down"))
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarWrites for UnreadableEvents {
     async fn patch_event(
         &self,
         account: &AccountId,

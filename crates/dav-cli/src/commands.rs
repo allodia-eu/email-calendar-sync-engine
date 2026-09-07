@@ -16,7 +16,9 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_ical::{Document, Edit, Edits, LineEdit};
-use engine_provider::{EventRsvp, EventWrite, Provider, ReplyDelivery, RsvpResponse};
+use engine_provider::{
+    CalendarWrites, EventRsvp, EventWrite, Provider, ReplyDelivery, RsvpResponse,
+};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials, imip, schedule_status};
 
 use crate::profile::Profile;

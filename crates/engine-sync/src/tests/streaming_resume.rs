@@ -3,7 +3,7 @@
 //! from `streaming.rs` to keep each file within the size limit; shares the parent
 //! module's fakes and helpers via `use super::*`.
 
-use engine_provider::EmailChunk;
+use engine_provider::{CalendarWrites, EmailChunk};
 
 use super::*;
 
@@ -106,6 +106,8 @@ impl Provider for BackfillMail {
         })
     }
 }
+
+impl CalendarWrites for BackfillMail {}
 
 #[tokio::test]
 async fn cold_backfill_resumes_from_the_checkpoint_after_a_kill() {

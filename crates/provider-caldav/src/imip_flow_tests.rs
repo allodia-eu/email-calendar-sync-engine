@@ -13,7 +13,7 @@
 use core::time::Duration;
 
 use engine_core::ids::AccountId;
-use engine_provider::IgnoreConnectSteps;
+use engine_provider::{CalendarWrites, IgnoreConnectSteps};
 use engine_store::{ManualClock, WorkerId};
 use store_sqlite::SqliteStore;
 
@@ -256,7 +256,7 @@ async fn answering_an_invitation_you_are_not_on_is_refused() {
     // nothing and says it worked.
     use engine_core::{ids::CalendarId, version::ETag};
     use engine_ical::parse_calendar_object;
-    use engine_provider::{EventRsvp, Provider, RsvpResponse};
+    use engine_provider::{EventRsvp, RsvpResponse};
 
     use crate::test_support::{Replay, ok, options};
 
@@ -306,7 +306,7 @@ async fn answering_an_invitation_you_are_not_on_is_refused() {
 async fn a_reported_delivery_failure_reaches_the_caller_on_the_receipt() {
     use engine_core::{ids::CalendarId, version::ETag};
     use engine_ical::parse_calendar_object;
-    use engine_provider::{EventRsvp, Provider, ReplyDelivery, RsvpResponse};
+    use engine_provider::{EventRsvp, ReplyDelivery, RsvpResponse};
 
     use crate::{
         test_support::{ok, status, wrote},
@@ -380,7 +380,7 @@ async fn a_reported_delivery_failure_reaches_the_caller_on_the_receipt() {
 async fn a_server_that_does_not_schedule_is_not_asked_about_delivery() {
     use engine_core::{ids::CalendarId, version::ETag};
     use engine_ical::parse_calendar_object;
-    use engine_provider::{EventRsvp, Provider, ReplyDelivery, RsvpResponse};
+    use engine_provider::{EventRsvp, ReplyDelivery, RsvpResponse};
 
     use crate::{
         test_support::{ok, wrote},

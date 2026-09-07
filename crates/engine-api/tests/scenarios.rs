@@ -34,8 +34,8 @@ use engine_core::{
     sync::{JmapDataType, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider, ProviderError, ProviderResult,
-    ScopeSync,
+    CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider, ProviderError,
+    ProviderResult, ScopeSync,
 };
 
 fn account() -> AccountId {
@@ -234,6 +234,8 @@ impl Provider for SimProvider {
         ))
     }
 }
+
+impl CalendarWrites for SimProvider {}
 
 /// The client's in-memory mailbox view, updated purely from streamed change events —
 /// what a native list-view binds to. Keyed by provider key so upserts replace.

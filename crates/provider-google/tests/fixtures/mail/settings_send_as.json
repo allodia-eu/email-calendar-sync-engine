@@ -1,0 +1,12 @@
+{
+  "sendAs": [
+    {
+      "displayName": "",
+      "isDefault": true,
+      "isPrimary": true,
+      "replyToAddress": "",
+      "sendAsEmail": "testuser@example.test",
+      "signature": ""
+    }
+  ]
+}

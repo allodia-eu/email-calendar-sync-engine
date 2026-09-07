@@ -8,8 +8,9 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, ContactDestination, ContactPhoto, ContactSourceSync,
-    ContactWriteReceipt, ContactsProvider, Provider, ProviderResult, ScopeSync, WriteGuard,
+    CalendarWrites, Capabilities, ConnectionInfo, ContactDestination, ContactPhoto,
+    ContactSourceSync, ContactWriteReceipt, ContactsProvider, Provider, ProviderResult, ScopeSync,
+    WriteGuard,
 };
 use serde_json::Value;
 
@@ -219,6 +220,8 @@ impl Provider for GoogleContactProvider {
         }
     }
 }
+
+impl CalendarWrites for GoogleContactProvider {}
 
 #[async_trait]
 impl ContactsProvider for GoogleContactProvider {

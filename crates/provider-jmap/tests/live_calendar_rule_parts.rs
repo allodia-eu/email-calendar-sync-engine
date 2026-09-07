@@ -17,7 +17,7 @@ mod common;
 
 use common::*;
 use engine_core::ids::Uid;
-use engine_provider::{EventDeletion, EventDraft, Provider};
+use engine_provider::{CalendarWrites, EventDeletion, EventDraft};
 
 /// A rule carrying the parts that decide *which dates* it generates comes back carrying them.
 ///

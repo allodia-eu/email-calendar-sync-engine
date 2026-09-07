@@ -22,8 +22,8 @@ use engine_core::{
     version::{ChangeKey, ETag, RevisionTokens},
 };
 use engine_provider::{
-    ConnectionInfo, ContactSourceSync, ContactWriteReceipt, ProviderError, ProviderResult,
-    ScopeSync,
+    CalendarWrites, ConnectionInfo, ContactSourceSync, ContactWriteReceipt, ProviderError,
+    ProviderResult, ScopeSync,
 };
 
 #[derive(Default)]
@@ -69,6 +69,8 @@ impl Provider for FakeContacts {
         )
     }
 }
+
+impl CalendarWrites for FakeContacts {}
 
 #[async_trait]
 impl ContactsProvider for FakeContacts {

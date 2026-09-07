@@ -19,7 +19,9 @@ use engine_core::{
     sync::{SyncState, SyncUpdate},
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
-use engine_provider::{EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider};
+use engine_provider::{
+    CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider,
+};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::Harness;
 

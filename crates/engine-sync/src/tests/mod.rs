@@ -24,10 +24,10 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, ResourceKey},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion, EventDraft,
-    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
-    OverrideSurvival, PatchTarget, Provider, ProviderError, ProviderResult, RsvpResponse,
-    ScopeSync, SubmissionReceipt, WriteGuard,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion,
+    EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit,
+    MailEditReceipt, OverrideSurvival, PatchTarget, Provider, ProviderError, ProviderResult,
+    RsvpResponse, ScopeSync, SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{
@@ -268,6 +268,22 @@ impl Provider for FakeMail {
         ))
     }
 
+    async fn edit_mail(
+        &self,
+        _account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        if self.fails(Fault::WriteGuard) {
+            // The IMAP analogue of a CalDAV 412: a stale UID under a changed
+            // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
+            return Err(ProviderError::conflict("UIDVALIDITY changed"));
+        }
+        Ok(MailEditReceipt::new(edit.target().clone()))
+    }
+}
+
+#[async_trait::async_trait]
+impl CalendarWrites for FakeMail {
     async fn create_event(
         &self,
         _account: &AccountId,
@@ -349,19 +365,6 @@ impl Provider for FakeMail {
             return Err(ProviderError::conflict("etag precondition failed"));
         }
         Ok(())
-    }
-
-    async fn edit_mail(
-        &self,
-        _account: &AccountId,
-        edit: &MailEdit,
-    ) -> ProviderResult<MailEditReceipt> {
-        if self.fails(Fault::WriteGuard) {
-            // The IMAP analogue of a CalDAV 412: a stale UID under a changed
-            // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
-            return Err(ProviderError::conflict("UIDVALIDITY changed"));
-        }
-        Ok(MailEditReceipt::new(edit.target().clone()))
     }
 }
 

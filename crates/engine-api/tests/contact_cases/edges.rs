@@ -1,3 +1,5 @@
+use engine_provider::CalendarWrites;
+
 use super::*;
 
 struct OtherDestination;
@@ -8,6 +10,8 @@ impl Provider for OtherDestination {
         ConnectionInfo::new(Capabilities::none().with_contacts())
     }
 }
+
+impl CalendarWrites for OtherDestination {}
 
 #[async_trait]
 impl ContactsProvider for OtherDestination {

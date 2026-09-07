@@ -10,7 +10,7 @@
 //! the message actually is — not the same mail twice, and not the folder it just left.
 
 use engine_api::{Engine, StreamTuning};
-use engine_provider::PassMode;
+use engine_provider::{CalendarWrites, PassMode};
 use engine_sync::IgnoreCommits;
 
 use super::*;
@@ -87,6 +87,8 @@ impl Provider for FolderProvider {
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
 }
+
+impl CalendarWrites for FolderProvider {}
 
 /// Syncs `source` (the folder the message is leaving, stale) then `destination` (where the move
 /// put it, carrying the later `lastModifiedDateTime`), and asserts the account reads back as one

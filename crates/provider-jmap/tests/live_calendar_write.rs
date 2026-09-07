@@ -33,7 +33,8 @@ use engine_core::{
     time::CalendarDateTime,
 };
 use engine_provider::{
-    EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget, Provider, WriteGuard,
+    CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget,
+    Provider, WriteGuard,
 };
 
 // ---------------------------------------------------------------------------

@@ -97,7 +97,7 @@ mod tests {
         raw::RawMime,
         scheduling::{ScheduleMethod, addresses_match},
     };
-    use engine_provider::{Capabilities, ConnectionInfo, Provider, ProviderResult};
+    use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
 
     use crate::Engine;
 
@@ -143,6 +143,8 @@ mod tests {
             Ok(RawMime::new(self.raw.clone()))
         }
     }
+
+    impl CalendarWrites for SourceProvider {}
 
     async fn scheduling_of(raw: &[u8]) -> Option<super::InboundScheduling> {
         let engine = Engine::open_in_memory().expect("engine");

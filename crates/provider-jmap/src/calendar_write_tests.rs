@@ -14,8 +14,8 @@ use engine_core::{
     time::{CalendarDate, CalendarDateTime},
 };
 use engine_provider::{
-    Capabilities, EventDeletion, EventDraft, EventRsvp, EventWrite, OverrideSurvival, RsvpResponse,
-    WriteGuard,
+    CalendarWrites, Capabilities, EventDeletion, EventDraft, EventRsvp, EventWrite,
+    OverrideSurvival, RsvpResponse, WriteGuard,
 };
 use serde_json::{Value, json};
 

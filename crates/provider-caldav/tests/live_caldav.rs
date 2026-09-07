@@ -370,7 +370,7 @@ async fn caldav_rsvp_reaches_the_organizer() {
     scheduling::an_rsvp_reaches_the_organizer(&parties).await;
 }
 
-/// The same round trip through `Provider::rsvp_event` — the verb a host actually calls —
+/// The same round trip through `CalendarWrites::rsvp_event` — the verb a host actually calls —
 /// plus the two controls CalDAV must refuse rather than silently drop.
 #[tokio::test]
 async fn caldav_rsvp_through_the_neutral_verb_reaches_the_organizer() {

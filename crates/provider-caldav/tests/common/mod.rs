@@ -30,7 +30,7 @@ use engine_core::{
     sync::SyncUpdate,
     version::ETag,
 };
-use engine_provider::{EventDeletion, Provider};
+use engine_provider::{CalendarWrites, EventDeletion, Provider};
 use provider_caldav::CalDavProvider;
 use tokio::sync::{Mutex, MutexGuard};
 

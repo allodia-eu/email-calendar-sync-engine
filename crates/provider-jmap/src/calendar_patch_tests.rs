@@ -7,10 +7,10 @@
 //! server merges it as we expect is `tests/live_calendar_write.rs`.
 
 use engine_core::{error::FailureClass, ids::EventId, time::CalendarDateTime};
-use engine_provider::{EventPatch, Occurrence, PatchTarget};
+use engine_provider::{CalendarWrites, EventPatch, Occurrence, PatchTarget};
 use serde_json::json;
 
-use super::{calendar_write_support::*, provider_test_support::*, *};
+use super::{calendar_write_support::*, provider_test_support::*};
 
 #[tokio::test]
 async fn a_partial_update_sends_only_what_changed() {

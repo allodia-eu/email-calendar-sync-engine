@@ -3,7 +3,7 @@
 //! `StaleLease` restart, and resume-from-checkpoint after a killed cold sync. Uses
 //! the shared fakes and helpers from the parent module via `use super::*`.
 
-use engine_provider::EmailChunk;
+use engine_provider::{CalendarWrites, EmailChunk};
 use engine_store::{ApplyBatch, DerivedWrite, MailSelector};
 
 use super::*;
@@ -148,6 +148,8 @@ impl Provider for ChunkedMail {
         })
     }
 }
+
+impl CalendarWrites for ChunkedMail {}
 
 #[tokio::test]
 async fn streamed_email_commits_each_chunk_and_reports_progress() {

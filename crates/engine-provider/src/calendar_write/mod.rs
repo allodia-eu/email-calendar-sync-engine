@@ -52,6 +52,7 @@
 mod delete;
 mod patch;
 mod rsvp;
+mod writes;
 
 pub use delete::{DeleteTarget, EventDeletion, Occurrence};
 use engine_core::{
@@ -64,6 +65,7 @@ use engine_core::{
 pub use patch::{EventEdit, EventPatch, PatchTarget, RecurrenceEdit, TextEdit};
 pub use rsvp::{EventRsvp, ReplyDelivery, RsvpResponse};
 use serde::{Deserialize, Serialize};
+pub use writes::CalendarWrites;
 
 /// How a new event repeats.
 ///
