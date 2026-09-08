@@ -53,7 +53,7 @@ pub use capability_calendar::{OverrideSurvival, RsvpControls, WriteGuard};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 pub use connection::{ConnectionInfo, HttpVersion, TlsVersion};
 #[cfg(feature = "http")]
-pub use connection::{ObservedHttpVersion, same_origin};
+pub use connection::{ObservedHttpVersion, redirect_target, same_origin};
 pub use contact::{
     ContactDestination, ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt,
     ContactsProvider,
