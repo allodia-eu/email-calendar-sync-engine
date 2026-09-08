@@ -37,6 +37,7 @@ mod party;
 mod patch;
 mod recur;
 mod recurrence;
+mod scheduling_write;
 mod unfold;
 mod value;
 

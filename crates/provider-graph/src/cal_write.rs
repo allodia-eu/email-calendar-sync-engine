@@ -20,8 +20,12 @@ use engine_provider::{
 use serde_json::{Map, Value, json};
 
 use crate::{
-    cal_normalize::cross_system_uid, cal_recur_render::render_recurrence, error::GraphError,
-    json::opt_str, transport::GraphClient,
+    cal_invite::{draft_attendees, merge_attendees},
+    cal_normalize::cross_system_uid,
+    cal_recur_render::render_recurrence,
+    error::GraphError,
+    json::opt_str,
+    transport::GraphClient,
 };
 
 /// Creates `draft` in the bound `calendar_path` (`/me/calendars/{id}`) via `POST …/events`.
@@ -252,6 +256,11 @@ fn build_create(draft: &EventDraft) -> ProviderResult<Value> {
             render_recurrence(&recurrence.rule, calendar_date_of(&draft.start))?,
         );
     }
+    if let Some(attendees) = draft_attendees(draft)? {
+        body.insert("attendees".to_owned(), attendees);
+        body.insert("responseRequested".to_owned(), json!(true));
+        body.insert("transactionId".to_owned(), json!(draft.uid.as_str()));
+    }
     Ok(Value::Object(body))
 }
 
@@ -311,6 +320,9 @@ fn build_patch(base: &Event, patch: &EventPatch) -> ProviderResult<Value> {
             RecurrenceEdit::Clear => Value::Null,
         };
         body.insert("recurrence".to_owned(), value);
+    }
+    if let Some(edit) = patch.invitee_edit() {
+        body.insert("attendees".to_owned(), merge_attendees(base, edit)?);
     }
     Ok(Value::Object(body))
 }
@@ -406,3 +418,7 @@ fn receipt(
 #[cfg(test)]
 #[path = "cal_write_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cal_invite_tests.rs"]
+mod invite_tests;

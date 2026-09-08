@@ -36,7 +36,7 @@ use crate::{
 };
 
 /// The namespaced key under which the whole raw Graph event JSON is preserved.
-const RAW_EVENT_KEY: &str = "microsoft.graph/event";
+pub(crate) const RAW_EVENT_KEY: &str = "microsoft.graph/event";
 
 /// The event's cross-system [`Uid`] — Graph reports it under **two** names that hold
 /// different values, and only one of them is the `UID` the rest of the world uses.

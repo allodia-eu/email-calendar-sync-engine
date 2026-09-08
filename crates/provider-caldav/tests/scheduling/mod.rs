@@ -50,8 +50,12 @@ use engine_core::{
     calendar::Event,
     ids::{AccountId, Uid},
     scheduling::addresses_match,
+    time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
-use engine_provider::{CalendarWrites, EventDeletion, EventWrite};
+use engine_provider::{
+    CalendarAddress, CalendarWrites, EventDeletion, EventDraft, EventWrite, Invitee, MeetingDraft,
+    SchedulingIdentity,
+};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 use stalwart_harness::{Harness, ScratchAccount};
 
@@ -161,10 +165,9 @@ fn invitation_date() -> String {
 
 /// An organizer's invitation document, naming the attendee with an unanswered `RSVP`.
 ///
-/// Assembled by hand rather than through [`engine_provider::EventDraft`] for the same
-/// reason `common::write::seed` does it: a draft cannot state an `ORGANIZER`/`ATTENDEE`
-/// pair, and this is the *counterparty's* fixture, not the thing under test. The times of
-/// day are fixed; the day itself comes from [`invitation_date`], which explains why.
+/// Used for the one non-IANA time-zone fixture that [`engine_provider::EventDraft`] cannot
+/// represent. The times of day are fixed; the day itself comes from [`invitation_date`],
+/// which explains why.
 fn invitation(uid: &str, summary: &str, tzid: &str, parties: &Parties) -> String {
     let day = invitation_date();
     format!(
@@ -187,16 +190,54 @@ fn invitation(uid: &str, summary: &str, tzid: &str, parties: &Parties) -> String
 /// it there. That *is* [`engine_core::scheduling::SchedulingMode::ServerAutoSchedule`].
 async fn invite(parties: &Parties, uid: &Uid, summary: &str, tzid: &str) -> Event {
     clean_up(parties, uid).await;
-    let body = invitation(uid.as_str(), summary, tzid, parties);
-    let href = parties.organizer.event_href(uid).expect("mint event href");
-    parties
-        .organizer
-        .put_event(
-            &parties.organizer_account,
-            &EventWrite::unconditional(href, uid.clone(), engine_core::raw::RawIcal::new(body)),
+    if let Ok(zone) = TimeZoneId::iana(tzid) {
+        let day = invitation_date();
+        let at = |hour: u8| CalendarDateTime::Zoned {
+            local: format!(
+                "{}-{}-{}T{hour:02}:00:00",
+                &day[0..4],
+                &day[4..6],
+                &day[6..8]
+            )
+            .parse()
+            .unwrap(),
+            zone: zone.clone(),
+        };
+        let draft = EventDraft::new(
+            parties.organizer.calendar_id(),
+            uid.clone(),
+            summary,
+            at(10),
+            at(11),
+            UtcDateTime::new(2026, 7, 1, 8, 0, 0).unwrap(),
         )
-        .await
-        .expect("the organizer stores the invitation");
+        .meeting(MeetingDraft::new(
+            SchedulingIdentity::named(
+                CalendarAddress::parse(parties.organizer_address()).unwrap(),
+                "Bob Tester",
+            ),
+            vec![Invitee::required(SchedulingIdentity::named(
+                CalendarAddress::parse(parties.attendee_address()).unwrap(),
+                "Carol",
+            ))],
+        ));
+        parties
+            .organizer
+            .create_event(&parties.organizer_account, &draft)
+            .await
+            .expect("the organiser creates the invitation");
+    } else {
+        let body = invitation(uid.as_str(), summary, tzid, parties);
+        let href = parties.organizer.event_href(uid).expect("mint event href");
+        parties
+            .organizer
+            .put_event(
+                &parties.organizer_account,
+                &EventWrite::unconditional(href, uid.clone(), engine_core::raw::RawIcal::new(body)),
+            )
+            .await
+            .expect("the organiser stores the non-IANA invitation fixture");
+    }
 
     poll_until(
         &parties.attendee,

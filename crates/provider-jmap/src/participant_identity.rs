@@ -6,6 +6,7 @@
 //! like a JSCalendar participant, so its address is read the way a participant's is
 //! ([`participant_address`]): `calendarAddress`, or the `sendTo` map of an earlier draft.
 
+use engine_core::scheduling::addresses_match;
 use engine_provider::CalendarUserAddresses;
 use serde_json::{Value, json};
 
@@ -41,13 +42,51 @@ pub(crate) async fn calendar_user_addresses(
 
 /// The addresses in a `ParticipantIdentity/get` result.
 fn from_get(result: &Value) -> Result<CalendarUserAddresses, JmapError> {
-    let list = result
+    Ok(CalendarUserAddresses::from_uris(
+        identities(result)?.iter().filter_map(participant_address),
+    ))
+}
+
+fn identities(result: &Value) -> Result<&Vec<Value>, JmapError> {
+    result
         .get("list")
         .and_then(Value::as_array)
-        .ok_or_else(|| JmapError::protocol("ParticipantIdentity/get result has no list"))?;
-    Ok(CalendarUserAddresses::from_uris(
-        list.iter().filter_map(participant_address),
-    ))
+        .ok_or_else(|| JmapError::protocol("ParticipantIdentity/get result has no list"))
+}
+
+/// Returns the participant map id belonging to `organiser`.
+///
+/// JMAP Calendars associates participants with account identities by calendar address. The
+/// lookup also rejects an organiser address the authenticated account does not own.
+pub(crate) async fn organiser_participant_id(
+    executor: &dyn Executor,
+    account: &str,
+    organiser: &str,
+) -> Result<String, JmapError> {
+    let mut request = Request::new([capability::CORE, capability::CALENDARS]);
+    let call = request.invoke(
+        "ParticipantIdentity/get",
+        json!({
+            "accountId": account,
+            "ids": null,
+            "properties": ["id", "calendarAddress", "sendTo", "isDefault"],
+        }),
+    );
+    let response = executor.execute(&request).await?;
+    identities(response.result(&call)?)?
+        .iter()
+        .find(|identity| {
+            participant_address(identity).is_some_and(|address| addresses_match(address, organiser))
+        })
+        .and_then(|identity| identity.get("id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            JmapError::protocol(
+                "the meeting organiser is not a participant identity of this JMAP account",
+            )
+        })
 }
 
 #[cfg(test)]

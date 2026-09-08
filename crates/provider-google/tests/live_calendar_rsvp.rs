@@ -130,9 +130,9 @@ async fn import_invitation(token: &str, uid: &Uid, summary: &str) -> EventId {
     EventId::try_from(imported["id"].as_str().expect("an imported event id")).unwrap()
 }
 
-/// Creates a meeting the **account itself** organizes, with one other guest — the shape the
-/// truncation gap needs, and one `EventDraft` cannot express (a draft states no attendees).
-/// `sendUpdates=none`, and the guest is a reserved domain, so nothing is mailed.
+/// Creates a meeting the **account itself** organises, with one other guest, which is the
+/// shape the truncation gap needs. The direct request selects `sendUpdates=none`; neutral
+/// meeting writes deliberately notify invitees. The guest is reserved, so nothing is mailed.
 async fn insert_with_guest(token: &str, summary: &str) -> EventId {
     let body = serde_json::json!({
         "summary": summary,

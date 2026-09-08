@@ -35,6 +35,7 @@
 
 mod affiliation;
 mod cal_fetch;
+mod cal_invite;
 mod cal_normalize;
 mod cal_override;
 mod cal_recur;
