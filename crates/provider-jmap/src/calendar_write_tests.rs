@@ -251,7 +251,7 @@ async fn there_is_no_whole_document_write_verb_on_this_transport() {
 /// The base event with two participants, keyed the way a JMAP server keys them: by an
 /// **opaque id**, not by the address. Resolving that id is the whole difficulty of a JMAP
 /// RSVP.
-fn invited() -> Event {
+pub(super) fn invited() -> Event {
     stored(&json!({
         "@type": "Event",
         "id": EVENT,

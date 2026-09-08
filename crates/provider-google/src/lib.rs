@@ -28,6 +28,7 @@
 
 mod base64url;
 mod cal_fetch;
+mod cal_invite;
 mod cal_normalize;
 mod cal_override;
 mod cal_write;

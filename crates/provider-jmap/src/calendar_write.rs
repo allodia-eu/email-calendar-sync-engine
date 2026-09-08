@@ -46,7 +46,7 @@
 //! concurrency everywhere when here it gives none (`jmap.md`).
 
 use engine_core::{calendar::Event, ids::EventId, time::CalendarDateTime, version::RevisionTokens};
-use engine_provider::{EventDeletion, EventDraft, EventEdit, EventWriteReceipt};
+use engine_provider::{EventDeletion, EventDraft, EventEdit, EventWriteReceipt, InviteeRole};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -54,6 +54,7 @@ use crate::{
     calendar_rule::render_rule,
     error::JmapError,
     executor::Executor,
+    participant_identity::organiser_participant_id,
     request::{Request, capability},
 };
 
@@ -73,8 +74,8 @@ pub(crate) const NEW_LOCATION_ID: &str = "1";
 /// is "tell nobody". Cancelling a meeting you organize would store the deletion and leave
 /// every attendee holding a meeting that is not happening; moving one would leave them at
 /// the old time. The neutral write verbs carry no notify control for a caller to state
-/// instead ([`EventDraft`] cannot even name a participant), and the transports that do
-/// schedule — CalDAV's RFC 6638 auto-schedule, and Graph — do it unconditionally. So the
+/// instead, and the transports that do schedule, CalDAV's RFC 6638 auto-schedule and Graph,
+/// do it unconditionally. So the
 /// engine's answer to "does a calendar write reach its participants?" stays the same
 /// whichever transport is under it.
 ///
@@ -99,7 +100,28 @@ pub(crate) async fn create_event(
     calendar_account: &str,
     draft: &EventDraft,
 ) -> Result<EventWriteReceipt, JmapError> {
-    let object = draft_to_json(draft)?;
+    if let Some(meeting) = &draft.meeting {
+        let max_invitees = executor
+            .session()
+            .max_participants_per_event()
+            .map(|participants| participants.saturating_sub(1));
+        meeting
+            .validate(max_invitees)
+            .map_err(|error| JmapError::protocol(error.to_string()))?;
+    }
+    let organiser_id = if let Some(meeting) = &draft.meeting {
+        Some(
+            organiser_participant_id(
+                executor,
+                calendar_account,
+                meeting.organiser().address().as_str(),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let object = draft_to_json(draft, organiser_id.as_deref())?;
     let args = json!({
         "accountId": calendar_account,
         "create": { CREATION_ID: object },
@@ -153,7 +175,7 @@ pub(crate) async fn patch_event(
     edit: &EventEdit,
 ) -> Result<EventWriteReceipt, JmapError> {
     let target = edit.event.as_str();
-    let patch = patch_to_json(base, edit)?;
+    let patch = patch_to_json(base, edit, executor.session().max_participants_per_event())?;
 
     // An empty patch would be a no-op `update` the server may still bump state for. The
     // caller asked for nothing; give the network nothing.
@@ -288,7 +310,7 @@ pub(crate) fn set_error<'a>(result: &'a Value, map: &str, target: &str) -> Optio
 }
 
 /// Renders an [`EventDraft`] as a JSCalendar `Event` object (RFC 8984 §5).
-fn draft_to_json(draft: &EventDraft) -> Result<Value, JmapError> {
+fn draft_to_json(draft: &EventDraft, organiser_id: Option<&str>) -> Result<Value, JmapError> {
     let mut object = Map::new();
     object.insert("@type".to_owned(), json!("Event"));
     object.insert("uid".to_owned(), json!(draft.uid.as_str()));
@@ -326,7 +348,60 @@ fn draft_to_json(draft: &EventDraft) -> Result<Value, JmapError> {
         // either spelling, so this only makes the write side agree with the read side.
         object.insert("recurrenceRule".to_owned(), render_rule(&recurrence.rule)?);
     }
+    if let Some(meeting) = &draft.meeting {
+        let organiser_id = organiser_id.ok_or_else(|| {
+            JmapError::protocol("a meeting create needs a resolved participant identity")
+        })?;
+        object.insert(
+            "organizerCalendarAddress".to_owned(),
+            json!(format!("mailto:{}", meeting.organiser().address().as_str())),
+        );
+        let mut participants = Map::new();
+        participants.insert(
+            organiser_id.to_owned(),
+            participant_json(
+                meeting.organiser(),
+                json!({ "owner": true, "chair": true }),
+                "accepted",
+                false,
+            ),
+        );
+        for (index, invitee) in meeting.invitees().iter().enumerate() {
+            let roles = match invitee.role() {
+                InviteeRole::Required => json!({ "required": true }),
+                InviteeRole::Optional => json!({ "optional": true }),
+            };
+            participants.insert(
+                format!("invitee-{}", index + 1),
+                participant_json(invitee.identity(), roles, "needs-action", true),
+            );
+        }
+        object.insert("participants".to_owned(), Value::Object(participants));
+    }
     Ok(Value::Object(object))
+}
+
+fn participant_json(
+    identity: &engine_provider::SchedulingIdentity,
+    roles: Value,
+    status: &str,
+    expect_reply: bool,
+) -> Value {
+    let mut participant = Map::new();
+    participant.insert("@type".to_owned(), json!("Participant"));
+    participant.insert(
+        "calendarAddress".to_owned(),
+        json!(format!("mailto:{}", identity.address().as_str())),
+    );
+    if let Some(name) = identity.name() {
+        participant.insert("name".to_owned(), json!(name));
+    }
+    participant.insert("roles".to_owned(), roles);
+    participant.insert("participationStatus".to_owned(), json!(status));
+    if expect_reply {
+        participant.insert("expectReply".to_owned(), json!(true));
+    }
+    Value::Object(participant)
 }
 
 /// `start` + the fields that state its form: `timeZone` for a zoned value, `showWithoutTime`
