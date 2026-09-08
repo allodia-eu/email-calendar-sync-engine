@@ -74,7 +74,7 @@ pub(crate) async fn fetch(
 }
 
 /// Reads the event back, failing with a message naming the scenario's event.
-async fn require(provider: &CalDavProvider, account: &AccountId, uid: &str) -> Event {
+pub(crate) async fn require(provider: &CalDavProvider, account: &AccountId, uid: &str) -> Event {
     fetch(provider, account, uid)
         .await
         .unwrap_or_else(|| panic!("event {uid} is present on the server"))
@@ -119,7 +119,7 @@ pub(crate) async fn pre_clean(provider: &CalDavProvider, account: &AccountId, ui
 /// *says*, not where its line breaks land. This is the integration-test counterpart of
 /// the patcher's own structural assertion: strike what the patch was allowed to touch,
 /// and everything remaining must be identical.
-fn lines_without(ical: &str, struck: &[&str]) -> Vec<String> {
+pub(crate) fn lines_without(ical: &str, struck: &[&str]) -> Vec<String> {
     let mut logical: Vec<String> = Vec::new();
     for line in ical.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);

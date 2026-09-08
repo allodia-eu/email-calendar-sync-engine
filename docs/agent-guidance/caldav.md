@@ -11,7 +11,7 @@ recurrence subset, iTIP/iMIP), and `stalwart-harness.md` (the fixture).
 
 The **IMAP/SMTP mail half** of step 5 is the other slice (`imap-smtp.md`).
 **CalDAV writes** (the neutral create/patch/delete verbs, rendered as a conditional
-`PUT`/`DELETE` with `If-Match`/`If-None-Match`) are **implemented** (see "CalDAV writes")
+`PUT`/`DELETE`) are **implemented** (see "CalDAV writes")
 and outbox-driven by `engine_sync::create_calendar_event`/`patch_calendar_event`/
 `delete_calendar_event`. **iTIP/iMIP**
 inbound parsing + the RSVP write primitive are **implemented** (see "iMIP
@@ -252,21 +252,22 @@ are split escape-aware so the writer and the parser agree.
   §3.2), `Unconditional` → no conditional header. `IfAbsent` is what makes **storing an
   inbound invitation** safe: on the very common account shape of IMAP mail plus a CalDAV
   calendar that does no scheduling, an invitation arrives as an iMIP message and nothing
-  puts it on the calendar but the host — and it must go in through this verb, not
-  `create_event`, because an `EventDraft` carries neither `ORGANIZER` nor `ATTENDEE` and
-  would store a plain appointment with nothing to answer on afterwards. The guard matters
+  puts it on the calendar but the host. It must go in through this verb because the
+  received raw document preserves its `ORGANIZER`, `ATTENDEE`, `SEQUENCE` and extensions.
+  `EventDraft::meeting` is the separate path for an organiser-authored invitation. The guard matters
   because the concurrent writer is usually the *server*: an auto-scheduling one deposits
   its own copy the moment the organizer writes, and an unconditional `PUT` would erase it
   along with whatever the server had recorded about delivery. A `412` is the same
   `Conflict` as any other precondition failure — re-read and decide, never a blind retry.
   Live on both servers (`tests/common/imip.rs`).
-- **Optimistic concurrency rides on the `ETag`, and CalDAV can actually promise it.** It
+- **Optimistic concurrency uses the strongest scheduling revision available.** It
   advertises `Capabilities::calendar_writes(WriteGuard::Enforced)` — the *other* calendar
   transport cannot (`jmap.md`), which is why the guard is a capability a host reads rather
   than an assumption it makes. A create sends `If-None-Match: *` (never overwrite an
-  existing resource at the href); a patch, a document replace, or a guarded delete sends
-  `If-Match: "<etag>"` (apply only while the server copy is unchanged), taken from
-  `base.revisions` — **the event as the caller read it**, so a guard cannot be
+  existing resource at the href). A scheduling resource with an RFC 6638 schedule tag sends
+  `If-Schedule-Tag-Match`; other patches, document replacements and guarded deletes send
+  `If-Match: "<etag>"`. The value comes from `base.revisions`, **the event as the caller read
+  it**, so a guard cannot be
   hand-assembled stale. A failed precondition is `412` → `FailureClass::Conflict`, recovered
   by refetch and re-apply, **never a blind retry** (`error.rs`). `PUT` and `DELETE` are
   **idempotent HTTP methods** (RFC 7231 §4.2.2), and the precondition makes a retry
@@ -286,22 +287,33 @@ are split escape-aware so the writer and the parser agree.
   - **Create** → `build_event_ical`, a **minimal** RFC 5545 builder (`UID`, `DTSTAMP`,
     `DTSTART`/`DTEND` **in the draft's own form** — zoned, floating or all-day, never
     flattened to UTC — `SUMMARY`, optional `DESCRIPTION`, optional `LOCATION`; TEXT escaped
-    per §3.3.11), locked by a round-trip test through the parser (which asserts the `LOCATION`
+    per §3.3.11). A meeting also emits `ORGANIZER` and one `ATTENDEE` per invitee, with
+    `ROLE`, `CUTYPE=INDIVIDUAL`, `PARTSTAT=NEEDS-ACTION` and `RSVP=TRUE`. Parameter text is
+    encoded per RFC 6868 and every content line is folded per RFC 5545. Stored calendar data
+    has no `METHOD`; that belongs only on an iTIP message under RFC 5546 and RFC 6047. The
+    builder is locked by a round-trip test through the parser (which asserts the `LOCATION`
     lands back in the projection's `locations`, the same field the read path fills). A create
     is the one write that sets a location from nothing; an edit reshapes it through the
-    patcher's `LOCATION` path below. It emits at most **seven properties**. Using it to
+    patcher's `LOCATION` path below. Using it to
     *update* an existing event would be data loss: every property it does not emit — the
     `RRULE`, the attendees, the alarms — would be deleted from the user's calendar by a
     `PUT` that reports success. Nothing can: `patch_event` is the only update path, and it
     refuses outright if the base carries no stored `raw_ical` to patch.
   - **Patch** → `patch_event_ical`, the **structural patcher** (`ical::patch`). It takes the
     stored `RawIcal` and the neutral `EventPatch`
-    (`SUMMARY`/`DESCRIPTION`/`LOCATION`/`DTSTART`/`DTEND`) and rewrites **only** the content
+    (`SUMMARY`/`DESCRIPTION`/`LOCATION`/`DTSTART`/`DTEND`/invitees) and rewrites **only** the content
     lines that changed, plus the `DTSTAMP`/`LAST-MODIFIED`/`SEQUENCE` bookkeeping RFC 5545
     requires of a revision. Every other byte — the original line folding, the document's line
     terminators, properties this crate has never heard of — is preserved verbatim, asserted
     structurally rather than by eyeball (`patch_tests.rs`: strike the patched properties from
     both documents and the remainder must be byte-equal).
+    Invitee edits are series-only and preserve untouched `ATTENDEE` parameters, including
+    response state and scheduling status. The organiser cannot be edited through the roster.
+  - **The organiser must be a calendar user address of the authenticated principal.** RFC 6638
+    defines those addresses through `calendar-user-address-set`. The adapter does not yet
+    discover or expose that set, so callers must use the account address they authenticated as
+    and must not offer organiser-alias selection on CalDAV yet. The server remains the final
+    enforcement point.
   - This machinery is **CalDAV's alone**, and that is the point: a JMAP `update` is already a
     JSON-pointer patch the *server* merges, so it has no use for line folding,
     `DTEND`-vs-`DURATION` exclusion or `SEQUENCE` bookkeeping. Hoisting the patcher would

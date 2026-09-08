@@ -44,9 +44,10 @@ mod sync;
 mod watch;
 
 pub use calendar_write::{
-    CalendarWrites, DeleteTarget, DraftRecurrence, EventDeletion, EventDraft, EventEdit,
-    EventPatch, EventRsvp, EventWrite, EventWriteReceipt, Occurrence, PatchTarget, RecurrenceEdit,
-    ReplyDelivery, RsvpResponse, TextEdit, WritePrecondition,
+    CalendarAddress, CalendarWrites, DeleteTarget, DraftRecurrence, EventDeletion, EventDraft,
+    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, InvitationError, Invitee,
+    InviteePatch, InviteeRole, MeetingDraft, Occurrence, PatchTarget, RecurrenceEdit,
+    ReplyDelivery, RsvpResponse, SchedulingIdentity, TextEdit, WritePrecondition,
 };
 pub use capability::Capabilities;
 pub use capability_calendar::{OverrideSurvival, RsvpControls, WriteGuard};

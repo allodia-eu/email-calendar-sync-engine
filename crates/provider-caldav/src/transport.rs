@@ -85,6 +85,9 @@ pub(crate) enum Precondition {
     /// `If-Match: <etag>` — the resource must still carry this entity tag (a
     /// guarded update or delete).
     IfMatch(String),
+    /// `If-Schedule-Tag-Match: <tag>` preserves attendee replies while an organiser
+    /// updates a scheduled object (RFC 6638 §3.2.10).
+    IfScheduleTagMatch(String),
     /// No conditional header (an unconditional write).
     None,
 }
@@ -406,6 +409,7 @@ impl DavExecutor for DavClient {
             // a replace/delete only while the entity tag is unchanged.
             Precondition::IfNoneMatch => builder.header(reqwest::header::IF_NONE_MATCH, "*"),
             Precondition::IfMatch(etag) => builder.header(reqwest::header::IF_MATCH, etag),
+            Precondition::IfScheduleTagMatch(tag) => builder.header("If-Schedule-Tag-Match", tag),
             Precondition::None => builder,
         };
         let response = send_retrying(builder.body(request.body), &self.retry).await?;

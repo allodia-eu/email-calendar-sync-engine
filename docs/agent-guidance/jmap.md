@@ -314,6 +314,18 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   it; `patch_event` → an `update` PatchObject; `delete_event` → a `destroy`. The
   `calendar_writes` capability is advertised whenever the account exposes calendars and is
   not `isReadOnly`, exactly as `mail_writes` is.
+  - **A meeting create first resolves the organiser's account identity.**
+    `ParticipantIdentity/get` supplies the participant id whose `calendarAddress` matches
+    `EventDraft::meeting.organiser`. A foreign organiser address is refused. The create sets
+    `organizerCalendarAddress` explicitly, then emits the organiser with `owner` and `chair`
+    roles and invitees with `required` or `optional` roles from JSCalendar 2.0. New invitees
+    start at `needs-action` with `expectReply: true`. The account capability's
+    `maxParticipantsPerEvent` limit includes the organiser, so the adapter subtracts that
+    one slot before validating the invitee roster.
+  - **A roster patch replaces the `participants` map from preserved JSCalendar.** It keeps
+    opaque participant ids, response states and unknown fields. Address comparison ignores
+    scheme and case. The organiser cannot be removed or edited, and invitees can only be
+    changed on the series.
   - **The server does the surgery, so this adapter has no serializer.** JMAP's `update` *is*
     a patch — a JSON-pointer PatchObject (RFC 8620 §5.3) the server merges into the stored
     object. Verified live, not assumed (`tests/live_calendar_write.rs::partial_update_is_merged_by_the_server`):
@@ -417,6 +429,12 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   organizer is never told an invitation was answered, and an attendee keeps a meeting the
   organizer cancelled. Nothing in the response distinguishes that from success.
 
+  Meeting creation follows draft-ietf-jmap-calendars-28 and
+  draft-ietf-calext-jscalendarbis-19. Stalwart 0.16.15 does not infer
+  `organizerCalendarAddress` when participants are supplied, although the JMAP Calendars
+  draft requires the server to do so. Sending the field explicitly is permitted and is
+  required for Stalwart to deliver the invitation. The live suite locks that behaviour.
+
   The adapter sends it on all four verbs. The RSVP carries the caller's choice
   (`EventRsvp::notify_organizer`); create/patch/destroy send `true` unconditionally
   (`calendar_write::SCHEDULE`), because the neutral write verbs carry no notify control for a
@@ -504,11 +522,6 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   (`RsvpControls::comment: false`) and a caller that supplies one is refused: no server we
   run is known to relay it into the `REPLY`, and a note that may go nowhere is worse than one
   never offered. Verify against a server before promising it.
-- **A neutral `EventDraft` cannot state a recurrence rule.** Both adapters share this gap
-  (CalDAV's `build_event_ical` cannot either), so a recurring event can only be *created*
-  through the CalDAV whole-document verb today. Editing one already exists on both. It is
-  the obvious next extension of the draft, and the live `recurrence_override_edit` test
-  works around it by editing the seeded series and restoring it.
 - **Calendar events are still fetched whole**, not streamed: only email has a
   streaming primitive (`stream_email`) so far. Events have no natural recency sort and
   the seed fits one page; when streaming is wanted there, generalize `member_page` with
@@ -574,8 +587,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   - `round_trip` (create → patch → destroy, plus the idempotent re-destroy) and
     `recurrence_override_edit` (is a `recurrenceOverrides/<start>/…` pointer accepted?) cover
     the wire shapes. The recurrence test edits the **seeded** series — the only recurring
-    event available, since a neutral draft cannot yet state a rule — and restores it before
-    returning, so the seed the read tests assert on is left exactly as found.
+    event available, and restores it before returning, so the seed the read tests assert on
+    is left exactly as found.
 - **Fuzzing:** `fuzz/` is a separate cargo-fuzz workspace (`cargo +nightly fuzz
   run jmap_parse`) driving `provider_jmap::fuzz_parse` (behind the `fuzzing`
   feature) over the JSON parse + normalize pipeline.

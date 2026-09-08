@@ -61,6 +61,13 @@ impl FakeExecutor {
                 "urn:ietf:params:jmap:calendars": "c",
                 "urn:ietf:params:jmap:contacts": "c"
             },
+            "accounts": {
+                "c": {
+                    "accountCapabilities": {
+                        "urn:ietf:params:jmap:calendars": { "maxParticipantsPerEvent": 20 }
+                    }
+                }
+            },
             "apiUrl": "https://mail.test.local/jmap/",
             "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}",
             "uploadUrl": "https://mail.test.local/upload/{accountId}/"
