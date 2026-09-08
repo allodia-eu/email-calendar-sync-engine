@@ -47,8 +47,9 @@ async fn live_calendar_lists_syncs_and_writes() {
     )
     .expect("the default calendar owner is an email address");
     let invitee = CalendarAddress::parse("calendar-engine-live@example.invalid").unwrap();
+    let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(60);
 
-    let provider = calendar_provider(&token, calendar_id.clone());
+    let provider = calendar_provider_around(&token, calendar_id.clone(), date);
 
     // A snapshot of the calendar's events: masters + singles, each zoned in the display
     // zone (proving the Prefer: outlook.timezone request), recurrence mapped for a series.
@@ -81,7 +82,6 @@ async fn live_calendar_lists_syncs_and_writes() {
         .unwrap()
         .as_nanos();
     let uid = Uid::new(format!("live-cal-{unique}@allodia-e2e.test")).unwrap();
-    let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(60);
     let draft = EventDraft::new(
         calendar_id.clone(),
         uid.clone(),
