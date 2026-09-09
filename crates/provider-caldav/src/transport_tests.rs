@@ -435,7 +435,35 @@ async fn adopt_origin_ignores_a_url_that_names_no_origin() {
     .expect("client");
     let before = format!("{client:?}");
     for noise in ["/principals/u/", "not a url", "data:text/plain,hi", ""] {
-        client.adopt_origin(noise);
+        assert!(client.adopt_origin(noise), "refused {noise:?}");
         assert_eq!(format!("{client:?}"), before, "moved by {noise:?}");
     }
+}
+
+/// The other half of "credentials follow the server's own redirect": they follow it only
+/// while it stays on TLS. `href::redirect_href` cannot catch this hop — discovery starts
+/// at a bare well-known path, which names no scheme — so the connection is what refuses,
+/// and the walk fails rather than putting the account's password on the wire in the clear.
+#[tokio::test]
+async fn adopt_origin_refuses_a_hop_that_leaves_tls() {
+    let client = DavClient::new(
+        "https://dav.example.com",
+        Credentials::Basic {
+            username: "alice".to_owned(),
+            password: "super-secret".to_owned(),
+        },
+        &engine_tls::TlsClientConfig::default(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
+    let before = format!("{client:?}");
+    assert!(!client.adopt_origin("http://evil.test/principals/u/"));
+    assert_eq!(
+        format!("{client:?}"),
+        before,
+        "the downgrade moved the base"
+    );
+    // The same hop over TLS is the case the feature exists for.
+    assert!(client.adopt_origin("https://dav.example.net/principals/u/"));
+    assert!(format!("{client:?}").contains("dav.example.net"));
 }

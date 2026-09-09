@@ -161,7 +161,10 @@ are split escape-aware so the writer and the parser agree.
   (`DavExecutor::adopt_origin`): the account's own server redirecting discovery is not the
   case the `same_origin` credential guard exists for (`providers.md`), so credentials
   travel to the new origin and the relative hrefs it then issues resolve there. A hop off
-  TLS is refused outright, since every one of these requests carries the credential.
+  TLS is refused outright, since every one of these requests carries the credential, and
+  **that refusal lives in `adopt_origin`, not in `redirect_href`**: a walk starts at a bare
+  well-known path, which names no scheme, so on the first hop only the connection knows it
+  is being asked to give up TLS. A refusal fails the walk rather than continuing over it.
   CalDAV emits no `Authenticated` step —
   credentials ride on every `PROPFIND`, so there is no discrete authentication
   exchange to observe — and no `TlsEstablished`, because reqwest never exposes the

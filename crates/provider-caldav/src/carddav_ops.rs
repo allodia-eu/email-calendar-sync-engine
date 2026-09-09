@@ -61,7 +61,11 @@ async fn principal_props(
             let next = redirect_href(&href, &location).ok_or_else(|| {
                 CalDavError::protocol(format!("unresolvable redirect to {location:?}"))
             })?;
-            executor.adopt_origin(&next);
+            if !executor.adopt_origin(&next) {
+                return Err(CalDavError::protocol(
+                    "a discovery redirect left TLS; refusing to send the credential in the clear",
+                ));
+            }
             href = next;
             continue;
         }

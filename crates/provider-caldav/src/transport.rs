@@ -199,7 +199,16 @@ pub(crate) trait DavExecutor: Send + Sync {
     ///
     /// A relative `url` names no origin and changes nothing. The default is a no-op:
     /// only the live transport authenticates or resolves against an origin at all.
-    fn adopt_origin(&self, _url: &str) {}
+    ///
+    /// Returns `false` only when the move is **refused** because it would leave TLS.
+    /// [`href::redirect_href`](crate::href::redirect_href) cannot decide that for the
+    /// first hop of a walk: discovery starts at a bare href, which names no scheme, so
+    /// the connection is the only thing that knows whether it is giving up TLS. Every
+    /// discovery request carries the account's credentials, so the caller must fail
+    /// rather than follow.
+    fn adopt_origin(&self, _url: &str) -> bool {
+        true
+    }
 
     /// `OPTIONS` on `href`, so the response's `DAV` header can be read for the compliance
     /// classes the resource supports (RFC 4918 §10.1).
@@ -383,25 +392,32 @@ impl DavExecutor for DavClient {
         self.http_version.get()
     }
 
-    fn adopt_origin(&self, url: &str) {
+    fn adopt_origin(&self, url: &str) -> bool {
         // A relative href, an opaque origin (`data:`, `blob:`) or an unparseable URL
-        // names no host to move to. The hop that got here was already checked for a
-        // TLS downgrade (`href::redirect_href`).
+        // names no host to move to.
         let Ok(next) = reqwest::Url::parse(url) else {
-            return;
+            return true;
         };
         if !next.origin().is_tuple() {
-            return;
+            return true;
         }
         let mut base = self.base.write().expect("base lock");
         if engine_provider::same_origin(next.as_str(), base.as_str()) {
-            return;
+            return true;
+        }
+        // Credentials ride every discovery request, so a connection that started on TLS
+        // never adopts a plaintext origin: doing so would put the account's password on
+        // the wire in cleartext, at a host the user never typed. A chain that began in
+        // plaintext (the loopback fixtures) is left alone.
+        if base.scheme() == "https" && next.scheme() != "https" {
+            return false;
         }
         // The origin alone: a redirect names one resource, and every later href is
         // resolved from the connection root, not from that resource's directory.
         if let Ok(origin) = reqwest::Url::parse(&next.origin().ascii_serialization()) {
             *base = origin;
         }
+        true
     }
 
     async fn send(

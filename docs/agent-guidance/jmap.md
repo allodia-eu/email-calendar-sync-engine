@@ -89,7 +89,20 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   origin change the advertised `apiUrl` belongs to the new host, and rebasing it onto
   the old one aims every method call at a server that never had the session. The same
   helper refuses a hop that leaves TLS, since every discovery request carries the
-  account's credentials. **The rebase is scoped to the session's own advertised
+  account's credentials.
+
+  ⚠️ **Know what that trust buys and what it costs.** The JMAP transport authenticates
+  every request unconditionally, with no `same_origin` gate (CalDAV has one, for URLs
+  named by card *content*), so whoever controls the web server at the user's own domain
+  can point `/.well-known/jmap` at any `https` origin and be handed the account's
+  password or bearer token on the first request. That is inherent to RFC 8620 §2.2
+  discovery rather than something this adapter chose: the apex is the authority for its
+  own domain's mail, and a client that would not follow it cannot connect a hosted
+  provider at all. It is written down because it used to be bounded by accident. While
+  redirects were rebased onto the connection origin a credential structurally could not
+  leave it, and removing that (a bug: it made such providers unconnectable) removed the
+  bound with it. TLS is now the only floor, so a change that would let a chain leave it,
+  or that widens what a `Location` may name, is a decision and not a detail. **The rebase is scoped to the session's own advertised
   origin.** A session may legitimately span two: Fastmail serves `apiUrl` from
   `api.fastmail.com` and `downloadUrl` from `www.fastmailusercontent.com`, a separate
   cookie-less origin for untrusted user content. A public-hostname mismatch applies

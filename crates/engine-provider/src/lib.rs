@@ -37,6 +37,8 @@ mod identity;
 mod mail_edit;
 mod page;
 mod provider;
+#[cfg(feature = "http")]
+mod redirect;
 mod report;
 mod stream;
 mod submit;
@@ -53,7 +55,7 @@ pub use capability_calendar::{OverrideSurvival, RsvpControls, WriteGuard};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 pub use connection::{ConnectionInfo, HttpVersion, TlsVersion};
 #[cfg(feature = "http")]
-pub use connection::{ObservedHttpVersion, redirect_target, same_origin};
+pub use connection::{ObservedHttpVersion, same_origin};
 pub use contact::{
     ContactDestination, ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt,
     ContactsProvider,
@@ -63,6 +65,8 @@ pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;
+#[cfg(feature = "http")]
+pub use redirect::redirect_target;
 pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };

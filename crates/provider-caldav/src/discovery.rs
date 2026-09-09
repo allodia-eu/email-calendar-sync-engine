@@ -89,8 +89,13 @@ async fn propfind_principal(
                 observer.step(&ConnectStep::redirected(&href, &next));
                 // The account's own server moved the chain, so the connection follows it:
                 // credentials travel to the new origin and later relative hrefs resolve
-                // there. A no-op until a hop names an origin (`DavExecutor::adopt_origin`).
-                exec.adopt_origin(&next);
+                // there. A no-op until a hop names an origin (`DavExecutor::adopt_origin`),
+                // and refused outright when that origin would leave TLS.
+                if !exec.adopt_origin(&next) {
+                    return Err(CalDavError::protocol(
+                        "a discovery redirect left TLS; refusing to send the credential in the clear",
+                    ));
+                }
                 href = next;
             }
             continue;
@@ -256,6 +261,51 @@ mod tests {
         assert_eq!(seen[0].1, "/.well-known/caldav");
         assert_eq!(seen[1].1, "https://dav.example.net/principals/u/");
         assert_eq!(seen[2].1, "https://dav.example.net/dav/calendars/u/");
+    }
+
+    /// A `Replay` whose connection refuses to move — what the live client answers when
+    /// the hop names a plaintext origin (`DavExecutor::adopt_origin`).
+    struct RefusesToMove(Replay);
+
+    #[async_trait::async_trait]
+    impl DavExecutor for RefusesToMove {
+        async fn send(
+            &self,
+            method: DavMethod,
+            href: &str,
+            depth: &str,
+            body: String,
+        ) -> Result<HttpResponse, CalDavError> {
+            self.0.send(method, href, depth, body).await
+        }
+
+        async fn send_write(
+            &self,
+            request: crate::transport::WriteRequest,
+        ) -> Result<HttpResponse, CalDavError> {
+            self.0.send_write(request).await
+        }
+
+        fn adopt_origin(&self, _url: &str) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_origin_change_fails_the_walk_rather_than_following_it() {
+        // Discovery starts at a bare well-known path, which names no scheme, so only the
+        // connection can tell that the hop gives up TLS. A refusal must stop the walk:
+        // every request it would go on to make carries the account's credentials.
+        let exec = RefusesToMove(Replay::new(vec![
+            redirect_to("http://dav.example.net/principals/u/"),
+            ok(include_str!("../tests/fixtures/principal.xml")),
+        ]));
+        let err = discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("left TLS"), "unexpected: {err}");
+        // And nothing was sent to the plaintext host.
+        assert_eq!(exec.0.seen().len(), 1);
     }
 
     #[tokio::test]
