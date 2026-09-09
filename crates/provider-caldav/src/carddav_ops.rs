@@ -13,6 +13,7 @@ use engine_provider::ProviderResult;
 use crate::{
     dav::{DavResponse, MultiStatus},
     error::CalDavError,
+    href::redirect_href,
     request::{
         ADDRESS_BOOK_CTAG_PROPFIND, ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND,
         ADDRESS_BOOK_QUERY_REPORT, address_book_sync_report,
@@ -55,7 +56,13 @@ async fn principal_props(
         if response.is_redirect()
             && let Some(location) = response.location
         {
-            href = location;
+            // Same rule as the CalDAV walk (`href::redirect_href`): a bare path after
+            // an origin change belongs to the new origin, not to the connection base.
+            let next = redirect_href(&href, &location).ok_or_else(|| {
+                CalDavError::protocol(format!("unresolvable redirect to {location:?}"))
+            })?;
+            executor.adopt_origin(&next);
+            href = next;
             continue;
         }
         return response.into_multistatus();

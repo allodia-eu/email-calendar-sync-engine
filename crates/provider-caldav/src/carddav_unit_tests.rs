@@ -145,3 +145,26 @@ async fn write_capability_follows_the_aggregate_privilege_and_survives_rebinding
     assert!(back.connection_info().capabilities.contact_writes());
     assert!(back.contact_destination().is_some_and(|d| d.writable));
 }
+
+/// The CardDAV half of the CalDAV rule: a bare-path `Location` arriving after a hop
+/// changed origin belongs to the new origin, not to the connection base.
+#[tokio::test]
+async fn a_relative_redirect_after_an_origin_change_stays_on_the_new_origin() {
+    let home = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/</D:href><D:propstat><D:prop><C:addressbook-home-set><D:href>/books/</D:href></C:addressbook-home-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+    let moved = |location: &str| HttpResponse {
+        status: 301,
+        body: String::new(),
+        location: Some(location.to_owned()),
+        etag: None,
+        dav: None,
+    };
+    let exec = Replay::new(vec![
+        moved("https://dav.example.net/principals/u/"),
+        moved("/books/u/"),
+        ok(home),
+    ]);
+    discover_home(&exec, "/.well-known/carddav").await.unwrap();
+    let seen = exec.seen();
+    assert_eq!(seen[1].1, "https://dav.example.net/principals/u/");
+    assert_eq!(seen[2].1, "https://dav.example.net/books/u/");
+}

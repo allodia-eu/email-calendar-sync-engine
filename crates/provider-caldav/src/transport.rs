@@ -186,6 +186,21 @@ pub(crate) trait DavExecutor: Send + Sync {
         body: String,
     ) -> Result<HttpResponse, CalDavError>;
 
+    /// Adopts `url`'s origin as the connection's own, after a discovery redirect moved
+    /// the chain there.
+    ///
+    /// The account's own server saying "the calendar home is over there" is not the case
+    /// [`engine_provider::same_origin`] guards against. That guard exists for a URL named
+    /// by remote *content* (a vCard `PHOTO;VALUE=uri` naming any host), which must never
+    /// receive the account's password. A well-known `30x` is the server we are already
+    /// authenticated to directing us, so credentials follow it and the server-issued
+    /// relative hrefs that come back resolve onto the new origin rather than the domain
+    /// discovery started from.
+    ///
+    /// A relative `url` names no origin and changes nothing. The default is a no-op:
+    /// only the live transport authenticates or resolves against an origin at all.
+    fn adopt_origin(&self, _url: &str) {}
+
     /// `OPTIONS` on `href`, so the response's `DAV` header can be read for the compliance
     /// classes the resource supports (RFC 4918 §10.1).
     ///
@@ -228,7 +243,12 @@ pub(crate) trait DavExecutor: Send + Sync {
 /// The live `reqwest`-backed CalDAV transport.
 pub(crate) struct DavClient {
     client: Client,
-    base: reqwest::Url,
+    /// The origin every relative href resolves onto, and the only one credentials are
+    /// sent to. Behind a lock because RFC 6764 discovery may move it: a well-known that
+    /// redirects to another host makes *that* host the account's server for the rest of
+    /// the connection ([`DavExecutor::adopt_origin`]). Written at most once per hop
+    /// during `connect`, read once per request afterwards.
+    base: std::sync::RwLock<reqwest::Url>,
     credentials: Credentials,
     /// The HTTP version most recently observed — the post-connect fact
     /// `ConnectionInfo::http_version` reports. Every response funnels through
@@ -248,7 +268,7 @@ pub(crate) struct DavClient {
 impl core::fmt::Debug for DavClient {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DavClient")
-            .field("base", &self.base.as_str())
+            .field("base", &self.base().as_str())
             .finish_non_exhaustive()
     }
 }
@@ -280,7 +300,7 @@ impl DavClient {
             .map_err(CalDavError::Transport)?;
         Ok(Self {
             client,
-            base,
+            base: std::sync::RwLock::new(base),
             credentials,
             http_version: ObservedHttpVersion::default(),
             retry: retry.clone().labelled("caldav"),
@@ -289,6 +309,12 @@ impl DavClient {
 }
 
 impl DavClient {
+    /// The connection's current origin. Cloned rather than borrowed so no request is
+    /// built while the lock is held.
+    fn base(&self) -> reqwest::Url {
+        self.base.read().expect("base lock").clone()
+    }
+
     /// Reduces a finished reqwest response to an [`HttpResponse`], reading its body and
     /// the `Location`/`ETag` headers — and recording the negotiated HTTP version on the
     /// way through. The one funnel every read and write response passes, so no path can
@@ -331,13 +357,13 @@ impl DavClient {
         method: DavMethod,
         href: &str,
     ) -> Result<reqwest::RequestBuilder, CalDavError> {
-        let url = self
-            .base
+        let base = self.base();
+        let url = base
             .join(href)
             .map_err(|e| CalDavError::protocol(format!("bad href {href:?}: {e}")))?;
         let method = Method::from_bytes(method.as_str().as_bytes())
             .map_err(|e| CalDavError::protocol(format!("bad method: {e}")))?;
-        let authenticate = engine_provider::same_origin(url.as_str(), self.base.as_str());
+        let authenticate = engine_provider::same_origin(url.as_str(), base.as_str());
         let builder = self.client.request(method, url);
         if !authenticate {
             return Ok(builder);
@@ -355,6 +381,27 @@ impl DavClient {
 impl DavExecutor for DavClient {
     fn http_version(&self) -> Option<HttpVersion> {
         self.http_version.get()
+    }
+
+    fn adopt_origin(&self, url: &str) {
+        // A relative href, an opaque origin (`data:`, `blob:`) or an unparseable URL
+        // names no host to move to. The hop that got here was already checked for a
+        // TLS downgrade (`href::redirect_href`).
+        let Ok(next) = reqwest::Url::parse(url) else {
+            return;
+        };
+        if !next.origin().is_tuple() {
+            return;
+        }
+        let mut base = self.base.write().expect("base lock");
+        if engine_provider::same_origin(next.as_str(), base.as_str()) {
+            return;
+        }
+        // The origin alone: a redirect names one resource, and every later href is
+        // resolved from the connection root, not from that resource's directory.
+        if let Ok(origin) = reqwest::Url::parse(&next.origin().ascii_serialization()) {
+            *base = origin;
+        }
     }
 
     async fn send(

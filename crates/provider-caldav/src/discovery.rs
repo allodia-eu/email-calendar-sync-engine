@@ -17,6 +17,7 @@ use crate::{
     calendar::calendar_from_response,
     dav::MultiStatus,
     error::CalDavError,
+    href::redirect_href,
     request::{CALENDAR_LIST_PROPFIND, PRINCIPAL_PROPFIND},
     transport::{DavExecutor, DavMethod},
 };
@@ -79,11 +80,18 @@ async fn propfind_principal(
             .await?;
         if response.is_redirect() {
             // `is_redirect()` is true only with a `Location`, so this always binds;
-            // without one the loop re-requests `href` and exhausts `MAX_REDIRECTS`,
+            // without one the loop re-requests `href` and exhausts [`MAX_REDIRECTS`],
             // exactly as before.
             if let Some(location) = &response.location {
-                observer.step(&ConnectStep::redirected(&href, location));
-                href.clone_from(location);
+                let next = redirect_href(&href, location).ok_or_else(|| {
+                    CalDavError::protocol(format!("unresolvable redirect to {location:?}"))
+                })?;
+                observer.step(&ConnectStep::redirected(&href, &next));
+                // The account's own server moved the chain, so the connection follows it:
+                // credentials travel to the new origin and later relative hrefs resolve
+                // there. A no-op until a hop names an origin (`DavExecutor::adopt_origin`).
+                exec.adopt_origin(&next);
+                href = next;
             }
             continue;
         }
@@ -228,6 +236,26 @@ mod tests {
             *hops.0.lock().unwrap(),
             ["/.well-known/caldav -> /dav", "/dav -> /dav/cal"]
         );
+    }
+
+    #[tokio::test]
+    async fn a_relative_redirect_after_an_origin_change_stays_on_the_new_origin() {
+        // RFC 6764 discovery starts on the account's domain and a hosted provider may
+        // send it to the host actually serving DAV. The hop after that answers with a
+        // bare path, which belongs to the *new* origin: left as a path it would be
+        // resolved onto the connection base, which is a different server.
+        let exec = Replay::new(vec![
+            redirect_to("https://dav.example.net/principals/u/"),
+            redirect_to("/dav/calendars/u/"),
+            ok(include_str!("../tests/fixtures/principal.xml")),
+        ]);
+        discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
+            .await
+            .unwrap();
+        let seen = exec.seen();
+        assert_eq!(seen[0].1, "/.well-known/caldav");
+        assert_eq!(seen[1].1, "https://dav.example.net/principals/u/");
+        assert_eq!(seen[2].1, "https://dav.example.net/dav/calendars/u/");
     }
 
     #[tokio::test]

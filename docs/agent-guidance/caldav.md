@@ -152,7 +152,17 @@ are split escape-aware so the writer and the parser agree.
   config's `ConnectObserver` (`providers.md`), and `ConnectStep::Discovered` with the
   resolved calendar home once discovery settles. The principal → home-set second step
   is **not** a redirect and emits nothing: it is a second `PROPFIND` of a *different*
-  resource, not the same resource moving. CalDAV emits no `Authenticated` step —
+  resource, not the same resource moving. **A hop's `Location` is resolved against the
+  href that issued it** (`href::redirect_href`): discovery walks in href space, so a bare
+  path is left for the executor to resolve onto the connection, but once a hop has moved
+  to an absolute URL the next one belongs to *that* origin, and leaving it a path walks
+  the chain silently back onto the connection base — a different server that answers
+  plausibly. When a hop does change origin the connection **follows** it
+  (`DavExecutor::adopt_origin`): the account's own server redirecting discovery is not the
+  case the `same_origin` credential guard exists for (`providers.md`), so credentials
+  travel to the new origin and the relative hrefs it then issues resolve there. A hop off
+  TLS is refused outright, since every one of these requests carries the credential.
+  CalDAV emits no `Authenticated` step —
   credentials ride on every `PROPFIND`, so there is no discrete authentication
   exchange to observe — and no `TlsEstablished`, because reqwest never exposes the
   negotiated version (`tls.md`). Then `PROPFIND Depth:1` the home and keep the responses
