@@ -46,6 +46,27 @@ pub(crate) fn ensure_bound_present(calendars: &mut Vec<Calendar>, bound: &Calend
     calendars.push(Calendar::new(bound.clone(), name));
 }
 
+/// Resolves a discovery redirect's `Location` against the href that issued it.
+///
+/// DAV discovery walks in **href space**: most hrefs are server-issued paths that the
+/// transport resolves onto the connection base, and a `Location` naming a bare path is
+/// one of those, so it is passed along untouched. Once a hop has moved the chain to an
+/// absolute URL, though, the next `Location` belongs to *that* origin. Leaving it a
+/// path would resolve it onto the connection base instead, which after an origin change
+/// is a different server: the request goes somewhere real, answers plausibly, and is
+/// the wrong host.
+///
+/// An absolute `current` therefore resolves per RFC 9110 §10.2.2 (via
+/// [`engine_provider::redirect_target`], which also refuses a hop that leaves TLS,
+/// since these requests carry the account's credentials). `None` means the redirect
+/// could not be resolved and the caller should fail rather than re-request `current`.
+pub(crate) fn redirect_href(current: &str, location: &str) -> Option<String> {
+    if current.contains("://") {
+        return engine_provider::redirect_target(current, location);
+    }
+    Some(location.to_owned())
+}
+
 /// Resolves the bound collection href (see [`bind_collection`]).
 pub(crate) fn resolve_collection(home_href: &str, calendar: &str) -> String {
     if calendar.starts_with('/') || calendar.contains("://") {

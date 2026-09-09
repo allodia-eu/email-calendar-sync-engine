@@ -250,7 +250,7 @@ impl JmapClient {
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
         let transport = Transport::new(config.credentials, &config.tls, &config.retry)?;
-        let document = fetch_session(
+        let (document, served_by) = fetch_session(
             &transport,
             &base,
             &config.session_path,
@@ -258,7 +258,11 @@ impl JmapClient {
             observer,
         )
         .await?;
-        let session = Session::parse(&document, &base, config.session_urls)?;
+        // The session resolves against the URL that served it, not the URL discovery
+        // started from. A chain that changed origin means the advertised `apiUrl`
+        // belongs to the new one, and rebasing it onto the old one aims every method
+        // call at a host that never had the session.
+        let session = Session::parse(&document, &served_by, config.session_urls)?;
         // The endpoint every method call will go to — the last thing connect resolves,
         // and (under `RebaseToConnection`) the one derived from the connection origin.
         observer.step(&ConnectStep::discovered(session.api_url()));
@@ -381,17 +385,31 @@ impl fmt::Debug for JmapClient {
     }
 }
 
-/// Fetches the session document, resolving the well-known redirect chain itself so
-/// a foreign advertised origin can be rebased onto the connection. Reports one
-/// [`ConnectStep::Redirected`] per hop and, once the server serves a success,
-/// [`ConnectStep::Authenticated`].
+/// Fetches the session document, following the well-known redirect chain itself.
+/// Reports one [`ConnectStep::Redirected`] per hop and, once the server serves a
+/// success, [`ConnectStep::Authenticated`].
+///
+/// Returns the document together with the URL that served it, which becomes the base
+/// the session's advertised URLs resolve against. The two can name different origins:
+/// RFC 8620 §2.2 discovery starts at the user's domain, and a hosted provider routinely
+/// redirects that to the host actually running the server.
+///
+/// [`SessionUrlPolicy`] deliberately plays no part in a hop. It governs what a server
+/// *advertises about itself* in a document it generated, where a public hostname it is
+/// not reached at is a known misconfiguration worth correcting. A `Location` is not
+/// that: it is the server saying where the resource is, resolved against the URL that
+/// issued it per RFC 9110 §10.2.2. Rebasing one onto the connection origin discards the
+/// move and re-requests the URL it came from, which reads as a redirect loop.
 async fn fetch_session(
     transport: &Transport,
     base: &Url,
     session_path: &str,
     policy: SessionUrlPolicy,
     observer: &dyn ConnectObserver,
-) -> Result<serde_json::Value, JmapError> {
+) -> Result<(serde_json::Value, Url), JmapError> {
+    // The starting URL *is* policy-resolved: `session_path` is our own configuration,
+    // not something a server said, and an override pointing at a public hostname needs
+    // the same rebase every other configured URL gets.
     let mut url = resolve_against(base, session_path, policy)?;
     for _ in 0..MAX_SESSION_REDIRECTS {
         let resp = transport.get(&url).await?;
@@ -402,7 +420,11 @@ async fn fetch_session(
                 .get(reqwest::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| JmapError::session("redirect without Location"))?;
-            let next = resolve_against(base, location, policy)?;
+            let next = engine_provider::redirect_target(&url, location).ok_or_else(|| {
+                // Unparseable, or a hop off TLS — which these requests may never take,
+                // since every one of them carries the account's credentials.
+                JmapError::session(format!("unresolvable redirect to {location:?}"))
+            })?;
             // Both sides resolved, so a host sees the hop it can actually replay —
             // not a bare `Location` path whose origin it would have to reconstruct.
             observer.step(&ConnectStep::redirected(&url, &next));
@@ -414,7 +436,9 @@ async fn fetch_session(
         if status.is_success() {
             observer.step(&ConnectStep::Authenticated);
         }
-        return transport::read_json(resp).await;
+        let served_by = Url::parse(&url)
+            .map_err(|e| JmapError::session(format!("bad session URL {url:?}: {e}")))?;
+        return Ok((transport::read_json(resp).await?, served_by));
     }
     Err(JmapError::session("too many session redirects"))
 }
@@ -442,3 +466,7 @@ pub fn fuzz_parse(data: &[u8]) {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "redirect_tests.rs"]
+mod redirect_tests;

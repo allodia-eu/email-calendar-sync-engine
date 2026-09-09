@@ -37,6 +37,8 @@ mod identity;
 mod mail_edit;
 mod page;
 mod provider;
+#[cfg(feature = "http")]
+mod redirect;
 mod report;
 mod stream;
 mod submit;
@@ -63,6 +65,8 @@ pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;
+#[cfg(feature = "http")]
+pub use redirect::redirect_target;
 pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };

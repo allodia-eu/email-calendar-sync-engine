@@ -68,8 +68,9 @@ use crate::TlsVersion;
 #[non_exhaustive]
 pub enum ConnectStep<'a> {
     /// A redirect the adapter resolved itself (the well-known `30x` chain — both JMAP
-    /// and CalDAV disable their HTTP client's redirect following so they can rebase a
-    /// foreign advertised origin onto the connection).
+    /// and CalDAV disable their HTTP client's redirect following so each hop is
+    /// reportable here, and so the adapter decides what rides on it: both resolve the
+    /// `Location` against the URL that issued it and refuse a hop that leaves TLS).
     ///
     /// Build with [`ConnectStep::redirected`]; both URLs are userinfo-scrubbed.
     #[non_exhaustive]

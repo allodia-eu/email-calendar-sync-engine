@@ -22,7 +22,7 @@ use store_sqlite::SqliteStore;
 
 use super::*;
 use crate::{
-    href::resolve_collection,
+    href::{redirect_href, resolve_collection},
     test_support::{Replay, ok, options},
 };
 
@@ -399,4 +399,37 @@ async fn a_patch_round_trips_raw_ical_preserving_non_jscalendar_properties() {
     assert!(writes[0].body.contains("X-CUSTOM-FLAG:keep-me"));
     assert!(writes[0].body.contains("BEGIN:VALARM"));
     assert!(writes[0].body.contains("TRIGGER:-PT15M"));
+}
+
+#[test]
+fn a_redirect_is_resolved_in_href_space() {
+    // Still on the connection base: a path stays a path, for the transport to resolve.
+    assert_eq!(
+        redirect_href("/.well-known/caldav", "/dav/cal").as_deref(),
+        Some("/dav/cal")
+    );
+    // The hop that changes origin is absolute, so it is carried through as given.
+    assert_eq!(
+        redirect_href("/.well-known/caldav", "https://dav.example.net/p/").as_deref(),
+        Some("https://dav.example.net/p/")
+    );
+    // And once absolute, a bare path belongs to *that* origin — the case that was
+    // silently resolving onto the connection base, a different server.
+    assert_eq!(
+        redirect_href("https://dav.example.net/p/", "/dav/cal").as_deref(),
+        Some("https://dav.example.net/dav/cal")
+    );
+}
+
+#[test]
+fn a_redirect_off_tls_is_refused_in_href_space() {
+    // These requests carry the account's password; nothing may walk them onto http.
+    assert_eq!(
+        redirect_href("https://dav.example.net/p/", "http://dav.example.net/cal"),
+        None
+    );
+    assert_eq!(
+        redirect_href("https://dav.example.net/p/", "http://[::bad"),
+        None
+    );
 }

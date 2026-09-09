@@ -212,6 +212,16 @@ Two traps this rule exists for:
 Adapters therefore expose a `get_bytes_unauthenticated` alongside the authenticated
 byte fetch, and the client picks between them by origin.
 
+**The guard is about who named the URL, not about which origin it is.** A host named by
+*content* never gets the credential. A host the account's **own server** redirects
+discovery to is the opposite case: it is that server saying where its resources live, so
+the connection adopts the new origin and credentials follow (`provider-jmap`'s
+`fetch_session`, `provider-caldav`'s `adopt_origin`). Both adapters resolve a `Location`
+against the URL that issued it (RFC 9110 §10.2.2, `engine_provider::redirect_target`) and
+refuse a hop that leaves TLS. Resolving a redirect against the *configured base* instead
+is what one of these adapters shipped: it turned a provider whose apex redirects to its
+mail host into an unconnectable account.
+
 Placeholder substitution into a URL **template** (RFC 8620 §6.2 `downloadUrl`) has the
 same shape of hazard: percent-encode every substituted value (RFC 6570 level-1 simple
 expansion) so a payload-supplied media type cannot introduce `?`, `#`, `&`, or `/../`

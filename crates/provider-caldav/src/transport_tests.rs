@@ -384,3 +384,86 @@ async fn config_debug_shows_the_observer_without_leaking_the_password() {
         "an attached observer should be visible"
     );
 }
+
+/// The counterpart of the foreign-photo rule: when the account's *own* server redirects
+/// discovery to another host, that host becomes the account's server. Credentials follow
+/// it, and the relative hrefs it then issues resolve onto it rather than onto the domain
+/// discovery started from.
+#[tokio::test]
+async fn credentials_follow_a_discovery_redirect_to_a_new_origin() {
+    let body = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_owned();
+    let (moved, moved_seen) = mock_server_capturing(vec![body.clone()]);
+    let (base, _base_seen) = mock_server_capturing(vec![body]);
+    let client = DavClient::new(
+        &base,
+        Credentials::Basic {
+            username: "alice".to_owned(),
+            password: "super-secret".to_owned(),
+        },
+        &engine_tls::TlsClientConfig::default(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
+
+    client.adopt_origin(&format!("{moved}/principals/u/"));
+    // A *relative* href now resolves onto the adopted origin, with credentials.
+    DavExecutor::get_bytes(&client, "/calendars/u/")
+        .await
+        .expect("get after the move");
+    let sent = moved_seen.lock().expect("seen").join("\n").to_lowercase();
+    assert!(
+        sent.contains("get /calendars/u/ "),
+        "the request did not resolve onto the adopted origin: {sent}"
+    );
+    assert!(
+        sent.contains("authorization: basic"),
+        "credentials did not follow the server's own redirect: {sent}"
+    );
+}
+
+/// `adopt_origin` moves the connection, so it must not be reachable by anything a
+/// server merely *mentions*. Only a resolvable, origin-bearing URL moves it.
+#[tokio::test]
+async fn adopt_origin_ignores_a_url_that_names_no_origin() {
+    let (base, _) = mock_server_capturing(vec![]);
+    let client = DavClient::new(
+        &base,
+        Credentials::Bearer("t".to_owned()),
+        &engine_tls::TlsClientConfig::default(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
+    let before = format!("{client:?}");
+    for noise in ["/principals/u/", "not a url", "data:text/plain,hi", ""] {
+        assert!(client.adopt_origin(noise), "refused {noise:?}");
+        assert_eq!(format!("{client:?}"), before, "moved by {noise:?}");
+    }
+}
+
+/// The other half of "credentials follow the server's own redirect": they follow it only
+/// while it stays on TLS. `href::redirect_href` cannot catch this hop — discovery starts
+/// at a bare well-known path, which names no scheme — so the connection is what refuses,
+/// and the walk fails rather than putting the account's password on the wire in the clear.
+#[tokio::test]
+async fn adopt_origin_refuses_a_hop_that_leaves_tls() {
+    let client = DavClient::new(
+        "https://dav.example.com",
+        Credentials::Basic {
+            username: "alice".to_owned(),
+            password: "super-secret".to_owned(),
+        },
+        &engine_tls::TlsClientConfig::default(),
+        &engine_http::RetryConfig::default(),
+    )
+    .expect("client");
+    let before = format!("{client:?}");
+    assert!(!client.adopt_origin("http://evil.test/principals/u/"));
+    assert_eq!(
+        format!("{client:?}"),
+        before,
+        "the downgrade moved the base"
+    );
+    // The same hop over TLS is the case the feature exists for.
+    assert!(client.adopt_origin("https://dav.example.net/principals/u/"));
+    assert!(format!("{client:?}").contains("dav.example.net"));
+}
