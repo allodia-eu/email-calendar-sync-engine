@@ -26,6 +26,9 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   offline), resolve inline CID resources with
   `message_inline_parts`, list ordinary downloadable attachments with
   `message_attachments`, fetch a selected attachment with `message_attachment`,
+  hand a host the delivered bytes themselves with `message_source` (the read behind
+  exporting a message to a file — cache-first on the same blob, so it is the *original*
+  message and not a re-serialization of the projection),
   recognize a meeting invitation with `message_scheduling` (the inbound iMIP read —
   cache-first on the same raw source, so it costs no extra fetch; it *reports* what
   arrived and deliberately makes no decision, because whether to offer an RSVP is a
