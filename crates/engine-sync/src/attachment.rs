@@ -1,4 +1,5 @@
-//! On-demand message attachment reads over the cached raw MIME source.
+//! On-demand reads over the cached raw MIME source: its bytes, its attachments, and the
+//! scheduling payload an invitation carries.
 
 use engine_core::{
     ids::AccountId,
@@ -94,6 +95,41 @@ where
             .map(|part| (part, engine_mime::extract_delivery_recipients(raw)))
     })
     .await
+}
+
+/// Returns the raw RFC 5322 source of `message` — the bytes the sender's server delivered,
+/// byte-for-byte, which is what a host writes when it exports a message to a file.
+///
+/// Cache-first on the same content-addressed blob every other read here uses, so exporting a
+/// message whose body has been read costs no fetch and works offline. Handing the bytes back
+/// rather than a decoding of them is the whole point: a re-serialization of the normalized
+/// projection is a *different* message, and the signatures over the original would no longer
+/// verify.
+///
+/// # Errors
+///
+/// Returns [`SyncError::Provider`] if the source fetch fails or [`SyncError::Store`] if a
+/// cache read fails.
+pub async fn fetch_message_source<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    message: &Message,
+) -> Result<RawMime, SyncError>
+where
+    P: Provider,
+    S: MessageSourceCache,
+{
+    let key = message.id.key();
+    if let Some(cached) = store.get_message_source(account, key).await? {
+        return Ok(cached);
+    }
+    let raw = provider.fetch_message_source(account, message).await?;
+    // The one read here that cannot cache by move, since the caller wants the bytes too. It
+    // costs a copy only on a source never cached before, which a host that warms bodies has
+    // already paid for elsewhere.
+    let _ = store.put_message_source(account, key, raw.clone()).await;
+    Ok(raw)
 }
 
 /// Reads the raw RFC 5322 source (cache-first: the content-addressed blob, else one provider
@@ -236,6 +272,55 @@ mod tests {
         .expect("attachment")
         .expect("present");
         assert_eq!(content.bytes(), b"PDF");
+        assert_eq!(provider.hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn message_source_returns_the_raw_bytes_and_caches_them() {
+        let provider = AttachmentProvider {
+            caps: Capabilities::none().with_mail().with_message_source(),
+            raw: RAW.to_vec(),
+            hits: AtomicUsize::new(0),
+        };
+        let store = store();
+
+        let raw = fetch_message_source(&provider, &store, &account(), &message())
+            .await
+            .expect("source");
+
+        // Byte-for-byte what the provider delivered: an export is the original message, not a
+        // re-serialization of the projection.
+        assert_eq!(raw.as_bytes(), RAW);
+        assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store
+                .get_message_source(&account(), message().id.key())
+                .await
+                .expect("get cached raw")
+                .expect("cached")
+                .as_bytes(),
+            RAW
+        );
+    }
+
+    #[tokio::test]
+    async fn message_source_reuses_cached_raw() {
+        let store = store();
+        store
+            .put_message_source(&account(), message().id.key(), RawMime::new(RAW.to_vec()))
+            .await
+            .expect("seed source");
+        let provider = AttachmentProvider {
+            caps: Capabilities::none().with_mail().with_message_source(),
+            raw: b"unused".to_vec(),
+            hits: AtomicUsize::new(0),
+        };
+
+        let raw = fetch_message_source(&provider, &store, &account(), &message())
+            .await
+            .expect("source");
+
+        assert_eq!(raw.as_bytes(), RAW);
         assert_eq!(provider.hits.load(Ordering::SeqCst), 0);
     }
 }

@@ -323,6 +323,7 @@ mod stream;
 mod threading;
 pub use attachment::{
     fetch_message_attachment, fetch_message_attachments, fetch_message_scheduling,
+    fetch_message_source,
 };
 pub use body::{ensure_message_source, fetch_inline_parts, fetch_message_body};
 pub use calendar::{CalendarSyncReport, EventSyncReport, reconcile_calendar_events, sync_calendar};

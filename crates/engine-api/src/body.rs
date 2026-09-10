@@ -9,11 +9,12 @@ use engine_core::{
         AttachmentPartId, InlinePart, Message, MessageAttachment, MessageAttachmentContent,
         MessageBody,
     },
+    raw::RawMime,
 };
 use engine_provider::Provider;
 use engine_sync::{
     ensure_message_source, fetch_inline_parts, fetch_message_attachment, fetch_message_attachments,
-    fetch_message_body,
+    fetch_message_body, fetch_message_source,
 };
 
 use crate::{ApiError, Engine, engine::map_sync_error};
@@ -71,6 +72,35 @@ impl Engine {
         message: &Message,
     ) -> Result<(), ApiError> {
         ensure_message_source(provider, &self.store, account, message)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Returns the raw RFC 5322 source of `message` — the bytes the sender's server
+    /// delivered, unaltered.
+    ///
+    /// This is the read behind exporting a message to a file: an `.eml` is the original
+    /// message, so a host writes these bytes and never a re-serialization of the normalized
+    /// projection, which would change the wording of headers, the order of parts and the
+    /// transfer encodings, and would break any signature over the original.
+    ///
+    /// Cache-first on the same content-addressed blob [`Engine::message_body`] fills, so a
+    /// message that has been read exports with no provider call and works offline. Where
+    /// [`Engine::ensure_message_source`] only guarantees the bytes are *there*, this one hands
+    /// them over. Takes **no** lease, like every other read here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the provider fetch fails (a stale IMAP target is a
+    /// `Conflict` — re-sync via [`Engine::clear_mail_cursors`] then retry) or the store cache
+    /// read fails.
+    pub async fn message_source<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        message: &Message,
+    ) -> Result<RawMime, ApiError> {
+        fetch_message_source(provider, &self.store, account, message)
             .await
             .map_err(map_sync_error)
     }
@@ -283,5 +313,33 @@ mod tests {
             .expect("attachment read")
             .expect("attachment exists");
         assert_eq!(content.bytes(), b"PDF");
+    }
+
+    #[tokio::test]
+    async fn message_source_returns_the_delivered_bytes_unaltered() {
+        let engine = Engine::open_in_memory().expect("engine");
+        // A folded header, a non-canonical header order and a quoted-printable body: the
+        // details a re-serialization of the projection would tidy away, and an export keeps.
+        let raw = b"Subject: Re:\r\n quarterly report\r\n\
+            Content-Transfer-Encoding: quoted-printable\r\n\
+            Content-Type: text/plain; charset=\"utf-8\"\r\n\
+            From: Someone <someone@example.com>\r\n\r\n\
+            caf=C3=A9\r\n"
+            .to_vec();
+        let provider = RelatedProvider {
+            caps: Capabilities::none().with_mail().with_message_source(),
+            raw: raw.clone(),
+        };
+        let account = AccountId::try_from("acct").expect("account");
+        let message = engine_core::mail::Message::new(
+            MessageId::try_from("imap:v1:u1@INBOX").expect("id"),
+            Memberships::of_one(MailboxId::try_from("INBOX").expect("mailbox")),
+        );
+
+        let source = engine
+            .message_source(&provider, &account, &message)
+            .await
+            .expect("source");
+        assert_eq!(source.as_bytes(), raw.as_slice());
     }
 }
