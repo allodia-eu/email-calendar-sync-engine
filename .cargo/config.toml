@@ -1,0 +1,16 @@
+# Cargo settings that must hold for EVERY build of this workspace — not only the ones the client
+# build scripts drive. This file is tracked.
+
+# ---------------------------------------------------------------------------------------------
+# One build directory for every checkout, so worktrees share the compile work instead of each
+# growing a multi-GB `target/`. Intermediates only: binaries and test executables still land in
+# each worktree's `target/`, which is why an almost empty one is normal. Cargo locks the directory
+# for the length of a build, so a second worktree waits; `CARGO_BUILD_BUILD_DIR` opts one out.
+#
+# Fixed name on purpose: `{workspace-path-hash}` would give every worktree its own directory and
+# defeat the sharing. `{cargo-cache-home}` is CARGO_HOME, so no absolute path is committed.
+# `rustc-wrapper` stays out of a tracked file: it would break every dev lacking that binary.
+# ---------------------------------------------------------------------------------------------
+
+[build]
+build-dir = "{cargo-cache-home}/build/allodia-sync-engine"
