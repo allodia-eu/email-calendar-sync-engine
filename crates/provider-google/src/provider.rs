@@ -102,15 +102,15 @@ impl GmailProvider {
 
 #[async_trait]
 impl Provider for GmailProvider {
-    /// The fixed mail capabilities plus the transport's negotiated HTTP version.
+    /// The fixed mail capabilities plus the versions the transport negotiated.
     ///
     /// Google has no session-discovery step, so [`GoogleClient::connect`] issues no
-    /// request and the HTTP version is `None` until this provider's first fetch. The TLS
-    /// version is always `None`: reqwest exposes only the peer certificate
+    /// request and both are `None` until this provider's first fetch
     /// (`docs/agent-guidance/tls.md`).
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
             http_version: self.client.http_version(),
+            tls_version: self.client.tls_version(),
             // The same ceiling the snapshot's own fan-out sits under
             // (`fetch::MAX_CONCURRENT_GETS`), reported so a caller draining a work list of
             // single fetches — warming bodies, most of all — overlaps them the same way

@@ -180,6 +180,41 @@ async fn reqwest_negotiates_http2_when_offered() {
     assert_eq!(response.status().as_u16(), 200);
 }
 
+/// A reqwest client built from the shared config reports the **negotiated TLS
+/// version** on every response — the fact `provider-imap` reads straight off its own
+/// handshake, and which the HTTP providers had no way to observe until
+/// `reqwest_builder` began asking for the `TlsInfo` extension.
+///
+/// Runs against a 1.2-only and a default server, so this proves the version is *read
+/// from the handshake* rather than assumed to be 1.3. A client that did not switch
+/// `tls_info` on carries no extension at all and fails the first assertion.
+#[tokio::test]
+async fn the_reqwest_client_reports_the_negotiated_tls_version() {
+    for (versions, expected) in [
+        (
+            &[&rustls::version::TLS12][..],
+            reqwest::tls::Version::TLS_1_2,
+        ),
+        (rustls::DEFAULT_VERSIONS, reqwest::tls::Version::TLS_1_3),
+    ] {
+        let (cert, port) = tls_server_with_versions(versions).await;
+        let response = client_config(&TlsPolicy::pinned(vec![cert]))
+            .unwrap()
+            .reqwest_builder()
+            .build()
+            .unwrap()
+            .get(format!("https://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .expect("GET over TLS should succeed");
+        let info = response
+            .extensions()
+            .get::<reqwest::tls::TlsInfo>()
+            .expect("the shared builder asks reqwest for the TlsInfo extension");
+        assert_eq!(info.version(), Some(expected));
+    }
+}
+
 /// Security invariant: the shared config enforces a **TLS 1.2 floor** uniformly.
 /// The real `client_config` negotiates exactly TLS 1.2 with a 1.2-only server and
 /// TLS 1.3 with a default server; rustls implements no version below 1.2, so 1.2

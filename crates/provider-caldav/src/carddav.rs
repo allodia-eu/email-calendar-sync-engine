@@ -198,6 +198,7 @@ impl Provider for CardDavProvider {
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
             http_version: self.executor.http_version(),
+            tls_version: self.executor.tls_version(),
             ..ConnectionInfo::new(self.capabilities)
         }
     }

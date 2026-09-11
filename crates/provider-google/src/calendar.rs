@@ -123,6 +123,7 @@ impl Provider for GoogleCalendarProvider {
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
             http_version: self.client.http_version(),
+            tls_version: self.client.tls_version(),
             ..ConnectionInfo::new(self.capabilities)
         }
     }

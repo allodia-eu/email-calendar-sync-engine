@@ -136,12 +136,16 @@ async fn live_message_source() {
     let info = provider.connection_info();
     assert!(info.capabilities.message_source());
     // Connecting fetched the session, so the negotiated HTTP version is already known.
-    // The harness serves plaintext HTTP, so ALPN never offers `h2` and it is 1.1. TLS
-    // is `None` even over TLS: reqwest cannot report it (`docs/agent-guidance/tls.md`).
+    // The harness serves plaintext HTTP, so ALPN never offers `h2` and it is 1.1.
     assert_eq!(
         info.http_version,
         Some(engine_provider::HttpVersion::Http1_1)
     );
+    // And `None` for TLS because there *is* no TLS here, not because the adapter cannot
+    // read one: the same `ObservedConnection` reports `Some(..)` off a real handshake in
+    // `engine-http/tests/observed_connection.rs`. The two directions are pinned together
+    // so this absence can never be produced by a transport that simply stopped looking
+    // (`AGENTS.md`, `docs/agent-guidance/tls.md`).
     assert_eq!(info.tls_version, None);
 
     let emails = provider.sync_email(&account(), None).await.unwrap();

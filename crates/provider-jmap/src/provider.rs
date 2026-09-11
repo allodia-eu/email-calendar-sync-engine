@@ -149,12 +149,13 @@ impl JmapProvider {
 
 #[async_trait]
 impl Provider for JmapProvider {
-    /// The session's advertised capabilities plus the transport's negotiated HTTP
-    /// version. The TLS version is always `None` — reqwest exposes only the peer
-    /// certificate, never the negotiated protocol version (`docs/agent-guidance/tls.md`).
+    /// The session's advertised capabilities plus the versions the transport
+    /// negotiated. The TLS version is `None` against a plaintext `http://` endpoint,
+    /// which is what the harness serves (`docs/agent-guidance/tls.md`).
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
             http_version: self.executor.http_version(),
+            tls_version: self.executor.tls_version(),
             // The server named this in its session; nothing here needs to guess it.
             ..ConnectionInfo::new(self.capabilities)
                 .with_concurrent_fetches(self.executor.session().limits().max_concurrent_requests)

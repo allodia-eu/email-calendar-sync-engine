@@ -1,16 +1,16 @@
 //! The production reqwest [`GoogleTransport`]: bearer auth over the standard HTTP
 //! stack.
 //!
-//! The one funnel every request flows through records the negotiated HTTP version, so
-//! no path forgets to observe it. Google needs no request-shaping preference header
+//! The one funnel every request flows through records the negotiated HTTP and TLS
+//! versions, so no path forgets them. Google needs no request-shaping preference header
 //! (unlike Graph's immutable-id `Prefer`): reads are plain bearer `GET`s. The write
 //! verbs (a shared `POST`/`PATCH`/`DELETE` funnel) are added by the write slices as
 //! they land. The offline tests drive it over a blocking single-shot mock server (no
 //! network).
 
 use async_trait::async_trait;
-use engine_http::{RetryConfig, send_retrying};
-use engine_provider::{HttpVersion, ObservedHttpVersion};
+use engine_http::{ObservedConnection, RetryConfig, send_retrying};
+use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -20,10 +20,10 @@ use crate::{error::GoogleError, transport::GoogleTransport};
 pub(crate) struct HttpTransport {
     client: reqwest::Client,
     token: String,
-    /// The HTTP version most recently observed. `GoogleClient::connect` performs no
-    /// request (Google has no session-discovery step), so this stays `None` until the
-    /// adapter's first fetch.
-    http_version: ObservedHttpVersion,
+    /// The HTTP and TLS versions most recently observed. `GoogleClient::connect`
+    /// performs no request (Google has no session-discovery step), so these stay `None`
+    /// until the adapter's first fetch.
+    connection: ObservedConnection,
     /// How a `429` is waited out. Gmail answers one past its per-mailbox concurrency
     /// ceiling, which a page's fan-out sits deliberately close to.
     retry: RetryConfig,
@@ -45,14 +45,14 @@ impl HttpTransport {
         Ok(Self {
             client: tls.reqwest_builder().build()?,
             token,
-            http_version: ObservedHttpVersion::default(),
+            connection: ObservedConnection::default(),
             retry: retry.clone().labelled("gmail"),
         })
     }
 
     /// Issues an authenticated write (`POST`/`PATCH`/`DELETE`) the write shapes share,
-    /// recording the negotiated HTTP version — the write funnel, so every path observes
-    /// it. Carries an optional `Content-Type` and `If-Match` precondition.
+    /// recording the negotiated HTTP and TLS versions — the write funnel, so every path
+    /// observes them. Carries an optional `Content-Type` and `If-Match` precondition.
     async fn send_write(
         &self,
         method: reqwest::Method,
@@ -69,16 +69,16 @@ impl HttpTransport {
             request = request.header("If-Match", if_match);
         }
         let response = send_retrying(request.body(body), &self.retry).await?;
-        self.http_version.record(response.version());
+        self.connection.record(&response);
         Ok(response)
     }
 
-    /// Sends a prepared byte fetch, recording the negotiated version and classifying a
+    /// Sends a prepared byte fetch, recording the negotiated versions and classifying a
     /// non-2xx. Shared by the authenticated and anonymous byte paths so they differ in
     /// exactly one thing: whether the bearer token is attached.
     async fn fetch_bytes(&self, request: reqwest::RequestBuilder) -> Result<Vec<u8>, GoogleError> {
         let resp = send_retrying(request, &self.retry).await?;
-        self.http_version.record(resp.version());
+        self.connection.record(&resp);
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -109,7 +109,7 @@ impl GoogleTransport for HttpTransport {
     async fn get(&self, url: &str) -> Result<Value, GoogleError> {
         let resp =
             send_retrying(self.client.get(url).bearer_auth(&self.token), &self.retry).await?;
-        self.http_version.record(resp.version());
+        self.connection.record(&resp);
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -172,7 +172,11 @@ impl GoogleTransport for HttpTransport {
     }
 
     fn http_version(&self) -> Option<HttpVersion> {
-        self.http_version.get()
+        self.connection.http_version()
+    }
+
+    fn tls_version(&self) -> Option<TlsVersion> {
+        self.connection.tls_version()
     }
 }
 
@@ -283,6 +287,10 @@ mod tests {
             GoogleTransport::http_version(&transport),
             Some(HttpVersion::Http1_1)
         );
+        // The mock server speaks cleartext, so there is no TLS version to report — and
+        // reporting one anyway would be the tell that the fact is invented rather than
+        // read off the connection. The real handshake is covered in `engine-http`.
+        assert_eq!(GoogleTransport::tls_version(&transport), None);
     }
 
     #[tokio::test]

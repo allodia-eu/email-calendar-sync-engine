@@ -11,6 +11,12 @@ license.workspace = true
 # The one HTTP client every provider here ships on; this crate wraps its send call
 # rather than replacing it, so a transport keeps building requests exactly as before.
 reqwest = { workspace = true }
+# The neutral `HttpVersion`/`TlsVersion` facts `ObservedConnection` publishes, and the
+# observation cells it is built from. The `http` feature is the one every reqwest-backed
+# adapter already enables. This crate is the only place allowed to translate a reqwest
+# response into those neutral types: `engine-provider` is the provider-neutral contract
+# and must not name a concrete HTTP client (`docs/agent-guidance/tls.md`).
+engine-provider = { workspace = true, features = ["http"] }
 # `time` for the backoff sleep. No runtime is started here — the caller's is used.
 tokio = { workspace = true, features = ["time"] }
 # Parses `Retry-After`'s HTTP-date form, all three syntaxes RFC 9110 §5.6.7 requires.
@@ -21,8 +27,14 @@ httpdate = { workspace = true }
 # through the crypto provider `rustls-no-provider` requires one of).
 engine-tls = { workspace = true, features = ["reqwest"] }
 # `macros`/`rt` for `#[tokio::test]`; `test-util` for `pause()`, so the backoff tests
-# assert the waits without spending them.
-tokio = { workspace = true, features = ["time", "macros", "rt", "test-util"] }
+# assert the waits without spending them. `net`/`io-util` back the in-process TLS
+# server the `ObservedConnection` round-trip needs.
+tokio = { workspace = true, features = ["time", "macros", "rt", "test-util", "net", "io-util"] }
+# The in-process TLS server for the `ObservedConnection` round-trip: reqwest's `TlsInfo`
+# extension has private fields, so only a real handshake can produce one to read.
+rcgen = "0.13"
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
 
 [lints]
 workspace = true

@@ -167,8 +167,9 @@ are split escape-aware so the writer and the parser agree.
   is being asked to give up TLS. A refusal fails the walk rather than continuing over it.
   CalDAV emits no `Authenticated` step —
   credentials ride on every `PROPFIND`, so there is no discrete authentication
-  exchange to observe — and no `TlsEstablished`, because reqwest never exposes the
-  negotiated version (`tls.md`). Then `PROPFIND Depth:1` the home and keep the responses
+  exchange to observe — and no `TlsEstablished`, because an HTTP adapter learns its TLS
+  version from a *response*, too late for a connect-phase step; it lands in
+  `ConnectionInfo::tls_version` instead (`tls.md`). Then `PROPFIND Depth:1` the home and keep the responses
   whose `resourcetype` marks them a `calendar`. Hrefs may be absolute paths or full
   URLs; the executor resolves them against the connection origin (the JMAP
   `RebaseToConnection` posture), and a bound-collection value that is itself an

@@ -81,8 +81,11 @@ pub enum ConnectStep<'a> {
         to: Cow<'a, str>,
     },
     /// The TLS handshake completed at this version. Only a `tokio-rustls` adapter can
-    /// report this: `reqwest` exposes the peer certificate but never the negotiated
-    /// protocol version (`docs/agent-guidance/tls.md`).
+    /// report this *step*: it owns the finished `TlsStream` during connect, whereas an
+    /// HTTP adapter learns its version from a response — one exchange too late for the
+    /// connect phase. An HTTP adapter reports it through
+    /// [`ConnectionInfo::tls_version`](crate::ConnectionInfo) instead
+    /// (`docs/agent-guidance/tls.md`).
     TlsEstablished(TlsVersion),
     /// The server accepted the account's credentials.
     Authenticated,

@@ -197,7 +197,8 @@ impl JmapConfig {
     /// Observes the connect phase: one [`ConnectStep::Redirected`] per well-known hop,
     /// [`ConnectStep::Authenticated`] when the server serves the session, and
     /// [`ConnectStep::Discovered`] naming the `apiUrl` that will serve every method
-    /// call. No TLS step — reqwest never exposes the negotiated version
+    /// call. No TLS step — an HTTP adapter learns its TLS version from a response,
+    /// after the connect phase, so it lands in `ConnectionInfo::tls_version` instead
     /// (`docs/agent-guidance/tls.md`).
     ///
     /// The observer rides on the config, so a host that rebuilds this client after a
@@ -276,11 +277,17 @@ impl JmapClient {
     }
 
     /// The HTTP version this client's connection negotiated — always populated once
-    /// [`connect`](Self::connect) has fetched the session. The matching TLS version is
-    /// not available: reqwest exposes only the peer certificate, never the negotiated
-    /// protocol version (`docs/agent-guidance/tls.md`).
+    /// [`connect`](Self::connect) has fetched the session.
     pub(crate) fn http_version(&self) -> Option<engine_provider::HttpVersion> {
         self.transport.http_version()
+    }
+
+    /// The TLS version this client's connection negotiated, or `None` against a
+    /// plaintext `http://` endpoint (`docs/agent-guidance/tls.md`). Populated from the
+    /// same response as the HTTP version, so it too is known once
+    /// [`connect`](Self::connect) has fetched the session.
+    pub(crate) fn tls_version(&self) -> Option<engine_provider::TlsVersion> {
+        self.transport.tls_version()
     }
 
     /// Ships a batched request to the API endpoint and parses the response

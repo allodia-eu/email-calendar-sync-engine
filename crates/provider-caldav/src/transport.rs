@@ -9,8 +9,8 @@
 //! so discovery can resolve the RFC 6764 well-known `307` itself.
 
 use async_trait::async_trait;
-use engine_http::{RetryConfig, send_retrying};
-use engine_provider::{HttpVersion, ObservedHttpVersion};
+use engine_http::{ObservedConnection, RetryConfig, send_retrying};
+use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{Client, Method, redirect::Policy};
 
@@ -247,6 +247,12 @@ pub(crate) trait DavExecutor: Send + Sync {
     fn http_version(&self) -> Option<HttpVersion> {
         None
     }
+
+    /// The TLS version the transport negotiated, `None` for the same reason — and also
+    /// for a live client talking to a plaintext `http://` origin, such as the harness.
+    fn tls_version(&self) -> Option<TlsVersion> {
+        None
+    }
 }
 
 /// The live `reqwest`-backed CalDAV transport.
@@ -259,15 +265,15 @@ pub(crate) struct DavClient {
     /// during `connect`, read once per request afterwards.
     base: std::sync::RwLock<reqwest::Url>,
     credentials: Credentials,
-    /// The HTTP version most recently observed — the post-connect fact
-    /// `ConnectionInfo::http_version` reports. Every response funnels through
+    /// The HTTP and TLS versions most recently observed — the post-connect facts
+    /// `ConnectionInfo` reports. Every response funnels through
     /// [`DavClient::collect`], and the discovery `PROPFIND` that
     /// [`CalDavProvider::connect`](crate::CalDavProvider::connect) performs populates it
     /// before a provider exists. It then keeps tracking: the RFC 6764 well-known `30x`
     /// this client follows *itself* may be a different origin from the calendar home
     /// that serves every real request, so the latest observation — not the first — is
     /// the one that describes the working connection.
-    http_version: ObservedHttpVersion,
+    connection: ObservedConnection,
     /// How a `429` is waited out. Note that `PROPFIND` and `REPORT` are extension methods
     /// rather than ones `http` knows are idempotent, so a `503` on them is not retried even
     /// though their own RFCs say it would be safe.
@@ -311,7 +317,7 @@ impl DavClient {
             client,
             base: std::sync::RwLock::new(base),
             credentials,
-            http_version: ObservedHttpVersion::default(),
+            connection: ObservedConnection::default(),
             retry: retry.clone().labelled("caldav"),
         })
     }
@@ -325,11 +331,11 @@ impl DavClient {
     }
 
     /// Reduces a finished reqwest response to an [`HttpResponse`], reading its body and
-    /// the `Location`/`ETag` headers — and recording the negotiated HTTP version on the
-    /// way through. The one funnel every read and write response passes, so no path can
-    /// forget to observe it.
+    /// the `Location`/`ETag` headers — and recording the negotiated HTTP and TLS
+    /// versions on the way through. The one funnel every read and write response passes,
+    /// so no path can forget to observe them.
     async fn collect(&self, response: reqwest::Response) -> Result<HttpResponse, CalDavError> {
-        self.http_version.record(response.version());
+        self.connection.record(&response);
         let status = response.status().as_u16();
         let header = |name: reqwest::header::HeaderName| {
             response
@@ -389,7 +395,11 @@ impl DavClient {
 #[async_trait]
 impl DavExecutor for DavClient {
     fn http_version(&self) -> Option<HttpVersion> {
-        self.http_version.get()
+        self.connection.http_version()
+    }
+
+    fn tls_version(&self) -> Option<TlsVersion> {
+        self.connection.tls_version()
     }
 
     fn adopt_origin(&self, url: &str) -> bool {
@@ -446,7 +456,7 @@ impl DavExecutor for DavClient {
 
     async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
         let response = send_retrying(self.request(DavMethod::Get, href)?, &self.retry).await?;
-        self.http_version.record(response.version());
+        self.connection.record(&response);
         let status = response.status().as_u16();
         let bytes = response.bytes().await?;
         if (200..300).contains(&status) {

@@ -50,7 +50,8 @@ async fn advertises_per_folder_scopes_and_mail_capability() {
     // Mutating writes and submission are advertised alongside read/sync.
     assert!(info.capabilities.mail_writes());
     assert!(info.capabilities.submission());
-    // A fixture-fed fake transport speaks no HTTP and reqwest never reports TLS.
+    // A fixture-fed fake transport speaks neither HTTP nor TLS, so it observes
+    // neither version.
     assert_eq!(info.http_version, None);
     assert_eq!(info.tls_version, None);
     // And the mailbox's concurrency ceiling, so a caller draining single fetches (the body

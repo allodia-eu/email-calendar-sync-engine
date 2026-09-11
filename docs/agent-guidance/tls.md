@@ -66,7 +66,10 @@ shares it (cloning is a cheap `Arc` bump):
 `TlsClientConfig::reqwest_builder()` returns a preconfigured `reqwest::ClientBuilder`
 (each HTTP provider adds its own non-TLS settings, e.g. redirect policy). It
 advertises ALPN `h2` then `http/1.1`, so the HTTP providers negotiate HTTP/2 where
-the server supports it (JMAP and Microsoft Graph do) and fall back to HTTP/1.1 —
+the server supports it (Google does; `graph.microsoft.com` answers HTTP/1.1 even when
+`h2` is offered — measured 2026-09-11 against the live account and confirmed with an
+independent `curl --http2`, so this is the server's choice, not a missing ALPN offer)
+and fall back to HTTP/1.1 —
 reqwest's preconfigured-TLS path keeps the config's ALPN rather than deriving its
 own, so it is set here. The shared connector (IMAP/SMTP) carries no ALPN.
 
@@ -114,32 +117,47 @@ is asymmetric:
   session; SMTP submission re-dials per send, so its handshake is not a durable fact
   of the provider.
 The same asymmetry decides who can emit `ConnectStep::TlsEstablished` on the
-connect-phase observer seam (`providers.md`): only `provider-imap`, for exactly the
-reason below — it owns the finished `TlsStream`. A `reqwest` adapter has no version
-to report and invents none.
+connect-phase observer seam (`providers.md`): only `provider-imap`, because that step
+fires *during* connect and only `provider-imap` owns a finished `TlsStream` by then. An
+HTTP adapter learns its TLS version from a **response**, which is one exchange too late
+for that step, so it still emits none.
 
-- **JMAP / CalDAV / Graph** (`reqwest`): `http_version` comes from
-  `reqwest::Response::version()`, recorded at each transport's single response funnel
-  into a shared `engine_provider::ObservedHttpVersion`. It is the **latest** observation,
-  not the first: both JMAP and CalDAV disable reqwest's redirect following and resolve
-  the well-known `30x` themselves, so the first response belongs to the redirector —
-  possibly a different origin, and a different negotiated version, from the `apiUrl` /
-  calendar home that serves every real request. Latching the first would permanently
-  misreport those providers.
-  `tls_version` is **always `None`**: reqwest 0.13's `TlsInfo` exposes only the peer
-  certificate, never the negotiated protocol version (its internal
-  `Version::from_rustls` serves min/max config only). Extracting it would need a
-  custom connector layer that downcasts to the rustls stream — brittle across
-  reqwest/hyper bumps, for a fact these providers negotiate at TLS 1.3 in practice.
-  **Do not add one.**
+- **JMAP / CalDAV / Graph / Google** (`reqwest`): both versions come off a response and
+  are recorded together, at each transport's single send/collect funnel, into one
+  `engine_http::ObservedConnection`. `http_version` is `reqwest::Response::version()`;
+  `tls_version` is reqwest's `TlsInfo` response extension, which the shared
+  `TlsClientConfig::reqwest_builder` asks for with `.tls_info(true)` — so every HTTP
+  provider reports it, or none would.
 
-  Tracked upstream as [seanmonstar/reqwest#3066][reqwest-tls-version], which proposes
-  a `TlsInfo::negotiated_version() -> Option<reqwest::tls::Version>` populated from
-  `rustls`'s `CommonState::protocol_version()`. If that lands, the fix here is to read
-  it off the response (behind `ClientBuilder::tls_info(true)`) and fill `tls_version`
-  in for the three HTTP adapters — **not** to write a connector. Until then the `None`
-  is correct and deliberate, and the asymmetry it creates is the reason
-  [`ConnectionInfo`]'s two version fields are independently optional.
+  Both are the **latest** observation, not the first: JMAP and CalDAV disable reqwest's
+  redirect following and resolve the well-known `30x` themselves, so the first response
+  belongs to the redirector — possibly a different origin, over a different TLS session,
+  from the `apiUrl` / calendar home that serves every real request. Latching the first
+  would permanently misreport those providers.
+
+  `tls_version` is `None` before the first response (Graph and Google issue none at
+  connect) and on a plaintext `http://` hop — which is what the Stalwart harness serves,
+  so the live suites see `None` and the real handshake is covered offline instead
+  (`engine-http/tests/observed_connection.rs`, `engine-tls/tests/roundtrip.rs`).
+
+  **Where the translation lives, and why it is not in `engine-provider`.** Reading a
+  reqwest response is `engine-http`'s job: it already wraps reqwest's send, and
+  `engine-provider` states the provider-neutral contract and must not name a concrete
+  HTTP client — the reason `HttpVersion::from_http` takes the leaf `http::Version`.
+  `engine-provider` owns the neutral facts and the two observation cells
+  (`ObservedHttpVersion`, `ObservedTlsVersion`); `engine-http` owns the pairing and the
+  reqwest-facing mapping.
+
+  **Record both together.** They arrive on the same response and the four transports
+  have one to three send funnels each, so two separate `record` calls is a pair that one
+  funnel eventually forgets. `ObservedConnection::record(&response)` takes the whole
+  response for that reason.
+
+  This closed [seanmonstar/reqwest#3066][reqwest-tls-version]; reqwest **0.13.5** added
+  `TlsInfo::version()`, populated from rustls' `CommonState::protocol_version()`. The
+  earlier guidance here was to write no custom connector that downcasts to the rustls
+  stream, and that still stands — the fix was to wait for the upstream accessor, and it
+  landed.
 
 [reqwest-tls-version]: https://github.com/seanmonstar/reqwest/issues/3066
 
@@ -158,6 +176,13 @@ to report and invents none.
   once to TLS 1.2 — so the reported version is proven to be *read from the handshake*,
   not assumed. The reqwest adapters' `http_version` is covered the same way, against
   their in-process mock HTTP/1.1 servers.
+- The reqwest adapters' `tls_version` is covered in the same shape, and has to be: the
+  harness is plaintext, reqwest's `TlsInfo` has private fields so no fake can construct
+  one, and a client built without `.tls_info(true)` reports `None` forever rather than
+  failing. `engine-tls`'s `roundtrip.rs` proves the shared builder asks for the
+  extension (1.2-only and default servers, so the version is read, not assumed);
+  `engine-http`'s `tests/observed_connection.rs` proves `ObservedConnection` gets both
+  facts off one response.
 
 ## Host / FFI wiring
 

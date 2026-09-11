@@ -222,7 +222,7 @@ async fn a_connected_provider_reports_the_negotiated_http_version() {
     // version the mock server spoke.
     let info = engine_provider::Provider::connection_info(&provider);
     assert_eq!(info.http_version, Some(HttpVersion::Http1_1));
-    // reqwest never exposes the negotiated TLS version, plaintext or not.
+    // The mock server speaks plaintext, so there is no TLS version on that response.
     assert_eq!(info.tls_version, None);
     assert!(info.capabilities.calendars() && info.capabilities.calendar_writes());
 }
@@ -325,7 +325,8 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
         [
             "redirected /.well-known/caldav -> /dav/cal",
             // CalDAV emits no `Authenticated` (no discrete auth exchange) and no
-            // `TlsEstablished` (reqwest never exposes the negotiated version).
+            // `TlsEstablished` (an HTTP adapter learns its TLS version from a response,
+            // after the connect phase).
             "discovered /dav/cal/alice%40test.local/",
         ]
     );
