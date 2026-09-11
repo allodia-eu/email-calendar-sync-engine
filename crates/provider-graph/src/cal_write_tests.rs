@@ -18,22 +18,22 @@ use serde_json::json as sjson;
 use super::*;
 use crate::test_support::fake_client_fallible;
 
-fn calendar() -> CalendarId {
+pub(super) fn calendar() -> CalendarId {
     CalendarId::try_from("cal-1").unwrap()
 }
 
-fn stamp() -> UtcDateTime {
+pub(super) fn stamp() -> UtcDateTime {
     "2026-07-18T10:00:00Z".parse().unwrap()
 }
 
-fn zoned(local: &str) -> CalendarDateTime {
+pub(super) fn zoned(local: &str) -> CalendarDateTime {
     CalendarDateTime::Zoned {
         local: local.parse::<LocalDateTime>().unwrap(),
         zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
     }
 }
 
-fn draft() -> EventDraft {
+pub(super) fn draft() -> EventDraft {
     EventDraft::new(
         calendar(),
         Uid::new("draft-uid@test.local").unwrap(),
@@ -46,7 +46,7 @@ fn draft() -> EventDraft {
     .description("agenda")
 }
 
-fn base_event() -> Event {
+pub(super) fn base_event() -> Event {
     let mut event = Event::new(
         EventId::try_from("evt-1").unwrap(),
         Uid::new("evt-1@test.local").unwrap(),

@@ -35,6 +35,7 @@ tests driven through a fake executor.
 | `calendarevent_get_rule_parts.json` | `CalendarEvent/get` result for a `BYSETPOS` series PUT over CalDAV | That a real server really sends `bySetPosition`, so the rule parts deciding *which dates* a series generates are read rather than dropped. Its own capture rather than a seventh seed event, because the file above is asserted on wholesale as "all 6". |
 | `calendar_snapshot_response.json` | `[Calendar/get]` response | Calendar container snapshot orchestration. |
 | `event_snapshot_response.json` | `[CalendarEvent/query, CalendarEvent/get(#ids)]` response | Event member snapshot orchestration. |
+| `participant_identity_get_response.json` | `[ParticipantIdentity/get]` response | Meeting creation resolves the organiser's account identity by calendar address before writing participants. |
 
 ## Re-capturing
 

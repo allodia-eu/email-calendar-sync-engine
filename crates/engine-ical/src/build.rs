@@ -20,7 +20,10 @@
 use engine_core::raw::RawIcal;
 use engine_provider::EventDraft;
 
-use super::format::{date_time_line, escape_text, format_utc, strip_control};
+use super::{
+    format::{date_time_line, escape_text, fold_line, format_utc, strip_control},
+    scheduling_write::{attendee_line, organiser_line},
+};
 use crate::error::IcalError;
 
 /// Builds a minimal RFC 5545 `VCALENDAR`/`VEVENT` document for a create `PUT`.
@@ -35,6 +38,11 @@ use crate::error::IcalError;
 /// clock on a zoned or UTC event with no resolved instant to render `UNTIL` from — see
 /// [`engine_provider::DraftRecurrence`].
 pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
+    if let Some(meeting) = &draft.meeting {
+        meeting
+            .validate(None)
+            .map_err(|error| IcalError::new(error.to_string()))?;
+    }
     let mut ical = String::new();
     ical.push_str("BEGIN:VCALENDAR\r\n");
     ical.push_str("VERSION:2.0\r\n");
@@ -64,6 +72,12 @@ pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
             &crate::patch::rrule_value(recurrence, &draft.start)?,
         );
     }
+    if let Some(meeting) = &draft.meeting {
+        ical.push_str(&fold_line(&organiser_line(meeting.organiser()), "\r\n"));
+        for invitee in meeting.invitees() {
+            ical.push_str(&fold_line(&attendee_line(invitee), "\r\n"));
+        }
+    }
     ical.push_str("END:VEVENT\r\n");
     ical.push_str("END:VCALENDAR\r\n");
     Ok(RawIcal::new(ical))
@@ -72,10 +86,7 @@ pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
 /// Appends one `NAME:VALUE` content line, CRLF-terminated (RFC 5545 §3.1). `value`
 /// is already escaped/formatted by the caller.
 fn push_property(out: &mut String, name: &str, value: &str) {
-    out.push_str(name);
-    out.push(':');
-    out.push_str(value);
-    out.push_str("\r\n");
+    out.push_str(&fold_line(&format!("{name}:{value}"), "\r\n"));
 }
 
 #[cfg(test)]

@@ -59,11 +59,11 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 
 | Provider | Crate | Data domains | Push | Standards |
 | --- | --- | --- | --- | --- |
-| **JMAP** | `provider-jmap` | mail/calendar/contact read/write, mail submit, RSVP | EventSource (RFC 8620 §7.3) | RFC 8620, RFC 8621, RFC 8984, RFC 9610 |
+| **JMAP** | `provider-jmap` | mail/calendar/contact read/write, mail submit, invitations, RSVP | EventSource (RFC 8620 §7.3) | RFC 8620, RFC 8621, RFC 8984, RFC 9610, JMAP Calendars draft 28, JSCalendar 2.0 draft 19 |
 | **IMAP + SMTP** | `provider-imap` | mail read/write (SMTP submit optional, incl. iMIP) | IMAP `IDLE` (RFC 2177) | RFC 9051 / RFC 3501 (negotiated), RFC 5161, RFC 7162, RFC 2177, RFC 6154, RFC 5258/5819, RFC 6851, RFC 4315, RFC 5321/5322, RFC 2047 |
-| **CalDAV/CardDAV** | `provider-caldav` | calendar/contact read/write, RSVP, iMIP inbound | — | RFC 4791, RFC 6350, RFC 6352, RFC 6578, RFC 6638 |
-| **Microsoft Graph** | `provider-graph` | mail read/write/submit (incl. iMIP), calendar read/write + RSVP, personal/directory contacts | — | Microsoft Graph v1.0 |
-| **Google** | `provider-google` | Gmail read/write/submit (incl. iMIP), Calendar read/write + RSVP, People read; owned writes | — | Gmail, Calendar, People APIs |
+| **CalDAV/CardDAV** | `provider-caldav` | calendar/contact read/write, invitations, RSVP, iMIP inbound | — | RFC 4791, RFC 5545, RFC 5546, RFC 6047, RFC 6350, RFC 6352, RFC 6578, RFC 6638, RFC 6868 |
+| **Microsoft Graph** | `provider-graph` | mail read/write/submit (incl. iMIP), calendar read/write + invitations + RSVP, personal/directory contacts | — | Microsoft Graph v1.0 |
+| **Google** | `provider-google` | Gmail read/write/submit (incl. iMIP), Calendar read/write + invitations + RSVP, People read; owned writes | — | Gmail, Calendar, People APIs |
 
 ## Capability matrix
 
@@ -74,7 +74,8 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 | iMIP submission | — | with SMTP | — | yes | yes |
 | push | EventSource | IDLE | — | — | — |
 | calendar read/write | yes | — | yes | yes | yes |
-| calendar write guard | absent | — | enforced ETag | enforced ETag | enforced ETag |
+| calendar write guard | absent | — | enforced ETag or schedule tag | enforced ETag | enforced ETag |
+| meeting invitations | yes, discovered account limit | — | yes, delivery needs RFC 6638 | yes, 500 attendees | yes, response propagation changes above 200 guests |
 | RSVP | yes | — | yes | yes | yes |
 | server-side scheduling | yes (asked for) | — | discovered (RFC 6638) | yes | yes |
 | contact read | yes | — | yes | personal + directory | owned + suggested + directory |
@@ -82,6 +83,21 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 | groups/photos | yes/yes | — | yes/yes | read/yes | read/yes |
 
 Two rows deserve a note, because they are the ones a host is tempted to hard-code:
+
+Calendar write includes organiser-authored meeting creation and whole-series roster edits on
+all four calendar adapters. It does not itself promise delivery. Graph and Google deliver
+through their APIs, JMAP requests scheduling on every write, and CalDAV delivers only when
+RFC 6638 auto-scheduling is advertised. A plain CalDAV server needs a separate client-iMIP
+workflow, which is not yet implemented for organiser requests and cancellations.
+
+The organiser identity has a different authority on each transport:
+
+| Provider | Organiser identity |
+| --- | --- |
+| JMAP | Resolved and validated through `ParticipantIdentity/get` before the write. |
+| CalDAV | Must be one of the principal's RFC 6638 `calendar-user-address-set` values. The adapter does not yet expose that set, so a host must use the authenticated account address and cannot safely offer organiser-alias selection. |
+| Graph | Exchange derives it from the target calendar. Use the synced calendar's `owner`; Graph does not accept an organiser override on event creation. |
+| Google | Google derives it from the target calendar. Use the synced calendar's `owner`; Calendar API event creation does not select an organiser alias. |
 
 - **iMIP submission** (`scheduling_submission`) is not "does this account have mail". It is whether
   the transport lets the adapter own the `method=` `Content-Type` parameter that makes an iTIP
@@ -104,6 +120,8 @@ read/write support, using JSCalendar and JSContact projections.
 - **RFC 8620** — JMAP Core (session resource, method calls, state changes, blob upload/download, EventSource push).
 - **RFC 8621** — JMAP Mail (`Mailbox`, `Email`, `EmailSubmission`, `Thread`).
 - **RFC 8984** — JSCalendar, the normalized calendar data model.
+- **draft-ietf-jmap-calendars-28** and **draft-ietf-calext-jscalendarbis-19**: current JMAP
+  Calendars and JSCalendar 2.0 write shapes. Reads remain compatible with RFC 8984 shapes.
 - **RFC 9610** — JMAP Contacts (`AddressBook`, `ContactCard`).
 - **RFC 8620 §7.3** — EventSource push notifications via `JmapWatcher`.
 
@@ -272,8 +290,10 @@ The `with_calendar` argument is either a name relative to the calendar home (e.g
   repeating discovery and carries write capability with it, so a rebind onto a
   writable book stays writable.
 - Event identity is the resource href; the iCalendar `UID` is the separate cross-system identifier.
-- Writes use conditional `PUT`/`DELETE` (`If-None-Match: *` for creates, `If-Match: "<etag>"` for updates/deletes) for optimistic concurrency.
+- Writes use conditional `PUT`/`DELETE`. Creates use `If-None-Match: *`; scheduling resources prefer RFC 6638 `If-Schedule-Tag-Match`; other updates and deletes use `If-Match: "<etag>"`.
 - The body round-trips the preserved `RawIcal`; the engine does not re-serialize from the lossy projection. For simple creates, the crate provides `provider_caldav::build_event_ical`.
+- Meeting creates render `ORGANIZER` and `ATTENDEE` content lines without a stored `METHOD`.
+  Whole-series roster edits preserve response and unknown attendee parameters.
 - iMIP inbound parse (`Engine::message_scheduling`, with the trust decision) and the RSVP write are implemented. Outbound iMIP delivery rides a submission transport that advertises `scheduling_submission` — SMTP, Graph, or Gmail — via `Draft::calendar`; a CalDAV server that advertises `calendar-auto-schedule` sends the `REPLY` itself, and the adapter says so rather than letting a caller send a second one.
 
 ## Microsoft Graph
@@ -297,6 +317,9 @@ and `scheduling_submission`; `GraphCalendarProvider` advertises `calendars`, gua
 `calendar_writes` (`If-Match`), `calendar_rsvp`, and `calendar_scheduling`. Personal
 Graph contacts are writable with `WriteGuard::Absent`; organizational contacts and
 directory users are read-only.
+
+Graph meeting writes use attendee arrays, `responseRequested`, and a stable `transactionId`.
+Roster edits retain provider response fields and enforce Graph's 500-attendee limit.
 
 ### Connection example
 
@@ -337,6 +360,10 @@ Only owned connections are writable, and People ETags enforce updates.
 Expired People sync tokens restart only their source as a snapshot; contact
 groups are always paginated snapshots because their list API has no sync token.
 See `docs/agent-guidance/google.md` and `contacts.md` for scopes and mappings.
+
+Google meeting writes use attendee arrays and `sendUpdates=all` for create, roster changes
+and delete. Roster edits refuse an incomplete `attendeesOmitted` event. Google accepts more
+than 200 guests, but stops propagating response status to guests above that threshold.
 
 ## TLS and trust policy
 

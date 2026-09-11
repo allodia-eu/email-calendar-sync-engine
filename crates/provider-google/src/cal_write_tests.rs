@@ -223,7 +223,7 @@ async fn create_posts_the_event_json_over_the_real_transport() {
     create_event(&client, "cal-1", &draft()).await.unwrap();
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
-        request.starts_with("POST /calendar/v3/calendars/cal-1/events "),
+        request.starts_with("POST /calendar/v3/calendars/cal-1/events?sendUpdates=all "),
         "{request}"
     );
     let body = request.split("\r\n\r\n").nth(1).unwrap();
@@ -249,7 +249,7 @@ async fn patch_sends_if_match_and_only_the_changed_field() {
         .unwrap();
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
-        request.starts_with("PATCH /calendar/v3/calendars/cal-1/events/evt-1 "),
+        request.starts_with("PATCH /calendar/v3/calendars/cal-1/events/evt-1?sendUpdates=all "),
         "{request}"
     );
     // The If-Match precondition carries the base's ETag (the lost-update guard).

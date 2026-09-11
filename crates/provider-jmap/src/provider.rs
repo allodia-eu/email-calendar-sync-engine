@@ -425,6 +425,10 @@ mod calendar_recurrence_tests;
 mod calendar_write_tests;
 
 #[cfg(test)]
+#[path = "calendar_invite_tests.rs"]
+mod calendar_invite_tests;
+
+#[cfg(test)]
 #[path = "report_provider_tests.rs"]
 mod report_provider_tests;
 
