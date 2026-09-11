@@ -205,8 +205,9 @@ async fn jmap_provider_connects_and_syncs_through_the_real_client() {
     assert!(format!("{provider:?}").contains("JmapProvider"));
 
     // Connecting fetched the session over the mock server's HTTP/1.1, so the
-    // post-connect object already reports the negotiated version. TLS is `None`: this
-    // is plaintext here, and reqwest could not report a version even over TLS.
+    // post-connect object already reports the negotiated version. TLS is `None` because
+    // the mock speaks plaintext — the same response would carry a TLS version over
+    // `https://` (`engine-http`'s `ObservedConnection`).
     let info = provider.connection_info();
     assert_eq!(
         info.http_version,

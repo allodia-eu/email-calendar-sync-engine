@@ -11,8 +11,9 @@
 //! provider can observe are asymmetric (`docs/agent-guidance/tls.md`):
 //!
 //! - A `tokio-rustls` provider (IMAP/SMTP) knows its TLS version and has no HTTP version.
-//! - A `reqwest` provider (JMAP/CalDAV/Graph) knows its HTTP version and **cannot** learn its TLS
-//!   version: reqwest exposes only the peer certificate, never the negotiated protocol version.
+//! - A `reqwest` provider (JMAP/CalDAV/Graph/Google) knows both, and learns the TLS version only
+//!   from a response: reqwest reports it on the `TlsInfo` extension the shared client asks for
+//!   (`engine-tls`), so there is nothing to read until one response has come back.
 //!
 //! The TLS *policy* is deliberately absent: the host chose it and already knows it
 //! (`docs/agent-guidance/tls.md`). This object carries only what the **server**
@@ -30,6 +31,63 @@ pub enum TlsVersion {
     Tls1_2,
     /// TLS 1.3 (RFC 8446).
     Tls1_3,
+}
+
+impl TlsVersion {
+    /// The wire encoding [`ObservedTlsVersion`] stores. Never zero — zero means
+    /// "nothing observed yet".
+    const fn as_u8(self) -> u8 {
+        match self {
+            Self::Tls1_2 => 2,
+            Self::Tls1_3 => 3,
+        }
+    }
+
+    /// The inverse of [`as_u8`](Self::as_u8); `None` for the "nothing observed" zero.
+    const fn from_u8(encoded: u8) -> Option<Self> {
+        match encoded {
+            2 => Some(Self::Tls1_2),
+            3 => Some(Self::Tls1_3),
+            _ => None,
+        }
+    }
+}
+
+/// The TLS version most recently observed on one HTTP transport's connection.
+///
+/// The sibling of [`ObservedHttpVersion`], and deliberately a separate type: the two
+/// facts are independently optional (see this module's header), and an adapter that
+/// can observe only one must not be forced to invent the other. `provider-imap` needs
+/// neither — it reads its version straight off the finished handshake.
+///
+/// **Most recent wins, not first**, for exactly the reason spelled out on
+/// [`ObservedHttpVersion`]: JMAP and CalDAV follow the well-known `30x` themselves, so
+/// the first response may come from a different origin — and therefore a different TLS
+/// session — than the endpoint that serves every request afterwards.
+///
+/// A `None` observation (a plain-`http://` hop, or a TLS backend that does not report a
+/// version) leaves the previous observation intact rather than erasing it, so one
+/// cleartext fetch cannot blank out what the account's own connection negotiated.
+#[derive(Debug, Default)]
+pub struct ObservedTlsVersion(core::sync::atomic::AtomicU8);
+
+impl ObservedTlsVersion {
+    /// Records the version negotiated for a response just received, if there was one.
+    ///
+    /// `Relaxed` for the same reason as [`ObservedHttpVersion::record`]: a standalone
+    /// diagnostic fact that publishes no other memory.
+    pub fn record(&self, version: Option<TlsVersion>) {
+        if let Some(version) = version {
+            self.0
+                .store(version.as_u8(), core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// The most recently observed version, or `None` before any TLS response.
+    #[must_use]
+    pub fn get(&self) -> Option<TlsVersion> {
+        TlsVersion::from_u8(self.0.load(core::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 /// The HTTP protocol version negotiated on a provider's connection.
@@ -152,9 +210,9 @@ impl ObservedHttpVersion {
 pub struct ConnectionInfo {
     /// The data domains this adapter supports.
     pub capabilities: Capabilities,
-    /// The negotiated TLS version, or `None` when the transport cannot report one —
-    /// either because the connection is not TLS at all, or because it is a `reqwest`
-    /// provider (reqwest never exposes the negotiated version).
+    /// The negotiated TLS version, or `None` when the transport has none to report —
+    /// the connection is not TLS at all, or it is an HTTP provider that has not yet
+    /// exchanged a response (the version arrives with one; see [`ObservedTlsVersion`]).
     pub tls_version: Option<TlsVersion>,
     /// The HTTP version most recently negotiated on this connection, or `None` for a
     /// non-HTTP provider (IMAP/SMTP) or an HTTP provider that has not yet exchanged a
@@ -294,6 +352,34 @@ mod tests {
         ] {
             assert_eq!(HttpVersion::from_http(unmodeled), None);
         }
+    }
+
+    #[test]
+    fn no_tls_version_is_observed_before_the_first_response() {
+        assert_eq!(ObservedTlsVersion::default().get(), None);
+    }
+
+    #[test]
+    fn the_most_recent_tls_observation_wins_not_the_first() {
+        // Same invariant as the HTTP version, and it matters for the same reason: the
+        // well-known `30x` a JMAP/CalDAV transport follows itself may be served by a
+        // different origin, over a different TLS session, than the endpoint that then
+        // serves every real request.
+        let observed = ObservedTlsVersion::default();
+        observed.record(Some(TlsVersion::Tls1_3));
+        assert_eq!(observed.get(), Some(TlsVersion::Tls1_3));
+        observed.record(Some(TlsVersion::Tls1_2));
+        assert_eq!(observed.get(), Some(TlsVersion::Tls1_2));
+    }
+
+    #[test]
+    fn an_unreported_tls_version_leaves_the_last_observation_intact() {
+        // A cleartext hop (or a backend that cannot report a version) must not blank out
+        // what the account's own TLS connection negotiated.
+        let observed = ObservedTlsVersion::default();
+        observed.record(Some(TlsVersion::Tls1_3));
+        observed.record(None);
+        assert_eq!(observed.get(), Some(TlsVersion::Tls1_3));
     }
 
     #[cfg(feature = "http")]

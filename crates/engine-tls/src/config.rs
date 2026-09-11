@@ -97,15 +97,26 @@ impl TlsClientConfig {
     /// settings such as the redirect policy.
     ///
     /// Advertises ALPN `h2` then `http/1.1`, so the connection negotiates HTTP/2
-    /// where the server offers it (JMAP and Microsoft Graph do) and falls back to
-    /// HTTP/1.1 otherwise. ALPN is set here rather than inherited: the shared
+    /// where the server offers it (Google does; `graph.microsoft.com` answers HTTP/1.1
+    /// even when `h2` is offered — measured, see `docs/agent-guidance/tls.md`) and falls
+    /// back to HTTP/1.1 otherwise. ALPN is set here rather than inherited: the shared
     /// config carries none (correct for the IMAP/SMTP connector), and reqwest's
     /// preconfigured-TLS path keeps the config's ALPN instead of deriving its own.
+    ///
+    /// Also asks reqwest to attach its `TlsInfo` extension to every response, which
+    /// is how an HTTP adapter learns the **negotiated TLS version** — the fact
+    /// `provider-imap` reads straight off its own `tokio-rustls` handshake. reqwest
+    /// reports it only when `tls_info` is on, and it is switched on here rather than
+    /// per adapter so all four HTTP providers report the same fact from the same
+    /// client (`docs/agent-guidance/tls.md`). `engine-http`'s `ObservedConnection`
+    /// reads it back out.
     #[cfg(feature = "reqwest")]
     pub fn reqwest_builder(&self) -> reqwest::ClientBuilder {
         let mut config = (*self.0).clone();
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        reqwest::Client::builder().tls_backend_preconfigured(config)
+        reqwest::Client::builder()
+            .tls_backend_preconfigured(config)
+            .tls_info(true)
     }
 
     /// TEST BUILDS ONLY — a config that accepts **any** server certificate, for the

@@ -108,7 +108,7 @@ jiff-tzdb = "0.1.6"
 # `http2` lets those providers negotiate HTTP/2 via ALPN where the server supports it
 # (JMAP and Graph do), falling back to HTTP/1.1. Default features stay off otherwise
 # so we do not pull native TLS.
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider", "charset", "http2"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider", "charset", "http2"] }
 # The HTTP primitives reqwest is built on. Used only for `http::Version`, so
 # `engine-provider` can map what `reqwest::Response::version` returns onto its neutral
 # `HttpVersion` in one place (`engine-provider`'s `http` feature). Must stay on the same

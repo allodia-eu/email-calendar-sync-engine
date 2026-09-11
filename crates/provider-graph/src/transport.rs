@@ -16,7 +16,7 @@
 
 use async_trait::async_trait;
 use engine_http::RetryConfig;
-use engine_provider::HttpVersion;
+use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -87,6 +87,12 @@ pub(crate) trait GraphTransport: Send + Sync {
     /// Defaults to `None`: only the reqwest transport speaks HTTP, so a fake fed canned
     /// fixtures has no version to report.
     fn http_version(&self) -> Option<HttpVersion> {
+        None
+    }
+
+    /// The TLS version the transport negotiated, `None` for the same reason — and also
+    /// before the first response, since it arrives on one.
+    fn tls_version(&self) -> Option<TlsVersion> {
         None
     }
 }
@@ -320,11 +326,15 @@ impl GraphClient {
 
     /// The HTTP version this client's transport negotiated, or `None` before its first
     /// request — [`connect`](Self::connect) performs no I/O, so a freshly connected
-    /// Graph client has not yet observed one. The matching TLS version is never
-    /// available: reqwest exposes only the peer certificate
-    /// (`docs/agent-guidance/tls.md`).
+    /// Graph client has not yet observed one.
     pub(crate) fn http_version(&self) -> Option<HttpVersion> {
         self.transport.http_version()
+    }
+
+    /// The TLS version this client's transport negotiated, `None` until the first
+    /// response for the same reason (`docs/agent-guidance/tls.md`).
+    pub(crate) fn tls_version(&self) -> Option<TlsVersion> {
+        self.transport.tls_version()
     }
 
     /// Rebases an absolute `graph.microsoft.com` URL onto a non-default base — a

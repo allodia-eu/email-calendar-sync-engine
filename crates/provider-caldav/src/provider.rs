@@ -150,9 +150,10 @@ impl CalDavConfig {
     /// Observes the connect phase: one [`ConnectStep::Redirected`] per hop discovery
     /// follows itself, then [`ConnectStep::Discovered`] naming the calendar home.
     ///
-    /// No TLS step (reqwest never exposes the negotiated version,
-    /// `docs/agent-guidance/tls.md`) and no auth step — CalDAV has no discrete
-    /// authentication exchange; credentials ride on each `PROPFIND`.
+    /// No TLS step — the version arrives on a response, after the connect phase, so it
+    /// lands in `ConnectionInfo::tls_version` instead (`docs/agent-guidance/tls.md`) —
+    /// and no auth step, since CalDAV has no discrete authentication exchange;
+    /// credentials ride on each `PROPFIND`.
     ///
     /// The observer rides on the config, so a host that rebuilds this provider after a
     /// dropped session observes the redial too. `Arc` so one host observer can be
@@ -322,12 +323,13 @@ impl CalDavProvider {
 
 #[async_trait]
 impl Provider for CalDavProvider {
-    /// The fixed calendar read/write capabilities plus the transport's negotiated HTTP
-    /// version. The TLS version is always `None` — reqwest exposes only the peer
-    /// certificate, never the negotiated protocol version (`docs/agent-guidance/tls.md`).
+    /// The fixed calendar read/write capabilities plus the versions the transport
+    /// negotiated. The TLS version is `None` against a plaintext `http://` origin,
+    /// which is what the harness serves (`docs/agent-guidance/tls.md`).
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
             http_version: self.executor.http_version(),
+            tls_version: self.executor.tls_version(),
             ..ConnectionInfo::new(self.capabilities)
         }
     }

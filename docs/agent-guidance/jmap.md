@@ -68,8 +68,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   hop it resolves itself (both sides fully resolved, so a host sees the hop it could
   replay), `ConnectStep::Authenticated` when the session responds `2xx` with the
   account's credentials attached, and `ConnectStep::Discovered` naming the resolved
-  `apiUrl` that will serve every method call. No `TlsEstablished` — reqwest never
-  exposes the negotiated version (`tls.md`). Under `RebaseToConnection` every one of
+  `apiUrl` that will serve every method call. No `TlsEstablished` — an HTTP adapter
+  learns its TLS version from a *response*, which is after the connect phase, so it has
+  nothing to report at that step; it lands in `ConnectionInfo::tls_version` instead
+  (`tls.md`). Under `RebaseToConnection` every one of
   those URLs derives from the connection base, so userinfo on the base would propagate
   into each step; `ConnectStep`'s constructors scrub it. Stalwart advertises absolute URLs to its
   configured public host (`https://mail.test.local/`) while a client connects to

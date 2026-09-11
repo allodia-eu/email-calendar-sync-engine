@@ -6,8 +6,8 @@
 //! so it can rebase a foreign advertised origin onto the connection (see
 //! [`SessionUrlPolicy`](crate::SessionUrlPolicy)).
 
-use engine_http::{RetryConfig, send_retrying};
-use engine_provider::{HttpVersion, ObservedHttpVersion};
+use engine_http::{ObservedConnection, RetryConfig, send_retrying};
+use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{Client, RequestBuilder, StatusCode, header::WWW_AUTHENTICATE, redirect::Policy};
 use serde_json::Value;
@@ -27,14 +27,14 @@ pub(crate) struct Transport {
     /// its `401` challenge — so this starts at the credential's natural scheme and
     /// moves if a server says otherwise. See [`crate::auth`].
     scheme: NegotiatedScheme,
-    /// The HTTP version most recently observed — the post-connect fact
-    /// `ConnectionInfo::http_version` reports. Every request funnels through
+    /// The HTTP and TLS versions most recently observed — the post-connect facts
+    /// `ConnectionInfo` reports. Every request funnels through
     /// [`Transport::send`], and [`JmapClient::connect`](crate::JmapClient::connect)
     /// fetches the session, so this is populated by the time a client exists. It then
     /// keeps tracking: the well-known redirect this transport follows *itself* may be a
     /// different origin from the `apiUrl` that serves method calls, so the latest
     /// observation — not the first — is the one that describes the working connection.
-    http_version: ObservedHttpVersion,
+    connection: ObservedConnection,
     /// How a `429` is waited out. A JMAP server also has protocol-level `rateLimit` /
     /// `overQuota` errors inside a `200`, which the method layer classifies; this covers
     /// only the HTTP one, which is the shape a blob download meets.
@@ -54,7 +54,7 @@ impl Transport {
             client,
             scheme: NegotiatedScheme::new(credentials.preferred_scheme()),
             credentials,
-            http_version: ObservedHttpVersion::default(),
+            connection: ObservedConnection::default(),
             retry: retry.clone().labelled("jmap"),
         })
     }
@@ -62,7 +62,13 @@ impl Transport {
     /// The HTTP version negotiated on this transport's connection, or `None` before
     /// its first response.
     pub(crate) fn http_version(&self) -> Option<HttpVersion> {
-        self.http_version.get()
+        self.connection.http_version()
+    }
+
+    /// The TLS version negotiated on this transport's connection, or `None` before its
+    /// first response over TLS.
+    pub(crate) fn tls_version(&self) -> Option<TlsVersion> {
+        self.connection.tls_version()
     }
 
     /// Applies the configured credentials to a request builder under `scheme`.
@@ -114,12 +120,13 @@ impl Transport {
         self.dispatch(self.authed(replay, next)).await
     }
 
-    /// Ships a fully authenticated `builder`, recording the negotiated HTTP version on
-    /// the way through. The engine's shared client offers ALPN `h2` then `http/1.1`
-    /// (`docs/agent-guidance/tls.md`), so this is HTTP/2 wherever the server supports it.
+    /// Ships a fully authenticated `builder`, recording the negotiated HTTP and TLS
+    /// versions on the way through. The engine's shared client offers ALPN `h2` then
+    /// `http/1.1` (`docs/agent-guidance/tls.md`), so this is HTTP/2 wherever the server
+    /// supports it.
     async fn dispatch(&self, builder: RequestBuilder) -> Result<reqwest::Response, JmapError> {
         let response = send_retrying(builder, &self.retry).await?;
-        self.http_version.record(response.version());
+        self.connection.record(&response);
         Ok(response)
     }
 

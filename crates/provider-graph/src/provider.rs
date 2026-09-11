@@ -146,13 +146,13 @@ impl Provider for GraphProvider {
     /// The fixed mail capabilities plus the transport's negotiated HTTP version.
     ///
     /// Graph has no session-discovery step, so [`GraphClient::connect`] issues no
-    /// request and the HTTP version is `None` until this provider's first fetch —
-    /// unlike JMAP/CalDAV, which learn it while connecting. The TLS version is always
-    /// `None`: reqwest exposes only the peer certificate, never the negotiated
-    /// protocol version (`docs/agent-guidance/tls.md`).
+    /// request and both transport versions are `None` until this provider's first
+    /// fetch — unlike JMAP/CalDAV, which learn them while connecting
+    /// (`docs/agent-guidance/tls.md`).
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
             http_version: self.client.http_version(),
+            tls_version: self.client.tls_version(),
             ..ConnectionInfo::new(self.capabilities)
                 .with_concurrent_fetches(MAX_CONCURRENT_SOURCE_FETCHES)
         }

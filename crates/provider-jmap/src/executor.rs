@@ -7,7 +7,7 @@
 //! network. The provider is one of its callers, not its owner.
 
 use async_trait::async_trait;
-use engine_provider::HttpVersion;
+use engine_provider::{HttpVersion, TlsVersion};
 
 use crate::{
     JmapClient,
@@ -35,6 +35,11 @@ pub(crate) trait Executor: Send + Sync {
     fn http_version(&self) -> Option<HttpVersion> {
         None
     }
+    /// The TLS version the transport negotiated, `None` for the same reason — and also
+    /// for a live client talking to a plaintext `http://` endpoint, such as the harness.
+    fn tls_version(&self) -> Option<TlsVersion> {
+        None
+    }
 }
 
 #[async_trait]
@@ -57,5 +62,9 @@ impl Executor for JmapClient {
 
     fn http_version(&self) -> Option<HttpVersion> {
         JmapClient::http_version(self)
+    }
+
+    fn tls_version(&self) -> Option<TlsVersion> {
+        JmapClient::tls_version(self)
     }
 }

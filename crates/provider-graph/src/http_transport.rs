@@ -1,13 +1,13 @@
 //! The production reqwest [`GraphTransport`]: bearer auth + immutable-id preference.
 //!
-//! The one funnel every request flows through records the negotiated HTTP version, so
-//! no path forgets to observe it. Reads add `Prefer: IdType="ImmutableId"` (and a
+//! The one funnel every request flows through records the negotiated HTTP and TLS
+//! versions, so no path forgets to observe them. Reads add `Prefer: IdType="ImmutableId"` (and a
 //! calendar read's `outlook.timezone`); writes add an optional `Content-Type`/`If-Match`.
 //! The offline tests drive it over a blocking single-shot mock server (no network).
 
 use async_trait::async_trait;
-use engine_http::{RetryConfig, send_retrying};
-use engine_provider::{HttpVersion, ObservedHttpVersion};
+use engine_http::{ObservedConnection, RetryConfig, send_retrying};
+use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -17,10 +17,10 @@ use crate::{error::GraphError, transport::GraphTransport};
 pub(crate) struct HttpTransport {
     client: reqwest::Client,
     token: String,
-    /// The HTTP version most recently observed. Unlike JMAP/CalDAV,
+    /// The HTTP and TLS versions most recently observed. Unlike JMAP/CalDAV,
     /// `GraphClient::connect` performs no request (Graph has no session-discovery step),
-    /// so this stays `None` until the adapter's first fetch.
-    http_version: ObservedHttpVersion,
+    /// so these stay `None` until the adapter's first fetch.
+    connection: ObservedConnection,
     /// How a `429` is waited out. Exchange Online throttles a mailbox on both concurrency
     /// and a requests-per-window budget, and names its own wait in `Retry-After`.
     retry: RetryConfig,
@@ -43,14 +43,14 @@ impl HttpTransport {
         Ok(Self {
             client: tls.reqwest_builder().build()?,
             token,
-            http_version: ObservedHttpVersion::default(),
+            connection: ObservedConnection::default(),
             retry: retry.clone().labelled("graph"),
         })
     }
 
     /// Issues the authenticated, immutable-id-preferring `GET` the fetch shapes share,
-    /// recording the negotiated HTTP version on the way through — the one funnel, so no
-    /// path can forget to observe it. `extra_prefer` appends a second `Prefer` value
+    /// recording the negotiated HTTP and TLS versions on the way through — the one
+    /// funnel, so no path can forget them. `extra_prefer` appends a second `Prefer` value
     /// (the calendar read's `outlook.timezone`).
     async fn send(
         &self,
@@ -69,13 +69,13 @@ impl HttpTransport {
             &self.retry,
         )
         .await?;
-        self.http_version.record(response.version());
+        self.connection.record(&response);
         Ok(response)
     }
 
     /// Issues an authenticated write (`POST`/`PATCH`/`DELETE`) the write shapes share,
-    /// recording the negotiated HTTP version like [`send`](Self::send) — the write
-    /// counterpart, so both funnels observe the version. Carries the immutable-id
+    /// recording the transport versions like [`send`](Self::send) — the write
+    /// counterpart, so both funnels observe them. Carries the immutable-id
     /// preference so a write that echoes an object (a create/patch) returns the stable
     /// id form, plus an optional `Content-Type` and `If-Match` precondition.
     async fn send_write(
@@ -105,7 +105,7 @@ impl HttpTransport {
             request = request.header(reqwest::header::CONTENT_LENGTH, 0);
         }
         let response = send_retrying(request.body(body), &self.retry).await?;
-        self.http_version.record(response.version());
+        self.connection.record(&response);
         Ok(response)
     }
 
@@ -171,7 +171,7 @@ impl GraphTransport for HttpTransport {
         // No `Authorization` and no `Prefer`: this URL came from payload content, not
         // from the Graph API, so it gets a bare GET.
         let resp = send_retrying(self.client.get(url), &self.retry).await?;
-        self.http_version.record(resp.version());
+        self.connection.record(&resp);
         Self::collect_bytes(resp).await
     }
 
@@ -220,7 +220,11 @@ impl GraphTransport for HttpTransport {
     }
 
     fn http_version(&self) -> Option<HttpVersion> {
-        self.http_version.get()
+        self.connection.http_version()
+    }
+
+    fn tls_version(&self) -> Option<TlsVersion> {
+        self.connection.tls_version()
     }
 }
 
@@ -331,6 +335,10 @@ mod tests {
             GraphTransport::http_version(&transport),
             Some(HttpVersion::Http1_1)
         );
+        // The mock server speaks cleartext, so there is no TLS version to report — and
+        // reporting one anyway would be the tell that the fact is invented rather than
+        // read off the connection. The real handshake is covered in `engine-http`.
+        assert_eq!(GraphTransport::tls_version(&transport), None);
     }
 
     #[tokio::test]
