@@ -158,6 +158,31 @@ fn encoded_word_subjects_are_decoded_through_normalization() {
 }
 
 #[test]
+fn a_legacy_charset_subject_and_display_name_are_decoded() {
+    // Observed on real Japanese mail. `ISO-2022-JP` is 7-bit, so a UTF-8 read of it
+    // yields no replacement character to notice — the escape sequences simply arrive as
+    // text (`$B...(B`) in the list row and the notification.
+    let line = "1 FETCH (UID 1 ENVELOPE (NIL \
+                \"=?iso-2022-jp?b?GyRCPzckNyQkPnBKcyRyJCpDTiRpJDskNyReJDkbKEI=?=\" \
+                ((\"=?iso-2022-jp?b?GyRCJSslOSU/JV4hPCU1JV0hPCVIGyhC?=\" NIL \
+                \"support\" \"example.test\")) NIL NIL NIL NIL NIL NIL NIL))";
+    let rows = parse_fetch(&[line.as_bytes().to_vec()]).unwrap();
+    let message = message_from_fetch(&rows[0], &MailboxId::try_from("INBOX").unwrap(), 1);
+    assert_eq!(
+        message.envelope.subject.as_deref(),
+        Some("新しい情報をお知らせします")
+    );
+    assert_eq!(
+        message
+            .envelope
+            .from
+            .first()
+            .and_then(|a| a.name.as_deref()),
+        Some("カスタマーサポート")
+    );
+}
+
+#[test]
 fn mailbox_from_list_maps_inbox_special_use_and_roleless() {
     let rows = crate::parse::parse_list(&[
         br#"LIST (\HasNoChildren) "/" "INBOX""#.to_vec(),

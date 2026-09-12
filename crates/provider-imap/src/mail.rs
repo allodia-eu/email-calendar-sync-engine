@@ -231,7 +231,10 @@ fn month_from_abbreviation(abbr: &str) -> Option<Month> {
 fn to_envelope(env: &crate::parse::Envelope) -> Envelope {
     Envelope {
         // Header text may be RFC 2047 encoded (a non-ASCII subject); decode it.
-        subject: env.subject.as_deref().map(crate::encoded_word::decode),
+        subject: env
+            .subject
+            .as_deref()
+            .map(engine_mime::encoded_word::decode),
         from: to_addresses(&env.from),
         sender: to_addresses(&env.sender),
         reply_to: to_addresses(&env.reply_to),
@@ -262,7 +265,7 @@ fn to_addresses(addrs: &[Address]) -> Vec<EmailAddress> {
             let host = addr.host.as_deref()?;
             let email = format!("{mailbox}@{host}");
             Some(match &addr.name {
-                Some(name) => EmailAddress::named(crate::encoded_word::decode(name), email),
+                Some(name) => EmailAddress::named(engine_mime::encoded_word::decode(name), email),
                 None => EmailAddress::new(email),
             })
         })

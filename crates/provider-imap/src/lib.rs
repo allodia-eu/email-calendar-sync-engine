@@ -60,7 +60,6 @@ mod bodystructure;
 mod capability;
 mod config;
 mod cursor;
-mod encoded_word;
 mod error;
 mod fetch;
 mod fetch_stream;

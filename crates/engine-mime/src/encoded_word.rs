@@ -1,16 +1,22 @@
 //! RFC 2047 "encoded-word" decoding for header text (subjects, display names).
 //!
-//! IMAP `ENVELOPE` carries header text verbatim, so a non-ASCII subject arrives as
-//! `=?UTF-8?Q?Caf=C3=A9?=`. This decodes those words to text. It handles the `B`
-//! (base64) and `Q` (quoted-printable) encodings and the UTF-8, ISO-8859-1, and
-//! Windows-1252 charsets (others fall back to a UTF-8-lossy read); per RFC 2047 §6.2,
-//! linear
+//! JMAP and Graph hand the engine header text already decoded, so their adapters never
+//! call this. The adapters that read RFC 5322 headers themselves do: IMAP's `ENVELOPE`
+//! carries the header text verbatim, and Gmail's `payload.headers` returns the raw value,
+//! so a non-ASCII subject reaches them as `=?UTF-8?Q?Caf=C3=A9?=`.
+//!
+//! The `B` (base64) and `Q` (quoted-printable) encodings are decoded here; the charset is
+//! read with `mail-parser`'s table, the same one body extraction uses, so a header and a
+//! body cannot disagree about what `iso-2022-jp` means. Per RFC 2047 §6.2, linear
 //! whitespace *between* two adjacent encoded-words is removed (a word may be split
-//! mid-character). Malformed input is passed through verbatim — header text is
-//! hostile input and must never panic (`north-star.md`).
+//! mid-character). Malformed input is passed through verbatim — header text is hostile
+//! input and must never panic (`north-star.md`).
+
+use mail_parser::decoders::{base64::base64_decode, charsets::map::charset_decoder};
 
 /// Decodes any RFC 2047 encoded-words in `input`, leaving ordinary text untouched.
-pub(crate) fn decode(input: &str) -> String {
+#[must_use]
+pub fn decode(input: &str) -> String {
     let mut out = String::new();
     let mut rest = input;
     let mut prev_was_encoded = false;
@@ -55,7 +61,7 @@ fn parse_encoded_word(body: &str) -> Option<(String, usize)> {
     let encoded = &text[..text_end];
 
     let bytes = match encoding.to_ascii_uppercase().as_str() {
-        "B" => crate::base64::decode(encoded)?,
+        "B" => base64_decode(encoded.as_bytes())?,
         "Q" => q_decode(encoded),
         _ => return None,
     };
@@ -64,61 +70,34 @@ fn parse_encoded_word(body: &str) -> Option<(String, usize)> {
 }
 
 /// Interprets bytes per the (case-insensitive) charset; a `*language` suffix
-/// (RFC 2231) is ignored, and unknown charsets fall back to a UTF-8-lossy read.
+/// (RFC 2231) is ignored, and a charset `mail-parser` does not know falls back to a
+/// UTF-8-lossy read.
 ///
-/// `ISO-8859-1` is decoded as its `Windows-1252` superset: the two agree on
-/// `0xA0..=0xFF`, and the `0x80..=0x9F` range that true Latin-1 leaves as C1 controls
-/// almost always carries CP1252 punctuation (smart quotes, en/em dashes, `€`) in real
-/// mail — the same lenient mapping browsers use (WHATWG Encoding §the `iso-8859-1`
-/// label *is* `windows-1252`). Without it a CP1252 en-dash (`0x96`) decodes to `�`.
+/// Delegating the table rather than keeping one here is what makes the legacy charsets
+/// real mail still carries work at all: the stateful `ISO-2022-*` sets, `Shift_JIS`,
+/// `EUC-JP`/`-KR`, `GB18030`, `Big5`, and the single-byte `ISO-8859-*` / `windows-125*` /
+/// `KOI8-*`. A 7-bit set is the trap — every `ISO-2022-JP` byte is valid ASCII, so a
+/// UTF-8 read of one yields no replacement character to notice, just the escape sequences
+/// as text.
+///
+/// The one label not taken at face value is `ISO-8859-1`, which is asked for as its
+/// `Windows-1252` superset. The two agree on `0xA0..=0xFF`, and the `0x80..=0x9F` range
+/// true Latin-1 leaves as C1 controls almost always carries CP1252 punctuation (smart
+/// quotes, en/em dashes, `€`) in real mail — the lenient mapping browsers use (WHATWG
+/// Encoding: the `iso-8859-1` label *is* `windows-1252`). Without it an Outlook subject's
+/// en-dash (`0x96`) decodes to an unrenderable `\u{96}`. Stated here rather than left to
+/// the table, because the table has already changed its answer once: `mail-parser` reads
+/// this label as true Latin-1 at the pinned 0.11.4 and as CP1252 by 0.11.9.
 fn decode_charset(charset: &str, bytes: &[u8]) -> String {
-    let name = charset
-        .split('*')
-        .next()
-        .unwrap_or(charset)
-        .to_ascii_uppercase();
-    match name.as_str() {
-        "ISO-8859-1" | "LATIN1" | "WINDOWS-1252" | "CP1252" => {
-            bytes.iter().map(|&b| windows_1252_char(b)).collect()
-        }
-        _ => String::from_utf8_lossy(bytes).into_owned(),
-    }
-}
-
-/// Maps a byte to its `Windows-1252` character. `0x00..=0x7F` and `0xA0..=0xFF` are
-/// identity (ASCII / Latin-1); `0x80..=0x9F` carry the CP1252 punctuation. The five
-/// bytes CP1252 leaves undefined (`0x81 0x8D 0x8F 0x90 0x9D`) fall through to their
-/// Latin-1 codepoint rather than erroring — mail is hostile input.
-fn windows_1252_char(b: u8) -> char {
-    match b {
-        0x80 => '\u{20AC}', // €
-        0x82 => '\u{201A}', // ‚
-        0x83 => '\u{0192}', // ƒ
-        0x84 => '\u{201E}', // „
-        0x85 => '\u{2026}', // …
-        0x86 => '\u{2020}', // †
-        0x87 => '\u{2021}', // ‡
-        0x88 => '\u{02C6}', // ˆ
-        0x89 => '\u{2030}', // ‰
-        0x8A => '\u{0160}', // Š
-        0x8B => '\u{2039}', // ‹
-        0x8C => '\u{0152}', // Œ
-        0x8E => '\u{017D}', // Ž
-        0x91 => '\u{2018}', // ‘
-        0x92 => '\u{2019}', // ’
-        0x93 => '\u{201C}', // “
-        0x94 => '\u{201D}', // ”
-        0x95 => '\u{2022}', // •
-        0x96 => '\u{2013}', // – (en dash)
-        0x97 => '\u{2014}', // — (em dash)
-        0x98 => '\u{02DC}', // ˜
-        0x99 => '\u{2122}', // ™
-        0x9A => '\u{0161}', // š
-        0x9B => '\u{203A}', // ›
-        0x9C => '\u{0153}', // œ
-        0x9E => '\u{017E}', // ž
-        0x9F => '\u{0178}', // Ÿ
-        other => other as char,
+    let name = charset.split('*').next().unwrap_or(charset);
+    let lowercased = name.to_ascii_lowercase();
+    let name = match lowercased.as_str() {
+        "iso-8859-1" | "iso_8859-1" | "latin1" | "l1" => "windows-1252",
+        _ => name,
+    };
+    match charset_decoder(name.as_bytes()) {
+        Some(decode) => decode(bytes),
+        None => String::from_utf8_lossy(bytes).into_owned(),
     }
 }
 
@@ -215,6 +194,37 @@ mod tests {
         // so a mislabeled 0x96 still decodes to an en-dash, while 0xA0..=0xFF are
         // unchanged from Latin-1.
         assert_eq!(decode("=?iso-8859-1?Q?a=96b=E9?="), "a–bé");
+    }
+
+    #[test]
+    fn iso_2022_jp_decodes() {
+        // Observed on real Japanese mail: a 7-bit stateful encoding, so every byte is
+        // valid ASCII and a UTF-8 read produces no replacement character to notice —
+        // just `$B...(B` where the text should be. Subject and display name from one
+        // message, `B`-encoded as such mail always is.
+        assert_eq!(
+            decode("=?iso-2022-jp?b?GyRCPzckNyQkPnBKcyRyJCpDTiRpJDskNyReJDkbKEI=?="),
+            "新しい情報をお知らせします"
+        );
+        assert_eq!(
+            decode("=?iso-2022-jp?b?GyRCJSslOSU/JV4hPCU1JV0hPCVIGyhC?="),
+            "カスタマーサポート"
+        );
+    }
+
+    #[test]
+    fn other_legacy_charsets_decode() {
+        // One per family, so a table swap that drops a family fails here.
+        assert_eq!(decode("=?shift_jis?B?g1SDfIFbg2c=?="), "サポート");
+        assert_eq!(decode("=?euc-jp?B?xvzL3A==?="), "日本");
+        assert_eq!(decode("=?koi8-r?B?8NLJ18XU?="), "Привет");
+        assert_eq!(decode("=?gb2312?B?xOO6ww==?="), "你好");
+        assert_eq!(decode("=?big5?B?p0Gmbg==?="), "你好");
+    }
+
+    #[test]
+    fn an_unknown_charset_falls_back_to_utf8() {
+        assert_eq!(decode("=?x-made-up?Q?Caf=C3=A9?="), "Café");
     }
 
     #[test]
