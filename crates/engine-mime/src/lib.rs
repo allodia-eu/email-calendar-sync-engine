@@ -11,8 +11,14 @@
 //! panic (`north-star.md` security). The crate is I/O-free and async-free, so the
 //! provider/store layers own *fetching* and *caching* the raw bytes and this layer
 //! only *interprets* them.
+//!
+//! [`encoded_word`] is the same decoding one level up, for RFC 2047 header text. It is
+//! here rather than in an adapter because two adapters read RFC 5322 headers themselves
+//! (IMAP's `ENVELOPE`, Gmail's `payload.headers`) and must agree with each other, and
+//! with a body, about what a charset label means.
 
 mod attachment;
+pub mod encoded_word;
 mod scheduling;
 
 use std::borrow::Cow;

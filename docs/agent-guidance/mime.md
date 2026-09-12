@@ -12,6 +12,7 @@ pub fn extract_body(raw: &RawMime) -> MessageBody
 pub fn extract_inline_parts(raw: &RawMime) -> Vec<InlinePart>
 pub fn extract_attachments(raw: &RawMime) -> Vec<MessageAttachment>
 pub fn extract_attachment(raw: &RawMime, id: AttachmentPartId) -> Option<MessageAttachmentContent>
+pub fn encoded_word::decode(input: &str) -> String
 ```
 
 `extract_body` interprets a message's cached raw source (`RawMime`, the Tier-3 blob the
@@ -36,6 +37,24 @@ in the (sanitized) HTML body. **Policy stays with the host**: which media types 
 to inline, and the inert form they are inlined as (e.g. an `image/*`-only `data:` URI),
 are decided by the renderer, not here — the bytes are hostile input. Text and
 `multipart/*` parts, and parts without a `Content-ID`, are skipped.
+
+`encoded_word::decode` is the same decoding one level up, on **header** text: it resolves
+RFC 2047 encoded-words (`=?iso-2022-jp?B?…?=`) in a subject or display name. It lives here
+rather than in an adapter because two adapters read RFC 5322 headers themselves and must
+agree with each other, and with a body, about what a charset label means:
+
+| Adapter | Header text | Decodes here? |
+|---|---|---|
+| `provider-imap` | IMAP `ENVELOPE`, verbatim header text | yes |
+| `provider-google` | Gmail `payload.headers[].value`, raw | yes |
+| `provider-jmap` | JMAP `subject` / `from.name`, server-decoded | no, nothing to do |
+| `provider-graph` | Graph `subject` / `from…name`, server-decoded | no, nothing to do |
+
+The charset table is `mail-parser`'s, shared with body decoding. One label is overridden:
+`ISO-8859-1` is read as its `Windows-1252` superset, because that is what browsers do and
+what real mail means (without it an Outlook en-dash, `0x96`, is an unrenderable C1
+control). That override is stated in code rather than left to the table, which has already
+changed its answer once across a `mail-parser` release.
 
 The fetching and caching of the raw bytes are **not** this crate's job — the
 provider layer fetches (`Provider::fetch_message_source`) and the store caches

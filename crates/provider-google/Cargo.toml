@@ -18,6 +18,9 @@ engine-provider = { workspace = true, features = ["http"] }
 # The shared RFC 5322 / MIME assembler, for `messages.send` in MIME format (submission
 # preserves the caller's Message-ID and threading — see `submit`).
 engine-rfc5322 = { workspace = true }
+# Gmail hands back raw RFC 5322 header values, so subjects and display names still need
+# RFC 2047 decoding — through the engine's one decoder, shared with the IMAP adapter.
+engine-mime = { workspace = true }
 # One shared TLS trust policy across every provider (`docs/agent-guidance/tls.md`);
 # `reqwest` enables the preconfigured-client builder this HTTP transport uses.
 # One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).

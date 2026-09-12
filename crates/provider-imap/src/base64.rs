@@ -1,9 +1,8 @@
 //! Shared RFC 4648 base64 codec.
 //!
 //! One alphabet, encode and decode together, so the two directions cannot drift.
-//! Used by the SMTP `AUTH PLAIN` SASL token ([`crate::smtp`]) and RFC 2047
-//! `B`-encoded header words ([`crate::encoded_word`]); these previously each
-//! hand-rolled their own half.
+//! Used by the SMTP `AUTH PLAIN` SASL token ([`crate::smtp`]) and modified UTF-7
+//! mailbox names ([`crate::utf7`]); these previously each hand-rolled their own half.
 
 /// The standard base64 alphabet (RFC 4648 §4).
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

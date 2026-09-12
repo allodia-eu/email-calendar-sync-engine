@@ -204,6 +204,37 @@ fn address_parsing_handles_names_bare_addrs_and_quoted_commas() {
 }
 
 #[test]
+fn encoded_word_subjects_and_display_names_are_decoded() {
+    // Gmail returns `payload.headers` as the raw RFC 5322 values — unlike JMAP and
+    // Graph, it does no RFC 2047 decoding — so without ours the encoded word reaches the
+    // list row and the notification verbatim. `ISO-2022-JP` is the case that hides: it
+    // is 7-bit, so a UTF-8 read produces no replacement character to notice.
+    let json = serde_json::json!({
+        "id": "m", "threadId": "t", "labelIds": ["INBOX"],
+        "payload": { "headers": [
+            { "name": "Subject",
+              "value": "=?iso-2022-jp?b?GyRCPzckNyQkPnBKcyRyJCpDTiRpJDskNyReJDkbKEI=?=" },
+            { "name": "From",
+              "value": "=?iso-2022-jp?b?GyRCJSslOSU/JV4hPCU1JV0hPCVIGyhC?= \
+                        <support@example.test>" },
+            { "name": "To", "value": "=?UTF-8?Q?Caf=C3=A9?= <cafe@example.test>" }
+        ]}
+    });
+    let msg = message_from_json(&json).unwrap();
+    assert_eq!(
+        msg.envelope.subject.as_deref(),
+        Some("新しい情報をお知らせします")
+    );
+    assert_eq!(
+        msg.envelope.from[0].name.as_deref(),
+        Some("カスタマーサポート")
+    );
+    assert_eq!(msg.envelope.from[0].email, "support@example.test");
+    // Every address header goes through the same decode, not just From.
+    assert_eq!(msg.envelope.to[0].name.as_deref(), Some("Café"));
+}
+
+#[test]
 fn malformed_messages_are_protocol_errors_not_panics() {
     // No id.
     assert!(message_from_json(&serde_json::json!({ "threadId": "t" })).is_err());

@@ -139,7 +139,9 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GoogleError> {
 
     let headers = value.get("payload").and_then(|p| p.get("headers"));
     let envelope = &mut message.envelope;
-    envelope.subject = header(headers, "Subject").map(str::to_owned);
+    // Gmail returns `payload.headers` as the raw RFC 5322 values, so non-ASCII text is
+    // still RFC 2047 encoded here — unlike JMAP and Graph, which decode server-side.
+    envelope.subject = header(headers, "Subject").map(engine_mime::encoded_word::decode);
     envelope.from = parse_addresses(header(headers, "From"));
     envelope.sender = parse_addresses(header(headers, "Sender"));
     envelope.to = parse_addresses(header(headers, "To"));
@@ -346,11 +348,13 @@ fn parse_one_address(part: &str) -> Option<EmailAddress> {
         if email.is_empty() {
             return None;
         }
+        // Quotes come off before decoding: a display name wide enough to need an
+        // encoded-word is often quoted around it as well.
         let name = part[..open].trim().trim_matches('"').trim();
         return Some(if name.is_empty() {
             EmailAddress::new(email)
         } else {
-            EmailAddress::named(name, email)
+            EmailAddress::named(engine_mime::encoded_word::decode(name), email)
         });
     }
     // A bare addr-spec with no display name.
