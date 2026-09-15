@@ -723,6 +723,27 @@ one event never race on either provider.
   `resource_key` collides with an already-leased op. This both honors offline
   `create → edit` dependency chains (the edit waits until the create's provider
   id is known) and serializes writes to the same provider resource.
+- **There are two claims, and an inline driver takes the targeted one.**
+  `claim_pending_ops` asks *what may run now* and is the drainer's primitive: ordered
+  by id, capped at a batch size, leasing whatever it gets. `claim_pending_op` asks
+  *may this op run now*, by id, and is what a driver resolving the op it just
+  enqueued needs. Mixing them up is a queue with a head: an op the caller will not
+  resolve gets leased and abandoned for the lease's whole TTL, and, worse, the batch
+  never reaches an op past its cap, so once an account accumulates more runnable ops
+  than the cap, **every** later write is refused and each refusal leaves one more
+  behind. That is unrecoverable while the drainer is still future work, which is
+  exactly why the targeted claim is not an optimisation.
+- **A refusal names its condition.** `claim_pending_op` returns
+  `PendingOpClaim::Refused(ClaimRejection::{Unknown, Settled, DependencyUnmet, Busy})`
+  rather than an empty result, because the caller acts on the difference: `Busy` is a
+  wait and nothing else is. Both stores answer with the batch claim's own predicate —
+  runnable means `Pending`, or `InFlight` whose lease died under it.
+- **Serializing on a resource means waiting, not refusing.** The store defers an op
+  whose `resource_key` a live lease holds; the inline drivers wait that out
+  (`engine_sync::outbox::RESOURCE_WAIT`, an upper bound on one provider round trip)
+  instead of failing. A host marks a message read when it opens and archives it a
+  moment later, so the second write routinely arrives inside the first's round trip;
+  a refusal there loses the archive, and with no drainer it loses it permanently.
 - **Resolution is fenced.** Each claimed op is leased individually with its own
   fencing token (`OpLease`). `mark_pending_op` takes the `OpLease`, not a bare
   id, and the store rejects a stale token. The outbox path is fenced exactly
@@ -779,7 +800,13 @@ pub trait Store: Send + Sync {
         account: AccountId,
         req: LeaseRequest,
         limit: usize,
-    ) -> Result<Vec<LeasedPendingOp>>; // runnable ops only
+    ) -> Result<Vec<LeasedPendingOp>>; // runnable ops only; the drainer's primitive
+    async fn claim_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+        req: LeaseRequest,
+    ) -> Result<PendingOpClaim>; // Leased(..) | Refused(ClaimRejection)
 
     async fn mark_pending_op(
         &self,

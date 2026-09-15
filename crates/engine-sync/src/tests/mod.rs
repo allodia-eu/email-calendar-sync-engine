@@ -21,7 +21,7 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::{CalendarDateTime, LocalDateTime, TimeZoneId},
     version::{ETag, RevisionTokens},
-    write::{IdempotencyKey, PendingOp, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOutcome, ResourceKey},
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion,

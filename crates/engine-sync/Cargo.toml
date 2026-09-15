@@ -19,9 +19,13 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 # `StreamExt` to drive the provider's email chunk stream in the streaming loop.
 futures-util = { workspace = true }
+# `time` for the outbox driver's bounded wait on a resource another op holds in flight.
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-tokio = { workspace = true }
+# `test-util` for `pause()`, so the outbox wait's upper bound is asserted in virtual
+# time rather than by making the suite sit through it.
+tokio = { workspace = true, features = ["time", "test-util"] }
 store-sqlite = { workspace = true }
 # `try_stream!` to build the fake providers' chunk streams in the sync tests.
 async-stream = { workspace = true }

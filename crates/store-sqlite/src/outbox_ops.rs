@@ -14,7 +14,8 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
 };
 use engine_store::{
-    FenceToken, LeasedPendingOp, OpLease, PendingOpState, Result, StoreError, WorkerId,
+    ClaimRejection, FenceToken, LeasedPendingOp, OpLease, PendingOpClaim, PendingOpState, Result,
+    StoreError, WorkerId,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::Value;
@@ -136,6 +137,126 @@ pub(crate) fn claim(
     Ok(result)
 }
 
+/// Claims the one op `op_id` names, under the same runnable rules as [`claim`],
+/// reporting which condition refused it when it cannot be leased.
+///
+/// Reads only what the decision needs — the op, its dependencies, and the ops
+/// sharing its resource — rather than the account's whole outbox: an account
+/// accumulates settled ops forever (they are the idempotency record), and a write
+/// must not get slower for every write that came before it.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure.
+pub(crate) fn claim_one(
+    conn: &mut Connection,
+    account: &AccountId,
+    op_id: PendingOpId,
+    owner: &WorkerId,
+    now: UtcDateTime,
+    expiry: UtcDateTime,
+) -> Result<PendingOpClaim> {
+    let id = convert::op_id_to_i64(op_id)?;
+    let tx = conn.transaction().map_err(convert::backend)?;
+
+    let Some(op) = load_one_op(&tx, account.as_str(), id)? else {
+        return Ok(PendingOpClaim::Refused(ClaimRejection::Unknown));
+    };
+    // The batch claim's own predicate: a fresh op, or one whose lease died under it.
+    match op.state {
+        PendingOpState::Pending => {}
+        PendingOpState::InFlight if !convert::is_live(op.lease_expiry, now) => {}
+        PendingOpState::InFlight => {
+            return Ok(PendingOpClaim::Refused(ClaimRejection::Busy));
+        }
+        PendingOpState::Succeeded | PendingOpState::Failed | PendingOpState::NeedsConfirmation => {
+            return Ok(PendingOpClaim::Refused(ClaimRejection::Settled));
+        }
+    }
+    if !dependencies_met(&tx, account.as_str(), &op.depends_on)? {
+        return Ok(PendingOpClaim::Refused(ClaimRejection::DependencyUnmet));
+    }
+    if resource_held_elsewhere(&tx, account.as_str(), &op.resource_key, id, now)? {
+        return Ok(PendingOpClaim::Refused(ClaimRejection::Busy));
+    }
+
+    let token = FenceToken::from_generation(op.token).bump();
+    tx.execute(
+        "UPDATE pending_op SET token = ?1, state = 'InFlight', lease_expiry = ?2 WHERE id = ?3",
+        (
+            convert::generation_to_i64(token.get())?,
+            convert::instant_to_text(expiry),
+            id,
+        ),
+    )
+    .map_err(convert::backend)?;
+    let pending = op.to_pending_op()?;
+    tx.commit().map_err(convert::backend)?;
+
+    let lease = OpLease::new(account.clone(), op_id, token, owner.clone(), expiry);
+    Ok(PendingOpClaim::Leased(Box::new(LeasedPendingOp::new(
+        op_id, pending, lease,
+    ))))
+}
+
+/// Whether every op in `depends_on` has reached terminal success. Scoped to
+/// `account`, so a dependency naming another account's op reads as unmet rather than
+/// as satisfied by work this account never did.
+fn dependencies_met(
+    tx: &Transaction<'_>,
+    account: &str,
+    depends_on: &[PendingOpId],
+) -> Result<bool> {
+    for dep in depends_on {
+        let id = convert::op_id_to_i64(*dep)?;
+        let state: Option<String> = tx
+            .query_row(
+                "SELECT state FROM pending_op WHERE account = ?1 AND id = ?2",
+                (account, id),
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(convert::backend)?;
+        let met = match state {
+            Some(text) => convert::parse_state(&text)?.is_success(),
+            None => false,
+        };
+        if !met {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether a **different** op of this account holds `resource` under a live lease.
+fn resource_held_elsewhere(
+    tx: &Transaction<'_>,
+    account: &str,
+    resource: &str,
+    op_id: i64,
+    now: UtcDateTime,
+) -> Result<bool> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT lease_expiry FROM pending_op
+             WHERE account = ?1 AND resource_key = ?2 AND id != ?3 AND state = 'InFlight'",
+        )
+        .map_err(convert::backend)?;
+    let expiries = stmt
+        .query_map((account, resource, op_id), |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .map_err(convert::backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(convert::backend)?;
+    for expiry in expiries {
+        if convert::is_live(convert::parse_opt_instant(expiry)?, now) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Records a claimed op's outcome, gated by its lease token.
 ///
 /// # Errors
@@ -225,44 +346,71 @@ impl LoadedOp {
     }
 }
 
+/// The `SELECT` list every op load shares, in [`LoadedOp`]'s field order.
+const OP_COLUMNS: &str =
+    "id, idempotency_key, resource_key, depends_on, payload, state, token, lease_expiry";
+
+/// Loads one op by id, scoped to `account` so an id from another account reads as
+/// absent rather than as someone else's work.
+fn load_one_op(tx: &Transaction<'_>, account: &str, id: i64) -> Result<Option<LoadedOp>> {
+    let sql = format!("SELECT {OP_COLUMNS} FROM pending_op WHERE account = ?1 AND id = ?2");
+    let raw = tx
+        .query_row(&sql, (account, id), read_op_row)
+        .optional()
+        .map_err(convert::backend)?;
+    raw.map(parse_op_row).transpose()
+}
+
 /// Loads an account's ops in id order, parsing the stored envelope columns.
 fn load_account_ops(tx: &Transaction<'_>, account: &str) -> Result<Vec<LoadedOp>> {
-    let mut stmt = tx
-        .prepare(
-            "SELECT id, idempotency_key, resource_key, depends_on, payload, state, token, lease_expiry
-             FROM pending_op WHERE account = ?1 ORDER BY id",
-        )
-        .map_err(convert::backend)?;
+    let sql = format!("SELECT {OP_COLUMNS} FROM pending_op WHERE account = ?1 ORDER BY id");
+    let mut stmt = tx.prepare(&sql).map_err(convert::backend)?;
     let raws = stmt
-        .query_map([account], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, Option<String>>(7)?,
-            ))
-        })
+        .query_map([account], read_op_row)
         .map_err(convert::backend)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(convert::backend)?;
 
-    let mut ops = Vec::with_capacity(raws.len());
-    for (id, idempotency_key, resource_key, depends_on, payload, state, token, lease_expiry) in raws
-    {
-        ops.push(LoadedOp {
-            id,
-            idempotency_key,
-            resource_key,
-            depends_on: serde_json::from_str(&depends_on).map_err(convert::backend)?,
-            payload: serde_json::from_str(&payload).map_err(convert::backend)?,
-            state: convert::parse_state(&state)?,
-            token: convert::generation_from_i64(token)?,
-            lease_expiry: convert::parse_opt_instant(lease_expiry)?,
-        });
-    }
-    Ok(ops)
+    raws.into_iter().map(parse_op_row).collect()
+}
+
+/// One op row as stored, in [`OP_COLUMNS`] order.
+type OpRow = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+);
+
+/// Reads an op row's columns without interpreting them.
+fn read_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<OpRow> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+    ))
+}
+
+/// Parses a read row's envelope columns into a [`LoadedOp`].
+fn parse_op_row(raw: OpRow) -> Result<LoadedOp> {
+    let (id, idempotency_key, resource_key, depends_on, payload, state, token, lease_expiry) = raw;
+    Ok(LoadedOp {
+        id,
+        idempotency_key,
+        resource_key,
+        depends_on: serde_json::from_str(&depends_on).map_err(convert::backend)?,
+        payload: serde_json::from_str(&payload).map_err(convert::backend)?,
+        state: convert::parse_state(&state)?,
+        token: convert::generation_from_i64(token)?,
+        lease_expiry: convert::parse_opt_instant(lease_expiry)?,
+    })
 }
