@@ -8,10 +8,11 @@
 use core::time::Duration;
 
 use engine_core::{
+    error::FailureClass,
     search_index::{AddressField, MembershipKind, ParticipantField},
     sync::SyncScope,
     time::UtcDateTime,
-    write::PendingOpId,
+    write::{PendingOpId, PendingOpKind},
 };
 use engine_store::{PendingOpState, Result, StoreError};
 
@@ -98,6 +99,7 @@ pub(crate) fn state_to_text(state: PendingOpState) -> &'static str {
         PendingOpState::NeedsConfirmation => "NeedsConfirmation",
         PendingOpState::Succeeded => "Succeeded",
         PendingOpState::Failed => "Failed",
+        PendingOpState::Cancelled => "Cancelled",
     }
 }
 
@@ -113,12 +115,103 @@ pub(crate) fn parse_state(text: &str) -> Result<PendingOpState> {
         "NeedsConfirmation" => PendingOpState::NeedsConfirmation,
         "Succeeded" => PendingOpState::Succeeded,
         "Failed" => PendingOpState::Failed,
+        "Cancelled" => PendingOpState::Cancelled,
         other => {
             return Err(StoreError::Backend(format!(
                 "unknown pending-op state: {other}"
             )));
         }
     })
+}
+
+/// Encodes which write an op's payload describes.
+pub(crate) fn kind_to_text(kind: PendingOpKind) -> &'static str {
+    match kind {
+        PendingOpKind::MailSubmit => "MailSubmit",
+        PendingOpKind::MailEdit => "MailEdit",
+        PendingOpKind::MailReport => "MailReport",
+        PendingOpKind::CalendarCreate => "CalendarCreate",
+        PendingOpKind::CalendarPatch => "CalendarPatch",
+        PendingOpKind::CalendarDocument => "CalendarDocument",
+        PendingOpKind::CalendarRsvp => "CalendarRsvp",
+        PendingOpKind::CalendarDelete => "CalendarDelete",
+        PendingOpKind::ContactCreate => "ContactCreate",
+        PendingOpKind::ContactPatch => "ContactPatch",
+        PendingOpKind::ContactDelete => "ContactDelete",
+    }
+}
+
+/// Decodes a stored op kind.
+///
+/// `None` for a `NULL` column: a row enqueued before v14, whose kind was never
+/// recorded. That is a normal state, not corruption, so it is not an error.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on an unrecognized kind string (corruption).
+pub(crate) fn parse_kind(text: Option<&str>) -> Result<Option<PendingOpKind>> {
+    let Some(text) = text else { return Ok(None) };
+    Ok(Some(match text {
+        "MailSubmit" => PendingOpKind::MailSubmit,
+        "MailEdit" => PendingOpKind::MailEdit,
+        "MailReport" => PendingOpKind::MailReport,
+        "CalendarCreate" => PendingOpKind::CalendarCreate,
+        "CalendarPatch" => PendingOpKind::CalendarPatch,
+        "CalendarDocument" => PendingOpKind::CalendarDocument,
+        "CalendarRsvp" => PendingOpKind::CalendarRsvp,
+        "CalendarDelete" => PendingOpKind::CalendarDelete,
+        "ContactCreate" => PendingOpKind::ContactCreate,
+        "ContactPatch" => PendingOpKind::ContactPatch,
+        "ContactDelete" => PendingOpKind::ContactDelete,
+        other => {
+            return Err(StoreError::Backend(format!(
+                "unknown pending-op kind: {other}"
+            )));
+        }
+    }))
+}
+
+/// Encodes a failure classification for the `failure_class` column.
+///
+/// The column is read back only to tell a user *why* something is still queued; the
+/// retry decision is made from the live `FailureClass` before the row is written and
+/// never from this. So a class this build does not know (the enum is `non_exhaustive`)
+/// stores as `Unknown` and reads back as `None`, costing a label rather than a write.
+pub(crate) fn class_to_text(class: FailureClass) -> &'static str {
+    match class {
+        FailureClass::Retryable => "Retryable",
+        FailureClass::RateLimited => "RateLimited",
+        FailureClass::Authentication => "Authentication",
+        FailureClass::Conflict => "Conflict",
+        FailureClass::InvalidState => "InvalidState",
+        FailureClass::NeedsResync => "NeedsResync",
+        FailureClass::Permanent => "Permanent",
+        _ => "Unknown",
+    }
+}
+
+/// Decodes a stored failure classification; `None` for a row that has not failed.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on an unrecognized class string (corruption).
+pub(crate) fn parse_class(text: Option<&str>) -> Result<Option<FailureClass>> {
+    let Some(text) = text else { return Ok(None) };
+    Ok(Some(match text {
+        "Retryable" => FailureClass::Retryable,
+        "RateLimited" => FailureClass::RateLimited,
+        "Authentication" => FailureClass::Authentication,
+        "Conflict" => FailureClass::Conflict,
+        "InvalidState" => FailureClass::InvalidState,
+        "NeedsResync" => FailureClass::NeedsResync,
+        "Permanent" => FailureClass::Permanent,
+        "Unknown" => return Ok(None),
+        other => {
+            return Err(StoreError::Backend(format!(
+                "unknown failure class: {other}"
+            )));
+        }
+    }))
 }
 
 /// Narrows a fencing generation to the `i64` SQLite stores (generations are tiny;

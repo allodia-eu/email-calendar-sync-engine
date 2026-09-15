@@ -18,8 +18,8 @@ use engine_core::{
     time::CalendarDateTime,
     version::{ChangeKey, ETag, ModSeq, RevisionTokens, ScheduleTag},
     write::{
-        CreationId, IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey,
-        WriteKeyError,
+        CreationId, IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome,
+        ResourceKey, WriteKeyError,
     },
 };
 
@@ -134,9 +134,11 @@ fn failure_classes_classify() {
 fn pending_ops_and_outcomes() {
     let mut op = PendingOp::new(
         IdempotencyKey::new("idem-1").unwrap(),
+        PendingOpKind::CalendarRsvp,
         ResourceKey::new("event:uid-1").unwrap(),
         serde_json::json!({ "op": "rsvp", "status": "accepted" }),
     );
+    assert_eq!(op.kind, PendingOpKind::CalendarRsvp);
     op.depends_on.push(PendingOpId::new(3));
     assert_eq!(op.depends_on[0].get(), 3);
     assert_eq!(op.idempotency_key.as_str(), "idem-1");

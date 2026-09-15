@@ -13,7 +13,8 @@ use crate::{
     apply::{ApplyBatch, DerivedWrite, FtsField, FtsRow, PendingReconciliation},
     lease::ManualClock,
     outbox::PendingOpState,
-    store::{Store, StoreRead},
+    read::StoreRead,
+    store::Store,
 };
 
 /// A streaming page (`next_state == None`) applies its objects but **leaves the

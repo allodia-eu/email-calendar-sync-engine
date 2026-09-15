@@ -14,7 +14,8 @@ use super::super::{TestObject, acct, event_scope, lease_request, pk};
 use crate::{
     apply::{ApplyBatch, DerivedWrite, OccurrenceRow, TzdataVersion},
     lease::ManualClock,
-    store::{Store, StoreRead},
+    read::StoreRead,
+    store::Store,
 };
 
 fn at(raw: &str) -> UtcDateTime {

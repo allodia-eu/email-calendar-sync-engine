@@ -19,8 +19,8 @@ use crate::{
     apply::OccurrenceRow,
     error::Result,
     lease::Clock,
-    outbox::PendingOpState,
-    store::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead},
+    outbox::{PendingOpRow, PendingOpState},
+    read::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead},
 };
 
 #[async_trait]
@@ -170,6 +170,28 @@ impl<C: Clock> StoreRead for MemStore<C> {
 
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {
         Ok(self.lock().ops.get(&id).map(|o| o.state))
+    }
+
+    async fn list_pending_ops(&self, account: AccountId) -> Result<Vec<PendingOpRow>> {
+        let inner = self.lock();
+        // `ops` is a BTreeMap keyed by id, so this is already enqueue order.
+        Ok(inner
+            .ops
+            .iter()
+            .filter(|(_, cell)| cell.account == account && !cell.state.is_terminal())
+            .map(|(id, cell)| PendingOpRow {
+                id: *id,
+                kind: Some(cell.op.kind),
+                idempotency_key: cell.op.idempotency_key.clone(),
+                resource_key: cell.op.resource_key.clone(),
+                payload: cell.op.payload.clone(),
+                state: cell.state,
+                attempts: cell.attempts,
+                next_attempt_at: cell.next_attempt_at,
+                failure_class: cell.failure_class,
+                detail: cell.detail.clone(),
+            })
+            .collect())
     }
 
     async fn index_row_counts(

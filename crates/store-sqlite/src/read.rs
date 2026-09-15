@@ -1,7 +1,7 @@
 //! The [`StoreRead`] query path for [`SqliteStore`]: scope and object reads, the mail
 //! list, the calendar occurrence range read, op state, and index-row counts.
 //!
-//! Split from the writer/lease/outbox half in `lib.rs` (which is at the 500-line limit),
+//! Split from the writer/lease/outbox half in `write.rs`,
 //! mirroring how the in-memory reference store separates `mem/read.rs` from `mem/write.rs`.
 
 use async_trait::async_trait;
@@ -12,8 +12,8 @@ use engine_core::{
     write::PendingOpId,
 };
 use engine_store::{
-    Clock, IndexRowCounts, MailListRow, MailSelector, OccurrenceRow, PendingOpState, Result,
-    SchemaStatus, StoreRead,
+    Clock, IndexRowCounts, MailListRow, MailSelector, OccurrenceRow, PendingOpRow, PendingOpState,
+    Result, SchemaStatus, StoreRead,
 };
 use serde_json::Value;
 
@@ -87,6 +87,11 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
     ) -> Result<Vec<OccurrenceRow>> {
         let key = scope_key(scope);
         self.read(move |conn| derived_ops::scope_occurrences(conn, &key, window))
+            .await
+    }
+
+    async fn list_pending_ops(&self, account: AccountId) -> Result<Vec<PendingOpRow>> {
+        self.read(move |conn| outbox_ops::list_pending_ops(conn, &account))
             .await
     }
 

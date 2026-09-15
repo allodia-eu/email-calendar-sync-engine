@@ -8,7 +8,7 @@ use core::time::Duration;
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey},
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider, SentCopy};
 use engine_store::{Store, WorkerId};
@@ -70,7 +70,7 @@ where
         account,
         worker,
         ttl,
-        PendingOp::new(idempotency, resource, payload),
+        PendingOp::new(idempotency, PendingOpKind::MailSubmit, resource, payload),
     )
     .await?;
 
@@ -169,7 +169,7 @@ where
         account,
         worker,
         ttl,
-        PendingOp::new(idempotency_key, resource, payload),
+        PendingOp::new(idempotency_key, PendingOpKind::MailEdit, resource, payload),
     )
     .await?;
 
@@ -252,7 +252,12 @@ where
         account,
         worker,
         ttl,
-        PendingOp::new(idempotency_key, resource, payload),
+        PendingOp::new(
+            idempotency_key,
+            PendingOpKind::MailReport,
+            resource,
+            payload,
+        ),
     )
     .await?;
 

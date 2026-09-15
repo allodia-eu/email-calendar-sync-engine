@@ -5,7 +5,7 @@ use core::time::Duration;
 use engine_core::{
     contact::{ContactCard, ContactDraft, ContactPatch},
     ids::{AccountId, ContactId},
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{ContactWriteReceipt, ContactsProvider};
 use engine_store::{LeasedPendingOp, Store, WorkerId};
@@ -41,8 +41,17 @@ where
     S: Store,
 {
     let resource = format!("contact-create:{}", draft.address_book.as_str());
-    let leased =
-        enqueue_contact_op(store, account, worker, ttl, idempotency, &resource, draft).await?;
+    let leased = enqueue_contact_op(
+        store,
+        account,
+        worker,
+        ttl,
+        PendingOpKind::ContactCreate,
+        idempotency,
+        &resource,
+        draft,
+    )
+    .await?;
     resolve(store, leased, provider.create_contact(account, draft).await).await
 }
 
@@ -74,6 +83,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::ContactPatch,
         idempotency,
         &format!("contact:{}", base.id.as_str()),
         patch,
@@ -110,6 +120,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::ContactDelete,
         idempotency,
         &format!("contact:{}", base.id.as_str()),
         &base.id,
@@ -170,6 +181,7 @@ async fn enqueue_contact_op<S: Store, T: serde::Serialize>(
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
+    kind: PendingOpKind,
     idempotency: &str,
     resource: &str,
     request: &T,
@@ -185,7 +197,7 @@ async fn enqueue_contact_op<S: Store, T: serde::Serialize>(
         account,
         worker,
         ttl,
-        PendingOp::new(idempotency, resource, payload),
+        PendingOp::new(idempotency, kind, resource, payload),
     )
     .await
 }

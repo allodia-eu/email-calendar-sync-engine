@@ -17,7 +17,8 @@ use super::super::{TestObject, acct, email_scope, lease_request, pk};
 use crate::{
     apply::{ApplyBatch, DerivedWrite},
     lease::ManualClock,
-    store::{MailSelector, Store, StoreRead},
+    read::{MailSelector, StoreRead},
+    store::Store,
 };
 
 /// A message in `mailbox`, owning `owned` and referencing `references` — the IMAP shape, carrying

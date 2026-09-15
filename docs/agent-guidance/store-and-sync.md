@@ -709,6 +709,37 @@ one event never race on either provider.
   It can never fail the write: a write that landed but did not reconcile is still a write,
   reported as `Reconciled::{Busy, Failed}` rather than as an error.
 
+- **An op says which write it is.** `PendingOp::kind` is a `PendingOpKind`, one variant per
+  driver, stored in its own column. The payload is an *untagged* serialization of the
+  provider-layer request type, and nothing else in the row distinguishes the verbs: a mail
+  edit and a report both serialize on `mail:{key}`, every calendar verb on `event:{uid}`, and
+  the idempotency key is caller-minted for all but a submission. A drainer cannot dispatch
+  what it cannot identify.
+  ⚠️ **A row enqueued before v14 has no kind, and is never attempted.** The information was
+  never written, and guessing would replay a months-old archive or send against a mailbox
+  that has moved on. Such a row is listed by the queue read so a host can show it and cancel
+  it, and refused by both claims as `Unknown`.
+
+- **A retryable failure parks; it does not settle.** `mark_pending_op` reads the outcome's
+  `FailureClass`: one that `is_retryable` puts the op back in `Pending` with `attempts`
+  raised and `next_attempt_at` set from `engine_store::retry_delay` (the provider's own
+  `retry_after` when it sent one, else 30s doubling to a 30-minute cap), and it becomes
+  claimable again when that time passes. It settles as `Failed` only once `attempts` reaches
+  `MAX_ATTEMPTS`. Every other class settles at once: a conflict or an auth failure needs
+  recomputation or a human, and backing off changes neither. `Failed` therefore means *the
+  outbox gave up*, not *one attempt failed*, and a claim refused for a backoff answers
+  `ClaimRejection::Backoff` rather than `Settled`, because the caller must not conclude the
+  op is finished.
+
+- **The queue is readable, and withdrawable.** `StoreRead::list_pending_ops(account)` returns
+  every row that has not settled, in enqueue order, with its kind, payload, attempts, backoff
+  and last failure class. This is what makes the outbox a queue rather than a set of ids a
+  caller had to remember: `pending_op_state` answers about one op the caller already holds
+  the id of, which a host that has restarted does not. `Store::cancel_pending_op` settles a
+  queued op as `Cancelled` (a state of its own: a user deleting a queued message is not a
+  failure) and bumps its fence, refusing rather than erroring when the op is under a live
+  lease or awaiting confirmation, neither of which can be called back.
+
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the
   side effect's commit and the caller learning its id) returns the existing
@@ -737,7 +768,8 @@ one event never race on either provider.
   `PendingOpClaim::Refused(ClaimRejection::{Unknown, Settled, DependencyUnmet, Busy})`
   rather than an empty result, because the caller acts on the difference: `Busy` is a
   wait and nothing else is. Both stores answer with the batch claim's own predicate —
-  runnable means `Pending`, or `InFlight` whose lease died under it.
+  runnable means `Pending` **and due**, or `InFlight` whose lease died under it, and in
+  both stores a row with no kind is runnable in neither.
 - **Serializing on a resource means waiting, not refusing.** The store defers an op
   whose `resource_key` a live lease holds; the inline drivers wait that out
   (`engine_sync::outbox::RESOURCE_WAIT`, an upper bound on one provider round trip)
@@ -795,6 +827,12 @@ pub trait Store: Send + Sync {
         account: AccountId,
         op: PendingOp,
     ) -> Result<PendingOpId>; // idempotent by (account, op key); PendingOp carries no account
+    async fn list_pending_ops(&self, account: AccountId) -> Result<Vec<PendingOpRow>>;
+    async fn cancel_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+    ) -> Result<Option<CancelRejection>>;
     async fn claim_pending_ops(
         &self,
         account: AccountId,

@@ -14,6 +14,7 @@ use std::{
 
 use engine_core::{
     calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
+    error::FailureClass,
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
     mail::{EmailAddress, MailStateChange, Mailbox, MailboxRole, Message},
     membership::Memberships,
@@ -21,7 +22,7 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::{CalendarDateTime, LocalDateTime, TimeZoneId},
     version::{ETag, RevisionTokens},
-    write::{IdempotencyKey, PendingOp, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion,
@@ -57,8 +58,10 @@ mod submit;
 /// provider carrying a flag per path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Fault {
-    /// The send fails outright.
+    /// The send is throttled: retryable, so the op stays queued.
     Submit,
+    /// The send is refused for good (a rejected recipient), so the op settles.
+    PermanentSubmit,
     /// The send is lost *after* `DATA` — the ambiguous, unretryable case.
     AmbiguousSubmit,
     /// Every write's revision guard is refused (a CalDAV `412`, a JMAP `stateMismatch`).
@@ -231,6 +234,8 @@ impl Provider for FakeMail {
             Err(ProviderError::needs_confirmation(
                 "post-DATA acknowledgement lost",
             ))
+        } else if self.fails(Fault::PermanentSubmit) {
+            Err(ProviderError::permanent("recipient rejected"))
         } else if self.fails(Fault::Submit) {
             Err(ProviderError::rate_limited("slow down", None))
         } else {

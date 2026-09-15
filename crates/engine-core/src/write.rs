@@ -108,6 +108,42 @@ impl PendingOpId {
     }
 }
 
+/// Which write an op's `payload` describes.
+///
+/// The payload itself is an untagged serialization of a provider-layer request type, and
+/// this contract sits below that layer, so the envelope carries the discriminator instead.
+/// Without it a stored row cannot be dispatched: `resource_key` collides across verbs (a
+/// mail edit and a report both serialize on `mail:{key}`, and every calendar verb on
+/// `event:{uid}`) and the idempotency key is caller-minted for all but a submission.
+///
+/// One variant per outbox driver. A row written before the store recorded a kind has
+/// none, which is why the store reads it back as `Option`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PendingOpKind {
+    /// Submitting a message for delivery.
+    MailSubmit,
+    /// Mutating a stored message: keywords, a move, or a permanent delete.
+    MailEdit,
+    /// Reporting a message as junk, not junk, or phishing.
+    MailReport,
+    /// Creating an event.
+    CalendarCreate,
+    /// Applying an edit to a stored event.
+    CalendarPatch,
+    /// Replacing an event's whole document.
+    CalendarDocument,
+    /// Answering an invitation.
+    CalendarRsvp,
+    /// Deleting an event.
+    CalendarDelete,
+    /// Creating a contact card.
+    ContactCreate,
+    /// Applying an edit to a stored contact card.
+    ContactPatch,
+    /// Deleting a contact card.
+    ContactDelete,
+}
+
 /// A durable pending write operation.
 ///
 /// The `payload` shape (create draft, set keywords, move, submit, RSVP, …) is
@@ -117,6 +153,8 @@ impl PendingOpId {
 pub struct PendingOp {
     /// Makes enqueuing idempotent.
     pub idempotency_key: IdempotencyKey,
+    /// Which write [`payload`](Self::payload) describes, so a drainer can dispatch it.
+    pub kind: PendingOpKind,
     /// Earlier ops that must reach terminal success before this one runs.
     pub depends_on: Vec<PendingOpId>,
     /// The resource this op serializes on.
@@ -128,9 +166,15 @@ pub struct PendingOp {
 impl PendingOp {
     /// Creates a pending op with no dependencies.
     #[must_use]
-    pub fn new(idempotency_key: IdempotencyKey, resource_key: ResourceKey, payload: Value) -> Self {
+    pub fn new(
+        idempotency_key: IdempotencyKey,
+        kind: PendingOpKind,
+        resource_key: ResourceKey,
+        payload: Value,
+    ) -> Self {
         Self {
             idempotency_key,
+            kind,
             depends_on: Vec::new(),
             resource_key,
             payload,
@@ -182,6 +226,7 @@ mod tests {
     fn pending_op_defaults_to_no_dependencies() {
         let op = PendingOp::new(
             IdempotencyKey::new("idem-1").unwrap(),
+            PendingOpKind::MailEdit,
             ResourceKey::new("message:m1").unwrap(),
             json!({ "op": "setKeywords", "add": ["$seen"] }),
         );
@@ -195,11 +240,36 @@ mod tests {
         let create = PendingOpId::new(1);
         let mut edit = PendingOp::new(
             IdempotencyKey::new("idem-2").unwrap(),
+            PendingOpKind::MailSubmit,
             ResourceKey::new("draft:#local-1").unwrap(),
             json!({ "op": "update" }),
         );
         edit.depends_on.push(create);
         assert_eq!(edit.depends_on, vec![create]);
+    }
+
+    #[test]
+    fn a_kind_names_the_driver_that_wrote_the_payload() {
+        // The payload is untagged, so the kind is the only thing that says which
+        // request type to deserialize it as. It must survive the store round trip.
+        for kind in [
+            PendingOpKind::MailSubmit,
+            PendingOpKind::MailEdit,
+            PendingOpKind::MailReport,
+            PendingOpKind::CalendarCreate,
+            PendingOpKind::CalendarPatch,
+            PendingOpKind::CalendarDocument,
+            PendingOpKind::CalendarRsvp,
+            PendingOpKind::CalendarDelete,
+            PendingOpKind::ContactCreate,
+            PendingOpKind::ContactPatch,
+            PendingOpKind::ContactDelete,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(serde_json::from_str::<PendingOpKind>(&json).unwrap(), kind);
+        }
+        // Two verbs that share a resource key are still told apart by the kind.
+        assert_ne!(PendingOpKind::MailEdit, PendingOpKind::MailReport);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
     sync::{ObjectKind, SyncObject, SyncScope, SyncState, SyncUpdate},
-    time::ExpansionWindow,
+    time::{ExpansionWindow, UtcDateTime},
     write::{PendingOp, PendingOpId, PendingOutcome, ResourceKey},
 };
 use serde::Serialize;
@@ -19,9 +19,32 @@ use crate::{
     apply::{ApplyBatch, DerivedWrite, SyncApplied},
     error::{Result, StoreError},
     lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease},
-    outbox::{ClaimRejection, LeasedPendingOp, PendingOpClaim, PendingOpState},
+    outbox::{
+        CancelRejection, ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, PendingOpClaim,
+        PendingOpState, retry_delay,
+    },
     store::Store,
 };
+
+/// Whether a parked retry's backoff has elapsed. An op with no `next_attempt_at`
+/// has never failed and is due immediately.
+fn is_due(next_attempt_at: Option<UtcDateTime>, now: UtcDateTime) -> bool {
+    next_attempt_at.is_none_or(|due| due <= now)
+}
+
+/// Whether an op may be leased now: fresh and due, or one whose lease died under it.
+/// A kind-less row (enqueued before the store recorded one) is never runnable, since
+/// nothing says which request type its payload is.
+fn is_runnable(cell: &OpCell, now: UtcDateTime) -> bool {
+    match cell.state {
+        PendingOpState::Pending => is_due(cell.next_attempt_at, now),
+        PendingOpState::InFlight => !is_live(cell.lease_expiry, now),
+        PendingOpState::Succeeded
+        | PendingOpState::Failed
+        | PendingOpState::Cancelled
+        | PendingOpState::NeedsConfirmation => false,
+    }
+}
 
 #[async_trait]
 impl<C: Clock> Store for MemStore<C> {
@@ -236,6 +259,10 @@ impl<C: Clock> Store for MemStore<C> {
                 state: PendingOpState::Pending,
                 token: FenceToken::initial(),
                 lease_expiry: None,
+                attempts: 0,
+                next_attempt_at: None,
+                failure_class: None,
+                detail: None,
             },
         );
         inner.idempotency.insert(idem, id);
@@ -278,10 +305,7 @@ impl<C: Clock> Store for MemStore<C> {
                 if o.account != account {
                     continue;
                 }
-                let claimable = matches!(o.state, PendingOpState::Pending)
-                    || (matches!(o.state, PendingOpState::InFlight)
-                        && !is_live(o.lease_expiry, now));
-                if !claimable {
+                if !is_runnable(o, now) {
                     continue;
                 }
                 let deps_ok =
@@ -323,13 +347,18 @@ impl<C: Clock> Store for MemStore<C> {
         };
         // The batch claim's own predicate: a fresh op, or one whose lease died under it.
         match cell.state {
-            PendingOpState::Pending => {}
+            PendingOpState::Pending if is_due(cell.next_attempt_at, now) => {}
+            // Parked on a backoff after a retryable failure: it will run, just not yet.
+            PendingOpState::Pending => {
+                return Ok(PendingOpClaim::Refused(ClaimRejection::Backoff));
+            }
             PendingOpState::InFlight if !is_live(cell.lease_expiry, now) => {}
             PendingOpState::InFlight => {
                 return Ok(PendingOpClaim::Refused(ClaimRejection::Busy));
             }
             PendingOpState::Succeeded
             | PendingOpState::Failed
+            | PendingOpState::Cancelled
             | PendingOpState::NeedsConfirmation => {
                 return Ok(PendingOpClaim::Refused(ClaimRejection::Settled));
             }
@@ -368,6 +397,7 @@ impl<C: Clock> Store for MemStore<C> {
     }
 
     async fn mark_pending_op(&self, lease: &OpLease, outcome: PendingOutcome) -> Result<()> {
+        let now = self.clock.now();
         let mut inner = self.lock();
         let op = inner
             .ops
@@ -377,13 +407,63 @@ impl<C: Clock> Store for MemStore<C> {
             return Err(StoreError::StaleLease);
         }
         op.lease_expiry = None;
+        op.attempts = op.attempts.saturating_add(1);
         match outcome {
-            PendingOutcome::Succeeded { .. } => op.state = PendingOpState::Succeeded,
-            PendingOutcome::Failed { .. } => op.state = PendingOpState::Failed,
-            PendingOutcome::NeedsConfirmation { .. } => {
+            PendingOutcome::Succeeded { .. } => {
+                op.state = PendingOpState::Succeeded;
+                op.next_attempt_at = None;
+                op.failure_class = None;
+                op.detail = None;
+            }
+            PendingOutcome::Failed { class, retry_after } => {
+                op.failure_class = Some(class);
+                op.detail = None;
+                // A class that a plain retry cannot fix settles now; so does one that
+                // has used up its attempts. Everything else parks and comes back.
+                if class.is_retryable() && op.attempts < MAX_ATTEMPTS {
+                    op.state = PendingOpState::Pending;
+                    op.next_attempt_at = now.checked_add(retry_delay(op.attempts, retry_after));
+                } else {
+                    op.state = PendingOpState::Failed;
+                    op.next_attempt_at = None;
+                }
+            }
+            PendingOutcome::NeedsConfirmation { detail } => {
                 op.state = PendingOpState::NeedsConfirmation;
+                op.next_attempt_at = None;
+                op.detail = Some(detail);
             }
         }
         Ok(())
+    }
+
+    async fn cancel_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+    ) -> Result<Option<CancelRejection>> {
+        let now = self.clock.now();
+        let mut inner = self.lock();
+        let Some(cell) = inner.ops.get_mut(&op).filter(|o| o.account == account) else {
+            return Ok(Some(CancelRejection::Unknown));
+        };
+        match cell.state {
+            // A dead lease is nobody's side effect: the worker that held it is gone.
+            PendingOpState::Pending => {}
+            PendingOpState::InFlight if !is_live(cell.lease_expiry, now) => {}
+            PendingOpState::InFlight => return Ok(Some(CancelRejection::InFlight)),
+            PendingOpState::NeedsConfirmation => {
+                return Ok(Some(CancelRejection::AwaitingConfirmation));
+            }
+            PendingOpState::Succeeded | PendingOpState::Failed | PendingOpState::Cancelled => {
+                return Ok(Some(CancelRejection::Settled));
+            }
+        }
+        // Bump the token so a worker still holding the old lease cannot resolve it.
+        cell.token = cell.token.bump();
+        cell.state = PendingOpState::Cancelled;
+        cell.lease_expiry = None;
+        cell.next_attempt_at = None;
+        Ok(None)
     }
 }

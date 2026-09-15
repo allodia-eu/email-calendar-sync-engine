@@ -142,6 +142,7 @@ async fn a_failed_guard_is_recorded_without_a_blind_retry() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("patch:evt-3:rev1").unwrap(),
+                PendingOpKind::CalendarPatch,
                 ResourceKey::new("event:evt-3@test.local").unwrap(),
                 serde_json::Value::Null,
             ),
@@ -210,6 +211,7 @@ async fn a_failed_delete_is_recorded_too_not_just_a_failed_edit() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("delete:evt-8").unwrap(),
+                PendingOpKind::CalendarPatch,
                 ResourceKey::new("event:evt-8@test.local").unwrap(),
                 serde_json::Value::Null,
             ),

@@ -10,7 +10,7 @@ use engine_core::{
     calendar::Event,
     ids::{AccountId, EventId, Uid},
     version::RevisionTokens,
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{
     EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
@@ -68,8 +68,17 @@ where
     P: Provider,
     S: Store,
 {
-    let leased =
-        enqueue_calendar_op(store, account, worker, ttl, idempotency, &draft.uid, draft).await?;
+    let leased = enqueue_calendar_op(
+        store,
+        account,
+        worker,
+        ttl,
+        PendingOpKind::CalendarCreate,
+        idempotency,
+        &draft.uid,
+        draft,
+    )
+    .await?;
     resolve(store, leased, provider.create_event(account, draft).await).await
 }
 
@@ -111,8 +120,17 @@ where
     S: Store,
 {
     let edit = EventEdit::new(base, target, patch);
-    let leased =
-        enqueue_calendar_op(store, account, worker, ttl, idempotency, &edit.uid, &edit).await?;
+    let leased = enqueue_calendar_op(
+        store,
+        account,
+        worker,
+        ttl,
+        PendingOpKind::CalendarPatch,
+        idempotency,
+        &edit.uid,
+        &edit,
+    )
+    .await?;
     resolve(
         store,
         leased,
@@ -146,8 +164,17 @@ where
     P: Provider,
     S: Store,
 {
-    let leased =
-        enqueue_calendar_op(store, account, worker, ttl, idempotency, &write.uid, write).await?;
+    let leased = enqueue_calendar_op(
+        store,
+        account,
+        worker,
+        ttl,
+        PendingOpKind::CalendarDocument,
+        idempotency,
+        &write.uid,
+        write,
+    )
+    .await?;
     resolve(store, leased, provider.put_event(account, write).await).await
 }
 
@@ -194,8 +221,17 @@ where
     P: Provider,
     S: Store,
 {
-    let leased =
-        enqueue_calendar_op(store, account, worker, ttl, idempotency, &rsvp.uid, rsvp).await?;
+    let leased = enqueue_calendar_op(
+        store,
+        account,
+        worker,
+        ttl,
+        PendingOpKind::CalendarRsvp,
+        idempotency,
+        &rsvp.uid,
+        rsvp,
+    )
+    .await?;
     resolve(
         store,
         leased,
@@ -246,6 +282,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::CalendarDelete,
         idempotency,
         &deletion.uid,
         deletion,
@@ -311,11 +348,16 @@ async fn resolve<S: Store>(
 /// provider id, because the `UID` is the one identity that exists *before* a create has an
 /// id and survives a transport that assigns its own — so a create and a follow-up edit of
 /// the same event serialize against each other on either provider.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the outbox's lease parameters plus the op's identity, kind and request"
+)]
 async fn enqueue_calendar_op<S: Store, T: serde::Serialize>(
     store: &S,
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
+    kind: PendingOpKind,
     idempotency: &str,
     uid: &Uid,
     request: &T,
@@ -331,7 +373,7 @@ async fn enqueue_calendar_op<S: Store, T: serde::Serialize>(
         account,
         worker,
         ttl,
-        PendingOp::new(idempotency_key, resource, payload),
+        PendingOp::new(idempotency_key, kind, resource, payload),
     )
     .await
 }

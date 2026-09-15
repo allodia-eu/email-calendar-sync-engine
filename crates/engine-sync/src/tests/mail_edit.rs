@@ -66,6 +66,7 @@ async fn edit_mail_records_conflict_without_blind_retry() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("edit:u42:delete").unwrap(),
+                PendingOpKind::MailEdit,
                 ResourceKey::new("mail:imap:v1:u42@INBOX").unwrap(),
                 serde_json::Value::Null,
             ),
@@ -153,6 +154,7 @@ async fn an_edit_applies_behind_a_backlog_of_unresolved_ops() {
                 account(),
                 PendingOp::new(
                     IdempotencyKey::new(format!("stuck:{i}")).unwrap(),
+                    PendingOpKind::MailEdit,
                     ResourceKey::new(format!("mail:imap:v1:u{i}@INBOX")).unwrap(),
                     serde_json::Value::Null,
                 ),
@@ -197,6 +199,7 @@ async fn a_second_edit_of_one_message_waits_for_the_first() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("edit:u42:seen:on").unwrap(),
+                PendingOpKind::MailEdit,
                 ResourceKey::new(format!("mail:{}", target().as_str())).unwrap(),
                 serde_json::Value::Null,
             ),
@@ -263,6 +266,7 @@ async fn a_resource_nothing_releases_fails_the_write_after_the_bound() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("edit:u42:seen:on").unwrap(),
+                PendingOpKind::MailEdit,
                 ResourceKey::new(format!("mail:{}", target().as_str())).unwrap(),
                 serde_json::Value::Null,
             ),
@@ -303,6 +307,7 @@ async fn a_resource_nothing_releases_fails_the_write_after_the_bound() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("edit:u42:archive").unwrap(),
+                PendingOpKind::MailEdit,
                 ResourceKey::new(format!("mail:{}", target().as_str())).unwrap(),
                 serde_json::Value::Null,
             ),

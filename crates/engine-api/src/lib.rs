@@ -46,7 +46,7 @@ mod scheduling;
 
 pub use engine::{
     CalendarDelete, CalendarWrite, ContactDelete, ContactReconciled, ContactWrite, Engine,
-    PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled,
+    PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled, queued_draft,
 };
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
@@ -112,7 +112,7 @@ pub use engine_core::{
         CalendarDate, CalendarDateTime, Duration, LocalDateTime, TimeZoneId, UtcDateTime,
         resolve_zone_name,
     },
-    write::PendingOpId,
+    write::{PendingOpId, PendingOpKind},
 };
 pub use engine_core::{mail::MailFlags, search_index::MailRow};
 /// How every HTTP provider answers a throttled reply, and how a host hears about it.
@@ -138,8 +138,8 @@ pub use engine_recurrence::{
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
 pub use engine_store::{
-    ContactPhotoFile, MailListRow, OccurrenceRow, PendingOpState, PruneReport, SchemaStatus,
-    SourcesDropped, SweepReport, SyncApplied, TzdataVersion,
+    CancelRejection, ContactPhotoFile, MailListRow, OccurrenceRow, PendingOpRow, PendingOpState,
+    PruneReport, SchemaStatus, SourcesDropped, SweepReport, SyncApplied, TzdataVersion,
 };
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
