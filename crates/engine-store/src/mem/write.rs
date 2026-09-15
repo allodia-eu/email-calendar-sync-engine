@@ -348,6 +348,7 @@ impl<C: Clock> Store for MemStore<C> {
             *id != op
                 && o.account == account
                 && o.op.resource_key == resource
+                && o.state == PendingOpState::InFlight
                 && is_live(o.lease_expiry, now)
         });
         if held {

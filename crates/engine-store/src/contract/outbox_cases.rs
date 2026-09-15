@@ -262,14 +262,17 @@ pub(super) async fn a_targeted_claim_reaches_an_op_behind_a_backlog<S: Store + S
     _clock: &ManualClock,
 ) {
     let account = acct("acct-targeted");
+    let mut older = Vec::new();
     for i in 0..40 {
-        store
-            .enqueue_pending_op(
-                account.clone(),
-                pending_op(&format!("older-{i}"), &format!("res-{i}")),
-            )
-            .await
-            .unwrap();
+        older.push(
+            store
+                .enqueue_pending_op(
+                    account.clone(),
+                    pending_op(&format!("older-{i}"), &format!("res-{i}")),
+                )
+                .await
+                .unwrap(),
+        );
     }
     let mine = store
         .enqueue_pending_op(account.clone(), pending_op("mine", "res-mine"))
@@ -291,7 +294,7 @@ pub(super) async fn a_targeted_claim_reaches_an_op_behind_a_backlog<S: Store + S
 
     // It leases that op alone: the backlog is untouched, so nothing is leased to a
     // worker that will never resolve it.
-    for id in [PendingOpId::new(1), PendingOpId::new(20)] {
+    for id in [older[0], older[19]] {
         assert_eq!(
             store.pending_op_state(id).await.unwrap(),
             Some(PendingOpState::Pending)
@@ -405,7 +408,8 @@ pub(super) async fn a_targeted_claim_names_why_it_refused<S: Store + StoreRead>(
 ///
 /// The first is how an account with a backlog of abandoned in-flight ops recovers
 /// without surgery: those ops still read `InFlight`, but their leases expired, so they
-/// serialize against nothing and a new write to the same resource runs.
+/// serialize against nothing, a new write to the same resource runs, and the abandoned
+/// op itself is claimable again under a fresh token.
 pub(super) async fn a_dead_lease_holds_no_resource<S: Store + StoreRead>(
     store: &S,
     clock: &ManualClock,
@@ -419,6 +423,10 @@ pub(super) async fn a_dead_lease_holds_no_resource<S: Store + StoreRead>(
         .enqueue_pending_op(account.clone(), pending_op("later", "res-shared"))
         .await
         .unwrap();
+    let solo = store
+        .enqueue_pending_op(account.clone(), pending_op("solo", "res-solo"))
+        .await
+        .unwrap();
 
     // Claimed and never resolved: the shape a driver leaves behind when it dies
     // mid-write.
@@ -427,6 +435,13 @@ pub(super) async fn a_dead_lease_holds_no_resource<S: Store + StoreRead>(
         .await
         .unwrap();
     assert!(matches!(claim, PendingOpClaim::Leased(_)));
+    let dead = store
+        .claim_pending_op(account.clone(), solo, lease_request("gone", 30))
+        .await
+        .unwrap();
+    let PendingOpClaim::Leased(dead) = dead else {
+        panic!("the solo op must lease")
+    };
     assert_eq!(
         store
             .claim_pending_op(account.clone(), later, lease_request("w", 30))
@@ -452,6 +467,17 @@ pub(super) async fn a_dead_lease_holds_no_resource<S: Store + StoreRead>(
         store.pending_op_state(abandoned).await.unwrap(),
         Some(PendingOpState::InFlight)
     );
+    // And such an op is claimable again itself, under a token that fences out the
+    // driver that walked away with the old one. This is what unwedges an account:
+    // nothing has to notice the abandoned op, the next attempt simply takes it.
+    let retaken = store
+        .claim_pending_op(account.clone(), solo, lease_request("w2", 30))
+        .await
+        .unwrap();
+    let PendingOpClaim::Leased(retaken) = retaken else {
+        panic!("an op whose own lease died must be re-claimable, got {retaken:?}")
+    };
+    assert_ne!(retaken.lease.token(), dead.lease.token());
 
     // A dependency naming an op this account's outbox does not hold is unmet, not met
     // by default.

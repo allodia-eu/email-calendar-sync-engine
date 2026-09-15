@@ -140,10 +140,12 @@ pub(crate) fn claim(
 /// Claims the one op `op_id` names, under the same runnable rules as [`claim`],
 /// reporting which condition refused it when it cannot be leased.
 ///
-/// Reads only what the decision needs — the op, its dependencies, and the ops
-/// sharing its resource — rather than the account's whole outbox: an account
-/// accumulates settled ops forever (they are the idempotency record), and a write
-/// must not get slower for every write that came before it.
+/// Reads only what the decision needs — the op, its dependencies, and the live
+/// in-flight ops sharing its resource — rather than the account's whole outbox: an
+/// account accumulates settled ops forever (they are the idempotency record), and a
+/// write must not get slower for every write that came before it. Each read rides a
+/// covering index (`pending_op`'s primary key, and `pending_op_held_resource` for the
+/// resource probe); a query here that falls back to `account = ?` scans them all.
 ///
 /// # Errors
 ///

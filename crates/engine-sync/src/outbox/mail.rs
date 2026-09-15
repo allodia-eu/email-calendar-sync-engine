@@ -131,11 +131,12 @@ pub struct MailEditOutcome {
 /// every op state, so a key derived only from the target would wrongly collapse two
 /// distinct edits of one message — e.g. mark-read then mark-unread — into one op).
 /// The op's `resource_key` is the target message key, so the store serializes edits
-/// to one message (a second edit whose target is already in flight is *deferred*; the
-/// thin inline driver assumes low outbox contention — the background worker is the
-/// right driver under contention). A provider failure is recorded `Failed` (with its
-/// class) and returned — never blindly retried here. Unlike an SMTP send there is no
-/// `NeedsConfirmation` case: `UID STORE`/`MOVE`/`EXPUNGE` are not post-`DATA`-ambiguous
+/// to one message: a second edit whose target is already in flight waits for the first
+/// (up to the driver's resource bound) rather than being refused, because opening a
+/// message and archiving it puts the second write inside the first's round trip. A
+/// provider failure is recorded `Failed` (with its class) and returned — never blindly
+/// retried here. Unlike an SMTP send there is no `NeedsConfirmation` case:
+/// `UID STORE`/`MOVE`/`EXPUNGE` are not post-`DATA`-ambiguous
 /// (a periodic snapshot reconciles the true state), and a stale-target `Conflict` is
 /// self-correcting after a re-sync (`imap-smtp.md`).
 ///

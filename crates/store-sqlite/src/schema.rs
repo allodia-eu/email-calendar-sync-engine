@@ -416,6 +416,22 @@ ALTER TABLE message ADD COLUMN size_octets INTEGER;
 ALTER TABLE message_source ADD COLUMN size_octets INTEGER;
 ";
 
+/// Migration v13: find the op holding a resource without reading the account's outbox.
+///
+/// The targeted claim asks whether a **live in-flight** op already holds the resource it
+/// wants. Without this, the only usable index is `UNIQUE (account, idempotency_key)`, whose
+/// `account = ?` prefix visits every op the account ever enqueued, and nothing prunes
+/// `pending_op`: it is the idempotency record, so it grows by one row per write forever.
+/// That scan sits on the path of every mail write, and is repeated once per poll while a
+/// write waits its turn.
+///
+/// Partial, because only `InFlight` rows can answer the question, and they are the few.
+pub(crate) const V13: &str = "\
+CREATE INDEX pending_op_held_resource
+    ON pending_op (account, resource_key)
+    WHERE state = 'InFlight';
+";
+
 mod mail;
 
 pub(crate) use mail::{V8, V9, V10};

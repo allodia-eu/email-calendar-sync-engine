@@ -38,6 +38,8 @@ use engine_store::{
 pub use mail::{
     MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
 };
+// Tokio's own `Instant`, so the wait's bound holds under a paused test clock too.
+use tokio::time::Instant;
 
 use crate::SyncError;
 
@@ -47,11 +49,14 @@ use crate::SyncError;
 /// rather than give up: a host marks a message read on open and archives it a moment
 /// later, and the archive arrives inside the mark-read's round trip. The bound is an
 /// upper limit on one provider round trip, not an expected wait — the common case
-/// clears in one poll. Past it the op stays durably enqueued for the drainer, and the
-/// caller is told which condition refused it.
+/// clears in one poll. It is measured as **elapsed** time rather than as a count of
+/// polls, because each poll also costs a store round trip: on a device where a sync is
+/// committing, that round trip waits on the writer and dwarfs [`RESOURCE_POLL`], so
+/// counting polls would hold the caller for a multiple of this bound. Past it the op
+/// stays durably enqueued and the caller is told which condition refused it.
 const RESOURCE_WAIT: Duration = Duration::from_secs(10);
 
-/// How often the wait re-asks the store. One small indexed read per poll.
+/// How often the wait re-asks the store: one targeted claim per poll.
 const RESOURCE_POLL: Duration = Duration::from_millis(25);
 
 /// Durably records `op` (idempotent by its key) and claims it under a fenced lease,
@@ -63,8 +68,8 @@ const RESOURCE_POLL: Duration = Duration::from_millis(25);
 /// that op **by id**, so it leases nothing it will not resolve and nothing older can
 /// starve it; a resource another op holds in flight is waited out up to
 /// [`RESOURCE_WAIT`]. It is still not the background outbox worker: it runs only at the
-/// moment of the enqueue, so an op it could not claim waits for the orchestrator's
-/// drainer rather than being retried here.
+/// moment of the enqueue, so an op it could not claim stays enqueued and unresolved,
+/// and nothing retries it until a drainer exists.
 async fn enqueue_and_claim<S: Store>(
     store: &S,
     account: &AccountId,
@@ -73,14 +78,13 @@ async fn enqueue_and_claim<S: Store>(
     op: PendingOp,
 ) -> Result<LeasedPendingOp, SyncError> {
     let op_id = store.enqueue_pending_op(account.clone(), op).await?;
-    let mut waited = Duration::ZERO;
+    let deadline = Instant::now() + RESOURCE_WAIT;
     loop {
         let req = LeaseRequest::new(worker.clone(), ttl);
         match store.claim_pending_op(account.clone(), op_id, req).await? {
             PendingOpClaim::Leased(leased) => return Ok(*leased),
-            PendingOpClaim::Refused(ClaimRejection::Busy) if waited < RESOURCE_WAIT => {
+            PendingOpClaim::Refused(ClaimRejection::Busy) if Instant::now() < deadline => {
                 tokio::time::sleep(RESOURCE_POLL).await;
-                waited += RESOURCE_POLL;
             }
             PendingOpClaim::Refused(reason) => {
                 return Err(SyncError::Outbox(format!(
