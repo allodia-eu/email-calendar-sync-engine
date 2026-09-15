@@ -181,6 +181,12 @@ where
     outbox_cases::unknown_op_is_rejected_and_stateless(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::claim_respects_limit(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_targeted_claim_reaches_an_op_behind_a_backlog(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_targeted_claim_names_why_it_refused(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_dead_lease_holds_no_resource(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.

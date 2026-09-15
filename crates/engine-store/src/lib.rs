@@ -34,7 +34,7 @@ pub use error::{Result, StoreError};
 pub use lease::{
     Clock, FenceToken, LeaseRequest, ManualClock, OpLease, SyncClaim, SyncLease, WorkerId,
 };
-pub use outbox::{LeasedPendingOp, PendingOpState};
+pub use outbox::{ClaimRejection, LeasedPendingOp, PendingOpClaim, PendingOpState};
 pub use source::{MessageBodyStore, MessageSourceCache, SourcesDropped};
 pub use store::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, Store, StoreRead};
 

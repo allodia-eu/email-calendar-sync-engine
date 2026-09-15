@@ -70,6 +70,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::filled(schema::V10, backfill::msgid_refs),
     Migration::sql(schema::V11),
     Migration::sql(schema::V12),
+    Migration::sql(schema::V13),
 ];
 
 /// Brings `conn` up to the latest schema version.

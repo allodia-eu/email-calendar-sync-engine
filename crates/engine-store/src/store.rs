@@ -28,7 +28,7 @@ use crate::{
     apply::{ApplyBatch, DerivedWrite, OccurrenceRow, SyncApplied},
     error::Result,
     lease::{LeaseRequest, OpLease, SyncClaim, SyncLease},
-    outbox::{LeasedPendingOp, PendingOpState},
+    outbox::{LeasedPendingOp, PendingOpClaim, PendingOpState},
 };
 
 /// The store writer, lease, and outbox contract.
@@ -158,6 +158,27 @@ pub trait Store: Send + Sync {
         req: LeaseRequest,
         limit: usize,
     ) -> Result<Vec<LeasedPendingOp>>;
+
+    /// Claims the **one** op `op` names, under the same runnable rules as
+    /// [`claim_pending_ops`](Store::claim_pending_ops), returning why it refused when
+    /// it cannot.
+    ///
+    /// The batch claim is ordered and bounded, which makes it the wrong primitive for
+    /// resolving a *particular* op: once an account's runnable set exceeds the batch
+    /// size, no batch reaches the tail, and an inline driver's own op is always at the
+    /// tail. Leasing exactly the op named also leases nothing a caller will not
+    /// resolve.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure. A refusal is not an error:
+    /// it is [`PendingOpClaim::Refused`].
+    async fn claim_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+        req: LeaseRequest,
+    ) -> Result<PendingOpClaim>;
 
     /// Records the outcome of a claimed op, gated by its [`OpLease`] token.
     ///

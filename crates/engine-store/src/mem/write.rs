@@ -19,7 +19,7 @@ use crate::{
     apply::{ApplyBatch, DerivedWrite, SyncApplied},
     error::{Result, StoreError},
     lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease},
-    outbox::{LeasedPendingOp, PendingOpState},
+    outbox::{ClaimRejection, LeasedPendingOp, PendingOpClaim, PendingOpState},
     store::Store,
 };
 
@@ -304,6 +304,67 @@ impl<C: Clock> Store for MemStore<C> {
             result.push(LeasedPendingOp::new(id, o.op.clone(), lease));
         }
         Ok(result)
+    }
+
+    async fn claim_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+        req: LeaseRequest,
+    ) -> Result<PendingOpClaim> {
+        let now = self.clock.now();
+        let expiry = expiry_after(now, &req)?;
+        let LeaseRequest { owner, ttl: _ } = req;
+        let mut inner = self.lock();
+        let ops = &mut inner.ops;
+
+        let Some(cell) = ops.get(&op).filter(|o| o.account == account) else {
+            return Ok(PendingOpClaim::Refused(ClaimRejection::Unknown));
+        };
+        // The batch claim's own predicate: a fresh op, or one whose lease died under it.
+        match cell.state {
+            PendingOpState::Pending => {}
+            PendingOpState::InFlight if !is_live(cell.lease_expiry, now) => {}
+            PendingOpState::InFlight => {
+                return Ok(PendingOpClaim::Refused(ClaimRejection::Busy));
+            }
+            PendingOpState::Succeeded
+            | PendingOpState::Failed
+            | PendingOpState::NeedsConfirmation => {
+                return Ok(PendingOpClaim::Refused(ClaimRejection::Settled));
+            }
+        }
+        let resource = cell.op.resource_key.clone();
+        let depends_on = cell.op.depends_on.clone();
+        if !depends_on.iter().all(|d| {
+            ops.get(d)
+                .is_some_and(|dep| dep.account == account && dep.state.is_success())
+        }) {
+            return Ok(PendingOpClaim::Refused(ClaimRejection::DependencyUnmet));
+        }
+        // Another op holding this one's resource under a live lease serializes against
+        // it, exactly as in the batch claim.
+        let held = ops.iter().any(|(id, o)| {
+            *id != op
+                && o.account == account
+                && o.op.resource_key == resource
+                && o.state == PendingOpState::InFlight
+                && is_live(o.lease_expiry, now)
+        });
+        if held {
+            return Ok(PendingOpClaim::Refused(ClaimRejection::Busy));
+        }
+
+        let cell = ops.get_mut(&op).expect("op present");
+        cell.token = cell.token.bump();
+        cell.state = PendingOpState::InFlight;
+        cell.lease_expiry = Some(expiry);
+        let lease = OpLease::new(account, op, cell.token, owner, expiry);
+        Ok(PendingOpClaim::Leased(Box::new(LeasedPendingOp::new(
+            op,
+            cell.op.clone(),
+            lease,
+        ))))
     }
 
     async fn mark_pending_op(&self, lease: &OpLease, outcome: PendingOutcome) -> Result<()> {

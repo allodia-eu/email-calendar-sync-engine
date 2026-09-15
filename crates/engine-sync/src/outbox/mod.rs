@@ -32,30 +32,44 @@ use engine_core::{
     ids::AccountId,
     write::{PendingOp, PendingOutcome},
 };
-use engine_store::{LeaseRequest, LeasedPendingOp, Store, WorkerId};
+use engine_store::{
+    ClaimRejection, LeaseRequest, LeasedPendingOp, PendingOpClaim, Store, WorkerId,
+};
 pub use mail::{
     MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
 };
+// Tokio's own `Instant`, so the wait's bound holds under a paused test clock too.
+use tokio::time::Instant;
 
 use crate::SyncError;
 
-/// How many runnable ops a claim asks for (each driver resolves only its own).
-const CLAIM_LIMIT: usize = 16;
+/// How long a driver waits for another op to release the resource it needs.
+///
+/// Writes to one resource serialize, so a driver whose resource is in flight must wait
+/// rather than give up: a host marks a message read on open and archives it a moment
+/// later, and the archive arrives inside the mark-read's round trip. The bound is an
+/// upper limit on one provider round trip, not an expected wait — the common case
+/// clears in one poll. It is measured as **elapsed** time rather than as a count of
+/// polls, because each poll also costs a store round trip: on a device where a sync is
+/// committing, that round trip waits on the writer and dwarfs [`RESOURCE_POLL`], so
+/// counting polls would hold the caller for a multiple of this bound. Past it the op
+/// stays durably enqueued and the caller is told which condition refused it.
+const RESOURCE_WAIT: Duration = Duration::from_secs(10);
+
+/// How often the wait re-asks the store: one targeted claim per poll.
+const RESOURCE_POLL: Duration = Duration::from_millis(25);
 
 /// Durably records `op` (idempotent by its key) and claims it under a fenced lease,
 /// returning the leased op ready to resolve. The shared head of every outbox driver
 /// (`store-and-sync.md`): enqueue → claim, with the same fencing discipline as sync.
 ///
 /// This is the **thin inline** primitive (the precedent `submit_mail` established): it
-/// enqueues an op and claims it *right now* to resolve it in the same call. It is not the
-/// background outbox worker, so it inherits two limitations the worker will remove (the
-/// worker claims runnable ops in id order and resolves whatever it gets): it claims a
-/// bounded [`CLAIM_LIMIT`] batch and then finds its own op, so it errors if the account
-/// already has ≥`CLAIM_LIMIT` older runnable ops; and a just-enqueued op whose
-/// `resource_key` is already held by a live in-flight op is correctly *deferred* by the
-/// store (not returned), which surfaces here as an error rather than a wait. Both mean the
-/// inline driver assumes low outbox contention; under real contention the orchestrator's
-/// worker is the right driver.
+/// enqueues an op and claims it *right now* to resolve it in the same call. It claims
+/// that op **by id**, so it leases nothing it will not resolve and nothing older can
+/// starve it; a resource another op holds in flight is waited out up to
+/// [`RESOURCE_WAIT`]. It is still not the background outbox worker: it runs only at the
+/// moment of the enqueue, so an op it could not claim stays enqueued and unresolved,
+/// and nothing retries it until a drainer exists.
 async fn enqueue_and_claim<S: Store>(
     store: &S,
     account: &AccountId,
@@ -64,13 +78,21 @@ async fn enqueue_and_claim<S: Store>(
     op: PendingOp,
 ) -> Result<LeasedPendingOp, SyncError> {
     let op_id = store.enqueue_pending_op(account.clone(), op).await?;
-    let req = LeaseRequest::new(worker, ttl);
-    store
-        .claim_pending_ops(account.clone(), req, CLAIM_LIMIT)
-        .await?
-        .into_iter()
-        .find(|op| op.id == op_id)
-        .ok_or_else(|| SyncError::Outbox(format!("enqueued op {op_id:?} was not claimable")))
+    let deadline = Instant::now() + RESOURCE_WAIT;
+    loop {
+        let req = LeaseRequest::new(worker.clone(), ttl);
+        match store.claim_pending_op(account.clone(), op_id, req).await? {
+            PendingOpClaim::Leased(leased) => return Ok(*leased),
+            PendingOpClaim::Refused(ClaimRejection::Busy) if Instant::now() < deadline => {
+                tokio::time::sleep(RESOURCE_POLL).await;
+            }
+            PendingOpClaim::Refused(reason) => {
+                return Err(SyncError::Outbox(format!(
+                    "enqueued op {op_id:?} was not claimable: {reason:?}"
+                )));
+            }
+        }
+    }
 }
 
 /// Records a failed write outcome with its classification and backoff hint.
