@@ -137,6 +137,12 @@ implemented**; the precise deferrals are listed at the end of this section.
   supersession gate drops a message that does not strictly supersede the highest
   revision already applied for its key (the synthetic `EventId`/`CalendarId` a
   parsed message carries are placeholders — storage identity is assigned later).
+  That makes `Event::uid` load-bearing for every adapter: it must be the `UID` **the
+  organizer assigned**, never a provider-internal handle that happens to be unique, or the
+  same meeting has one identity in the mail that announced it and another in the calendar
+  that filed it and no answer can find its event. CalDAV, JMAP and Google each read a field
+  their protocol defines as the iCalendar `UID`; Graph reports the organizer's under `uid`
+  and an Exchange re-encoding of it under `iCalUId` (`graph.md`).
 - **`METHOD` handling.** **Implemented** as `engine_core::scheduling::reconcile`
   returning a `ScheduleAction` (after the trust gate and supersession check):
   - `REQUEST` → `ScheduleEvent` (create or update; attendees default to

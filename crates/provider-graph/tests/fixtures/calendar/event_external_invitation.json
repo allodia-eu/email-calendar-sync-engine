@@ -1,0 +1,91 @@
+{
+  "@odata.etag": "W/\"graph-etag-external-invitation-1\"",
+  "allowNewTimeProposals": true,
+  "attendees": [
+    {
+      "emailAddress": {
+        "address": "boss@example.test",
+        "name": "The Boss"
+      },
+      "status": {
+        "response": "none",
+        "time": "0001-01-01T00:00:00Z"
+      },
+      "type": "required"
+    },
+    {
+      "emailAddress": {
+        "address": "testuser@example.test",
+        "name": "Test User"
+      },
+      "status": {
+        "response": "none",
+        "time": "0001-01-01T00:00:00Z"
+      },
+      "type": "required"
+    }
+  ],
+  "body": {
+    "content": "<html><body>An invitation whose organizer runs CalDAV, not Exchange.</body></html>",
+    "contentType": "html"
+  },
+  "bodyPreview": "An invitation whose organizer runs CalDAV, not Exchange.",
+  "categories": [],
+  "changeKey": "graph-etag-external-invitation-1",
+  "createdDateTime": "2026-09-15T19:04:02.1909305Z",
+  "end": {
+    "dateTime": "2026-10-02T09:30:00.0000000",
+    "timeZone": "UTC"
+  },
+  "hasAttachments": false,
+  "hideAttendees": false,
+  "iCalUId": "040000008200E00074C5B7101A82E00800000000000000000000000000000000000000003D0000007643616C2D5569640100000033663161396432302D366337342D346232662D396135652D306438633765366235613431406578616D706C652E636F6D00",
+  "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0AEXTERNALINVITATIONFIXTUREAAAAAAAAAA",
+  "importance": "normal",
+  "isAllDay": false,
+  "isCancelled": false,
+  "isDraft": false,
+  "isOnlineMeeting": false,
+  "isOrganizer": false,
+  "isReminderOn": false,
+  "lastModifiedDateTime": "2026-09-15T19:04:41.4106648Z",
+  "location": {
+    "address": {},
+    "coordinates": {},
+    "displayName": "",
+    "locationType": "default",
+    "uniqueIdType": "unknown"
+  },
+  "locations": [],
+  "occurrenceId": null,
+  "onlineMeeting": null,
+  "onlineMeetingProvider": "unknown",
+  "onlineMeetingUrl": null,
+  "organizer": {
+    "emailAddress": {
+      "address": "boss@example.test",
+      "name": "The Boss"
+    }
+  },
+  "originalEndTimeZone": "Greenwich Standard Time",
+  "originalStartTimeZone": "Greenwich Standard Time",
+  "recurrence": null,
+  "reminderMinutesBeforeStart": 0,
+  "responseRequested": true,
+  "responseStatus": {
+    "response": "notResponded",
+    "time": "0001-01-01T00:00:00Z"
+  },
+  "sensitivity": "normal",
+  "seriesMasterId": null,
+  "showAs": "tentative",
+  "start": {
+    "dateTime": "2026-10-02T09:00:00.0000000",
+    "timeZone": "UTC"
+  },
+  "subject": "Fixture: invitation from a calendar server that is not Exchange",
+  "transactionId": null,
+  "type": "singleInstance",
+  "uid": "3f1a9d20-6c74-4b2f-9a5e-0d8c7e6b5a41@example.com",
+  "webLink": "https://outlook.office365.com/owa/?itemid=FIXTURE&exvsurl=1&path=/calendar/item"
+}

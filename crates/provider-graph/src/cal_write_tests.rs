@@ -101,10 +101,29 @@ async fn create_event_returns_the_server_id_uid_and_etag() {
         .await
         .unwrap();
     assert_eq!(receipt.event.key().as_str(), "srv-id");
-    // Graph assigns the iCalUId (a client UID is not accepted), so the receipt carries
-    // the server's, not the draft's.
+    // Graph assigns the UID (a client one is not accepted), so the receipt carries the
+    // server's, not the draft's.
     assert_eq!(receipt.uid.as_str(), "SERVER-UID");
     assert_eq!(receipt.revisions.etag, Some(ETag::new("W/\"v1\"")));
+}
+
+#[tokio::test]
+async fn a_receipt_names_the_same_uid_field_the_sync_path_reads() {
+    // Both halves read `uid` first. Were the receipt still on `iCalUId`, a caller holding
+    // an event this write created would disagree with the store the moment the write landed
+    // on a meeting somebody else organized.
+    let echoed = sjson!({
+        "id": "srv-id",
+        "uid": "outside-organizer@example.com",
+        "iCalUId": "040000008200E00074C5B7101A82E008WRAPPED",
+        "@odata.etag": "W/\"v1\"",
+        "type": "singleInstance"
+    });
+    let client = fake_client_fallible(vec![("/events", Ok(echoed))]);
+    let receipt = create_event(&client, "/calendars/cal-1", &draft())
+        .await
+        .unwrap();
+    assert_eq!(receipt.uid.as_str(), "outside-organizer@example.com");
 }
 
 #[test]
