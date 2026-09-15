@@ -27,7 +27,13 @@ fn session_doc() -> Value {
             "urn:ietf:params:jmap:calendars": "c"
         },
         "accounts": {
-            "c": { "name": "alice@test.local", "isReadOnly": false }
+            "c": {
+                "name": "alice@test.local",
+                "isReadOnly": false,
+                "accountCapabilities": {
+                    "urn:ietf:params:jmap:calendars": { "maxParticipantsPerEvent": 20 }
+                }
+            }
         },
         "apiUrl": "https://mail.test.local/jmap/",
         "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}",
@@ -93,6 +99,7 @@ fn reads_capabilities_and_limits() {
     assert_eq!(session.limits().max_calls_in_request, 16);
     // What a concurrent body warm is allowed to be: the server's number, not a guess.
     assert_eq!(session.limits().max_concurrent_requests, 4);
+    assert_eq!(session.max_participants_per_event(), Some(20));
 }
 
 #[test]

@@ -39,9 +39,8 @@ time = { workspace = true }
 # `StreamExt` to drain the email chunk stream in the offline sync tests.
 futures-util = { workspace = true }
 stalwart-harness = { path = "../stalwart-harness" }
-# The live RSVP test seeds its invitation with a CalDAV PUT: JMAP has no whole-document
-# write and `EventDraft` cannot state an ORGANIZER/ATTENDEE pair, so an invitation cannot
-# be created over JMAP at all. Test-only, and only for the counterparty's fixture.
+# The live scheduling tests observe organiser and attendee copies over CalDAV and clean
+# both scheduling inboxes after creating and changing the meeting through JMAP.
 provider-caldav = { workspace = true }
 # The live iMIP test reads the message the *server* built back through the engine's own
 # inbound scheduling bridge — the same detection an arriving invitation goes through — so

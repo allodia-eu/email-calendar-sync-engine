@@ -80,7 +80,8 @@ pub(crate) fn sync_collection_report(sync_token: &str) -> String {
             r#"<?xml version="1.0" encoding="utf-8"?>"#,
             r#"<d:sync-collection xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
             r#"<d:sync-token>{token}</d:sync-token><d:sync-level>1</d:sync-level>"#,
-            r#"<d:prop><d:getetag/><c:calendar-data/></d:prop></d:sync-collection>"#,
+            r#"<d:prop><d:getetag/><c:schedule-tag/><c:calendar-data/></d:prop>"#,
+            r#"</d:sync-collection>"#,
         ),
         token = xml_escape(sync_token),
     )
@@ -111,6 +112,7 @@ mod tests {
     fn initial_sync_sends_an_empty_token() {
         let body = sync_collection_report("");
         assert!(body.contains("<d:sync-token></d:sync-token>"));
+        assert!(body.contains("<c:schedule-tag/>"));
         assert!(body.contains("<c:calendar-data/>"));
     }
 

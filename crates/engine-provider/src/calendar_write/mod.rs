@@ -50,6 +50,7 @@
 //! wins, so "the write succeeded" does not mean "no concurrent edit was lost".
 
 mod delete;
+mod invitation;
 mod patch;
 mod rsvp;
 mod writes;
@@ -61,6 +62,10 @@ use engine_core::{
     raw::RawIcal,
     time::{CalendarDateTime, UtcDateTime},
     version::RevisionTokens,
+};
+pub use invitation::{
+    CalendarAddress, InvitationError, Invitee, InviteePatch, InviteeRole, MeetingDraft,
+    SchedulingIdentity,
 };
 pub use patch::{EventEdit, EventPatch, PatchTarget, RecurrenceEdit, TextEdit};
 pub use rsvp::{EventRsvp, ReplyDelivery, RsvpResponse};
@@ -153,6 +158,9 @@ pub struct EventDraft {
     /// Changing or removing the rule afterwards goes through
     /// [`EventPatch::recurrence`](crate::EventPatch::recurrence).
     pub recurrence: Option<DraftRecurrence>,
+    /// Scheduling data when the event is a meeting rather than an appointment.
+    #[serde(default)]
+    pub meeting: Option<MeetingDraft>,
 }
 
 impl EventDraft {
@@ -176,6 +184,7 @@ impl EventDraft {
             location: None,
             stamp,
             recurrence: None,
+            meeting: None,
         }
     }
 
@@ -200,6 +209,13 @@ impl EventDraft {
     #[must_use]
     pub fn repeating(mut self, recurrence: DraftRecurrence) -> Self {
         self.recurrence = Some(recurrence);
+        self
+    }
+
+    /// Makes the new event a meeting and names its organiser and invitees.
+    #[must_use]
+    pub fn meeting(mut self, meeting: MeetingDraft) -> Self {
+        self.meeting = Some(meeting);
         self
     }
 }

@@ -434,6 +434,22 @@ which occurrence), both in `engine-provider`, and the adapter does the rest:
 Read `caldav.md` → "CalDAV writes" and `jmap.md` → "Calendar writes" for the two renderings;
 this section fixes the *semantics* they share.
 
+- **A meeting draft owns its invitation.** `EventDraft::meeting` carries one explicit
+  organiser and at least one required or optional invitee. Addresses are validated and
+  canonicalised. Duplicate invitees and an organiser repeated in the roster are refused.
+  CalDAV renders `ORGANIZER` and `ATTENDEE`; JMAP resolves the organiser through
+  `ParticipantIdentity/get`; Graph and Google render their attendee arrays.
+- **A roster edit is a whole-series operation.** `EventPatch::invitees` carries address
+  removals and invitee upserts. It cannot target one recurrence instance or edit the
+  organiser. Each adapter starts from the stored raw event, so accepted or declined states,
+  opaque participant ids and unknown fields survive a role or name change. Adding an
+  invitee starts them in the provider's unanswered state.
+- **Storage and delivery remain separate facts.** Graph and Google schedule every create,
+  roster update and delete. JMAP requests `sendSchedulingMessages` on every such write.
+  CalDAV relies on RFC 6638 only when `calendar_scheduling` is advertised. A plain CalDAV
+  server stores the meeting but does not notify its invitees; organiser-side client-iMIP
+  delivery is not yet an engine workflow.
+
 - **Never rebuild a document to update it.** A create-path serializer emits only the handful
   of properties it knows about. An update that went through one would delete the recurrence
   rule, the attendees, the location, the alarms and the timezone from the user's calendar,

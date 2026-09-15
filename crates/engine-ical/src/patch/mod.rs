@@ -111,6 +111,11 @@ pub fn patch_event_ical(
                      occurrence has no rule of its own",
                 ));
             }
+            if patch.invitee_edit().is_some() {
+                return Err(IcalError::new(
+                    "invitees belong to the whole meeting, not one occurrence",
+                ));
+            }
             let recurrence_id = &occurrence.start;
             if let Some(existing) = resource.override_for(&doc, recurrence_id) {
                 // The series is already overridden here: patch that VEVENT in place.

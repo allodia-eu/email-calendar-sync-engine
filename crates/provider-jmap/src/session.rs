@@ -22,7 +22,10 @@ use engine_provider::{OverrideSurvival, RsvpControls, WriteGuard};
 use reqwest::Url;
 use serde_json::Value;
 
-use crate::{error::JmapError, request::capability};
+use crate::{
+    error::JmapError, request::capability, session_calendar::max_participants_per_event,
+    session_limits::parse_limits,
+};
 
 /// What a JMAP RSVP can and cannot control.
 ///
@@ -124,6 +127,7 @@ pub struct Session {
     mail_account_id: Option<String>,
     submission_account_id: Option<String>,
     calendar_account_id: Option<String>,
+    pub(crate) max_participants_per_event: Option<usize>,
     contact_account_id: Option<String>,
     limits: CoreLimits,
     capabilities: engine_provider::Capabilities,
@@ -258,6 +262,10 @@ impl Session {
             event_source_url,
             mail_account_id,
             submission_account_id: account_for(capability::SUBMISSION),
+            max_participants_per_event: max_participants_per_event(
+                value,
+                calendar_account_id.as_deref(),
+            ),
             calendar_account_id,
             contact_account_id,
             limits,
@@ -473,25 +481,6 @@ fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabiliti
         caps = caps.with_contacts().with_contact_groups();
     }
     caps
-}
-
-/// Reads the core-capability limit fields, falling back to [`CoreLimits::default`]
-/// per field.
-fn parse_limits(core: &Value) -> CoreLimits {
-    let defaults = CoreLimits::default();
-    let read = |name: &str, fallback: usize| {
-        core.get(name)
-            .and_then(Value::as_u64)
-            .and_then(|v| usize::try_from(v).ok())
-            .filter(|&v| v > 0)
-            .unwrap_or(fallback)
-    };
-    CoreLimits {
-        max_objects_in_get: read("maxObjectsInGet", defaults.max_objects_in_get),
-        max_objects_in_set: read("maxObjectsInSet", defaults.max_objects_in_set),
-        max_calls_in_request: read("maxCallsInRequest", defaults.max_calls_in_request),
-        max_concurrent_requests: read("maxConcurrentRequests", defaults.max_concurrent_requests),
-    }
 }
 
 #[cfg(test)]

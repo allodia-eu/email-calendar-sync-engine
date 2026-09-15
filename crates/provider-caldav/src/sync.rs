@@ -17,7 +17,7 @@ use engine_core::{
     error::FailureClass,
     ids::{CalendarId, EventId, ProviderKey},
     sync::{SyncState, SyncUpdate},
-    version::{ETag, RevisionTokens},
+    version::{ETag, RevisionTokens, ScheduleTag},
 };
 use engine_ical::parse_calendar_object;
 use engine_provider::ScopeSync;
@@ -115,6 +115,9 @@ fn build_update(
         if let Some(etag) = response.props.get("getetag") {
             event.revisions = RevisionTokens::from_etag(ETag::new(etag));
         }
+        if let Some(schedule_tag) = response.props.get("schedule-tag") {
+            event.revisions.schedule_tag = Some(ScheduleTag::new(schedule_tag));
+        }
         present.insert(event.id.key().clone());
         changed.push(event);
     }
@@ -173,6 +176,38 @@ mod tests {
             .unwrap();
         assert!(oneoff.revisions.etag.is_some());
         assert!(oneoff.id.as_str().ends_with("oneoff-2001.ics"));
+    }
+
+    #[tokio::test]
+    async fn a_scheduling_resource_keeps_its_schedule_tag_beside_the_etag() {
+        let fixture = include_str!("../tests/fixtures/sync-initial.xml").replace(
+            "<D:getetag>&quot;1532521015&quot;</D:getetag>",
+            "<D:getetag>&quot;1532521015&quot;</D:getetag><A:schedule-tag>&quot;sched-3&quot;</A:schedule-tag>",
+        );
+        let result = sync_events(
+            &replay(vec![ok(&fixture)]),
+            "/dav/cal/alice%40test.local/default/",
+            &calendar(),
+            None,
+        )
+        .await
+        .unwrap();
+        let SyncUpdate::Snapshot { objects, .. } = result.update else {
+            panic!("expected snapshot");
+        };
+        let meeting = objects
+            .iter()
+            .find(|event| event.uid.as_str() == "meeting-2003@test.local")
+            .unwrap();
+        assert_eq!(
+            meeting
+                .revisions
+                .schedule_tag
+                .as_ref()
+                .map(ScheduleTag::as_str),
+            Some("\"sched-3\"")
+        );
+        assert!(meeting.revisions.etag.is_some());
     }
 
     #[tokio::test]

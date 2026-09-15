@@ -21,7 +21,12 @@ use engine_provider::{
 };
 use serde_json::{Map, Value, json};
 
-use crate::{error::GoogleError, json::opt_str, transport::GoogleClient};
+use crate::{
+    cal_invite::{draft_attendees, merge_attendees},
+    error::GoogleError,
+    json::opt_str,
+    transport::GoogleClient,
+};
 
 /// The Google Calendar v3 events collection for a calendar.
 fn events_path(calendar: &str) -> String {
@@ -40,7 +45,7 @@ pub(crate) async fn create_event(
     let body = build_create(draft)?;
     let created = client
         .post(
-            &client.url(&events_path(calendar)),
+            &client.url(&format!("{}?sendUpdates=all", events_path(calendar))),
             "application/json",
             serde_json::to_vec(&body).map_err(GoogleError::from)?,
         )
@@ -89,7 +94,7 @@ pub(crate) async fn patch_event(
     let body = build_patch(base, &edit.patch)?;
     let updated = client
         .patch(
-            &client.url(&format!("{}/{id}", events_path(calendar))),
+            &client.url(&format!("{}/{id}?sendUpdates=all", events_path(calendar))),
             "application/json",
             guard,
             serde_json::to_vec(&body).map_err(GoogleError::from)?,
@@ -224,7 +229,7 @@ pub(crate) async fn delete_event(
     };
     match client
         .delete(
-            &client.url(&format!("{}/{id}", events_path(calendar))),
+            &client.url(&format!("{}/{id}?sendUpdates=all", events_path(calendar))),
             guard,
         )
         .await
@@ -300,6 +305,9 @@ fn build_create(draft: &EventDraft) -> ProviderResult<Value> {
             json!([format!("RRULE:{}", rrule_value(recurrence, &draft.start)?)]),
         );
     }
+    if let Some(attendees) = draft_attendees(draft)? {
+        body.insert("attendees".to_owned(), attendees);
+    }
     Ok(Value::Object(body))
 }
 
@@ -360,6 +368,9 @@ fn build_patch(base: &Event, patch: &EventPatch) -> ProviderResult<Value> {
             RecurrenceEdit::Clear => json!([]),
         };
         body.insert("recurrence".to_owned(), value);
+    }
+    if let Some(edit) = patch.invitee_edit() {
+        body.insert("attendees".to_owned(), merge_attendees(base, edit)?);
     }
     Ok(Value::Object(body))
 }
@@ -444,6 +455,10 @@ fn receipt(
 #[cfg(test)]
 #[path = "cal_write_tests.rs"]
 mod cal_write_tests;
+
+#[cfg(test)]
+#[path = "cal_invite_tests.rs"]
+mod cal_invite_tests;
 
 #[cfg(test)]
 #[path = "cal_recurrence_tests.rs"]

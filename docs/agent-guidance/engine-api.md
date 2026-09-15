@@ -199,6 +199,9 @@ Step 6 lands in small, tested slices. Order and status:
    `EventDeletion` — returning a `CalendarWrite` / `CalendarDelete`. These carry **intent**: the host never assembles
    iCalendar, mints an href, or touches an `ETag`, and the same call drives CalDAV and JMAP
    (`providers.md`). The write types are re-exported from `engine-api`.
+   `EventDraft::meeting` carries the organiser and required or optional invitees for a new
+   meeting. `EventPatch::invitees` carries whole-series roster upserts and removals. The
+   adapters preserve existing response state and provider fields while applying that intent.
    - **Read `Capabilities::calendar_write_guard()` before writing.** `WriteGuard::Enforced`
      (CalDAV) means a stale edit is refused — a `412` surfaces as a `Conflict`, to be
      recovered by re-syncing and re-applying, never a blind retry. `WriteGuard::Absent`
@@ -217,9 +220,9 @@ Step 6 lands in small, tested slices. Order and status:
      asks the server to store the document **only if nothing is there** (`WritePrecondition::IfAbsent`),
      so putting an invitation that arrived as mail onto the calendar is a guarded create: a
      resource that appeared in the meantime is a `Conflict`, never a silent overwrite. This
-     is the path for an inbound invitation specifically because
-     `create_calendar_event`/`EventDraft` carries neither organizer nor attendees and would
-     store a plain appointment with nothing to answer on.
+     is the path for an inbound invitation because only the received raw document preserves
+     its organiser, participant response states, sequence and extensions. `EventDraft::meeting`
+     is instead the organiser-authored path for creating a new invitation.
    - **A calendar write reconciles the store before it returns** (issue #65). A write's
      response is a *receipt*, not a document (a CalDAV `PUT` answers with an `ETag` and no
      body; a JMAP `/set` with an id and no object), so the driver alone would leave the row

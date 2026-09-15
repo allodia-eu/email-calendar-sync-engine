@@ -41,7 +41,7 @@ use crate::{
 };
 
 /// The namespaced key under which the whole raw Google event JSON is preserved.
-const RAW_EVENT_KEY: &str = "google/event";
+pub(crate) const RAW_EVENT_KEY: &str = "google/event";
 
 /// Normalizes one Google `calendarList` entry into a [`Calendar`] container.
 ///

@@ -36,7 +36,7 @@ use crate::{
 };
 
 /// The namespaced key under which the whole raw Graph event JSON is preserved.
-const RAW_EVENT_KEY: &str = "microsoft.graph/event";
+pub(crate) const RAW_EVENT_KEY: &str = "microsoft.graph/event";
 
 /// Normalizes one Graph `calendar` into a [`Calendar`] container.
 ///
