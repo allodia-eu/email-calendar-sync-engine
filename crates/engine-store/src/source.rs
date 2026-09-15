@@ -14,7 +14,7 @@ use engine_core::{
     raw::RawMime,
 };
 
-use crate::{error::Result, store::MailListRow};
+use crate::{error::Result, read::MailListRow};
 
 /// What one [`MessageSourceCache::drop_message_sources_over`] pass forgot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

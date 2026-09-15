@@ -71,6 +71,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(schema::V11),
     Migration::sql(schema::V12),
     Migration::sql(schema::V13),
+    Migration::sql(schema::V14),
 ];
 
 /// Brings `conn` up to the latest schema version.
@@ -250,6 +251,57 @@ mod tests {
         assert!(failed.is_err());
         assert_eq!(version(&conn), 1);
         assert_eq!(table_count(&conn, "a"), 1);
+    }
+
+    /// v14 adds `kind`, and every op an existing store already holds was enqueued
+    /// before that column existed. Those rows must survive the step (they are user
+    /// writes, not a re-derivable cache) and must never be *attempted*: nothing records
+    /// which request type their payload is, so running one would mean guessing whether
+    /// a months-old row was an archive, a report or a send.
+    #[test]
+    fn v14_keeps_the_ops_a_v13_store_held_and_leaves_them_unclassified() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        // Bring a store up to v13, the shape before the queue columns existed.
+        let upto_v13 = &MIGRATIONS[..13];
+        run(&mut conn, upto_v13).unwrap();
+        assert_eq!(version(&conn), 13);
+
+        conn.execute(
+            "INSERT INTO pending_op
+                 (account, idempotency_key, resource_key, depends_on, payload, state, token,
+                  lease_expiry)
+             VALUES ('acct-1', 'edit:1757942400:7', 'mail:imap:v1:u42@INBOX', '[]',
+                     '{\"MoveTo\":{}}', 'Pending', 0, NULL)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        assert_eq!(version(&conn), i64::from(expected_version()));
+
+        // The row is still there, with its payload and idempotency record intact: that
+        // row is what stops the same write being replayed.
+        let (idempotency, payload, state, kind, attempts): (
+            String,
+            String,
+            String,
+            Option<String>,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT idempotency_key, payload, state, kind, attempts FROM pending_op",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(idempotency, "edit:1757942400:7");
+        assert_eq!(payload, "{\"MoveTo\":{}}");
+        assert_eq!(state, "Pending");
+        assert_eq!(
+            kind, None,
+            "a pre-v14 row cannot be classified after the fact"
+        );
+        assert_eq!(attempts, 0);
     }
 
     /// v11 adds the column that separates "no photo here" from "never asked", and every

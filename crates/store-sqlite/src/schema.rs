@@ -432,6 +432,34 @@ CREATE INDEX pending_op_held_resource
     WHERE state = 'InFlight';
 ";
 
+/// Migration v14: make `pending_op` a queue rather than a log of attempts.
+///
+/// Six columns, all nullable or defaulted, so the step is a pure `ALTER` over a table
+/// that holds non-re-derivable user writes and must be migrated data-preservingly
+/// (`migrations.rs`).
+///
+/// `kind` says which request type `payload` deserializes as. The payload is an untagged
+/// serialization and nothing else distinguishes the verbs: a mail edit and a report both
+/// serialize on `mail:{key}`, every calendar verb on `event:{uid}`, and the idempotency
+/// key is caller-minted for all but a submission. A drainer cannot dispatch what it
+/// cannot identify.
+///
+/// **Rows already in the table keep a `NULL` kind, and are never attempted.** They cannot
+/// be classified: the information was never written. Guessing would replay a months-old
+/// archive or send against a mailbox that has moved on, which is worse than dropping it,
+/// so they are listed for a host to show and withdraw instead. New rows always carry one.
+///
+/// `attempts` and `next_attempt_at` are how a retryable failure parks instead of settling;
+/// `failure_class` and `detail` are how a host says *why* something is still queued, and
+/// survive the park back into `Pending`.
+pub(crate) const V14: &str = "\
+ALTER TABLE pending_op ADD COLUMN kind            TEXT;
+ALTER TABLE pending_op ADD COLUMN attempts        INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pending_op ADD COLUMN next_attempt_at TEXT;
+ALTER TABLE pending_op ADD COLUMN failure_class   TEXT;
+ALTER TABLE pending_op ADD COLUMN detail          TEXT;
+";
+
 mod mail;
 
 pub(crate) use mail::{V8, V9, V10};

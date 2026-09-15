@@ -190,3 +190,79 @@ async fn a_file_store_reads_through_a_connection_that_cannot_write() {
         .await;
     assert_eq!(stored, "1", "a reader sees the writer's committed row");
 }
+
+/// A row enqueued before v14 has no kind, so nothing can say which request type its
+/// payload is. It must be **listed** (a host has to be able to see it and clear it) and
+/// never **claimed** (attempting it would mean guessing which provider verb to run).
+///
+/// This is the shape a store carries after upgrading with work already stuck in it.
+#[tokio::test]
+async fn a_pre_v14_row_is_listed_and_cancellable_but_never_claimed() {
+    use engine_core::{
+        ids::{AccountId, ProviderKey},
+        write::PendingOpId,
+    };
+    use engine_store::{
+        ClaimRejection, LeaseRequest, PendingOpClaim, PendingOpState, Store, StoreRead, WorkerId,
+    };
+
+    let store = SqliteStore::open_in_memory(ManualClock::new(
+        "2026-01-01T00:00:00Z".parse().expect("valid instant"),
+    ))
+    .expect("open");
+    let account = AccountId::new(ProviderKey::new("acct-legacy").unwrap());
+
+    // Write the row the way a pre-v14 build did: every queue column at its default.
+    store
+        .call(|conn| {
+            conn.execute(
+                "INSERT INTO pending_op
+                     (account, idempotency_key, resource_key, depends_on, payload, state, token,
+                      lease_expiry)
+                 VALUES ('acct-legacy', 'edit:1757942400:7', 'mail:imap:v1:u42@INBOX', '[]',
+                         'null', 'Pending', 0, NULL)",
+                [],
+            )
+            .expect("seed a pre-v14 row");
+        })
+        .await;
+    let op = PendingOpId::new(1);
+
+    // Listed, and honest about what it is: the kind was never recorded.
+    let rows = store.list_pending_ops(account.clone()).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, op);
+    assert_eq!(rows[0].kind, None);
+    assert_eq!(rows[0].state, PendingOpState::Pending);
+
+    // Never claimed, by either claim: a drainer must not guess at it.
+    assert_eq!(
+        store
+            .claim_pending_op(
+                account.clone(),
+                op,
+                LeaseRequest::new(WorkerId::new("drainer"), core::time::Duration::from_mins(5)),
+            )
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::Unknown)
+    );
+    assert!(
+        store
+            .claim_pending_ops(
+                account.clone(),
+                LeaseRequest::new(WorkerId::new("drainer"), core::time::Duration::from_mins(5)),
+                10,
+            )
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // And a host can clear it, which is the only way it ever leaves the queue.
+    assert_eq!(
+        store.cancel_pending_op(account.clone(), op).await.unwrap(),
+        None
+    );
+    assert!(store.list_pending_ops(account).await.unwrap().is_empty());
+}

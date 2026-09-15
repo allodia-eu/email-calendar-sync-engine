@@ -18,14 +18,15 @@ use core::time::Duration;
 use engine_core::{
     ids::{AccountId, ProviderKey},
     sync::{JmapDataType, Keyed, NoPatch, SyncObject, SyncScope},
-    write::{IdempotencyKey, PendingOp, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpKind, ResourceKey},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
     lease::{LeaseRequest, ManualClock, WorkerId},
-    store::{Store, StoreRead},
+    read::StoreRead,
+    store::Store,
 };
 
 mod contact_cases;
@@ -95,8 +96,13 @@ fn lease_request(owner: &str, ttl_secs: u64) -> LeaseRequest {
 }
 
 fn pending_op(idempotency: &str, resource: &str) -> PendingOp {
+    pending_op_of(PendingOpKind::MailEdit, idempotency, resource)
+}
+
+fn pending_op_of(kind: PendingOpKind, idempotency: &str, resource: &str) -> PendingOp {
     PendingOp::new(
         IdempotencyKey::new(idempotency).expect("valid idempotency key"),
+        kind,
         ResourceKey::new(resource).expect("valid resource key"),
         json!({ "idempotency": idempotency }),
     )
@@ -187,6 +193,18 @@ where
     outbox_cases::a_targeted_claim_names_why_it_refused(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::a_dead_lease_holds_no_resource(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::a_retryable_failure_comes_back_when_its_backoff_elapses(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::a_retryable_failure_settles_once_its_attempts_run_out(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::a_cancelled_op_is_never_attempted(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::a_queue_read_lists_what_has_not_settled(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.

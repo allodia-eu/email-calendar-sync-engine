@@ -20,6 +20,7 @@ use std::{
 };
 
 use engine_core::{
+    error::FailureClass,
     ids::{AccountId, ContactId, MessageId, ProviderKey},
     people::{CanonicalEmail, PeopleSnapshot},
     recipient::{RecipientCoverage, RecipientObservation},
@@ -245,6 +246,13 @@ struct OpCell {
     state: PendingOpState,
     token: FenceToken,
     lease_expiry: Option<UtcDateTime>,
+    /// Provider attempts made so far; the input to [`retry_delay`](crate::retry_delay).
+    attempts: u32,
+    /// Set while a retryable failure waits out its backoff; until then the op is
+    /// `Pending` but not runnable.
+    next_attempt_at: Option<UtcDateTime>,
+    failure_class: Option<FailureClass>,
+    detail: Option<String>,
 }
 
 /// The whole store state, behind one mutex (a reference impl, not a throughput

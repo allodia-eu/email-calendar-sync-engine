@@ -19,6 +19,7 @@ mod error;
 mod lease;
 pub mod mem;
 mod outbox;
+mod read;
 mod source;
 mod store;
 
@@ -34,9 +35,13 @@ pub use error::{Result, StoreError};
 pub use lease::{
     Clock, FenceToken, LeaseRequest, ManualClock, OpLease, SyncClaim, SyncLease, WorkerId,
 };
-pub use outbox::{ClaimRejection, LeasedPendingOp, PendingOpClaim, PendingOpState};
+pub use outbox::{
+    CancelRejection, ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, PendingOpClaim, PendingOpRow,
+    PendingOpState, retry_delay,
+};
+pub use read::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead};
 pub use source::{MessageBodyStore, MessageSourceCache, SourcesDropped};
-pub use store::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, Store, StoreRead};
+pub use store::Store;
 
 /// The version of the engine's **normalization** — how providers decode wire data and
 /// how `engine-core` projects it (subject charset decoding, header parsing, address

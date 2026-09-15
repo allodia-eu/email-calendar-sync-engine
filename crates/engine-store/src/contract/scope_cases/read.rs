@@ -16,7 +16,8 @@ use super::super::{TestObject, acct, email_scope, lease_request, mailbox_scope, 
 use crate::{
     apply::{ApplyBatch, DerivedWrite, FtsField, FtsRow},
     lease::ManualClock,
-    store::{IndexRowCounts, Store, StoreRead},
+    read::{IndexRowCounts, StoreRead},
+    store::Store,
 };
 
 /// The mixed mail+event derived-row fixture the structured-index case applies:

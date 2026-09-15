@@ -13,7 +13,8 @@ use super::super::{TestObject, acct, email_scope, lease_request, pk};
 use crate::{
     apply::{ApplyBatch, DerivedWrite},
     lease::ManualClock,
-    store::{MailSelector, Store, StoreRead},
+    read::{MailSelector, StoreRead},
+    store::Store,
 };
 
 /// A stored row with only the fields a case is about set; the rest are the empty message.
@@ -74,7 +75,7 @@ async fn seed<S: Store + StoreRead>(
 }
 
 /// The keys of a read, in the order it returned them.
-fn keys(rows: &[crate::store::MailListRow]) -> Vec<ProviderKey> {
+fn keys(rows: &[crate::read::MailListRow]) -> Vec<ProviderKey> {
     rows.iter().map(|row| row.mail.key.clone()).collect()
 }
 

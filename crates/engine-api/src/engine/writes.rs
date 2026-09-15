@@ -5,10 +5,10 @@
 
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    write::PendingOpId,
+    write::{PendingOpId, PendingOpKind},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider};
-use engine_store::{PendingOpState, StoreRead};
+use engine_store::{CancelRejection, PendingOpRow, PendingOpState, Store, StoreRead};
 use engine_sync::{
     MailEditOutcome, ReportOutcome, SubmitOutcome, SyncError, edit_mail, report_message,
     submit_mail,
@@ -167,4 +167,53 @@ impl Engine {
     ) -> Result<Option<PendingOpState>, ApiError> {
         Ok(self.store.pending_op_state(op).await?)
     }
+
+    /// Everything still outstanding in `account`'s outbox, in enqueue order: what has
+    /// not gone yet, what is being attempted, how many attempts each has had, and how
+    /// the last one failed.
+    ///
+    /// A lease-free read, and the only way a host learns what it left behind: after a
+    /// restart it holds none of the op ids
+    /// [`pending_op_state`](Self::pending_op_state) answers about. Settled ops are
+    /// excluded; they are kept as the idempotency record, not as outstanding work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn outbox(&self, account: &AccountId) -> Result<Vec<PendingOpRow>, ApiError> {
+        Ok(self.store.list_pending_ops(account.clone()).await?)
+    }
+
+    /// Withdraws a queued op so it is never attempted, returning `None` when it was
+    /// withdrawn and the reason when it could not be.
+    ///
+    /// Refusal is not failure: an op under a live lease may be mid-round-trip, and one
+    /// awaiting confirmation may already have been delivered. Neither can be called
+    /// back, so neither is withdrawn.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn cancel_pending_op(
+        &self,
+        account: &AccountId,
+        op: PendingOpId,
+    ) -> Result<Option<CancelRejection>, ApiError> {
+        Ok(self.store.cancel_pending_op(account.clone(), op).await?)
+    }
+}
+
+/// The message a queued send would deliver, decoded from an outbox row.
+///
+/// `None` for any row that is not a [`MailSubmit`](PendingOpKind::MailSubmit), including
+/// one enqueued before the store recorded a kind. The payload is the driver's own
+/// serialization of the [`Draft`], so this is the one supported way to read it back: a
+/// host rendering an outbox needs the recipients and subject, and must not re-implement
+/// the encoding to get them.
+#[must_use]
+pub fn queued_draft(row: &PendingOpRow) -> Option<Draft> {
+    if row.kind != Some(PendingOpKind::MailSubmit) {
+        return None;
+    }
+    serde_json::from_value(row.payload.clone()).ok()
 }

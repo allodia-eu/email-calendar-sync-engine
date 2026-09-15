@@ -10,7 +10,8 @@ use crate::{
     apply::{ApplyBatch, DerivedWrite, FtsField, FtsRow},
     error::StoreError,
     lease::ManualClock,
-    store::{Store, StoreRead},
+    read::StoreRead,
+    store::Store,
 };
 
 /// A write under a superseded lease is rejected; the winner's data is intact.
