@@ -125,6 +125,7 @@ public repo must not ship a working join link (see Finding 10).
 | `calendar/event_series_master.json` | `GET /me/events/{id}` (a `seriesMaster`) | `patternedRecurrence` → `Recurrence`, zone, location, organizer |
 | `calendar/event_single.json` | a `singleInstance` from `GET /me/events` | non-recurring event + attendee projection (the **organizer's own** copy: `attendees` excludes the organizer, `responseStatus.response: "organizer"`) |
 | `calendar/event_invitation.json` | the **invitee's** copy of a meeting a second account organized, after answering (`GET /me/events/{id}`) | the invitation shape only two accounts produce: `isOrganizer: false`, and the organizer named **both** as `organizer` and in `attendees` with `status.response: "none"` → one merged participant (Finding 20) |
+| `calendar/event_external_invitation.json` | the invitee's copy of an invitation an organizer **outside Exchange** mailed in (a `singleInstance` from `calendarView`) | the one shape where `uid` and `iCalUId` disagree: `uid` is the organizer's own `UID`, `iCalUId` the `PidLidGlobalObjectId` Exchange wrapped it in. The wrapper is re-encoded around the scrubbed `UID` so the two still agree byte for byte |
 | `calendar/event_allday.json` | an all-day `singleInstance` | `isAllDay` → zoneless `Date` + one-day duration |
 | `calendar/event_online_meeting.json` | a Teams `singleInstance` from `calendarView` | the online-meeting shape (`isOnlineMeeting`, `onlineMeetingProvider`, `onlineMeeting.joinUrl`) preserved on `Event.extended` — captured ahead of online-meeting-provider support |
 | `calendar/events_delta.json` | `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` | the delta page shape: `seriesMaster`/`singleInstance` **kept**, `occurrence` **dropped**, `exception` folded onto its series (it carries `seriesMasterId` + `occurrenceId`), `@odata.deltaLink` cursor |
@@ -242,6 +243,17 @@ contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@od
     one. `cancelledOccurrences` is also **absent from every collection response** even when
     `$select`ed by name (`/events` and the delta both), which is why it costs a request per
     master rather than riding the page.
+
+24. **`uid` and `iCalUId` are two different identities, and only `uid` is the iCalendar
+    one.** For anything the mailbox organizes they agree. For a meeting organized outside
+    Exchange they do not: `uid` holds the organizer's own `UID` and `iCalUId` holds the
+    `PidLidGlobalObjectId` Exchange wrapped it in (`…vCal-Uid…<UID as hex>…`). The pair also
+    parts company within one series — every `occurrence` and `exception` gets its own
+    instance-stamped `iCalUId`, while `uid` stays the series'. Like `cancelledOccurrences`,
+    `uid` is **not selectable**: a `$select` naming it answers without it. It is present
+    unasked on a `calendarView`/delta page's `seriesMaster` and `singleInstance` entries and
+    on a create/patch echo — `event_external_invitation.json` is the shape that separates the
+    two.
 
 16. **Photo routes are resource-kind specific, and every failure is a 404 except the
     one that is a 400.** `photos/{size}/$value` exists on `user`

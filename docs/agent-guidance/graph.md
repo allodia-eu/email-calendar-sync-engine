@@ -307,6 +307,29 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   An `exception` is not an object of its own here — it is folded onto the series it names
   (`cal_override`). This reuses the mail delta machinery
   (`@odata.nextLink`/`deltaLink`/`@removed`, `410`→snapshot restart).
+- **An event's `UID` is `uid`, not `iCalUId`.** Graph reports both, and they are different
+  values. `uid` is the iCalendar `UID` (RFC 5545 §3.8.4.7): the organizer's own, kept
+  verbatim when the meeting was organized outside Exchange, and one value for a whole series.
+  `iCalUId` is Exchange's `PidLidGlobalObjectId` in hex, which **re-encodes** that identity —
+  an outside `UID` is wrapped in a `vCal-Uid` structure, and each occurrence and exception is
+  stamped with its own date. Measured, on an invitation a CalDAV server mailed to an Exchange
+  Online mailbox:
+
+  ```text
+  uid      6ca67e6b-fab4-4bbb-b2b5-6fb84dfd2ab7
+  iCalUId  040000008200E00074C5B7101A82E008…310000007643616C2D5569640100000036…
+  ```
+
+  Reading the wrapper gives one meeting two identities — one in the iMIP message that
+  announced it, another in the calendar that filed it — and scheduling reconciliation keys on
+  exactly that value (RFC 5546 §2.1.5), so an answer to the mail finds no event to write to.
+  `cal_normalize::cross_system_uid` reads `uid` and keeps `iCalUId` as the fallback; the write
+  receipt reads the same helper, so the two halves cannot end up on different fields.
+  ⚠️ **`uid` is not selectable**: a `$select` naming it comes back without it, the same trap
+  `cancelledOccurrences` has. It *is* on a `calendarView/delta` page for the `seriesMaster`
+  and `singleInstance` entries the adapter keeps (a lightweight `occurrence` entry carries
+  neither field, and is dropped before normalization) and on a create/patch echo. Proven live
+  in `tests/live_calendar_uid.rs`.
 - **A series master is re-read on its own, in its own zone.** One
   `GET /me/events/{id}?$select=start,end,cancelledOccurrences` per `seriesMaster` per page,
   fanned out `MAX_CONCURRENT_MASTER_READS` at a time. It carries
@@ -333,7 +356,7 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   `absoluteYearly`/`relativeYearly` → `FREQ`+`BY*`; `range` `noEnd`/`numbered`/`endDate`
   → unbounded/`COUNT`/`UNTIL`. Graph's full weekday names map to the engine `Weekday`.
 - **Writes — the server does the surgery (like JMAP).** `create_event` `POST`s to
-  `/me/calendars/{id}/events` (Graph assigns id **and** `iCalUId` — a client `UID` is not
+  `/me/calendars/{id}/events` (Graph assigns id **and** `UID` — a client `UID` is not
   accepted, so the receipt carries the server's id/uid); `patch_event` translates the
   neutral `EventEdit` intent into a **partial** event `PATCH` (never re-serializing the
   projection); `delete_event` `DELETE`s. All are `If-Match`-ETag guarded — a stale one is
@@ -417,7 +440,11 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   is polled back out of the Inbox (proving Graph preserves it in the MIME form), and a
   **calendar cycle** — list calendars, snapshot+delta the events, then create→patch
   (asserting the ETag advances)→delete a throwaway event — all against a *real* account,
-  an occasional drift check against the actual API, not the CI gate. There is no CI harness (no live account in CI); the token
+  an occasional drift check against the actual API, not the CI gate. Two calendar suites need
+  a **second** mailbox as well (`GRAPH_ORGANIZER_ACCESS_TOKEN`), because the thing under test
+  only exists once an invitation has crossed between two accounts: `tests/live_calendar_rsvp.rs`
+  (the answer reaches the organizer) and `tests/live_calendar_uid.rs` (a meeting keeps the
+  `UID` its mail carried). There is no CI harness (no live account in CI); the token
   is obtained with `tools/graph-oauth` (a standalone PKCE-loopback login + refresh
   helper, outside the engine workspace). Excluded from the offline coverage metric
   via the `ci.yml` `--ignore-filename-regex`, like the other providers' live tests.

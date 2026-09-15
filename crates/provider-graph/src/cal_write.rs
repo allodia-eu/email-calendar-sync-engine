@@ -20,7 +20,8 @@ use engine_provider::{
 use serde_json::{Map, Value, json};
 
 use crate::{
-    cal_recur_render::render_recurrence, error::GraphError, json::opt_str, transport::GraphClient,
+    cal_normalize::cross_system_uid, cal_recur_render::render_recurrence, error::GraphError,
+    json::opt_str, transport::GraphClient,
 };
 
 /// Creates `draft` in the bound `calendar_path` (`/me/calendars/{id}`) via `POST …/events`.
@@ -379,7 +380,10 @@ fn if_match(base: &Event) -> Option<&str> {
 }
 
 /// Builds a receipt from a create/patch response: the event id it resolved to, the
-/// server's `iCalUId` (falling back to `fallback_uid`), and the new ETag.
+/// server's own `UID` (falling back to `fallback_uid`), and the new ETag.
+///
+/// Read through [`cross_system_uid`], the same reader the sync path uses, so the identity a
+/// caller is handed and the one the next sync stores cannot be two different fields.
 fn receipt(
     event: &Value,
     fallback_uid: engine_core::ids::Uid,
@@ -388,7 +392,7 @@ fn receipt(
         .ok_or_else(|| ProviderError::permanent("write response had no event id"))?;
     let event_id = EventId::try_from(id)
         .map_err(|e| ProviderError::permanent(format!("bad created event id: {e}")))?;
-    let uid = opt_str(event, "iCalUId")
+    let uid = cross_system_uid(event)
         .and_then(|u| engine_core::ids::Uid::new(u).ok())
         .unwrap_or(fallback_uid);
     let revisions = RevisionTokens {

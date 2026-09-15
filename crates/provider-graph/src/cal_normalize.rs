@@ -38,6 +38,31 @@ use crate::{
 /// The namespaced key under which the whole raw Graph event JSON is preserved.
 const RAW_EVENT_KEY: &str = "microsoft.graph/event";
 
+/// The event's cross-system [`Uid`] — Graph reports it under **two** names that hold
+/// different values, and only one of them is the `UID` the rest of the world uses.
+///
+/// `uid` is the iCalendar `UID` (RFC 5545 §3.8.4.7): the organizer's own, kept verbatim
+/// when the meeting was organized outside Exchange, and shared by every instance of a
+/// series. `iCalUId` is Exchange's `PidLidGlobalObjectId` in hex, which **re-encodes** that
+/// identity: an outside `UID` is wrapped in a `vCal-Uid` structure, and each occurrence and
+/// exception is stamped with its own date, so a series does not have one of them. Measured,
+/// on an invitation a CalDAV server sent an Exchange Online mailbox:
+///
+/// ```text
+/// uid      6ca67e6b-fab4-4bbb-b2b5-6fb84dfd2ab7
+/// iCalUId  040000008200E00074C5B7101A82E008…310000007643616C2D556964010000003663…
+/// ```
+///
+/// Reading the wrapper gives a meeting one identity in the calendar and another in the iMIP
+/// message that announced it, and scheduling reconciliation is keyed on exactly that value
+/// (RFC 5546 §2.1.5): an answer to the mail then finds no event to write to.
+///
+/// `iCalUId` stays as the fallback because it is the older of the two fields and the pair
+/// agree for everything Exchange organizes itself.
+pub(crate) fn cross_system_uid(value: &Value) -> Option<&str> {
+    opt_str(value, "uid").or_else(|| opt_str(value, "iCalUId"))
+}
+
 /// Normalizes one Graph `calendar` into a [`Calendar`] container.
 ///
 /// # Errors
@@ -66,13 +91,12 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, GraphError> 
 ///
 /// # Errors
 ///
-/// Returns [`GraphError::Protocol`] on a missing `id`/`iCalUId`, an unparseable
+/// Returns [`GraphError::Protocol`] on a missing `id`/`uid`, an unparseable
 /// time/duration/recurrence, or a malformed field.
 pub(crate) fn event_from_json(value: &Value, calendar: &CalendarId) -> Result<Event, GraphError> {
     let id = wrap_id(EventId::try_from(req_str(value, "id")?), "event id")?;
-    let uid_raw = opt_str(value, "iCalUId")
-        .or_else(|| opt_str(value, "uid"))
-        .ok_or_else(|| GraphError::protocol("event has no iCalUId"))?;
+    let uid_raw = cross_system_uid(value)
+        .ok_or_else(|| GraphError::protocol("event has neither uid nor iCalUId"))?;
     let uid = Uid::new(uid_raw).map_err(|e| GraphError::protocol(format!("bad event uid: {e}")))?;
 
     let all_day = bool_field(value, "isAllDay");

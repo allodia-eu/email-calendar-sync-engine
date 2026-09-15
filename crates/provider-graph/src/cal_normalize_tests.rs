@@ -17,6 +17,8 @@ const ONLINE: &str = include_str!("../tests/fixtures/calendar/event_online_meeti
 const CALENDARS: &str = include_str!("../tests/fixtures/calendar/calendars.json");
 const EXTRA_EVENT: &str = include_str!("../tests/fixtures/calendar/event_extra_calendar.json");
 const INVITATION: &str = include_str!("../tests/fixtures/calendar/event_invitation.json");
+const EXTERNAL_INVITATION: &str =
+    include_str!("../tests/fixtures/calendar/event_external_invitation.json");
 
 fn json(fixture: &str) -> Value {
     serde_json::from_str(fixture).unwrap()
@@ -276,4 +278,38 @@ fn an_unknown_windows_zone_is_preserved_as_custom() {
     };
     assert!(!zone.is_iana());
     assert_eq!(zone.as_str(), "tzone://Microsoft/Custom");
+}
+
+#[test]
+fn an_outside_organizers_invitation_keeps_the_uid_its_mail_carried() {
+    // Exchange does not keep an outside `UID` as it arrived: it wraps it in a
+    // `PidLidGlobalObjectId` and reports *that* as `iCalUId`, while `uid` still holds the
+    // organizer's own. Reading the wrapper gives the meeting one identity in the calendar
+    // and a different one in the iMIP message that announced it, so an answer to the mail
+    // can never find the event it is about.
+    let event = event(EXTERNAL_INVITATION);
+    assert_eq!(
+        event.uid.as_str(),
+        "3f1a9d20-6c74-4b2f-9a5e-0d8c7e6b5a41@example.com"
+    );
+    // The wrapper is still there, and still not the UID — the fixture would pass the
+    // assertion above by accident if Graph had stopped sending it.
+    let raw = json(EXTERNAL_INVITATION);
+    assert!(raw["iCalUId"].as_str().unwrap().len() > event.uid.as_str().len());
+}
+
+#[test]
+fn an_event_that_reports_no_uid_falls_back_to_the_ical_uid() {
+    // `uid` is the newer of the two fields. Where a response carries only `iCalUId` that is
+    // the best identity on offer, and for anything Exchange itself organizes the two agree.
+    let event = event_from_json(
+        &serde_json::json!({
+            "id": "e", "iCalUId": "040000008200E00074C5B7101A82E008",
+            "start": { "dateTime": "2026-08-01T09:00:00", "timeZone": "UTC" },
+            "end": { "dateTime": "2026-08-01T10:00:00", "timeZone": "UTC" }
+        }),
+        &calendar_id(),
+    )
+    .unwrap();
+    assert_eq!(event.uid.as_str(), "040000008200E00074C5B7101A82E008");
 }
