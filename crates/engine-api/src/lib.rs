@@ -143,10 +143,11 @@ pub use engine_store::{
 };
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
-    ContactSourceReport, ContactSyncReport, ContactWriteOutcome, EventSyncReport, FolderSync,
-    HorizonExpansion, IgnoreCommits, MailEditOutcome, MailSyncReport, PeopleRebuildReport,
-    ProgressSnapshot, ReportOutcome, StreamTuning, SubmitOutcome, SyncCommit, SyncError,
-    SyncObserver, SyncTiming, ThreadRebuildReport, UnexpandableEvent,
+    ContactSourceReport, ContactSyncReport, ContactWriteOutcome, DrainOutcome, DrainReport,
+    DrainedOp, EventSyncReport, FolderSync, HorizonExpansion, IgnoreCommits, MailEditOutcome,
+    MailSyncReport, PeopleRebuildReport, ProgressSnapshot, ReportOutcome, StreamTuning,
+    SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming, ThreadRebuildReport,
+    UnexpandableEvent,
 };
 pub use scheduling::InboundScheduling;
 

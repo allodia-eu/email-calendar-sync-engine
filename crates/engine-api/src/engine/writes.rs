@@ -10,8 +10,8 @@ use engine_core::{
 use engine_provider::{Draft, MailEdit, MessageReport, Provider};
 use engine_store::{CancelRejection, PendingOpRow, PendingOpState, Store, StoreRead};
 use engine_sync::{
-    MailEditOutcome, ReportOutcome, SubmitOutcome, SyncError, edit_mail, report_message,
-    submit_mail,
+    DrainReport, MailEditOutcome, ReportOutcome, SubmitOutcome, SyncError, drain_outbox, edit_mail,
+    report_message, submit_mail,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -166,6 +166,31 @@ impl Engine {
         op: PendingOpId,
     ) -> Result<Option<PendingOpState>, ApiError> {
         Ok(self.store.pending_op_state(op).await?)
+    }
+
+    /// Attempts every queued write for `account` that is due and that the drainer can
+    /// dispatch, returning what became of each.
+    ///
+    /// **Call this when the device reconnects**, and after a sync. The engine runs no timer
+    /// of its own: the reachability signal is the host's, and a poll from here would wake a
+    /// dead network on a battery.
+    ///
+    /// A provider failure is not an error. It is recorded against its own op — retryable
+    /// classes park for a later pass, the rest settle — and reported in the
+    /// [`DrainReport`], so one bad recipient does not stop the rest of the queue going out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the queue cannot be read or an outcome cannot be
+    /// recorded.
+    pub async fn drain_outbox<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+    ) -> Result<DrainReport, ApiError> {
+        drain_outbox(provider, &self.store, account, worker(), LEASE_TTL)
+            .await
+            .map_err(map_sync_error)
     }
 
     /// Everything still outstanding in `account`'s outbox, in enqueue order: what has
