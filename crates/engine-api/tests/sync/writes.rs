@@ -2,7 +2,9 @@
 //! recorded as durable ops (success committing `Succeeded`, failure surfacing as a sync
 //! error), and the pending-op state poll for an unknown op.
 
-use engine_api::{ApiError, Engine, PendingOpId, PendingOpState};
+use engine_api::{
+    ApiError, Engine, FailureClass, PendingOpId, PendingOpKind, PendingOpState, queued_draft,
+};
 
 use super::*;
 
@@ -310,4 +312,70 @@ async fn pending_op_state_is_none_for_an_unknown_op() {
             .unwrap(),
         None
     );
+}
+
+/// The surface a host draws an outbox from: a send that could not go out stays in
+/// `outbox()` with its draft readable, a drain leaves it alone while it is backing off,
+/// and the user can withdraw it.
+///
+/// Before the outbox became a queue, a failed send left an op no host could find: the only
+/// read took an id a restarted host no longer had.
+#[tokio::test]
+async fn a_failed_send_is_visible_in_the_outbox_and_can_be_withdrawn() {
+    let engine = Engine::open_in_memory().unwrap();
+    let offline = SubmittingProvider {
+        inner: FakeProvider::new(),
+        fail: true,
+        unfiled: false,
+    };
+    let draft = draft("gen-outbox@test.local", "Quarterly report");
+    engine
+        .submit_mail(&offline, &account(), &draft)
+        .await
+        .expect_err("the send cannot go out with no transport");
+
+    // Still there, and it says what it is and why it has not gone.
+    let queued = engine.outbox(&account()).await.unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].kind, Some(PendingOpKind::MailSubmit));
+    assert_eq!(queued[0].attempts, 1);
+    assert_eq!(queued[0].failure_class, Some(FailureClass::Retryable));
+    // The message itself is recoverable from the row, which is how a host renders a
+    // subject and recipients rather than "1 item".
+    let recovered = queued_draft(&queued[0]).expect("a queued send carries its draft");
+    assert_eq!(recovered.message_id, draft.message_id);
+    assert_eq!(recovered.subject, "Quarterly report");
+
+    // A host calls this on every row it draws, so it must refuse the ones that are not
+    // sends rather than decode something that happens to fit.
+    let mut not_a_send = queued[0].clone();
+    not_a_send.kind = Some(PendingOpKind::MailEdit);
+    assert!(queued_draft(&not_a_send).is_none());
+
+    // A drain now must not attempt it: the store parked it behind a backoff.
+    let healthy = SubmittingProvider {
+        inner: FakeProvider::new(),
+        fail: false,
+        unfiled: false,
+    };
+    let report = engine.drain_outbox(&healthy, &account()).await.unwrap();
+    assert!(report.is_idle(), "a parked send is not due yet");
+    assert_eq!(report.deferred, 1);
+
+    // The user changes their mind, and the send is withdrawn rather than delivered later.
+    assert_eq!(
+        engine
+            .cancel_pending_op(&account(), queued[0].id)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(engine.outbox(&account()).await.unwrap().is_empty());
+    assert_eq!(
+        engine.pending_op_state(queued[0].id).await.unwrap(),
+        Some(PendingOpState::Cancelled)
+    );
+    // And a later drain, with a working transport, must not resurrect it.
+    let after = engine.drain_outbox(&healthy, &account()).await.unwrap();
+    assert!(after.is_idle());
 }

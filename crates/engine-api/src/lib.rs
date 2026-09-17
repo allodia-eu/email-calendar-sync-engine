@@ -114,7 +114,9 @@ pub use engine_core::{
     },
     write::{PendingOpId, PendingOpKind},
 };
-pub use engine_core::{mail::MailFlags, search_index::MailRow};
+// `FailureClass` names a public field of `PendingOpRow`, so a host reading an outbox
+// row must be able to name its type without depending on `engine-core`.
+pub use engine_core::{error::FailureClass, mail::MailFlags, search_index::MailRow};
 /// How every HTTP provider answers a throttled reply, and how a host hears about it.
 ///
 /// Re-exported because both halves are the host's: it builds one [`RetryConfig`] and hands it
@@ -186,7 +188,7 @@ impl ApiError {
     /// Whether this failure is a provider **conflict** — the provider's state moved
     /// underneath the operation (an IMAP `UIDVALIDITY` renumbering, a stale or
     /// expunged target), classified
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict). The
+    /// [`FailureClass::Conflict`]. The
     /// documented recovery is *re-sync the affected scope, then retry* (e.g. the
     /// [`Engine::message_body`] error contract); this accessor lets a host automate
     /// that recovery without parsing error text.
