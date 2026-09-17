@@ -740,6 +740,20 @@ one event never race on either provider.
   failure) and bumps its fence, refusing rather than erroring when the op is under a live
   lease or awaiting confirmation, neither of which can be called back.
 
+- **The drainer is what comes back for a queued op.** `engine_sync::drain_outbox` reads the
+  account's queue, keeps the ops it dispatches, and takes each under a **targeted** claim,
+  because the batch claim would lease kinds it cannot run and hold them for a whole lease:
+  the failure #202 removed from the inline path. It dispatches mail only so far
+  (`MailSubmit`, `MailEdit`, `MailReport`), whose provider calls are complete in the
+  payload; a calendar patch or delete takes the `base` event *beside* the request, so
+  draining one means re-reading it and re-applying the stored intent, which is the conflict
+  recovery and is its own work. Everything else stays queued and untouched, counted as
+  deferred. A provider failure is not an error: it is recorded against its own op and
+  reported, so one bad recipient does not stop the rest of the queue going out.
+  **The host decides when a pass runs** (on reconnect, after a sync, when a user asks). The
+  engine holds no timer: the reachability signal is the host's, and polling from here would
+  wake a dead network on a battery.
+
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the
   side effect's commit and the caller learning its id) returns the existing

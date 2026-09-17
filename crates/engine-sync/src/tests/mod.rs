@@ -37,15 +37,17 @@ use engine_store::{
 use store_sqlite::SqliteStore;
 
 use super::{
-    AccountId, AccountProgress, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
-    create_calendar_event, delete_calendar_event, edit_mail, expand_calendar_horizon,
-    patch_calendar_event, put_calendar_document, reconcile_calendar_events, refresh_folders,
-    rsvp_calendar_event, submit_mail, sync_calendar, sync_mail,
+    AccountId, AccountProgress, DrainOutcome, IgnoreCommits, StreamTuning, SyncCommit,
+    SyncObserver, create_calendar_event, delete_calendar_event, drain_outbox, edit_mail,
+    expand_calendar_horizon, patch_calendar_event, put_calendar_document,
+    reconcile_calendar_events, refresh_folders, rsvp_calendar_event, submit_mail, sync_calendar,
+    sync_mail,
 };
 
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
+mod drain;
 mod mail_account;
 mod mail_edit;
 mod mail_sync;
@@ -62,6 +64,8 @@ enum Fault {
     Submit,
     /// The send is refused for good (a rejected recipient), so the op settles.
     PermanentSubmit,
+    /// The send goes out, but the sender's copy cannot be filed in Sent.
+    UnfiledCopy,
     /// The send is lost *after* `DATA` — the ambiguous, unretryable case.
     AmbiguousSubmit,
     /// Every write's revision guard is refused (a CalDAV `412`, a JMAP `stateMismatch`).
@@ -93,6 +97,9 @@ struct FakeMail {
     /// Records, in order, the scopes whose mail was fetched — so a test can assert *which folder
     /// went first*, which a report ordered by completion cannot show.
     started: Arc<Mutex<Vec<MailboxId>>>,
+    /// Sends left to refuse before this provider starts accepting them: the outage a
+    /// drain pass is supposed to ride out. Counts down per attempt.
+    failing_sends: Mutex<u32>,
 }
 
 impl FakeMail {
@@ -113,6 +120,7 @@ impl FakeMail {
             state_delta: Mutex::default(),
             folder: None,
             started: Arc::new(Mutex::new(Vec::new())),
+            failing_sends: Mutex::new(0),
         }
     }
 
@@ -142,6 +150,22 @@ impl FakeMail {
 
     fn fails(&self, fault: Fault) -> bool {
         self.faults.contains(&fault)
+    }
+
+    /// Refuses the next `n` sends as throttled, then accepts: a provider that comes back.
+    fn failing_sends(self, n: u32) -> Self {
+        *self.failing_sends.lock().expect("failing_sends mutex") = n;
+        self
+    }
+
+    /// Whether this send should be refused, counting one off the outage if so.
+    fn send_is_out(&self) -> bool {
+        let mut left = self.failing_sends.lock().expect("failing_sends mutex");
+        if *left == 0 {
+            return false;
+        }
+        *left -= 1;
+        true
     }
 
     fn with_calendar(mut self, calendars: Vec<Calendar>, events: Vec<Event>) -> Self {
@@ -236,8 +260,14 @@ impl Provider for FakeMail {
             ))
         } else if self.fails(Fault::PermanentSubmit) {
             Err(ProviderError::permanent("recipient rejected"))
-        } else if self.fails(Fault::Submit) {
+        } else if self.fails(Fault::Submit) || self.send_is_out() {
             Err(ProviderError::rate_limited("slow down", None))
+        } else if self.fails(Fault::UnfiledCopy) {
+            Ok(SubmissionReceipt::unfiled(
+                ProviderKey::new("sent-1").unwrap(),
+                draft.message_id.clone(),
+                "APPEND refused: over quota",
+            ))
         } else {
             Ok(SubmissionReceipt::filed(
                 ProviderKey::new("sent-1").unwrap(),
