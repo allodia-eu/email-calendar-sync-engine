@@ -67,4 +67,10 @@ pub use store::Store;
 ///   whose synthesized `accepted` masks the participation status the account actually answered
 ///   (Google) or contradicts it with a placeholder `needs-action` (Graph), until the re-snapshot
 ///   re-projects it.
-pub const NORMALIZER_VERSION: u32 = 4;
+/// - `5`: a Graph event's `uid` is the iCalendar `UID` the organizer assigned, read from `uid`
+///   rather than from `iCalUId` — Exchange's `PidLidGlobalObjectId` re-encoding of it, which wraps
+///   an outside `UID` in a structure of its own (`graph.md`). A stored event keeps the re-encoding,
+///   so a meeting organized outside Exchange carries one identity in the iMIP message that
+///   announced it and another in the calendar that filed it, and scheduling reconciliation keying
+///   on that value (RFC 5546 §2.1.5) matches neither, until the re-snapshot re-reads it.
+pub const NORMALIZER_VERSION: u32 = 5;
