@@ -17,8 +17,10 @@ pub(super) use self::{
         unknown_op_is_rejected_and_stateless,
     },
     queue::{
-        a_cancelled_op_is_never_attempted, a_queue_read_lists_what_has_not_settled,
+        a_cancelled_op_is_never_attempted, a_parked_retry_can_be_hurried,
+        a_queue_read_lists_what_has_not_settled,
         a_retryable_failure_comes_back_when_its_backoff_elapses,
         a_retryable_failure_settles_once_its_attempts_run_out,
+        the_host_verbs_refuse_what_they_cannot_act_on,
     },
 };

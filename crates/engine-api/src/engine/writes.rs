@@ -8,7 +8,7 @@ use engine_core::{
     write::{PendingOpId, PendingOpKind},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider};
-use engine_store::{CancelRejection, PendingOpRow, PendingOpState, Store, StoreRead};
+use engine_store::{OpRejection, PendingOpRow, PendingOpState, Store, StoreRead};
 use engine_sync::{
     DrainReport, MailEditOutcome, ReportOutcome, SubmitOutcome, SyncError, drain_outbox, edit_mail,
     report_message, submit_mail,
@@ -223,8 +223,26 @@ impl Engine {
         &self,
         account: &AccountId,
         op: PendingOpId,
-    ) -> Result<Option<CancelRejection>, ApiError> {
+    ) -> Result<Option<OpRejection>, ApiError> {
         Ok(self.store.cancel_pending_op(account.clone(), op).await?)
+    }
+
+    /// Clears a queued op's retry backoff so the next [`drain_outbox`](Self::drain_outbox)
+    /// attempts it, returning `None` when it did and the reason when it could not.
+    ///
+    /// What a host wires to "Send now". The attempt count is not reset: one more attempt
+    /// now is not a fresh bound. An op with no backoff to clear is already due, which is
+    /// what the caller wanted, so that is `None` too.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn retry_pending_op_now(
+        &self,
+        account: &AccountId,
+        op: PendingOpId,
+    ) -> Result<Option<OpRejection>, ApiError> {
+        Ok(self.store.retry_pending_op_now(account.clone(), op).await?)
     }
 }
 

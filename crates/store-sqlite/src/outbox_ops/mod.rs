@@ -15,7 +15,7 @@ use engine_core::{
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_store::{
-    CancelRejection, ClaimRejection, FenceToken, LeasedPendingOp, MAX_ATTEMPTS, OpLease,
+    ClaimRejection, FenceToken, LeasedPendingOp, MAX_ATTEMPTS, OpLease, OpRejection,
     PendingOpClaim, PendingOpState, Result, StoreError, WorkerId, retry_delay,
 };
 use rusqlite::{Connection, OptionalExtension};
@@ -307,22 +307,22 @@ pub(crate) fn cancel(
     account: &AccountId,
     op_id: PendingOpId,
     now: UtcDateTime,
-) -> Result<Option<CancelRejection>> {
+) -> Result<Option<OpRejection>> {
     let id = convert::op_id_to_i64(op_id)?;
     let tx = conn.transaction().map_err(convert::backend)?;
     let Some(op) = load_one_op(&tx, account.as_str(), id)? else {
-        return Ok(Some(CancelRejection::Unknown));
+        return Ok(Some(OpRejection::Unknown));
     };
     match op.state {
         // A dead lease is nobody's side effect: the worker that held it is gone.
         PendingOpState::Pending => {}
         PendingOpState::InFlight if !convert::is_live(op.lease_expiry, now) => {}
-        PendingOpState::InFlight => return Ok(Some(CancelRejection::InFlight)),
+        PendingOpState::InFlight => return Ok(Some(OpRejection::InFlight)),
         PendingOpState::NeedsConfirmation => {
-            return Ok(Some(CancelRejection::AwaitingConfirmation));
+            return Ok(Some(OpRejection::AwaitingConfirmation));
         }
         PendingOpState::Succeeded | PendingOpState::Failed | PendingOpState::Cancelled => {
-            return Ok(Some(CancelRejection::Settled));
+            return Ok(Some(OpRejection::Settled));
         }
     }
     // Bump the token so a worker still holding the old lease cannot resolve it.
@@ -332,6 +332,44 @@ pub(crate) fn cancel(
             SET state = 'Cancelled', token = ?1, lease_expiry = NULL, next_attempt_at = NULL
           WHERE id = ?2",
         (convert::generation_to_i64(token.get())?, id),
+    )
+    .map_err(convert::backend)?;
+    tx.commit().map_err(convert::backend)?;
+    Ok(None)
+}
+
+/// Clears a queued op's retry backoff so the next drain attempts it.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure.
+pub(crate) fn retry_now(
+    conn: &mut Connection,
+    account: &AccountId,
+    op_id: PendingOpId,
+    now: UtcDateTime,
+) -> Result<Option<OpRejection>> {
+    let id = convert::op_id_to_i64(op_id)?;
+    let tx = conn.transaction().map_err(convert::backend)?;
+    let Some(op) = load_one_op(&tx, account.as_str(), id)? else {
+        return Ok(Some(OpRejection::Unknown));
+    };
+    match op.state {
+        // A dead lease is nobody's attempt: the worker that held it is gone.
+        PendingOpState::Pending => {}
+        PendingOpState::InFlight if !convert::is_live(op.lease_expiry, now) => {}
+        PendingOpState::InFlight => return Ok(Some(OpRejection::InFlight)),
+        PendingOpState::NeedsConfirmation => {
+            return Ok(Some(OpRejection::AwaitingConfirmation));
+        }
+        PendingOpState::Succeeded | PendingOpState::Failed | PendingOpState::Cancelled => {
+            return Ok(Some(OpRejection::Settled));
+        }
+    }
+    // The attempt count stays: one more attempt now, not a fresh bound.
+    tx.execute(
+        "UPDATE pending_op SET next_attempt_at = NULL WHERE id = ?1",
+        [id],
     )
     .map_err(convert::backend)?;
     tx.commit().map_err(convert::backend)?;

@@ -3,7 +3,8 @@
 //! error), and the pending-op state poll for an unknown op.
 
 use engine_api::{
-    ApiError, Engine, FailureClass, PendingOpId, PendingOpKind, PendingOpState, queued_draft,
+    ApiError, Engine, FailureClass, OpRejection, PendingOpId, PendingOpKind, PendingOpState,
+    queued_draft,
 };
 
 use super::*;
@@ -361,6 +362,54 @@ async fn a_failed_send_is_visible_in_the_outbox_and_can_be_withdrawn() {
     let report = engine.drain_outbox(&healthy, &account()).await.unwrap();
     assert!(report.is_idle(), "a parked send is not due yet");
     assert_eq!(report.deferred, 1);
+
+    // "Send now": the backoff clears, so the very next pass takes it, and this time the
+    // transport is there.
+    assert_eq!(
+        engine
+            .retry_pending_op_now(&account(), queued[0].id)
+            .await
+            .unwrap(),
+        None
+    );
+    let sent = engine.drain_outbox(&healthy, &account()).await.unwrap();
+    assert_eq!(sent.delivered(), 1);
+    assert!(engine.outbox(&account()).await.unwrap().is_empty());
+    assert_eq!(
+        engine.pending_op_state(queued[0].id).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+
+    // Hurrying a settled op is refused rather than silently doing nothing.
+    assert_eq!(
+        engine
+            .retry_pending_op_now(&account(), queued[0].id)
+            .await
+            .unwrap(),
+        Some(OpRejection::Settled)
+    );
+}
+
+/// The other half of the row's actions: a queued send the user withdraws never goes out.
+#[tokio::test]
+async fn a_queued_send_can_be_withdrawn_before_it_goes() {
+    let engine = Engine::open_in_memory().unwrap();
+    let offline = SubmittingProvider {
+        inner: FakeProvider::new(),
+        fail: true,
+        unfiled: false,
+    };
+    let draft = draft("gen-withdraw@test.local", "Quarterly report");
+    engine
+        .submit_mail(&offline, &account(), &draft)
+        .await
+        .expect_err("the send cannot go out with no transport");
+    let queued = engine.outbox(&account()).await.unwrap();
+    let healthy = SubmittingProvider {
+        inner: FakeProvider::new(),
+        fail: false,
+        unfiled: false,
+    };
 
     // The user changes their mind, and the send is withdrawn rather than delivered later.
     assert_eq!(

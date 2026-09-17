@@ -140,7 +140,7 @@ pub use engine_recurrence::{
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
 pub use engine_store::{
-    CancelRejection, ContactPhotoFile, MailListRow, OccurrenceRow, PendingOpRow, PendingOpState,
+    ContactPhotoFile, MailListRow, OccurrenceRow, OpRejection, PendingOpRow, PendingOpState,
     PruneReport, SchemaStatus, SourcesDropped, SweepReport, SyncApplied, TzdataVersion,
 };
 pub use engine_sync::{

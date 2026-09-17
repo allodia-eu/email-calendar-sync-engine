@@ -36,7 +36,7 @@ pub use lease::{
     Clock, FenceToken, LeaseRequest, ManualClock, OpLease, SyncClaim, SyncLease, WorkerId,
 };
 pub use outbox::{
-    CancelRejection, ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, PendingOpClaim, PendingOpRow,
+    ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, OpRejection, PendingOpClaim, PendingOpRow,
     PendingOpState, retry_delay,
 };
 pub use read::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead};

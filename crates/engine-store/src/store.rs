@@ -23,7 +23,7 @@ use crate::{
     apply::{ApplyBatch, DerivedWrite, SyncApplied},
     error::Result,
     lease::{LeaseRequest, OpLease, SyncClaim, SyncLease},
-    outbox::{CancelRejection, LeasedPendingOp, PendingOpClaim},
+    outbox::{LeasedPendingOp, OpRejection, PendingOpClaim},
 };
 
 /// The store writer, lease, and outbox contract.
@@ -199,7 +199,7 @@ pub trait Store: Send + Sync {
     /// The host's half of an outbox a user can see: a message queued to the wrong address
     /// has to be stoppable, and no other call removes an op from the runnable set. Refuses
     /// rather than errors when the op cannot be withdrawn, because the caller acts on the
-    /// difference (see [`CancelRejection`]).
+    /// difference (see [`OpRejection`]).
     ///
     /// The row itself stays: it is the `(account, idempotency_key)` record that makes
     /// enqueuing idempotent, and deleting one re-arms a replay of that write.
@@ -211,5 +211,26 @@ pub trait Store: Send + Sync {
         &self,
         account: AccountId,
         op: PendingOpId,
-    ) -> Result<Option<CancelRejection>>;
+    ) -> Result<Option<OpRejection>>;
+
+    /// Clears a queued op's retry backoff so the next drain pass attempts it, returning
+    /// `None` when it did and the reason when it could not.
+    ///
+    /// The other half of an outbox a user can see: a person looking at a message that has
+    /// not gone will press the button rather than wait out a delay the engine chose, and
+    /// a bounded wait the user is watching is a long one. The attempt count is **not**
+    /// reset: asking for one more attempt now is not asking for the bound to start again,
+    /// and an op that has used up its attempts has already settled and is refused here.
+    ///
+    /// An op with no backoff to clear is not a refusal: it is already due, which is what
+    /// the caller wanted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure. A refusal is not an error.
+    async fn retry_pending_op_now(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+    ) -> Result<Option<OpRejection>>;
 }

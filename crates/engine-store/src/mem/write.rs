@@ -20,8 +20,8 @@ use crate::{
     error::{Result, StoreError},
     lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease},
     outbox::{
-        CancelRejection, ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, PendingOpClaim,
-        PendingOpState, retry_delay,
+        ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, OpRejection, PendingOpClaim, PendingOpState,
+        retry_delay,
     },
     store::Store,
 };
@@ -441,28 +441,55 @@ impl<C: Clock> Store for MemStore<C> {
         &self,
         account: AccountId,
         op: PendingOpId,
-    ) -> Result<Option<CancelRejection>> {
+    ) -> Result<Option<OpRejection>> {
         let now = self.clock.now();
         let mut inner = self.lock();
         let Some(cell) = inner.ops.get_mut(&op).filter(|o| o.account == account) else {
-            return Ok(Some(CancelRejection::Unknown));
+            return Ok(Some(OpRejection::Unknown));
         };
         match cell.state {
             // A dead lease is nobody's side effect: the worker that held it is gone.
             PendingOpState::Pending => {}
             PendingOpState::InFlight if !is_live(cell.lease_expiry, now) => {}
-            PendingOpState::InFlight => return Ok(Some(CancelRejection::InFlight)),
+            PendingOpState::InFlight => return Ok(Some(OpRejection::InFlight)),
             PendingOpState::NeedsConfirmation => {
-                return Ok(Some(CancelRejection::AwaitingConfirmation));
+                return Ok(Some(OpRejection::AwaitingConfirmation));
             }
             PendingOpState::Succeeded | PendingOpState::Failed | PendingOpState::Cancelled => {
-                return Ok(Some(CancelRejection::Settled));
+                return Ok(Some(OpRejection::Settled));
             }
         }
         // Bump the token so a worker still holding the old lease cannot resolve it.
         cell.token = cell.token.bump();
         cell.state = PendingOpState::Cancelled;
         cell.lease_expiry = None;
+        cell.next_attempt_at = None;
+        Ok(None)
+    }
+
+    async fn retry_pending_op_now(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+    ) -> Result<Option<OpRejection>> {
+        let now = self.clock.now();
+        let mut inner = self.lock();
+        let Some(cell) = inner.ops.get_mut(&op).filter(|o| o.account == account) else {
+            return Ok(Some(OpRejection::Unknown));
+        };
+        match cell.state {
+            // A dead lease is nobody's attempt: the worker that held it is gone.
+            PendingOpState::Pending => {}
+            PendingOpState::InFlight if !is_live(cell.lease_expiry, now) => {}
+            PendingOpState::InFlight => return Ok(Some(OpRejection::InFlight)),
+            PendingOpState::NeedsConfirmation => {
+                return Ok(Some(OpRejection::AwaitingConfirmation));
+            }
+            PendingOpState::Succeeded | PendingOpState::Failed | PendingOpState::Cancelled => {
+                return Ok(Some(OpRejection::Settled));
+            }
+        }
+        // The attempt count stays: one more attempt now, not a fresh bound.
         cell.next_attempt_at = None;
         Ok(None)
     }
