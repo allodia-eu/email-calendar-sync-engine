@@ -27,8 +27,9 @@ use engine_core::{
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion,
     EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit,
-    MailEditReceipt, OverrideSurvival, PatchTarget, Provider, ProviderError, ProviderResult,
-    RsvpResponse, ScopeSync, SubmissionReceipt, WriteGuard,
+    MailEditReceipt, MessageReport, OverrideSurvival, PatchTarget, Provider, ProviderError,
+    ProviderResult, ReportReceipt, ReportVerdict, RsvpResponse, ScopeSync, SubmissionReceipt,
+    WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{
@@ -66,6 +67,8 @@ enum Fault {
     PermanentSubmit,
     /// The send goes out, but the sender's copy cannot be filed in Sent.
     UnfiledCopy,
+    /// Reporting a message is throttled.
+    Report,
     /// The send is lost *after* `DATA` — the ambiguous, unretryable case.
     AmbiguousSubmit,
     /// Every write's revision guard is refused (a CalDAV `412`, a JMAP `stateMismatch`).
@@ -314,6 +317,17 @@ impl Provider for FakeMail {
             return Err(ProviderError::conflict("UIDVALIDITY changed"));
         }
         Ok(MailEditReceipt::new(edit.target().clone()))
+    }
+
+    async fn report_message(
+        &self,
+        _account: &AccountId,
+        report: &MessageReport,
+    ) -> ProviderResult<ReportReceipt> {
+        if self.fails(Fault::Report) {
+            return Err(ProviderError::rate_limited("slow down", None));
+        }
+        Ok(ReportReceipt::new(report.target.clone()))
     }
 }
 

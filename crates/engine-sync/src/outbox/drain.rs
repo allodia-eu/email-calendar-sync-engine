@@ -115,6 +115,17 @@ pub enum DrainOutcome {
         /// The provider's description of the ambiguity.
         detail: String,
     },
+    /// The stored payload could not be read as the request its kind names, so the op
+    /// never reached the provider and is settled.
+    ///
+    /// Distinct from [`Failed`](DrainOutcome::Failed), which is the provider refusing:
+    /// nothing was asked of it. A payload written by a build this one cannot read reaches
+    /// here, and no number of retries changes that, so the op settles rather than
+    /// blocking the pass behind it for ever.
+    Undecodable {
+        /// What could not be decoded.
+        detail: String,
+    },
 }
 
 /// Attempts every op in `account`'s outbox that is due and that this pass can dispatch.
@@ -144,7 +155,7 @@ where
     let mut report = DrainReport::default();
 
     for row in queue {
-        let Some(kind) = dispatchable(&row) else {
+        let Some(op) = dispatchable(&row) else {
             report.deferred += 1;
             continue;
         };
@@ -158,31 +169,55 @@ where
             report.deferred += 1;
             continue;
         };
-        let outcome = run_one(provider, store, account, &leased, kind).await?;
+        let outcome = run_one(provider, store, account, &leased, op).await?;
         report.attempted.push(DrainedOp {
             id: row.id,
-            kind,
+            kind: op.kind(),
             outcome,
         });
     }
     Ok(report)
 }
 
-/// The kind this pass would dispatch for `row`, or `None` to leave it alone.
+/// The writes this pass runs: exactly the kinds whose provider call is complete in the
+/// stored payload.
+///
+/// A type rather than a subset of [`PendingOpKind`] checked by hand, so [`run_one`]
+/// matches exhaustively. The alternative leaves a fallback arm for kinds
+/// [`dispatchable`] already excluded: unreachable, untestable, and one edit away from
+/// being neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MailOp {
+    Submit,
+    Edit,
+    Report,
+}
+
+impl MailOp {
+    /// The stored kind this dispatches, for the report a caller reads.
+    fn kind(self) -> PendingOpKind {
+        match self {
+            Self::Submit => PendingOpKind::MailSubmit,
+            Self::Edit => PendingOpKind::MailEdit,
+            Self::Report => PendingOpKind::MailReport,
+        }
+    }
+}
+
+/// The write this pass would run for `row`, or `None` to leave it alone.
 ///
 /// Three reasons to leave one: it carries no kind (enqueued before the store recorded
 /// one, so nothing says which request type its payload is), it is not `Pending` (in
 /// flight under someone else's lease, or awaiting a confirmation no retry may resolve),
 /// or it is a kind whose provider call needs more than the payload.
-fn dispatchable(row: &PendingOpRow) -> Option<PendingOpKind> {
+fn dispatchable(row: &PendingOpRow) -> Option<MailOp> {
     if row.state != PendingOpState::Pending {
         return None;
     }
     match row.kind? {
-        kind
-        @ (PendingOpKind::MailSubmit | PendingOpKind::MailEdit | PendingOpKind::MailReport) => {
-            Some(kind)
-        }
+        PendingOpKind::MailSubmit => Some(MailOp::Submit),
+        PendingOpKind::MailEdit => Some(MailOp::Edit),
+        PendingOpKind::MailReport => Some(MailOp::Report),
         PendingOpKind::CalendarCreate
         | PendingOpKind::CalendarPatch
         | PendingOpKind::CalendarDocument
@@ -200,15 +235,17 @@ async fn run_one<P, S>(
     store: &S,
     account: &AccountId,
     leased: &LeasedPendingOp,
-    kind: PendingOpKind,
+    op: MailOp,
 ) -> Result<DrainOutcome, SyncError>
 where
     P: Provider,
     S: Store + StoreRead,
 {
-    match kind {
-        PendingOpKind::MailSubmit => {
-            let draft: Draft = decode(leased, "draft")?;
+    match op {
+        MailOp::Submit => {
+            let Some(draft) = decode::<Draft>(store, leased).await? else {
+                return Ok(undecodable("draft"));
+            };
             match provider.submit_email(account, &draft).await {
                 Ok(receipt) => {
                     store
@@ -243,8 +280,10 @@ where
                 }
             }
         }
-        PendingOpKind::MailEdit => {
-            let edit: MailEdit = decode(leased, "mail edit")?;
+        MailOp::Edit => {
+            let Some(edit) = decode::<MailEdit>(store, leased).await? else {
+                return Ok(undecodable("mail edit"));
+            };
             match provider.edit_mail(account, &edit).await {
                 Ok(receipt) => {
                     store
@@ -260,8 +299,10 @@ where
                 Err(err) => settle(store, leased, &err).await,
             }
         }
-        PendingOpKind::MailReport => {
-            let report: MessageReport = decode(leased, "message report")?;
+        MailOp::Report => {
+            let Some(report) = decode::<MessageReport>(store, leased).await? else {
+                return Ok(undecodable("message report"));
+            };
             match provider.report_message(account, &report).await {
                 Ok(receipt) => {
                     store
@@ -277,10 +318,6 @@ where
                 Err(err) => settle(store, leased, &err).await,
             }
         }
-        // `dispatchable` admits no other kind.
-        other => Err(SyncError::Outbox(format!(
-            "drain does not dispatch {other:?}"
-        ))),
     }
 }
 
@@ -312,11 +349,34 @@ async fn settle<S: Store + StoreRead>(
     })
 }
 
-/// Deserializes a claimed op's payload into the request its kind names.
-fn decode<T: serde::de::DeserializeOwned>(
+/// Deserializes a claimed op's payload into the request its kind names, settling the op
+/// as permanently failed and returning `None` when it cannot be read.
+///
+/// A pass must not abort here. One op whose payload this build cannot read would
+/// otherwise stop every op behind it draining, for ever, and the unreadable one is not
+/// coming back however many times it is tried.
+async fn decode<T: serde::de::DeserializeOwned>(
+    store: &impl Store,
     leased: &LeasedPendingOp,
-    what: &str,
-) -> Result<T, SyncError> {
-    serde_json::from_value(leased.op.payload.clone())
-        .map_err(|e| SyncError::Outbox(format!("decode queued {what}: {e}")))
+) -> Result<Option<T>, SyncError> {
+    let Ok(request) = serde_json::from_value(leased.op.payload.clone()) else {
+        store
+            .mark_pending_op(
+                &leased.lease,
+                PendingOutcome::Failed {
+                    class: FailureClass::Permanent,
+                    retry_after: None,
+                },
+            )
+            .await?;
+        return Ok(None);
+    };
+    Ok(Some(request))
+}
+
+/// The outcome for an op whose payload could not be read.
+fn undecodable(what: &str) -> DrainOutcome {
+    DrainOutcome::Undecodable {
+        detail: format!("queued {what} could not be read by this build"),
+    }
 }
