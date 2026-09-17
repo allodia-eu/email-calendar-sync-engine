@@ -12,8 +12,8 @@ use engine_core::{
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_store::{
-    ApplyBatch, CancelRejection, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease,
-    PendingOpClaim, Result, Store, SyncApplied, SyncClaim, SyncLease,
+    ApplyBatch, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, OpRejection, PendingOpClaim,
+    Result, Store, SyncApplied, SyncClaim, SyncLease,
 };
 use serde::Serialize;
 
@@ -156,9 +156,19 @@ impl<C: Clock> Store for SqliteStore<C> {
         &self,
         account: AccountId,
         op: PendingOpId,
-    ) -> Result<Option<CancelRejection>> {
+    ) -> Result<Option<OpRejection>> {
         let now = self.clock.now();
         self.call(move |conn| outbox_ops::cancel(conn, &account, op, now))
+            .await
+    }
+
+    async fn retry_pending_op_now(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+    ) -> Result<Option<OpRejection>> {
+        let now = self.clock.now();
+        self.call(move |conn| outbox_ops::retry_now(conn, &account, op, now))
             .await
     }
 }

@@ -112,7 +112,22 @@ fn pending_op_of(kind: PendingOpKind, idempotency: &str, resource: &str) -> Pend
 ///
 /// `make` returns a store wired to a [`ManualClock`] the suite advances to drive
 /// lease/TTL expiry. Every backend must pass this suite unchanged.
+///
+/// The two halves are separate futures, each boxed at its await. Inlined, one state
+/// machine carries a variant per case and the suite's future outgrows the budget
+/// `clippy::large_futures` guards; boxing also keeps adding a case from changing how
+/// this function compiles.
 pub async fn run_all<S, F>(make: F)
+where
+    S: Store + StoreRead,
+    F: Fn() -> (S, ManualClock),
+{
+    Box::pin(run_scope_cases(&make)).await;
+    Box::pin(run_outbox_cases(&make)).await;
+}
+
+/// The scope half: claim, apply, reconcile, maintenance, release, and the reads over them.
+async fn run_scope_cases<S, F>(make: &F)
 where
     S: Store + StoreRead,
     F: Fn() -> (S, ManualClock),
@@ -175,6 +190,14 @@ where
     scope_cases::scope_occurrences_reads_the_overlapping_window(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::scope_occurrences_keep_overrides_and_drop_with_the_event(&store, &clock).await;
+}
+
+/// The outbox half: enqueue, claim, mark, retry parking, cancellation and the queue read.
+async fn run_outbox_cases<S, F>(make: &F)
+where
+    S: Store + StoreRead,
+    F: Fn() -> (S, ManualClock),
+{
     let (store, clock) = make();
     outbox_cases::expired_op_lease_is_rejected(&store, &clock).await;
     let (store, clock) = make();
@@ -205,6 +228,12 @@ where
 
     let (store, clock) = make();
     outbox_cases::a_queue_read_lists_what_has_not_settled(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::a_parked_retry_can_be_hurried(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::the_host_verbs_refuse_what_they_cannot_act_on(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.

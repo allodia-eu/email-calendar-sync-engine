@@ -3,12 +3,15 @@
 
 use core::time::Duration;
 
-use engine_core::{error::FailureClass, write::PendingOutcome};
+use engine_core::{
+    error::FailureClass,
+    write::{PendingOpId, PendingOutcome},
+};
 
 use super::super::{acct, lease_request, pending_op, pk};
 use crate::{
     lease::ManualClock,
-    outbox::{CancelRejection, ClaimRejection, MAX_ATTEMPTS, PendingOpClaim, PendingOpState},
+    outbox::{ClaimRejection, MAX_ATTEMPTS, OpRejection, PendingOpClaim, PendingOpState},
     read::StoreRead,
     store::Store,
 };
@@ -183,7 +186,7 @@ pub(in crate::contract) async fn a_cancelled_op_is_never_attempted<S: Store + St
             .cancel_pending_op(account.clone(), queued)
             .await
             .unwrap(),
-        Some(CancelRejection::Settled)
+        Some(OpRejection::Settled)
     );
 
     // An op under a live lease may be mid-round-trip, so it cannot be withdrawn:
@@ -204,7 +207,7 @@ pub(in crate::contract) async fn a_cancelled_op_is_never_attempted<S: Store + St
             .cancel_pending_op(account.clone(), live)
             .await
             .unwrap(),
-        Some(CancelRejection::InFlight)
+        Some(OpRejection::InFlight)
     );
 
     // Once that lease dies the worker holding it is gone, so the op can be withdrawn.
@@ -227,6 +230,94 @@ pub(in crate::contract) async fn a_cancelled_op_is_never_attempted<S: Store + St
             )
             .await
             .is_err()
+    );
+}
+
+/// A host can hurry a parked retry: the backoff clears and the next claim takes it, without
+/// the attempt count starting over.
+pub(in crate::contract) async fn a_parked_retry_can_be_hurried<S: Store + StoreRead>(
+    store: &S,
+    clock: &ManualClock,
+) {
+    let account = acct("acct-retry-now");
+    let op = store
+        .enqueue_pending_op(account.clone(), pending_op("hurry-1", "res-hurry"))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_pending_op(account.clone(), op, lease_request("worker", 300))
+        .await
+        .unwrap();
+    let PendingOpClaim::Leased(leased) = claimed else {
+        panic!("a fresh op must be claimable");
+    };
+    store
+        .mark_pending_op(
+            &leased.lease,
+            PendingOutcome::Failed {
+                class: FailureClass::Retryable,
+                // Far longer than any test would sit through, which is the point: a user
+                // watching an unsent message will not wait out a delay the engine chose.
+                retry_after: Some("PT1H".parse().unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .claim_pending_op(account.clone(), op, lease_request("worker", 300))
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::Backoff)
+    );
+
+    assert_eq!(
+        store
+            .retry_pending_op_now(account.clone(), op)
+            .await
+            .unwrap(),
+        None
+    );
+    let row = one_row(store, &account).await;
+    assert_eq!(row.next_attempt_at, None, "the backoff is cleared");
+    assert_eq!(
+        row.attempts, 1,
+        "one more attempt now, not a fresh bound: the count stands"
+    );
+    assert!(matches!(
+        store
+            .claim_pending_op(account.clone(), op, lease_request("worker", 300))
+            .await
+            .unwrap(),
+        PendingOpClaim::Leased(_)
+    ));
+
+    // An op nobody can hurry says so rather than silently doing nothing: this one is
+    // in flight under a live lease, so a second attempt would race the first.
+    let live = store
+        .enqueue_pending_op(account.clone(), pending_op("hurry-2", "res-live"))
+        .await
+        .unwrap();
+    let PendingOpClaim::Leased(_) = store
+        .claim_pending_op(account.clone(), live, lease_request("worker", 300))
+        .await
+        .unwrap()
+    else {
+        panic!("a fresh op must be claimable");
+    };
+    assert_eq!(
+        store
+            .retry_pending_op_now(account.clone(), live)
+            .await
+            .unwrap(),
+        Some(OpRejection::InFlight)
+    );
+    // Once that lease dies the op is nobody's, and hurrying it is a no-op success: it
+    // is already due.
+    clock.advance(Duration::from_mins(10));
+    assert_eq!(
+        store.retry_pending_op_now(account, live).await.unwrap(),
+        None
     );
 }
 
@@ -308,4 +399,87 @@ async fn one_row<S: StoreRead>(
     let mut rows = store.list_pending_ops(account.clone()).await.unwrap();
     assert_eq!(rows.len(), 1, "case expects exactly one outstanding op");
     rows.remove(0)
+}
+
+/// Both host verbs refuse the same two conditions, and say which: an op this account does
+/// not have, and one parked awaiting confirmation.
+///
+/// The second is the one that matters. A `NeedsConfirmation` send may already have been
+/// delivered, so neither withdrawing it (which would claim to have stopped it) nor
+/// attempting it again (which would risk a second copy) is allowed, however a host asks.
+pub(in crate::contract) async fn the_host_verbs_refuse_what_they_cannot_act_on<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-verb-refusals");
+    let absent = PendingOpId::new(9_999);
+    assert_eq!(
+        store
+            .cancel_pending_op(account.clone(), absent)
+            .await
+            .unwrap(),
+        Some(OpRejection::Unknown)
+    );
+    assert_eq!(
+        store
+            .retry_pending_op_now(account.clone(), absent)
+            .await
+            .unwrap(),
+        Some(OpRejection::Unknown)
+    );
+
+    // An op belonging to a different account is not this account's to act on either.
+    let other = acct("acct-verb-refusals-other");
+    let theirs = store
+        .enqueue_pending_op(other, pending_op("theirs", "res-theirs"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .cancel_pending_op(account.clone(), theirs)
+            .await
+            .unwrap(),
+        Some(OpRejection::Unknown)
+    );
+
+    let ambiguous = store
+        .enqueue_pending_op(account.clone(), pending_op("ambiguous", "res-ambiguous"))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_pending_op(account.clone(), ambiguous, lease_request("worker", 300))
+        .await
+        .unwrap();
+    let PendingOpClaim::Leased(leased) = claimed else {
+        panic!("a fresh op must be claimable");
+    };
+    store
+        .mark_pending_op(
+            &leased.lease,
+            PendingOutcome::NeedsConfirmation {
+                detail: "post-DATA acknowledgement lost".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .cancel_pending_op(account.clone(), ambiguous)
+            .await
+            .unwrap(),
+        Some(OpRejection::AwaitingConfirmation)
+    );
+    assert_eq!(
+        store
+            .retry_pending_op_now(account.clone(), ambiguous)
+            .await
+            .unwrap(),
+        Some(OpRejection::AwaitingConfirmation)
+    );
+    // Untouched by either: still awaiting the confirmation only a reconcile resolves.
+    let row = one_row(store, &account).await;
+    assert_eq!(row.state, PendingOpState::NeedsConfirmation);
 }

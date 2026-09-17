@@ -184,20 +184,26 @@ pub struct PendingOpRow {
     pub detail: Option<String>,
 }
 
-/// Why a host's request to withdraw a queued op did not take effect.
+/// Why a host's request to act on a queued op did not take effect.
+///
+/// Shared by the two things a host can do to an op it did not claim: withdraw it
+/// (`Store::cancel_pending_op`) and hurry it (`Store::retry_pending_op_now`). The
+/// conditions are the same either way, because both are a host reaching for an op some
+/// other worker may already own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CancelRejection {
+pub enum OpRejection {
     /// No op with that id in this account's outbox.
     Unknown,
-    /// The op has already settled; there is nothing left to withdraw.
+    /// The op has already settled; there is nothing left to act on.
     Settled,
     /// A live lease holds the op: the provider side effect may be happening right
-    /// now, so withdrawing it would claim to have stopped something that already
-    /// went out. The caller retries once the lease lapses.
+    /// now, so withdrawing it would claim to have stopped something that already went
+    /// out, and hurrying it would ask for a second attempt while the first is running.
+    /// The caller retries once the lease lapses.
     InFlight,
     /// The op is parked in [`NeedsConfirmation`](PendingOpState::NeedsConfirmation):
-    /// it may already have been delivered, so it is resolved by confirmation, never
-    /// by withdrawal.
+    /// it may already have been delivered, so it is resolved by confirmation, never by
+    /// withdrawal and never by another attempt.
     AwaitingConfirmation,
 }
 
