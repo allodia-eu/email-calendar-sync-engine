@@ -41,6 +41,24 @@ fn draft(message_id: &str, subject: &str, from: &str) -> Draft {
     )
 }
 
+/// Whether the stored message `key` carries an attachment, as the account's own sync
+/// reports it.
+///
+/// `Message::has_attachment` rather than `Message::attachments`: the mail sync selects
+/// `hasAttachment` and not the attachments collection, so the list is empty here whatever
+/// the server holds.
+async fn has_attachment(provider: &JmapProvider, key: &engine_core::ids::ProviderKey) -> bool {
+    let emails = provider.sync_email(&account(), None).await.expect("sync");
+    let SyncUpdate::Snapshot { objects, .. } = emails.update else {
+        panic!("a cursorless sync is a snapshot");
+    };
+    objects
+        .iter()
+        .find(|m| m.id.key() == key)
+        .expect("the saved draft syncs back")
+        .has_attachment
+}
+
 /// The account's drafts, as the server holds them: every message carrying
 /// `message_id`, with the subject each one records.
 async fn drafts_carrying(provider: &JmapProvider, message_id: &str) -> Vec<String> {
@@ -180,6 +198,65 @@ async fn live_jmap_a_saved_draft_lands_in_the_drafts_mailbox() {
 
     provider
         .delete_draft(&account(), &key)
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+async fn live_jmap_a_resaved_attachment_is_not_sent_again() {
+    let Some(harness) = Harness::from_env() else {
+        eprintln!("skipping live_jmap_resaved_attachment: STALWART_HTTP_ADDR unset");
+        return;
+    };
+    let provider = connect(&harness).await;
+
+    let message_id = &format!(
+        "live-jmap-draft-blob-{}@test.local",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_nanos()
+    );
+    let attached = |subject: &str| {
+        let mut draft = draft(message_id, subject, &harness.account);
+        draft.attachments = vec![engine_provider::DraftAttachment::attachment(
+            "note.txt",
+            "text/plain",
+            b"the same bytes both times".to_vec(),
+        )];
+        draft
+    };
+
+    let first = provider
+        .put_draft(&account(), &attached("Blob v1"), None)
+        .await
+        .expect("first save");
+    assert!(
+        has_attachment(&provider, &first).await,
+        "the attachment is on the stored draft"
+    );
+
+    let second = provider
+        .put_draft(&account(), &attached("Blob v2"), Some(&first))
+        .await
+        .expect("second save");
+
+    // An `Email` is immutable, so the replacement is a new object — but the bytes are
+    // not re-sent: it references the blob the stored draft already carried. Saving a
+    // draft with a large file attached therefore costs that file once, not once per save.
+    // The replacement references the blob the stored draft carried rather than sending
+    // the bytes again. A `blobId` the server would not accept fails the whole
+    // `Email/set` with `blobNotFound`, so a save that succeeds with its attachment intact
+    // is what proves the reference was good. How many uploads it cost is counted exactly
+    // in the offline suite, which is the only place a request can be counted.
+    assert_ne!(first, second, "a replaced JMAP email is a new object");
+    assert!(
+        has_attachment(&provider, &second).await,
+        "the re-saved draft lost its attachment"
+    );
+
+    provider
+        .delete_draft(&account(), &second)
         .await
         .expect("cleanup");
 }

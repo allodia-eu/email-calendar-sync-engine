@@ -185,12 +185,35 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `keywords: { "$draft": true, "$seen": true }` — just no `EmailSubmission/set` after
   it. One `build_draft` serves both, so a saved draft and a sent one cannot drift apart
   in shape.
-- **A re-save is one method call, and that is stronger than the other adapters manage.**
-  The `Email/set` carries `create` **and** `destroy`, and RFC 8620 §5.3 fixes the order
+- ⚠️ **There is no way to edit a stored draft, and this was measured rather than assumed.**
+  RFC 8621 §4.6 makes `keywords` and `mailboxIds` the only mutable `Email` properties, and
+  Stalwart agrees: an `Email/set` `update` naming `subject`, `bodyValues`, `bodyStructure`
+  or `to` is refused with `invalidProperties`, while the same request shape updating
+  `keywords/$flagged` or `mailboxIds` succeeds. That control arm is the point — an
+  "it cannot" recorded without it is the #93 mistake — and it means the protocol's answer
+  to editing a draft is deliberately a new object, not an oversight. Graph and Gmail both
+  rewrite in place; JMAP does not, and no advertised capability changes it.
+- **So a re-save is a create and a destroy, in one method call, which is stronger than the
+  other adapters manage.** The `Email/set` carries both, and RFC 8620 §5.3 fixes the order
   within a `Set` as create, then update, then destroy — so the replacement exists before
-  the copy it supersedes goes, and no caller can observe a window holding neither. The
-  key still **moves**, because an `Email` is immutable. Proven against Stalwart in
-  `provider-jmap/tests/live_drafts.rs`, which fails if the `destroy` is dropped.
+  the copy it supersedes goes, and no caller can observe a window holding neither. The key
+  still **moves**. Proven against Stalwart in `provider-jmap/tests/live_drafts.rs`, which
+  fails if the `destroy` is dropped.
+- **A new object does not mean new bytes: the replacement references the blobs the stored
+  draft already carries.** An attachment is addressed by `blobId`, and an `Email/set`
+  create may reference one the account already holds, so re-saving a draft with a large
+  file costs that file **once**, not once per save (`crate::drafts_blobs`). The adapter
+  reads the draft being replaced with `Email/get` `properties: ["attachments"]` and matches
+  by name, media type and size before falling back to an upload.
+  - ⚠️ **The `blobId` to reference is the one on the stored `Email`, not the one the upload
+    returned.** The server re-blobs the bytes when it embeds them into a message, so the
+    two differ; only the former is on the draft being replaced.
+  - JMAP's attachment `size` is the **decoded** content length, so a file swapped for one
+    of a different length is correctly seen as changed. (Graph's `size` is the encoded part
+    size and cannot be compared that way, so its matching is weaker — `graph.md`.)
+  - The mail sync selects `hasAttachment`, not the attachments collection, so a blob id is
+    not visible from a synced `Message`. A live test can assert the attachment survived a
+    re-save; how many uploads it cost is counted in the offline suite.
 - **A `destroy` the server reports `notFound` is a successful delete**, because the op
   behind it is retryable and the second call names a message the first one destroyed.
   Any other `SetError` surfaces classified.

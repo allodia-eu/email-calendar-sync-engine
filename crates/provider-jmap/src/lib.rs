@@ -43,6 +43,7 @@ mod contact_fields;
 mod contact_write;
 mod contact_write_fields;
 mod drafts;
+mod drafts_blobs;
 mod error;
 mod executor;
 mod fetch;

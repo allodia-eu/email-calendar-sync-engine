@@ -20,7 +20,7 @@ use crate::{
     executor::Executor,
     mail::mailbox_from_json,
     request::{Request, capability},
-    submit::{build_draft, created_id, role_id, set_error, upload_attachments},
+    submit::{build_draft, created_id, role_id, set_error},
     sync_ops::objects,
 };
 
@@ -41,8 +41,10 @@ pub(crate) async fn put_draft(
 ) -> Result<ProviderKey, JmapError> {
     let drafts = drafts_mailbox(executor, mail_account).await?;
     // Attachment bytes first: the draft references each by the server-assigned `blobId`,
-    // which cannot be known before the upload (RFC 8620 §6.1).
-    let blob_ids = upload_attachments(executor, mail_account, draft).await?;
+    // which cannot be known before the upload (RFC 8620 §6.1). A re-save reuses the blob
+    // the stored draft already carries wherever the attachment is unchanged, so saving
+    // again does not re-send a file the server has (`crate::drafts_blobs`).
+    let blob_ids = crate::drafts_blobs::resolve(executor, mail_account, draft, replacing).await?;
 
     let mut req = Request::new([capability::CORE, capability::MAIL]);
     let mut create = Map::new();
