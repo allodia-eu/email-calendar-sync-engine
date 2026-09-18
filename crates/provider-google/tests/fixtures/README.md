@@ -25,6 +25,9 @@ on the account.
 | Fixture | Real call | Protects |
 | --- | --- | --- |
 | `mail/settings_send_as.json` | `users.settings.sendAs.list` | The shape a real account's send-as list has: `displayName` is present and **empty** on a mailbox nobody has named, which is what the adapter reads as "no name" rather than as a blank one. |
+| `mail/draft_created.json` | `POST /gmail/v1/users/me/drafts` | the draft object a create returns: a `drafts` id plus the message it wraps, already labelled `DRAFT` |
+| `mail/draft_updated.json` | `PUT /gmail/v1/users/me/drafts/{id}` on that draft | the same **draft** id with a **new** message id under it: what makes Gmail the one adapter whose draft key survives a re-save |
+| `error/draft_not_found.json` | `DELETE …/drafts/{id}` on a draft already deleted | the `404` a retried draft delete meets, so a retryable op settles rather than parking |
 | `mail/profile.json` | `GET /gmail/v1/users/me/profile` | the account cursor (`historyId`) a snapshot persists |
 | `mail/labels.json` | `GET /users/me/labels` | label → `Mailbox` role/keyword/membership mapping (system + a custom label) |
 | `mail/messages_list.json` | `GET /users/me/messages` | the `{id, threadId}` enumeration a snapshot pages |
@@ -200,3 +203,18 @@ handle → a placeholder.
 17. **Sync tokens are eventually consistent.** A write is visible to a direct `GET`
     immediately but takes seconds (~5–15 observed) to surface in a delta, so the live
     tests poll rather than read once.
+18. **Gmail rewrites the `Message-ID` on `drafts.create`, not only on send.** A draft
+    written with `<local@test.local>` comes back carrying `<CALRU+…@mail.gmail.com>`. The
+    consequence lands on a host rather than the adapter: a saved Gmail draft **cannot** be
+    correlated with a local copy by `Message-ID`, so the key `put_draft` returned is the
+    only join. `tests/live_drafts.rs` pins the rewrite and identifies drafts by subject.
+19. **A draft's id outlives its message.** `drafts.update` keeps the `drafts` id and
+    replaces the message under it (`r-3587310113811252119` held while its message went
+    `1a0b3e0689acae42` → `1a0b3e06ad26a21b`). That is why the draft verbs key on the draft
+    id, and why Gmail is the one adapter here whose key survives a re-save. A retried
+    `drafts.delete` answers a clean `404` (no Graph-style second shape).
+20. **A whole-account snapshot can exhaust the per-minute quota.** Gmail meters a "Total
+    Query Cost" of 6000 units/minute/user and a `sync_email` snapshot fetches every
+    message, so a handful in quick succession answers `403 rateLimitExceeded` — which reads
+    like a permissions failure and is not. Live tests take one snapshot per phase and reuse
+    it.

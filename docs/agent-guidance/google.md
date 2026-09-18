@@ -184,11 +184,23 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   `GoogleTransport` seam has a `put` verb at all; it is a full replace, not a `PATCH`.
 - ⚠️ **The key is the *draft* id, not a message id, and the two are not
   interchangeable.** `drafts.update` keeps the draft id and replaces the message
-  underneath it, so the synced message carries a different id than the key `put_draft`
-  returned (live-verified in `tests/live_drafts.rs`). That is safe only because the two
-  draft verbs are the sole consumers of that key: nothing else addresses a message by
-  it. Keying by the message id instead would have forced create-and-delete here too, for
-  no gain.
+  underneath it: captured live, `r-3587310113811252119` stayed put while its message went
+  `1a0b3e0689acae42` → `1a0b3e06ad26a21b`. So the synced message carries a different id
+  than the key `put_draft` returned. That is safe only because the two draft verbs are the
+  sole consumers of that key: nothing else addresses a message by it. Keying by the
+  message id instead would have forced create-and-delete here too, for no gain.
+- ⚠️ **Gmail rewrites the `Message-ID` on `drafts.create`, not only on send.** A draft
+  written with `<local@test.local>` comes back as `<CALRU+…@mail.gmail.com>`
+  (live-verified). This is the same behaviour as the send finding above, and it has a
+  consequence a host feels rather than the adapter: **a saved Gmail draft cannot be
+  correlated with a local copy by `Message-ID`**, so anything matching the two has to use
+  the key `put_draft` returned. `tests/live_drafts.rs` pins the rewrite itself, and
+  identifies drafts by subject for exactly this reason.
+- **A whole-account snapshot is expensive enough to fail a live run.** Gmail meters a
+  "Total Query Cost" of 6000 units per minute per user, and a `sync_email` snapshot
+  fetches every message; a few in quick succession answer `403 rateLimitExceeded`, which
+  reads like a permissions problem and is not. The draft live tests take one snapshot per
+  phase and reuse it.
 - **A `404` from `drafts.delete` is a successful delete**, because the op behind it is
   retryable and the second call names a draft the first one removed. (Graph needs a
   second shape here; Gmail does not: it answers `404` for both cases.)
