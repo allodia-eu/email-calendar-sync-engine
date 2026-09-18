@@ -374,10 +374,13 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   makes an iTIP object a scheduling message. It is therefore usable as the *sending*
   transport for an account whose **calendar** lives on a plain CalDAV server (`providers.md`).
 - **RSVP** (`cal_write::rsvp_event`): `POST /me/events/{id}/accept|tentativelyAccept|decline`
-  with `{comment, sendResponse}`. Proven against two real accounts
-  (`tests/live_calendar_rsvp.rs` — the only test in this repo that needs a second mailbox,
-  because Graph cannot fake an invitation: an event created in a mailbox always has that
-  mailbox as organizer, and a mailbox cannot answer its own meeting). Live findings:
+  with `{comment, sendResponse}`. Proven against two real accounts, because Graph cannot fake an
+  invitation: an event created in a mailbox always has that mailbox as organizer, and a mailbox
+  cannot answer its own meeting. Two suites, for the two organizers an invitation can have:
+  `tests/live_calendar_rsvp.rs` answers one Exchange itself organized and reads the reply out of
+  the organizer's copy, and `tests/live_calendar_uid.rs` answers one that arrived by iMIP from
+  outside Exchange, which is the case the `UID` above decides and the one that was broken. Live
+  findings:
   - **`sendResponse: true` really schedules the reply** — the *organizer's* copy shows
     `tentativelyAccepted` within seconds. Unobservable from the answering mailbox, whose own
     copy changes either way, which is why the test reads the counterparty's mailbox.
@@ -443,8 +446,9 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   an occasional drift check against the actual API, not the CI gate. Two calendar suites need
   a **second** mailbox as well (`GRAPH_ORGANIZER_ACCESS_TOKEN`), because the thing under test
   only exists once an invitation has crossed between two accounts: `tests/live_calendar_rsvp.rs`
-  (the answer reaches the organizer) and `tests/live_calendar_uid.rs` (a meeting keeps the
-  `UID` its mail carried). There is no CI harness (no live account in CI); the token
+  (the answer reaches the organizer) and `tests/live_calendar_uid.rs` (a meeting keeps the `UID`
+  its mail carried, and can then be answered on it). There is no CI harness (no live account in
+  CI); the token
   is obtained with `tools/graph-oauth` (a standalone PKCE-loopback login + refresh
   helper, outside the engine workspace). Excluded from the offline coverage metric
   via the `ci.yml` `--ignore-filename-regex`, like the other providers' live tests.

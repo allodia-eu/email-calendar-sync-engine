@@ -1,5 +1,9 @@
-//! Gated live check that a meeting keeps **one identity** across the mail that announced it
-//! and the calendar that filed it.
+//! Gated live checks that a meeting keeps **one identity** across the mail that announced it and
+//! the calendar that filed it, and that the identity is then good enough to answer on.
+//!
+//! Two tests, and the second is the reported failure in its own shape: the first settles what the
+//! calendar's copy is called, the second answers it. They are separate because the answer is a
+//! separate call, made only once the lookup by `UID` has found something.
 //!
 //! An invitation arrives twice: as an iMIP message carrying a `UID`, and as a calendar item
 //! the server files by itself. Answering the first means writing to the second, and the only
@@ -33,8 +37,13 @@
 //! **This sends real mail** between the two accounts and files a meeting in the account under
 //! test's calendar; both are cleaned up at the end.
 
-use engine_core::{ids::AccountId, sync::SyncUpdate, time::CalendarDate};
-use engine_provider::Provider;
+use engine_core::{
+    calendar::{Event, ParticipationStatus},
+    ids::AccountId,
+    sync::SyncUpdate,
+    time::CalendarDate,
+};
+use engine_provider::{CalendarWrites, EventRsvp, Provider, RsvpResponse};
 use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
@@ -190,10 +199,7 @@ async fn send_invitation(organizer_token: &str, mime: &str) {
 
 /// Polls the account's calendar through the adapter until the meeting is filed — it crosses
 /// two mailboxes and is then processed by the receiving one, so it is not there at once.
-async fn await_filed(
-    provider: &GraphCalendarProvider,
-    subject: &str,
-) -> engine_core::calendar::Event {
+async fn await_filed(provider: &GraphCalendarProvider, subject: &str) -> Event {
     for _ in 0..20 {
         let sync = provider
             .sync_events(&account(), None)
@@ -208,6 +214,46 @@ async fn await_filed(
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
     panic!("the invitation was never filed in the receiving account's calendar");
+}
+
+/// This account's participation status in `event`.
+///
+/// Narrow on purpose: that an invitee's copy names the organizer once rather than twice, and the
+/// shape of the participant list behind that, is asserted in `live_calendar_rsvp.rs`. Here only
+/// the answer matters.
+fn answer_of(event: &Event, address: &str) -> ParticipationStatus {
+    event
+        .participants
+        .iter()
+        .find(|p| {
+            p.email
+                .as_deref()
+                .is_some_and(|e| e.eq_ignore_ascii_case(address))
+        })
+        .map(|p| p.participation_status.clone())
+        .expect("the answering account is a participant in its own copy")
+}
+
+/// Polls the account's own copy until it holds `want`.
+///
+/// Answering is a *request*: the action endpoint acknowledges it and the mailbox catches up
+/// afterwards, so a single read races Exchange's own processing. The last read is returned either
+/// way, so a real failure still says what was there.
+async fn await_answer(
+    provider: &GraphCalendarProvider,
+    subject: &str,
+    address: &str,
+    want: &ParticipationStatus,
+) -> Event {
+    let mut last = await_filed(provider, subject).await;
+    for _ in 0..20 {
+        if answer_of(&last, address) == *want {
+            return last;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        last = await_filed(provider, subject).await;
+    }
+    last
 }
 
 /// Best effort, so a cleanup failure never masks the assertion: the filed meeting, then the
@@ -308,6 +354,89 @@ async fn live_an_invitation_from_outside_exchange_keeps_its_own_uid() {
     );
 
     cleanup(&token, filed.id.key().as_str(), &subject).await;
+}
+
+/// The payoff: an invitation organized outside Exchange can actually be **answered**.
+///
+/// This is the reported failure in its own shape. Answering an emailed invitation means writing to
+/// the calendar's copy of it, found by the `UID` the mail carried (RFC 5546 §2.1.5). While the
+/// adapter reported Exchange's wrapper, that lookup matched nothing, a host concluded the meeting
+/// was not on the calendar at all, and fell through to putting it there first, which Graph has no
+/// verb for. So the test above, which settles the identity, does not settle this: the answer is a
+/// separate call that only happens once the join has succeeded.
+///
+/// `.quietly()`, and the boundary that draws: whether the **organizer is told** is asserted in
+/// `live_calendar_rsvp.rs`, against a second real mailbox whose copy can be read back. The
+/// organizer here is an `example.com` address by construction, because an outside `UID` is what
+/// makes Exchange wrap it, and mailing a reply to a reserved domain would leave a bounce in the
+/// answering mailbox that no cleanup here could reach. What this settles is the half that was
+/// broken: that the answer is accepted, against the meeting the mail announced.
+#[tokio::test]
+async fn live_an_invitation_from_outside_exchange_can_be_answered() {
+    let (Some(token), Some(organizer_token)) = (
+        non_empty("GRAPH_ACCESS_TOKEN"),
+        non_empty("GRAPH_ORGANIZER_ACCESS_TOKEN"),
+    ) else {
+        eprintln!(
+            "skipping live_an_invitation_from_outside_exchange_can_be_answered: needs \
+             GRAPH_ACCESS_TOKEN *and* GRAPH_ORGANIZER_ACCESS_TOKEN (two accounts — see the module \
+             docs)"
+        );
+        return;
+    };
+    let me = whoami(&token).await;
+    let sender = whoami(&organizer_token).await;
+    assert_ne!(
+        me.to_lowercase(),
+        sender.to_lowercase(),
+        "the two tokens must be different accounts: a mailbox does not mail itself an invitation"
+    );
+
+    // A subject of its own, so this runs beside the identity test above without either one
+    // waiting on, or cleaning up, the other's meeting.
+    let run = std::process::id();
+    let uid = format!("engine-live-answer-{run}@example.com");
+    let subject = format!("Engine live UID answer probe {run}");
+    send_invitation(
+        &organizer_token,
+        &imip_request(&sender, &me, &uid, &subject),
+    )
+    .await;
+
+    let provider = calendar_provider(&token).await;
+    let filed = await_filed(&provider, &subject).await;
+
+    // The join, restated here as the precondition it is: answering the wrong event, or no event,
+    // is the failure this test exists for, so it must not be able to pass by answering something
+    // the mail did not announce.
+    assert_eq!(
+        filed.uid.as_str(),
+        uid,
+        "the meeting to answer is the meeting the mail announced"
+    );
+    assert_eq!(
+        answer_of(&filed, &me),
+        ParticipationStatus::NeedsAction,
+        "the delivered invitation is unanswered, so the transition below cannot trivially pass"
+    );
+
+    provider
+        .rsvp_event(
+            &account(),
+            &filed,
+            &EventRsvp::to(&filed, &me, RsvpResponse::Accepted).quietly(),
+        )
+        .await
+        .expect("an invitation organized outside Exchange can be answered on its filed copy");
+
+    let answered = await_answer(&provider, &subject, &me, &ParticipationStatus::Accepted).await;
+    assert_eq!(
+        answer_of(&answered, &me),
+        ParticipationStatus::Accepted,
+        "the answer lands on the account's own copy of the meeting"
+    );
+
+    cleanup(&token, answered.id.key().as_str(), &subject).await;
 }
 
 /// The uppercase hex of `bytes`, the form Exchange renders a `PidLidGlobalObjectId` in.

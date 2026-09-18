@@ -237,6 +237,29 @@ fn status_of(event: &Event, address: &str) -> ParticipationStatus {
     matching[0].participation_status.clone()
 }
 
+/// Re-reads the account's own copy until it holds `want`.
+///
+/// Polled for the reason [`organizer_sees`] is, and it is the same reason twice: answering is a
+/// *request*. The action endpoint acknowledges it and the mailbox catches up afterwards, so a
+/// single read races Exchange's own processing and reports `NeedsAction` for an answer that did
+/// land. The last read is returned either way, so a real failure still says what was there.
+async fn await_own_answer(
+    provider: &GraphCalendarProvider,
+    uid: &str,
+    address: &str,
+    want: &ParticipationStatus,
+) -> Event {
+    let mut last = reread(provider, uid).await;
+    for _ in 0..20 {
+        if status_of(&last, address) == *want {
+            return last;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        last = reread(provider, uid).await;
+    }
+    last
+}
+
 /// The status the **organizer's** mailbox holds for `attendee`, polled: the reply travels by
 /// mail, so the organizer's copy updates a moment after the answer is acknowledged.
 async fn organizer_sees(
@@ -381,7 +404,7 @@ async fn live_rsvp_answers_an_invitation_and_the_organizer_is_told() {
         .expect("the neutral verb answers on Graph");
 
     // Our own copy records it…
-    let answered = reread(&provider, &uid).await;
+    let answered = await_own_answer(&provider, &uid, &me, &ParticipationStatus::Tentative).await;
     assert_eq!(
         status_of(&answered, &me),
         ParticipationStatus::Tentative,
