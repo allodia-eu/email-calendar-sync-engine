@@ -22,6 +22,10 @@ fn inbox() -> MailboxId {
     MailboxId::try_from("folder-inbox").unwrap()
 }
 
+fn folder(id: &str) -> MailboxId {
+    MailboxId::try_from(id).unwrap()
+}
+
 #[test]
 fn initial_delta_url_windows_by_received_datetime_only_when_since_is_set() {
     let client = fake_client(vec![]);
@@ -48,8 +52,18 @@ fn initial_delta_url_windows_by_received_datetime_only_when_since_is_set() {
 #[tokio::test]
 async fn folders_resolve_roles_by_id_and_null_root_parents() {
     let mailboxes = folders(&fake_client(folder_routes())).await.unwrap();
-    assert_eq!(mailboxes.len(), 8);
-    assert!(mailboxes.iter().all(|m| m.parent.is_none()));
+    let parent = |name: &str| {
+        mailboxes
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap()
+            .parent
+            .clone()
+    };
+    // Every folder the mailbox root holds is top-level: its `parentFolderId` is the
+    // `msgfolderroot`, which normalizes to no parent at all.
+    assert_eq!(parent("Postvak IN"), None);
+    assert_eq!(parent("Archiveren"), None);
     let role = |name: &str| {
         mailboxes
             .iter()
@@ -61,6 +75,112 @@ async fn folders_resolve_roles_by_id_and_null_root_parents() {
     assert_eq!(role("Postvak IN"), Some(MailboxRole::Inbox));
     assert_eq!(role("Verzonden items"), Some(MailboxRole::Sent));
     assert_eq!(role("Postvak UIT"), None);
+}
+
+#[tokio::test]
+async fn folders_walk_the_whole_tree_not_only_the_root() {
+    // `/mailFolders` answers with one level. A folder nested under another is reachable
+    // only through its parent's `childFolders`, and until the walk existed a Microsoft
+    // account showed neither the folder nor one message in it.
+    let mailboxes = folders(&fake_client(folder_routes())).await.unwrap();
+    let find = |name: &str| mailboxes.iter().find(|m| m.name == name).unwrap();
+    // Eight top-level folders, plus the two the walk reached.
+    assert_eq!(mailboxes.len(), 10);
+    assert_eq!(
+        find("Fixture parent").parent,
+        Some(folder("folder-archive"))
+    );
+    // Two levels down, so the walk recurses rather than fetching one level of children.
+    assert_eq!(find("Fixture child").parent, Some(folder("folder-extra-2")));
+}
+
+#[tokio::test]
+async fn folders_drain_every_page_of_a_child_level() {
+    // A child level pages like any other collection, and a page dropped here loses the
+    // folders on it exactly as dropping the root's second page would.
+    let page1 = serde_json::json!({
+        "value": [{
+            "childFolderCount": 0,
+            "id": "folder-child-a",
+            "displayName": "Child A",
+            "parentFolderId": "folder-archive"
+        }],
+        "@odata.nextLink":
+            "https://graph.microsoft.com/v1.0/me/mailFolders/folder-archive/childFolders?$skiptoken=P2"
+    });
+    let page2 = serde_json::json!({
+        "value": [{
+            "childFolderCount": 0,
+            "id": "folder-child-b",
+            "displayName": "Child B",
+            "parentFolderId": "folder-archive"
+        }]
+    });
+    let mut routes: Vec<(&str, Value)> = folder_routes()
+        .into_iter()
+        .filter(|(key, _)| !key.contains("/folder-archive/childFolders"))
+        .collect();
+    routes.push(("childFolders?$skiptoken=P2", page2));
+    routes.push(("/mailFolders/folder-archive/childFolders", page1));
+    let mailboxes = folders(&fake_client(routes)).await.unwrap();
+    assert!(mailboxes.iter().any(|m| m.name == "Child A"));
+    assert!(mailboxes.iter().any(|m| m.name == "Child B"));
+}
+
+#[tokio::test]
+async fn folders_leave_a_childless_folder_unasked() {
+    // `childFolderCount: 0` is the whole answer, so a mailbox of leaf folders costs one
+    // request. Nothing routes a `childFolders` call here, and the fake fails an unrouted
+    // URL, so a walk that asked anyway could not pass.
+    let list = serde_json::json!({
+        "value": [{
+            "childFolderCount": 0,
+            "id": "folder-a",
+            "displayName": "A",
+            "parentFolderId": "folder-root"
+        }]
+    });
+    let mut routes: Vec<(&str, Value)> = folder_routes()
+        .into_iter()
+        .filter(|(key, _)| !key.contains("childFolders") && *key != "/mailFolders?$top")
+        .collect();
+    routes.push(("mailFolders?$top", list));
+    assert_eq!(folders(&fake_client(routes)).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn folders_descend_when_a_payload_names_no_child_count() {
+    // Only a stated `0` stops the walk. A payload that says nothing is asked, because the
+    // cost of one needless request is a request, and the cost of guessing "none" is a
+    // subtree of folders and all their mail missing with nothing reporting it.
+    let list = serde_json::json!({
+        "value": [{ "id": "folder-a", "displayName": "A", "parentFolderId": "folder-root" }]
+    });
+    let children = serde_json::json!({
+        "value": [{
+            "childFolderCount": 0,
+            "id": "folder-a-child",
+            "displayName": "A child",
+            "parentFolderId": "folder-a"
+        }]
+    });
+    let mut routes: Vec<(&str, Value)> = folder_routes()
+        .into_iter()
+        .filter(|(key, _)| !key.contains("childFolders") && *key != "/mailFolders?$top")
+        .collect();
+    routes.push(("/mailFolders/folder-a/childFolders", children));
+    routes.push(("mailFolders?$top", list));
+    let mailboxes = folders(&fake_client(routes)).await.unwrap();
+    assert!(mailboxes.iter().any(|m| m.name == "A child"));
+}
+
+#[tokio::test]
+async fn folders_survive_a_child_count_that_names_only_hidden_folders() {
+    // `childFolderCount` counts hidden children, which `childFolders` does not return,
+    // so a folder can promise children and answer with an empty page (Conversation
+    // History does exactly that). The pass carries on rather than failing.
+    let mailboxes = folders(&fake_client(folder_routes())).await.unwrap();
+    assert!(mailboxes.iter().any(|m| m.name == "Gesprekgeschiedenis"));
 }
 
 #[tokio::test]
@@ -226,11 +346,21 @@ async fn folders_drain_every_page_of_the_list() {
     // A folder list paginated across two pages (`@odata.nextLink`) is fully
     // drained, not truncated at the first page.
     let page1 = serde_json::json!({
-        "value": [{ "id": "folder-a", "displayName": "A", "parentFolderId": "folder-root" }],
+        "value": [{
+            "childFolderCount": 0,
+            "id": "folder-a",
+            "displayName": "A",
+            "parentFolderId": "folder-root"
+        }],
         "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders?$skiptoken=PAGE2"
     });
     let page2 = serde_json::json!({
-        "value": [{ "id": "folder-b", "displayName": "B", "parentFolderId": "folder-root" }]
+        "value": [{
+            "childFolderCount": 0,
+            "id": "folder-b",
+            "displayName": "B",
+            "parentFolderId": "folder-root"
+        }]
     });
     let mut routes: Vec<(&str, Value)> = folder_routes()
         .into_iter()

@@ -1,4 +1,4 @@
-//! Shared setup for the gated `provider-graph` live calendar suites.
+//! Shared setup for the gated `provider-graph` live suites.
 //!
 //! Its own module rather than a copy per suite: each needs the same token gate, the same
 //! bound provider and the same hand-assembled base event, and a second copy is a second
