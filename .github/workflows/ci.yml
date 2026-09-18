@@ -18,6 +18,15 @@ env:
   # Treat warnings (including `missing_docs`) as errors everywhere.
   RUSTFLAGS: -D warnings
   RUSTDOCFLAGS: -D warnings
+  # `.cargo/config.toml` sends `build.build-dir` outside the checkout so worktrees share one copy
+  # of the compile work. A runner has no worktrees, and the caching here is built around `target/`:
+  # `Swatinem/rust-cache` saves that directory and a few `~/.cargo` subpaths and knows nothing about
+  # a build directory, so with the setting in force it restores a cache holding no intermediates and
+  # every job recompiles the tree. It showed as 238 crates compiled after a "Cache restored
+  # successfully" of 235 MB. Pointing the build directory back at `target/` is what the cache is
+  # shaped for, and it also puts the directory inside the workspace, where nothing else can be
+  # holding it.
+  CARGO_BUILD_BUILD_DIR: ${{ github.workspace }}/target
 
 jobs:
   # The repository states its licensing once, for every file at once, in `REUSE.toml` rather than in
