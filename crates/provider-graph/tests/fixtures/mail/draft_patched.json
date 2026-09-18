@@ -1,0 +1,23 @@
+{
+  "@odata.etag": "W/\"CQAAABYAAAAetag0001\"",
+  "id": "message-30",
+  "subject": "Fixture: draft rewritten in place",
+  "isDraft": true,
+  "hasAttachments": false,
+  "internetMessageId": "<message-30@test.local>",
+  "lastModifiedDateTime": "2026-01-01T00:00:01Z",
+  "body": {
+    "contentType": "html",
+    "content": "<html><head></head><body><p>second body</p></body></html>"
+  },
+  "toRecipients": [
+    {
+      "emailAddress": {
+        "name": "Test User",
+        "address": "testuser@example.test"
+      }
+    }
+  ],
+  "ccRecipients": [],
+  "bccRecipients": []
+}

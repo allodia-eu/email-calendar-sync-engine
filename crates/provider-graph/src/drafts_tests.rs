@@ -57,8 +57,10 @@ async fn a_first_save_creates_the_message_and_returns_its_id() {
 
 #[tokio::test]
 async fn a_new_copy_that_cannot_replace_the_old_is_still_saved() {
-    // The create landed and the delete was refused. Failing here would have the caller
-    // retry the whole save, creating a third copy; a duplicate draft is the better loss.
+    // The replacement path, reached here because the draft gained an attachment, which
+    // cannot be rewritten in place. The create landed and the purge was refused: failing
+    // would have the caller retry the whole save and store a third copy, so a duplicate
+    // draft is the better loss.
     let p = provider_over(fake_client_fallible(vec![
         (
             "/messages/AAMkAGold/permanentDelete",
@@ -67,8 +69,18 @@ async fn a_new_copy_that_cannot_replace_the_old_is_still_saved() {
         ("/messages", Ok(json!({ "id": "AAMkAGnew" }))),
     ]));
 
+    let mut with_file = draft();
+    with_file.attachments = vec![engine_provider::DraftAttachment::attachment(
+        "note.txt",
+        "text/plain",
+        b"hello".to_vec(),
+    )];
+
     let old = engine_core::ids::ProviderKey::new("AAMkAGold").unwrap();
-    let key = p.put_draft(&account(), &draft(), Some(&old)).await.unwrap();
+    let key = p
+        .put_draft(&account(), &with_file, Some(&old))
+        .await
+        .unwrap();
 
     assert_eq!(key.as_str(), "AAMkAGnew");
 }

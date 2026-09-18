@@ -161,11 +161,25 @@ what sending it would have delivered. Graph files it into Drafts and sets `isDra
 itself: nothing in the request names a folder, which is live-verified rather than
 assumed (`tests/live_drafts.rs`). Graph advertises `mail_drafts`.
 
-- **There is no MIME update, so a re-save creates and deletes and the key moves.**
-  `PATCH /me/messages/{id}` takes a JSON message resource, whose attachments are further
-  requests of their own; going that way would mean a second assembler for the same
-  message. The new copy is created **before** the old one is deleted, and a delete that
-  fails does not fail the save (`providers.md` has the ordering rule and why).
+- **A re-save rewrites the stored message in place: `PATCH /me/messages/{id}`.** A
+  draft's `subject`, `body`, `from` and recipient collections are writable while
+  `isDraft` is true (they are read-only once it is not), so a text edit is **one
+  request**, the message keeps its id, it keeps its `internetMessageId`, and it keeps its
+  place in the Drafts folder instead of jumping on every save. That is the shape a
+  repeatedly-saved draft actually takes, so it is the one worth optimising.
+- ⚠️ **`PATCH` cannot touch the attachment collection**, which is a navigation property
+  of its own: a patched draft keeps exactly the attachments it had (verified against a
+  real mailbox). So a save that adds or removes one falls back to creating a replacement
+  from MIME and purging the original, and the key **moves**. The adapter takes the
+  rewrite only when the draft it is storing carries no attachment and no iTIP part, and
+  steps aside when the response's `hasAttachments` says the stored one still does.
+- **A `PATCH` that 404s means the draft was deleted from another device**, and the save
+  stores a fresh copy rather than failing: losing what the user still has open would be
+  the worse answer. A `PATCH` that fails any other way propagates, so a throttled save
+  does not quietly become a second draft.
+- **Graph preserves the `Message-ID` we wrote**, through the MIME create and through the
+  rewrite (live-verified). Gmail does **not** (`google.md`), so the header is a usable
+  join between a host's own copy and the stored draft here and not there.
 - **`delete_draft` is `POST /me/messages/{id}/permanentDelete`, not `DELETE`.** The plain
   `DELETE` only moves the message to Deleted Items (Finding 14), so using it would leave a
   discarded draft recoverable on Graph and gone on the other three adapters, and a host

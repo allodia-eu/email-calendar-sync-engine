@@ -2,10 +2,11 @@
 //! account.
 //!
 //! What only a real server can answer: that `POST /me/messages` accepts the same
-//! base64 MIME `/sendMail` takes and files the result as a draft, that the response
-//! carries the id the key is built from, and that deleting an absent message answers
-//! `404` rather than something the idempotent path would mistake for a failure. The
-//! fixture-replay fake serves canned bytes whatever it is sent, so none of that is
+//! base64 MIME `/sendMail` takes and files the result as a draft, that `PATCH` really
+//! does rewrite a draft's subject, body and recipients while keeping its id and its
+//! `internetMessageId`, that it leaves the attachment collection alone (which is why an
+//! attachment change falls back to a replacement), and what a retried delete answers.
+//! The fixture-replay fake serves canned bytes whatever it is sent, so none of that is
 //! testable offline.
 //!
 //! Skips unless `GRAPH_ACCESS_TOKEN` is set, so `cargo test --workspace` stays green:
@@ -113,11 +114,18 @@ async fn live_graph_replacing_a_draft_leaves_exactly_one() {
         )
         .await
         .expect("second save");
-    assert_ne!(first, second, "Graph has no MIME update, so the key moves");
+
+    // The whole point of the in-place rewrite: a text edit keeps the id, so the draft
+    // does not jump in the folder and the caller's key stays good. This is the shape a
+    // repeated save takes.
+    assert_eq!(
+        first, second,
+        "a text-only re-save rewrites the stored draft rather than replacing it"
+    );
     assert_eq!(
         drafts_carrying(&drafts, message_id).await,
         vec!["Second version".to_owned()],
-        "replacing left a duplicate behind"
+        "the rewrite left the old version behind"
     );
 
     drafts
@@ -187,6 +195,112 @@ async fn live_graph_a_saved_draft_is_filed_as_a_draft() {
 
     drafts
         .delete_draft(&account(), &key)
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+async fn live_graph_a_rewritten_draft_keeps_its_message_id() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_graph_rewritten_message_id: GRAPH_ACCESS_TOKEN unset");
+        return;
+    };
+    let drafts = provider(token, "drafts");
+
+    let message_id = &format!(
+        "live-graph-draft-header-{}@test.local",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_nanos()
+    );
+
+    let first = drafts
+        .put_draft(&account(), &draft(message_id, "Header v1"), None)
+        .await
+        .expect("first save");
+    let second = drafts
+        .put_draft(&account(), &draft(message_id, "Header v2"), Some(&first))
+        .await
+        .expect("rewrite");
+    assert_eq!(first, second);
+
+    // Unlike Gmail, Graph preserves the `Message-ID` we wrote — through the MIME create
+    // *and* through the rewrite. So on this transport the header stays a usable join
+    // between a host's own copy and the stored draft, which is worth pinning because the
+    // two adapters differ on exactly this point.
+    let emails = drafts.sync_email(&account(), None).await.expect("sync");
+    let SyncUpdate::Snapshot { objects, .. } = emails.update else {
+        panic!("a cursorless sync is a snapshot");
+    };
+    let saved = objects
+        .iter()
+        .find(|m| m.id.key() == &second)
+        .expect("the rewritten draft syncs back");
+    assert!(
+        saved
+            .envelope
+            .message_id
+            .iter()
+            .any(|id| id.as_str() == message_id),
+        "Graph kept our Message-ID across the rewrite: {:?}",
+        saved.envelope.message_id
+    );
+    assert_eq!(saved.envelope.subject.as_deref(), Some("Header v2"));
+
+    drafts
+        .delete_draft(&account(), &second)
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+async fn live_graph_an_attachment_change_replaces_the_draft() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_graph_attachment_change: GRAPH_ACCESS_TOKEN unset");
+        return;
+    };
+    let drafts = provider(token, "drafts");
+
+    let message_id = &format!(
+        "live-graph-draft-attach-{}@test.local",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_nanos()
+    );
+
+    let first = drafts
+        .put_draft(&account(), &draft(message_id, "Attach v1"), None)
+        .await
+        .expect("first save");
+
+    let mut with_file = draft(message_id, "Attach v2");
+    with_file.attachments = vec![engine_provider::DraftAttachment::attachment(
+        "note.txt",
+        "text/plain",
+        b"hello".to_vec(),
+    )];
+    let second = drafts
+        .put_draft(&account(), &with_file, Some(&first))
+        .await
+        .expect("save with an attachment");
+
+    // `PATCH` cannot add to the attachment collection, so this save had to store a
+    // replacement, and the key moves. The contract is that a caller keeps whatever comes
+    // back, and this is the case that exercises it.
+    assert_ne!(
+        first, second,
+        "an attachment change cannot be a rewrite, so the key moves"
+    );
+    assert_eq!(
+        drafts_carrying(&drafts, message_id).await,
+        vec!["Attach v2".to_owned()],
+        "the replacement left the old version behind"
+    );
+
+    drafts
+        .delete_draft(&account(), &second)
         .await
         .expect("cleanup");
 }

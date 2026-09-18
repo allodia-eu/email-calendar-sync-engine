@@ -3,10 +3,17 @@
 //!
 //! Graph creates a draft from the same base64 MIME the send path hands `/sendMail`, so
 //! one assembler serves both and a saved draft is byte-identical to what sending it
-//! would have delivered. There is no MIME **update**: `PATCH /me/messages/{id}` takes a
-//! JSON message resource, whose attachments are further requests of their own. So a
-//! re-save creates the new message and deletes the old, and the key moves, exactly as it
-//! does on IMAP and JMAP.
+//! would have delivered.
+//!
+//! **A re-save rewrites the stored message in place** where it can
+//! ([`crate::drafts_patch`]): one request, the key and the `internetMessageId` unchanged,
+//! and the draft stays where it is in the folder rather than jumping on every save. That
+//! matters most for the case that saves most often, an edit to the text.
+//!
+//! The fallback is to create the new message and purge the old, which is what an
+//! attachment change needs: `PATCH` cannot touch the attachment collection, and there is
+//! no MIME update to fall back on. Then the key **moves**, as it does on IMAP and JMAP,
+//! which is why the caller keeps whatever key comes back rather than assuming.
 
 use engine_core::ids::ProviderKey;
 use engine_provider::{Draft, ProviderResult};
@@ -14,19 +21,27 @@ use time::OffsetDateTime;
 
 use crate::{error::GraphError, transport::GraphClient};
 
-/// Stores `draft` in the account's Drafts folder, removing the message named by
-/// `replacing`, and returns the new message's id.
+/// Stores `draft` in the account's Drafts folder and returns its key: the key
+/// `replacing` named when the stored message could be rewritten in place, else the new
+/// message's id.
 ///
 /// # Errors
 ///
-/// A classified [`ProviderError`](engine_provider::ProviderError) if the create failed.
-/// A failure to remove the superseded message is **not** one: the new draft is stored,
-/// and reporting it would have the caller create a further copy on retry.
+/// A classified [`ProviderError`](engine_provider::ProviderError) if the store failed. A
+/// failure to remove a superseded message is **not** one: the new draft is stored, and
+/// reporting it would have the caller create a further copy on retry.
 pub(crate) async fn put_draft(
     client: &GraphClient,
     draft: &Draft,
     replacing: Option<&ProviderKey>,
 ) -> ProviderResult<ProviderKey> {
+    if let Some(existing) = replacing
+        && let Some(unchanged) =
+            crate::drafts_patch::patch_in_place(client, draft, existing).await?
+    {
+        return Ok(unchanged);
+    }
+
     // The stored draft keeps its `Bcc` header, so resuming it restores every recipient;
     // it is created in the mailbox and never delivered from here.
     let mime = engine_rfc5322::assemble_filed_message(draft, OffsetDateTime::now_utc())?;

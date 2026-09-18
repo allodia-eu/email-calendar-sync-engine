@@ -45,6 +45,7 @@ mod contact_normalize;
 mod contact_photo;
 mod contact_write;
 mod drafts;
+mod drafts_patch;
 mod error;
 mod fetch;
 mod http_transport;
