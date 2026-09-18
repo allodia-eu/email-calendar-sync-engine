@@ -65,6 +65,11 @@ impl GmailProvider {
                 .with_mail()
                 .with_message_source()
                 .with_mail_writes()
+                // Gmail keeps drafts as objects of their own, so a re-save replaces one
+                // in place rather than creating and deleting (`crate::drafts`). Whether
+                // *this* token holds the scope the collection needs is a scope question
+                // no capability can answer, so a refusal surfaces as an error.
+                .with_mail_drafts()
                 // Junk and not-junk only: Gmail's system label set has no phishing member
                 // and `messages.modify` 400s on anything outside it, so the verdict is
                 // withheld rather than filed as junk. `Convention` because the filter is
@@ -256,6 +261,23 @@ impl Provider for GmailProvider {
 
     /// Applies a [`MailEdit`] via `messages.modify`/`trash`/`delete` (`mutate`). The
     /// outbox owns durability/idempotency; this performs only the provider call.
+    /// Stores a draft in `users.drafts`, replacing the one named by `replacing` in place.
+    /// The key is Gmail's **draft** id, which survives the replacement (`crate::drafts`).
+    async fn put_draft(
+        &self,
+        _account: &AccountId,
+        draft: &engine_provider::Draft,
+        replacing: Option<&ProviderKey>,
+    ) -> ProviderResult<ProviderKey> {
+        crate::drafts::put_draft(&self.client, draft, replacing).await
+    }
+
+    /// Removes a stored draft (`drafts.delete`), reporting one that is already gone as
+    /// done.
+    async fn delete_draft(&self, _account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
+        crate::drafts::delete_draft(&self.client, draft).await
+    }
+
     async fn edit_mail(
         &self,
         _account: &AccountId,

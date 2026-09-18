@@ -111,6 +111,21 @@ impl GoogleTransport for Fake {
         }
     }
 
+    async fn put(
+        &self,
+        url: &str,
+        _content_type: &str,
+        _body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError> {
+        // Body ignored (canned answer, `AGENTS.md`); that the PUT carries the replacing
+        // draft's id in its path is asserted by the route match itself.
+        match self.route(url)? {
+            Ok(Value::Null) => Ok(None),
+            Ok(doc) => Ok(Some(doc.clone())),
+            Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
+        }
+    }
+
     async fn patch(
         &self,
         url: &str,

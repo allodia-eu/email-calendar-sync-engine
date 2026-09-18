@@ -15,8 +15,8 @@ use crate::CalendarWrites;
 
 /// A trivial in-memory provider, proving the trait is implementable and that
 /// the scope accessors + connection info + ScopeSync compose as intended.
-struct FakeJmap {
-    info: ConnectionInfo,
+pub(crate) struct FakeJmap {
+    pub(crate) info: ConnectionInfo,
 }
 
 #[async_trait]
@@ -77,7 +77,7 @@ impl Provider for FakeJmap {
 
 impl CalendarWrites for FakeJmap {}
 
-fn account() -> AccountId {
+pub(crate) fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()
 }
 

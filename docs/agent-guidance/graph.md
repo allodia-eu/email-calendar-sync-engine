@@ -153,6 +153,43 @@ whole message the caller assembled — pre-generated `Message-ID`, threading, `C
   Graph preserves it in the MIME form (`tests/live_provider.rs`, gated on
   `GRAPH_ACCESS_TOKEN`). The `Mail.Send` delegated scope is required.
 
+## Drafts
+
+`put_draft` stores a draft with `POST /me/messages` carrying the **same base64 MIME**
+`/sendMail` takes, so one assembler serves both and a saved draft is byte-identical to
+what sending it would have delivered. Graph files it into Drafts and sets `isDraft`
+itself: nothing in the request names a folder, which is live-verified rather than
+assumed (`tests/live_drafts.rs`). Graph advertises `mail_drafts`.
+
+- **There is no MIME update, so a re-save creates and deletes and the key moves.**
+  `PATCH /me/messages/{id}` takes a JSON message resource, whose attachments are further
+  requests of their own; going that way would mean a second assembler for the same
+  message. The new copy is created **before** the old one is deleted, and a delete that
+  fails does not fail the save (`providers.md` has the ordering rule and why).
+- **`delete_draft` is `POST /me/messages/{id}/permanentDelete`, not `DELETE`.** The plain
+  `DELETE` only moves the message to Deleted Items (Finding 14), so using it would leave a
+  discarded draft recoverable on Graph and gone on the other three adapters, and a host
+  would have to know which provider it was talking to before it could say what it had
+  done. Needs `Content-Length: 0` like every bodyless Graph `POST`.
+- ⚠️ **Graph says "gone" two different ways, and which one depends on the endpoint.**
+  Both observed against a real mailbox:
+
+  | call | on a message that is not there | code |
+  |---|---|---|
+  | `POST …/permanentDelete` (retried) | `404` | `ErrorItemNotFound` |
+  | `DELETE /me/messages/{id}` on an already-moved message | `403` | `ErrorCannotDeleteObject` |
+
+  The `404` is the shape this verb meets in practice; the `403` is recorded here too
+  because `mutate.rs` observed the same code from the purge path during the retention
+  window, and a retryable op must not park on either. Both bodies are pinned as fixtures
+  (`tests/fixtures/error/draft_delete_*.json`). The match is on the error **code**, not
+  the status: a genuine permission failure is also a `403` and must still surface.
+- **This treats the `403` differently from `MailEdit::Delete`, deliberately.** There the
+  caller asked for irreversible removal of the user's mail, and a message still sitting in
+  Purges has not had that done to it, so the ambiguity is reported and the outbox resolves
+  it. Here the caller asked only that the draft stop being in Drafts, which a previous
+  attempt already achieved.
+
 ## Mail writes (mark-read/flag, move, delete)
 
 `edit_mail` applies a neutral [`MailEdit`] to an already-synced message, keyed by its

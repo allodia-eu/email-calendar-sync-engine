@@ -37,6 +37,8 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/message_reported.json` | `POST {beta}/messages/{id}/reportMessage` `{ReportAction,IsMessageMoveRequested}` | the report echo — a **`reportMessageCommandResult`**, not the `message` object the docs describe (see Finding 17) |
 | `error/report_bad_action.json` | the same call with `ReportAction: unknownFutureValue` | the `400 RequestBodyRead` for a `reportAction` outside the three that exist |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
+| `error/draft_delete_not_found.json` | `POST /me/messages/{id}/permanentDelete` on a draft already purged | the `404` a retried draft delete meets (see Mail-write finding 16) |
+| `error/draft_delete_already_deleted.json` | `DELETE /me/messages/{id}` on an already-moved message | the `403 ErrorCannotDeleteObject` that also means "not there" (see Mail-write finding 16) |
 | `error/photo_image_not_found.json` | `GET /me/photos/240x240/$value` with no photo set | the 404 that means "there is no image" |
 | `error/photo_invalid_size.json` | `GET /me/photos/999x999/$value` | the 404 that means "that size is not offered" (see Finding 16) |
 | `me.json` | `GET /me` | account identity probe |
@@ -95,6 +97,22 @@ no body, so no fixture).
     it). A re-delete of an already-purged message is `403 ErrorCannotDeleteObject`, **not** a
     clean `404` (the item lingers in Purges, still `GET`-able by id during retention); delete
     idempotency keys on `404` only, mirroring the calendar re-delete (Finding 9).
+
+15. **A draft is stored from the same MIME a send takes, and Graph files it itself.**
+    `POST /me/messages` with `Content-Type: text/plain` and the base64 MIME body creates the
+    message in **Drafts** with `isDraft` set — nothing in the request names a folder or the
+    flag, so both are the server's doing (live-verified, `tests/live_drafts.rs`). There is no
+    MIME *update*: `PATCH /me/messages/{id}` takes a JSON message resource, so a re-save
+    creates the new copy and deletes the old, and the message id moves.
+16. **"Gone" has two shapes, and which one you get depends on the endpoint.** Retrying
+    `POST …/permanentDelete` on a purged draft answers `404 ErrorItemNotFound`; the soft
+    `DELETE /me/messages/{id}` on a message it already moved answers
+    `403 ErrorCannotDeleteObject`, the same code Finding 14 records from the purge path during
+    retention. A draft delete accepts **both** — it is driven by a retryable op, and either
+    means the draft is not there — while `MailEdit::Delete` still propagates the `403`,
+    because that caller asked for irreversible removal and a message in Purges has not had it.
+    Matching is on the error `code`, never the bare `403`, so a real permission failure still
+    surfaces.
 
 ## Calendar fixtures (`calendar/`)
 

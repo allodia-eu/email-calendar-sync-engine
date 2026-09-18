@@ -180,6 +180,23 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   Blast radius: a malformed **optional** per-message field degrades that one field
   (`sentAt` → `None`) and never aborts the mailbox sync — do not re-tighten it to a
   `?` that raises a `Permanent` error for the whole page (issue #38).
+- **Drafts.** `put_draft` is the first half of submission and nothing else: the same
+  `Email/set` create, into the mailbox carrying the Drafts **role**, with
+  `keywords: { "$draft": true, "$seen": true }` — just no `EmailSubmission/set` after
+  it. One `build_draft` serves both, so a saved draft and a sent one cannot drift apart
+  in shape.
+- **A re-save is one method call, and that is stronger than the other adapters manage.**
+  The `Email/set` carries `create` **and** `destroy`, and RFC 8620 §5.3 fixes the order
+  within a `Set` as create, then update, then destroy — so the replacement exists before
+  the copy it supersedes goes, and no caller can observe a window holding neither. The
+  key still **moves**, because an `Email` is immutable. Proven against Stalwart in
+  `provider-jmap/tests/live_drafts.rs`, which fails if the `destroy` is dropped.
+- **A `destroy` the server reports `notFound` is a successful delete**, because the op
+  behind it is retryable and the second call names a message the first one destroyed.
+  Any other `SetError` surfaces classified.
+- **An account with no Drafts mailbox is `Permanent`, not retryable.** No amount of
+  waiting grows one, and the caller has to keep the draft itself. The role is resolved
+  per save rather than cached, for the same reason the send path resolves it.
 - **Submission.** `Email/set` creates the draft, `EmailSubmission/set` submits it
   (referencing the draft by creation id `#draft`), and `onSuccessUpdateEmail`
   files the sent copy (Drafts→Sent, clear `$draft`). Stalwart **requires an

@@ -63,6 +63,25 @@ pub(crate) trait GoogleTransport: Send + Sync {
         body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError>;
 
+    /// `PUT`s `body` with `content_type` to `url`, returning the parsed JSON response.
+    /// Gmail's `drafts.update` is the one caller: it **replaces** a draft's content while
+    /// keeping the draft's own id, which is why it is a `PUT` and not the `PATCH` above.
+    ///
+    /// Defaults to rejecting, so a fake that no draft test drives implements nothing.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`GoogleError`]; the default is [`GoogleError::Protocol`].
+    async fn put(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError> {
+        let _ = (url, content_type, body);
+        Err(GoogleError::protocol("transport does not implement PUT"))
+    }
+
     /// `PATCH`es `body` with `content_type` to `url`, guarded by `if_match` (an `If-Match`
     /// ETag precondition; a stale one is `412` → [`FailureClass::Conflict`]). Returns the
     /// updated object's JSON (Google echoes it). Calendar's `events.patch` posts here.
@@ -237,6 +256,20 @@ impl GoogleClient {
         body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError> {
         self.transport.post(url, content_type, body).await
+    }
+
+    /// Authenticated `PUT`. Returns the replaced object's JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`GoogleError`] (a non-2xx is [`GoogleError::Status`]).
+    pub(crate) async fn put(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError> {
+        self.transport.put(url, content_type, body).await
     }
 
     /// Authenticated `PATCH` guarded by `if_match`. Returns the updated object JSON.

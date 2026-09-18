@@ -35,6 +35,7 @@ use crate::{IdentityControls, OverrideSurvival, ReportControls, RsvpControls, Wr
 pub struct Capabilities {
     mail: bool,
     mail_writes: bool,
+    mail_drafts: bool,
     /// `None` when the adapter cannot report a message at all; otherwise which
     /// verdicts it can express and how much the provider tells us. One field rather
     /// than several, so "acknowledged but cannot report" is unrepresentable.
@@ -63,10 +64,10 @@ pub struct Capabilities {
     /// unrepresentable.
     override_survival: Option<OverrideSurvival>,
     calendar_scheduling: bool,
-    contacts: bool,
-    contact_writes: Option<WriteGuard>,
-    contact_groups: bool,
-    contact_photos: bool,
+    pub(crate) contacts: bool,
+    pub(crate) contact_writes: Option<WriteGuard>,
+    pub(crate) contact_groups: bool,
+    pub(crate) contact_photos: bool,
 }
 
 impl Capabilities {
@@ -76,6 +77,7 @@ impl Capabilities {
         Self {
             mail: false,
             mail_writes: false,
+            mail_drafts: false,
             mail_report: None,
             message_source: false,
             sender_identities: None,
@@ -110,6 +112,23 @@ impl Capabilities {
     #[must_use]
     pub const fn with_mail_writes(mut self) -> Self {
         self.mail_writes = true;
+        self
+    }
+
+    /// Marks storing a **draft** on the server as supported
+    /// ([`Provider::put_draft`](crate::Provider::put_draft) /
+    /// [`delete_draft`](crate::Provider::delete_draft)).
+    ///
+    /// Distinct from both of its neighbours, and an adapter can have either without
+    /// this one. [`with_mail_writes`](Self::with_mail_writes) changes an existing
+    /// message; a draft is a message the server does not have yet.
+    /// [`with_submission`](Self::with_submission) hands a message to the transport to
+    /// deliver; a draft is the message the user is not ready to send. On Gmail the
+    /// three are even granted separately, so an account may legitimately be able to
+    /// send while unable to keep a draft.
+    #[must_use]
+    pub const fn with_mail_drafts(mut self) -> Self {
+        self.mail_drafts = true;
         self
     }
 
@@ -248,34 +267,6 @@ impl Capabilities {
         self
     }
 
-    /// Marks address-book/contact read and sync as supported.
-    #[must_use]
-    pub const fn with_contacts(mut self) -> Self {
-        self.contacts = true;
-        self
-    }
-
-    /// Marks source-targeted contact writes and their guard strength.
-    #[must_use]
-    pub const fn with_contact_writes(mut self, guard: WriteGuard) -> Self {
-        self.contact_writes = Some(guard);
-        self
-    }
-
-    /// Marks contact-group reads as supported.
-    #[must_use]
-    pub const fn with_contact_groups(mut self) -> Self {
-        self.contact_groups = true;
-        self
-    }
-
-    /// Marks authenticated, on-demand contact-photo fetch as supported.
-    #[must_use]
-    pub const fn with_contact_photos(mut self) -> Self {
-        self.contact_photos = true;
-        self
-    }
-
     /// Whether mail read/sync is supported.
     #[must_use]
     pub const fn mail(self) -> bool {
@@ -286,6 +277,12 @@ impl Capabilities {
     #[must_use]
     pub const fn mail_writes(self) -> bool {
         self.mail_writes
+    }
+
+    /// Whether a draft can be stored on the server.
+    #[must_use]
+    pub const fn mail_drafts(self) -> bool {
+        self.mail_drafts
     }
 
     /// Which report verdicts this transport can express and how much the provider says
@@ -429,36 +426,6 @@ impl Capabilities {
     #[must_use]
     pub const fn calendar_scheduling(self) -> bool {
         self.calendar_scheduling
-    }
-
-    /// Whether address-book/contact read and sync is supported.
-    #[must_use]
-    pub const fn contacts(self) -> bool {
-        self.contacts
-    }
-
-    /// Whether contact writes are supported.
-    #[must_use]
-    pub const fn contact_writes(self) -> bool {
-        self.contact_writes.is_some()
-    }
-
-    /// Contact-write lost-update guard strength.
-    #[must_use]
-    pub const fn contact_write_guard(self) -> Option<WriteGuard> {
-        self.contact_writes
-    }
-
-    /// Whether contact-group reads are supported.
-    #[must_use]
-    pub const fn contact_groups(self) -> bool {
-        self.contact_groups
-    }
-
-    /// Whether authenticated contact-photo fetch is supported.
-    #[must_use]
-    pub const fn contact_photos(self) -> bool {
-        self.contact_photos
     }
 }
 

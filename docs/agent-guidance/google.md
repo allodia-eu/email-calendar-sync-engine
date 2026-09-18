@@ -176,6 +176,26 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   the sent message's id** in its response, so the receipt uses that directly (no reconcile
   round-trip, unlike SMTP/Graph `sendMail`, which return nothing).
 
+- **`put_draft` / `delete_draft`** → the `users.drafts` collection. Gmail is the **one
+  transport in this workspace with a draft object of its own**, so this is the only
+  adapter where a re-save is an in-place replacement rather than a create and a delete:
+  `drafts.create` (`POST`) for the first save, `drafts.update` (`PUT
+  /drafts/{draftId}`) after that, `drafts.delete` to discard. `drafts.update` is why the
+  `GoogleTransport` seam has a `put` verb at all; it is a full replace, not a `PATCH`.
+- ⚠️ **The key is the *draft* id, not a message id, and the two are not
+  interchangeable.** `drafts.update` keeps the draft id and replaces the message
+  underneath it, so the synced message carries a different id than the key `put_draft`
+  returned (live-verified in `tests/live_drafts.rs`). That is safe only because the two
+  draft verbs are the sole consumers of that key: nothing else addresses a message by
+  it. Keying by the message id instead would have forced create-and-delete here too, for
+  no gain.
+- **A `404` from `drafts.delete` is a successful delete**, because the op behind it is
+  retryable and the second call names a draft the first one removed. (Graph needs a
+  second shape here; Gmail does not: it answers `404` for both cases.)
+- **The full `mail.google.com` scope covers the collection**, so no separate
+  `gmail.compose` consent is needed. An account whose token lacks it fails at the call,
+  which no capability could have predicted (`Scopes` above).
+
 ## Google Calendar
 
 `GoogleCalendarProvider` is **bound to one calendar** (like `GraphCalendarProvider`): its

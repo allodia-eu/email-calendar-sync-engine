@@ -75,6 +75,9 @@ impl GraphProvider {
             capabilities: Capabilities::none()
                 .with_mail()
                 .with_mail_writes()
+                // A draft is created from the same MIME `/sendMail` takes, into the
+                // account's Drafts folder by Graph's own default (`crate::drafts`).
+                .with_mail_drafts()
                 // The one transport here that takes a report as an *action* and answers
                 // whether it landed, hence `Acknowledged`. All three verdicts exist —
                 // `junk`, `notJunk`, `phish` — and only those three (`crate::report`).
@@ -315,6 +318,24 @@ impl Provider for GraphProvider {
     /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (a `PATCH` of
     /// `isRead`/`flag`), move (`POST …/move`), or permanent delete (`POST …/permanentDelete`).
     ///
+    /// Stores a draft (`POST /me/messages` in MIME format), removing the message it
+    /// supersedes. Graph has no MIME update, so a re-save creates and deletes, and the
+    /// key moves (`crate::drafts`).
+    async fn put_draft(
+        &self,
+        _account: &AccountId,
+        draft: &Draft,
+        replacing: Option<&ProviderKey>,
+    ) -> ProviderResult<ProviderKey> {
+        crate::drafts::put_draft(&self.client, draft, replacing).await
+    }
+
+    /// Removes a stored draft (`DELETE /me/messages/{id}`), reporting one that is already
+    /// gone as done.
+    async fn delete_draft(&self, _account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
+        crate::drafts::delete_draft(&self.client, draft).await
+    }
+
     /// The target's mailbox comes from its provider key, not this provider's bound folder,
     /// so one connected provider can edit a message in any of the account's folders — Graph
     /// addresses a message by its immutable id alone (`crate::mutate`).

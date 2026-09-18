@@ -42,6 +42,7 @@ mod contact;
 mod contact_fields;
 mod contact_write;
 mod contact_write_fields;
+mod drafts;
 mod error;
 mod executor;
 mod fetch;
@@ -54,6 +55,7 @@ mod provider_calendar;
 mod report;
 mod request;
 mod session;
+mod session_urls;
 mod submit;
 mod submit_body;
 mod sync_ops;
@@ -73,7 +75,7 @@ pub use watch::{DEFAULT_EVENT_SOURCE_PING, JmapWatcher};
 
 use crate::{
     request::{Request, Response},
-    session::resolve_against,
+    session_urls::resolve_against,
     transport::Transport,
 };
 

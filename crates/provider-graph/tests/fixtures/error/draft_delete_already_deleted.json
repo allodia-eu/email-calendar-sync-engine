@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "ErrorCannotDeleteObject",
+    "message": "Object cannot be deleted."
+  }
+}
