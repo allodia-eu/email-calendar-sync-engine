@@ -7,10 +7,11 @@
 //! replacement and purging the old one costs two requests, moves the key, and makes the
 //! draft jump every time it is saved.
 //!
-//! **What `PATCH` cannot do is change the attachment collection**, which is a navigation
-//! property of its own: a patched draft keeps exactly the attachments it had (verified
-//! against a real mailbox). So this path is taken only when the draft being stored
-//! carries none, and it steps aside when the response says the stored one still does.
+//! `PATCH` itself cannot change the attachment collection: a patched draft keeps exactly
+//! the attachments it had (verified against a real mailbox). That is not a reason to
+//! replace the message, because attachments are resources of their own
+//! ([`crate::drafts_attachments`]) and only what changed has to be sent. So the rewrite
+//! covers an attachment change too, and the draft keeps its id either way.
 
 use engine_core::{ids::ProviderKey, mail::EmailAddress};
 use engine_provider::Draft;
@@ -33,9 +34,9 @@ pub(crate) async fn patch_in_place(
     draft: &Draft,
     existing: &ProviderKey,
 ) -> Result<Option<ProviderKey>, GraphError> {
-    // An attachment or an iTIP part has to go through the MIME assembler; neither is
-    // expressible as a message-resource property.
-    if !draft.attachments.is_empty() || draft.calendar.is_some() {
+    // An iTIP part is a body part carrying `method=`, which no message-resource property
+    // expresses; only the MIME assembler can write one.
+    if draft.calendar.is_some() {
         return Ok(None);
     }
 
@@ -55,15 +56,16 @@ pub(crate) async fn patch_in_place(
         Err(other) => return Err(other),
     };
 
-    // `PATCH` left the attachment collection alone, so a draft that had attachments and
-    // no longer should still has them. Only a replacement can express that.
-    if patched
+    // `PATCH` left the attachment collection alone, so bring it in line separately. The
+    // response says whether there is anything stored to reconcile against, which spares
+    // the listing for the common case: a text-only draft that never had an attachment.
+    let stored_has_attachments = patched
         .as_ref()
         .and_then(|m| m.get("hasAttachments"))
         .and_then(Value::as_bool)
-        == Some(true)
-    {
-        return Ok(None);
+        == Some(true);
+    if stored_has_attachments || !draft.attachments.is_empty() {
+        crate::drafts_attachments::reconcile(client, existing, draft).await?;
     }
     Ok(Some(existing.clone()))
 }

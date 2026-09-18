@@ -167,12 +167,31 @@ assumed (`tests/live_drafts.rs`). Graph advertises `mail_drafts`.
   request**, the message keeps its id, it keeps its `internetMessageId`, and it keeps its
   place in the Drafts folder instead of jumping on every save. That is the shape a
   repeatedly-saved draft actually takes, so it is the one worth optimising.
-- ⚠️ **`PATCH` cannot touch the attachment collection**, which is a navigation property
-  of its own: a patched draft keeps exactly the attachments it had (verified against a
-  real mailbox). So a save that adds or removes one falls back to creating a replacement
-  from MIME and purging the original, and the key **moves**. The adapter takes the
-  rewrite only when the draft it is storing carries no attachment and no iTIP part, and
-  steps aside when the response's `hasAttachments` says the stored one still does.
+- **`PATCH` does not touch the attachment collection, and it does not have to.** A
+  patched draft keeps exactly the attachments it had (verified live), but an attachment is
+  a resource of its own: `POST /messages/{id}/attachments` adds one and
+  `DELETE /messages/{id}/attachments/{id}` removes one, so a draft that gains or loses a
+  file sends just that file and **keeps its message**. `crate::drafts_attachments`
+  reconciles the collection after the `PATCH`, and only when there is something to
+  reconcile: the `PATCH` response's `hasAttachments` spares the listing entirely for a
+  text-only draft that never had one.
+  - **Unchanged attachments are left alone**, which is the point: re-uploading a large
+    file on every save would make a draft carrying one expensive to keep. The listing asks
+    for base properties only (`$select=id,name,contentType,size,isInline`), so it does not
+    drag `contentBytes` down the wire either; Graph returns those by default.
+  - ⚠️ **`contentId` cannot be named in that `$select`.** It lives on `fileAttachment`
+    rather than on the base `attachment` type, and naming it fails the whole request with
+    `BadRequest: Could not find a property named 'contentId'` rather than being ignored.
+  - **An attachment is matched by name, media type and inline-ness**, which is what the
+    cheap listing can see, and matched by **count**, so two files sharing a name are
+    handled. The residual: a file swapped for a *different* file of the same name and
+    media type reads as unchanged and the stored draft keeps the earlier bytes. Closing it
+    would mean downloading every attachment on every save, because Graph's `size` is the
+    encoded part size and not comparable to a local byte length (measured: an 11-byte
+    payload reports 191, a 1000-byte one 1192, the overhead growing with the file name).
+- **The replacement path survives for one shape only: a draft carrying an iTIP part.** A
+  body part with `method=` is not a message-resource property, so only the MIME assembler
+  can write one; that save creates and purges, and the key **moves**.
 - **A `PATCH` that 404s means the draft was deleted from another device**, and the save
   stores a fresh copy rather than failing: losing what the user still has open would be
   the worse answer. A `PATCH` that fails any other way propagates, so a throttled save

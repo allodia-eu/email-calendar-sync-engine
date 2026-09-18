@@ -59,6 +59,25 @@ fn draft(message_id: &str, subject: &str) -> Draft {
     )
 }
 
+/// Whether the stored message `key` carries an attachment, as the account's own sync
+/// reports it.
+///
+/// `Message::has_attachment` rather than `Message::attachments`: an envelope sync does
+/// not fetch the attachment collection (that is the body-fetch path's job), so the list
+/// is empty here whatever the server holds, while the flag is normalized from Graph's
+/// own `hasAttachments`.
+async fn has_attachment(provider: &GraphProvider, key: &engine_core::ids::ProviderKey) -> bool {
+    let emails = provider.sync_email(&account(), None).await.expect("sync");
+    let SyncUpdate::Snapshot { objects, .. } = emails.update else {
+        panic!("a cursorless sync is a snapshot");
+    };
+    objects
+        .iter()
+        .find(|m| m.id.key() == key)
+        .expect("the saved draft syncs back")
+        .has_attachment
+}
+
 /// The subjects of every message in Drafts carrying `message_id`.
 async fn drafts_carrying(provider: &GraphProvider, message_id: &str) -> Vec<String> {
     let emails = provider.sync_email(&account(), None).await.expect("sync");
@@ -255,7 +274,7 @@ async fn live_graph_a_rewritten_draft_keeps_its_message_id() {
 }
 
 #[tokio::test]
-async fn live_graph_an_attachment_change_replaces_the_draft() {
+async fn live_graph_an_attachment_change_keeps_the_draft() {
     let Some(token) = token() else {
         eprintln!("skipping live_graph_attachment_change: GRAPH_ACCESS_TOKEN unset");
         return;
@@ -275,6 +294,7 @@ async fn live_graph_an_attachment_change_replaces_the_draft() {
         .await
         .expect("first save");
 
+    // Gain an attachment.
     let mut with_file = draft(message_id, "Attach v2");
     with_file.attachments = vec![engine_provider::DraftAttachment::attachment(
         "note.txt",
@@ -286,21 +306,32 @@ async fn live_graph_an_attachment_change_replaces_the_draft() {
         .await
         .expect("save with an attachment");
 
-    // `PATCH` cannot add to the attachment collection, so this save had to store a
-    // replacement, and the key moves. The contract is that a caller keeps whatever comes
-    // back, and this is the case that exercises it.
-    assert_ne!(
-        first, second,
-        "an attachment change cannot be a rewrite, so the key moves"
+    // An attachment is a resource of its own, so gaining one does not cost a new
+    // message: the draft keeps its id, and a host's stored key stays good.
+    assert_eq!(first, second, "gaining an attachment kept the draft");
+    assert!(
+        has_attachment(&drafts, &second).await,
+        "the uploaded attachment is not on the stored draft"
+    );
+
+    // And lose it again.
+    let third = drafts
+        .put_draft(&account(), &draft(message_id, "Attach v3"), Some(&second))
+        .await
+        .expect("save without the attachment");
+    assert_eq!(first, third, "losing an attachment kept the draft");
+    assert!(
+        !has_attachment(&drafts, &third).await,
+        "the attachment the draft no longer carries is still stored"
     );
     assert_eq!(
         drafts_carrying(&drafts, message_id).await,
-        vec!["Attach v2".to_owned()],
-        "the replacement left the old version behind"
+        vec!["Attach v3".to_owned()],
+        "three saves, one draft"
     );
 
     drafts
-        .delete_draft(&account(), &second)
+        .delete_draft(&account(), &third)
         .await
         .expect("cleanup");
 }

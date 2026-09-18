@@ -5,15 +5,17 @@
 //! one assembler serves both and a saved draft is byte-identical to what sending it
 //! would have delivered.
 //!
-//! **A re-save rewrites the stored message in place** where it can
-//! ([`crate::drafts_patch`]): one request, the key and the `internetMessageId` unchanged,
-//! and the draft stays where it is in the folder rather than jumping on every save. That
-//! matters most for the case that saves most often, an edit to the text.
+//! **A re-save rewrites the stored message in place** ([`crate::drafts_patch`]): the key
+//! and the `internetMessageId` are unchanged, and the draft stays where it is in the
+//! folder rather than jumping on every save. An attachment change is part of that:
+//! attachments are resources of their own, so only the ones that changed are sent
+//! ([`crate::drafts_attachments`]) and the message still keeps its id.
 //!
-//! The fallback is to create the new message and purge the old, which is what an
-//! attachment change needs: `PATCH` cannot touch the attachment collection, and there is
-//! no MIME update to fall back on. Then the key **moves**, as it does on IMAP and JMAP,
-//! which is why the caller keeps whatever key comes back rather than assuming.
+//! The fallback creates the new message and purges the old, and is reached in two cases
+//! only: a draft carrying an iTIP part, which no message-resource property expresses,
+//! and a draft that has been deleted from another device, where there is nothing to
+//! rewrite and nothing to purge. Then the key **moves**, which is why the caller keeps
+//! whatever key comes back rather than assuming.
 
 use engine_core::ids::ProviderKey;
 use engine_provider::{Draft, ProviderResult};

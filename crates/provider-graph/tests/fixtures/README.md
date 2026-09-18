@@ -105,11 +105,19 @@ no body, so no fixture).
     folder or the flag, so both are the server's doing. A later save then `PATCH`es that
     message: `subject`, `body`, `from` and the recipient collections are writable while it
     is a draft, so the edit is one request and the `id` **and** `internetMessageId` survive
-    (all live-verified, `tests/live_drafts.rs`). What `PATCH` will not do is change the
-    attachment collection — patching a draft that has one leaves `hasAttachments` true — so
-    a save that adds or removes an attachment falls back to create-and-purge and the id
-    moves. Contrast Gmail, which rewrites the `Message-ID` on create (Google Finding 18);
-    Graph keeps ours throughout.
+    (all live-verified, `tests/live_drafts.rs`). Contrast Gmail, which rewrites the
+    `Message-ID` on create (Google Finding 18); Graph keeps ours throughout.
+17. **An attachment is a resource of its own, so changing one does not replace the
+    message.** `PATCH` leaves the attachment collection alone — patching a draft that has
+    one leaves `hasAttachments` true — but `POST`/`DELETE` under
+    `/messages/{id}/attachments` add and remove individually, so a draft that gains or
+    loses a file keeps its id (live-verified, both directions). Two traps in the listing:
+    `contentBytes` comes back **by default** (so a `$select` of base properties is what
+    keeps a save cheap), and `contentId` **cannot** be named in that `$select` at all —
+    it is on `fileAttachment`, not the base type, and asking for it fails the whole
+    request with `BadRequest`. `size` is the encoded part size, not the content length
+    (11 bytes → 191, 1000 → 1192, the overhead growing with the file name), so it cannot
+    be compared against a local byte length.
 16. **"Gone" has two shapes, and which one you get depends on the endpoint.** Retrying
     `POST …/permanentDelete` on a purged draft answers `404 ErrorItemNotFound`; the soft
     `DELETE /me/messages/{id}` on a message it already moved answers

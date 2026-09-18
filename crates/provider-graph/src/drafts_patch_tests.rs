@@ -61,12 +61,15 @@ async fn a_text_edit_rewrites_the_stored_draft_and_keeps_its_key() {
 }
 
 #[tokio::test]
-async fn adding_an_attachment_stores_a_replacement_instead() {
-    // `PATCH` cannot touch the attachment collection, so this must not reach it: only
-    // the create and the purge are routed.
+async fn adding_an_attachment_keeps_the_draft_and_uploads_only_the_file() {
+    // An attachment is a resource of its own, so gaining one costs an upload, not a new
+    // message. Neither the create nor the purge is routed, so reaching either fails this.
     let p = provider_over(fake_client_fallible(vec![
-        ("/messages/AAMkAGold/permanentDelete", Ok(json!({}))),
-        ("/messages", Ok(json!({ "id": "AAMkAGnew" }))),
+        (
+            "/messages/AAMkAGold/attachments",
+            Ok(json!({ "value": [] })),
+        ),
+        ("/messages/AAMkAGold", Ok(fixture(PATCHED))),
     ]));
 
     let mut with_file = draft();
@@ -81,24 +84,58 @@ async fn adding_an_attachment_stores_a_replacement_instead() {
         .await
         .unwrap();
 
-    assert_eq!(key.as_str(), "AAMkAGnew", "the key moves on a replacement");
+    assert_eq!(
+        key,
+        existing(),
+        "gaining an attachment keeps the draft's id"
+    );
 }
 
 #[tokio::test]
-async fn a_draft_that_still_holds_attachments_is_replaced_not_rewritten() {
-    // The remove-an-attachment case. The `PATCH` lands but the response says the stored
-    // message kept its attachments, which only a replacement can undo.
+async fn removing_an_attachment_deletes_it_without_touching_the_draft() {
+    // The `PATCH` response says the stored message still has attachments the draft no
+    // longer carries, so the collection is reconciled. The message itself is untouched:
+    // no create and no purge are routed.
     let p = provider_over(fake_client_fallible(vec![
-        ("/messages/AAMkAGold/permanentDelete", Ok(json!({}))),
+        ("/messages/AAMkAGold/attachments/att-1", Ok(json!({}))),
+        (
+            "/messages/AAMkAGold/attachments",
+            Ok(json!({ "value": [
+                { "id": "att-1", "name": "note.txt", "contentType": "text/plain", "isInline": false }
+            ]})),
+        ),
         (
             "/messages/AAMkAGold",
             Ok(json!({ "id": "AAMkAGold", "hasAttachments": true })),
         ),
-        ("/messages", Ok(json!({ "id": "AAMkAGnew" }))),
     ]));
 
     let key = p
         .put_draft(&account(), &draft(), Some(&existing()))
+        .await
+        .unwrap();
+
+    assert_eq!(key, existing(), "losing an attachment keeps the draft's id");
+}
+
+#[tokio::test]
+async fn a_draft_carrying_an_itip_part_is_replaced() {
+    // The one shape no message-resource property expresses: a body part with `method=`,
+    // which only the MIME assembler can write. So this save does store a replacement,
+    // and the key moves.
+    let p = provider_over(fake_client_fallible(vec![
+        ("/messages/AAMkAGold/permanentDelete", Ok(json!({}))),
+        ("/messages", Ok(json!({ "id": "AAMkAGnew" }))),
+    ]));
+
+    let mut invitation = draft();
+    invitation.calendar = Some(engine_provider::DraftCalendar::new(
+        engine_core::scheduling::ScheduleMethod::Request,
+        "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n",
+    ));
+
+    let key = p
+        .put_draft(&account(), &invitation, Some(&existing()))
         .await
         .unwrap();
 
