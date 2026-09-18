@@ -1,6 +1,6 @@
-//! Gated live provider-level checks against a real Microsoft Graph account: folder
-//! role resolution, message normalization, and the snapshot → delta cursor cycle
-//! through the real HTTP client.
+//! Gated live provider-level checks against a real Microsoft Graph account: message
+//! normalization, the snapshot → delta cursor cycle, submission and mail writes, through
+//! the real HTTP client. The folder list has its own suite (`live_folders.rs`).
 //!
 //! Skips unless `GRAPH_ACCESS_TOKEN` is set (an OAuth bearer access token, e.g.
 //! from `tools/graph-oauth`), so the offline `cargo test --workspace` stays green.
@@ -47,28 +47,6 @@ fn provider(token: String) -> GraphProvider {
     )
     .expect("client");
     GraphProvider::new(client, MailboxId::try_from("inbox").unwrap())
-}
-
-#[tokio::test]
-async fn live_mail_folders_resolve_roles() {
-    let Some(token) = token() else {
-        eprintln!("skipping live_mail_folders_resolve_roles: GRAPH_ACCESS_TOKEN unset");
-        return;
-    };
-    let mailboxes = provider(token)
-        .sync_mailboxes(&account(), None)
-        .await
-        .expect("sync folders");
-    assert!(mailboxes.is_snapshot());
-    let SyncUpdate::Snapshot { objects, .. } = &mailboxes.update else {
-        panic!("expected a folder snapshot");
-    };
-    // Roles resolve by well-known-alias id despite localized display names.
-    let roles: BTreeSet<MailboxRole> = objects.iter().filter_map(|m| m.role.clone()).collect();
-    assert!(roles.contains(&MailboxRole::Inbox), "inbox role resolved");
-    assert!(roles.contains(&MailboxRole::Sent), "sent role resolved");
-    // Every folder is top-level (parent nulled against msgfolderroot).
-    assert!(objects.iter().all(|m| m.parent.is_none()));
 }
 
 #[tokio::test]

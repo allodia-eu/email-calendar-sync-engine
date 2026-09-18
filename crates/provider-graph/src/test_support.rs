@@ -314,7 +314,8 @@ pub(crate) fn base64_decode(text: &str) -> Vec<u8> {
 }
 
 /// The routes for a full folder-list sync: the `msgfolderroot` + six well-known
-/// role aliases + the folder list.
+/// role aliases + the folder list, and the `childFolders` of every folder the list
+/// says has children — the tree walk is part of one folder sync, not an extra step.
 pub(crate) fn folder_routes() -> Vec<(&'static str, Value)> {
     vec![
         (
@@ -352,6 +353,24 @@ pub(crate) fn folder_routes() -> Vec<(&'static str, Value)> {
         (
             "/mailFolders?$top",
             json(include_str!("../tests/fixtures/mail/mailfolders.json")),
+        ),
+        (
+            "/mailFolders/folder-archive/childFolders",
+            json(include_str!(
+                "../tests/fixtures/mail/mailfolders_children.json"
+            )),
+        ),
+        (
+            "/mailFolders/folder-extra-2/childFolders",
+            json(include_str!(
+                "../tests/fixtures/mail/mailfolders_grandchildren.json"
+            )),
+        ),
+        (
+            "/mailFolders/folder-extra-1/childFolders",
+            json(include_str!(
+                "../tests/fixtures/mail/mailfolders_children_hidden.json"
+            )),
         ),
     ]
 }

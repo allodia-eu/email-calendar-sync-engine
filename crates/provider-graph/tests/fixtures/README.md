@@ -21,7 +21,10 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | Fixture | Real Graph call | Protects |
 | --- | --- | --- |
 | `mail/me_identity.json` | `GET /me?$select=displayName,mail,userPrincipalName` | that `$select` is **not applied** on a personal account: the real payload carries all twelve default `user` properties, so the normalizer must pick its three out of the noise |
-| `mail/mailfolders.json` | `GET /me/mailFolders?$top=50` | folder → `Mailbox` normalization (8 folders) |
+| `mail/mailfolders.json` | `GET /me/mailFolders?$top=50` | folder → `Mailbox` normalization (8 folders, the mailbox root's own children) |
+| `mail/mailfolders_children.json` | `GET /me/mailFolders/{archive}/childFolders?$top=100` | the tree walk's first hop: `Fixture parent`, nested under Archiveren |
+| `mail/mailfolders_grandchildren.json` | `GET /me/mailFolders/{Fixture parent}/childFolders?$top=100` | its **second** hop: `Fixture child`, two levels down — one level is all `$expand` can do (see Finding 25) |
+| `mail/mailfolders_children_hidden.json` | `GET /me/mailFolders/{conversation history}/childFolders?$top=100` | a folder whose `childFolderCount` is 1 answering with an **empty** page (see Finding 25) |
 | `mail/mailfolders_delta.json` | `GET /me/mailFolders/delta` | folder container delta + `deltaLink` cursor |
 | `mail/messages_delta_snapshot.json` | `GET /me/mailFolders/inbox/messages/delta?$select=…` | **initial** sync: full message objects + `deltaLink` |
 | `mail/messages_delta_nochange.json` | replay the snapshot `deltaLink` | incremental no-op (`value:[]` + new `deltaLink`) |
@@ -73,6 +76,20 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
     a future regression here degrades to a stale guard rather than to none — and the
     live assertion in `live_an_is_read_change_comes_back_as_state_not_a_whole_message`
     is what would tell us it happened.
+
+25. **`GET /me/mailFolders` is one level of a tree, and every shortcut past it truncates
+    silently.** It lists the children of `msgfolderroot` only, so a nested folder — and all
+    its mail — is invisible until its parent's `childFolders` is asked for.
+    `$expand=childFolders` looks like the cheap way to avoid that and is not: it returns
+    **ten** children unless the expand carries its own `$top`, carries no `@odata.nextLink`
+    to page past whatever cap it does have, and **silently ignores** a nested
+    `$expand=childFolders($expand=childFolders)`, answering one level deep with a `200`.
+    `mailFolders/delta` does return the whole hierarchy, but rejects `$top` and `$select`
+    outright (`ErrorInvalidUrlQuery`), so its page size is not ours to set. Hence the
+    breadth-first `childFolders` walk. Its guard is `childFolderCount`, which counts
+    **hidden** folders that `childFolders` does not return — Conversation History reports 1
+    and answers with an empty page — so only a stated `0` stops the descent, and an empty
+    page is ordinary.
 
 ## Mail-write findings (captured, not assumed)
 

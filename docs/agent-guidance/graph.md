@@ -64,6 +64,21 @@ each over its own `GraphClient` on the same token. The mail layers:
   change on move). A message's single-folder membership comes from
   `parentFolderId` (Graph mail is one-folder, like an IMAP copy — not the
   multi-membership JMAP/Gmail shape).
+- **The folder list is a tree, and one request sees one level of it.**
+  `GET /me/mailFolders` returns the children of `msgfolderroot` and nothing below them,
+  so `fetch::folder_tree` walks the rest: every folder whose `childFolderCount` is not a
+  stated `0` is asked for its `childFolders`, breadth-first, each level draining its own
+  `@odata.nextLink`. Without the walk a nested folder is invisible to the host, and so is
+  every message in it — the mail is reachable only through a `SyncScope::GraphFolder` for
+  a folder the folder list never named. A well-known role alias that 404s (unprovisioned
+  on the account) is still skipped rather than failing the whole list.
+
+  Two traps. **`$expand=childFolders` is not a shortcut**: it caps at ten children unless
+  the expand carries its own `$top`, offers no `@odata.nextLink` to page past whatever cap
+  it does have, and silently ignores a nested `$expand` — three ways to answer `200` with a
+  short tree. And **`childFolderCount` counts hidden folders that `childFolders` does not
+  return** (Conversation History has one), so a folder can promise a child and answer with
+  an empty page; that is ordinary, not a failure.
 - **Roles resolved by id, never by name.** A personal `mailFolder` carries **no**
   `wellKnownName` (selecting it `400`s) and a **localized** `displayName`
   (e.g. Dutch "Postvak IN"). The provider `GET`s the well-known aliases
@@ -257,12 +272,6 @@ shared mailboxes; verification awaits a work/school account.)
   demand in a later store sub-step, not materialized here.
 - **No cross-folder orchestration yet.** The provider is folder-bound; syncing
   every folder is the orchestrator's job (the live test binds the inbox alias).
-- **Top-level folders only.** `GET /me/mailFolders` lists the children of
-  `msgfolderroot`; a folder nested under another folder is not yet discovered (a
-  `childFolders` traversal is a follow-up). `folder_from_json` already preserves a
-  non-root parent for when nested discovery lands. The list *is* fully paginated
-  (`@odata.nextLink` drained), and a well-known role alias that 404s (unprovisioned
-  on the account) is skipped rather than failing the whole folder list.
 - **Per-id delta re-fetch (and role resolution) are sequential GETs.** A changed id
   is re-fetched with one `GET` each, and the 6 role aliases + `msgfolderroot` are
   resolved with one `GET` each per folder-list pass; both could collapse to a few

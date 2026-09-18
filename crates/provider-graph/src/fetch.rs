@@ -10,6 +10,8 @@
 //!   [`MESSAGE_STATE_SELECT`] rather than re-fetched whole. `@removed` tombstones apply inline.
 //!   Multi-page passes follow `@odata.nextLink`.
 
+use std::collections::VecDeque;
+
 use engine_core::{
     ids::{MailboxId, MessageId, ProviderKey},
     mail::{MailState, MailStateChange, Mailbox, Message},
@@ -48,22 +50,51 @@ pub(crate) async fn folders(client: &GraphClient) -> Result<Vec<Mailbox>, GraphE
             resolved.push((id, role.clone()));
         }
     }
-    // Drain every page of the folder list (`@odata.nextLink`), so a mailbox with
-    // more than one page of folders is not truncated — and then tombstoned, since
-    // this set becomes the snapshot's `present` set.
+    let mut mailboxes = folder_tree(client, &root).await?;
+    apply_roles(&mut mailboxes, &resolved);
+    Ok(mailboxes)
+}
+
+/// Every folder in the mailbox, not only the ones the root holds directly.
+///
+/// `/mailFolders` answers with **one level**. A folder nested under another is reachable
+/// only through its parent's `childFolders`, so without the walk a host sees neither the
+/// folder nor a single message in it. Each level drains its own `@odata.nextLink` — a page
+/// dropped here loses folders, and then their mail, since this set becomes the snapshot's
+/// `present` set. A folder is asked for children unless it says it has none, so a mailbox
+/// of leaf folders still costs one request. Contact folders list the same way, and
+/// `contact::discover_folders` already walks them.
+///
+/// ⚠️ **`$expand=childFolders` is not a shortcut for this.** It returns **ten** children
+/// unless the expand carries a `$top` of its own, offers no `@odata.nextLink` to page past
+/// whatever limit it does have, and silently ignores a nested `$expand`. Each of those
+/// answers `200` with a short tree, which is the failure this walk exists to prevent.
+///
+/// A count of children is not a promise of any: `childFolderCount` counts **hidden**
+/// folders, which `childFolders` does not return (Conversation History has one), so an
+/// empty page here is ordinary.
+async fn folder_tree(client: &GraphClient, root: &MailboxId) -> Result<Vec<Mailbox>, GraphError> {
     let mut mailboxes = Vec::new();
-    let mut url = client.url("/mailFolders?$top=100");
-    loop {
-        let doc = client.get(&url).await?;
-        for folder in value_array(&doc, "mailFolders")? {
-            mailboxes.push(folder_from_json(folder, Some(&root))?);
-        }
-        match odata_link(&doc, "@odata.nextLink") {
-            Some(next) => url = next,
-            None => break,
+    let mut queue = VecDeque::from([client.url("/mailFolders?$top=100")]);
+    while let Some(mut url) = queue.pop_front() {
+        loop {
+            let doc = client.get(&url).await?;
+            for folder in value_array(&doc, "mailFolders")? {
+                let mailbox = folder_from_json(folder, Some(root))?;
+                if folder.get("childFolderCount").and_then(Value::as_u64) != Some(0) {
+                    queue.push_back(client.url(&format!(
+                        "/mailFolders/{}/childFolders?$top=100",
+                        mailbox.id.as_str()
+                    )));
+                }
+                mailboxes.push(mailbox);
+            }
+            match odata_link(&doc, "@odata.nextLink") {
+                Some(next) => url = next,
+                None => break,
+            }
         }
     }
-    apply_roles(&mut mailboxes, &resolved);
     Ok(mailboxes)
 }
 
