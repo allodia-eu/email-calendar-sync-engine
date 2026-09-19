@@ -139,6 +139,18 @@ impl GoogleTransport for HttpTransport {
         write_body(resp).await
     }
 
+    async fn put(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError> {
+        let resp = self
+            .send_write(reqwest::Method::PUT, url, Some(content_type), None, body)
+            .await?;
+        write_body(resp).await
+    }
+
     async fn patch(
         &self,
         url: &str,

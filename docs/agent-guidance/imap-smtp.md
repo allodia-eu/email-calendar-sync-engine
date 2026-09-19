@@ -238,7 +238,7 @@ is authoritative for the `provider-caldav` calendar client.
   the command stream), and a **non-ASCII subject or display name is emitted as an
   RFC 2047 `B` encoded-word**, never raw 8-bit bytes, so headers stay 7-bit clean.
   A **`Date` header is generated locally** (RFC 5322 §3.6 requires it; for an IMAP
-  `APPEND` — `save_draft` / the Sent copy — no server is in the loop to add one).
+  `APPEND` — a draft or the Sent copy — no server is in the loop to add one).
   For a reply or forward it also emits the **threading linkage** (RFC 5322 §3.6.4):
   `In-Reply-To: <id>` when `Draft.in_reply_to` is set and `References: <id1> <id2> …`
   (space-separated, each angle-bracketed) when `Draft.references` is non-empty — each
@@ -319,13 +319,28 @@ is authoritative for the `provider-caldav` calendar client.
   argument keep the server's own bytes. Decoding an id instead would re-key every message
   in a non-ASCII folder and address the server with a name it never advertised. There is
   deliberately no encoder: no name this crate sends originates from a decoded one.
-- **`save_draft` (no SMTP).** `ImapProvider::save_draft` files a draft into the
-  account's Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating
-  `Drafts`), flagged `\Draft`, via `APPEND` — so creating a mail works against any
-  IMAP server even where SMTP submission cannot. Unlike Sent placement it surfaces
-  an `APPEND` failure (saving the draft is the whole op). The
-  `examples/imap_explore.rs` example exercises read + (opt-in) `save_draft` against
-  a real provider.
+- **`put_draft` / `delete_draft` (no SMTP).** A draft is `APPEND`ed into the account's
+  Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating `Drafts`) flagged
+  `\Draft \Seen`, so keeping a draft works against any IMAP server even where SMTP
+  submission cannot. Unlike Sent placement an `APPEND` failure surfaces: saving the
+  draft is the whole op. `ImapProvider::save_draft` remains as the first-save
+  convenience the example and the live suite use, and is the same code path.
+- **A re-save is `APPEND` then `UID STORE +FLAGS (\Deleted)` + `UID EXPUNGE`, in that
+  order, and the removal may fail without failing the save.** An IMAP message is
+  immutable, so "replace" is two commands with nothing around them; appending first
+  means a partial failure leaves the user two drafts rather than none, which is the
+  right way round for a message nobody has sent. Returning an error once the new copy
+  is stored would be worse still: the caller retries and appends a third. The key
+  therefore **moves** on every save, and the caller keeps whatever `put_draft` returned.
+- **A key minted without UIDPLUS names the draft by its `Message-ID`.** `APPENDUID`
+  (RFC 4315) gives the real key where the server offers it; otherwise the key is
+  `draft:<Message-ID>`, and removing it has to `SEARCH HEADER Message-ID` in the Drafts
+  folder before it can address anything. Without that path a draft on a server lacking
+  UIDPLUS would accumulate one copy per save, which is the failure worth the extra code.
+- **A removal whose `UIDVALIDITY` moved is a `Conflict`, not a success.** The UID now
+  names a different message, and deleting it would delete someone else's mail; the
+  caller re-syncs instead. A UID the folder simply no longer holds is a `UID STORE`
+  no-op, so a repeated delete settles rather than parking the op that drives it.
 
 ## Mail mutations
 

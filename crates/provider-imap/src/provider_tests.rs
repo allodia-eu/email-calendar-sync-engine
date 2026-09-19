@@ -398,7 +398,7 @@ async fn observed_open_session(server_script: Vec<u8>, tls: Option<TlsVersion>) 
     let config = ImapConfig::new("h:993", "h", "alice@test.local", "pw")
         .with_connect_observer(recorder.clone());
     let (stream, _recorded) = MockStream::new(server_script);
-    super::open_session(stream, tls, &config)
+    crate::connect::open_session(stream, tls, &config)
         .await
         .expect("session");
     let steps = recorder.0.lock().unwrap();
@@ -452,7 +452,7 @@ async fn a_failed_login_reports_the_handshake_but_never_authentication() {
     let config = ImapConfig::new("h:993", "h", "alice@test.local", "wrong")
         .with_connect_observer(recorder.clone());
     let (stream, _recorded) = MockStream::new(script(&[GREETING, "a1 NO bad credentials\r\n"]));
-    let err = super::open_session(stream, Some(TlsVersion::Tls1_2), &config)
+    let err = crate::connect::open_session(stream, Some(TlsVersion::Tls1_2), &config)
         .await
         .expect_err("login must fail");
     assert!(matches!(err, crate::error::ImapError::Auth(_)));

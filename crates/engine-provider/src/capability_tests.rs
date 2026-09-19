@@ -169,3 +169,13 @@ fn a_writable_identity_is_both_readable_and_writable() {
             .is_some_and(IdentityControls::writable)
     );
 }
+
+#[test]
+fn storing_a_draft_is_its_own_capability() {
+    // Distinct from both mail writes and submission: an adapter can flag, move and
+    // send mail and still have nowhere to put a draft, so a host asks separately
+    // before it offers the action.
+    let caps = Capabilities::none().with_mail_writes().with_submission();
+    assert!(!caps.mail_drafts());
+    assert!(Capabilities::none().with_mail_drafts().mail_drafts());
+}

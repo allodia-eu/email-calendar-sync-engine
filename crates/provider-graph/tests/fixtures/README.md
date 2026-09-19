@@ -40,6 +40,9 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/message_reported.json` | `POST {beta}/messages/{id}/reportMessage` `{ReportAction,IsMessageMoveRequested}` | the report echo — a **`reportMessageCommandResult`**, not the `message` object the docs describe (see Finding 17) |
 | `error/report_bad_action.json` | the same call with `ReportAction: unknownFutureValue` | the `400 RequestBodyRead` for a `reportAction` outside the three that exist |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
+| `mail/draft_patched.json` | `PATCH /me/messages/{id}` on a draft | the in-place rewrite: same `id`, same `internetMessageId`, `hasAttachments` echoed back so the caller can tell whether it had to fall back (see Mail-write finding 15) |
+| `error/draft_delete_not_found.json` | `POST /me/messages/{id}/permanentDelete` on a draft already purged | the `404` a retried draft delete meets (see Mail-write finding 16) |
+| `error/draft_delete_already_deleted.json` | `DELETE /me/messages/{id}` on an already-moved message | the `403 ErrorCannotDeleteObject` that also means "not there" (see Mail-write finding 16) |
 | `error/photo_image_not_found.json` | `GET /me/photos/240x240/$value` with no photo set | the 404 that means "there is no image" |
 | `error/photo_invalid_size.json` | `GET /me/photos/999x999/$value` | the 404 that means "that size is not offered" (see Finding 16) |
 | `me.json` | `GET /me` | account identity probe |
@@ -112,6 +115,35 @@ no body, so no fixture).
     it). A re-delete of an already-purged message is `403 ErrorCannotDeleteObject`, **not** a
     clean `404` (the item lingers in Purges, still `GET`-able by id during retention); delete
     idempotency keys on `404` only, mirroring the calendar re-delete (Finding 9).
+
+15. **A draft is stored from MIME and rewritten as JSON, and the second is what a re-save
+    uses.** `POST /me/messages` with `Content-Type: text/plain` and the base64 MIME body
+    creates the message in **Drafts** with `isDraft` set — nothing in the request names a
+    folder or the flag, so both are the server's doing. A later save then `PATCH`es that
+    message: `subject`, `body`, `from` and the recipient collections are writable while it
+    is a draft, so the edit is one request and the `id` **and** `internetMessageId` survive
+    (all live-verified, `tests/live_drafts.rs`). Contrast Gmail, which rewrites the
+    `Message-ID` on create (Google Finding 18); Graph keeps ours throughout.
+17. **An attachment is a resource of its own, so changing one does not replace the
+    message.** `PATCH` leaves the attachment collection alone — patching a draft that has
+    one leaves `hasAttachments` true — but `POST`/`DELETE` under
+    `/messages/{id}/attachments` add and remove individually, so a draft that gains or
+    loses a file keeps its id (live-verified, both directions). Two traps in the listing:
+    `contentBytes` comes back **by default** (so a `$select` of base properties is what
+    keeps a save cheap), and `contentId` **cannot** be named in that `$select` at all —
+    it is on `fileAttachment`, not the base type, and asking for it fails the whole
+    request with `BadRequest`. `size` is the encoded part size, not the content length
+    (11 bytes → 191, 1000 → 1192, the overhead growing with the file name), so it cannot
+    be compared against a local byte length.
+16. **"Gone" has two shapes, and which one you get depends on the endpoint.** Retrying
+    `POST …/permanentDelete` on a purged draft answers `404 ErrorItemNotFound`; the soft
+    `DELETE /me/messages/{id}` on a message it already moved answers
+    `403 ErrorCannotDeleteObject`, the same code Finding 14 records from the purge path during
+    retention. A draft delete accepts **both** — it is driven by a retryable op, and either
+    means the draft is not there — while `MailEdit::Delete` still propagates the `403`,
+    because that caller asked for irreversible removal and a message in Purges has not had it.
+    Matching is on the error `code`, never the bare `403`, so a real permission failure still
+    surfaces.
 
 ## Calendar fixtures (`calendar/`)
 
