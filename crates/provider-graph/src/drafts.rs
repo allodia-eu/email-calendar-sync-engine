@@ -48,6 +48,11 @@ pub(crate) async fn put_draft(
     // it is created in the mailbox and never delivered from here.
     let mime = engine_rfc5322::assemble_filed_message(draft, OffsetDateTime::now_utc())?;
     let body = engine_rfc5322::base64_encode(&mime).into_bytes();
+    // MIME format, exactly as `sendMail` takes it: `text/plain` is the **request's**
+    // content type, declaring that the body is a base64 RFC 5322 message, and says
+    // nothing about the message's own parts. An HTML draft is a `multipart/alternative`
+    // inside that MIME, and Graph parses it and stores the draft as `body.contentType:
+    // html` (live-verified).
     let created = client
         .post(&client.url("/messages"), "text/plain", body)
         .await?;

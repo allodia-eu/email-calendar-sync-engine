@@ -59,6 +59,30 @@ fn draft(message_id: &str, subject: &str) -> Draft {
     )
 }
 
+/// The body of the stored message `key`, as the account's own sync fetched it.
+async fn stored_body(provider: &GraphProvider, key: &engine_core::ids::ProviderKey) -> String {
+    let source = provider
+        .fetch_message_source(&account(), &stored_message(provider, key).await)
+        .await
+        .expect("fetch the stored draft's source");
+    String::from_utf8_lossy(source.as_bytes()).into_owned()
+}
+
+/// The synced `Message` for `key`, which a source fetch needs to address it.
+async fn stored_message(
+    provider: &GraphProvider,
+    key: &engine_core::ids::ProviderKey,
+) -> engine_core::mail::Message {
+    let emails = provider.sync_email(&account(), None).await.expect("sync");
+    let SyncUpdate::Snapshot { objects, .. } = emails.update else {
+        panic!("a cursorless sync is a snapshot");
+    };
+    objects
+        .into_iter()
+        .find(|m| m.id.key() == key)
+        .expect("the saved draft syncs back")
+}
+
 /// Whether the stored message `key` carries an attachment, as the account's own sync
 /// reports it.
 ///
@@ -332,6 +356,63 @@ async fn live_graph_an_attachment_change_keeps_the_draft() {
 
     drafts
         .delete_draft(&account(), &third)
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+async fn live_graph_an_html_draft_is_stored_as_html_by_both_paths() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_graph_html_draft: GRAPH_ACCESS_TOKEN unset");
+        return;
+    };
+    let drafts = provider(token, "drafts");
+
+    let message_id = &format!(
+        "live-graph-draft-html-{}@test.local",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_nanos()
+    );
+    let rich =
+        |subject: &str, html: &str| draft(message_id, subject).with_html_body(html.to_owned());
+
+    // The create goes out as base64 MIME under an HTTP `Content-Type: text/plain`, which
+    // describes the *request* and not the message: the HTML rides inside the MIME as a
+    // `multipart/alternative`. This asserts Graph parsed it that way rather than storing
+    // the whole payload as text, which is the thing the request header looks like it says.
+    let created = drafts
+        .put_draft(
+            &account(),
+            &rich("HTML v1", "<p><strong>one</strong></p>"),
+            None,
+        )
+        .await
+        .expect("first save");
+    let body = stored_body(&drafts, &created).await;
+    assert!(
+        body.contains("<strong>one</strong>"),
+        "the create lost the HTML: {body}"
+    );
+
+    // And the rewrite, which states the content type outright rather than through MIME.
+    let rewritten = drafts
+        .put_draft(
+            &account(),
+            &rich("HTML v2", "<p><em>two</em></p>"),
+            Some(&created),
+        )
+        .await
+        .expect("rewrite");
+    let body = stored_body(&drafts, &rewritten).await;
+    assert!(
+        body.contains("<em>two</em>"),
+        "the rewrite lost the HTML: {body}"
+    );
+
+    drafts
+        .delete_draft(&account(), &rewritten)
         .await
         .expect("cleanup");
 }
