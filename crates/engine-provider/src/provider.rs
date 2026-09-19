@@ -211,6 +211,59 @@ pub trait Provider: CalendarWrites + Send + Sync {
         ))
     }
 
+    /// Stores `draft` in the account's Drafts folder, returning the key of the stored
+    /// message. `replacing` names the draft this one supersedes: the same composition,
+    /// saved again.
+    ///
+    /// **The returned key is the one to keep, and it need not be `replacing`.** A
+    /// transport whose stored messages are immutable writes a new one and removes the
+    /// old, so the key moves (IMAP `APPEND` then delete, JMAP `Email/set` create then
+    /// destroy, Graph `POST` then delete); one with a draft object of its own rewrites
+    /// it and returns the key it was given (Gmail `drafts.update`). A caller stores
+    /// whatever comes back rather than assuming either, which is the whole reason this
+    /// is one verb.
+    ///
+    /// Replacing is not atomic everywhere: where the old message has to be removed
+    /// separately, a failure between the two leaves both, and the next Drafts sync is
+    /// what the user sees. That is a duplicate draft, never a lost one, which is the
+    /// right way round for a message nobody has sent.
+    ///
+    /// Providers advertising [`Capabilities::mail_drafts`] override this; the default
+    /// rejects, so a capability-checking caller never relies on it. The write is
+    /// outbox-mediated by the caller (a durable pending op precedes this side effect);
+    /// this method performs only the provider call.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]. The default returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn put_draft(
+        &self,
+        account: &AccountId,
+        draft: &Draft,
+        replacing: Option<&ProviderKey>,
+    ) -> ProviderResult<ProviderKey> {
+        let _ = (account, draft, replacing);
+        Err(unsupported("mail drafts"))
+    }
+
+    /// Removes a stored draft: the user discarded it, or it has been sent and the copy
+    /// in Drafts would otherwise linger.
+    ///
+    /// **Implementations must treat an absent draft as success.** It sits behind a
+    /// retryable op, so it will be called again on a draft the first call removed, and
+    /// "no such message" is the state the caller asked for. An adapter that reported it
+    /// as a failure would park the op and retry forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]. The default returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn delete_draft(&self, account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
+        let _ = (account, draft);
+        Err(unsupported("mail drafts"))
+    }
+
     /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (keyword
     /// change), move (folder change, incl. a Trash "delete"), or permanent delete.
     ///
@@ -389,3 +442,7 @@ pub trait Provider: CalendarWrites + Send + Sync {
         Err(unsupported("calendar sync"))
     }
 }
+
+#[cfg(test)]
+#[path = "draft_tests.rs"]
+mod draft_tests;

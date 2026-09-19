@@ -96,6 +96,19 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         (**self).file_sent_copy(account, draft).await
     }
 
+    async fn put_draft(
+        &self,
+        account: &AccountId,
+        draft: &Draft,
+        replacing: Option<&ProviderKey>,
+    ) -> ProviderResult<ProviderKey> {
+        (**self).put_draft(account, draft, replacing).await
+    }
+
+    async fn delete_draft(&self, account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
+        (**self).delete_draft(account, draft).await
+    }
+
     async fn edit_mail(
         &self,
         account: &AccountId,

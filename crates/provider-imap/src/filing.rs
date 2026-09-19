@@ -31,9 +31,10 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::{ImapConfig, SmtpSecurity, SmtpSettings},
+    connect::connect_session,
     error::ImapError,
     place::{Filing, append_to_role_folder, place_if_absent, placed_key},
-    provider::{ImapProvider, connect_session},
+    provider::ImapProvider,
     smtp::{self, Disposition, SmtpResult},
 };
 
@@ -398,34 +399,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         ))
     }
 
-    /// Saves `draft` as a message in the Drafts folder via IMAP `APPEND` — no SMTP,
-    /// so it works against any IMAP server. Ensures Drafts exists (`CREATE`, ignoring
-    /// "already exists"), appends the assembled RFC 5322 message flagged `\Draft`,
-    /// and returns its key (the real Drafts key from UIDPLUS `APPENDUID`, or a
-    /// `Message-ID`-derived key the next Drafts sync resolves).
+    /// Saves `draft` as a new message in the Drafts folder.
     ///
-    /// Unlike a Sent copy this **fails loudly**: saving the draft is the whole operation,
-    /// so there is nothing to report success about if the `APPEND` did not land.
+    /// The whole operation is the `drafts` module's, which
+    /// [`Provider::put_draft`](engine_provider::Provider::put_draft) calls too, so there
+    /// is one implementation of what a draft costs on IMAP rather than one per caller.
     ///
     /// # Errors
     ///
-    /// Returns a classified [`ProviderError`] on a transport or `APPEND` failure.
+    /// Returns a classified [`ProviderError`] on a transport or `APPEND` failure. Unlike
+    /// a Sent copy this fails loudly: saving the draft is the whole operation.
     pub async fn save_draft(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
-        // A saved draft retains the Bcc header so resuming it restores every recipient (it is
-        // APPENDed locally, never transmitted).
-        let message = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
-        // The Drafts folder is resolved by its `\Drafts` SPECIAL-USE role (falling back to
-        // the conventional "Drafts").
-        let (folder, append_uid) = {
-            let mut connection = self.connection.lock().await;
-            append_to_role_folder(&mut connection, Filing::Drafts, &message).await?
-        };
-        Ok(placed_key(
-            &folder,
-            Filing::Drafts.key_prefix(),
-            append_uid,
-            &draft.message_id,
-        ))
+        let mut connection = self.connection.lock().await;
+        crate::drafts::put_draft(&mut connection, draft, None).await
     }
 }
 

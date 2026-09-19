@@ -1,0 +1,15 @@
+{
+  "methodResponses": [
+    [
+      "Mailbox/get",
+      {
+        "accountId": "u1",
+        "list": [
+          { "id": "mb-inbox", "name": "Inbox", "role": "inbox", "totalEmails": 2, "unreadEmails": 1 },
+          { "id": "mb-drafts", "name": "Drafts", "role": "drafts", "totalEmails": 0, "unreadEmails": 0 }
+        ]
+      },
+      "0"
+    ]
+  ]
+}

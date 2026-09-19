@@ -168,6 +168,76 @@ whole message the caller assembled — pre-generated `Message-ID`, threading, `C
   Graph preserves it in the MIME form (`tests/live_provider.rs`, gated on
   `GRAPH_ACCESS_TOKEN`). The `Mail.Send` delegated scope is required.
 
+## Drafts
+
+`put_draft` stores a draft with `POST /me/messages` carrying the **same base64 MIME**
+`/sendMail` takes, so one assembler serves both and a saved draft is byte-identical to
+what sending it would have delivered. Graph files it into Drafts and sets `isDraft`
+itself: nothing in the request names a folder, which is live-verified rather than
+assumed (`tests/live_drafts.rs`). Graph advertises `mail_drafts`.
+
+- **A re-save rewrites the stored message in place: `PATCH /me/messages/{id}`.** A
+  draft's `subject`, `body`, `from` and recipient collections are writable while
+  `isDraft` is true (they are read-only once it is not), so a text edit is **one
+  request**, the message keeps its id, it keeps its `internetMessageId`, and it keeps its
+  place in the Drafts folder instead of jumping on every save. That is the shape a
+  repeatedly-saved draft actually takes, so it is the one worth optimising.
+- **`PATCH` does not touch the attachment collection, and it does not have to.** A
+  patched draft keeps exactly the attachments it had (verified live), but an attachment is
+  a resource of its own: `POST /messages/{id}/attachments` adds one and
+  `DELETE /messages/{id}/attachments/{id}` removes one, so a draft that gains or loses a
+  file sends just that file and **keeps its message**. `crate::drafts_attachments`
+  reconciles the collection after the `PATCH`, and only when there is something to
+  reconcile: the `PATCH` response's `hasAttachments` spares the listing entirely for a
+  text-only draft that never had one.
+  - **Unchanged attachments are left alone**, which is the point: re-uploading a large
+    file on every save would make a draft carrying one expensive to keep. The listing asks
+    for base properties only (`$select=id,name,contentType,size,isInline`), so it does not
+    drag `contentBytes` down the wire either; Graph returns those by default.
+  - ⚠️ **`contentId` cannot be named in that `$select`.** It lives on `fileAttachment`
+    rather than on the base `attachment` type, and naming it fails the whole request with
+    `BadRequest: Could not find a property named 'contentId'` rather than being ignored.
+  - **An attachment is matched by name, media type and inline-ness**, which is what the
+    cheap listing can see, and matched by **count**, so two files sharing a name are
+    handled. The residual: a file swapped for a *different* file of the same name and
+    media type reads as unchanged and the stored draft keeps the earlier bytes. Closing it
+    would mean downloading every attachment on every save, because Graph's `size` is the
+    encoded part size and not comparable to a local byte length (measured: an 11-byte
+    payload reports 191, a 1000-byte one 1192, the overhead growing with the file name).
+- **The replacement path survives for one shape only: a draft carrying an iTIP part.** A
+  body part with `method=` is not a message-resource property, so only the MIME assembler
+  can write one; that save creates and purges, and the key **moves**.
+- **A `PATCH` that 404s means the draft was deleted from another device**, and the save
+  stores a fresh copy rather than failing: losing what the user still has open would be
+  the worse answer. A `PATCH` that fails any other way propagates, so a throttled save
+  does not quietly become a second draft.
+- **Graph preserves the `Message-ID` we wrote**, through the MIME create and through the
+  rewrite (live-verified). Gmail does **not** (`google.md`), so the header is a usable
+  join between a host's own copy and the stored draft here and not there.
+- **`delete_draft` is `POST /me/messages/{id}/permanentDelete`, not `DELETE`.** The plain
+  `DELETE` only moves the message to Deleted Items (Finding 14), so using it would leave a
+  discarded draft recoverable on Graph and gone on the other three adapters, and a host
+  would have to know which provider it was talking to before it could say what it had
+  done. Needs `Content-Length: 0` like every bodyless Graph `POST`.
+- ⚠️ **Graph says "gone" two different ways, and which one depends on the endpoint.**
+  Both observed against a real mailbox:
+
+  | call | on a message that is not there | code |
+  |---|---|---|
+  | `POST …/permanentDelete` (retried) | `404` | `ErrorItemNotFound` |
+  | `DELETE /me/messages/{id}` on an already-moved message | `403` | `ErrorCannotDeleteObject` |
+
+  The `404` is the shape this verb meets in practice; the `403` is recorded here too
+  because `mutate.rs` observed the same code from the purge path during the retention
+  window, and a retryable op must not park on either. Both bodies are pinned as fixtures
+  (`tests/fixtures/error/draft_delete_*.json`). The match is on the error **code**, not
+  the status: a genuine permission failure is also a `403` and must still surface.
+- **This treats the `403` differently from `MailEdit::Delete`, deliberately.** There the
+  caller asked for irreversible removal of the user's mail, and a message still sitting in
+  Purges has not had that done to it, so the ambiguity is reported and the outbox resolves
+  it. Here the caller asked only that the draft stop being in Drafts, which a previous
+  attempt already achieved.
+
 ## Mail writes (mark-read/flag, move, delete)
 
 `edit_mail` applies a neutral [`MailEdit`] to an already-synced message, keyed by its

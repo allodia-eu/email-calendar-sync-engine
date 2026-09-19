@@ -325,6 +325,27 @@ impl Provider for JmapProvider {
     // `calendar_writes`, because that capability covers the neutral create/patch/delete
     // spine, not the escape hatch (`engine_provider::EventWrite`).
 
+    async fn put_draft(
+        &self,
+        _account: &AccountId,
+        draft: &engine_provider::Draft,
+        replacing: Option<&engine_core::ids::ProviderKey>,
+    ) -> ProviderResult<engine_core::ids::ProviderKey> {
+        // One `Email/set` carries the create and the destroy, so the replacement exists
+        // before the copy it supersedes goes (`crate::drafts`).
+        let account = self.mail_account()?;
+        Ok(crate::drafts::put_draft(self.executor.as_ref(), &account, draft, replacing).await?)
+    }
+
+    async fn delete_draft(
+        &self,
+        _account: &AccountId,
+        draft: &engine_core::ids::ProviderKey,
+    ) -> ProviderResult<()> {
+        let account = self.mail_account()?;
+        Ok(crate::drafts::delete_draft(self.executor.as_ref(), &account, draft).await?)
+    }
+
     async fn edit_mail(
         &self,
         _account: &AccountId,
@@ -402,7 +423,7 @@ impl Provider for JmapProvider {
 
 #[cfg(test)]
 #[path = "provider_test_support.rs"]
-mod provider_test_support;
+pub(crate) mod provider_test_support;
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]

@@ -50,7 +50,10 @@ pub(crate) async fn send(
 
     let mut req = Request::new([capability::CORE, capability::MAIL, capability::SUBMISSION]);
     let mut email_create = Map::new();
-    email_create.insert("draft".to_owned(), build_draft(&context, draft, &blob_ids));
+    email_create.insert(
+        "draft".to_owned(),
+        build_draft(&context.drafts, draft, &blob_ids),
+    );
     let email_set = req.invoke(
         "Email/set",
         json!({ "accountId": mail_account, "create": email_create }),
@@ -82,7 +85,7 @@ pub(crate) async fn send(
 ///
 /// [`JmapError::Session`] if the draft has attachments but the server advertised no
 /// `uploadUrl`, or the classified failure of an upload.
-async fn upload_attachments(
+pub(crate) async fn upload_attachments(
     executor: &dyn Executor,
     mail_account: &str,
     draft: &Draft,
@@ -126,7 +129,7 @@ async fn resolve_context(
 }
 
 /// Finds the id of the mailbox with `role`.
-fn role_id(mailboxes: &[Mailbox], role: &MailboxRole) -> Result<String, JmapError> {
+pub(crate) fn role_id(mailboxes: &[Mailbox], role: &MailboxRole) -> Result<String, JmapError> {
     mailboxes
         .iter()
         .find(|m| m.role.as_ref() == Some(role))
@@ -148,9 +151,9 @@ fn first_identity(result: &Value) -> Result<String, JmapError> {
 
 /// Builds the `Email/set` create object for the draft, referencing the uploaded
 /// attachment `blob_ids` (one per `draft.attachments`, in order).
-fn build_draft(context: &SubmitContext, draft: &Draft, blob_ids: &[String]) -> Value {
+pub(crate) fn build_draft(drafts_mailbox: &str, draft: &Draft, blob_ids: &[String]) -> Value {
     let mut mailbox_ids = Map::new();
-    mailbox_ids.insert(context.drafts.clone(), Value::Bool(true));
+    mailbox_ids.insert(drafts_mailbox.to_owned(), Value::Bool(true));
     let (body_structure, body_values) = body(draft, blob_ids);
     json!({
         "mailboxIds": mailbox_ids,
@@ -217,7 +220,7 @@ fn parse_receipt(
 }
 
 /// The id of an object created under `creation_id`, if the create succeeded.
-fn created_id<'a>(result: &'a Value, creation_id: &str) -> Option<&'a str> {
+pub(crate) fn created_id<'a>(result: &'a Value, creation_id: &str) -> Option<&'a str> {
     result
         .get("created")
         .and_then(|created| created.get(creation_id))
@@ -226,7 +229,7 @@ fn created_id<'a>(result: &'a Value, creation_id: &str) -> Option<&'a str> {
 }
 
 /// Turns a `notCreated` `SetError` (RFC 8620 §5.3) into a classified method error.
-fn set_error(result: &Value, creation_id: &str, method: &str) -> JmapError {
+pub(crate) fn set_error(result: &Value, creation_id: &str, method: &str) -> JmapError {
     let error_type = result
         .get("notCreated")
         .and_then(|nc| nc.get(creation_id))
@@ -313,7 +316,7 @@ mod tests {
             "Subject",
             "Body",
         );
-        let create = build_draft(&context, &draft, &[]);
+        let create = build_draft(&context.drafts, &draft, &[]);
         assert_eq!(create["mailboxIds"]["d"], json!(true));
         assert_eq!(create["keywords"]["$draft"], json!(true));
         assert_eq!(create["messageId"][0], "step4-send-probe-0002@test.local");
@@ -344,7 +347,7 @@ mod tests {
         )
         .with_html_body("<p>Plain</p>");
 
-        let create = build_draft(&context, &draft, &[]);
+        let create = build_draft(&context.drafts, &draft, &[]);
 
         assert_eq!(create["bodyStructure"]["type"], "multipart/alternative");
         assert_eq!(create["bodyStructure"]["subParts"][0]["partId"], "text");
