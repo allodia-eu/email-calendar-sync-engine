@@ -251,9 +251,13 @@ sequence numbers are deterministic) rather than by searching.
 | `10-report-junk.eml`     | `Reported` (**APPEND**ed)    | The junk/not-junk report tests' own message, on both the JMAP and IMAP side. |
 | `11-report-phishing.eml` | `Reported` (**APPEND**ed)    | A **second** message so the phishing test starts from one carrying neither `$junk` nor `$phishing`. |
 
-Folders `Archive` and `Projects` exercise non-INBOX mailboxes. Beyond them, every
-**mutating** live test gets a dedicated mailbox, so nothing it does can disturb a
-count-asserted folder (`live_imap.rs` asserts eight messages in INBOX):
+Folders `Archive` and `Projects` exercise non-INBOX mailboxes, and `Archive/Nested` plus
+`Archive/Nested/Deeper` make the list a **tree**: two levels, because one proves only that a
+name was split at its delimiter while the name a folder pane shows is the last segment of the
+whole path. Both are empty and both are declared on the Dovecot harness too, so the same
+assertion runs on every configured server. Beyond them, every **mutating** live test gets a
+dedicated mailbox, so nothing it does can disturb a count-asserted folder (`live_imap.rs`
+asserts eight messages in INBOX):
 
 | Mailbox | Contents | The test that owns it |
 | --- | --- | --- |

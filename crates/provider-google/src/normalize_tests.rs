@@ -11,14 +11,18 @@ const META: &str = include_str!("../tests/fixtures/mail/message_metadata.json");
 const META_LABELED: &str = include_str!("../tests/fixtures/mail/message_metadata_labeled.json");
 const FULL: &str = include_str!("../tests/fixtures/mail/message_full.json");
 
+/// The fixture's labels as `fetch::labels` builds them: normalized, then nested. Both halves,
+/// because a label's name is only its own once the nesting pass has taken the path off it.
 fn labels() -> Vec<Mailbox> {
     let doc: Value = serde_json::from_str(LABELS).unwrap();
-    doc["labels"]
+    let mut labels: Vec<Mailbox> = doc["labels"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|l| label_from_json(l).unwrap())
-        .collect()
+        .collect();
+    nest_labels(&mut labels);
+    labels
 }
 
 fn message(fixture: &str) -> Message {
@@ -247,6 +251,71 @@ fn malformed_messages_are_protocol_errors_not_panics() {
         }))
         .is_err()
     );
+}
+
+#[test]
+fn a_nested_label_is_filed_under_the_label_its_path_names() {
+    let all = labels();
+    let find = |name: &str| {
+        all.iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("no label named {name}"))
+    };
+
+    // Gmail reports one flat list of `Fixture Label`, `Fixture Label/Nested` and
+    // `Fixture Label/Nested/Deeper`; the nesting is only in the names, and this is where it
+    // comes back out of them.
+    let parent = find("Fixture Label");
+    assert_eq!(parent.parent, None);
+    let nested = find("Nested");
+    assert_eq!(nested.parent.as_ref().unwrap(), &parent.id);
+    let deeper = find("Deeper");
+    assert_eq!(deeper.parent.as_ref().unwrap(), &nested.id);
+
+    // The ids are Gmail's own and are untouched, which is what keeps a message's `labelIds`
+    // pointing at the same places.
+    assert_eq!(nested.id.as_str(), "Label_2");
+    assert_eq!(deeper.id.as_str(), "Label_3");
+}
+
+#[test]
+fn a_label_whose_parent_does_not_exist_keeps_its_whole_name() {
+    // Live-verified against the throwaway account: creating `Fixture Orphan/Child` does **not**
+    // give Gmail a `Fixture Orphan` label. So that slash is a character in one label's name,
+    // and reading it as nesting would file the label under something the account does not have
+    // and leave a row called `Child` with no visible parent.
+    let all = labels();
+    let orphan = all
+        .iter()
+        .find(|m| m.name == "Fixture Orphan/Child")
+        .unwrap();
+    assert_eq!(orphan.parent, None);
+}
+
+#[test]
+fn a_system_label_belongs_to_no_parent() {
+    // `CATEGORY_PERSONAL` and friends carry no slash, and All Mail is ours rather than the
+    // account's, so neither the categories nor the synthetic home acquire a parent.
+    let mut all = labels();
+    all.push(all_mail_mailbox());
+    for label in &all {
+        if label.role.is_some() || label.name.starts_with("CATEGORY_") {
+            assert_eq!(label.parent, None, "{} gained a parent", label.name);
+        }
+    }
+}
+
+#[test]
+fn the_nearest_existing_ancestor_is_the_parent() {
+    // `A/B/C` with no `A/B`: the account has `A`, so the label sits there under the name it
+    // keeps, `B/C`. Inventing the missing `A/B` would put a row in the pane that opens nothing.
+    let mut labels = vec![
+        Mailbox::new(MailboxId::try_from("Label_A").unwrap(), "A"),
+        Mailbox::new(MailboxId::try_from("Label_C").unwrap(), "A/B/C"),
+    ];
+    nest_labels(&mut labels);
+    assert_eq!(labels[1].parent.as_ref().unwrap().as_str(), "Label_A");
+    assert_eq!(labels[1].name, "B/C");
 }
 
 #[test]

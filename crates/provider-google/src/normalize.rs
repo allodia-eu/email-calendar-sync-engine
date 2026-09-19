@@ -22,7 +22,7 @@
 //!
 //! [`ThreadProvenance::ProviderAssigned`]: engine_core::mail::ThreadProvenance::ProviderAssigned
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
@@ -71,6 +71,10 @@ fn label_role(id: &str) -> Option<MailboxRole> {
 /// Normalizes one Gmail `label` into a [`Mailbox`], or `None` for a keyword-only label
 /// (`UNREAD`/`STARRED`), which is state rather than a place.
 ///
+/// The name arrives as Gmail stores it, which for a nested label is the whole path
+/// (`Work/Clients`). [`nest_labels`] is what turns that into a parent and a folder's own name,
+/// and it needs the rest of the list to do it.
+///
 /// # Errors
 ///
 /// Returns [`GoogleError::Protocol`] if the label lacks a usable `id`.
@@ -92,6 +96,44 @@ pub(crate) fn label_from_json(value: &Value) -> Result<Option<Mailbox>, GoogleEr
         .and_then(Value::as_u64)
         .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
     Ok(Some(mailbox))
+}
+
+/// Recovers the label hierarchy Gmail reports flat.
+///
+/// Gmail has no parent field. A nested label is one whose **name** carries the path, and the
+/// client that made it is what put the `/` there; `users.labels.list` says nothing else about
+/// the shape. So the nesting is read back out of the names, and only against names the account
+/// actually has: Gmail will hold `Work/Clients` with no `Work` beside it, and that is one label
+/// with a slash in its name rather than a child of a label that does not exist.
+///
+/// The **nearest** ancestor wins, so `A/B/C` sits under `A/B` where there is one, and under `A`
+/// (keeping `B/C` as its own name) where there is not.
+///
+/// Leaves the ids alone: a label's id is `Label_17`, never its name, so nesting moves nothing a
+/// message's `labelIds` refers to.
+pub(crate) fn nest_labels(labels: &mut [Mailbox]) {
+    let by_name: HashMap<String, MailboxId> = labels
+        .iter()
+        .map(|label| (label.name.clone(), label.id.clone()))
+        .collect();
+    for label in labels.iter_mut() {
+        if let Some((parent, own_name)) = nearest_parent(&label.name, &by_name) {
+            label.parent = Some(parent);
+            label.name = own_name;
+        }
+    }
+}
+
+/// The nearest ancestor of `name` that `by_name` holds, paired with the name the label keeps
+/// under it. `None` when no ancestor is a label of its own.
+fn nearest_parent(name: &str, by_name: &HashMap<String, MailboxId>) -> Option<(MailboxId, String)> {
+    let mut cut = name.rfind('/')?;
+    loop {
+        if let Some(parent) = by_name.get(&name[..cut]) {
+            return Some((parent.clone(), name[cut + 1..].to_owned()));
+        }
+        cut = name[..cut].rfind('/')?;
+    }
 }
 
 /// The synthetic "All Mail" mailbox the label list appends (see [`ALL_MAIL_ID`]).

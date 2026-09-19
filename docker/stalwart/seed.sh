@@ -82,6 +82,12 @@ done
 log "ensuring mailboxes exist"
 imap_cmd INBOX "CREATE Archive" >/dev/null 2>&1 || true
 imap_cmd INBOX "CREATE Projects" >/dev/null 2>&1 || true
+# Two levels under Archive, so the folder list is a tree rather than a flat namespace. Two
+# rather than one: a single level proves only that a name was split at its delimiter, while the
+# display name a host shows is the last segment of the *whole* path. Both stay empty, so they
+# add rows to the mailbox list without touching a count anything asserts on.
+imap_cmd INBOX "CREATE Archive/Nested" >/dev/null 2>&1 || true
+imap_cmd INBOX "CREATE Archive/Nested/Deeper" >/dev/null 2>&1 || true
 # QResync is a dedicated, otherwise-untouched mailbox the CONDSTORE/QRESYNC delta
 # test mutates in isolation (it re-flags one message and expunges another), so it
 # never disturbs the count-asserted INBOX/Archive/Projects.
