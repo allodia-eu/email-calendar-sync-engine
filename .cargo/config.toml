@@ -10,6 +10,17 @@
 # Fixed name on purpose: `{workspace-path-hash}` would give every worktree its own directory and
 # defeat the sharing. `{cargo-cache-home}` is CARGO_HOME, so no absolute path is committed.
 # `rustc-wrapper` stays out of a tracked file: it would break every dev lacking that binary.
+#
+# ⚠️ **Cargo does not tell the checkouts apart, so a build can hand you another one's output.** It
+# names an artifact, and the fingerprint guarding it, from the workspace-*relative* path, so every
+# checkout of this repository lands on the same `deps/<crate>-<hash>` and the same fingerprint
+# entry. Freshness is then decided from mtimes against that relative file list: a checkout whose
+# sources predate the build another checkout last ran is declared fresh and is uplifted that
+# checkout's binary. A suite then reports `ok` for an assertion this tree cannot satisfy, which is
+# what a freshly created worktree is in line for, its files being the newest thing not yet
+# compiled. `scripts/dev/claim-build-dir.sh` is what the gate runs first to settle it; AGENTS.md
+# carries the rest. CI sets `CARGO_BUILD_BUILD_DIR` back to the workspace, where the cache can see
+# the intermediates and no other checkout can be holding them.
 # ---------------------------------------------------------------------------------------------
 
 [build]
