@@ -40,7 +40,7 @@ use crate::{
     json::{opt_str, req_str},
     normalize::{
         METADATA_HEADERS, all_mail_mailbox, keywords_from_labels, label_from_json, memberships_of,
-        message_from_json,
+        message_from_json, nest_labels,
     },
     transport::{GoogleClient, encode_query_value},
 };
@@ -76,6 +76,11 @@ pub(crate) const MAX_CONCURRENT_GETS: usize = 20;
 
 /// Fetches the account's labels as mailboxes, dropping the keyword-only labels
 /// (`UNREAD`/`STARRED`) and appending the synthetic All Mail home.
+///
+/// Nesting is resolved over the whole list ([`nest_labels`]) rather than per label, because
+/// Gmail spells a nested label by its path and only the rest of the list says which prefixes of
+/// that path are labels. All Mail is appended afterwards: it is ours, not the account's, so no
+/// label of theirs may adopt it and it may adopt none of theirs.
 pub(crate) async fn labels(client: &GoogleClient) -> Result<Vec<Mailbox>, GoogleError> {
     let doc = client
         .get(&client.url(&format!("{USERS_ME}/labels")))
@@ -86,6 +91,7 @@ pub(crate) async fn labels(client: &GoogleClient) -> Result<Vec<Mailbox>, Google
             mailboxes.push(mailbox);
         }
     }
+    nest_labels(&mut mailboxes);
     mailboxes.push(all_mail_mailbox());
     Ok(mailboxes)
 }

@@ -60,6 +60,62 @@ async fn the_account_has_exactly_one_folder_for_each_special_role() {
 }
 
 #[tokio::test]
+async fn a_nested_folder_names_itself_and_points_at_its_parent() {
+    for server in &SERVERS {
+        let Some(provider) = connect(
+            server,
+            "a_nested_folder_names_itself_and_points_at_its_parent",
+        )
+        .await
+        else {
+            continue;
+        };
+        let all = folders(&provider).await;
+        let by_name = |name: &str| {
+            all.iter().find(|m| m.name == name).unwrap_or_else(|| {
+                let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
+                panic!("{}: no folder named {name} among {names:?}", server.label)
+            })
+        };
+
+        // The harnesses hold `Archive` -> `Nested` -> `Deeper`. What each server puts on the
+        // wire for that is its own business: the delimiter is the server's to choose and rev1
+        // and rev2 do not even agree on how a name is encoded. What must be the same on all
+        // three is the shape the model ends up with.
+        let archive = by_name("Archive");
+        let nested = by_name("Nested");
+        let deeper = by_name("Deeper");
+        assert_eq!(
+            nested.parent.as_ref(),
+            Some(&archive.id),
+            "{}",
+            server.label
+        );
+        assert_eq!(deeper.parent.as_ref(), Some(&nested.id), "{}", server.label);
+
+        // The id is the whole path, because that is what `SELECT` and `APPEND` take, and the
+        // name is the folder's own, because a pane draws it underneath the parent the id
+        // names. A folder called `Archive/Nested` on screen, indented under `Archive`, is the
+        // failure these two assertions are here for.
+        assert!(
+            nested.id.as_str().ends_with(&nested.name),
+            "{}: the id {} should end in the folder's own name",
+            server.label,
+            nested.id.as_str()
+        );
+        assert!(
+            nested.id.as_str().len() > nested.name.len(),
+            "{}: the id {} should carry the path the name no longer does",
+            server.label,
+            nested.id.as_str()
+        );
+
+        // And the folder it nests under is not itself nested: the chain has a top.
+        assert_eq!(archive.parent, None, "{}", server.label);
+    }
+}
+
+#[tokio::test]
 async fn the_folder_list_carries_its_unread_counts() {
     for server in &SERVERS {
         let Some(provider) = connect(server, "the_folder_list_carries_its_unread_counts").await
@@ -117,17 +173,29 @@ async fn a_mailbox_id_addresses_the_mailbox_it_names() {
         };
         let all = folders(&provider).await;
 
-        // The id is the decoded name on either dialect, and the transport puts the wire
+        // The id is the decoded **path** on either dialect, and the transport puts the wire
         // form back — so selecting by id must reach the mailbox the list named. A rev1
         // server whose id was left in modified UTF-7 would still pass a `SELECT`; one whose
         // decoded id was sent unencoded would not.
+        //
+        // The name is the folder's own, the last segment of that path, so the two are equal
+        // exactly at the top level and the id carries the rest of the way down.
         for mailbox in &all {
-            assert_eq!(
+            assert!(
+                mailbox.id.as_str().ends_with(&mailbox.name),
+                "{}: the id {} should address the folder it names, {}",
+                server.label,
                 mailbox.id.as_str(),
-                mailbox.name,
-                "{}: id and name are one identity",
-                server.label
+                mailbox.name
             );
+            if mailbox.parent.is_none() {
+                assert_eq!(
+                    mailbox.id.as_str(),
+                    mailbox.name,
+                    "{}: a top-level folder's id is its name",
+                    server.label
+                );
+            }
         }
     }
 }

@@ -29,7 +29,7 @@ on the account.
 | `mail/draft_updated.json` | `PUT /gmail/v1/users/me/drafts/{id}` on that draft | the same **draft** id with a **new** message id under it: what makes Gmail the one adapter whose draft key survives a re-save |
 | `error/draft_not_found.json` | `DELETE …/drafts/{id}` on a draft already deleted | the `404` a retried draft delete meets, so a retryable op settles rather than parking |
 | `mail/profile.json` | `GET /gmail/v1/users/me/profile` | the account cursor (`historyId`) a snapshot persists |
-| `mail/labels.json` | `GET /users/me/labels` | label → `Mailbox` role/keyword/membership mapping (system + a custom label) |
+| `mail/labels.json` | `GET /users/me/labels` | label → `Mailbox` role/keyword/membership mapping (system + a custom label), and the **nesting**: a two-level chain under `Fixture Label`, plus a `Fixture Orphan/Child` whose parent the account really does not have |
 | `mail/messages_list.json` | `GET /users/me/messages` | the `{id, threadId}` enumeration a snapshot pages |
 | `mail/message_metadata.json` | `GET /users/me/messages/{id}?format=metadata&metadataHeaders=…` | envelope/labels/thread normalization (unread, single-membership) |
 | `mail/message_metadata_labeled.json` | same, the labeled reply | **multi-membership** (INBOX+SENT+custom) + `STARRED`/`IMPORTANT` keywords, read, threaded to the first |
