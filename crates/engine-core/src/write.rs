@@ -126,6 +126,10 @@ pub enum PendingOpKind {
     MailEdit,
     /// Reporting a message as junk, not junk, or phishing.
     MailReport,
+    /// Storing a draft on the server, replacing the copy it supersedes.
+    MailDraftPut,
+    /// Removing a stored draft: discarded, or sent and now stale.
+    MailDraftDelete,
     /// Creating an event.
     CalendarCreate,
     /// Applying an edit to a stored event.
@@ -142,6 +146,30 @@ pub enum PendingOpKind {
     ContactPatch,
     /// Deleting a contact card.
     ContactDelete,
+}
+
+impl PendingOpKind {
+    /// Every kind, for a caller that has to handle all of them.
+    ///
+    /// Hand-maintained, and the store's `kind_to_text` is the exhaustive match that makes
+    /// a new variant impossible to forget: adding one there is a compile error, and the
+    /// round-trip test over this list is what then catches a missing decode arm, which no
+    /// compiler sees because decoding matches strings.
+    pub const ALL: [Self; 13] = [
+        Self::MailSubmit,
+        Self::MailEdit,
+        Self::MailReport,
+        Self::MailDraftPut,
+        Self::MailDraftDelete,
+        Self::CalendarCreate,
+        Self::CalendarPatch,
+        Self::CalendarDocument,
+        Self::CalendarRsvp,
+        Self::CalendarDelete,
+        Self::ContactCreate,
+        Self::ContactPatch,
+        Self::ContactDelete,
+    ];
 }
 
 /// A durable pending write operation.
@@ -252,19 +280,7 @@ mod tests {
     fn a_kind_names_the_driver_that_wrote_the_payload() {
         // The payload is untagged, so the kind is the only thing that says which
         // request type to deserialize it as. It must survive the store round trip.
-        for kind in [
-            PendingOpKind::MailSubmit,
-            PendingOpKind::MailEdit,
-            PendingOpKind::MailReport,
-            PendingOpKind::CalendarCreate,
-            PendingOpKind::CalendarPatch,
-            PendingOpKind::CalendarDocument,
-            PendingOpKind::CalendarRsvp,
-            PendingOpKind::CalendarDelete,
-            PendingOpKind::ContactCreate,
-            PendingOpKind::ContactPatch,
-            PendingOpKind::ContactDelete,
-        ] {
+        for kind in PendingOpKind::ALL {
             let json = serde_json::to_string(&kind).unwrap();
             assert_eq!(serde_json::from_str::<PendingOpKind>(&json).unwrap(), kind);
         }
