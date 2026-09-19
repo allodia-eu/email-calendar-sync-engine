@@ -94,6 +94,27 @@
       "messageListVisibility": "show",
       "name": "Fixture Label",
       "type": "user"
+    },
+    {
+      "id": "Label_2",
+      "labelListVisibility": "labelShow",
+      "messageListVisibility": "show",
+      "name": "Fixture Label/Nested",
+      "type": "user"
+    },
+    {
+      "id": "Label_3",
+      "labelListVisibility": "labelShow",
+      "messageListVisibility": "show",
+      "name": "Fixture Label/Nested/Deeper",
+      "type": "user"
+    },
+    {
+      "id": "Label_4",
+      "labelListVisibility": "labelShow",
+      "messageListVisibility": "show",
+      "name": "Fixture Orphan/Child",
+      "type": "user"
     }
   ]
 }

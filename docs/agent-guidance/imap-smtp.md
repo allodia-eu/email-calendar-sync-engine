@@ -312,13 +312,25 @@ is authoritative for the `provider-caldav` calendar client.
   With UIDPLUS the `APPEND` returns `[APPENDUID validity uid]` → the receipt carries the
   real Sent key (the same key the next Sent sync synthesizes); without it the receipt key
   is `Message-ID`-derived and the copy reconciles when Sent is synced.
-- **Mailbox names: the wire form is the id, the decoded form is the label.** A `LIST` name
-  is modified UTF-7 (RFC 3501 §5.1.3), so `Travel &- Expenses` is one folder called
-  `Travel & Expenses`. `utf7::decode` produces `Mailbox::name` for display **only**;
-  `MailboxId`, every `imap:v…:u…@folder` key, and every `SELECT`/`APPEND`/`CREATE`
-  argument keep the server's own bytes. Decoding an id instead would re-key every message
-  in a non-ASCII folder and address the server with a name it never advertised. There is
-  deliberately no encoder: no name this crate sends originates from a decoded one.
+- **A `LIST` name is three things, and they are not the same string.** The **wire form** is
+  what the server said, modified UTF-7 on rev1 (RFC 3501 §5.1.3), so `Travel &- Expenses` is
+  one folder. The **id** is that name decoded (`utf7::decode`), whole path included: it is
+  what `SELECT`/`APPEND`/`CREATE` are given, with `crate::transport` putting the wire form
+  back, and what every `imap:v…:u…@folder` key embeds, so a message does not re-key the day a
+  server starts offering rev2. The **display name** is the folder's own, the last segment of
+  that path, with the nesting carried by `Mailbox::parent` instead. There is deliberately no
+  general encoder: no name this crate sends originates from a decoded one.
+- **The folder list is a tree, and IMAP is the only transport that spells it in the name.**
+  `LIST` gives a flat set of delimiter-joined paths plus the delimiter itself, per row
+  (`Archive/2024`, or `INBOX.Archive.2024` on a Courier-shaped namespace); JMAP, Graph and
+  Gmail all hand over the segment alone. So `mail::mailbox_from_list` splits the path at the
+  **last** delimiter: the part before it is the parent's id, the part after it is the name.
+  A host drawing a tree would otherwise indent a row reading `Archive/2024` underneath one
+  reading `Archive`. Two traps, both pinned by `mail_tests.rs`: a delimiter at offset `0` is
+  **not** a split (`/Archive` and `.Archive` are rooted namespaces, not children of a
+  nameless folder), and a `NIL` delimiter means a flat namespace, where a slash in a name is
+  a character the user typed. Role matching stays on the **whole** path, so a folder someone
+  called `INBOX` inside another one is an ordinary folder.
 - **`save_draft` (no SMTP).** `ImapProvider::save_draft` files a draft into the
   account's Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating
   `Drafts`), flagged `\Draft`, via `APPEND` — so creating a mail works against any

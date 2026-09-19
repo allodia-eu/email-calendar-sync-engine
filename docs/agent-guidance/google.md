@@ -97,6 +97,19 @@ Gmail labels drive all three of the message's independent axes (`modeling.md`):
   of `UNREAD` (an inversion — setting `$seen` *removes* `UNREAD`), `STARRED` → `$flagged`,
   and `DRAFT` sets `$draft` (while also being the Drafts place). Keyword-only labels are
   **excluded** from membership and are **never emitted as mailboxes**.
+- **Nesting** is in the **name**, and nowhere else. Gmail has no parent field: a nested label
+  is one whose name is a `/`-joined path (`Work/Clients`), and `users.labels.list` says
+  nothing more about the shape. `normalize::nest_labels` reads it back out over the whole
+  list, because only the rest of the list says which prefixes of that path are labels, and
+  rewrites the name to the segment the label keeps. Ids are untouched (`Label_17`, never a
+  name), so nothing a message's `labelIds` points at moves.
+
+  ⚠️ **Gmail will list a child with no parent.** Creating `Fixture Orphan/Child` does *not*
+  create `Fixture Orphan` (live-verified, and the fixture holds both cases). So the
+  **nearest existing** ancestor is the parent, and a path naming no label at all is one
+  label with a slash in its name: filing it under an invented parent would put a row in a
+  folder pane that opens nothing. `A/B/C` with an `A` but no `A/B` therefore sits under `A`,
+  keeping `B/C` as its own name.
 - **Roles** (label list): `INBOX`→Inbox, `SENT`→Sent, `DRAFT`→Drafts, `TRASH`→Trash,
   `SPAM`→Junk, `IMPORTANT`→Important, plus the synthetic All-Mail→All; category/chat/
   custom labels are roleless mailboxes.

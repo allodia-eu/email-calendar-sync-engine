@@ -77,6 +77,44 @@ async fn live_labels_resolve_roles() {
 }
 
 #[tokio::test]
+async fn live_nested_labels_carry_their_parent() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_nested_labels_carry_their_parent: GOOGLE_ACCESS_TOKEN unset");
+        return;
+    };
+    let sync = provider(token)
+        .sync_mailboxes(&account(), None)
+        .await
+        .expect("sync labels");
+    let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
+        panic!("expected a label snapshot");
+    };
+    let find = |name: &str| {
+        objects
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("no label named {name}; the account needs `{name}` seeded"))
+    };
+
+    // The account holds `Fixture Label` -> `Nested` -> `Deeper`, two levels on purpose: Gmail
+    // spells all three as one flat list of paths, and one level would not show that the walk
+    // back up the names keeps going.
+    let parent = find("Fixture Label");
+    let nested = find("Nested");
+    let deeper = find("Deeper");
+    assert_eq!(parent.parent, None, "the top of the chain has no parent");
+    assert_eq!(nested.parent.as_ref(), Some(&parent.id));
+    assert_eq!(deeper.parent.as_ref(), Some(&nested.id));
+
+    // No label was invented to hold `Fixture Orphan/Child`: Gmail really does list a label
+    // whose path names one it does not have (verified by creating exactly that), so the name
+    // stays whole rather than the row going missing under a parent nothing can open.
+    assert!(!objects.iter().any(|m| m.name == "Fixture Orphan"));
+    let orphan = find("Fixture Orphan/Child");
+    assert_eq!(orphan.parent, None);
+}
+
+#[tokio::test]
 async fn live_snapshot_then_delta_cycle() {
     let Some(token) = token() else {
         eprintln!("skipping live_snapshot_then_delta_cycle: GOOGLE_ACCESS_TOKEN unset");
