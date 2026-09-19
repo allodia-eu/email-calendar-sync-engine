@@ -11,7 +11,7 @@
 //! Tier-1 metadata only: the raw RFC 5322 source is not materialized here (durable
 //! blob storage is a later store sub-step), matching `provider-jmap`.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, ops::Range};
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ProviderKey},
@@ -93,14 +93,18 @@ pub(crate) fn message_from_fetch(
 /// a capability the server merely advertised. Decoding unconditionally is not safe on a
 /// rev2 name: `R&AD-` is a mailbox called `R&AD-` there, and a shift sequence in rev1.
 ///
-/// The decoded name becomes **both** the id and the display name, so a mailbox keeps one
-/// identity whichever revision a session negotiates, and [`crate::transport`] puts the
-/// wire form back on outgoing commands.
+/// The **decoded full path is the id**, so a mailbox keeps one identity whichever revision a
+/// session negotiates, and [`crate::transport`] puts the wire form back on outgoing commands:
+/// the id is what `SELECT`/`APPEND` take and what every message key embeds.
 ///
-/// The **id keeps the wire name** and the **display name is decoded** from modified UTF-7
-/// (`crate::utf7`): the id is what `SELECT`/`APPEND` take and what every message key embeds,
-/// while the name is what a person reads. Conventional-name role matching runs on the decoded
-/// name, so a server that spells a role folder in its own script still matches.
+/// The **display name is the folder's own name**, the last segment of that path, with the
+/// nesting carried by [`Mailbox::parent`] instead. IMAP is the only transport that names a
+/// folder by where it sits (JMAP, Graph and Gmail all give the segment alone), and a host
+/// drawing a tree would otherwise indent `Archive/2024` underneath `Archive`. The path is
+/// still there, as the chain of parents.
+///
+/// Role matching runs on the **full** path: `INBOX` is a reserved name at the top level, and a
+/// folder called `Sent` inside another one is not the account's Sent.
 pub(crate) fn mailbox_from_list(row: &ListRow, modified_utf7: bool) -> Option<Mailbox> {
     if has_attribute(&row.attributes, "NonExistent") {
         return None;
@@ -111,9 +115,10 @@ pub(crate) fn mailbox_from_list(row: &ListRow, modified_utf7: bool) -> Option<Ma
         row.name.clone()
     };
     let id = MailboxId::try_from(name.as_str()).ok()?;
-    let mut mailbox = Mailbox::new(id, name.clone());
+    let delimiter = row.delimiter.as_deref();
+    let mut mailbox = Mailbox::new(id, leaf_of(&name, delimiter));
     mailbox.role = role_for(&name, &row.attributes);
-    mailbox.parent = parent_of(&name, row.delimiter.as_deref());
+    mailbox.parent = parent_of(&name, delimiter);
     Some(mailbox)
 }
 
@@ -344,12 +349,33 @@ fn role_for(name: &str, attributes: &[String]) -> Option<MailboxRole> {
 
 /// Derives a parent mailbox id from a hierarchical name and its delimiter.
 fn parent_of(name: &str, delimiter: Option<&str>) -> Option<MailboxId> {
+    MailboxId::try_from(&name[..split_at(name, delimiter)?.start]).ok()
+}
+
+/// The folder's own name: whatever follows the last delimiter in a hierarchical name, and the
+/// whole name for a top-level folder or a server that declares no delimiter (a flat namespace).
+///
+/// A name ending in the delimiter would otherwise leave nothing to show, so it keeps the whole
+/// name: no `LIST` row should carry one, and an empty row in a folder pane is worse than an odd
+/// one.
+fn leaf_of(name: &str, delimiter: Option<&str>) -> String {
+    let leaf = split_at(name, delimiter)
+        .map(|split| &name[split.end..])
+        .filter(|leaf| !leaf.is_empty());
+    leaf.unwrap_or(name).to_owned()
+}
+
+/// Where a hierarchical name splits into parent and leaf: the byte range of the last delimiter,
+/// or `None` when the name has no parent.
+///
+/// A delimiter at offset `0` is not a split. A rooted namespace lists names beginning with the
+/// separator (`/Archive`, `.Archive`), and reading that one as a split would hand the folder an
+/// empty-named parent no `LIST` row ever names. A name that merely *contains* the separator is
+/// an ordinary child: `INBOX.Archive` on Courier really does sit inside the inbox.
+fn split_at(name: &str, delimiter: Option<&str>) -> Option<Range<usize>> {
     let delimiter = delimiter.filter(|d| !d.is_empty())?;
-    let index = name.rfind(delimiter)?;
-    if index == 0 {
-        return None;
-    }
-    MailboxId::try_from(&name[..index]).ok()
+    let index = name.rfind(delimiter).filter(|index| *index > 0)?;
+    Some(index..index + delimiter.len())
 }
 
 #[cfg(test)]

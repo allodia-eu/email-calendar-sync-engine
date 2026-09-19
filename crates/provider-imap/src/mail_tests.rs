@@ -209,6 +209,57 @@ fn hierarchy_parent_is_derived_from_the_delimiter() {
     let rows = crate::parse::parse_list(&[br#"LIST () "/" "Work/Clients""#.to_vec()]).unwrap();
     let mailbox = mailbox_from_list(&rows[0], true).unwrap();
     assert_eq!(mailbox.parent.as_ref().unwrap().as_str(), "Work");
+    // The id is the whole path, because that is what `SELECT` takes; the display name is the
+    // folder's own, because a pane indents it under the parent the id names.
+    assert_eq!(mailbox.id.as_str(), "Work/Clients");
+    assert_eq!(mailbox.name, "Clients");
+}
+
+#[test]
+fn a_rooted_namespace_keeps_its_top_level_folders_at_the_top() {
+    // Cyrus roots at the delimiter and Courier under `INBOX`. A leading delimiter is part of
+    // the name rather than a separator, so neither shape invents a nameless parent.
+    for raw in [
+        br#"LIST () "/" "/Archive""#.to_vec(),
+        br#"LIST () "." ".Archive""#.to_vec(),
+    ] {
+        let rows = crate::parse::parse_list(&[raw]).unwrap();
+        let mailbox = mailbox_from_list(&rows[0], true).unwrap();
+        assert_eq!(mailbox.parent, None);
+        assert_eq!(mailbox.name, mailbox.id.as_str());
+    }
+}
+
+#[test]
+fn a_flat_namespace_keeps_the_whole_name() {
+    // `LIST () NIL "Work/Clients"`: no delimiter, so the slash is a character in the name and
+    // splitting on it would strip half of what the user called the folder.
+    let rows = crate::parse::parse_list(&[br#"LIST () NIL "Work/Clients""#.to_vec()]).unwrap();
+    let mailbox = mailbox_from_list(&rows[0], true).unwrap();
+    assert_eq!(mailbox.parent, None);
+    assert_eq!(mailbox.name, "Work/Clients");
+}
+
+#[test]
+fn a_nested_folder_named_like_a_role_is_not_that_role() {
+    // Role matching reads the whole path: `INBOX` is reserved at the top level only, so a
+    // folder someone called `INBOX` inside another one is an ordinary folder.
+    let rows = crate::parse::parse_list(&[br#"LIST () "/" "Work/INBOX""#.to_vec()]).unwrap();
+    let mailbox = mailbox_from_list(&rows[0], true).unwrap();
+    assert_eq!(mailbox.role, None);
+    assert_eq!(mailbox.name, "INBOX");
+}
+
+#[test]
+fn a_deeply_nested_name_keeps_only_its_last_segment() {
+    let rows =
+        crate::parse::parse_list(&[br#"LIST () "/" "Work/Clients/Acme/2024""#.to_vec()]).unwrap();
+    let mailbox = mailbox_from_list(&rows[0], true).unwrap();
+    assert_eq!(mailbox.name, "2024");
+    assert_eq!(
+        mailbox.parent.as_ref().unwrap().as_str(),
+        "Work/Clients/Acme"
+    );
 }
 
 #[test]
