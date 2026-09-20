@@ -127,15 +127,17 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   fixed `metadataHeaders` set for a minimal, deterministic payload). Those per-id gets are
   the pass's whole cost — `messages.list` returns bare `{id, threadId}` and Gmail offers no
   companion batch-get — so a page fetches them **concurrently**, `MAX_CONCURRENT_GETS` in
-  flight. **20 is not a concurrency ceiling, and this line used to claim it was.** Re-measured
-  on a rested quota with widths in randomised order, 5, 20 and 50 each ran 200 requests with
-  *zero* refusals and throughput scaling linearly — while a *fixed* width of 5 goes 0% → 21% →
-  82% refused across three consecutive unrested blocks. The earlier "20 clean, 30 occasional,
-  50 throttles a tenth" measured cumulative drain and attributed it to width. What Gmail
-  enforces is a quota on Total Query Cost units per minute per user, announced as `403
-  rateLimitExceeded` — and across ~1,600 observed refusals it never once sent a `429`
-  (`http-throttling.md`). 20 stays as the fan-out width because it is a sensible amount of
-  work to have outstanding, not because Gmail refuses 21. The batch endpoint is not used: a batch of n counts as n
+  flight. **20 is not Gmail's concurrency ceiling.** Gmail has one — salvos of W simultaneous
+  `messages.get`s, rested between widths and run in randomised order, are clean through 48 and
+  refuse from 64 upward with `429 "Too many concurrent requests for user."`, the share climbing
+  with width. It is simply nowhere near 20. The figure this line used to carry, "20 clean, 30
+  occasional, 50 throttles a tenth", was a *rate* result wearing a width's clothes: a fixed
+  width of 5 goes 0% → 21% → 82% refused across three consecutive unrested blocks, because the
+  quota emptied and nothing about the width changed. The limit an ordinary pass actually meets
+  is that quota — Total Query Cost, 6,000 units per minute per user, announced as `403
+  rateLimitExceeded`. Both refusals are captured under `tests/fixtures/error/`, and
+  `http-throttling.md` has the sweep. 20 stays as the fan-out width because it is a sensible
+  amount of work to have outstanding, not because Gmail refuses 21. The batch endpoint is not used: a batch of n counts as n
   requests, is no faster at equal width (both shapes cost one round trip), costs ~25% more
   bytes for the multipart envelope, and answers `200` while individual members carry their
   own `429` — so it buys nothing and adds a parser. `tests/live_batch_vs_concurrent.rs` is
@@ -222,7 +224,11 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   "Total Query Cost" of 6000 units per minute per user, and a `sync_email` snapshot
   fetches every message; a few in quick succession answer `403 rateLimitExceeded`, which
   reads like a permissions problem and is not. The draft live tests take one snapshot per
-  phase and reuse it.
+  phase and reuse it. The engine now *waits out* that `403` rather than failing the scope
+  (`src/throttle.rs`), so a run that meets it pauses instead of going red — which makes a
+  suite slower and no longer wrong. It does not make the quota free: a suite that spends
+  more than 6,000 units a minute for several minutes still outruns every window it waits
+  for.
 - **A `404` from `drafts.delete` is a successful delete**, because the op behind it is
   retryable and the second call names a draft the first one removed. (Graph needs a
   second shape here; Gmail does not: it answers `404` for both cases.)

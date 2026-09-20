@@ -32,12 +32,14 @@
 //! implements and logs. A [`ThrottleEvent`] carries the provider label, the status, the attempt
 //! and the delay, and deliberately carries no URL: a request path names the user's own mail.
 
+mod classify;
 mod gate;
 mod observed;
 mod observer;
 mod policy;
 mod send;
 
+pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
 pub use gate::{GatePermit, RequestGate};
 pub use observed::ObservedConnection;
 pub use observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver};
@@ -45,6 +47,10 @@ pub use policy::RetryPolicy;
 pub use send::{RetryConfig, send_retrying};
 
 #[cfg(test)]
+mod classify_send_tests;
+#[cfg(test)]
 mod gate_tests;
+#[cfg(test)]
+mod send_test_support;
 #[cfg(test)]
 mod send_tests;

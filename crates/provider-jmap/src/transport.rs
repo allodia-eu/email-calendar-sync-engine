@@ -55,7 +55,12 @@ impl Transport {
             scheme: NegotiatedScheme::new(credentials.preferred_scheme()),
             credentials,
             connection: ObservedConnection::default(),
-            retry: retry.clone().labelled("jmap"),
+            retry: retry
+                .clone()
+                .labelled("jmap")
+                // A concurrency refusal arrives as a `400`, which the shared status rule
+                // reads as a request defect rather than as "not yet". See `JmapThrottles`.
+                .classifying(std::sync::Arc::new(crate::error::JmapThrottles)),
         })
     }
 

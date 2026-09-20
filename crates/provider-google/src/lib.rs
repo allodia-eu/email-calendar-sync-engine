@@ -21,6 +21,8 @@
 //! - `base64url` — the URL-safe base64 codec Gmail's `raw` message field uses.
 //! - `json` — pure `serde_json::Value` extraction helpers.
 //! - `transport` — bearer HTTP behind the `GoogleTransport` seam ([`GoogleClient`]).
+//! - `throttle` — which of Gmail's two refusals its status can recognise, and which one only its
+//!   body can.
 //!
 //! Mail, calendar, and People read/sync and writes share this transport spine.
 
@@ -45,6 +47,7 @@ mod normalize;
 mod provider;
 mod report;
 mod submit;
+mod throttle;
 mod transport;
 
 #[cfg(test)]

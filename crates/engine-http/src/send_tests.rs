@@ -1,74 +1,23 @@
-//! What [`send_retrying`] does with a throttled reply, against a scripted server.
+//! What [`send_retrying`] does with a reply the **status** classifies, against a scripted
+//! server. The bodies an adapter classifies are the sibling suite, `classify_send_tests`.
 
 use std::{
     io::{Read, Write},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use crate::{RetryConfig, RetryPolicy, ThrottleEvent, send_retrying};
-
-/// The client every provider here builds, so these send through the stack that ships.
-fn client() -> reqwest::Client {
-    engine_tls::TlsClientConfig::bundled()
-        .reqwest_builder()
-        .build()
-        .expect("client")
-}
-
-/// One reply the scripted server will make: a status line and any extra header lines.
-struct Reply(&'static str, &'static str);
-
-/// Serves `script` in order, repeating its last entry once exhausted, and counts what it was
-/// asked for. Every reply closes its connection, so each attempt is visible as its own accept.
-fn scripted(script: Vec<Reply>) -> (String, Arc<AtomicUsize>) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let served = Arc::new(AtomicUsize::new(0));
-    let count = Arc::clone(&served);
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            let mut buf = [0_u8; 4096];
-            let _ = stream.read(&mut buf);
-            let index = count.fetch_add(1, Ordering::SeqCst);
-            let Reply(status, headers) = &script[index.min(script.len() - 1)];
-            let _ = stream.write_all(
-                format!(
-                    "HTTP/1.1 {status}\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n"
-                )
-                .as_bytes(),
-            );
-        }
-    });
-    (format!("http://{addr}/"), served)
-}
-
-/// Every event the run reported, in order.
-type Log = Arc<Mutex<Vec<(u16, u32, Duration, bool, bool)>>>;
-
-fn recording() -> (RetryConfig, Log) {
-    let log: Log = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&log);
-    let observer = move |e: &ThrottleEvent<'_>| {
-        sink.lock()
-            .unwrap()
-            .push((e.status, e.attempt, e.delay, e.server_asked, e.gave_up));
-    };
-    (
-        RetryConfig::default()
-            .labelled("test")
-            .with_observer(Arc::new(observer)),
-        log,
-    )
-}
+use crate::{
+    RetryConfig, RetryPolicy, send_retrying,
+    send_test_support::{Reply, client, recording, scripted},
+};
 
 #[tokio::test(start_paused = true)]
 async fn a_reply_that_is_not_a_throttle_is_returned_after_one_send() {
-    let (url, served) = scripted(vec![Reply("200 OK", "")]);
+    let (url, served) = scripted(vec![Reply("200 OK", "", "")]);
     let (retry, log) = recording();
     let response = send_retrying(client().get(&url), &retry)
         .await
@@ -81,8 +30,8 @@ async fn a_reply_that_is_not_a_throttle_is_returned_after_one_send() {
 #[tokio::test(start_paused = true)]
 async fn a_throttle_that_clears_is_absorbed() {
     let (url, served) = scripted(vec![
-        Reply("429 Too Many Requests", ""),
-        Reply("200 OK", ""),
+        Reply("429 Too Many Requests", "", ""),
+        Reply("200 OK", "", ""),
     ]);
     let (retry, log) = recording();
     let started = tokio::time::Instant::now();
@@ -105,7 +54,7 @@ async fn a_throttle_that_clears_is_absorbed() {
 
 #[tokio::test(start_paused = true)]
 async fn a_throttle_that_never_clears_is_handed_back_as_the_rate_limit_it_is() {
-    let (url, served) = scripted(vec![Reply("429 Too Many Requests", "")]);
+    let (url, served) = scripted(vec![Reply("429 Too Many Requests", "", "")]);
     let (retry, log) = recording();
     let response = send_retrying(client().get(&url), &retry)
         .await
@@ -133,8 +82,8 @@ async fn a_throttle_that_never_clears_is_handed_back_as_the_rate_limit_it_is() {
 #[tokio::test(start_paused = true)]
 async fn the_servers_own_retry_after_decides_the_wait() {
     let (url, _) = scripted(vec![
-        Reply("429 Too Many Requests", "Retry-After: 12\r\n"),
-        Reply("200 OK", ""),
+        Reply("429 Too Many Requests", "Retry-After: 12\r\n", ""),
+        Reply("200 OK", "", ""),
     ]);
     let (retry, log) = recording();
     let started = tokio::time::Instant::now();
@@ -157,8 +106,8 @@ async fn a_retry_after_given_as_a_date_is_honoured_too() {
     let when = httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(20));
     let header: &'static str = Box::leak(format!("Retry-After: {when}\r\n").into_boxed_str());
     let (url, served) = scripted(vec![
-        Reply("429 Too Many Requests", header),
-        Reply("200 OK", ""),
+        Reply("429 Too Many Requests", header, ""),
+        Reply("200 OK", "", ""),
     ]);
     let (retry, log) = recording();
     let started = tokio::time::Instant::now();
@@ -190,8 +139,8 @@ async fn a_date_already_in_the_past_falls_back_to_the_backoff_schedule() {
     let when = httpdate::fmt_http_date(std::time::SystemTime::now() - Duration::from_mins(10));
     let header: &'static str = Box::leak(format!("Retry-After: {when}\r\n").into_boxed_str());
     let (url, served) = scripted(vec![
-        Reply("429 Too Many Requests", header),
-        Reply("200 OK", ""),
+        Reply("429 Too Many Requests", header, ""),
+        Reply("200 OK", "", ""),
     ]);
     let (retry, log) = recording();
     let started = tokio::time::Instant::now();
@@ -211,7 +160,11 @@ async fn a_date_already_in_the_past_falls_back_to_the_backoff_schedule() {
 
 #[tokio::test(start_paused = true)]
 async fn a_retry_after_past_the_budget_hands_the_work_to_the_next_pass() {
-    let (url, served) = scripted(vec![Reply("429 Too Many Requests", "Retry-After: 900\r\n")]);
+    let (url, served) = scripted(vec![Reply(
+        "429 Too Many Requests",
+        "Retry-After: 900\r\n",
+        "",
+    )]);
     let (retry, log) = recording();
     let response = send_retrying(client().get(&url), &retry)
         .await
@@ -227,8 +180,8 @@ async fn a_retry_after_past_the_budget_hands_the_work_to_the_next_pass() {
 #[tokio::test(start_paused = true)]
 async fn a_503_is_waited_out_for_a_get_and_never_for_a_post() {
     let (url, served) = scripted(vec![
-        Reply("503 Service Unavailable", ""),
-        Reply("200 OK", ""),
+        Reply("503 Service Unavailable", "", ""),
+        Reply("200 OK", "", ""),
     ]);
     let (retry, _) = recording();
     send_retrying(client().get(&url), &retry)
@@ -236,7 +189,7 @@ async fn a_503_is_waited_out_for_a_get_and_never_for_a_post() {
         .expect("sent");
     assert_eq!(served.load(Ordering::SeqCst), 2);
 
-    let (post_url, post_served) = scripted(vec![Reply("503 Service Unavailable", "")]);
+    let (post_url, post_served) = scripted(vec![Reply("503 Service Unavailable", "", "")]);
     let response = send_retrying(client().post(&post_url).body("x"), &retry)
         .await
         .expect("sent");
@@ -250,7 +203,7 @@ async fn a_503_is_waited_out_for_a_get_and_never_for_a_post() {
 
 #[tokio::test(start_paused = true)]
 async fn the_none_policy_reports_the_throttle_without_waiting_it_out() {
-    let (url, served) = scripted(vec![Reply("429 Too Many Requests", "")]);
+    let (url, served) = scripted(vec![Reply("429 Too Many Requests", "", "")]);
     let (retry, log) = recording();
     let retry = retry.with_policy(RetryPolicy::none());
     let response = send_retrying(client().get(&url), &retry)
@@ -265,8 +218,8 @@ async fn the_none_policy_reports_the_throttle_without_waiting_it_out() {
 #[tokio::test(start_paused = true)]
 async fn a_host_that_wires_no_observer_still_gets_the_backoff() {
     let (url, served) = scripted(vec![
-        Reply("429 Too Many Requests", ""),
-        Reply("200 OK", ""),
+        Reply("429 Too Many Requests", "", ""),
+        Reply("200 OK", "", ""),
     ]);
     let response = send_retrying(client().get(&url), &RetryConfig::default().labelled("test"))
         .await
@@ -339,8 +292,8 @@ async fn a_lane_is_held_across_the_backoff_and_not_handed_on_mid_throttle() {
     // lane for the wait would let the next one take it and be refused in turn, which is how
     // one throttle becomes several — the thing the jitter above already exists to avoid.
     let (url, _served) = scripted(vec![
-        Reply("429 Too Many Requests", "Retry-After: 1\r\n"),
-        Reply("200 OK", ""),
+        Reply("429 Too Many Requests", "Retry-After: 1\r\n", ""),
+        Reply("200 OK", "", ""),
     ]);
     let gate = crate::RequestGate::new();
     gate.narrow_to(1);

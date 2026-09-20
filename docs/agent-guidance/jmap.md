@@ -61,6 +61,18 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
 
 ## JMAP specifics implemented
 
+- **The session's `maxConcurrentRequests` is a number the server states, so it is
+  honoured.** `JmapClient::connect` narrows the account's `engine_http::RequestGate` to it
+  once the session resolves — the one adapter whose ceiling is read rather than measured.
+  RFC 8620 §2 scopes it to the API endpoint and names no companion for uploads or downloads;
+  a server may apply one number more widely, and **Stalwart applies it to uploads alone**
+  (measured: 300 simultaneous API calls and 300 simultaneous blob downloads all answered
+  `200`, 16 simultaneous uploads drew six refusals). The refusal is a **`400`** carrying
+  `urn:ietf:params:jmap:error:limit` with `limit: maxConcurrentRequests`, which reads as a
+  bad request and is not one; `JmapThrottles` is what tells the shared send funnel to wait it
+  out (`http-throttling.md`). Because connect narrows the gate, this adapter alone cannot
+  reach the limit — it takes a second client of the same account, which is what
+  `tests/live_concurrency_limit.rs` sets up.
 - **Session discovery + URL policy.** The session is fetched (well-known →
   redirect handled), then capabilities, account ids (per `primaryAccounts`, *not*
   assumed), and the core limits are read. `JmapClient::connect` reports the phase to

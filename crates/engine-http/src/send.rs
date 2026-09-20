@@ -11,6 +11,7 @@ use std::{
 use reqwest::{RequestBuilder, Response, header::RETRY_AFTER};
 
 use crate::{
+    classify::{StatusAlone, ThrottleClassifier},
     gate::RequestGate,
     observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver},
     policy::{Attempt, RetryPolicy, retry_after, retryable},
@@ -27,6 +28,7 @@ pub struct RetryConfig {
     observer: Arc<dyn ThrottleObserver>,
     provider: &'static str,
     gate: RequestGate,
+    classifier: Arc<dyn ThrottleClassifier>,
 }
 
 impl Default for RetryConfig {
@@ -36,6 +38,7 @@ impl Default for RetryConfig {
             observer: Arc::new(IgnoreThrottles),
             provider: "http",
             gate: RequestGate::new(),
+            classifier: Arc::new(StatusAlone),
         }
     }
 }
@@ -99,6 +102,19 @@ impl RetryConfig {
         &self.gate
     }
 
+    /// Lets `classifier` recognise this adapter's refusals in replies whose status does not
+    /// classify them — Gmail's `403` quota refusal, JMAP's `400 maxConcurrentRequests`.
+    ///
+    /// Called by the adapter, not the host, for the same reason
+    /// [`labelled`](Self::labelled) is: how a server says no is the one thing only the
+    /// adapter knows. Without one, a status is the whole decision, which is the accurate
+    /// description of what Graph and CalDAV meet.
+    #[must_use]
+    pub fn classifying(mut self, classifier: Arc<dyn ThrottleClassifier>) -> Self {
+        self.classifier = classifier;
+        self
+    }
+
     fn report(&self, status: u16, attempt: u32, delay: Duration, asked: bool, gave_up: bool) {
         self.observer.throttled(&ThrottleEvent {
             provider: self.provider,
@@ -126,9 +142,20 @@ impl RetryConfig {
 /// retried: whether the server acted on the request is unknowable from here, and the sync
 /// pass above already treats a failed pass as one to repeat.
 ///
+/// # What counts as throttled
+///
+/// A `429`, or a `503` on an idempotent request — and, where the adapter supplied a
+/// [`ThrottleClassifier`], whatever else that classifier recognises in a body. The status
+/// rule is applied first and on its own, so the replies that were already waited out are
+/// waited out on exactly the path they always were, and a classifier can only ever add to
+/// the set. A reply a classifier had to read is reassembled around the bytes it read —
+/// status, version, headers and extensions all cross over, and the transfer headers are
+/// restated for a body reqwest has already decoded.
+///
 /// # Errors
 ///
-/// Returns the `reqwest` error from building or sending the request.
+/// Returns the `reqwest` error from building or sending the request, or from reading the
+/// body of a reply the classifier asked to see.
 pub async fn send_retrying(
     request: RequestBuilder,
     retry: &RetryConfig,
@@ -148,21 +175,34 @@ pub async fn send_retrying(
         let replay = pending.try_clone();
         let response = client.execute(pending).await?;
         let status = response.status().as_u16();
-        if !retryable(status, idempotent) {
+        let (response, stated) = if retryable(status, idempotent) {
+            // The status settles it: nothing is read, and the reply is the one that
+            // arrived rather than one put back together.
+            (response, None)
+        } else if retry.classifier.reads_body_of(status) {
+            let (response, body) = buffered(response).await?;
+            match retry.classifier.throttle(status, &body) {
+                Some(throttle) => (response, throttle.stated_wait()),
+                // Exactly the refusal its status says it is — a real `403`, not a quota
+                // one. Handed back read, which is what the adapter was about to do.
+                None => return Ok(response),
+            }
+        } else {
             return Ok(response);
-        }
-        let retry_after = response
-            .headers()
-            .get(RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            // The device clock, which is only ever consulted for the HTTP-date form — and
-            // only to reject a date that has already passed.
-            .and_then(|value| retry_after(value, SystemTime::now()));
+        };
+        let retry_after = stated.or_else(|| {
+            response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                // The device clock, which is only ever consulted for the HTTP-date form —
+                // and only to reject a date that has already passed.
+                .and_then(|value| retry_after(value, SystemTime::now()))
+        });
         let granted = retry.policy.next_delay(
             &Attempt {
-                status,
+                throttled: true,
                 retry_after,
-                idempotent,
                 number,
                 waited,
             },
@@ -178,6 +218,49 @@ pub async fn send_retrying(
         number = number.saturating_add(1);
         pending = next;
     }
+}
+
+/// Reads a reply's body so a classifier can see it, and hands back a reply that still has
+/// one.
+///
+/// Reading consumes the response, and the adapter is still owed one — so the reply is taken
+/// apart and put back together around the bytes just read. Status, HTTP version, headers and
+/// extensions all cross over, which is what the adapter and [`ObservedConnection`] actually
+/// read from a reply: the negotiated TLS version lives in an extension, and losing it here
+/// would make a throttled account the one account that reports no TLS version.
+///
+/// Two things do not survive, both deliberately:
+///
+/// - **The URL**, which reqwest will not let anything outside itself set. No adapter reads one, and
+///   this is the reason to keep it that way — a request path names the user's own mail, which is
+///   also why [`ThrottleEvent`] refuses to carry one.
+/// - **The transfer headers.** `Content-Encoding`, `Content-Length` and `Transfer-Encoding`
+///   describe the bytes that were on the wire, and reqwest has already decompressed them (Gmail's
+///   refusals arrive gzipped). Carrying `Content-Encoding: gzip` over to a body that is no longer
+///   gzipped states something false; `Content-Length` is restated, since after decoding it is known
+///   exactly.
+///
+/// [`ObservedConnection`]: crate::ObservedConnection
+/// [`ThrottleEvent`]: crate::ThrottleEvent
+async fn buffered(response: Response) -> reqwest::Result<(Response, Vec<u8>)> {
+    use reqwest::header::{CONTENT_ENCODING, CONTENT_LENGTH, TRANSFER_ENCODING};
+
+    let status = response.status();
+    let version = response.version();
+    let mut headers = response.headers().clone();
+    let extensions = response.extensions().clone();
+    let body = response.bytes().await?.to_vec();
+
+    headers.remove(CONTENT_ENCODING);
+    headers.remove(TRANSFER_ENCODING);
+    headers.insert(CONTENT_LENGTH, body.len().into());
+
+    let mut rebuilt = http::Response::new(body.clone());
+    *rebuilt.status_mut() = status;
+    *rebuilt.version_mut() = version;
+    *rebuilt.headers_mut() = headers;
+    *rebuilt.extensions_mut() = extensions;
+    Ok((Response::from(rebuilt), body))
 }
 
 /// Bits to place one backoff inside its jitter window.

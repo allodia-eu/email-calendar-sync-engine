@@ -417,6 +417,7 @@ version = "0.1.0"
 dependencies = [
  "engine-provider",
  "engine-tls",
+ "http",
  "httpdate",
  "rcgen",
  "reqwest",

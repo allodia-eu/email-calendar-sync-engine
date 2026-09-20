@@ -55,12 +55,18 @@ impl RetryPolicy {
 /// What one refused attempt came back with, and what has already been spent on it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Attempt {
-    /// The reply's status code.
-    pub(crate) status: u16,
-    /// The server's `Retry-After`, where it sent a parseable one.
+    /// Whether this reply is one to wait out at all.
+    ///
+    /// Decided by the caller, because there are now two ways to decide it — [`retryable`]
+    /// from the status, or an adapter's
+    /// [`ThrottleClassifier`](crate::ThrottleClassifier) from the body — and a policy that
+    /// re-derived it from the status would silently overrule the second. That is precisely
+    /// the bug this field exists to have fixed: Gmail's quota refusal is a `403`, and a
+    /// schedule asked "is 403 retryable?" answers no however carefully the adapter read the
+    /// body.
+    pub(crate) throttled: bool,
+    /// The wait the server named, from its `Retry-After` or from a body the adapter read.
     pub(crate) retry_after: Option<Duration>,
-    /// Whether replaying this request cannot apply it twice.
-    pub(crate) idempotent: bool,
     /// Which send this was, counting the first as `0`.
     pub(crate) number: u32,
     /// Total slept across every earlier wait for this request.
@@ -80,7 +86,7 @@ impl RetryPolicy {
     /// `entropy` is any spread of bits; only its low end is used, and only to place the delay
     /// inside its jitter window.
     pub(crate) fn next_delay(&self, attempt: &Attempt, entropy: u64) -> Option<Wait> {
-        if !retryable(attempt.status, attempt.idempotent) {
+        if !attempt.throttled {
             return None;
         }
         if attempt.number.saturating_add(1) >= self.attempts {
@@ -167,13 +173,14 @@ pub(crate) fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
 mod tests {
     use std::time::Duration;
 
-    use super::{Attempt, RetryPolicy, retry_after};
+    use super::{Attempt, RetryPolicy, retry_after, retryable};
 
+    /// An attempt refused with `status`, classified the way the send funnel classifies one:
+    /// by the status rule, on an idempotent request.
     fn refused(status: u16) -> Attempt {
         Attempt {
-            status,
+            throttled: retryable(status, true),
             retry_after: None,
-            idempotent: true,
             number: 0,
             waited: Duration::ZERO,
         }
@@ -196,26 +203,51 @@ mod tests {
 
     #[test]
     fn a_429_is_retried_whatever_the_method() {
-        let policy = RetryPolicy::default();
-        let non_idempotent = Attempt {
-            idempotent: false,
-            ..refused(429)
-        };
-        assert!(policy.next_delay(&non_idempotent, HALFWAY).is_some());
+        assert!(retryable(429, true));
+        assert!(
+            retryable(429, false),
+            "the request was refused, not applied"
+        );
     }
 
     #[test]
     fn a_503_is_retried_only_where_a_replay_cannot_duplicate_the_request() {
-        let policy = RetryPolicy::default();
-        assert!(policy.next_delay(&refused(503), HALFWAY).is_some());
-        let post = Attempt {
-            idempotent: false,
-            ..refused(503)
-        };
+        assert!(retryable(503, true));
         assert!(
-            policy.next_delay(&post, HALFWAY).is_none(),
+            !retryable(503, false),
             "a replayed POST on a 503 is a message sent twice",
         );
+    }
+
+    #[test]
+    fn a_status_the_rule_declines_is_still_waited_out_once_an_adapter_recognises_it() {
+        // Gmail's quota refusal, which is where this whole distinction comes from: the
+        // status rule says no, the adapter's classifier says yes, and the schedule follows
+        // the adapter. Without this the `403` is handed back and the scope waits a pass.
+        let policy = RetryPolicy::default();
+        assert!(!retryable(403, true));
+        assert!(policy.next_delay(&refused(403), HALFWAY).is_none());
+        let classified = Attempt {
+            throttled: true,
+            ..refused(403)
+        };
+        assert!(policy.next_delay(&classified, HALFWAY).is_some());
+    }
+
+    #[test]
+    fn a_wait_an_adapter_read_out_of_a_body_is_the_servers_own_number() {
+        // Gmail states the quota window's start in the refusal's `details`, so the wait to
+        // its end is the server's word, not a guess — and is treated exactly as a
+        // `Retry-After` would be: never undercut, and reported as `server_asked`.
+        let policy = RetryPolicy::default();
+        let stated = Attempt {
+            throttled: true,
+            retry_after: Some(Duration::from_secs(11)),
+            ..refused(403)
+        };
+        let wait = policy.next_delay(&stated, 0).expect("classified");
+        assert!(wait.server_asked);
+        assert!(wait.delay >= Duration::from_secs(11), "{:?}", wait.delay);
     }
 
     #[test]
