@@ -33,6 +33,8 @@ use tokio::sync::oneshot;
 mod fixtures;
 use fixtures::*;
 
+#[path = "sync/drafts.rs"]
+mod drafts;
 #[path = "sync/expansion.rs"]
 mod expansion;
 #[path = "sync/folder_scopes.rs"]
@@ -355,6 +357,33 @@ impl Provider for SubmittingProvider {
             return Ok(SubmissionReceipt::unfiled(key, id, detail));
         }
         Ok(SubmissionReceipt::filed(key, id))
+    }
+
+    /// Stores a draft, answering with a key that **moves on a re-save**, which is what
+    /// three of the four real adapters do. A fake that echoed the key back would let a
+    /// facade test pass while the caller kept a stale key and stored a second copy.
+    async fn put_draft(
+        &self,
+        _account: &AccountId,
+        _draft: &Draft,
+        replacing: Option<&ProviderKey>,
+    ) -> ProviderResult<ProviderKey> {
+        if self.fail {
+            return Err(ProviderError::retryable("no route to host"));
+        }
+        let key = if replacing.is_some() {
+            "draft-2"
+        } else {
+            "draft-1"
+        };
+        Ok(ProviderKey::new(key).unwrap())
+    }
+
+    async fn delete_draft(&self, _account: &AccountId, _draft: &ProviderKey) -> ProviderResult<()> {
+        if self.fail {
+            return Err(ProviderError::retryable("no route to host"));
+        }
+        Ok(())
     }
 
     async fn edit_mail(

@@ -280,3 +280,87 @@ async fn a_removal_that_succeeds_settles_its_op() {
     );
     assert_eq!(*provider.draft_deletes.lock().unwrap(), vec![key]);
 }
+
+/// A drain that finds the network still out **parks the op again** rather than settling
+/// it, for a save and for a removal alike.
+///
+/// This is the ordinary case for an autosave, not an edge: a draft saved on a train is
+/// queued, and every pass until the signal returns meets the same failure. Settling one
+/// of these would drop the user's text, and the two draft verbs are the only mail writes
+/// whose op is *re-enqueued* rather than replaced, so each is checked on its own.
+#[tokio::test]
+async fn a_drain_that_is_still_offline_parks_the_draft_op_again() {
+    // Enough failures for the inline attempt and both drains that follow.
+    let provider = FakeMail::new(vec![], vec![]).failing_drafts(4);
+    let (store, clock) = store_and_clock();
+    let key = ProviderKey::new("draft-9").unwrap();
+
+    put_draft_mail(
+        &provider,
+        &store,
+        &account(),
+        WorkerId::new("w"),
+        Duration::from_secs(30),
+        &composing("compose-offline@test.local", "v1"),
+        None,
+    )
+    .await
+    .expect_err("the save had no network");
+    delete_draft_mail(
+        &provider,
+        &store,
+        &account(),
+        WorkerId::new("w"),
+        Duration::from_secs(30),
+        &key,
+    )
+    .await
+    .expect_err("the removal had no network");
+
+    clock.advance(Duration::from_mins(1));
+    let report = drain_outbox(
+        &provider,
+        &store,
+        &account(),
+        WorkerId::new("drainer"),
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+
+    // Both were attempted and both parked: `Parked` rather than `Failed` is the whole
+    // distinction, because a `Failed` op is settled and never tried again. `attempts` is
+    // 2 because the inline save counted as the first. And no key is claimed for a write
+    // that did not happen.
+    assert_eq!(report.attempted.len(), 2);
+    assert_eq!(report.delivered(), 0);
+    for attempted in &report.attempted {
+        assert_eq!(
+            attempted.outcome,
+            DrainOutcome::Parked {
+                class: FailureClass::Retryable,
+                attempts: 2,
+            },
+            "{:?} should have parked, not settled",
+            attempted.kind
+        );
+        assert!(attempted.provider_key.is_none());
+    }
+    assert!(provider.draft_puts.lock().unwrap().is_empty());
+    assert!(provider.draft_deletes.lock().unwrap().is_empty());
+
+    // Still queued, so the pass after the network returns is the one that stores them.
+    assert_eq!(store.list_pending_ops(account()).await.unwrap().len(), 2);
+    clock.advance(Duration::from_mins(5));
+    let recovered = drain_outbox(
+        &provider,
+        &store,
+        &account(),
+        WorkerId::new("drainer"),
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered.delivered(), 2);
+    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+}
