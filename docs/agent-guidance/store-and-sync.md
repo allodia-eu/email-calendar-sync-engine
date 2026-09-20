@@ -138,8 +138,14 @@ is an enum, not a single id:
 Consequences that the orchestrator must not paper over:
 
 - **Lease cardinality differs by provider.** A JMAP account syncs under a few
-  coarse leases (one per type); an IMAP account under many fine leases (one per
-  mailbox). Do not assume a fixed fan-out per account.
+  coarse leases (one per type); an IMAP and a Graph account under many fine leases
+  (one per mailbox/folder). Do not assume a fixed fan-out per account.
+- **The fan-out is a store bound, and it is not the network bound.** `MAX_CONCURRENT_FOLDERS`
+  caps how many folders contend for the single write connection. How many *requests* an
+  account may have in flight is a different question with a different answer per server, and
+  it is enforced where every request passes — `engine_http::RequestGate`, one per account
+  (`http-throttling.md`). Conflating them breaks in both directions: an IMAP folder holds its
+  own socket, so its ceiling is per connection, while every Graph folder shares the mailbox's.
 - **Referential apply order.** Container scopes (mailboxes, calendars, address
   books) are applied before the member scopes that reference them (emails,
   events, contacts). Membership rows resolve against already-applied containers,

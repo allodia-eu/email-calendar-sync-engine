@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "ApplicationThrottled",
+    "message": "Application is over its MailboxConcurrency limit."
+  }
+}

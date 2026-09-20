@@ -117,12 +117,21 @@ pub use engine_core::{
 // `FailureClass` names a public field of `PendingOpRow`, so a host reading an outbox
 // row must be able to name its type without depending on `engine-core`.
 pub use engine_core::{error::FailureClass, mail::MailFlags, search_index::MailRow};
-/// How every HTTP provider answers a throttled reply, and how a host hears about it.
+/// How every HTTP provider answers a throttled reply, how many it may have in flight, and
+/// how a host hears about both.
 ///
-/// Re-exported because both halves are the host's: it builds one [`RetryConfig`] and hands it
-/// to each provider it configures — the way it hands out one TLS policy — and it implements
+/// Re-exported because all of it is the host's: it builds one [`RetryConfig`] and hands it to
+/// each provider it configures — the way it hands out one TLS policy — and it implements
 /// [`ThrottleObserver`], because the engine writes no logs of its own.
-pub use engine_http::{IgnoreThrottles, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver};
+///
+/// [`RequestGate`] is the one with a **per-account** lifetime rather than a per-process one.
+/// A server that limits concurrency counts requests against the account, so one gate is built
+/// per account and cloned to every provider connected for it; the adapter fills in the number,
+/// because only it knows the server. See its docs, and
+/// `docs/agent-guidance/http-throttling.md`.
+pub use engine_http::{
+    IgnoreThrottles, RequestGate, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver,
+};
 pub use engine_provider::{
     CalendarWrites, Capabilities, ContactDestination, ContactPhoto, ContactsProvider,
     ContentIdHeader, DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition,

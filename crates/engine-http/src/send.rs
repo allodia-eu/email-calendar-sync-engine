@@ -11,6 +11,7 @@ use std::{
 use reqwest::{RequestBuilder, Response, header::RETRY_AFTER};
 
 use crate::{
+    gate::RequestGate,
     observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver},
     policy::{Attempt, RetryPolicy, retry_after, retryable},
 };
@@ -25,6 +26,7 @@ pub struct RetryConfig {
     policy: RetryPolicy,
     observer: Arc<dyn ThrottleObserver>,
     provider: &'static str,
+    gate: RequestGate,
 }
 
 impl Default for RetryConfig {
@@ -33,6 +35,7 @@ impl Default for RetryConfig {
             policy: RetryPolicy::default(),
             observer: Arc::new(IgnoreThrottles),
             provider: "http",
+            gate: RequestGate::new(),
         }
     }
 }
@@ -42,6 +45,7 @@ impl core::fmt::Debug for RetryConfig {
         f.debug_struct("RetryConfig")
             .field("policy", &self.policy)
             .field("provider", &self.provider)
+            .field("gate", &self.gate)
             .finish_non_exhaustive()
     }
 }
@@ -71,6 +75,30 @@ impl RetryConfig {
         self
     }
 
+    /// Sends these requests through `gate`, so they are counted against the account's
+    /// ceiling together with every other provider sharing it.
+    ///
+    /// **One gate belongs to one account**, and a host builds it: only the host knows where
+    /// an account ends. Sharing a config — and therefore a gate — across two accounts bounds
+    /// them jointly, which is stricter than any server asked for; the policy and the observer
+    /// genuinely are process-wide, so a host that keeps one `RetryConfig` around clones it
+    /// per account through this rather than building a second.
+    ///
+    /// Without one, requests are unbounded here and the ceiling is whatever the caller's own
+    /// fan-out happens to be. See [`RequestGate`] for why that is not good enough.
+    #[must_use]
+    pub fn gated(mut self, gate: RequestGate) -> Self {
+        self.gate = gate;
+        self
+    }
+
+    /// The account ceiling these requests are counted against, for an adapter to
+    /// [`narrow_to`](RequestGate::narrow_to) what its own server allows as it connects.
+    #[must_use]
+    pub fn gate(&self) -> &RequestGate {
+        &self.gate
+    }
+
     fn report(&self, status: u16, attempt: u32, delay: Duration, asked: bool, gave_up: bool) {
         self.observer.throttled(&ThrottleEvent {
             provider: self.provider,
@@ -89,6 +117,11 @@ impl RetryConfig {
 /// the outcome, so an adapter's own status handling is unchanged and a request that stays
 /// throttled still surfaces as the rate limit it is.
 ///
+/// A lane of the account's [`RequestGate`] is held for the whole call, **the backoff sleeps
+/// included**: a request waiting out a `Retry-After` is still a request in progress, and
+/// letting another one take its lane while the server is asking for less is how one throttle
+/// becomes several. Where no gate was wired, nothing is bounded here.
+///
 /// A transport failure (connection reset, timeout) is returned immediately rather than
 /// retried: whether the server acted on the request is unknowable from here, and the sync
 /// pass above already treats a failed pass as one to repeat.
@@ -102,6 +135,9 @@ pub async fn send_retrying(
 ) -> reqwest::Result<Response> {
     let (client, built) = request.build_split();
     let mut pending = built?;
+    // Held until this returns, so the account's ceiling counts a retrying request once,
+    // from its first attempt to its last.
+    let _lane = retry.gate.acquire().await;
     let idempotent = pending.method().is_idempotent();
     let mut number: u32 = 0;
     let mut waited = Duration::ZERO;

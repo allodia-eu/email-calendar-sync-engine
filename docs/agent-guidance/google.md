@@ -133,7 +133,10 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   requests, is no faster at equal width (both shapes cost one round trip), costs ~25% more
   bytes for the multipart envelope, and answers `200` while individual members carry their
   own `429` — so it buys nothing and adds a parser. `tests/live_batch_vs_concurrent.rs` is
-  the gated probe that keeps that decision honest. The persisted cursor
+  the gated probe that keeps that decision honest. That same 20 is what the adapter narrows
+  the account's `engine_http::RequestGate` to (`http-throttling.md`), so the ceiling now
+  bounds everything the account does at once rather than one page's fan-out at a time — a
+  body warm overlapping a snapshot used to be able to exceed it. The persisted cursor
   is that captured `historyId` (messages arriving mid-snapshot are re-reported by the
   first delta — idempotent). This is a **reconciling** pass (its present set tombstones
   absent rows). A `SyncWindow` floor windows the enumeration to `q: after:<epoch>`.

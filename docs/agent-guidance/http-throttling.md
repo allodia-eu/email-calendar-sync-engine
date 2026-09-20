@@ -51,13 +51,70 @@ attaches to a support request.
 
 Surveyed across every adapter, because a throttle is not a provider-specific symptom:
 
-| Adapter | Signals a throttle as | Concurrency ceiling | Where the ceiling comes from |
-|---|---|---|---|
-| `provider-google` | `429`, and `403` with a rate-limit `reason` | 20 per mailbox | Measured: 20 clean, 30 occasional, 50 throttles a tenth |
-| `provider-graph` | `429` (+ `Retry-After`) | 4 per mailbox | Documented `MailboxConcurrency`, and measured: 4 clean, 6 draws a `429` |
-| `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | The server states it (RFC 8620 §2) — 4 on Stalwart, 10 on Fastmail |
-| `provider-caldav` | `429` | not fanned out | No per-object fetch to overlap: `calendar-multiget` batches |
-| `provider-imap` | n/a | 1 | Not HTTP, and one connection is one command at a time |
+| Adapter | Signals a throttle as | Concurrency ceiling | Where the ceiling comes from | Narrows the gate |
+|---|---|---|---|---|
+| `provider-google` | `429`, and `403` with a rate-limit `reason` | 20 per user | Measured: 20 clean, 30 occasional, 50 throttles a tenth | yes, in `HttpTransport::new` |
+| `provider-graph` | `429` (+ `Retry-After`) | 4 per mailbox | Documented `MailboxConcurrency`, and measured below | yes, in `HttpTransport::new` |
+| `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | The server states it (RFC 8620 §2) — 4 on Stalwart, 10 on Fastmail | yes, in `JmapClient::connect`, once the session is resolved |
+| `provider-caldav` | `429` | unknown | No spec states one and no server here has been measured; see Known gaps | **no** — an unstated ceiling bounds nothing |
+| `provider-imap` | n/a | 1 **per connection** | Not HTTP, and one connection is one command at a time | n/a — not an HTTP adapter |
+
+⚠️ **`provider-imap`'s `1` is the odd one out, and it is the reason `min`-ing these into a
+fan-out is wrong.** Every HTTP adapter's number is a bound on the *account*: one mailbox, one
+user, one session, however many providers address it. IMAP's is a bound on *one socket*, and an
+account holds one per folder — so an IMAP account with thirteen folders can genuinely run
+thirteen commands at once. Read the two as the same kind of number and you serialize IMAP to fix
+Graph.
+
+## The account gate
+
+**`engine_http::RequestGate` is the bound on concurrency; the fan-out is not.** A host builds
+**one gate per account**, passes it to `RetryConfig::gated`, and hands clones to every provider
+it connects for that account — folder-bound mail providers, calendar, contacts. `send_retrying`
+holds one lane of it per call, the backoff sleeps included, because a request waiting out a
+`Retry-After` is still a request in progress.
+
+The **adapter** states the number, via `RequestGate::narrow_to`, as it connects. A host that had
+to know it would be branching on which provider it is talking to, which is the engine leaking
+(`providers.md`). Narrowing only ever narrows, so an account whose adapters disagree takes the
+strictest.
+
+### Why not just clamp `MAX_CONCURRENT_FOLDERS`
+
+That was the proposal in #216, and it is wrong for two measured reasons. Against a live
+Microsoft 365 mailbox of 56 folders, alternating widths inside one run (the methodology
+`provider-graph/src/provider.rs` insists on, since the same width minutes apart differed by 40%):
+
+| Concurrent requests | 1 | 2 | 3 | 4 | 5 | 6 | 8 |
+|---|---|---|---|---|---|---|---|
+| refused | 0% | 0% | 0% | **0%** (460 requests) | **13.4%** | 22.4% | 40.3% |
+
+Every refusal, all 107 of them: `ApplicationThrottled: Application is over its MailboxConcurrency
+limit`. So it is concurrency, not the requests-per-window budget — that never came into it.
+
+1. **The ceiling is not per folder**, so `min(fan-out, concurrent_fetches)` fixes the wrong
+   number on one adapter and breaks another (the IMAP note above).
+2. **Folder sync is not the only traffic.** The same mailbox, given four folder syncs plus one
+   body warm — five requests, two endpoint families — refused at 8.2%, and refused *both*
+   families: 41 folder pages and 19 `$value` fetches in one block. A bound that sees only the
+   fan-out cannot hold a total the server counts across everything.
+
+`MAX_CONCURRENT_FOLDERS` therefore stays 5 and stays a *store* figure — how many folders contend
+for the store's single write connection. A folder task that cannot get a lane waits at the gate,
+which costs a parked future and nothing else.
+
+### One gate, one account — the scope is the whole difficulty
+
+The number is easy and the thing it attaches to is not. A host had already written this bound by
+hand, correctly set to 4, as a semaphore field on its per-account token source — and then built
+the core twice in one process, which is ordinary on Android where a one-time sync worker and the
+periodic one overlap. Two cores, two semaphores, eight concurrent requests, and a mailbox
+refusing 40% of them. That host had *already* moved its credential state to be shared per account
+per process for exactly this reason; the semaphore was left behind.
+
+So: the gate belongs wherever the host's per-account state lives, not on any one provider, and
+not on a `RetryConfig` shared process-wide — the policy and the observer genuinely are
+process-wide, so clone it per account through `gated` rather than building a second.
 
 **JMAP's is a `400`.** RFC 8620 §3.6.1 returns *every* request-level error with a `400`,
 `urn:ietf:params:jmap:error:limit` among them, and its `limit` property names which limit was
@@ -72,6 +129,15 @@ and it defaults to `1` when a session omits it rather than to a guess.
 
 ## Known gaps
 
+- **No CalDAV/CardDAV adapter narrows the gate**, because no number is known: no RFC states
+  one, and no server here has been measured. Unstated means unbounded, which is the behaviour
+  that shipped before the gate existed — not a claim that DAV servers have no limit. Measuring
+  Stalwart and SabreDAV would close it.
+- **A `ThrottleEvent` does not say which ceiling was hit.** Graph names it in the body
+  (`MailboxConcurrency`) and Google in a `403` `reason`; neither reaches the host, so a
+  diagnostic log cannot distinguish "too many at once" from "too many this window" — which is
+  the exact question #216 had to be answered with a live probe because the recorded events
+  could not answer it.
 - A transport failure (connection reset, timeout) is not retried here. Whether the server
   acted is unknowable from this layer, and the sync pass above already repeats a failed pass.
 - `Method::is_idempotent` answers `false` for the WebDAV extension methods, so a `503` on

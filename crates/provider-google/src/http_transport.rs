@@ -42,11 +42,17 @@ impl HttpTransport {
         tls: &TlsClientConfig,
         retry: &RetryConfig,
     ) -> Result<Self, GoogleError> {
+        let retry = retry.clone().labelled("gmail");
+        // The measured per-user ceiling, stated once for the whole account: the same figure
+        // a page's own fan-out sits under (`fetch::MAX_CONCURRENT_GETS`), now bounding
+        // everything the account does rather than one page at a time
+        // (`engine_http::RequestGate`).
+        retry.gate().narrow_to(crate::fetch::MAX_CONCURRENT_GETS);
         Ok(Self {
             client: tls.reqwest_builder().build()?,
             token,
             connection: ObservedConnection::default(),
-            retry: retry.clone().labelled("gmail"),
+            retry,
         })
     }
 
@@ -229,7 +235,7 @@ mod tests {
         let transport = HttpTransport::new(
             "super-secret".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
 
@@ -274,7 +280,7 @@ mod tests {
         let transport = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         let doc = transport.get(&base).await.unwrap();
@@ -289,7 +295,7 @@ mod tests {
         let transport = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(GoogleTransport::http_version(&transport), None);
@@ -312,7 +318,7 @@ mod tests {
         let err = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .get(&base)
@@ -328,7 +334,7 @@ mod tests {
         let err = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .get(&base)
@@ -343,7 +349,7 @@ mod tests {
         let err = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .get("http://127.0.0.1:1/gmail/v1/users/me/labels")
@@ -360,7 +366,7 @@ mod tests {
         let sent = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .post(&base, "application/json", b"{}".to_vec())
@@ -372,7 +378,7 @@ mod tests {
         HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .delete(&base, None)
@@ -387,7 +393,7 @@ mod tests {
         let err = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .post(&base, "application/json", b"{}".to_vec())

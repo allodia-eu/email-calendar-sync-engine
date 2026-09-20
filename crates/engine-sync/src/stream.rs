@@ -32,7 +32,7 @@ use futures_util::StreamExt;
 
 use crate::{
     MAX_STALE_RECLAIMS, SyncCommit, SyncError, SyncObserver, derive_messages,
-    mail_account::SyncTiming, recipients,
+    mail_report::SyncTiming, recipients,
 };
 
 /// How a streaming sync runs: the depth window, plus how it separates network

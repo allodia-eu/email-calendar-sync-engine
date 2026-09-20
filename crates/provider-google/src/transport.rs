@@ -325,7 +325,7 @@ mod tests {
         let client = GoogleClient::connect(
             "super-secret-token",
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(
@@ -337,7 +337,7 @@ mod tests {
             "t",
             "http://127.0.0.1:9",
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(
@@ -356,7 +356,7 @@ mod tests {
         let client = GoogleClient::connect(
             "t",
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(
@@ -373,7 +373,7 @@ mod tests {
             "t",
             "http://127.0.0.1:9",
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(

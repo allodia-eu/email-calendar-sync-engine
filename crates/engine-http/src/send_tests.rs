@@ -274,3 +274,87 @@ async fn a_host_that_wires_no_observer_still_gets_the_backoff() {
     assert_eq!(response.status().as_u16(), 200);
     assert_eq!(served.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_account_ceiling_bounds_what_is_in_flight_across_providers() {
+    // The measured shape: a mailbox that is clean at four concurrent requests and refuses
+    // at five. The two configs stand for two of an account's providers — a folder-bound
+    // mail provider and its calendar — which is exactly the pair that has to be counted
+    // together, and separately labelled because they report as themselves.
+    let live = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&live);
+    let high = Arc::clone(&peak);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let (counter, high) = (Arc::clone(&counter), Arc::clone(&high));
+            std::thread::spawn(move || {
+                let mut buf = [0_u8; 4096];
+                let _ = stream.read(&mut buf);
+                let now = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                high.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(30));
+                counter.fetch_sub(1, Ordering::SeqCst);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            });
+        }
+    });
+    let url = format!("http://{addr}/");
+
+    let gate = crate::RequestGate::new();
+    let mail = RetryConfig::default().labelled("graph").gated(gate.clone());
+    let calendar = RetryConfig::default()
+        .labelled("graph-calendar")
+        .gated(gate.clone());
+    // What the adapter states as it connects, once, for the whole account.
+    gate.narrow_to(4);
+
+    let client = client();
+    let mut handles = Vec::new();
+    for (index, retry) in (0..16).map(|i| (i, if i % 2 == 0 { &mail } else { &calendar })) {
+        let (client, url, retry) = (client.clone(), url.clone(), retry.clone());
+        handles.push(tokio::spawn(async move {
+            let _ = index;
+            send_retrying(client.get(&url), &retry).await.expect("sent");
+        }));
+    }
+    for handle in handles {
+        handle.await.expect("task");
+    }
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        4,
+        "two providers of one account were counted apart",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lane_is_held_across_the_backoff_and_not_handed_on_mid_throttle() {
+    // A request waiting out a `Retry-After` is still a request in progress. Releasing its
+    // lane for the wait would let the next one take it and be refused in turn, which is how
+    // one throttle becomes several — the thing the jitter above already exists to avoid.
+    let (url, _served) = scripted(vec![
+        Reply("429 Too Many Requests", "Retry-After: 1\r\n"),
+        Reply("200 OK", ""),
+    ]);
+    let gate = crate::RequestGate::new();
+    gate.narrow_to(1);
+    let retry = RetryConfig::default().labelled("test").gated(gate.clone());
+    let throttled = {
+        let (client, url, retry) = (client(), url.clone(), retry.clone());
+        tokio::spawn(async move { send_retrying(client.get(&url), &retry).await.expect("sent") })
+    };
+    // Long enough that the first request is certainly inside its one-second backoff.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let taken = tokio::time::timeout(Duration::from_millis(300), gate.acquire()).await;
+    assert!(
+        taken.is_err(),
+        "the retrying request gave up its lane while the server was asking for less",
+    );
+    assert_eq!(throttled.await.expect("task").status().as_u16(), 200);
+}

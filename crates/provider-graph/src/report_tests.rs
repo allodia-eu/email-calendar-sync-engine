@@ -80,7 +80,7 @@ async fn the_request_goes_to_the_beta_endpoint_with_the_action_and_the_move_flag
     // The offline fake ignores request bodies (`AGENTS.md`), so drive the REAL transport
     // at a capturing server to pin the bytes that actually go out.
     let (base, rx) = capturing_server("200 OK", REPORTED);
-    let client = GraphClient::with_base("tok", base, tls(), retry()).unwrap();
+    let client = GraphClient::with_base("tok", base, tls(), &retry()).unwrap();
 
     let receipt = report_message(&client, &report(ReportVerdict::Phishing))
         .await
@@ -103,7 +103,7 @@ async fn the_request_goes_to_the_beta_endpoint_with_the_action_and_the_move_flag
 #[tokio::test]
 async fn a_rejected_action_surfaces_as_a_permanent_failure() {
     let (base, _rx) = capturing_server("400 Bad Request", BAD_ACTION);
-    let client = GraphClient::with_base("tok", base, tls(), retry()).unwrap();
+    let client = GraphClient::with_base("tok", base, tls(), &retry()).unwrap();
 
     let err = report_message(&client, &report(ReportVerdict::Junk))
         .await
@@ -113,7 +113,7 @@ async fn a_rejected_action_surfaces_as_a_permanent_failure() {
 
 #[test]
 fn beta_url_switches_only_the_version_segment() {
-    let client = GraphClient::connect("tok", tls(), retry()).unwrap();
+    let client = GraphClient::connect("tok", tls(), &retry()).unwrap();
     assert_eq!(
         client.beta_url("/messages/x/reportMessage"),
         "https://graph.microsoft.com/beta/me/messages/x/reportMessage"
