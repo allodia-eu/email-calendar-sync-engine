@@ -4,12 +4,17 @@
 use std::sync::{Arc, Once};
 
 use rustls::{
-    ClientConfig, RootCertStore, client::danger::ServerCertVerifier, crypto::CryptoProvider,
+    ClientConfig, RootCertStore,
+    client::{WebPkiServerVerifier, danger::ServerCertVerifier},
+    crypto::CryptoProvider,
     pki_types::CertificateDer,
 };
 use tokio_rustls::TlsConnector;
 
-use crate::{TlsError, TlsPolicy};
+use crate::{
+    CertificateException, RejectedCertificate, TlsError, TlsPolicy,
+    exception::{ExceptionVerifier, RejectionSlot},
+};
 
 /// One TLS client configuration, shared by every provider of one account.
 ///
@@ -18,8 +23,14 @@ use crate::{TlsError, TlsPolicy};
 /// hand-rolled IMAP/SMTP stack and [`TlsClientConfig::reqwest_builder`] for the
 /// HTTP providers. Cloning is cheap (it shares one `Arc`), so a host builds one and
 /// stores a clone in each provider's config.
+///
+/// It also carries the last certificate it refused ([`TlsClientConfig::rejected`]),
+/// which is how a host offering a certificate exception knows what it is offering.
 #[derive(Clone)]
-pub struct TlsClientConfig(Arc<ClientConfig>);
+pub struct TlsClientConfig {
+    config: Arc<ClientConfig>,
+    rejected: RejectionSlot,
+}
 
 impl core::fmt::Debug for TlsClientConfig {
     /// Terse: the wrapped rustls config is large and its contents are not useful in
@@ -46,6 +57,23 @@ impl Default for TlsClientConfig {
 /// [`TlsError::Unsupported`] if the policy needs a trust mechanism this build was
 /// not compiled with.
 pub fn client_config(policy: &TlsPolicy) -> Result<TlsClientConfig, TlsError> {
+    client_config_with_exceptions(policy, &[])
+}
+
+/// Realizes `policy`, additionally accepting each server in `exceptions` when it
+/// presents the exact certificate that exception names.
+///
+/// Verification is not relaxed: `policy`'s own verifier runs first and unchanged, and
+/// an exception is consulted only once it has refused. Every refusal, excepted or not,
+/// is recorded in [`TlsClientConfig::rejected`].
+///
+/// # Errors
+///
+/// As [`client_config`].
+pub fn client_config_with_exceptions(
+    policy: &TlsPolicy,
+    exceptions: &[CertificateException],
+) -> Result<TlsClientConfig, TlsError> {
     ensure_process_provider();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     // TLS 1.2 floor, newest ceiling. rustls's safe defaults are TLS 1.2 + 1.3 (it
@@ -59,20 +87,35 @@ pub fn client_config(policy: &TlsPolicy) -> Result<TlsClientConfig, TlsError> {
         .with_safe_default_protocol_versions()
         .map_err(|_| TlsError::Provider)?;
 
-    let config = match policy {
+    let inner: Arc<dyn ServerCertVerifier> = match policy {
         TlsPolicy::Roots {
             bundled,
             system,
             custom,
-        } => builder
-            .with_root_certificates(build_root_store(*bundled, *system, custom)?)
-            .with_no_client_auth(),
-        TlsPolicy::PlatformVerifier { extra_roots } => builder
-            .dangerous()
-            .with_custom_certificate_verifier(platform_verifier(&provider, extra_roots)?)
-            .with_no_client_auth(),
+        } => {
+            let roots = Arc::new(build_root_store(*bundled, *system, custom)?);
+            // What `with_root_certificates` builds internally, named here because the
+            // exception verifier has to wrap it. `build_root_store` has already
+            // rejected the empty store, which is this builder's only failure.
+            WebPkiServerVerifier::builder_with_provider(roots, provider.clone())
+                .build()
+                .map_err(|_| TlsError::EmptyRootStore)?
+        }
+        TlsPolicy::PlatformVerifier { extra_roots } => platform_verifier(&provider, extra_roots)?,
     };
-    Ok(TlsClientConfig(Arc::new(config)))
+    let rejected = RejectionSlot::default();
+    let config = builder
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(ExceptionVerifier::new(
+            inner,
+            exceptions,
+            rejected.clone(),
+        )))
+        .with_no_client_auth();
+    Ok(TlsClientConfig {
+        config: Arc::new(config),
+        rejected,
+    })
 }
 
 impl TlsClientConfig {
@@ -89,7 +132,25 @@ impl TlsClientConfig {
     /// A [`TlsConnector`] carrying this trust policy — for the IMAP/SMTP transport.
     #[must_use]
     pub fn connector(&self) -> TlsConnector {
-        TlsConnector::from(self.0.clone())
+        TlsConnector::from(self.config.clone())
+    }
+
+    /// The certificate of the most recent server this config refused, and the name it
+    /// was asked for — `None` while it has refused none, and `None` again once a later
+    /// handshake on this config has succeeded.
+    ///
+    /// **One slot, and one config is shared by every provider of an account** (see this
+    /// type's own note), so what comes back names the server it refused and not
+    /// necessarily the one the caller is asking about. A host whose providers can dial
+    /// concurrently must compare [`RejectedCertificate::server_name`] before it offers
+    /// anybody an exception; a host that builds a config per connect attempt, which is
+    /// the simpler shape and the one `mailcal-account` uses, has nothing to compare.
+    ///
+    /// It is what a client shows somebody before offering to accept that certificate as
+    /// a [`CertificateException`].
+    #[must_use]
+    pub fn rejected(&self) -> Option<RejectedCertificate> {
+        self.rejected.last()
     }
 
     /// A `reqwest` client builder preconfigured with this trust policy — for the
@@ -112,7 +173,7 @@ impl TlsClientConfig {
     /// reads it back out.
     #[cfg(feature = "reqwest")]
     pub fn reqwest_builder(&self) -> reqwest::ClientBuilder {
-        let mut config = (*self.0).clone();
+        let mut config = (*self.config).clone();
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         reqwest::Client::builder()
             .tls_backend_preconfigured(config)
@@ -126,7 +187,10 @@ impl TlsClientConfig {
     #[must_use]
     pub fn dangerous_accept_any() -> Self {
         ensure_process_provider();
-        Self(Arc::new(crate::dangerous::accept_any_config()))
+        Self {
+            config: Arc::new(crate::dangerous::accept_any_config()),
+            rejected: RejectionSlot::default(),
+        }
     }
 }
 

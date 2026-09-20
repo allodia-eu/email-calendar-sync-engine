@@ -156,6 +156,10 @@ mail-parser = { version = "0.11.4", default-features = false, features = ["full_
 # copies of one message and giving filesystem-safe, fixed-length names. Pure Rust,
 # no C surface.
 sha2 = { version = "0.11.0", default-features = false }
+# Reads the names and validity window out of a refused certificate, for the summary
+# `engine-tls` hands a host to show (`docs/agent-guidance/tls.md`). `std` only: none of the
+# crate's builder or signature halves.
+x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 # IDNA domain canonicalization for conservative cross-provider contact identity.
 # Only the email domain is folded; the local part remains byte/case exact
 # (`docs/agent-guidance/contacts.md`).

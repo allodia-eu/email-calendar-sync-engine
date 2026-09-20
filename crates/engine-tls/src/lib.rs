@@ -23,19 +23,33 @@
 //! Every config is built with an explicit [`ring`](rustls::crypto::ring) provider,
 //! so the workspace carries one crypto backend rather than mixing `ring` and
 //! `aws-lc-rs`.
+//!
+//! # Certificate exceptions
+//!
+//! A server whose certificate no root can validate — a self-signed CA served as its
+//! own end-entity certificate, the shape Proton Mail Bridge and several self-hosted
+//! servers use — is reachable only by accepting that one certificate, which
+//! [`client_config_with_exceptions`] does and [`CertificateException`] describes.
+//! Verification is never relaxed: an exception is consulted only after it has failed,
+//! and every refusal is recorded in [`TlsClientConfig::rejected`] so a host can show
+//! what it declined rather than only that something was wrong.
 
 mod config;
 mod error;
+mod exception;
 mod policy;
+mod summary;
 
 #[cfg(feature = "dangerous-testing")]
 mod dangerous;
 
-pub use config::{TlsClientConfig, client_config};
+pub use config::{TlsClientConfig, client_config, client_config_with_exceptions};
 pub use error::TlsError;
+pub use exception::{CertificateException, RejectedCertificate, fingerprint};
 pub use policy::TlsPolicy;
 /// A DER-encoded certificate — the currency for [`TlsPolicy`]'s explicit roots.
 ///
 /// Re-exported so hosts and the FFI shim can build a policy from raw certificate
 /// bytes without depending on `rustls` directly.
 pub use rustls::pki_types::CertificateDer;
+pub use summary::CertificateSummary;

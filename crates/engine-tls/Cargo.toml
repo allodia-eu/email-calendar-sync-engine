@@ -15,6 +15,13 @@ tokio-rustls = { workspace = true }
 # The bundled Mozilla root program — the hermetic default trust anchor set.
 webpki-roots = { workspace = true }
 thiserror = { workspace = true }
+# Fingerprints a certificate an exception names (SHA-256 of its DER). rustls keeps its
+# own hashes crate-private, so the digest comes from the workspace's sha2.
+sha2 = { workspace = true }
+# Reads the names and validity window out of a refused certificate, so a host can show
+# somebody what they are being asked to accept. Parsing X.509 by hand is the wrong kind
+# of clever.
+x509-cert = { workspace = true }
 # HTTP providers finish building their own reqwest client from the shared config, so the
 # reqwest seam is optional: `provider-imap` (connector only) does not pull reqwest.
 reqwest = { workspace = true, optional = true }
