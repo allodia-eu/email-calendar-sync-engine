@@ -546,6 +546,14 @@ what a client would assume:
   *and* the organizer (a `REPLY` arrives as "Accepted:…"), and the mail suites assert an exact
   INBOX count on Alice — so the whole exchange runs between two scratch accounts
   (`stalwart-harness.md`). This is why `bob`/`carol` exist.
+- **Neither server bounds concurrency; Stalwart bounds rate.** Measured on both harness
+  implementations (`tests/live_concurrency.rs`): at a fixed 25 requests/second, widths of 1, 4,
+  16 and 64 were refused 0% of the time on *both*. At a fixed width of 8, Stalwart begins
+  refusing somewhere between 50/s and 150/s with a proper `429`, and SabreDAV refused nothing
+  at all up to 400/s. So `provider-caldav` does **not** narrow the account
+  `engine_http::RequestGate` — not because nobody looked, which is what `http-throttling.md`
+  used to say, but because two independent implementations were asked and neither has a width
+  to narrow to. A future change to that needs to get past that suite.
 - **That mail is rate-limited, and exceeding the limit looks like nothing at all.** Stalwart's
   default inbound throttle is 25 messages/hour per (sender domain, recipient); past it the
   server abandons the **whole** iTIP delivery — calendar copy included — while still answering

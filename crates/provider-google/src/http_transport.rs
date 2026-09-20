@@ -43,10 +43,19 @@ impl HttpTransport {
         retry: &RetryConfig,
     ) -> Result<Self, GoogleError> {
         let retry = retry.clone().labelled("gmail");
-        // The measured per-user ceiling, stated once for the whole account: the same figure
-        // a page's own fan-out sits under (`fetch::MAX_CONCURRENT_GETS`), now bounding
-        // everything the account does rather than one page at a time
-        // (`engine_http::RequestGate`).
+        // The adapter's own fan-out width, applied account-wide — **not** a server ceiling,
+        // and the distinction matters.
+        //
+        // Gmail has no concurrency ceiling in this range: measured on a rested quota, widths
+        // 5, 20 and 50 all ran 200 requests with **zero** refusals and throughput scaling
+        // linearly. What Gmail enforces is a *rate* (Total Query Cost units per minute per
+        // user), announced as `403 rateLimitExceeded`, and a width bound does not control a
+        // rate (`docs/agent-guidance/http-throttling.md`).
+        //
+        // It is still worth narrowing, for the reason the gate exists rather than for the
+        // reason Graph narrows: an account's mail, calendar and contacts providers would
+        // otherwise each run their own `MAX_CONCURRENT_GETS`-wide fan-out against one user's
+        // quota, and three times the width drains it three times as fast.
         retry.gate().narrow_to(crate::fetch::MAX_CONCURRENT_GETS);
         Ok(Self {
             client: tls.reqwest_builder().build()?,
