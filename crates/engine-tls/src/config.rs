@@ -136,11 +136,18 @@ impl TlsClientConfig {
     }
 
     /// The certificate of the most recent server this config refused, and the name it
-    /// was asked for — `None` while it has refused none.
+    /// was asked for — `None` while it has refused none, and `None` again once a later
+    /// handshake on this config has succeeded.
     ///
-    /// A host builds one config per connect attempt, so this answers for the attempt it
-    /// just awaited: it is what a client shows somebody before offering to accept that
-    /// certificate as a [`CertificateException`].
+    /// **One slot, and one config is shared by every provider of an account** (see this
+    /// type's own note), so what comes back names the server it refused and not
+    /// necessarily the one the caller is asking about. A host whose providers can dial
+    /// concurrently must compare [`RejectedCertificate::server_name`] before it offers
+    /// anybody an exception; a host that builds a config per connect attempt, which is
+    /// the simpler shape and the one `mailcal-account` uses, has nothing to compare.
+    ///
+    /// It is what a client shows somebody before offering to accept that certificate as
+    /// a [`CertificateException`].
     #[must_use]
     pub fn rejected(&self) -> Option<RejectedCertificate> {
         self.rejected.last()

@@ -56,6 +56,13 @@ impl CertificateException {
 
     /// Accepts the certificate with this SHA-256 `fingerprint` when `server_name`
     /// presents it — the form a host rebuilds from its own storage.
+    ///
+    /// `server_name` must be the name the **handshake** asks for, which for an address
+    /// is [`std::net::IpAddr`]'s own rendering: compressed and unbracketed
+    /// (`2001:db8::1`, never `[2001:db8::1]` or an expanded form). An exception whose
+    /// name is spelled otherwise simply never matches, so it fails closed and the
+    /// person is asked again. [`RejectedCertificate::exception`] always produces the
+    /// right spelling, and is the way to avoid the question.
     #[must_use]
     pub fn from_fingerprint(server_name: &str, fingerprint: [u8; 32]) -> Self {
         Self {
@@ -85,10 +92,31 @@ impl CertificateException {
 
 /// What a server this config refused presented, so a host can show a person exactly
 /// what it declined to trust rather than only that something was wrong.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RejectedCertificate {
     server_name: String,
     certificate: CertificateDer<'static>,
+}
+
+impl core::fmt::Debug for RejectedCertificate {
+    /// Terse, and deliberately so: the derived form prints the whole certificate as a
+    /// byte vector beside the server somebody reads their mail from, and this type
+    /// travels inside a connect error a host is likely to log. The fingerprint names it
+    /// without carrying it.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RejectedCertificate")
+            .field("sha256", &hex(&self.fingerprint()))
+            .finish_non_exhaustive()
+    }
+}
+
+/// A fingerprint as lowercase hex, for [`RejectedCertificate`]'s `Debug`.
+fn hex(fingerprint: &[u8; 32]) -> String {
+    use core::fmt::Write as _;
+    fingerprint.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
 }
 
 impl RejectedCertificate {
@@ -138,6 +166,10 @@ impl RejectionSlot {
 
     fn record(&self, rejected: RejectedCertificate) {
         *self.lock() = Some(rejected);
+    }
+
+    fn clear(&self) {
+        *self.lock() = None;
     }
 
     /// A poisoned slot still holds a perfectly good certificate: the panic that poisoned
@@ -190,6 +222,9 @@ impl ServerCertVerifier for ExceptionVerifier {
             ocsp_response,
             now,
         ) else {
+            // Nothing to answer any more: a config that has since reached this server
+            // must not still be holding it out as a question.
+            self.rejected.clear();
             return Ok(ServerCertVerified::assertion());
         };
         let name = normalized(&server_name.to_str());
@@ -198,6 +233,7 @@ impl ServerCertVerifier for ExceptionVerifier {
             .iter()
             .any(|exception| exception.accepts(&name, end_entity))
         {
+            self.rejected.clear();
             return Ok(ServerCertVerified::assertion());
         }
         self.rejected.record(RejectedCertificate {
@@ -227,6 +263,19 @@ impl ServerCertVerifier for ExceptionVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.inner.supported_verify_schemes()
+    }
+
+    /// Forwarded rather than left to the trait's default. This wrapper is on the path of
+    /// **every** config, the plain [`client_config`](crate::client_config) included, so
+    /// a default here would quietly answer for an inner verifier that had said otherwise.
+    /// Neither `WebPkiServerVerifier` nor `rustls-platform-verifier` overrides these
+    /// today; that is a fact about their current versions, not a property to build on.
+    fn requires_raw_public_keys(&self) -> bool {
+        self.inner.requires_raw_public_keys()
+    }
+
+    fn root_hint_subjects(&self) -> Option<&[rustls::DistinguishedName]> {
+        self.inner.root_hint_subjects()
     }
 }
 

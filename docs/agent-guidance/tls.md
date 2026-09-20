@@ -89,6 +89,21 @@ CertificateException { server_name, fingerprint }   // SHA-256 of one certificat
   timezone data and the host knows the reader. The parse can fail and says so — nothing
   has validated those bytes, which is the whole point — and the fingerprint is taken
   over the bytes, so it needs no parse. Nothing else may rest on a summary.
+- ⚠️ **The name to show is `subject_names()`, never the `CN`.** `rustls-webpki` matches a
+  host against `subjectAltName` and has **no `CN` fallback at all**, so a certificate whose
+  `CN` is the server somebody expected and whose SAN is something else fails *because of the
+  SAN* — and a host showing the `CN` would display the expected name as the certificate's
+  claim while asking them to pin it. `subject_common_name()` is kept as a label and its
+  doc says so.
+- **A claim is untrusted text bound for a dialog**, so `CertificateSummary` normalises every
+  string it returns: control and bidi-formatting characters become separators and the value
+  is cut to 128 characters. Without that, a `CN` of `mail.example.com\n\nVerified by a
+  trusted authority` reaches the host as a name to print.
+- **A refusal does not outlive itself.** A later handshake that succeeds on the same config
+  clears the slot, so "is there a certificate question?" cannot stay true forever. One slot
+  is shared by every provider of an account, so a host whose providers dial concurrently
+  compares `server_name` before offering anybody an exception; one config per connect
+  attempt, which is what `mailcal-account` builds, has nothing to compare.
 
 The host decides. This crate offers no policy on when to ask, what to display, or
 where to keep an accepted exception; those are product questions, and an engine that

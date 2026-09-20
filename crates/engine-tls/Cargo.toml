@@ -20,8 +20,8 @@ thiserror = { workspace = true }
 sha2 = { workspace = true }
 # Reads the names and validity window out of a refused certificate, so a host can show
 # somebody what they are being asked to accept. Parsing X.509 by hand is the wrong kind
-# of clever; `std` only, none of the crate's builder/signature halves.
-x509-cert = { version = "0.3", default-features = false, features = ["std"] }
+# of clever.
+x509-cert = { workspace = true }
 # HTTP providers finish building their own reqwest client from the shared config, so the
 # reqwest seam is optional: `provider-imap` (connector only) does not pull reqwest.
 reqwest = { workspace = true, optional = true }
