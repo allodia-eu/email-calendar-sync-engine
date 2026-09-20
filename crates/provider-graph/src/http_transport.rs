@@ -126,8 +126,9 @@ impl HttpTransport {
         if !status.is_success() {
             // The `$value` error body is JSON like any other Graph error, so classify it
             // the same way (an expired/moved message → the caller re-syncs and retries).
+            let wait = resp.stated_wait();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GraphError::status(status.as_u16(), body));
+            return Err(GraphError::status(status.as_u16(), body).with_retry_after(wait));
         }
         Ok(resp.bytes().await?)
     }
@@ -138,8 +139,9 @@ impl HttpTransport {
 async fn write_body(resp: engine_http::Sent) -> Result<Option<Value>, GraphError> {
     let status = resp.status();
     if !status.is_success() {
+        let wait = resp.stated_wait();
         let body = resp.text().await.unwrap_or_default();
-        return Err(GraphError::status(status.as_u16(), body));
+        return Err(GraphError::status(status.as_u16(), body).with_retry_after(wait));
     }
     let text = resp.text().await.unwrap_or_default();
     if text.trim().is_empty() {
@@ -155,8 +157,9 @@ impl GraphTransport for HttpTransport {
         let resp = self.send(url, None).await?;
         let status = resp.status();
         if !status.is_success() {
+            let wait = resp.stated_wait();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GraphError::status(status.as_u16(), body));
+            return Err(GraphError::status(status.as_u16(), body).with_retry_after(wait));
         }
         Ok(serde_json::from_slice(&resp.bytes().await?)?)
     }
@@ -165,8 +168,9 @@ impl GraphTransport for HttpTransport {
         let resp = self.send(url, prefer).await?;
         let status = resp.status();
         if !status.is_success() {
+            let wait = resp.stated_wait();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GraphError::status(status.as_u16(), body));
+            return Err(GraphError::status(status.as_u16(), body).with_retry_after(wait));
         }
         Ok(serde_json::from_slice(&resp.bytes().await?)?)
     }
@@ -223,8 +227,9 @@ impl GraphTransport for HttpTransport {
         if status.is_success() {
             Ok(())
         } else {
+            let wait = resp.stated_wait();
             let body = resp.text().await.unwrap_or_default();
-            Err(GraphError::status(status.as_u16(), body))
+            Err(GraphError::status(status.as_u16(), body).with_retry_after(wait))
         }
     }
 

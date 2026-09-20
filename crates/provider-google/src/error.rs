@@ -43,6 +43,10 @@ pub enum GoogleError {
         reason: Option<String>,
         /// The raw response body.
         body: String,
+        /// When the server said to come back, where it said — read off the reply by
+        /// [`engine_http::Sent::stated_wait`] and carried here so it survives as far as
+        /// [`ProviderError::rate_limited`], which is what the outbox schedules from.
+        retry_after: Option<core::time::Duration>,
     },
 
     /// The Gmail `startHistoryId` has aged out of the history window (a `404` from
@@ -75,6 +79,29 @@ impl GoogleError {
             status,
             reason,
             body,
+            retry_after: None,
+        }
+    }
+
+    /// Records when the server said this would clear.
+    ///
+    /// Set by the transport from [`engine_http::Sent::stated_wait`], which is the only place
+    /// that has the reply. Everywhere else builds a status error from a code and a body it
+    /// has already read, and has nothing to say about timing.
+    #[must_use]
+    pub fn with_retry_after(mut self, wait: Option<core::time::Duration>) -> Self {
+        if let Self::Status { retry_after, .. } = &mut self {
+            *retry_after = wait;
+        }
+        self
+    }
+
+    /// When the server said to come back, if it said.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<core::time::Duration> {
+        match self {
+            Self::Status { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 
@@ -173,7 +200,15 @@ impl From<GoogleError> for ProviderError {
     fn from(err: GoogleError) -> Self {
         let class = err.failure_class();
         let detail = err.to_string();
-        ProviderError::new(class, detail).with_source(err)
+        // A rate limit is the one class that carries *when*. The outbox obeys a provider's
+        // instant outright — past its own 30-minute cap, because a server naming a time is
+        // an instruction — and a host schedules a throttled scope from the same number.
+        let error = if class == FailureClass::RateLimited {
+            ProviderError::rate_limited(detail, err.retry_after().map(Into::into))
+        } else {
+            ProviderError::new(class, detail)
+        };
+        error.with_source(err)
     }
 }
 

@@ -37,6 +37,11 @@ pub enum GraphError {
         code: Option<String>,
         /// The raw response body.
         body: String,
+        /// When the server said to come back — Graph's `Retry-After`, read off the reply
+        /// by [`engine_http::Sent::stated_wait`]. Graph is the one adapter here whose server
+        /// reliably names an instant, and until now the funnel read it for its own backoff
+        /// and nothing above the transport ever saw it.
+        retry_after: Option<core::time::Duration>,
     },
 
     /// A response was not the JSON the protocol requires.
@@ -56,7 +61,30 @@ impl GraphError {
     pub fn status(status: u16, body: impl Into<String>) -> Self {
         let body = body.into();
         let code = error_code(&body);
-        Self::Status { status, code, body }
+        Self::Status {
+            status,
+            code,
+            body,
+            retry_after: None,
+        }
+    }
+
+    /// Records when the server said this would clear, from [`engine_http::Sent::stated_wait`].
+    #[must_use]
+    pub fn with_retry_after(mut self, wait: Option<core::time::Duration>) -> Self {
+        if let Self::Status { retry_after, .. } = &mut self {
+            *retry_after = wait;
+        }
+        self
+    }
+
+    /// When the server said to come back, if it said.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<core::time::Duration> {
+        match self {
+            Self::Status { retry_after, .. } => *retry_after,
+            _ => None,
+        }
     }
 
     /// Builds a [`GraphError::Protocol`].
@@ -115,13 +143,54 @@ impl From<GraphError> for ProviderError {
     fn from(err: GraphError) -> Self {
         let class = err.failure_class();
         let detail = err.to_string();
-        ProviderError::new(class, detail).with_source(err)
+        // A rate limit is the one class that carries *when*: the outbox obeys a provider's
+        // instant outright, past its own derived cap, and a host schedules from it.
+        let error = if class == FailureClass::RateLimited {
+            ProviderError::rate_limited(detail, err.retry_after().map(Into::into))
+        } else {
+            ProviderError::new(class, detail)
+        };
+        error.with_source(err)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Graph is the one server here that reliably names an instant, in a `Retry-After`
+    /// header on its `429` — and until #218's follow-up the send funnel read that header
+    /// for its own backoff and then discarded it, so nothing above the transport ever
+    /// learned it. A window-scale wait is exactly the case: the funnel declines to sleep
+    /// on it, and the number is the only thing that makes the refusal actionable.
+    #[test]
+    fn a_retry_after_graph_sent_reaches_the_neutral_error() {
+        use engine_provider::ProviderError;
+
+        let throttled = GraphError::status(429, r#"{"error":{"code":"ApplicationThrottled"}}"#)
+            .with_retry_after(Some(core::time::Duration::from_mins(5)));
+        let neutral: ProviderError = throttled.into();
+        assert_eq!(neutral.class(), FailureClass::RateLimited);
+        assert_eq!(
+            neutral
+                .retry_after()
+                .map(engine_core::time::Duration::seconds),
+            Some(300),
+        );
+    }
+
+    #[test]
+    fn a_status_that_is_not_a_throttle_carries_no_instant() {
+        use engine_provider::ProviderError;
+
+        // The guard that keeps the number meaningful: it is only ever read beside
+        // `RateLimited`, so it must not ride out on any other class.
+        let gone = GraphError::status(404, r#"{"error":{"code":"ErrorItemNotFound"}}"#)
+            .with_retry_after(Some(core::time::Duration::from_mins(5)));
+        let neutral: ProviderError = gone.into();
+        assert_ne!(neutral.class(), FailureClass::RateLimited);
+        assert_eq!(neutral.retry_after(), None);
+    }
 
     const BAD_REQUEST: &str = include_str!("../tests/fixtures/error/bad_request.json");
     const UNAUTHORIZED: &str = include_str!("../tests/fixtures/error/unauthorized.json");

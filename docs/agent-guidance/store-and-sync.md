@@ -726,11 +726,22 @@ one event never race on either provider.
   that has moved on. Such a row is listed by the queue read so a host can show it and cancel
   it, and refused by both claims as `Unknown`.
 
+- **A throttled *read* does not park at all — it reports when to come back.** A scope
+  refused by a rate limit fails with `FailureClass::RateLimited` and, where the server named
+  an instant, `ApiError::retry_after()`. The engine does not sleep on it: the wait is a
+  scheduling decision, scheduling is the host's (`north-star.md`), and a task asleep inside
+  a sync call holds a lane of the account's `RequestGate` and stalls that account's *other*
+  providers against limits they have not reached. Re-run the same call once the wait has
+  passed; a refused read has done nothing and changed nothing. A short wait never reaches a
+  host — `engine-http` absorbs it (`http-throttling.md`).
 - **A retryable failure parks; it does not settle.** `mark_pending_op` reads the outcome's
   `FailureClass`: one that `is_retryable` puts the op back in `Pending` with `attempts`
   raised and `next_attempt_at` set from `engine_store::retry_delay` (the provider's own
   `retry_after` when it sent one, else 30s doubling to a 30-minute cap), and it becomes
-  claimable again when that time passes. It settles as `Failed` only once `attempts` reaches
+  claimable again when that time passes. **The provider's own number is obeyed past that
+  cap** — a server saying "come back in forty-five minutes" is an instruction, not a hint to
+  average down — and every HTTP adapter now supplies one where its server named one
+  (`http-throttling.md`); before that it was a path nothing ever exercised. It settles as `Failed` only once `attempts` reaches
   `MAX_ATTEMPTS`. Every other class settles at once: a conflict or an auth failure needs
   recomputation or a human, and backing off changes neither. `Failed` therefore means *the
   outbox gave up*, not *one attempt failed*, and a claim refused for a backoff answers

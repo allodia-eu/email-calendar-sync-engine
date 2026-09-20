@@ -232,6 +232,7 @@ mod tests {
             location: None,
             etag: None,
             dav: None,
+            retry_after: None,
         };
         let exec = replay(vec![
             rejected,

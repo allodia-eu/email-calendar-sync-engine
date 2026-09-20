@@ -224,11 +224,14 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   "Total Query Cost" of 6000 units per minute per user, and a `sync_email` snapshot
   fetches every message; a few in quick succession answer `403 rateLimitExceeded`, which
   reads like a permissions problem and is not. The draft live tests take one snapshot per
-  phase and reuse it. The engine now *waits out* that `403` rather than failing the scope
-  (`src/throttle.rs`), so a run that meets it pauses instead of going red — which makes a
-  suite slower and no longer wrong. It does not make the quota free: a suite that spends
-  more than 6,000 units a minute for several minutes still outruns every window it waits
-  for.
+  phase and reuse it. The engine **classifies** that `403` correctly (`src/throttle.rs`) and,
+  where the refusal names its quota window — about a third do, measured — reports the instant
+  it clears through `ProviderError::retry_after`. It does not sleep through it: a quota window
+  is tens of seconds, and parking a task on one holds a lane of the account's gate against a
+  limit that is Gmail's alone (`http-throttling.md`). So a caller that honours the instant
+  recovers; a caller that ignores it sees the scope fail as it always did. The live suites
+  here are callers of the second kind, which is why they still have to be run rested and one
+  at a time — `tests/live_quota_throttle.rs` is the one that plays the host properly.
 - **A `404` from `drafts.delete` is a successful delete**, because the op behind it is
   retryable and the second call names a draft the first one removed. (Graph needs a
   second shape here; Gmail does not: it answers `404` for both cases.)

@@ -105,8 +105,9 @@ impl HttpTransport {
         self.connection.record(&resp);
         let status = resp.status();
         if !status.is_success() {
+            let wait = resp.stated_wait();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GoogleError::status(status.as_u16(), body));
+            return Err(GoogleError::status(status.as_u16(), body).with_retry_after(wait));
         }
         Ok(resp.bytes().await?)
     }
@@ -117,8 +118,9 @@ impl HttpTransport {
 async fn write_body(resp: engine_http::Sent) -> Result<Option<Value>, GoogleError> {
     let status = resp.status();
     if !status.is_success() {
+        let wait = resp.stated_wait();
         let body = resp.text().await.unwrap_or_default();
-        return Err(GoogleError::status(status.as_u16(), body));
+        return Err(GoogleError::status(status.as_u16(), body).with_retry_after(wait));
     }
     let text = resp.text().await.unwrap_or_default();
     if text.trim().is_empty() {
@@ -136,8 +138,9 @@ impl GoogleTransport for HttpTransport {
         self.connection.record(&resp);
         let status = resp.status();
         if !status.is_success() {
+            let wait = resp.stated_wait();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GoogleError::status(status.as_u16(), body));
+            return Err(GoogleError::status(status.as_u16(), body).with_retry_after(wait));
         }
         Ok(serde_json::from_slice(&resp.bytes().await?)?)
     }
@@ -202,8 +205,9 @@ impl GoogleTransport for HttpTransport {
         if status.is_success() {
             Ok(())
         } else {
+            let wait = resp.stated_wait();
             let body = resp.text().await.unwrap_or_default();
-            Err(GoogleError::status(status.as_u16(), body))
+            Err(GoogleError::status(status.as_u16(), body).with_retry_after(wait))
         }
     }
 

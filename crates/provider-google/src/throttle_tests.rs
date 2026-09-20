@@ -15,6 +15,12 @@ use crate::error::GoogleError;
 
 /// The captured quota refusal: `403`, `PERMISSION_DENIED`, `reason: rateLimitExceeded`.
 const QUOTA: &str = include_str!("../tests/fixtures/error/quota_exceeded.json");
+/// The **commoner** captured quota refusal: the same `403`, with the same `ErrorInfo`, and
+/// no `window_start_time` in it. Measured across 14,710 refusals in three rested bursts,
+/// only **32%** carry that field (42%, 23% and 29% by burst) — so this shape is the one a
+/// host meets twice as often, and a reader who saw only `QUOTA` would conclude the instant
+/// is always there.
+const UNTIMED: &str = include_str!("../tests/fixtures/error/quota_exceeded_untimed.json");
 /// The captured concurrency refusal: `429`, `RESOURCE_EXHAUSTED`.
 const CONCURRENCY: &str = include_str!("../tests/fixtures/error/concurrency_exceeded.json");
 /// A real `403`: the account never granted the scope, and no wait will change that.
@@ -149,6 +155,19 @@ fn a_quota_window_that_is_not_per_minute_states_no_wait() {
 }
 
 #[test]
+fn the_commoner_refusal_names_no_window_and_is_a_throttle_regardless() {
+    // Two thirds of real refusals look like this: the `ErrorInfo` is there, the quota is
+    // named, and `window_start_time` simply is not. So the instant is a bonus, never a
+    // guarantee, and the only thing that must always hold is the classification.
+    assert_eq!(quota_window_remaining(UNTIMED, at(SERVED_AT)), None);
+    assert_eq!(
+        classify(403, UNTIMED.as_bytes(), at(SERVED_AT)),
+        Some(Throttle::new()),
+        "a refusal that does not say when is still a refusal",
+    );
+}
+
+#[test]
 fn a_refusal_with_no_details_at_all_is_still_a_throttle() {
     // The older shape, and whatever Google sends next: the `ErrorInfo` is metadata, not a
     // contract, so everything below it is best-effort and its absence changes nothing about
@@ -197,4 +216,58 @@ fn the_short_reasons_are_still_waited_out() {
             "{short}",
         );
     }
+}
+
+#[test]
+fn the_instant_reaches_the_neutral_error_a_host_and_the_outbox_read() {
+    use engine_provider::ProviderError;
+
+    // The whole point of #218's follow-up, end to end through the adapter: the number the
+    // server named has to survive as far as `ProviderError::retry_after`, because that is
+    // what `engine-store`'s `retry_delay` obeys — outright, past its own 30-minute cap —
+    // and what a host schedules a refused scope from. Before this it was computed for a
+    // backoff and then dropped on the floor.
+    let refused = GoogleError::status(403, QUOTA).with_retry_after(Some(Duration::from_secs(11)));
+    assert_eq!(refused.retry_after(), Some(Duration::from_secs(11)));
+
+    let neutral: ProviderError = refused.into();
+    assert_eq!(
+        neutral.class(),
+        engine_core::error::FailureClass::RateLimited
+    );
+    let stated = neutral
+        .retry_after()
+        .expect("the instant survives the conversion");
+    assert_eq!(stated.seconds(), 11);
+    assert_eq!(stated.days(), 0, "an exact span has no nominal day part");
+}
+
+#[test]
+fn a_failure_that_is_not_a_throttle_names_no_instant_however_it_was_built() {
+    use engine_provider::ProviderError;
+
+    // `retry_after` is only ever read alongside `RateLimited`, so a stray instant on
+    // another class would be a number a host might act on for a failure that waiting
+    // cannot fix. A real `403` is the case that matters, since it shares its status with
+    // the quota refusal.
+    let forbidden =
+        GoogleError::status(403, FORBIDDEN).with_retry_after(Some(Duration::from_secs(11)));
+    let neutral: ProviderError = forbidden.into();
+    assert_eq!(neutral.class(), engine_core::error::FailureClass::Permanent);
+    assert_eq!(neutral.retry_after(), None);
+}
+
+#[test]
+fn a_throttle_the_server_timed_no_better_than_a_shrug_carries_nothing() {
+    use engine_provider::ProviderError;
+
+    // The common JMAP-shaped case, and Gmail's too once the `details` block is absent: a
+    // genuine rate limit that named no instant. `None` has to mean "nobody said", not
+    // "zero" — the outbox reads it as "fall back to your own backoff".
+    let neutral: ProviderError = GoogleError::status(429, CONCURRENCY).into();
+    assert_eq!(
+        neutral.class(),
+        engine_core::error::FailureClass::RateLimited
+    );
+    assert_eq!(neutral.retry_after(), None);
 }

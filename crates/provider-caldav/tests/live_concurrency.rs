@@ -242,6 +242,13 @@ async fn measure(target: Target) {
         );
         worst = worst.max(counts.refused_percent());
     }
+    // Leave the server as it was found. Everything above deliberately drains Stalwart's
+    // rate limiter, and the suite that runs next on the same harness then meets a `429`
+    // with half a minute still on it — which the engine no longer sleeps through, because a
+    // wait that long is a scheduling decision now (`http-throttling.md`). A probe that
+    // hammers a shared server owes it a cooldown on the way out, not only between blocks.
+    tokio::time::sleep(COOLDOWN.saturating_mul(2)).await;
+
     eprintln!(
         "  → {}: width does not bound; rate {} (worst refusal share {:.1}%)",
         target.name,

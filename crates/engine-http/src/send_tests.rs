@@ -100,31 +100,112 @@ async fn the_servers_own_retry_after_decides_the_wait() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_retry_after_given_as_a_date_is_honoured_too() {
-    // The scripted server needs a real instant, because the date form is resolved against the
-    // system clock rather than the runtime's — which is the whole reason it is guarded.
-    let when = httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(20));
-    let header: &'static str = Box::leak(format!("Retry-After: {when}\r\n").into_boxed_str());
-    let (url, served) = scripted(vec![
-        Reply("429 Too Many Requests", header, ""),
-        Reply("200 OK", "", ""),
-    ]);
+async fn a_retry_after_too_long_to_absorb_is_handed_back_carrying_its_instant() {
+    // The half of the split that did not exist before: a wait this long is a scheduling
+    // decision, so the funnel reports it instead of sleeping on it — and the instant has to
+    // survive the hand-back, because a `Retry-After` read only for a backoff that never
+    // happens is a number nobody above the transport ever learns.
+    let (url, served) = scripted(vec![Reply(
+        "429 Too Many Requests",
+        "Retry-After: 45\r\n",
+        "",
+    )]);
     let (retry, log) = recording();
     let started = tokio::time::Instant::now();
     let response = send_retrying(client().get(&url), &retry)
         .await
         .expect("sent");
-    assert_eq!(response.status().as_u16(), 200);
-    assert_eq!(served.load(Ordering::SeqCst), 2);
-    let waited = started.elapsed();
-    // The band absorbs a second the header cannot carry: `fmt_http_date` truncates to whole
-    // seconds, so the instant it names is up to a second nearer than the 20s asked for, and
-    // the delay is then measured from a `now` read after the round trip. Both losses are on
-    // the same side, and 18s is still three orders of magnitude from the quarter-second the
-    // backoff schedule would have chosen, which is what this distinguishes.
+    assert_eq!(response.status().as_u16(), 429);
+    assert_eq!(served.load(Ordering::SeqCst), 1, "it did not sleep on it");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(
+        response.stated_wait(),
+        Some(Duration::from_secs(45)),
+        "the caller is told when, so it can come back then",
+    );
+    let events = log.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(events[0].4, "reported as a give-up, not a silent stall");
+    assert_eq!(
+        events[0].3,
+        Some(Duration::from_secs(45)),
+        "and the log is told the same figure the caller was",
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reply_that_names_no_instant_carries_none() {
+    // `stated_wait` says *when*, never *whether*. A throttle the engine gave up on after a
+    // blind backoff has no instant to report, and must not invent one — an adapter reading
+    // `Some(_)` would pass it to the outbox as the server's word.
+    let (url, _) = scripted(vec![Reply("429 Too Many Requests", "", "")]);
+    let (retry, _) = recording();
+    let response = send_retrying(client().get(&url), &retry)
+        .await
+        .expect("sent");
+    assert_eq!(response.status().as_u16(), 429);
+    assert_eq!(response.stated_wait(), None);
+
+    let (ok_url, _) = scripted(vec![Reply("200 OK", "Retry-After: 30\r\n", "")]);
+    let fine = send_retrying(client().get(&ok_url), &retry)
+        .await
+        .expect("sent");
+    assert_eq!(
+        fine.stated_wait(),
+        None,
+        "a success is not a throttle, whatever headers it happens to carry",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_long_stated_wait_gives_the_lane_back_instead_of_parking_on_it() {
+    // The harm that motivated the split. One account's gate is shared by its mail,
+    // calendar and contacts providers, so a task asleep on a mail quota window holds a lane
+    // a calendar request needs — against a quota that is not the calendar's. Handing the
+    // wait back releases the lane immediately.
+    let (url, _served) = scripted(vec![Reply(
+        "429 Too Many Requests",
+        "Retry-After: 45\r\n",
+        "",
+    )]);
+    let gate = crate::RequestGate::new();
+    gate.narrow_to(1);
+    let retry = RetryConfig::default().labelled("test").gated(gate.clone());
+    let throttled = send_retrying(client().get(&url), &retry)
+        .await
+        .expect("sent");
+    assert_eq!(throttled.stated_wait(), Some(Duration::from_secs(45)));
+    let taken = tokio::time::timeout(Duration::from_millis(200), gate.acquire()).await;
     assert!(
-        waited >= Duration::from_secs(18) && waited <= Duration::from_secs(22),
-        "waited {waited:?}, want the ~20s the date named",
+        taken.is_ok(),
+        "the account's only lane is still held by a request that is not sending anything",
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_after_given_as_a_date_is_honoured_too() {
+    // The scripted server needs a real instant, because the date form is resolved against the
+    // system clock rather than the runtime's — which is the whole reason it is guarded.
+    //
+    // Asserted through the instant the funnel *reports* rather than through how long it
+    // slept: a 20-second date is past the absorb bound now, so the number is handed back
+    // exactly instead of being approximated by a wall-clock measurement. That reads the date
+    // path more precisely than the old timing band did, and it cannot flake.
+    let when = httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(20));
+    let header: &'static str = Box::leak(format!("Retry-After: {when}\r\n").into_boxed_str());
+    let (url, served) = scripted(vec![Reply("429 Too Many Requests", header, "")]);
+    let (retry, log) = recording();
+    let response = send_retrying(client().get(&url), &retry)
+        .await
+        .expect("sent");
+    assert_eq!(response.status().as_u16(), 429);
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+    // `fmt_http_date` truncates to whole seconds and the delay is measured from a `now`
+    // read after the round trip, so both losses are on the same side of 20.
+    let stated = response.stated_wait().expect("the date named an instant");
+    assert!(
+        stated >= Duration::from_secs(18) && stated <= Duration::from_secs(20),
+        "reported {stated:?}, want the ~20s the date named",
     );
     assert!(
         log.lock().unwrap()[0].3.is_some(),

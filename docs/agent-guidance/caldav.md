@@ -562,6 +562,15 @@ what a client would assume:
 
 ## Known limitations (documented, not bugs)
 
+- **Stalwart rate-limits its DAV endpoint, and a refusal there now reaches the caller.** It
+  answers `429` with a `Retry-After` — 31 seconds, observed — and since the engine stopped
+  sleeping through a wait that long, a `connect` or a sync that meets one fails with
+  `FailureClass::RateLimited` and the instant attached (`http-throttling.md`). That is the
+  intended contract, not a regression: the caller comes back when the server said. It shows
+  up in this crate's own live suites because `tests/live_concurrency.rs` drains that limiter
+  by design, which is why it now cools down on the way out and why `tests/live_contacts.rs`
+  honours the instant at connect — the smallest version of what a host does.
+
 - **iTIP/iMIP inbound parse + RSVP are implemented; delivery/persistence wiring is
   staged.** `engine_core::scheduling` (keys, `SEQUENCE` ordering, the trust
   decision, `reconcile` → `ScheduleAction`, the `apply_reply`/`cancel` event

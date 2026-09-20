@@ -1,26 +1,36 @@
-//! Gated live proof that Gmail's `403` quota refusal is *waited out* rather than returned.
+//! Gated live proof of what the engine does with Gmail's `403` quota refusal: it names the
+//! instant the window reopens, and coming back then works.
 //!
-//! This is the live half of #218. Nothing offline can
-//! stand in for it: the fakes answer canned bytes whatever they are sent, so a test built on
-//! one proves that the classifier reads a body correctly and says nothing about whether
-//! Gmail still refuses in the shape the fixture was captured in — or whether the funnel's
-//! wait is long enough to outlast a real quota window.
+//! The live half of #218 and its follow-up. Nothing offline can stand in for it: the fakes
+//! answer canned bytes whatever they are sent, so a test built on one proves the classifier
+//! reads a body correctly and says nothing about whether Gmail still refuses in the shape the
+//! fixture was captured in — or whether the instant it names is one you can actually schedule
+//! against.
 //!
-//! # What it does
+//! # The contract under test
 //!
-//! Drains the whole mailbox over and over at the width the adapter really uses. One pass
-//! over this account costs about 720 cost units (142 messages at 5 apiece, plus the listing),
-//! and Gmail allows 6,000 per minute per user, so the ninth pass or so meets the wall. That
-//! is the event under test:
+//! Drains the whole mailbox repeatedly at the width the adapter really uses. One pass over
+//! this account costs about 720 cost units (142 messages at 5 apiece, plus the listing), and
+//! Gmail allows 6,000 per minute per user, so a pass or so in the second minute meets the
+//! wall. Then, in order:
 //!
-//! - the observer must record a **`403`**, which only happens if `GoogleThrottles` recognised the
-//!   body — before #218 the status was read as "not allowed" and nothing was ever reported;
-//! - and the pass that met it must still come back **`Ok`**, which only happens if the funnel
-//!   waited and sent again. Before #218 the `403` reached the caller, the scope's sync failed, and
-//!   the work waited for the next pass.
+//! 1. the pass **fails** rather than parking — a quota window is most of a minute and the engine
+//!    does not sleep a task, or an account's gate lane, through one;
+//! 2. the failure is **`RateLimited`** rather than the permission error a bare `403` reads as —
+//!    which the adapter has got right since it landed, so this step documents rather than guards;
+//! 3. it **names when**, read out of the refusal's `window_start_time`, since Gmail sends no
+//!    `Retry-After` on either of its refusals — **this is the step that goes red**, because the
+//!    instant only exists if the shared funnel recognised the reply as a throttle;
+//! 4. and **honouring that instant works** — the whole point, and the step that would fail if the
+//!    number were a guess dressed up as the server's word.
 //!
-//! To watch it fail, take `.classifying(…)` out of `HttpTransport::new` and run it again: the
-//! log goes empty and the drain returns the rate limit.
+//! Step 4 is the host's job in production. Here the test plays the host, which is the honest
+//! way to test a contract whose other half lives outside the engine.
+//!
+//! Verified by taking `.classifying(…)` out of `HttpTransport::new`: step 3 fails. Note what
+//! step 2 does **not** catch there — the class stays `RateLimited`, because the adapter's own
+//! reading of the body was never the broken part. That is #218's whole point, and it is why
+//! the class alone was never enough to act on.
 //!
 //! ⚠️ **It deliberately exhausts a minute of the account's quota**, so anything else pointed
 //! at the same account for the next minute will meet a `403` that has nothing to do with it.
@@ -36,14 +46,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use engine_core::ids::AccountId;
+use engine_core::{error::FailureClass, ids::AccountId};
 use engine_http::{RetryConfig, ThrottleEvent};
 use engine_provider::Provider;
 use provider_google::{GmailProvider, GoogleClient};
 
-/// Passes over the mailbox before giving up on provoking the limit. Eight should do it; the
-/// headroom is for an account smaller than the one this was written against.
+/// Passes over the mailbox before giving up on provoking the limit.
 const MAX_PASSES: usize = 30;
+
+/// Added to the instant the server named before coming back.
+///
+/// Not impatience insurance — the window's end is computed against *this device's* clock,
+/// and a second of skew either way would otherwise land the retry just inside a window that
+/// has not reopened, which reads exactly like the instant being wrong.
+const MARGIN: Duration = Duration::from_secs(2);
 
 fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
@@ -64,11 +80,11 @@ struct Reported {
 }
 
 #[tokio::test]
-async fn live_a_gmail_quota_refusal_is_waited_out_and_reported() {
+async fn live_a_gmail_quota_refusal_names_when_it_clears_and_coming_back_then_works() {
     let Some(token) = token() else {
         eprintln!(
-            "skipping live_a_gmail_quota_refusal_is_waited_out_and_reported: \
-                   GOOGLE_ACCESS_TOKEN unset"
+            "skipping live_a_gmail_quota_refusal_names_when_it_clears_and_coming_back_then_works: \
+             GOOGLE_ACCESS_TOKEN unset"
         );
         return;
     };
@@ -86,66 +102,71 @@ async fn live_a_gmail_quota_refusal_is_waited_out_and_reported() {
         .expect("client");
     let provider = GmailProvider::new(client);
 
+    // --- 1..3: spend the quota until a refusal names an instant. ---
     let started = Instant::now();
     let mut passes = 0;
-    let mut messages = 0;
-    while log.lock().expect("log").is_empty() && passes < MAX_PASSES {
-        let outcome = provider.sync_email(&account(), None).await;
+    let mut refusals = 0;
+    let (refusal, named) = loop {
+        assert!(
+            passes < MAX_PASSES,
+            "{passes} passes drew {refusals} refusal(s), none naming an instant. Reaching \
+             the quota at all takes a pass or two; if that happened and no refusal ever \
+             carried `window_start_time`, Gmail has stopped sending it and `throttle.rs` \
+             needs re-measuring — about a third of refusals carried it when this was \
+             written, so a dozen without is a finding, not a flake.",
+        );
         passes += 1;
-        let throttled = log.lock().expect("log").clone();
-        match outcome {
-            Ok(sync) => {
-                if let engine_core::sync::SyncUpdate::Snapshot { objects, .. } = &sync.update {
-                    messages = objects.len();
-                }
-            }
-            Err(err) => panic!(
-                "pass {passes} failed after {:?}: {err}\nreported: {throttled:?}\n\
-                 A quota refusal reaching the caller is exactly the bug #218 describes — \
-                 either the classifier did not recognise it, or the wait it asked for was \
-                 declined by the policy's budget.",
-                started.elapsed(),
-            ),
+        let Err(err) = provider.sync_email(&account(), None).await else {
+            continue;
+        };
+        refusals += 1;
+        assert_eq!(
+            err.class(),
+            FailureClass::RateLimited,
+            "a `403` is Google's ordinary not-allowed status, and only the body separates \
+             the two. This has held since the adapter landed; if it breaks, `error.rs` has \
+             drifted from what Gmail sends, not the funnel",
+        );
+        if let Some(named) = err.retry_after() {
+            break (err, named);
         }
-    }
+        println!("  refusal {refusals} named no window (two thirds do not); asking again");
+    };
+    println!(
+        "refused on pass {passes} ({refusals} refusal(s)) after {:?}: {refusal}",
+        started.elapsed(),
+    );
+
+    let wait = Duration::new(named.seconds(), named.nanoseconds());
+    println!("the server named {wait:?}");
+    assert!(
+        wait <= Duration::from_mins(1),
+        "a per-minute window cannot reopen more than a minute out: {wait:?}",
+    );
 
     let reported = log.lock().expect("log").clone();
-    println!(
-        "{passes} pass(es) of {messages} message(s) in {:?}; {} throttle(s) reported",
-        started.elapsed(),
-        reported.len(),
-    );
-    for event in &reported {
-        println!("  {event:?}");
-    }
-
-    assert!(
-        !reported.is_empty(),
-        "{passes} passes over {messages} messages did not reach Gmail's 6,000 units per \
-         minute. Either the account is far smaller than the one this was written against, \
-         or the quota was raised — check by hand before trusting a green run here, because \
-         a limit that is never reached cannot prove anything was waited out.",
-    );
     let quota: Vec<_> = reported.iter().filter(|e| e.status == 403).collect();
     assert!(
-        !quota.is_empty(),
-        "throttles were reported but none was a 403: {reported:?}. That is the *concurrency* \
-         limit (Gmail's 429), which the status rule has always handled; this suite exists for \
-         the quota refusal, which only a classifier can see.",
+        quota.iter().any(|e| e.gave_up),
+        "the host was not told about the pause it is now expected to schedule: {reported:?}",
     );
     assert!(
-        quota.iter().any(|e| !e.gave_up),
-        "every quota refusal was given up on rather than waited out: {quota:?}",
+        quota.iter().any(|e| e.stated == Some(wait)),
+        "the refusal named {wait:?} to the caller but the host's log was not told the \
+         same figure — the two copies of the instant have drifted",
     );
+
+    // --- 4: play the host, and come back when it said. ---
+    tokio::time::sleep(wait + MARGIN).await;
+    let recovered = provider.sync_email(&account(), None).await;
     assert!(
-        started.elapsed() < Duration::from_mins(5),
-        "the run outlasted any plausible quota window, which means it was waiting on \
-         something else",
+        recovered.is_ok(),
+        "the window had not reopened when the server said it would, so the instant is not \
+         one a host can schedule against: {:?}",
+        recovered.err(),
     );
-    assert!(
-        quota.iter().any(|e| e.stated.is_some()),
-        "no quota refusal named its own window. Gmail states `window_start_time` in the \
-         refusal's `details`; if that has stopped arriving, the wait is now a blind backoff \
-         against a minute-long window and `throttle.rs` needs re-measuring.",
+    println!(
+        "recovered after honouring the instant; {:?} total",
+        started.elapsed()
     );
 }

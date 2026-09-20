@@ -120,16 +120,16 @@ async fn a_classifier_can_add_a_throttle_and_never_take_one_away() {
 #[tokio::test(start_paused = true)]
 async fn a_wait_the_adapter_read_out_of_the_body_is_treated_as_the_servers_own() {
     // Gmail names no `Retry-After`, but its refusal carries the quota window's start, so
-    // the wait to the window's end is a number the server named. It must be honoured like
-    // a header would be — never undercut — and reported as the server's, since a host
-    // logging "waited 11s because the server asked" is saying something true.
+    // the wait to the window's end is a number the server stated. It is then treated
+    // exactly as a header would be — including by the bound on what gets absorbed. A
+    // window with three seconds left is a hiccup, and the funnel sleeps on it.
     let (url, served) = scripted(vec![
         Reply("403 Forbidden", "", QUOTA),
         Reply("200 OK", "", ""),
     ]);
     let (retry, log) = recording();
     let retry = retry.classifying(Arc::new((READS, |_status: u16, _body: &[u8]| {
-        Some(crate::Throttle::after(Duration::from_secs(11)))
+        Some(crate::Throttle::after(Duration::from_secs(3)))
     })));
     let started = tokio::time::Instant::now();
     send_retrying(client().get(&url), &retry)
@@ -137,12 +137,43 @@ async fn a_wait_the_adapter_read_out_of_the_body_is_treated_as_the_servers_own()
         .expect("sent");
     assert_eq!(served.load(Ordering::SeqCst), 2);
     assert!(
-        started.elapsed() >= Duration::from_secs(11),
+        started.elapsed() >= Duration::from_secs(3),
         "backoff would have guessed 250ms, inside a window that had not reset",
     );
     let (_, _, delay, named, _) = log.lock().unwrap()[0];
-    assert!(named.is_some(), "reported as the server's own number");
-    assert!(delay >= Duration::from_secs(11));
+    assert_eq!(
+        named,
+        Some(Duration::from_secs(3)),
+        "the host is told the figure, not merely that there was one",
+    );
+    assert!(delay >= Duration::from_secs(3));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_quota_window_that_has_just_begun_is_reported_rather_than_slept_on() {
+    // The other end of the same number, and the case that matters most in practice: trip
+    // the quota early in its window and the reset is most of a minute away. Sleeping there
+    // parks the task and holds the account's gate lane against a quota that is one
+    // provider's, so the instant goes back to the caller to schedule.
+    let (url, served) = scripted(vec![Reply("403 Forbidden", "", QUOTA)]);
+    let (retry, log) = recording();
+    let retry = retry.classifying(Arc::new((READS, |_status: u16, _body: &[u8]| {
+        Some(crate::Throttle::after(Duration::from_secs(50)))
+    })));
+    let started = tokio::time::Instant::now();
+    let response = send_retrying(client().get(&url), &retry)
+        .await
+        .expect("sent");
+    assert_eq!(response.status().as_u16(), 403);
+    assert_eq!(served.load(Ordering::SeqCst), 1, "it did not sleep on it");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(
+        response.stated_wait(),
+        Some(Duration::from_secs(50)),
+        "a wait read out of a body reaches the caller exactly as a header's would",
+    );
+    assert!(log.lock().unwrap()[0].4, "reported as a give-up");
+    assert_eq!(response.text().await.expect("body"), QUOTA);
 }
 
 #[tokio::test(start_paused = true)]

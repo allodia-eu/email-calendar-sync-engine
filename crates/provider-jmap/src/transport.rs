@@ -208,8 +208,12 @@ pub(crate) async fn error_for_status(
     if status.is_success() {
         Ok(resp)
     } else {
+        // Read before the body consumes the reply. Usually `None` here — JMAP's own
+        // refusals name a limit and not an instant — but a server may still send a
+        // `Retry-After`, and this is the last place it exists.
+        let wait = resp.stated_wait();
         let body = resp.text().await.unwrap_or_default();
-        Err(JmapError::status(status.as_u16(), body))
+        Err(JmapError::status(status.as_u16(), body).with_retry_after(wait))
     }
 }
 

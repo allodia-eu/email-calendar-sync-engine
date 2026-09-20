@@ -102,6 +102,7 @@ async fn discovery_accepts_direct_home_and_fails_closed_on_missing_or_redirected
             location: Some(format!("/redirect-{index}")),
             etag: None,
             dav: None,
+            retry_after: None,
         })
         .collect();
     assert!(
@@ -157,6 +158,7 @@ async fn a_relative_redirect_after_an_origin_change_stays_on_the_new_origin() {
         location: Some(location.to_owned()),
         etag: None,
         dav: None,
+        retry_after: None,
     };
     let exec = Replay::new(vec![
         moved("https://dav.example.net/principals/u/"),

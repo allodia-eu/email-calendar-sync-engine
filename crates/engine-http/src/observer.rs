@@ -40,6 +40,10 @@ pub struct ThrottleEvent<'a> {
     /// number away. A log line that can say *how long* the server asked for is the difference
     /// between "still limiting us, the rest waits for the next sync" and knowing when the
     /// next sync will get anywhere.
+    ///
+    /// The same figure reaches the *caller* as
+    /// [`Sent::stated_wait`](crate::Sent::stated_wait), which is what a scope schedules its
+    /// next attempt from; this is the copy that goes in the log.
     pub stated: Option<Duration>,
     /// Set on the last event of a request that stayed throttled — the attempts or the total
     /// wait ran out and the `429` is being returned to the caller. Exactly one event per

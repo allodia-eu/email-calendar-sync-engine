@@ -20,21 +20,31 @@
 //! at `403`, decided it was nothing to do with throttling, and returned. That is
 //! #218; this is the adapter's half of the answer.
 //!
-//! # The window Gmail names but does not put in a header
+//! # The window Gmail sometimes names, and never puts in a header
 //!
 //! Neither refusal carries a `Retry-After` — measured, both captures, every header. The
-//! `403` does something better: its `google.rpc.ErrorInfo` names
+//! `403` sometimes does something better: its `google.rpc.ErrorInfo` names
 //! `quota_limit: totalQueryCostPerMinutePerUser`, `quota_unit: 1/min/{project}/{user}` and a
-//! `window_start_time`. The captured refusal was served 49 seconds after its window began,
+//! `window_start_time`. One captured refusal was served 49 seconds after its window began,
 //! so the quota had 11 seconds left to run — a number the *server* stated, and one no
-//! backoff schedule could have found. Without it the engine's schedule spends all five
-//! attempts inside the first eight seconds of a minute-long window and gives up having
-//! learned nothing.
+//! backoff schedule could have found.
 //!
-//! It is read defensively, because it is response *metadata* and not a documented contract:
-//! anything missing, unparseable, not per-minute, already past, or further away than the
-//! window is long falls back to the backoff schedule. Every one of those failures lands on
-//! the behaviour that existed before this file.
+//! **Sometimes is the operative word, and it is worth knowing the number: about a third.**
+//! Across 14,710 refusals in three rested bursts, 4,648 carried `window_start_time` and
+//! 10,062 did not — 42%, 23% and 29% burst by burst, from the same account minutes apart,
+//! with every other metadata key identical. Both shapes are captured
+//! (`quota_exceeded.json` and `quota_exceeded_untimed.json`) precisely so the next reader
+//! does not infer from one fixture that the field is always there. It was very nearly
+//! written up here as though it were.
+//!
+//! So the instant is a **bonus, not a mechanism**: two refusals in three are waited out on
+//! the engine's own schedule or handed back with nothing but the classification, which is
+//! what `ProviderError::retry_after` returning `None` means everywhere else too.
+//!
+//! What is read is read defensively, because it is response *metadata* and not a documented
+//! contract: anything missing, unparseable, not per-minute, already past, or further away
+//! than the window is long falls back to the backoff schedule. Every one of those failures
+//! lands on the behaviour that existed before this file.
 
 use core::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
