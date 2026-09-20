@@ -130,6 +130,8 @@ pub(crate) fn kind_to_text(kind: PendingOpKind) -> &'static str {
         PendingOpKind::MailSubmit => "MailSubmit",
         PendingOpKind::MailEdit => "MailEdit",
         PendingOpKind::MailReport => "MailReport",
+        PendingOpKind::MailDraftPut => "MailDraftPut",
+        PendingOpKind::MailDraftDelete => "MailDraftDelete",
         PendingOpKind::CalendarCreate => "CalendarCreate",
         PendingOpKind::CalendarPatch => "CalendarPatch",
         PendingOpKind::CalendarDocument => "CalendarDocument",
@@ -155,6 +157,8 @@ pub(crate) fn parse_kind(text: Option<&str>) -> Result<Option<PendingOpKind>> {
         "MailSubmit" => PendingOpKind::MailSubmit,
         "MailEdit" => PendingOpKind::MailEdit,
         "MailReport" => PendingOpKind::MailReport,
+        "MailDraftPut" => PendingOpKind::MailDraftPut,
+        "MailDraftDelete" => PendingOpKind::MailDraftDelete,
         "CalendarCreate" => PendingOpKind::CalendarCreate,
         "CalendarPatch" => PendingOpKind::CalendarPatch,
         "CalendarDocument" => PendingOpKind::CalendarDocument,
@@ -330,5 +334,28 @@ mod tests {
         );
         let id = PendingOpId::new(9);
         assert_eq!(op_id_from_i64(op_id_to_i64(id).unwrap()).unwrap(), id);
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use engine_core::write::PendingOpKind;
+
+    use super::{kind_to_text, parse_kind};
+
+    #[test]
+    fn every_kind_reads_back_as_itself() {
+        // The two halves are written separately: `kind_to_text` is an exhaustive match, so
+        // the compiler demands a new variant there, while `parse_kind` matches strings and
+        // has a catch-all. A kind added to one and not the other would store correctly and
+        // fail to load, which no compiler catches and this does.
+        for kind in PendingOpKind::ALL {
+            let text = kind_to_text(kind);
+            assert_eq!(
+                parse_kind(Some(text)).unwrap(),
+                Some(kind),
+                "{kind:?} does not survive the column"
+            );
+        }
     }
 }

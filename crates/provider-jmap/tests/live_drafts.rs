@@ -15,8 +15,11 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
+use engine_store::{ManualClock, PendingOpState, StoreRead, WorkerId};
+use engine_sync::put_draft_mail;
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::Harness;
+use store_sqlite::SqliteStore;
 
 fn account() -> AccountId {
     AccountId::try_from("live-drafts").unwrap()
@@ -257,6 +260,57 @@ async fn live_jmap_a_resaved_attachment_is_not_sent_again() {
 
     provider
         .delete_draft(&account(), &second)
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+async fn live_jmap_a_draft_saved_through_the_outbox_settles_and_is_on_the_server() {
+    let Some(harness) = Harness::from_env() else {
+        eprintln!("skipping live_jmap_outbox_draft: STALWART_HTTP_ADDR unset");
+        return;
+    };
+    let provider = connect(&harness).await;
+    let store =
+        SqliteStore::open_in_memory(ManualClock::new("2026-06-08T00:00:00Z".parse().unwrap()))
+            .expect("store");
+
+    let message_id = &format!(
+        "live-jmap-outbox-draft-{}@test.local",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_nanos()
+    );
+
+    // The whole path a host takes, against a real server and a real store: durable op,
+    // claim, provider call, settle. The offline half is driven by the fake, which is the
+    // right tool for simulating an outage; what only a server can answer is that the op
+    // settles against the key the provider actually minted.
+    let saved = put_draft_mail(
+        &provider,
+        &store,
+        &account(),
+        WorkerId::new("live-outbox"),
+        core::time::Duration::from_secs(30),
+        &draft(message_id, "Through the outbox", &harness.account),
+        None,
+    )
+    .await
+    .expect("save through the outbox");
+
+    assert_eq!(
+        store.pending_op_state(saved.op).await.unwrap(),
+        Some(PendingOpState::Succeeded),
+        "the op did not settle"
+    );
+    assert_eq!(
+        drafts_carrying(&provider, message_id).await,
+        vec!["Through the outbox".to_owned()]
+    );
+
+    provider
+        .delete_draft(&account(), &saved.key)
         .await
         .expect("cleanup");
 }

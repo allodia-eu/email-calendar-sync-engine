@@ -10,8 +10,8 @@ use engine_core::{
 use engine_provider::{Draft, MailEdit, MessageReport, Provider};
 use engine_store::{OpRejection, PendingOpRow, PendingOpState, Store, StoreRead};
 use engine_sync::{
-    DrainReport, MailEditOutcome, ReportOutcome, SubmitOutcome, SyncError, drain_outbox, edit_mail,
-    report_message, submit_mail,
+    DrainReport, MailEditOutcome, PutDraftOutcome, ReportOutcome, SubmitOutcome, SyncError,
+    delete_draft_mail, drain_outbox, edit_mail, put_draft_mail, report_message, submit_mail,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -37,6 +37,62 @@ impl Engine {
         draft: &Draft,
     ) -> Result<SubmitOutcome, ApiError> {
         submit_mail(provider, &self.store, account, worker(), LEASE_TTL, draft)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Stores `draft` on the server through the outbox, superseding `replacing`.
+    ///
+    /// **Keep the key that comes back and pass it as `replacing` next time.** It is not
+    /// necessarily the one that went in: three of the four adapters write a new message
+    /// and remove the old, so the key moves, while Gmail's draft object survives
+    /// (`providers.md`). A caller that assumes otherwise stores a second copy beside the
+    /// first on the next save.
+    ///
+    /// A save with no network is **kept**, not lost: the durable op parks and a later
+    /// [`drain_outbox`](Self::drain_outbox) attempts it. Saving again before that happens
+    /// replaces what was queued, so an edited draft costs the server one write rather
+    /// than one per save.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError`] if the save failed; the op is recorded either way.
+    pub async fn put_draft<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        draft: &Draft,
+        replacing: Option<&ProviderKey>,
+    ) -> Result<PutDraftOutcome, ApiError> {
+        put_draft_mail(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            draft,
+            replacing,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
+
+    /// Removes the stored draft `key` through the outbox: the user discarded it, or it
+    /// has been sent and the copy in Drafts would otherwise linger.
+    ///
+    /// A draft that is already gone settles as done rather than failing, so a removal
+    /// that is retried after a lost response does not park forever.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError`] if the removal failed; the op is recorded either way.
+    pub async fn delete_draft<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        key: &ProviderKey,
+    ) -> Result<PendingOpId, ApiError> {
+        delete_draft_mail(provider, &self.store, account, worker(), LEASE_TTL, key)
             .await
             .map_err(map_sync_error)
     }

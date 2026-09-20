@@ -243,17 +243,40 @@ async fn an_unreadable_payload_settles_without_blocking_the_queue() {
     assert_eq!(report.delivered(), 1);
     assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
 }
+/// Whether a pass dispatches `kind` as a mail write, which is what decides whether an
+/// unreadable payload of it has to settle rather than be left alone.
+///
+/// **Exhaustive on purpose.** A hand-written list of kinds goes stale in silence: a kind
+/// added later is simply never asserted on, and the test still passes. This match refuses
+/// to compile until the new kind is placed on one side or the other.
+const fn is_a_mail_write(kind: PendingOpKind) -> bool {
+    match kind {
+        PendingOpKind::MailSubmit
+        | PendingOpKind::MailEdit
+        | PendingOpKind::MailReport
+        | PendingOpKind::MailDraftPut
+        | PendingOpKind::MailDraftDelete => true,
+        PendingOpKind::CalendarCreate
+        | PendingOpKind::CalendarPatch
+        | PendingOpKind::CalendarDocument
+        | PendingOpKind::CalendarRsvp
+        | PendingOpKind::CalendarDelete
+        | PendingOpKind::ContactCreate
+        | PendingOpKind::ContactPatch
+        | PendingOpKind::ContactDelete => false,
+    }
+}
+
 /// The unreadable-payload rule holds for every mail write, not just a send: each kind
 /// settles its own op and the pass carries on.
 #[tokio::test]
 async fn an_unreadable_payload_of_any_mail_kind_settles() {
     let provider = FakeMail::new(vec![], vec![]);
     let (store, _clock) = store_and_clock();
-    let kinds = [
-        PendingOpKind::MailSubmit,
-        PendingOpKind::MailEdit,
-        PendingOpKind::MailReport,
-    ];
+    let kinds: Vec<PendingOpKind> = PendingOpKind::ALL
+        .into_iter()
+        .filter(|k| is_a_mail_write(*k))
+        .collect();
     for (i, kind) in kinds.iter().enumerate() {
         store
             .enqueue_pending_op(

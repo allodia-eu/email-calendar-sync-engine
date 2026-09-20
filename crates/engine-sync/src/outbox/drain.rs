@@ -22,7 +22,7 @@ use core::time::Duration;
 
 use engine_core::{
     error::FailureClass,
-    ids::AccountId,
+    ids::{AccountId, ProviderKey},
     write::{PendingOpId, PendingOpKind, PendingOutcome},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider, SentCopy};
@@ -31,7 +31,7 @@ use engine_store::{
     WorkerId,
 };
 
-use super::record_failure;
+use super::{drafts::DraftPut, record_failure};
 use crate::SyncError;
 
 /// What one drain pass did, one entry per op it attempted.
@@ -79,6 +79,15 @@ pub struct DrainedOp {
     pub kind: PendingOpKind,
     /// What the provider call did.
     pub outcome: DrainOutcome,
+    /// The key the provider resolved the write to, when it succeeded and there is one.
+    ///
+    /// **This is the only place a caller learns what a queued write became.** An op that
+    /// parked while offline succeeds with nobody watching, and the account then holds an
+    /// object the caller has never seen a key for. A draft is what makes it matter: the
+    /// next save has to name the copy it supersedes, or it stores a second one beside it,
+    /// and on three of the four adapters the key is not the one that went in
+    /// (`providers.md`).
+    pub provider_key: Option<ProviderKey>,
 }
 
 /// The outcome of one drained op.
@@ -169,11 +178,12 @@ where
             report.deferred += 1;
             continue;
         };
-        let outcome = run_one(provider, store, account, &leased, op).await?;
+        let ran = run_one(provider, store, account, &leased, op).await?;
         report.attempted.push(DrainedOp {
             id: row.id,
             kind: op.kind(),
-            outcome,
+            outcome: ran.outcome,
+            provider_key: ran.key,
         });
     }
     Ok(report)
@@ -191,6 +201,8 @@ enum MailOp {
     Submit,
     Edit,
     Report,
+    DraftPut,
+    DraftDelete,
 }
 
 impl MailOp {
@@ -200,6 +212,8 @@ impl MailOp {
             Self::Submit => PendingOpKind::MailSubmit,
             Self::Edit => PendingOpKind::MailEdit,
             Self::Report => PendingOpKind::MailReport,
+            Self::DraftPut => PendingOpKind::MailDraftPut,
+            Self::DraftDelete => PendingOpKind::MailDraftDelete,
         }
     }
 }
@@ -218,6 +232,8 @@ fn dispatchable(row: &PendingOpRow) -> Option<MailOp> {
         PendingOpKind::MailSubmit => Some(MailOp::Submit),
         PendingOpKind::MailEdit => Some(MailOp::Edit),
         PendingOpKind::MailReport => Some(MailOp::Report),
+        PendingOpKind::MailDraftPut => Some(MailOp::DraftPut),
+        PendingOpKind::MailDraftDelete => Some(MailOp::DraftDelete),
         PendingOpKind::CalendarCreate
         | PendingOpKind::CalendarPatch
         | PendingOpKind::CalendarDocument
@@ -229,6 +245,27 @@ fn dispatchable(row: &PendingOpRow) -> Option<MailOp> {
     }
 }
 
+/// What running one op produced: its outcome, and the key it resolved to if any.
+struct Ran {
+    outcome: DrainOutcome,
+    key: Option<ProviderKey>,
+}
+
+impl Ran {
+    /// An outcome that names nothing: a failure, a park, or a write with no key to keep.
+    const fn bare(outcome: DrainOutcome) -> Self {
+        Self { outcome, key: None }
+    }
+
+    /// A success that resolved to `key`.
+    const fn keyed(outcome: DrainOutcome, key: ProviderKey) -> Self {
+        Self {
+            outcome,
+            key: Some(key),
+        }
+    }
+}
+
 /// Runs one claimed op and records its outcome under the lease it was claimed with.
 async fn run_one<P, S>(
     provider: &P,
@@ -236,7 +273,7 @@ async fn run_one<P, S>(
     account: &AccountId,
     leased: &LeasedPendingOp,
     op: MailOp,
-) -> Result<DrainOutcome, SyncError>
+) -> Result<Ran, SyncError>
 where
     P: Provider,
     S: Store + StoreRead,
@@ -244,10 +281,11 @@ where
     match op {
         MailOp::Submit => {
             let Some(draft) = decode::<Draft>(store, leased).await? else {
-                return Ok(undecodable("draft"));
+                return Ok(Ran::bare(undecodable("draft")));
             };
             match provider.submit_email(account, &draft).await {
                 Ok(receipt) => {
+                    let sent_key = receipt.email_key.clone();
                     store
                         .mark_pending_op(
                             &leased.lease,
@@ -256,10 +294,13 @@ where
                             },
                         )
                         .await?;
-                    Ok(match receipt.sent_copy {
-                        SentCopy::Filed => DrainOutcome::Succeeded,
-                        SentCopy::Unfiled { detail } => DrainOutcome::SentNotFiled { detail },
-                    })
+                    Ok(Ran::keyed(
+                        match receipt.sent_copy {
+                            SentCopy::Filed => DrainOutcome::Succeeded,
+                            SentCopy::Unfiled { detail } => DrainOutcome::SentNotFiled { detail },
+                        },
+                        sent_key,
+                    ))
                 }
                 Err(err) => {
                     // An ambiguous send is parked, never recorded as a retryable failure:
@@ -274,18 +315,64 @@ where
                                 },
                             )
                             .await?;
-                        return Ok(DrainOutcome::AwaitingConfirmation { detail });
+                        return Ok(Ran::bare(DrainOutcome::AwaitingConfirmation { detail }));
                     }
-                    settle(store, leased, &err).await
+                    settle(store, leased, &err).await.map(Ran::bare)
                 }
+            }
+        }
+        MailOp::DraftPut => {
+            let Some(request) = decode::<DraftPut>(store, leased).await? else {
+                return Ok(Ran::bare(undecodable("draft put")));
+            };
+            match provider
+                .put_draft(account, &request.draft, request.replacing.as_ref())
+                .await
+            {
+                Ok(key) => {
+                    store
+                        .mark_pending_op(
+                            &leased.lease,
+                            PendingOutcome::Succeeded {
+                                provider_key: key.clone(),
+                            },
+                        )
+                        .await?;
+                    // The key travels back in the report, because it is not necessarily
+                    // the one that went in: a caller that queued this save while offline
+                    // has to learn what the draft is stored under before it saves again,
+                    // or it stores a second copy beside the first.
+                    Ok(Ran::keyed(DrainOutcome::Succeeded, key))
+                }
+                Err(err) => settle(store, leased, &err).await.map(Ran::bare),
+            }
+        }
+        MailOp::DraftDelete => {
+            let Some(key) = decode::<ProviderKey>(store, leased).await? else {
+                return Ok(Ran::bare(undecodable("draft delete")));
+            };
+            match provider.delete_draft(account, &key).await {
+                Ok(()) => {
+                    store
+                        .mark_pending_op(
+                            &leased.lease,
+                            PendingOutcome::Succeeded {
+                                provider_key: key.clone(),
+                            },
+                        )
+                        .await?;
+                    Ok(Ran::keyed(DrainOutcome::Succeeded, key))
+                }
+                Err(err) => settle(store, leased, &err).await.map(Ran::bare),
             }
         }
         MailOp::Edit => {
             let Some(edit) = decode::<MailEdit>(store, leased).await? else {
-                return Ok(undecodable("mail edit"));
+                return Ok(Ran::bare(undecodable("mail edit")));
             };
             match provider.edit_mail(account, &edit).await {
                 Ok(receipt) => {
+                    let edited = receipt.message_key.clone();
                     store
                         .mark_pending_op(
                             &leased.lease,
@@ -294,17 +381,18 @@ where
                             },
                         )
                         .await?;
-                    Ok(DrainOutcome::Succeeded)
+                    Ok(Ran::keyed(DrainOutcome::Succeeded, edited))
                 }
-                Err(err) => settle(store, leased, &err).await,
+                Err(err) => settle(store, leased, &err).await.map(Ran::bare),
             }
         }
         MailOp::Report => {
             let Some(report) = decode::<MessageReport>(store, leased).await? else {
-                return Ok(undecodable("message report"));
+                return Ok(Ran::bare(undecodable("message report")));
             };
             match provider.report_message(account, &report).await {
                 Ok(receipt) => {
+                    let reported = receipt.message_key.clone();
                     store
                         .mark_pending_op(
                             &leased.lease,
@@ -313,9 +401,9 @@ where
                             },
                         )
                         .await?;
-                    Ok(DrainOutcome::Succeeded)
+                    Ok(Ran::keyed(DrainOutcome::Succeeded, reported))
                 }
-                Err(err) => settle(store, leased, &err).await,
+                Err(err) => settle(store, leased, &err).await.map(Ran::bare),
             }
         }
     }

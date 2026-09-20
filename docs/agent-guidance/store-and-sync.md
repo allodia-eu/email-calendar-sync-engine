@@ -744,7 +744,8 @@ one event never race on either provider.
   account's queue, keeps the ops it dispatches, and takes each under a **targeted** claim,
   because the batch claim would lease kinds it cannot run and hold them for a whole lease:
   the failure #202 removed from the inline path. It dispatches mail only so far
-  (`MailSubmit`, `MailEdit`, `MailReport`), whose provider calls are complete in the
+  (`MailSubmit`, `MailEdit`, `MailReport`, `MailDraftPut`, `MailDraftDelete`), whose
+  provider calls are complete in the
   payload; a calendar patch or delete takes the `base` event *beside* the request, so
   draining one means re-reading it and re-applying the stored intent, which is the conflict
   recovery and is its own work. Everything else stays queued and untouched, counted as
@@ -753,6 +754,29 @@ one event never race on either provider.
   **The host decides when a pass runs** (on reconnect, after a sync, when a user asks). The
   engine holds no timer: the reachability signal is the host's, and polling from here would
   wake a dead network on a battery.
+- ⚠️ **`DrainedOp::provider_key` is the only place a caller learns what a queued write
+  became.** An op that parked while offline succeeds with nobody watching, and a settled op
+  is not in the queue read (`list_pending_ops` returns what is still outstanding), so the
+  report is the one channel. A **draft** is what makes this load-bearing: the next save has
+  to name the copy it supersedes, and on three of the four adapters the key it resolved to
+  is not the one that went in (`providers.md`). A host that drops the report stores a
+  second draft beside the first.
+
+- **A queued draft save supersedes the one before it.** A draft is saved *repeatedly*, so
+  five saves with no network must not become five rounds of store-and-remove against a
+  folder the user is watching. `put_draft_mail` withdraws an unsettled save already queued
+  for the same draft before enqueuing, which needs no new primitive: `cancel_pending_op` is
+  the same one a host uses. Two ops it leaves alone, each for a reason:
+  - **One a worker holds**, because its provider call may be in flight and withdrawing it
+    would claim to have stopped something that has gone. The resource key serialises the
+    new save behind it anyway.
+  - **The one this save would itself reuse.** The op is named by a hash of what it would
+    store, so saving identical text twice is the *same* op by design; withdrawing it would
+    cancel the row the enqueue then dedups onto, leaving the save with nothing to claim.
+    (Found by a test, which is the only reason it is not a bug.)
+- **A draft's writes serialise on the resource its submission uses** (`draft:<Message-ID>`),
+  so saving and sending one composition cannot run at once: whichever is claimed first holds
+  the resource and the other waits.
 
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the

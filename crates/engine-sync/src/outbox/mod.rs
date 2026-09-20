@@ -19,6 +19,7 @@
 
 mod calendar;
 mod contact;
+mod drafts;
 mod drain;
 mod mail;
 
@@ -29,6 +30,7 @@ pub use calendar::{
     put_calendar_document, rsvp_calendar_event,
 };
 pub use contact::{ContactWriteOutcome, create_contact, delete_contact, patch_contact};
+pub use drafts::{DraftPut, PutDraftOutcome, delete_draft_mail, put_draft_mail};
 pub use drain::{DrainOutcome, DrainReport, DrainedOp, drain_outbox};
 use engine_core::{
     ids::AccountId,
