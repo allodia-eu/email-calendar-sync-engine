@@ -51,6 +51,42 @@ store "just works" while public CAs always resolve.
 > sovereignty-strict tenant can stay on pure `bundled()`, or `pinned(roots)` to
 > trust *only* an explicit CA.
 
+## Certificate exceptions
+
+Some servers cannot be reached by *any* trust policy. A **self-signed CA certificate
+served as its own end-entity certificate** — what Proton Mail Bridge's local IMAP/SMTP
+listener does, and several self-hosted servers besides — fails with
+`CaUsedAsEndEntity`, and **adding it to `custom` does not help**: the webpki verifier
+reads the leaf's own basic constraints before it consults a trust anchor, so the
+certificate is refused for being a CA regardless of whether it is also trusted.
+
+`client_config_with_exceptions(&policy, &exceptions)` is the only mechanism that
+reaches such a server, and it is Thunderbird's model rather than a policy relaxation:
+
+```
+CertificateException { server_name, fingerprint }   // SHA-256 of one certificate's DER
+```
+
+- **Verification is never relaxed.** The policy's own verifier runs first and
+  unchanged; an exception is consulted only once it has *already* refused. A server
+  that verifies normally cannot be affected by one.
+- **One server, one certificate.** An exception admits a certificate whose SHA-256
+  matches, presented under the server name it names. The same name presenting anything
+  else is refused exactly as before, so it is not `danger_accept_invalid_certs` scoped
+  to a host: it is a pin.
+- **It overrides whatever the verifier objected to** for that certificate — expiry and
+  a name mismatch as much as an unbuildable chain. That is what an exception *is*, and
+  it is why the fingerprint is the whole of it.
+- **Every refusal is recorded**, excepted or not. `TlsClientConfig::rejected()` returns
+  the server name and end-entity certificate of the most recent one, which is how a
+  host shows a person what it declined rather than only that something was wrong. A
+  host builds one config per connect attempt, so it answers for the attempt just
+  awaited.
+
+The host decides. This crate offers no policy on when to ask, what to display, or
+where to keep an accepted exception; those are product questions, and an engine that
+answered them would be deciding for every host.
+
 ## How each provider consumes it
 
 The host builds **one** `TlsClientConfig` (`engine_tls::client_config(&policy)?`) and
@@ -171,6 +207,13 @@ for that step, so it still emits none.
   in-process `tokio-rustls` server proves one policy makes **both** the reqwest
   client and the connector accept a trusted (pinned/union) cert and reject an
   untrusted (bundled) one.
+- `engine-tls`'s `tests/exceptions.rs` covers certificate exceptions against a real
+  handshake, with a server presenting a `CA:TRUE` leaf — the Bridge shape. Its first
+  test is the one that decides the design: that certificate is refused **even as a
+  trust anchor**, so the exception is not a convenience for something `custom` could
+  have done. The rest hold the pin: an exception admits the certificate it names, not a
+  second certificate for the same name, not the same certificate under another name,
+  and a valid certificate still verifies normally alongside one.
 - `provider-imap`'s `tls_info` tests stand up an in-process TLS server speaking just
   enough IMAP to complete `connect_session`, pinned once to the default versions and
   once to TLS 1.2 — so the reported version is proven to be *read from the handshake*,

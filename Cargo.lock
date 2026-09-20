@@ -535,6 +535,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "rustls-platform-verifier",
+ "sha2",
  "thiserror",
  "tokio",
  "tokio-rustls",
