@@ -241,8 +241,9 @@ fn normalized(server_name: &str) -> String {
 mod tests {
     use std::fmt::Write as _;
 
-    use super::{CertificateException, RejectionSlot, fingerprint, normalized};
     use rustls::pki_types::CertificateDer;
+
+    use super::{CertificateException, RejectionSlot, fingerprint, normalized};
 
     fn der(bytes: &[u8]) -> CertificateDer<'static> {
         CertificateDer::from(bytes.to_vec())

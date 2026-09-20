@@ -102,8 +102,9 @@ fn epoch_seconds(time: x509_cert::time::Time) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::CertificateSummary;
     use rustls::pki_types::CertificateDer;
+
+    use super::CertificateSummary;
 
     /// A self-signed certificate naming `common` and `organization`.
     fn certificate(common: &str, organization: &str) -> CertificateDer<'static> {
