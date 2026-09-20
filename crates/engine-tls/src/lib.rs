@@ -38,6 +38,7 @@ mod config;
 mod error;
 mod exception;
 mod policy;
+mod summary;
 
 #[cfg(feature = "dangerous-testing")]
 mod dangerous;
@@ -51,3 +52,4 @@ pub use policy::TlsPolicy;
 /// Re-exported so hosts and the FFI shim can build a policy from raw certificate
 /// bytes without depending on `rustls` directly.
 pub use rustls::pki_types::CertificateDer;
+pub use summary::CertificateSummary;

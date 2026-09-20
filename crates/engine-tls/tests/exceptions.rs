@@ -28,6 +28,15 @@ fn ca_shaped_cert() -> (CertificateDer<'static>, PrivatePkcs8KeyDer<'static>) {
     let mut params =
         rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).expect("certificate params");
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    // A distinguished name like the ones these servers carry, so what a host would show
+    // is exercised too. rcgen otherwise writes a placeholder common name.
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "127.0.0.1");
+    params
+        .distinguished_name
+        .push(rcgen::DnType::OrganizationName, "Example Ltd");
     let cert = params.self_signed(&key).expect("self-signed certificate");
     (
         cert.der().clone(),
@@ -114,6 +123,16 @@ async fn a_refusal_records_the_certificate_the_server_presented() {
     assert_eq!(rejected.server_name(), "127.0.0.1");
     assert_eq!(rejected.certificate(), &cert);
     assert_eq!(rejected.fingerprint(), engine_tls::fingerprint(&cert));
+
+    // And it reads back as something to show: the refusal carries the certificate, so
+    // the claims in it reach a person alongside the fingerprint.
+    let summary = rejected
+        .summary()
+        .expect("the presented certificate parses");
+    assert_eq!(summary.subject_common_name(), Some("127.0.0.1"));
+    assert_eq!(summary.subject_organization(), Some("Example Ltd"));
+    assert_eq!(summary.issuer_common_name(), Some("127.0.0.1"));
+    assert!(summary.not_before() < summary.not_after());
 }
 
 /// The exception built from that refusal lets the same server through, over both

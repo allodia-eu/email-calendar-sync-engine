@@ -82,6 +82,13 @@ CertificateException { server_name, fingerprint }   // SHA-256 of one certificat
   host shows a person what it declined rather than only that something was wrong. A
   host builds one config per connect attempt, so it answers for the attempt just
   awaited.
+- **What to show comes with it.** `RejectedCertificate::summary()` reads the names and
+  the validity window out of the DER (`x509-cert`, `CertificateSummary`), because
+  "is this the server I meant?" is the question somebody is actually answering and a
+  bare fingerprint does not answer it. Dates are epoch seconds: this crate carries no
+  timezone data and the host knows the reader. The parse can fail and says so — nothing
+  has validated those bytes, which is the whole point — and the fingerprint is taken
+  over the bytes, so it needs no parse. Nothing else may rest on a summary.
 
 The host decides. This crate offers no policy on when to ask, what to display, or
 where to keep an accepted exception; those are product questions, and an engine that

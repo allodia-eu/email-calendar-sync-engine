@@ -115,6 +115,14 @@ impl RejectedCertificate {
     pub fn exception(&self) -> CertificateException {
         CertificateException::from_fingerprint(&self.server_name, self.fingerprint())
     }
+
+    /// What the certificate claims about itself, for a host to show beside the
+    /// fingerprint — `None` when the bytes do not parse, which an unvalidated
+    /// certificate is entitled to be.
+    #[must_use]
+    pub fn summary(&self) -> Option<crate::CertificateSummary> {
+        crate::CertificateSummary::read(&self.certificate)
+    }
 }
 
 /// Where a config records the last certificate it refused. Shared with the verifier by
