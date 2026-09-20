@@ -108,6 +108,21 @@ async fn a_tls_1_2_server_is_reported_as_tls_1_2() {
     );
 }
 
+/// Claims a `403` and then declines every body it is shown — enough to make
+/// [`send_retrying`](engine_http::send_retrying) buffer a reply and put it back together,
+/// which is the step under test below, and the shortest path through it.
+struct ClaimsThenDeclines;
+
+impl engine_http::ThrottleClassifier for ClaimsThenDeclines {
+    fn reads_body_of(&self, status: u16) -> bool {
+        status == 403
+    }
+
+    fn throttle(&self, _status: u16, _body: &[u8]) -> Option<engine_http::Throttle> {
+        None
+    }
+}
+
 /// A reply a [`ThrottleClassifier`](engine_http::ThrottleClassifier) had to read is taken
 /// apart and put back together, and reqwest's `TlsInfo` rides in the response's
 /// *extensions* — the one part of a reply that is easy to drop while reassembling it and
@@ -122,7 +137,6 @@ async fn a_tls_1_2_server_is_reported_as_tls_1_2() {
 async fn a_reply_the_classifier_had_to_read_still_reports_its_tls_version() {
     const QUOTA: &[u8] = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 18\r\n\
         Connection: close\r\n\r\n{\"reason\":\"quota\"}";
-    const READS: &[u16] = &[403];
 
     let (cert, port) = tls_server_replying(&[&rustls::version::TLS12], QUOTA).await;
     let client = client_config(&TlsPolicy::pinned(vec![cert]))
@@ -130,11 +144,9 @@ async fn a_reply_the_classifier_had_to_read_still_reports_its_tls_version() {
         .reqwest_builder()
         .build()
         .expect("client");
-    // Claims the `403` and then declines it, so the reply is buffered and rebuilt exactly
-    // once and handed straight back — the shortest path through the reassembly.
     let retry = engine_http::RetryConfig::default()
         .labelled("test")
-        .classifying(Arc::new((READS, |_: u16, _: &[u8]| None)));
+        .classifying(Arc::new(ClaimsThenDeclines));
     let response =
         engine_http::send_retrying(client.get(format!("https://127.0.0.1:{port}/")), &retry)
             .await

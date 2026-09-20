@@ -111,8 +111,10 @@ impl ThrottleClassifier for StatusAlone {
     }
 }
 
-/// A closure is a classifier for the statuses it is paired with, so a test — or an adapter
-/// whose rule really is one line — needs no named type.
+/// A closure paired with the statuses it claims, so the suites here need no named type per
+/// case. **Test-only on purpose:** both adapters that classify do it with a named type, and
+/// a public impl on a tuple would be API surface nothing ships against.
+#[cfg(test)]
 impl<F: Fn(u16, &[u8]) -> Option<Throttle> + Send + Sync> ThrottleClassifier
     for (&'static [u16], F)
 {
