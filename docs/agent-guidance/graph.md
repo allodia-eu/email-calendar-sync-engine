@@ -59,6 +59,16 @@ each over its own `GraphClient` on the same token. The mail layers:
   `SyncScope::GraphFolder`), the folder list syncs under the per-account
   `SyncScope::GraphFolderList`, and the **cross-folder fan-out is the
   orchestrator's job** — the same shape as `provider-imap`.
+
+  ⚠️ **A Graph account therefore passes `Engine::sync_mail` one provider per folder — 56 of
+  them on a mailbox this was measured against — and they all address one mailbox that
+  Exchange Online rate-limits as a *single* thing.** That is not the IMAP shape after all:
+  an IMAP folder provider holds its own socket, so its ceiling is per connection, while
+  every one of these shares the mailbox's. `engine-api`'s docs said Graph passed a single
+  account-level provider until #216, and the fan-out was quietly multiplying the ceiling by
+  five. What bounds requests is the account's `engine_http::RequestGate`, narrowed by
+  `HttpTransport::new` to `MAX_CONCURRENT_SOURCE_FETCHES` — not the fan-out
+  (`http-throttling.md`).
 - **Immutable ids are the `ProviderKey`.** `Prefer: IdType="ImmutableId"` yields
   ids that are stable across folder moves and URL-safe (Graph's default ids
   change on move). A message's single-folder membership comes from

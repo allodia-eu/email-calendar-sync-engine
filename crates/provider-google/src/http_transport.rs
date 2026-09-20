@@ -42,11 +42,26 @@ impl HttpTransport {
         tls: &TlsClientConfig,
         retry: &RetryConfig,
     ) -> Result<Self, GoogleError> {
+        let retry = retry.clone().labelled("gmail");
+        // The adapter's own fan-out width, applied account-wide — **not** a server ceiling,
+        // and the distinction matters.
+        //
+        // Gmail has no concurrency ceiling in this range: measured on a rested quota, widths
+        // 5, 20 and 50 all ran 200 requests with **zero** refusals and throughput scaling
+        // linearly. What Gmail enforces is a *rate* (Total Query Cost units per minute per
+        // user), announced as `403 rateLimitExceeded`, and a width bound does not control a
+        // rate (`docs/agent-guidance/http-throttling.md`).
+        //
+        // It is still worth narrowing, for the reason the gate exists rather than for the
+        // reason Graph narrows: an account's mail, calendar and contacts providers would
+        // otherwise each run their own `MAX_CONCURRENT_GETS`-wide fan-out against one user's
+        // quota, and three times the width drains it three times as fast.
+        retry.gate().narrow_to(crate::fetch::MAX_CONCURRENT_GETS);
         Ok(Self {
             client: tls.reqwest_builder().build()?,
             token,
             connection: ObservedConnection::default(),
-            retry: retry.clone().labelled("gmail"),
+            retry,
         })
     }
 
@@ -229,7 +244,7 @@ mod tests {
         let transport = HttpTransport::new(
             "super-secret".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
 
@@ -274,7 +289,7 @@ mod tests {
         let transport = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         let doc = transport.get(&base).await.unwrap();
@@ -289,7 +304,7 @@ mod tests {
         let transport = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(GoogleTransport::http_version(&transport), None);
@@ -312,7 +327,7 @@ mod tests {
         let err = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .get(&base)
@@ -328,7 +343,7 @@ mod tests {
         let err = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .get(&base)
@@ -343,7 +358,7 @@ mod tests {
         let err = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .get("http://127.0.0.1:1/gmail/v1/users/me/labels")
@@ -360,7 +375,7 @@ mod tests {
         let sent = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .post(&base, "application/json", b"{}".to_vec())
@@ -372,7 +387,7 @@ mod tests {
         HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .delete(&base, None)
@@ -387,7 +402,7 @@ mod tests {
         let err = HttpTransport::new(
             "tok".to_owned(),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap()
         .post(&base, "application/json", b"{}".to_vec())

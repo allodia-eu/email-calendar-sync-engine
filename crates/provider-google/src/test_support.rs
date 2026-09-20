@@ -23,11 +23,16 @@ pub(crate) fn tls() -> &'static TlsClientConfig {
     TLS.get_or_init(TlsClientConfig::bundled)
 }
 
-/// The default throttling policy, for tests that build a real transport. No offline route
-/// answers `429`, so nothing here ever waits.
-pub(crate) fn retry() -> &'static engine_http::RetryConfig {
-    static RETRY: OnceLock<engine_http::RetryConfig> = OnceLock::new();
-    RETRY.get_or_init(engine_http::RetryConfig::default)
+/// A throttling policy for tests that build a real transport. No offline route answers
+/// `429`, so nothing here ever waits.
+///
+/// **A fresh one per call, deliberately.** A `RetryConfig` carries an `engine_http::RequestGate`,
+/// and a shared config is a shared gate — which the transport then narrows to this server's
+/// per-account ceiling. One `OnceLock` here would put every test in the binary inside one
+/// account's ceiling and make them wait on each other, which is exactly the scope error the
+/// gate exists to prevent, reproduced in the test helper.
+pub(crate) fn retry() -> engine_http::RetryConfig {
+    engine_http::RetryConfig::default()
 }
 
 /// What a fake route answers with: a fixture body, or an HTTP status plus the Google

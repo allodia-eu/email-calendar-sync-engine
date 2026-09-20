@@ -300,7 +300,7 @@ async fn other_contacts_requests_only_the_fields_that_source_allows() {
         "token",
         base,
         crate::test_support::tls(),
-        crate::test_support::retry(),
+        &crate::test_support::retry(),
     )
     .unwrap();
     let _ = GoogleContactProvider::other_contacts(client)

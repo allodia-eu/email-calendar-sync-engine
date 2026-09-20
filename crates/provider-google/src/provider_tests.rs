@@ -271,7 +271,7 @@ async fn setting_a_name_patches_the_send_as_resource_and_nothing_else() {
         "/settings/sendAs/",
         json(r#"{"sendAsEmail":"alice@example.com","displayName":"Alice Smith"}"#),
     )]);
-    let client = GoogleClient::with_base("tok", base, tls(), retry()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
     let provider = GmailProvider::new(client);
 
     provider

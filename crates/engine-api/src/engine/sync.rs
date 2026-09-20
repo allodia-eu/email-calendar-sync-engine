@@ -70,10 +70,16 @@ impl Engine {
     /// (`store-and-sync.md`).
     ///
     /// **This is the only way to sync mail, and the engine drives the fan-out.** `providers` is
-    /// whatever the account has — one per folder where the protocol binds a connection to a
-    /// mailbox (IMAP), a single element where one provider serves the account (JMAP, Graph,
-    /// Gmail). The engine bounds how many run at once, puts the Inbox first, and runs the
-    /// account-level store steps once rather than once per folder.
+    /// whatever the account has — one per folder wherever the protocol's mail delta is
+    /// per-folder (IMAP, and **Graph**, whose `email_scope` names a `GraphFolder`), a single
+    /// element where one provider serves the account (JMAP, Gmail). The engine bounds how many
+    /// run at once, puts the Inbox first, and runs the account-level store steps once rather
+    /// than once per folder.
+    ///
+    /// That distinction is not cosmetic: a 56-folder Graph account passes **56 providers**
+    /// here, every one of them speaking to a mailbox the server rate-limits as a *single*
+    /// thing. How many requests they may make between them is not this bound — see
+    /// `engine_http::RequestGate`, which a host holds one of per account.
     ///
     /// `observer` receives every committed chunk plus the pass's lifecycle, so a host can splice
     /// its list and show which account is syncing without polling.

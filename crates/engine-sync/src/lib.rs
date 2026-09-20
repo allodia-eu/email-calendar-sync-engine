@@ -315,6 +315,7 @@ mod calendar;
 mod contact;
 mod horizon;
 mod mail_account;
+mod mail_report;
 mod observer;
 mod outbox;
 mod progress;
@@ -333,7 +334,8 @@ pub use contact::{
     sync_contact_cards, sync_contacts,
 };
 pub use horizon::{HorizonExpansion, UnexpandableEvent, expand_calendar_horizon};
-pub use mail_account::{FolderSync, MailSyncReport, SyncTiming, refresh_folders, sync_mail};
+pub use mail_account::{refresh_folders, sync_mail};
+pub use mail_report::{FolderSync, MailSyncReport, SyncTiming};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
     CalendarWriteOutcome, ContactWriteOutcome, DraftPut, DrainOutcome, DrainReport, DrainedOp,

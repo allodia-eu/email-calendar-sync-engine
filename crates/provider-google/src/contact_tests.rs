@@ -25,7 +25,7 @@ fn account() -> AccountId {
 async fn update_contact_carries_the_source_etag_and_update_mask() {
     let (base_url, captured) = capturing_server("200 OK", r#"{"resourceName":"people/c1"}"#);
     let provider = GoogleContactProvider::connections(
-        GoogleClient::with_base("token", base_url, tls(), retry()).unwrap(),
+        GoogleClient::with_base("token", base_url, tls(), &retry()).unwrap(),
     );
     let mut base = ContactCard::new(
         ContactId::try_from("people/c1").unwrap(),
@@ -127,7 +127,7 @@ async fn contact_groups_are_always_listed_as_a_snapshot_without_sync_token() {
         r#"{"contactGroups":[{"resourceName":"contactGroups/friends","name":"Friends"}]}"#,
     );
     let provider = GoogleContactProvider::groups(
-        GoogleClient::with_base("token", base_url, tls(), retry()).unwrap(),
+        GoogleClient::with_base("token", base_url, tls(), &retry()).unwrap(),
     );
     let result = provider
         .sync_contacts(&account(), Some(&SyncState::new("old-snapshot")))

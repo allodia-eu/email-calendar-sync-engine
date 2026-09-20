@@ -477,7 +477,7 @@ async fn the_whole_stack_runs_over_the_reqwest_replay_server() {
     // Drive the real reqwest transport (via with_base) at the replay server, proving the
     // label fetch works end-to-end without a live token.
     let base = replay_server(vec![("/labels", json(LABELS))]);
-    let client = crate::GoogleClient::with_base("t", base, tls(), retry()).unwrap();
+    let client = crate::GoogleClient::with_base("t", base, tls(), &retry()).unwrap();
     let mailboxes = labels(&client).await.unwrap();
     assert!(mailboxes.iter().any(|m| m.role == Some(MailboxRole::Inbox)));
 }

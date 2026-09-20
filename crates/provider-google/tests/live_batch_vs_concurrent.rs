@@ -23,9 +23,19 @@
 //! - Both throttle as the width grows, which is the direct evidence that a batch of n counts as n
 //!   requests. Batch tolerates a somewhat wider window before it does.
 //!
+//! Note that a Gmail throttle here is a **`403 rateLimitExceeded`**, not a `429` — that is its
+//! only refusal shape (`http-throttling.md`), and counting only `429` made this suite report an
+//! ordinary throttle as a malformed probe.
+//!
 //! So the case for concurrency is bytes, simplicity, and the ability to yield a message as it
 //! lands rather than after a whole envelope parses — not speed. Re-run this before changing
 //! `MAX_CONCURRENT_GETS` or reaching for batch again.
+//!
+//! ⚠️ **Run this one alone, or last.** It deliberately holds a wide fan-out for many rounds,
+//! which spends a good share of Gmail's 6,000 cost units per minute per user — so whatever
+//! runs next in the same suite can meet a `403 rateLimitExceeded` that has nothing to do with
+//! it. A whole-crate `cargo test -p provider-google` with a token set will show that as an
+//! unrelated live test failing right after this one; rest a minute and re-run it by itself.
 //!
 //! `GOOGLE_BENCH_WINDOW` sets the width, `GOOGLE_BENCH_ROUNDS` how long the rate is held.
 //!
@@ -197,12 +207,21 @@ async fn concurrent_round(
         .collect()
         .await;
     let bytes = results.iter().map(|(l, ..)| l).sum();
-    let throttled = results.iter().filter(|(_, s, _)| *s == 429).count();
+    // **Gmail's throttle is a `403`, not a `429`.** Measured over ~1,600 refusals against a
+    // live account, it never sent a `429` once: it answers `403 rateLimitExceeded` with
+    // "Quota exceeded for quota metric 'Total Query Cost'"
+    // (`docs/agent-guidance/http-throttling.md`). Counting only `429` made this assertion
+    // fire on an ordinary throttle and call it a malformed probe, which is the opposite of
+    // what it is for — it exists to reject a *failure* being timed as if it were work.
+    let throttled = results
+        .iter()
+        .filter(|(_, s, _)| *s == 429 || *s == 403)
+        .count();
     let ok = results.iter().filter(|(_, s, _)| *s == 200).count();
     assert!(
         ok + throttled == results.len(),
-        "{} of {} gets answered neither 200 nor 429 — a timing sample over failed requests \
-         is not a measurement",
+        "{} of {} gets answered neither 200 nor a throttle (429/403) — a timing sample over \
+         failed requests is not a measurement",
         results.len() - ok - throttled,
         results.len(),
     );
@@ -245,7 +264,7 @@ async fn batch_round(
     // individual members fail, which is the trap that makes batching look clean. Counting
     // only 429 would also let a *fast failure* — an expired token 401ing every member in
     // 90ms — post the best time in the run and be read as batch winning.
-    let throttled = text.matches("HTTP/1.1 429").count();
+    let throttled = text.matches("HTTP/1.1 429").count() + text.matches("HTTP/1.1 403").count();
     let ok = text.matches("HTTP/1.1 200").count();
     assert!(
         status.is_success() && ok + throttled == ids.len(),
@@ -353,10 +372,26 @@ async fn live_batch_versus_concurrent() {
     );
 
     // The measurement is a print, not a threshold — someone else's service over whatever
-    // link the developer has is not an assertion. This one property is: a batch that answers
-    // 200 while throttling its members is the failure mode that makes batching look free.
-    assert_eq!(
-        concurrent.throttled, 0,
-        "a bounded concurrent fan-out must not be throttled"
-    );
+    // link the developer has is not an assertion.
+    //
+    // This used to assert `concurrent.throttled == 0`, "a bounded concurrent fan-out must not
+    // be throttled", and that premise is false. Gmail bounds **rate**, not width: on a rested
+    // quota, widths of 5, 20 and 50 are all refused 0% of the time, while a *fixed* width of 5
+    // goes 0% → 21% → 82% across three consecutive unrested blocks
+    // (`docs/agent-guidance/http-throttling.md`). A bench that holds width 20 for this many
+    // rounds drains the quota by construction, so the old assertion fired on the bench's own
+    // load and called it a regression.
+    //
+    // A throttled run is not a failure, it is an **inconclusive** one: the timings are over a
+    // mix of work and refusals and mean nothing. So say so loudly and stop, rather than
+    // reporting a comparison nobody should read or a red test nobody can fix.
+    if concurrent.throttled > 0 || batch.throttled > 0 {
+        eprintln!(
+            "  ⚠️  INCONCLUSIVE: {} concurrent and {} batch sub-requests were throttled, so \
+             these timings are over a mix of work and refusals.\n      Gmail's quota is \
+             per-minute; rest the account a few minutes and re-run. Lowering \
+             GOOGLE_BENCH_ROUNDS also helps.",
+            concurrent.throttled, batch.throttled,
+        );
+    }
 }

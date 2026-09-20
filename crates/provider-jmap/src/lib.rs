@@ -267,6 +267,15 @@ impl JmapClient {
         // belongs to the new one, and rebasing it onto the old one aims every method
         // call at a host that never had the session.
         let session = Session::parse(&document, &served_by, config.session_urls)?;
+        // What this server said it allows, stated once for the whole account. RFC 8620 §2
+        // scopes `maxConcurrentRequests` to the API endpoint and defines no companion for
+        // downloads, but a server may apply one number to both and Stalwart does — so it
+        // bounds a body warm too (`docs/agent-guidance/http-throttling.md`). Known only
+        // here, since the session is where the server states it.
+        config
+            .retry
+            .gate()
+            .narrow_to(session.limits().max_concurrent_requests);
         // The endpoint every method call will go to — the last thing connect resolves,
         // and (under `RebaseToConnection`) the one derived from the connection origin.
         observer.step(&ConnectStep::discovered(session.api_url()));

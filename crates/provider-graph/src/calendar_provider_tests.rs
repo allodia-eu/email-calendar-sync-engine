@@ -48,7 +48,7 @@ fn provider(client: GraphClient) -> GraphCalendarProvider {
 #[test]
 fn debug_names_the_binding_without_leaking_the_token() {
     let provider = GraphCalendarProvider::new(
-        GraphClient::connect("super-secret", tls(), retry()).unwrap(),
+        GraphClient::connect("super-secret", tls(), &retry()).unwrap(),
         calendar(),
         window(),
         engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
@@ -111,7 +111,7 @@ async fn syncs_the_calendar_list_and_an_event_snapshot() {
 async fn end_to_end_against_a_fixture_replay_server() {
     // Drive the whole stack (reqwest transport + @odata rebasing + drain) over real HTTP.
     let base = replay_server(routes());
-    let client = GraphClient::with_base("t", base, tls(), retry()).unwrap();
+    let client = GraphClient::with_base("t", base, tls(), &retry()).unwrap();
     let provider = provider(client);
     let events = provider.sync_events(&account(), None).await.unwrap();
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {

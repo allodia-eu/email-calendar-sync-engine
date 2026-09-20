@@ -384,7 +384,7 @@ async fn folders_skip_an_unprovisioned_well_known_alias() {
         "t",
         replay_server(routes),
         crate::test_support::tls(),
-        crate::test_support::retry(),
+        &crate::test_support::retry(),
     )
     .unwrap();
     let mailboxes = folders(&client).await.unwrap();
@@ -434,7 +434,7 @@ async fn delta_refetch_skips_a_message_that_404s() {
         "t",
         replay_server(vec![("$deltatoken=", json(CHANGED))]),
         crate::test_support::tls(),
-        crate::test_support::retry(),
+        &crate::test_support::retry(),
     )
     .unwrap();
     let cursor = SyncState::new(

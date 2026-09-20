@@ -248,10 +248,18 @@ Step 6 lands in small, tested slices. Order and status:
        low-level `engine_sync` drivers itself) — **never** by re-issuing the write.
 4. **Mail sync — _one entrypoint, and the engine owns the fan-out._**
    `Engine::sync_mail(providers, account, tuning, observer)` takes the account's mail
-   providers — one per folder where the protocol binds a connection to a mailbox (IMAP),
-   a single element where one serves the account (JMAP, Gmail, Graph) — and runs the
-   whole pass: the folder-list container once, the account-level store steps once, then
-   the folders **concurrently, bounded, Inbox first**.
+   providers — one per folder wherever the mail delta is per-folder (IMAP, and **Graph**,
+   whose `email_scope` names a `GraphFolder`), a single element where one serves the
+   account (JMAP, Gmail) — and runs the whole pass: the folder-list container once, the
+   account-level store steps once, then the folders **concurrently, bounded, Inbox
+   first**.
+
+   This page said "a single element ... (JMAP, Gmail, Graph)" until #216, and the error
+   mattered. A 56-folder Graph account passes 56 providers, all addressing one mailbox
+   that Exchange Online rate-limits as a single thing; read as one-provider-per-account,
+   the fan-out looks incapable of multiplying a per-mailbox ceiling, which is exactly
+   what it was doing. The **request** bound is not the fan-out — it is
+   `engine_http::RequestGate`, one per account (`http-throttling.md`).
 
    Each folder commits **chunk by chunk** under its own lease, reporting a `SyncCommit
    { scope, fetched, total, upserted, removed }` after each committed chunk — so a UI

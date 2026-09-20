@@ -22,6 +22,7 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | --- | --- | --- |
 | `mail/me_identity.json` | `GET /me?$select=displayName,mail,userPrincipalName` | that `$select` is **not applied** on a personal account: the real payload carries all twelve default `user` properties, so the normalizer must pick its three out of the noise |
 | `mail/mailfolders.json` | `GET /me/mailFolders?$top=50` | folder → `Mailbox` normalization (8 folders, the mailbox root's own children) |
+| `mail/throttled_mailbox_concurrency.json` | any mail read, with five requests in flight against one mailbox | the **exact** bytes Exchange Online refuses with — see the note below |
 | `mail/mailfolders_children.json` | `GET /me/mailFolders/{archive}/childFolders?$top=100` | the tree walk's first hop: `Fixture parent`, nested under Archiveren |
 | `mail/mailfolders_grandchildren.json` | `GET /me/mailFolders/{Fixture parent}/childFolders?$top=100` | its **second** hop: `Fixture child`, two levels down — one level is all `$expand` can do (see Finding 25) |
 | `mail/mailfolders_children_hidden.json` | `GET /me/mailFolders/{conversation history}/childFolders?$top=100` | a folder whose `childFolderCount` is 1 answering with an **empty** page (see Finding 25) |
@@ -323,3 +324,29 @@ contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@od
     to Junk regardless, with both the JSON boolean and the string `"false"` (the doc's own
     example form) tried. And only `junk`/`notJunk`/`phish` are accepted; the documented
     `unknown` and `unknownFutureValue` are both `400`. Details in `graph.md`.
+
+## The throttle fixture is a captured refusal, not an invented one
+
+`mail/throttled_mailbox_concurrency.json` was captured from a **real Microsoft 365 mailbox**
+(#216), not the throwaway personal account the rest of this directory comes from: a personal
+Outlook mailbox is too small to provoke one. It carries no identifiers, so nothing needed
+scrubbing beyond dropping the response's `request-id`/`client-request-id` GUIDs and the
+`x-ms-ags-diagnostic` server-info header, which name the datacenter and role instance that
+served *this* account's request.
+
+What matters about it and is not in the file:
+
+```
+HTTP/1.1 429
+Retry-After: 7
+Content-Type: application/json; odata.metadata=minimal; …
+```
+
+- **`Retry-After` is present**, and Graph named values from 2 to 10 seconds across 107
+  observed refusals. Guessing shorter than a number the server named is what turns one
+  throttle into several (`docs/agent-guidance/http-throttling.md`).
+- **There are no `Rate-Limit-*` headers.** The reason lives in the body and nowhere else, so
+  the only way to know *which* ceiling was hit is to read `error.code`.
+- **`ApplicationThrottled` is a concurrency refusal, not a quota one.** It says the account
+  had too many requests *in flight*, not too many this window — the distinction the fan-out
+  fix turned on, and one a bare `429` cannot make.

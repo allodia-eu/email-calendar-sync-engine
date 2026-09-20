@@ -358,7 +358,7 @@ mod tests {
         let me = GraphClient::connect(
             "super-secret-token",
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(me.url("/messages"), format!("{GRAPH_BASE}/me/messages"));
@@ -368,7 +368,7 @@ mod tests {
             "t",
             MailboxPrincipal::user("info@example.org"),
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(
@@ -385,7 +385,7 @@ mod tests {
         let prod = GraphClient::connect(
             "t",
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         let link = format!("{GRAPH_BASE}/me/messages/delta?$deltatoken=x");
@@ -395,7 +395,7 @@ mod tests {
             "t",
             "http://127.0.0.1:9",
             crate::test_support::tls(),
-            crate::test_support::retry(),
+            &crate::test_support::retry(),
         )
         .unwrap();
         assert_eq!(

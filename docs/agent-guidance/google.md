@@ -127,13 +127,22 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   fixed `metadataHeaders` set for a minimal, deterministic payload). Those per-id gets are
   the pass's whole cost — `messages.list` returns bare `{id, threadId}` and Gmail offers no
   companion batch-get — so a page fetches them **concurrently**, `MAX_CONCURRENT_GETS` in
-  flight. Gmail answers `429` past 50 concurrent requests per mailbox whatever the quota
-  allows; 20 is the widest window measured clean against a live account (30 draws occasional
-  throttles, 50 throttles a tenth). The batch endpoint is not used: a batch of n counts as n
+  flight. **20 is not a concurrency ceiling, and this line used to claim it was.** Re-measured
+  on a rested quota with widths in randomised order, 5, 20 and 50 each ran 200 requests with
+  *zero* refusals and throughput scaling linearly — while a *fixed* width of 5 goes 0% → 21% →
+  82% refused across three consecutive unrested blocks. The earlier "20 clean, 30 occasional,
+  50 throttles a tenth" measured cumulative drain and attributed it to width. What Gmail
+  enforces is a quota on Total Query Cost units per minute per user, announced as `403
+  rateLimitExceeded` — and across ~1,600 observed refusals it never once sent a `429`
+  (`http-throttling.md`). 20 stays as the fan-out width because it is a sensible amount of
+  work to have outstanding, not because Gmail refuses 21. The batch endpoint is not used: a batch of n counts as n
   requests, is no faster at equal width (both shapes cost one round trip), costs ~25% more
   bytes for the multipart envelope, and answers `200` while individual members carry their
   own `429` — so it buys nothing and adds a parser. `tests/live_batch_vs_concurrent.rs` is
-  the gated probe that keeps that decision honest. The persisted cursor
+  the gated probe that keeps that decision honest. That same 20 is what the adapter narrows
+  the account's `engine_http::RequestGate` to (`http-throttling.md`), so the ceiling now
+  bounds everything the account does at once rather than one page's fan-out at a time — a
+  body warm overlapping a snapshot used to be able to exceed it. The persisted cursor
   is that captured `historyId` (messages arriving mid-snapshot are re-reported by the
   first delta — idempotent). This is a **reconciling** pass (its present set tombstones
   absent rows). A `SyncWindow` floor windows the enumeration to `q: after:<epoch>`.
