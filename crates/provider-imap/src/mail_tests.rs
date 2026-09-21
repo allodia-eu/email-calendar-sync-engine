@@ -231,29 +231,23 @@ fn a_rooted_namespace_keeps_its_top_level_folders_at_the_top() {
 }
 
 #[test]
-fn an_escaped_delimiter_is_part_of_the_name_rather_than_a_split() {
-    // A Proton Mail Bridge label called `example.com 29/01/2021` arrives with its slashes
-    // escaped: IMAP has no other way to put the delimiter inside a name. Splitting on them
-    // invents a folder per fragment, so the label turns into a chain nobody created.
+fn an_escaped_delimiter_is_split_on_like_any_other() {
+    // Proton Mail Bridge escapes a delimiter inside a label name (`29\/01\/2021`) and then
+    // lists a row per fragment as well, so the fragments are mailboxes whether or not the
+    // escape is honoured. Splitting puts the chain on screen the way Thunderbird and Apple
+    // Mail draw it; honouring the escape would leave Bridge's own fragment rows beside it as
+    // siblings, which is three folders for one label. The bytes reach here at all because
+    // `tokenize` keeps an unrecognised escape rather than refusing the response.
     let rows =
         crate::parse::parse_list(&[br#"LIST () "/" "Labels/example.com 29\/01\/2021""#.to_vec()])
             .unwrap();
     let mailbox = mailbox_from_list(&rows[0], true).unwrap();
-    assert_eq!(mailbox.parent.as_ref().unwrap().as_str(), "Labels");
-    // The id keeps the wire form, escape included, because that is what `SELECT` takes; the
-    // display name is what the person actually called the folder.
+    assert_eq!(
+        mailbox.parent.as_ref().unwrap().as_str(),
+        r"Labels/example.com 29\/01\"
+    );
     assert_eq!(mailbox.id.as_str(), r"Labels/example.com 29\/01\/2021");
-    assert_eq!(mailbox.name, "example.com 29/01/2021");
-}
-
-#[test]
-fn an_escaped_delimiter_at_the_top_level_leaves_the_folder_at_the_top() {
-    // Every delimiter in the name is escaped, so there is no hierarchy at all: one top-level
-    // folder, not a parent the `LIST` never named.
-    let rows = crate::parse::parse_list(&[br#"LIST () "/" "29\/01\/2021""#.to_vec()]).unwrap();
-    let mailbox = mailbox_from_list(&rows[0], true).unwrap();
-    assert_eq!(mailbox.parent, None);
-    assert_eq!(mailbox.name, "29/01/2021");
+    assert_eq!(mailbox.name, "2021");
 }
 
 #[test]

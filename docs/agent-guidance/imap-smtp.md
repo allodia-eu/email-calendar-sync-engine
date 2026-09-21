@@ -327,28 +327,33 @@ is authoritative for the `provider-caldav` calendar client.
   path at the **last** delimiter: the part before it is the parent's id, the part after it is
   the name.
   A host drawing a tree would otherwise indent a row reading `Archive/2024` underneath one
-  reading `Archive`. Three traps, all pinned by `mail_tests.rs`: a delimiter at offset `0` is
+  reading `Archive`. Two traps, both pinned by `mail_tests.rs`: a delimiter at offset `0` is
   **not** a split (`/Archive` and `.Archive` are rooted namespaces, not children of a
-  nameless folder); a `NIL` delimiter means a flat namespace, where a slash in a name is
-  a character the user typed; and an **escaped** delimiter is not a split either. IMAP treats
-  the delimiter as structural and defines no way to put one inside a name, so a server holding
-  a folder someone called `29/01/2021` has to invent a way, and the convention in the wild is
-  a preceding backslash (Proton Mail Bridge sends `29\/01\/2021`). Splitting on those turns
-  one folder into a chain nobody created, each link named after a fragment of the real name.
-  The escape comes off the **display name** and stays in the **id**, which is what `SELECT`
-  takes. Role matching stays on the **whole** path, so a folder someone
+  nameless folder), and a `NIL` delimiter means a flat namespace, where a slash in a name is
+  a character the user typed. Role matching stays on the **whole** path, so a folder someone
   called `INBOX` inside another one is an ordinary folder.
 
-  Gmail reads its hierarchy out of a name too, and guards the same trap differently:
-  `provider-google`'s `nest_labels` splits only where the prefix is a label the account
-  actually has, so `Work/Clients` with no `Work` beside it stays one label. Either guard works;
-  what does not work is splitting on every delimiter byte.
+  **An escaped delimiter is split on as well, and that is a decision, not an oversight.** IMAP
+  defines no way to put the delimiter inside a name, so a server holding a folder someone called
+  `29/01/2021` has to invent one; Proton Mail Bridge's is a preceding backslash, and it sends
+  `29\/01\/2021`. Honouring that escape recovers the name the person typed, and is still the
+  wrong answer here, because Bridge lists a **row per fragment** too (`…29\`, `…29\/01\`,
+  `…29\/01\/2021`, three rows for one label, the first two with no `STATUS` behind them). Split,
+  and those rows are the chain's own links, which is what Thunderbird and Apple Mail draw, both
+  greying the intermediates out. Honour the escape, and they become siblings beside the folder
+  they are fragments of: one label, three entries. A folder pane that agrees with every other
+  client beats one that is privately more correct. Bridge is splitting its own escaped string,
+  which is the bug this rule declines to have twice.
+
+  Gmail reads its hierarchy out of a name too and lands elsewhere, because nothing hands it
+  fragment rows: `provider-google`'s `nest_labels` splits only where the prefix is a label the
+  account actually has, so `Work/Clients` with no `Work` beside it stays one label.
 - **An unknown escape in a quoted string is kept, not refused.** `QUOTED-CHAR` allows `\` only
   before `"` or `\` (RFC 9051 §4.3), so anything else is a server getting it wrong. A protocol
   error there is scoped to the whole response rather than the one string, so refusing takes every
   mailbox or message on the line with it, and one folder nobody can name costs an account its
-  entire `LIST`. `tokenize` keeps both bytes verbatim, which is also what lets the folder-list
-  rule above read the escape back.
+  entire `LIST`. `tokenize` keeps both bytes verbatim, so the name survives to be split like any
+  other; what the escape *means* is the folder-list rule's business, not the tokenizer's.
 - **`put_draft` / `delete_draft` (no SMTP).** A draft is `APPEND`ed into the account's
   Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating `Drafts`) flagged
   `\Draft \Seen`, so keeping a draft works against any IMAP server even where SMTP

@@ -362,13 +362,7 @@ fn leaf_of(name: &str, delimiter: Option<&str>) -> String {
     let leaf = split_at(name, delimiter)
         .map(|split| &name[split.end..])
         .filter(|leaf| !leaf.is_empty());
-    let leaf = leaf.unwrap_or(name);
-    // An escaped delimiter is wire syntax, so it comes off the name a person reads. The id
-    // keeps it, because that is the name `SELECT` takes.
-    match delimiter.filter(|d| !d.is_empty()) {
-        Some(delimiter) => leaf.replace(&["\\", delimiter].concat(), delimiter),
-        None => leaf.to_owned(),
-    }
+    leaf.unwrap_or(name).to_owned()
 }
 
 /// Where a hierarchical name splits into parent and leaf: the byte range of the last delimiter,
@@ -379,24 +373,17 @@ fn leaf_of(name: &str, delimiter: Option<&str>) -> String {
 /// empty-named parent no `LIST` row ever names. A name that merely *contains* the separator is
 /// an ordinary child: `INBOX.Archive` on Courier really does sit inside the inbox.
 ///
-/// A delimiter the name **escapes** is not a split either. IMAP treats the delimiter as
-/// structural and defines no way to put one inside a name, so a server holding a folder called
-/// `29/01/2021` has to invent one; the convention in the wild, and Proton Mail Bridge's, is a
-/// preceding backslash. Reading those as hierarchy turns one folder into a chain of folders
-/// nobody created, each named after a fragment of the real one.
+/// A delimiter the server **escaped** is split on all the same, deliberately. IMAP defines no
+/// way to put the delimiter inside a name, so a server holding a folder called `29/01/2021` has
+/// to invent one, and Proton Mail Bridge's is a preceding backslash. Reading that escape back
+/// would recover the name the person typed, and it is still the wrong answer: Bridge also lists
+/// a row per fragment, so honouring the escape turns one folder into three siblings. Thunderbird
+/// and Apple Mail both split, showing the chain with its intermediates greyed out, and a folder
+/// pane that agrees with every other client beats one that is privately more correct.
 fn split_at(name: &str, delimiter: Option<&str>) -> Option<Range<usize>> {
     let delimiter = delimiter.filter(|d| !d.is_empty())?;
-    let mut before = name.len();
-    while let Some(index) = name[..before].rfind(delimiter) {
-        if index == 0 {
-            return None;
-        }
-        if !name[..index].ends_with('\\') {
-            return Some(index..index + delimiter.len());
-        }
-        before = index;
-    }
-    None
+    let index = name.rfind(delimiter).filter(|index| *index > 0)?;
+    Some(index..index + delimiter.len())
 }
 
 #[cfg(test)]
