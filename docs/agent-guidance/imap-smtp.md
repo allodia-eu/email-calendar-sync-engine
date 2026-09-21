@@ -322,15 +322,33 @@ is authoritative for the `provider-caldav` calendar client.
   general encoder: no name this crate sends originates from a decoded one.
 - **The folder list is a tree, and IMAP is the only transport that spells it in the name.**
   `LIST` gives a flat set of delimiter-joined paths plus the delimiter itself, per row
-  (`Archive/2024`, or `INBOX.Archive.2024` on a Courier-shaped namespace); JMAP, Graph and
-  Gmail all hand over the segment alone. So `mail::mailbox_from_list` splits the path at the
-  **last** delimiter: the part before it is the parent's id, the part after it is the name.
+  (`Archive/2024`, or `INBOX.Archive.2024` on a Courier-shaped namespace); JMAP and Graph
+  hand the nesting over as an explicit parent id. So `mail::mailbox_from_list` splits the
+  path at the **last** delimiter: the part before it is the parent's id, the part after it is
+  the name.
   A host drawing a tree would otherwise indent a row reading `Archive/2024` underneath one
-  reading `Archive`. Two traps, both pinned by `mail_tests.rs`: a delimiter at offset `0` is
+  reading `Archive`. Three traps, all pinned by `mail_tests.rs`: a delimiter at offset `0` is
   **not** a split (`/Archive` and `.Archive` are rooted namespaces, not children of a
-  nameless folder), and a `NIL` delimiter means a flat namespace, where a slash in a name is
-  a character the user typed. Role matching stays on the **whole** path, so a folder someone
+  nameless folder); a `NIL` delimiter means a flat namespace, where a slash in a name is
+  a character the user typed; and an **escaped** delimiter is not a split either. IMAP treats
+  the delimiter as structural and defines no way to put one inside a name, so a server holding
+  a folder someone called `29/01/2021` has to invent a way, and the convention in the wild is
+  a preceding backslash (Proton Mail Bridge sends `29\/01\/2021`). Splitting on those turns
+  one folder into a chain nobody created, each link named after a fragment of the real name.
+  The escape comes off the **display name** and stays in the **id**, which is what `SELECT`
+  takes. Role matching stays on the **whole** path, so a folder someone
   called `INBOX` inside another one is an ordinary folder.
+
+  Gmail reads its hierarchy out of a name too, and guards the same trap differently:
+  `provider-google`'s `nest_labels` splits only where the prefix is a label the account
+  actually has, so `Work/Clients` with no `Work` beside it stays one label. Either guard works;
+  what does not work is splitting on every delimiter byte.
+- **An unknown escape in a quoted string is kept, not refused.** `QUOTED-CHAR` allows `\` only
+  before `"` or `\` (RFC 9051 §4.3), so anything else is a server getting it wrong. A protocol
+  error there is scoped to the whole response rather than the one string, so refusing takes every
+  mailbox or message on the line with it, and one folder nobody can name costs an account its
+  entire `LIST`. `tokenize` keeps both bytes verbatim, which is also what lets the folder-list
+  rule above read the escape back.
 - **`put_draft` / `delete_draft` (no SMTP).** A draft is `APPEND`ed into the account's
   Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating `Drafts`) flagged
   `\Draft \Seen`, so keeping a draft works against any IMAP server even where SMTP
