@@ -335,7 +335,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let response = self
             .command(&format!("UID FETCH {uid} (BODY.PEEK[])"))
             .await?;
-        Ok(parse::parse_fetch_body(&response.untagged, uid))
+        Ok(crate::parse_body::parse_fetch_body(&response.untagged, uid))
     }
 
     /// `LIST "" "*"`, returning every mailbox — asking for its SPECIAL-USE attributes
