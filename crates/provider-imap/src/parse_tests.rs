@@ -81,6 +81,22 @@ fn list_unescapes_a_quoted_name() {
 }
 
 #[test]
+fn a_nonstandard_escape_keeps_its_bytes_rather_than_failing_the_response() {
+    // `QUOTED-CHAR` allows `\` only before `"` or `\` (RFC 9051), so an escaped delimiter is
+    // a server getting it wrong. It is also the only way IMAP lets one name a folder whose
+    // own name contains the delimiter, which is why Proton Mail Bridge sends it. Refusing the
+    // line would lose every mailbox on it, so the bytes survive for `mail::split_at` to read.
+    let rows = parse_list(&lines(&[
+        r#"LIST () "/" "Labels/example.com 29\/01\/2021""#,
+    ]))
+    .unwrap();
+    assert_eq!(rows[0].name, r"Labels/example.com 29\/01\/2021");
+    // A legal escape still resolves, and an unterminated string is still an error.
+    let legal = parse_list(&lines(&[r#"LIST () "/" "weird\\name""#])).unwrap();
+    assert_eq!(legal[0].name, r"weird\name");
+}
+
+#[test]
 fn a_completion_line_is_not_a_list_row() {
     // A tagged completion's detail begins with the command name and, on Dovecot, ends in
     // a period: `List completed (0.003 + 0.000 + 0.002 secs).` — four items, whose first

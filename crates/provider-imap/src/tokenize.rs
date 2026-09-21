@@ -160,7 +160,18 @@ impl<'a> Tokens<'a> {
                 Some(b'"') => return Ok(Item::Quoted(String::from_utf8_lossy(&out).into_owned())),
                 Some(b'\\') => match self.bump() {
                     Some(c @ (b'"' | b'\\')) => out.push(c),
-                    _ => return Err(ImapError::protocol("bad escape in quoted string")),
+                    // RFC 9051's `QUOTED-CHAR` allows `\` only before `"` or `\`, so anything
+                    // else is a server getting it wrong. Keeping both bytes costs one
+                    // odd-looking string; refusing costs every mailbox on the line, because a
+                    // quoted string is parsed as part of a whole response. Proton Mail Bridge
+                    // escapes the hierarchy delimiter inside a mailbox name this way, which is
+                    // the only way IMAP lets it name a folder containing one, and
+                    // `mail::split_at` reads that escape back.
+                    Some(c) => {
+                        out.push(b'\\');
+                        out.push(c);
+                    }
+                    None => return Err(ImapError::protocol("unterminated quoted string")),
                 },
                 Some(b'\r' | b'\n') => {
                     return Err(ImapError::protocol("CR/LF in quoted string"));
