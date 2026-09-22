@@ -334,7 +334,7 @@ impl DavClient {
     /// the `Location`/`ETag` headers — and recording the negotiated HTTP and TLS
     /// versions on the way through. The one funnel every read and write response passes,
     /// so no path can forget to observe them.
-    async fn collect(&self, response: reqwest::Response) -> Result<HttpResponse, CalDavError> {
+    async fn collect(&self, response: engine_http::Sent) -> Result<HttpResponse, CalDavError> {
         self.connection.record(&response);
         let status = response.status().as_u16();
         let header = |name: reqwest::header::HeaderName| {
@@ -460,7 +460,7 @@ impl DavExecutor for DavClient {
         let status = response.status().as_u16();
         let bytes = response.bytes().await?;
         if (200..300).contains(&status) {
-            Ok(bytes.to_vec())
+            Ok(bytes)
         } else {
             Err(CalDavError::status(
                 status,

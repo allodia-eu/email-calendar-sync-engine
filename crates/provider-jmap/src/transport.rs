@@ -99,7 +99,7 @@ impl Transport {
     ///
     /// This is the one funnel every request in this transport passes, so no path can
     /// forget either the version observation or the negotiation.
-    async fn send(&self, builder: RequestBuilder) -> Result<reqwest::Response, JmapError> {
+    async fn send(&self, builder: RequestBuilder) -> Result<engine_http::Sent, JmapError> {
         let scheme = self.scheme.get();
         // Cloned before the body is consumed, so a scheme switch replays the identical
         // request. Only a streaming body would refuse to clone, and this transport sends
@@ -129,7 +129,7 @@ impl Transport {
     /// versions on the way through. The engine's shared client offers ALPN `h2` then
     /// `http/1.1` (`docs/agent-guidance/tls.md`), so this is HTTP/2 wherever the server
     /// supports it.
-    async fn dispatch(&self, builder: RequestBuilder) -> Result<reqwest::Response, JmapError> {
+    async fn dispatch(&self, builder: RequestBuilder) -> Result<engine_http::Sent, JmapError> {
         let response = send_retrying(builder, &self.retry).await?;
         self.connection.record(&response);
         Ok(response)
@@ -137,7 +137,7 @@ impl Transport {
 
     /// Sends an authenticated GET, returning the raw response so the caller can
     /// inspect a redirect's status and `Location` before reading any body.
-    pub(crate) async fn get(&self, url: &str) -> Result<reqwest::Response, JmapError> {
+    pub(crate) async fn get(&self, url: &str) -> Result<engine_http::Sent, JmapError> {
         self.send(self.client.get(url)).await
     }
 
@@ -146,7 +146,7 @@ impl Transport {
     /// content-negotiating server/proxy keys on to serve the streaming SSE
     /// representation rather than a buffered JSON/HTML one. The status is **not**
     /// checked here; the caller does so before treating the body as a stream.
-    pub(crate) async fn get_event_stream(&self, url: &str) -> Result<reqwest::Response, JmapError> {
+    pub(crate) async fn get_event_stream(&self, url: &str) -> Result<engine_http::Sent, JmapError> {
         self.send(
             self.client
                 .get(url)
@@ -166,7 +166,7 @@ impl Transport {
     /// status to [`JmapError::Status`] via [`error_for_status`].
     pub(crate) async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, JmapError> {
         let resp = self.send(self.client.get(url)).await?;
-        Ok(error_for_status(resp).await?.bytes().await?.to_vec())
+        Ok(error_for_status(resp).await?.bytes().await?)
     }
 
     /// POSTs raw `bytes` with `Content-Type: content_type` and parses the JSON
@@ -192,8 +192,9 @@ impl Transport {
 
 /// Reads a JSON body, mapping a non-success status to [`JmapError::Status`] with
 /// the body captured for diagnostics.
-pub(crate) async fn read_json(resp: reqwest::Response) -> Result<Value, JmapError> {
-    Ok(error_for_status(resp).await?.json::<Value>().await?)
+pub(crate) async fn read_json(resp: engine_http::Sent) -> Result<Value, JmapError> {
+    let body = error_for_status(resp).await?.bytes().await?;
+    Ok(serde_json::from_slice(&body)?)
 }
 
 /// Returns `resp` unchanged on a success (2xx) status, else consumes its body into a
@@ -201,8 +202,8 @@ pub(crate) async fn read_json(resp: reqwest::Response) -> Result<Value, JmapErro
 /// that turns an HTTP error status into an engine error, shared by the JSON, blob, and
 /// EventSource paths so their failure handling cannot drift.
 pub(crate) async fn error_for_status(
-    resp: reqwest::Response,
-) -> Result<reqwest::Response, JmapError> {
+    resp: engine_http::Sent,
+) -> Result<engine_http::Sent, JmapError> {
     let status = resp.status();
     if status.is_success() {
         Ok(resp)

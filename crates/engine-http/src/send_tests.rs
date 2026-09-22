@@ -82,7 +82,7 @@ async fn a_throttle_that_never_clears_is_handed_back_as_the_rate_limit_it_is() {
 #[tokio::test(start_paused = true)]
 async fn the_servers_own_retry_after_decides_the_wait() {
     let (url, _) = scripted(vec![
-        Reply("429 Too Many Requests", "Retry-After: 12\r\n", ""),
+        Reply("429 Too Many Requests", "Retry-After: 4\r\n", ""),
         Reply("200 OK", "", ""),
     ]);
     let (retry, log) = recording();
@@ -91,12 +91,12 @@ async fn the_servers_own_retry_after_decides_the_wait() {
         .await
         .expect("sent");
     assert!(
-        started.elapsed() >= Duration::from_secs(12),
+        started.elapsed() >= Duration::from_secs(4),
         "backoff would have guessed 250ms and been refused again",
     );
     let (_, _, delay, asked, _) = log.lock().unwrap()[0];
     assert!(asked);
-    assert!(delay >= Duration::from_secs(12));
+    assert!(delay >= Duration::from_secs(4));
 }
 
 #[tokio::test(start_paused = true)]

@@ -84,7 +84,7 @@ impl HttpTransport {
         content_type: Option<&str>,
         if_match: Option<&str>,
         body: Vec<u8>,
-    ) -> Result<reqwest::Response, GoogleError> {
+    ) -> Result<engine_http::Sent, GoogleError> {
         let mut request = self.client.request(method, url).bearer_auth(&self.token);
         if let Some(content_type) = content_type {
             request = request.header("Content-Type", content_type);
@@ -108,13 +108,13 @@ impl HttpTransport {
             let body = resp.text().await.unwrap_or_default();
             return Err(GoogleError::status(status.as_u16(), body));
         }
-        Ok(resp.bytes().await?.to_vec())
+        Ok(resp.bytes().await?)
     }
 }
 
 /// Turns a successful write response into its parsed JSON body, or `None` when the
 /// action carried none (`204`). A non-2xx is a classified [`GoogleError::Status`].
-async fn write_body(resp: reqwest::Response) -> Result<Option<Value>, GoogleError> {
+async fn write_body(resp: engine_http::Sent) -> Result<Option<Value>, GoogleError> {
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -139,7 +139,7 @@ impl GoogleTransport for HttpTransport {
             let body = resp.text().await.unwrap_or_default();
             return Err(GoogleError::status(status.as_u16(), body));
         }
-        Ok(resp.json::<Value>().await?)
+        Ok(serde_json::from_slice(&resp.bytes().await?)?)
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GoogleError> {
@@ -358,7 +358,12 @@ mod tests {
         .get(&base)
         .await
         .unwrap_err();
-        assert!(matches!(err, GoogleError::Transport(_)));
+        // `Json`, not `Transport`: the bytes arrived fine and are not the JSON the
+        // protocol requires, which is what that variant is for. It used to be `Transport`
+        // only because `reqwest::Response::json` wrapped the parse failure as a decode
+        // error of its own — and a reply now comes back through `engine_http::Sent`, whose
+        // bytes this crate parses itself. The class callers branch on is unchanged.
+        assert!(matches!(err, GoogleError::Json(_)));
         assert_eq!(err.failure_class(), FailureClass::Permanent);
     }
 

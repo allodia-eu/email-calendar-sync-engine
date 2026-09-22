@@ -244,13 +244,18 @@ Three properties hold the design together:
 - **Bodies are read only where the adapter asked.** `reads_body_of(status)` is consulted before
   anything is buffered, and claims `403` for Google and `400` for JMAP — nothing else. A
   classifier that claimed `200` would buffer every page the adapter ever fetched.
-- **The reply survives being read.** Reading a body consumes the response, and the adapter is
-  still owed one, so it is reassembled around the bytes just read: status, HTTP version,
-  headers and extensions all cross over. The extensions matter more than they look — reqwest's
-  `TlsInfo` lives there, and dropping it would make a throttled account the one account that
-  reports no TLS version, silently. The transfer headers are the exception and are restated,
-  because reqwest has already decompressed the body and `Content-Encoding: gzip` over
-  un-gzipped bytes is a statement that is simply false.
+- **Nothing is reconstructed.** Reading a body used to mean losing the reply —
+  `Response::bytes` consumes `self` — so the first version of this took the reply apart and
+  built a new one around the bytes, copying the status, version, headers and extensions across
+  by hand. That is a list of fields somebody has to keep in step with reqwest, and one of them
+  was already nearly missed: `TlsInfo` lives in the extensions, and dropping it would have made
+  a throttled account the one account reporting no TLS version, with nothing failing to say so.
+  The URL could not be carried at all. So the body is drained through `Response::chunk`, which
+  takes `&mut self`, and **the reply handed back is the object the client produced**. `Sent`
+  wraps it: it derefs to the response for everything taken by reference, and its own `text`
+  and `bytes` hand back what was already read. A caller cannot reach past it to an empty
+  body — `Response`'s consuming readers are unreachable through a `Deref`, so it does not
+  compile.
 
 A classifier may also name a wait. Google's does: the `403` carries the quota window's start,
 so the time to the window's end is the server's own number and is honoured exactly as a

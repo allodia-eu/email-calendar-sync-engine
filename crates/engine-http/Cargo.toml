@@ -21,10 +21,6 @@ engine-provider = { workspace = true, features = ["http"] }
 tokio = { workspace = true, features = ["time", "sync"] }
 # Parses `Retry-After`'s HTTP-date form, all three syntaxes RFC 9110 §5.6.7 requires.
 httpdate = { workspace = true }
-# Reassembles a reply whose body a `ThrottleClassifier` had to read. Reading a body
-# consumes the response, and the adapter still has to be handed one back; reqwest
-# converts in both directions through `http::Response` and offers no other way.
-http = { workspace = true }
 
 [dev-dependencies]
 # The client the providers actually build, so the tests send through the same stack (and

@@ -148,18 +148,14 @@ impl RetryConfig {
 /// [`ThrottleClassifier`], whatever else that classifier recognises in a body. The status
 /// rule is applied first and on its own, so the replies that were already waited out are
 /// waited out on exactly the path they always were, and a classifier can only ever add to
-/// the set. A reply a classifier had to read is reassembled around the bytes it read —
-/// status, version, headers and extensions all cross over, and the transfer headers are
-/// restated for a body reqwest has already decoded.
+/// the set. A reply a classifier had to read comes back through [`Sent`] with those bytes
+/// attached — the reply object itself is untouched, so nothing about it can be lost.
 ///
 /// # Errors
 ///
 /// Returns the `reqwest` error from building or sending the request, or from reading the
 /// body of a reply the classifier asked to see.
-pub async fn send_retrying(
-    request: RequestBuilder,
-    retry: &RetryConfig,
-) -> reqwest::Result<Response> {
+pub async fn send_retrying(request: RequestBuilder, retry: &RetryConfig) -> reqwest::Result<Sent> {
     let (client, built) = request.build_split();
     let mut pending = built?;
     // Held until this returns, so the account's ceiling counts a retrying request once,
@@ -173,22 +169,24 @@ pub async fn send_retrying(
         // replay (a stream); no adapter here sends one, and the arm below is what happens
         // if one ever does.
         let replay = pending.try_clone();
-        let response = client.execute(pending).await?;
+        let mut response = client.execute(pending).await?;
         let status = response.status().as_u16();
-        let (response, stated) = if retryable(status, idempotent) {
-            // The status settles it: nothing is read, and the reply is the one that
-            // arrived rather than one put back together.
-            (response, None)
+        let (body, stated) = if retryable(status, idempotent) {
+            // The status settles it, so the body is never touched — which matters beyond
+            // efficiency: a JMAP EventSource stream comes back through here, and reading
+            // one to the end never returns.
+            (None, None)
         } else if retry.classifier.reads_body_of(status) {
-            let (response, body) = buffered(response).await?;
+            let body = drain(&mut response).await?;
             match retry.classifier.throttle(status, &body) {
-                Some(throttle) => (response, throttle.stated_wait()),
+                Some(throttle) => (Some(body), throttle.stated_wait()),
                 // Exactly the refusal its status says it is — a real `403`, not a quota
-                // one. Handed back read, which is what the adapter was about to do.
-                None => return Ok(response),
+                // one. Handed back with the bytes already read, which is what the adapter
+                // was about to do itself.
+                None => return Ok(Sent::read(response, body)),
             }
         } else {
-            return Ok(response);
+            return Ok(Sent::whole(response));
         };
         let retry_after = stated.or_else(|| {
             response
@@ -210,7 +208,7 @@ pub async fn send_retrying(
         );
         let (Some(wait), Some(next)) = (granted, replay) else {
             retry.report(status, number, waited, retry_after.is_some(), true);
-            return Ok(response);
+            return Ok(Sent { response, body });
         };
         retry.report(status, number, wait.delay, wait.server_asked, false);
         tokio::time::sleep(wait.delay).await;
@@ -220,47 +218,122 @@ pub async fn send_retrying(
     }
 }
 
-/// Reads a reply's body so a classifier can see it, and hands back a reply that still has
-/// one.
+/// A reply [`send_retrying`] is handing back, and whatever it had to learn on the way.
 ///
-/// Reading consumes the response, and the adapter is still owed one — so the reply is taken
-/// apart and put back together around the bytes just read. Status, HTTP version, headers and
-/// extensions all cross over, which is what the adapter and [`ObservedConnection`] actually
-/// read from a reply: the negotiated TLS version lives in an extension, and losing it here
-/// would make a throttled account the one account that reports no TLS version.
+/// # Why this is not just a `reqwest::Response`
 ///
-/// Two things do not survive, both deliberately:
+/// Classifying a refusal means reading its body, and reading a body used to mean losing the
+/// reply: `Response::bytes` consumes `self`, so an earlier version of this crate took the
+/// reply apart and built a new one around the bytes — copying the status, the version, the
+/// headers and the extensions across by hand. That works until it silently does not. The
+/// negotiated TLS version lives in an extension, and dropping it would have made a throttled
+/// account the one account reporting no TLS version, with nothing failing to say so; the URL
+/// could not be carried over at all, because reqwest will not let anything outside itself set
+/// one. Every field was one somebody had to remember.
 ///
-/// - **The URL**, which reqwest will not let anything outside itself set. No adapter reads one, and
-///   this is the reason to keep it that way — a request path names the user's own mail, which is
-///   also why [`ThrottleEvent`] refuses to carry one.
-/// - **The transfer headers.** `Content-Encoding`, `Content-Length` and `Transfer-Encoding`
-///   describe the bytes that were on the wire, and reqwest has already decompressed them (Gmail's
-///   refusals arrive gzipped). Carrying `Content-Encoding: gzip` over to a body that is no longer
-///   gzipped states something false; `Content-Length` is restated, since after decoding it is known
-///   exactly.
+/// So nothing is rebuilt. The body is drained through [`Response::chunk`], which takes
+/// `&mut self`, and **the reply that comes back is the same object the client produced** —
+/// its status, headers, version, extensions and URL are the originals, not copies, so there
+/// is no list of fields to keep in step with reqwest.
 ///
-/// [`ObservedConnection`]: crate::ObservedConnection
-/// [`ThrottleEvent`]: crate::ThrottleEvent
-async fn buffered(response: Response) -> reqwest::Result<(Response, Vec<u8>)> {
-    use reqwest::header::{CONTENT_ENCODING, CONTENT_LENGTH, TRANSFER_ENCODING};
+/// What is left is that a drained reply has no body to read a second time, and that is
+/// handled by type rather than by care: this derefs to the response for everything taken by
+/// reference, while [`text`](Self::text) and [`bytes`](Self::bytes) are inherent methods that
+/// hand back the bytes already read. `Response`'s own consuming readers are unreachable
+/// through a `Deref`, so a caller cannot reach past this and find an empty body — it does not
+/// compile.
+pub struct Sent {
+    response: Response,
+    /// The body, where the funnel had to read it to classify the reply.
+    body: Option<Vec<u8>>,
+}
 
-    let status = response.status();
-    let version = response.version();
-    let mut headers = response.headers().clone();
-    let extensions = response.extensions().clone();
-    let body = response.bytes().await?.to_vec();
+impl Sent {
+    /// A reply nothing here read — the ordinary case, and the only one a streaming body
+    /// survives.
+    fn whole(response: Response) -> Self {
+        Self {
+            response,
+            body: None,
+        }
+    }
 
-    headers.remove(CONTENT_ENCODING);
-    headers.remove(TRANSFER_ENCODING);
-    headers.insert(CONTENT_LENGTH, body.len().into());
+    /// A reply whose body a classifier asked to see, and which turned out not to be a
+    /// throttle after all.
+    fn read(response: Response, body: Vec<u8>) -> Self {
+        Self {
+            response,
+            body: Some(body),
+        }
+    }
 
-    let mut rebuilt = http::Response::new(body.clone());
-    *rebuilt.status_mut() = status;
-    *rebuilt.version_mut() = version;
-    *rebuilt.headers_mut() = headers;
-    *rebuilt.extensions_mut() = extensions;
-    Ok((Response::from(rebuilt), body))
+    /// The whole body as bytes, read now or already read here.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `reqwest` error from reading the body.
+    pub async fn bytes(self) -> reqwest::Result<Vec<u8>> {
+        match self.body {
+            Some(body) => Ok(body),
+            None => Ok(self.response.bytes().await?.to_vec()),
+        }
+    }
+
+    /// The whole body as text, lossily decoded like `Response::text`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `reqwest` error from reading the body.
+    pub async fn text(self) -> reqwest::Result<String> {
+        match self.body {
+            // `Response::text` decodes by the charset the headers name; these bytes came
+            // from a JSON or XML error document, and every provider here serves those as
+            // UTF-8. Lossy rather than strict, for the same reason `text` is: a malformed
+            // byte in a diagnostic body should not turn into a second failure.
+            Some(body) => Ok(String::from_utf8_lossy(&body).into_owned()),
+            None => self.response.text().await,
+        }
+    }
+
+    /// The reply itself, for a caller that wants to stream the body rather than hold it.
+    ///
+    /// The JMAP EventSource push stream is the one caller: its body never ends, so it must
+    /// not be read here. It is a `200`, which no classifier claims, so it always arrives
+    /// undrained — and [`bytes`](Self::bytes) would work on it in the sense that it would
+    /// never return.
+    #[must_use]
+    pub fn into_streaming(self) -> Response {
+        self.response
+    }
+}
+
+impl core::ops::Deref for Sent {
+    type Target = Response;
+
+    fn deref(&self) -> &Response {
+        &self.response
+    }
+}
+
+impl core::fmt::Debug for Sent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Sent")
+            .field("status", &self.response.status())
+            .field("body_read", &self.body.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Reads a reply's body to the end without consuming the reply.
+///
+/// `Response::chunk` takes `&mut self` where `bytes` takes `self`, which is the whole reason
+/// this crate no longer reconstructs anything.
+async fn drain(response: &mut Response) -> reqwest::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Bits to place one backoff inside its jitter window.

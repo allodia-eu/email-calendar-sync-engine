@@ -44,7 +44,7 @@ pub use gate::{GatePermit, RequestGate};
 pub use observed::ObservedConnection;
 pub use observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver};
 pub use policy::RetryPolicy;
-pub use send::{RetryConfig, send_retrying};
+pub use send::{RetryConfig, Sent, send_retrying};
 
 #[cfg(test)]
 mod classify_send_tests;
