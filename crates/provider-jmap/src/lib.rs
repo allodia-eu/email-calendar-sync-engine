@@ -38,6 +38,7 @@ mod calendar_patch;
 mod calendar_rsvp;
 mod calendar_rule;
 mod calendar_write;
+mod config;
 mod contact;
 mod contact_fields;
 mod contact_write;
@@ -56,7 +57,9 @@ mod provider_calendar;
 mod report;
 mod request;
 mod session;
+mod session_accounts;
 mod session_urls;
+mod shared;
 mod submit;
 mod submit_body;
 mod sync_ops;
@@ -64,10 +67,9 @@ mod transport;
 mod watch;
 
 use core::fmt;
-use std::sync::Arc;
 
+pub use config::{Credentials, JmapConfig};
 use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
-use engine_tls::TlsClientConfig;
 pub use error::JmapError;
 pub use provider::JmapProvider;
 use reqwest::Url;
@@ -83,146 +85,6 @@ use crate::{
 /// The maximum number of redirects followed while discovering the session
 /// resource (the well-known endpoint 307-redirects to the session URL).
 const MAX_SESSION_REDIRECTS: usize = 5;
-
-/// Credentials for authenticating to a JMAP server.
-///
-/// This names the credential the caller *holds*, not the header that goes on the wire.
-/// JMAP specifies no authentication mechanism of its own — RFC 8620 §8.2 defers to the
-/// IANA scheme registry and marks Basic NOT RECOMMENDED — so the scheme is whatever the
-/// server challenges for, and the transport re-frames the secret to match (see
-/// `crate::auth`). A `Basic` credential is therefore also presentable as a bearer token;
-/// the variant records that a username came with it, not that Basic will be sent.
-///
-/// `Debug` is redacted — the secret never appears in logs (`north-star.md` security).
-#[derive(Clone)]
-pub enum Credentials {
-    /// A username and secret: a login password, an app-specific password, or an API
-    /// token that the user happened to enter alongside their address.
-    Basic {
-        /// The username (full email address for the fixture).
-        username: String,
-        /// The password or app-specific token.
-        password: String,
-    },
-    /// A bare secret with no username — an OAuth or API bearer token.
-    Bearer(String),
-}
-
-impl Credentials {
-    /// HTTP Basic credentials.
-    #[must_use]
-    pub fn basic(username: impl Into<String>, password: impl Into<String>) -> Self {
-        Self::Basic {
-            username: username.into(),
-            password: password.into(),
-        }
-    }
-
-    /// An OAuth bearer token.
-    #[must_use]
-    pub fn bearer(token: impl Into<String>) -> Self {
-        Self::Bearer(token.into())
-    }
-}
-
-impl fmt::Debug for Credentials {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Never render the secret.
-        let kind = match self {
-            Self::Basic { username, .. } => format!("Basic {{ username: {username:?}, .. }}"),
-            Self::Bearer(_) => "Bearer(..)".to_owned(),
-        };
-        f.write_str(&kind)
-    }
-}
-
-/// How to connect a [`JmapClient`].
-#[derive(Clone)]
-pub struct JmapConfig {
-    base_url: String,
-    credentials: Credentials,
-    session_path: String,
-    session_urls: SessionUrlPolicy,
-    tls: TlsClientConfig,
-    retry: engine_http::RetryConfig,
-    connect_observer: Option<Arc<dyn ConnectObserver>>,
-}
-
-impl JmapConfig {
-    /// Configures a connection to `base_url` (e.g. `http://127.0.0.1:18080`) with
-    /// `credentials`, defaulting to well-known session discovery and rebasing
-    /// advertised URLs onto the connection.
-    #[must_use]
-    pub fn new(base_url: impl Into<String>, credentials: Credentials) -> Self {
-        Self {
-            base_url: base_url.into(),
-            credentials,
-            session_path: "/.well-known/jmap".to_owned(),
-            session_urls: SessionUrlPolicy::RebaseToConnection,
-            tls: TlsClientConfig::default(),
-            retry: engine_http::RetryConfig::default(),
-            connect_observer: None,
-        }
-    }
-
-    /// Overrides the session-discovery path (default `/.well-known/jmap`).
-    #[must_use]
-    pub fn with_session_path(mut self, path: impl Into<String>) -> Self {
-        self.session_path = path.into();
-        self
-    }
-
-    /// Overrides how advertised session URLs are resolved.
-    #[must_use]
-    pub fn with_session_urls(mut self, policy: SessionUrlPolicy) -> Self {
-        self.session_urls = policy;
-        self
-    }
-
-    /// Sets the TLS trust policy (the host builds one and shares it across the
-    /// account's providers). Defaults to the hermetic bundled roots
-    /// (`docs/agent-guidance/tls.md`).
-    #[must_use]
-    pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
-        self.tls = tls;
-        self
-    }
-
-    /// Sets the throttling policy (the host builds one and shares it across the account's
-    /// providers, like the TLS policy above). Defaults to waiting a `429` out
-    /// (`docs/agent-guidance/http-throttling.md`).
-    #[must_use]
-    pub fn with_retry(mut self, retry: engine_http::RetryConfig) -> Self {
-        self.retry = retry;
-        self
-    }
-
-    /// Observes the connect phase: one [`ConnectStep::Redirected`] per well-known hop,
-    /// [`ConnectStep::Authenticated`] when the server serves the session, and
-    /// [`ConnectStep::Discovered`] naming the `apiUrl` that will serve every method
-    /// call. No TLS step — an HTTP adapter learns its TLS version from a response,
-    /// after the connect phase, so it lands in `ConnectionInfo::tls_version` instead
-    /// (`docs/agent-guidance/tls.md`).
-    ///
-    /// The observer rides on the config, so a host that rebuilds this client after a
-    /// dropped session observes the redial too. `Arc` so one host observer can be
-    /// shared across the account's providers.
-    #[must_use]
-    pub fn with_connect_observer(mut self, observer: Arc<dyn ConnectObserver>) -> Self {
-        self.connect_observer = Some(observer);
-        self
-    }
-}
-
-impl fmt::Debug for JmapConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JmapConfig")
-            .field("base_url", &self.base_url)
-            .field("session_path", &self.session_path)
-            .field("session_urls", &self.session_urls)
-            .finish_non_exhaustive()
-    }
-}
 
 /// A connected JMAP client: an authenticated transport plus the resolved session.
 ///
@@ -266,7 +128,12 @@ impl JmapClient {
         // started from. A chain that changed origin means the advertised `apiUrl`
         // belongs to the new one, and rebasing it onto the old one aims every method
         // call at a host that never had the session.
-        let session = Session::parse(&document, &served_by, config.session_urls)?;
+        let session = Session::parse(
+            &document,
+            &served_by,
+            config.session_urls,
+            config.shared_mailbox.as_ref(),
+        )?;
         // What this server said it allows, stated once for the whole account. RFC 8620 §2
         // scopes `maxConcurrentRequests` to the API endpoint and defines no companion for
         // downloads, but a server may apply one number to both and Stalwart does — so it

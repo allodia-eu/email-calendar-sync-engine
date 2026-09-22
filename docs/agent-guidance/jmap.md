@@ -242,6 +242,17 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   taxonomy. Sending is outbox-mediated by `engine-sync::submit_mail`: a durable
   `PendingOp` (carrying the serialized draft, idempotent by `Message-ID`) precedes
   the provider call; the result is recorded under the op lease.
+  - **The identity is the one for the draft's `From`, never simply the first.** An account
+    holds one identity per address it may send as, and membership of a group mailbox gives
+    it the group's — which Stalwart lists **ahead of** the user's own. Taking `list[0]`
+    (which this used to do) submitted `From: alice@` under `support@`, and Stalwart
+    answered `forbiddenFrom`; the moment the harness grew a group mailbox, four live
+    submission tests failed that way. The match is the exact address first, then an
+    identity whose address is `*@domain` covering it (RFC 8621 §6), both ASCII
+    case-insensitive. A `From` no identity covers is **refused before anything is created**
+    (`JmapError::Refused`, `Permanent`): the RFC says the identity's address is the one the
+    client MUST use, so sending under another would be the client's violation, not the
+    server's call.
 - **Sender identities.** `Identity/get` and `Identity/set` (RFC 8621 §6) back the
   neutral `sender_identities`/`set_sender_name` verbs (`providers.md`). They belong to
   the **submission** capability, not to mail, so every request names
@@ -536,6 +547,40 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   now wrong. Neither is a harness problem and neither is fixed by this pin; the shape of a
   fix has to be provider-neutral (CalDAV discovers the same fact from `OPTIONS`, per #107),
   so it is tracked separately rather than patched into the JMAP adapter.
+
+## Shared mailboxes: the session's `accounts` map
+
+RFC 8620 §1.6.2's `accounts` map lists **every** account the credential can reach, the user's
+own marked `isPersonal: true`; the rest are stores shared with it. The client used to parse
+`primaryAccounts` and discard the map, which is why `list_shared_mailboxes()` needs no
+request — the answer arrived with the session `connect` already fetched (`crate::shared`,
+`crate::session_accounts`). On a server implementing JMAP Sharing (RFC 9670) the map holds
+the shares the user has **subscribed** to, so a share appears there once accepted.
+
+- **What is listed:** accounts with `isPersonal: false` that expose `urn:ietf:params:jmap:mail`.
+  The user's own is left out (a host already holds it), and so is an account shared for another
+  domain alone — it is not a mailbox. The handle is the account id; the account `name` ("usually
+  the primary email address") is offered as the address only when it has an address's shape.
+  `Enumerable` is advertised whenever the server serves mail and an `accounts` map, whatever
+  the client is bound to. Resolving an address reads this list (the trait's default).
+- **Binding is `JmapConfig::with_shared_mailbox(handle)`.** Every domain the bound account
+  exposes in its own `accountCapabilities` is then addressed at it — mail, submission,
+  calendars, contacts — and a domain it does not expose is simply not advertised, with an
+  accessor error that names the reason. The handle is checked at connect, so a withdrawn or
+  foreign one fails `connect` rather than every call after it.
+- **Rights come from each `Mailbox.myRights`; the account flag cannot answer.** Live against
+  Stalwart, the account bob shares read-only reports `isReadOnly: false` while the one INBOX
+  it exposes grants `mayReadItems` alone. So `mail_writes` stays advertised for it (the account
+  flag is what gates that, as RFC 8620 defines it) and the *folder* says read-only
+  (`modeling.md`).
+- **Stalwart gives every account the same `accountCapabilities`,** shares included — so the
+  per-account narrowing is a no-op against it and is driven offline by a trimmed session. It
+  is kept because RFC 8620 defines the set per account precisely so it *can* differ.
+- **Sending from a group mailbox works through its own account.** Bound to it, `Identity/get`
+  answers the group's one identity and the message leaves as the group (live: the copy bob
+  receives is `From: support@`). A share granted read-only answers `Identity/get` with
+  `forbidden`, so a send there fails `Permanent`; `submission` is still advertised for it
+  because its `accountCapabilities` say so, and a capability names the door, not that it opens.
 
 ## Known limitations (documented, not bugs)
 

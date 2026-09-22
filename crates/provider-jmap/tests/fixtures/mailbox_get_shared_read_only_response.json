@@ -1,0 +1,40 @@
+{
+  "methodResponses": [
+    [
+      "Mailbox/get",
+      {
+        "accountId": "d",
+        "state": "shy",
+        "list": [
+          {
+            "id": "a",
+            "name": "Inbox",
+            "parentId": null,
+            "role": "inbox",
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 13,
+            "unreadEmails": 13,
+            "totalThreads": 13,
+            "unreadThreads": 13,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": false,
+              "mayRemoveItems": false,
+              "maySetSeen": false,
+              "maySetKeywords": false,
+              "mayCreateChild": false,
+              "mayRename": false,
+              "maySubmit": false,
+              "mayDelete": false,
+              "mayShare": false
+            }
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "1fd7d549"
+}

@@ -31,6 +31,86 @@ async fn submit_email_resolves_context_then_sends() {
     );
 }
 
+/// Sends one draft from `from` against `context`, returning the `identityId` the
+/// submission carried — or the refusal, when it never got that far.
+async fn identity_sent_for(context: serde_json::Value, from: &str) -> Result<String, String> {
+    use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
+    use engine_provider::Draft;
+
+    let exec = FakeExecutor::new(vec![context, fixture("submit_send_response.json")]);
+    let draft = Draft::new(
+        MessageIdHeader::new("identity-probe@test.local").unwrap(),
+        EmailAddress::new(from),
+        vec![EmailAddress::new("bob@test.local")],
+        "Identity probe",
+        "Hello",
+    );
+    crate::submit::send(&exec, "c", "c", &draft)
+        .await
+        .map_err(|err| err.to_string())?;
+    let requests = exec.requests.lock().unwrap();
+    Ok(
+        requests[1]["methodCalls"][1][1]["create"]["sub"]["identityId"]
+            .as_str()
+            .expect("identityId")
+            .to_owned(),
+    )
+}
+
+#[tokio::test]
+async fn the_submission_identity_is_the_one_for_the_drafts_from() {
+    // The captured `Identity/get` of alice after she joined the `support` group: two
+    // identities, the group's listed **first**. Taking the first — which this used to do —
+    // submitted `From: alice@` under `support@`, and Stalwart answered `forbiddenFrom`.
+    let context = || fixture("submit_context_shared_identities_response.json");
+    assert_eq!(
+        identity_sent_for(context(), "alice@test.local").await,
+        Ok("c".into())
+    );
+    assert_eq!(
+        identity_sent_for(context(), "support@test.local").await,
+        Ok("b".into())
+    );
+    // Neither half of an address is compared case-sensitively.
+    assert_eq!(
+        identity_sent_for(context(), "Alice@TEST.local").await,
+        Ok("c".into())
+    );
+
+    // An address no identity covers is refused before anything is created: sending it
+    // under some other identity would break RFC 8621 §6's MUST on the client's side.
+    let refused = identity_sent_for(context(), "stranger@example.test").await;
+    assert!(refused.unwrap_err().contains("may send as"));
+}
+
+#[tokio::test]
+async fn a_wildcard_identity_covers_its_domain_but_an_exact_one_wins() {
+    // RFC 8621 §6: an identity whose address is `*@domain` may send as any address there.
+    // Rewrite the captured group identity into one, keeping its place ahead of alice's.
+    let mut context = fixture("submit_context_shared_identities_response.json");
+    let identities = context["methodResponses"][1][1]["list"]
+        .as_array_mut()
+        .unwrap();
+    assert_eq!(identities[0]["email"], "support@test.local");
+    identities[0]["email"] = json!("*@test.local");
+
+    assert_eq!(
+        identity_sent_for(context.clone(), "carol@test.local").await,
+        Ok("b".into())
+    );
+    // Alice's own identity names her exactly, so it wins over the wildcard listed first.
+    assert_eq!(
+        identity_sent_for(context.clone(), "alice@test.local").await,
+        Ok("c".into())
+    );
+    // The wildcard is a domain match, not a suffix match.
+    assert!(
+        identity_sent_for(context, "carol@nottest.local")
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn submit_email_uploads_attachment_bytes_before_sending() {
     use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
