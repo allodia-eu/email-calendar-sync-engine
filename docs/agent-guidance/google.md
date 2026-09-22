@@ -347,6 +347,37 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
   with it. An `EXDATE` value becomes an excluded override; an `RDATE` becomes an override that
   patches nothing, which is JSCalendar's way of saying "this instance happens as well".
 
+### `accessRole` → `CalendarAccess`: five roles, four different grants
+
+Google documents five values for a `calendarList` entry's `accessRole`, and collapsing any two
+tells a host it may do something the API refuses — or, for `freeBusyReader`, that it may read
+events it may only see the busy times of. The adapter used to map `writer` to `owner()` and
+`freeBusyReader` to `reader()`, which did both.
+
+- `owner` — everything, including "the additional ability to see and modify access levels of
+  other users": sharing, and deleting the calendar.
+- `writer`, `writerWithoutPrivateAccess` — read and write **events**, but neither re-share nor
+  delete the calendar, which stay the owner's. They differ only in whether a private event's
+  details are visible, which `CalendarAccess` does not model.
+- `reader` — see the events, change nothing.
+- `freeBusyReader` — busy times only (`CalendarAccess::free_busy_only`).
+
+An absent or unknown role reads as `reader`: visible and immutable, hiding a capability
+rather than inviting a rejected write. **Live-verified for `owner` and `reader`** — the two roles
+the throwaway account holds, which the old mapping also got right. `writer`,
+`writerWithoutPrivateAccess` and `freeBusyReader` need a *second* Google account to share a
+calendar from, so they are proven offline only (`cal_normalize_tests`).
+
+## Shared mailboxes: Gmail has no usable mechanism
+
+`GmailProvider` advertises `SharedMailboxes::Unsupported`, and that is a decision rather than
+an omission. Gmail delegation is a real product feature, but a user credential cannot reach it:
+the API route that would serve it, `users/{userId}` for another user, needs a **service
+account with domain-wide delegation** — a different credential model from the user bearer
+token this adapter holds. Advertising anything else would offer a host an onboarding flow that
+could only fail, so both discovery verbs keep their rejecting defaults (`providers.md`). Google
+*Calendar* sharing is a separate mechanism, the `accessRole` above.
+
 ## Testing (3-tier, mirroring Graph — `AGENTS.md` offline-mock caveat)
 
 1. **Offline** (always green): normalizers + error mapping against scrubbed captured

@@ -52,6 +52,38 @@ fn calendar_list_maps_primary_and_reader_roles() {
 }
 
 #[test]
+fn each_access_role_maps_to_the_grant_it_names() {
+    let owner = access_role(Some("owner"));
+    assert!(owner.may_read && owner.may_write && owner.may_share && owner.may_delete);
+
+    // A writer edits events but does not own the calendar: it cannot re-share or delete it.
+    // `writerWithoutPrivateAccess` differs only in hidden private-event details.
+    for role in ["writer", "writerWithoutPrivateAccess"] {
+        let writer = access_role(Some(role));
+        assert!(
+            writer.may_read && writer.may_write && writer.may_rsvp,
+            "{role}"
+        );
+        assert!(!writer.may_share && !writer.may_delete, "{role}");
+    }
+
+    let reader = access_role(Some("reader"));
+    assert!(reader.may_read && !reader.may_write);
+
+    // The privacy-relevant one: busy times, never the events themselves.
+    let free_busy = access_role(Some("freeBusyReader"));
+    assert!(!free_busy.may_read && free_busy.may_read_free_busy);
+    assert!(!free_busy.may_write && !free_busy.may_rsvp);
+
+    // Absent or unknown reads as visible-but-immutable: a capability hidden rather than a
+    // rejected write invited.
+    for unknown in [None, Some("somethingNew")] {
+        let fallback = access_role(unknown);
+        assert!(fallback.may_read && !fallback.may_write);
+    }
+}
+
+#[test]
 fn single_event_normalizes_zoned_time_participants_and_location() {
     let event = event(SINGLE);
     assert_eq!(event.title, "Fixture: single meeting");
