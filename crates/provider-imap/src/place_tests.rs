@@ -9,6 +9,12 @@ use crate::{
     transport::Connection,
 };
 
+/// The credential's own store on a server advertising no namespaces — every folder is its
+/// own, the behaviour these tests predate namespaces with.
+fn own() -> crate::store::MailStore {
+    crate::store::MailStore::own(&crate::store::Namespaces::default())
+}
+
 const GREETING: &str = "* OK ready\r\n";
 const LOGIN_OK: &str = "a1 OK LOGIN completed\r\n";
 
@@ -34,7 +40,7 @@ async fn the_role_folder_wins_over_a_conventionally_named_one() {
          a2 OK LIST done\r\n"])
     .await;
 
-    let folder = resolve_filing_folder(&mut conn, Filing::Sent)
+    let folder = resolve_filing_folder(&mut conn, &own(), Filing::Sent)
         .await
         .unwrap();
     assert_eq!(folder, "Verzonden items");
@@ -52,9 +58,10 @@ async fn a_role_folder_resolves_to_its_decoded_name_and_appends_to_the_wire_name
     ])
     .await;
 
-    let (folder, append_uid) = super::append_to_role_folder(&mut conn, Filing::Sent, b"raw")
-        .await
-        .unwrap();
+    let (folder, append_uid) =
+        super::append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw")
+            .await
+            .unwrap();
 
     assert_eq!(folder, "日本語");
     assert_eq!(append_uid, Some((7, 3)));
@@ -85,7 +92,7 @@ async fn no_advertised_role_folder_falls_back_to_the_conventional_name() {
     ])
     .await;
 
-    let folder = resolve_filing_folder(&mut conn, Filing::Sent)
+    let folder = resolve_filing_folder(&mut conn, &own(), Filing::Sent)
         .await
         .unwrap();
 

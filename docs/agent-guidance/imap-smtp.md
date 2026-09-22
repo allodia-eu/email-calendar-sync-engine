@@ -206,8 +206,8 @@ is authoritative for the `provider-caldav` calendar client.
   attributes. `list_command` builds the clause, and asks for `SPECIAL-USE` only where the
   capability was advertised: an unadvertised return option is a `BAD`, which costs the
   whole folder list rather than only its roles.
-- **Unread counts** (`Mailbox::unread_count`, `unseen.rs`). `LIST` carries none, so the
-  folder-list sync asks for `UNSEEN` too: one round trip via
+- **Unread counts** (`Mailbox::unread_count`, `listing.rs`/`unseen.rs`). `LIST` carries none,
+  so the folder-list sync asks for `UNSEEN` too: one round trip via
   `LIST "" "*" RETURN (SPECIAL-USE STATUS (UNSEEN))` where the server advertised
   **LIST-STATUS** (RFC 5819), else one `STATUS <mailbox> (UNSEEN)` per selectable mailbox — capped at
   `MAX_STATUS_PROBES`, so a pathological account cannot turn a folder list into a
@@ -472,6 +472,65 @@ is authoritative for the `provider-caldav` calendar client.
   a second connection pushes a `Changed` — confirming the path across a second server
   implementation, like the QRESYNC delta was.
 
+## Shared mailboxes: namespaces, stores and rights
+
+`LIST "" "*"` answers for every principal at once: the credential's own folders and every
+folder shared with it, flat and interleaved. Before this was read against `NAMESPACE` two
+things went wrong — a folder list held two principals' folders, and the `\Sent` a sent copy
+was filed into was whichever the server listed first (Stalwart happens to list the
+credential's own first, which is why it looked right). `crate::store` is the fix, and
+everything below runs against Stalwart and both Dovecots (`live_imap_shared_contract.rs`).
+
+- **A provider covers one store** (`MailStore`): the credential's own — the whole tree minus
+  every foreign namespace — or one shared store, bound with `ImapConfig::with_shared_mailbox`.
+  The folder list, the Sent/Drafts placement (on the standing session *and* a re-dialed one)
+  and a fallback folder's creation are all scoped to it. A server without `NAMESPACE`
+  yields the old behaviour exactly: everything is the credential's own.
+- **The namespaces are asked for lazily and kept** (`crate::folders`). A host runs one provider
+  per folder and most of them never need to know whose mail is whose, so a `NAMESPACE` at
+  connect would be a round trip per folder per pass for nothing. Prefixes arrive in the wire
+  dialect and are decoded like names, so they compare against decoded mailbox ids.
+- **RFC 2342's two foreign positions are treated alike.** Both Stalwart and Dovecot put their
+  stores in *Other Users'*; the engine's only question is mine-or-not. A prefix match must end
+  at the delimiter: `Shared Foldersomething` is somebody's own folder.
+- **Where a store keeps its inbox is not assumable.** Stalwart makes the store's root a
+  `\Noselect` container with `INBOX` below it; Dovecot makes the **root itself** the inbox —
+  selectable, holding the mail, with `…/INBOX` an alias it never lists. So the store's `LIST`
+  pattern is `<root>*` (the root and everything below), and a selectable root is adopted as the
+  Inbox. Dropping it — which the first cut of this code did — lost Dovecot's Inbox, and made a
+  share of one INBOX list nothing at all. A shared store is re-rooted either way: its top
+  folders have no parent, and its `INBOX` is the Inbox (the reserved name is matched relative
+  to the store, not the full path).
+- **A shared store may have no roles.** Dovecot's shared namespace carries no SPECIAL-USE
+  attributes unless configured, so placing a draft there takes the fallback — the
+  conventional name, **qualified by the store** (`shared/support@test.local/Drafts`), which is
+  the folder Dovecot really has. Unqualified, the fallback would resolve among the credential's
+  own folders and file the store's mail there; on Stalwart, where a qualified `CREATE` in
+  someone else's store is refused (`NO [CANNOT]`), the refusal is the proof.
+- **Discovery** lists one level below each foreign prefix (`LIST "" "<prefix>/%"`): that level
+  is the owner, and the handle is the store's root path. `Enumerable` is advertised when the
+  session has `NAMESPACE` **and** `ACL` — a server without ACLs cannot share, and Gmail and
+  Outlook.com advertise `NAMESPACE` alone, so claiming a list there would offer a picker that
+  never fills. A credential nothing is shared with gets an empty list, not a refusal.
+- **Rights ride the folder `LIST` where the server has `LIST-MYRIGHTS`** (RFC 8440): the
+  `MYRIGHTS` return option joins `SPECIAL-USE` and `STATUS (UNSEEN)` on the one `LIST`
+  (`listing.rs`), and a `* MYRIGHTS` line follows each row it covers. Both Dovecots advertise it
+  and are live-proven to take this path; RFC 8440 lets a server leave a row out when it cannot
+  look the rights up, and such a row keeps `owner()`.
+- **Otherwise rights are one `MYRIGHTS` per selectable folder, pipelined** in batches of 64,
+  wherever the server has `ACL` alone (Stalwart), so a folder list pays one extra round trip
+  rather than one per folder. Answers are paired with folders **by the mailbox name on the
+  untagged line**, never by position: RFC 9051 §5.5 lets a server work on the next command
+  before finishing this one, and Stalwart does — the first live run paired by tag and failed on
+  `a21 OK` arriving while an earlier tag was pending. On either path a folder without an answer
+  (a `NO`, a row left out) keeps `owner()` ("unknown", never "no rights"); a server without
+  `ACL` is not asked at all. The letter mapping is in `crate::acl` — reading needs `l`+`r`,
+  removing needs `t`+`e`, and RFC 2086's `c`/`d` are **ignored**: RFC 4314 §2.1.1 has a server
+  add them when *any one* member right is set, so reading `lrtd` as "may expunge" would be wrong.
+- **A provider scoped to a shared store refuses to sync a folder outside it** (`InvalidState`),
+  since that would put the credential's own mail into the shared mailbox's account. And a store
+  the server lists nothing of is `Permanent` — access withdrawn — not an empty mailbox.
+
 ## Known limitations (documented, not bugs)
 
 - **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
@@ -612,6 +671,11 @@ whole rule:
 | Mailbox names in `LIST` rows | always quoted | unquoted atoms where quoting is unnecessary | quoted only where needed |
 | `* ENABLED` casing | `IMAP4rev2` | — | `IMAP4REV2` (atoms are case-insensitive) |
 | Tagged completion | `LIST completed` | `List completed (0.028 + 0.000 secs).` | same prose form |
+| Shared stores (RFC 2342) | *Other Users'*, prefix `Shared Folders` | *Other Users'*, prefix `shared/` (trailing delimiter) | same |
+| A shared store's inbox | `…/support@test.local/INBOX` below a `\Noselect` root | **the root itself**, selectable; `…/INBOX` an unlisted alias | same |
+| Roles in a shared store | the owner's SPECIAL-USE, as for their own | none — `harness.conf` configures them on the personal namespace only | same |
+| How rights are read | pipelined `MYRIGHTS` (`ACL` only), completed **out of order** | `LIST-MYRIGHTS`: on the folder `LIST` | same |
+| Full rights as reported | `rliteswkxpa` | `lrwstipekxacd` — RFC 2086's `c`/`d` alongside the members | same |
 
 Three asymmetries decide where a new test belongs.
 
@@ -676,6 +740,14 @@ behaviour broke; if the answer is none, the test is not proving what it claims.
   (which is the encode half). rev2, across **both** rev2 servers: a UTF-8 name needing no
   decoding, a `SELECT` sending it unencoded, and the roles surviving the dialect — which
   Stalwart cannot fail and Dovecot's rev2 fails the moment the client stops asking.
+- **Live, shared mailboxes (`tests/live_imap_shared_contract.rs`, every server;
+  `tests/live_shared.rs`, Stalwart):** the contract half — discovery, the credential's own list
+  holding none of a shared store, a full share reading like an account, a read-only share
+  saying so on its one folder, a non-ASCII folder inside a store, and a draft landing in the
+  store's own Drafts — runs against Stalwart and both Dovecots, whose sharing differs in nearly
+  every detail (the table above). The Stalwart half needs what only that harness has: SMTP, to
+  prove a message sent as the group is filed in the group's Sent; a store that refuses a
+  qualified `CREATE`; and bob's credential, which nothing is shared with.
 
   A third gated file,A third gated file,
   `tests/live_imap_tls.rs`, covers the **TLS transports beyond that baseline** —

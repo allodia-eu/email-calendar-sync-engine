@@ -218,7 +218,7 @@ async fn list_returns_every_mailbox() {
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("a", "b").await.unwrap();
 
-    let rows = conn.list().await.unwrap();
+    let rows = conn.list("*").await.unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].name, "INBOX");
     assert_eq!(rows[1].name, "Sent");
@@ -242,7 +242,7 @@ async fn list_asks_for_special_use_where_the_server_advertised_it() {
     conn.login("a", "b").await.unwrap();
     conn.negotiated = crate::capability::Negotiated::from_capabilities(&["SPECIAL-USE".to_owned()]);
 
-    let rows = conn.list().await.unwrap();
+    let rows = conn.list("*").await.unwrap();
 
     // The Sent folder a filed copy goes to is resolved from these attributes, so a
     // server that only returns them on request must be asked (RFC 6154 §2).

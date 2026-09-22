@@ -421,15 +421,16 @@ async fn connect_reports_the_tls_handshake_then_the_login() {
     )
     .await;
     // The dialect step closes the trace, and shows what one ENABLE bought: this server
-    // advertised only IDLE, but rev2 folds LIST-STATUS and SPECIAL-USE in too. QRESYNC is
-    // absent because it is *not* folded in and this server never offered it — which is
-    // exactly the distinction a support session needs the line to make.
+    // advertised only IDLE, but rev2 folds LIST-STATUS, SPECIAL-USE and NAMESPACE in too.
+    // QRESYNC and ACL are absent because they are *not* folded in and this server never
+    // offered them — which is exactly the distinction a support session needs the line to
+    // make.
     assert_eq!(
         steps,
         [
             "tls Tls1_3",
             "authenticated",
-            "negotiated IMAP4rev2 [IDLE LIST-STATUS SPECIAL-USE]"
+            "negotiated IMAP4rev2 [IDLE LIST-STATUS SPECIAL-USE NAMESPACE]"
         ]
     );
 }

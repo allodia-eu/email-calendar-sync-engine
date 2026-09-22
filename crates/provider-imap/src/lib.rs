@@ -55,6 +55,7 @@
 //! Tier-1 metadata only: like step 4, the raw RFC 5322 body is not materialized
 //! yet (durable blob storage is a later store sub-step).
 
+mod acl;
 mod base64;
 mod bodystructure;
 mod capability;
@@ -66,7 +67,9 @@ mod error;
 mod fetch;
 mod fetch_stream;
 mod filing;
+mod folders;
 mod idle;
+mod listing;
 mod mail;
 mod mutate;
 mod parse;
@@ -77,6 +80,7 @@ mod provider;
 mod qresync;
 mod report;
 mod smtp;
+mod store;
 mod stream;
 mod sync;
 mod target;
@@ -87,6 +91,7 @@ mod transport_append;
 mod transport_command;
 mod transport_session;
 mod transport_starttls;
+mod transport_store;
 mod unseen;
 mod utf7;
 mod watch;

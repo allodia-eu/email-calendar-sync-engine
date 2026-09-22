@@ -13,7 +13,7 @@ use crate::{
     capability::Negotiated,
     error::{ImapError, ImapResult},
     parse::{self, FetchRow, ListRow, SelectData},
-    transport_command::{list_command, quote},
+    transport_command::{ListReturn, list_command, quote},
 };
 
 /// The largest `{n}` literal we will read into memory. A hostile or buggy server
@@ -338,15 +338,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Ok(crate::parse_body::parse_fetch_body(&response.untagged, uid))
     }
 
-    /// `LIST "" "*"`, returning every mailbox — asking for its SPECIAL-USE attributes
-    /// wherever the server advertised RFC 6154, on either dialect (see
+    /// `LIST "" <pattern>`, returning the mailboxes it matches — asking for their
+    /// SPECIAL-USE attributes wherever the server advertised RFC 6154, on either dialect (see
     /// [`Negotiated::must_request_special_use`]; [`crate::place`] resolves the Sent/Drafts
-    /// folder from them).
-    pub(crate) async fn list(&mut self) -> ImapResult<Vec<ListRow>> {
+    /// folder from them). `pattern` is a decoded name pattern, encoded here for the wire.
+    pub(crate) async fn list(&mut self, pattern: &str) -> ImapResult<Vec<ListRow>> {
         let response = self
             .command(&list_command(
-                self.negotiated.must_request_special_use(),
-                false,
+                &self.quoted_name(pattern),
+                ListReturn {
+                    special_use: self.negotiated.must_request_special_use(),
+                    ..ListReturn::default()
+                },
             ))
             .await?;
         parse::parse_list(response.untagged())

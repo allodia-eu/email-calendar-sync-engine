@@ -12,15 +12,16 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use engine_core::{
-    ids::{AccountId, MailboxId, ProviderKey},
+    ids::{AccountId, MailboxId, ProviderKey, SharedMailboxId},
     mail::{Mailbox, Message},
     sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt,
-    MessageReport, Provider, ProviderResult, ReportControls, ReportEvidence, ReportReceipt,
-    ReportVerdicts, ScopeSync, SubmissionReceipt, TlsVersion,
+    MessageReport, Provider, ProviderError, ProviderResult, ReportControls, ReportEvidence,
+    ReportReceipt, ReportVerdicts, ScopeSync, SharedMailbox, SharedMailboxes, SubmissionReceipt,
+    TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -30,11 +31,12 @@ use tokio::{
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
 use crate::{
+    capability::Extension,
     config::ImapConfig,
     connect::connect_session,
     error::ImapError,
     filing::{Redial, SmtpSender, resolve_smtp},
-    mail::mailbox_from_list,
+    store::Namespaces,
     transport::Connection,
 };
 
@@ -63,6 +65,14 @@ pub struct ImapProvider<S> {
     /// version of the **IMAP** session. SMTP submission re-dials per send
     /// (`SmtpSender::ImplicitTls`), so its handshake is not a fact of this provider.
     connection_info: ConnectionInfo,
+    /// The shared mail store this provider covers (`ImapConfig::with_shared_mailbox`), or
+    /// `None` for the credential's own. `pub(crate)` for `crate::folders`, which turns it
+    /// into the store every folder list and placement is scoped to.
+    pub(crate) shared_mailbox: Option<SharedMailboxId>,
+    /// The server's `NAMESPACE` answer, learned the first time something needs it
+    /// (`crate::folders`) — never at connect, which one provider per folder would pay for
+    /// nothing.
+    pub(crate) namespaces: std::sync::OnceLock<Namespaces>,
 }
 
 impl<S> core::fmt::Debug for ImapProvider<S> {
@@ -71,6 +81,7 @@ impl<S> core::fmt::Debug for ImapProvider<S> {
             .field("mailbox", &self.mailbox)
             .field("since", &self.since)
             .field("connection_info", &self.connection_info)
+            .field("shared_mailbox", &self.shared_mailbox)
             .finish_non_exhaustive()
     }
 }
@@ -101,6 +112,7 @@ impl ImapProvider<TlsStream<TcpStream>> {
         // Only a provider that dialed knows how to dial again — which is what lets a Sent
         // copy that fails to file over this session be retried on a fresh one.
         provider.redial = Some(Redial::new(config, &connector));
+        provider.shared_mailbox.clone_from(&config.shared_mailbox);
         Ok(provider)
     }
 }
@@ -161,6 +173,16 @@ impl<S> ImapProvider<S> {
         if connection.idle_available() {
             capabilities = capabilities.with_idle();
         }
+        // Shares are listable where the server can say whose mail is whose (`NAMESPACE`)
+        // and can grant access at all (`ACL`, RFC 4314 — how one IMAP user shares with
+        // another). Gmail and Outlook.com advertise `NAMESPACE` alone; claiming a list
+        // there would offer a picker that can never fill. Unlike the folder list, this is
+        // read off the negotiation, so it costs no command (`crate::folders`).
+        if connection.negotiated.has(Extension::Namespace)
+            && connection.negotiated.has(Extension::Acl)
+        {
+            capabilities = capabilities.with_shared_mailboxes(SharedMailboxes::Enumerable);
+        }
         Self {
             connection: Mutex::new(connection),
             mailbox,
@@ -171,6 +193,8 @@ impl<S> ImapProvider<S> {
                 tls_version,
                 ..ConnectionInfo::new(capabilities)
             },
+            shared_mailbox: None,
+            namespaces: std::sync::OnceLock::new(),
         }
     }
 
@@ -218,41 +242,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         }
     }
 
+    /// The folders of the store this provider covers — the credential's own, or the shared
+    /// mailbox it is bound to — never every folder the credential can see: a flat `LIST`
+    /// returns both, and one account must hold one principal's mail (`crate::store`). Each
+    /// carries its unread count and the caller's rights (`crate::folders`).
     async fn sync_mailboxes(
         &self,
         _account: &AccountId,
         _cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
-        // `LIST` alone carries no unread count, so the folder list either asks for it
-        // in the same round trip (LIST-STATUS) or probes each mailbox afterwards —
-        // `unseen` owns that choice and its cost.
-        let (modified_utf7, rows, unseen) = {
+        let mailboxes = {
             let mut connection = self.connection.lock().await;
-            // The dialect decides how the names in these rows are encoded, and it is a
-            // property of the session, so it is read under the same lock as the rows.
-            let modified_utf7 = connection.names_are_modified_utf7();
-            let (rows, unseen) = if connection
-                .negotiated
-                .has(crate::capability::Extension::ListStatus)
-            {
-                connection.list_with_unseen().await?
-            } else {
-                let rows = connection.list().await?;
-                let unseen = crate::unseen::unseen_by_probing(&mut connection, &rows).await?;
-                (rows, unseen)
-            };
-            (modified_utf7, rows, unseen)
+            let store = self.store_on(&mut connection).await?;
+            crate::folders::list_store(&mut connection, &store).await?
         };
-        let mailboxes: Vec<Mailbox> = rows
-            .iter()
-            .filter_map(|row| {
-                let mut mailbox = mailbox_from_list(row, modified_utf7)?;
-                // Absent stays absent: a mailbox the server did not count must not
-                // read as one with nothing unread.
-                mailbox.unread_count = unseen.get(&row.name).copied();
-                Some(mailbox)
-            })
-            .collect();
         // `LIST` is a full snapshot every pass, so every folder is `present`.
         let present: BTreeSet<ProviderKey> = mailboxes.iter().map(|m| m.id.key().clone()).collect();
         Ok(ScopeSync::new(
@@ -293,13 +296,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         } else {
             self.default_sync_window()
         };
-        Box::pin(crate::stream::stream_email(
+        let stream: EmailStream<'a> = Box::pin(crate::stream::stream_email(
             &self.connection,
             &self.mailbox,
             cursor,
             window,
             fetch_batch,
             chunk_size,
+        ));
+        if self.shared_mailbox.is_none() {
+            return stream;
+        }
+        // A provider scoped to a shared store syncs that store's folders only. Binding any
+        // other folder to it would put that folder's mail in the shared mailbox's account —
+        // refused, not synced.
+        let checked = async move {
+            match self.check_in_store(&self.mailbox).await {
+                Ok(()) => stream,
+                Err(refusal) => Box::pin(futures_util::stream::once(async move { Err(refusal) })),
+            }
+        };
+        Box::pin(futures_util::StreamExt::flatten(
+            futures_util::stream::once(checked),
         ))
     }
 
@@ -346,14 +364,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         replacing: Option<&ProviderKey>,
     ) -> ProviderResult<ProviderKey> {
         let mut connection = self.connection.lock().await;
-        crate::drafts::put_draft(&mut connection, draft, replacing).await
+        let store = self.store_on(&mut connection).await?;
+        crate::drafts::put_draft(&mut connection, &store, draft, replacing).await
     }
 
     /// Removes a stored draft (`UID STORE \\Deleted` + `UID EXPUNGE`), reporting one that
     /// is already gone as done.
     async fn delete_draft(&self, _account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
         let mut connection = self.connection.lock().await;
-        crate::drafts::delete_draft(&mut connection, draft).await
+        let store = self.store_on(&mut connection).await?;
+        crate::drafts::delete_draft(&mut connection, &store, draft).await
     }
 
     /// Applies a [`MailEdit`] to the bound mailbox: mark-read/flag (`UID STORE`),
@@ -401,6 +421,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     ) -> ProviderResult<ReportReceipt> {
         let mut connection = self.connection.lock().await;
         crate::report::report_message(&mut connection, report).await
+    }
+
+    /// The stores this credential can open besides its own: one per owner under each
+    /// foreign namespace (`crate::folders`). Its own store is never among them — its
+    /// prefix is the empty string, which is no handle — and the answer is the same
+    /// whichever store this provider covers. Resolving an address reads this list through
+    /// the trait's default.
+    async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
+        if self.connection_info.capabilities.shared_mailboxes() != SharedMailboxes::Enumerable {
+            return Err(ProviderError::invalid_state(
+                "provider does not support listing shared mailboxes",
+            ));
+        }
+        let mut connection = self.connection.lock().await;
+        let namespaces = self.namespaces_on(&mut connection).await?;
+        crate::folders::discover(&mut connection, &namespaces).await
     }
 }
 
