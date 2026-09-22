@@ -41,6 +41,12 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/message_reported.json` | `POST {beta}/messages/{id}/reportMessage` `{ReportAction,IsMessageMoveRequested}` | the report echo — a **`reportMessageCommandResult`**, not the `message` object the docs describe (see Finding 17) |
 | `error/report_bad_action.json` | the same call with `ReportAction: unknownFutureValue` | the `400 RequestBodyRead` for a `reportAction` outside the three that exist |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
+| `mail/shared_mailbox_probe.json` | `GET /users/{shared}/mailFolders/inbox?$select=id` | the shared-mailbox probe's success shape — a **work/school** tenant, so the address is scrubbed to `shared@example.test` (percent-encoded in `@odata.context`, as Graph writes it) |
+| `mail/own_inbox_probe.json` | `GET /me/mailFolders/inbox?$select=id` | the id the own-mailbox check compares against; Graph names the user in `@odata.context` by **object id**, not address, so that is scrubbed too |
+| `error/shared_mailbox_invalid_user.json` | the probe, for an address not in the tenant | `404 ErrorInvalidUser` |
+| `error/shared_mailbox_not_enabled.json` | the probe, for a principal whose mailbox is inactive or on-premises | `404 MailboxNotEnabledForRESTAPI` (captured in the #89 probe, not re-captured) |
+| `error/shared_mailbox_no_inbox.json` | the probe, for a principal that is not a mailbox (a group) | `404 ErrorItemNotFound`, "Default folder Inbox not found" (captured in the #89 probe, not re-captured) |
+| `error/shared_mailbox_access_denied.json` | `GET /users/{shared}/mailboxSettings` **with** `MailboxSettings.ReadWrite` granted | `403 ErrorAccessDenied` — a *grant* shortfall, not a missing mailbox (Shared-mailbox finding 1) |
 | `mail/draft_patched.json` | `PATCH /me/messages/{id}` on a draft | the in-place rewrite: same `id`, same `internetMessageId`, `hasAttachments` echoed back so the caller can tell whether it had to fall back (see Mail-write finding 15) |
 | `error/draft_delete_not_found.json` | `POST /me/messages/{id}/permanentDelete` on a draft already purged | the `404` a retried draft delete meets (see Mail-write finding 16) |
 | `error/draft_delete_already_deleted.json` | `DELETE /me/messages/{id}` on an already-moved message | the `403 ErrorCannotDeleteObject` that also means "not there" (see Mail-write finding 16) |
@@ -324,6 +330,44 @@ contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@od
     to Junk regardless, with both the JSON boolean and the string `"false"` (the doc's own
     example form) tried. And only `junk`/`notJunk`/`phish` are accepted; the documented
     `unknown` and `unknownFutureValue` are both `400`. Details in `graph.md`.
+
+## Shared-mailbox findings (captured, not assumed)
+
+Probed read-only against a real Microsoft 365 tenant (`tools/graph-oauth --profile m365`) on
+2026-09-22, with a shared mailbox the account holds Full Access to. Where a finding repeats an
+earlier probe (PR #89) it says so, and where Graph has since changed it says that too.
+
+1. **Graph will not say that a mailbox exists but is not shared with you.** The probe
+   `GET /users/{addr}/mailFolders/inbox` has produced three different `404` codes and no
+   `403`: `ErrorInvalidUser` (not a principal), `MailboxNotEnabledForRESTAPI` (inactive,
+   soft-deleted or on-premises) and `ErrorItemNotFound` — "Default folder Inbox not found" —
+   which #89 recorded for a group. #89 probed every mailbox of a tenant, unshared ones
+   included, and got no `403`, so a mailbox never shared with the caller is a `404` as well
+   and "not resolvable by you" is all a resolver can report. (Which of the three codes an
+   unshared *user* mailbox gets was not recorded; the classification does not depend on it.) `403
+   ErrorAccessDenied` is a *different* failure, the credential's grant falling short of the
+   route: `/users/{shared}/mailboxSettings` answers it even with `MailboxSettings.ReadWrite`
+   granted and Full Access to the mailbox, while `/me/mailboxSettings` answers `200`.
+   Re-observed 2026-09-22 for `ErrorInvalidUser` and the `mailboxSettings` `403`.
+2. **An encoded `/` is still a path separator: Graph decodes the segment once and re-parses
+   the path.** `/users/a@b.example%2FmailFolders%2Fsentitems/mailFolders/inbox` answers `400
+   "Resource not found for the segment 'mailFolders'"`, and `a%2Fb@…` answers `400 "Unexpected
+   segment"`. Every other encoded character arrived as data — `%3F`, `%23`, `%3C`/`%3E`, `;`
+   come back inside an `ErrorInvalidUser` message — and `%252F` is decoded exactly once, to a
+   literal `%2F`. So `principal::MailboxAddress` refuses `/` and `\` and encodes the rest.
+3. **`..` segments are refused by Graph today, and were not always.** Every traversal shape
+   tried — `..%2Fme`, `%2e%2e%2fme`, `a%2F..%2F..%2Fme`, `..%5Cme` — answers `400 "The
+   request URL must not contain '..' path segments."`, and `/users/me` answers `400
+   TargetIdShouldNotBeMeOrWhitespace`. The #89 probe recorded `/users/..%2Fme/mailFolders/inbox`
+   answering **`200` with the signed-in user's own Inbox**. The guard is Microsoft's and
+   recent, which is exactly why the adapter does not lean on it (finding 2).
+4. **The same mailbox has the same Inbox id by every route.** `/me/mailFolders/inbox`,
+   `/users/{own upn}/…` and `/users/{own address in upper case}/…` returned one id; the shared
+   mailbox's differed. `/users/{own address}` answers `200` like a shared mailbox, so the
+   resolver compares Inbox ids to refuse the caller's own mailbox under any address or alias.
+   The folder id is the same with and without `Prefer: IdType="ImmutableId"`.
+5. **Addresses are case-insensitive on this route.** The probe answered the same mailbox for
+   the address in upper case.
 
 ## The throttle fixture is a captured refusal, not an invented one
 

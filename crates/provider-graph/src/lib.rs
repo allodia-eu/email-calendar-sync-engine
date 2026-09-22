@@ -58,6 +58,7 @@ mod normalize_state;
 mod principal;
 mod provider;
 mod report;
+mod shared;
 mod submit;
 mod transport;
 
@@ -72,6 +73,6 @@ pub use cal_fetch::CalendarWindow;
 pub use calendar::GraphCalendarProvider;
 pub use contact::{GraphContactProvider, GraphContactSource};
 pub use error::GraphError;
-pub use principal::MailboxPrincipal;
+pub use principal::{MailboxAddress, MailboxPrincipal};
 pub use provider::GraphProvider;
 pub use transport::GraphClient;
