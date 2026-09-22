@@ -7,7 +7,9 @@
 //! capability URNs (`urn:ietf:params:jmap:mail` → [`Capabilities::mail`], etc.)
 //! and grows as protocol features are added.
 
-use crate::{IdentityControls, OverrideSurvival, ReportControls, RsvpControls, WriteGuard};
+use crate::{
+    IdentityControls, OverrideSurvival, ReportControls, RsvpControls, SharedMailboxes, WriteGuard,
+};
 
 /// The data domains a provider supports.
 ///
@@ -68,6 +70,10 @@ pub struct Capabilities {
     pub(crate) contact_writes: Option<WriteGuard>,
     pub(crate) contact_groups: bool,
     pub(crate) contact_photos: bool,
+    /// How the credential can find mail stores besides its own. Not a flag: "the server
+    /// lists them" and "the server answers only for an address you name" are different
+    /// promises, and a host's onboarding differs between them (`crate::shared`).
+    pub(crate) shared_mailboxes: SharedMailboxes,
 }
 
 impl Capabilities {
@@ -93,6 +99,7 @@ impl Capabilities {
             contact_writes: None,
             contact_groups: false,
             contact_photos: false,
+            shared_mailboxes: SharedMailboxes::Unsupported,
         }
     }
 
@@ -105,10 +112,16 @@ impl Capabilities {
 
     /// Marks mail **writes** (mark-read/flag, move, delete via
     /// [`Provider::edit_mail`](crate::Provider::edit_mail)) as supported. Distinct
-    /// from [`with_mail`](Self::with_mail), the read capability — a mailbox the
-    /// account can read but not mutate (a shared read-only IMAP folder) advertises
-    /// [`mail`](Self::mail) without this, exactly as a no-SMTP adapter advertises
-    /// [`mail`](Self::mail) without [`submission`](Self::submission).
+    /// from [`with_mail`](Self::with_mail), the read capability — an account the
+    /// transport will not let mutate anything advertises [`mail`](Self::mail) without
+    /// this, exactly as a no-SMTP adapter advertises [`mail`](Self::mail) without
+    /// [`submission`](Self::submission).
+    ///
+    /// It says the transport can *issue* an edit, not that every folder will accept one.
+    /// Which folders do is a per-folder answer, on
+    /// [`Mailbox::access`](engine_core::mail::Mailbox::access): a store shared read-only
+    /// advertises this capability like any other, because the account-level flag that
+    /// could have said otherwise does not (`providers.md`).
     #[must_use]
     pub const fn with_mail_writes(mut self) -> Self {
         self.mail_writes = true;

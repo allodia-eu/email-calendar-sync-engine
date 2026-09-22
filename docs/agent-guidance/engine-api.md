@@ -343,12 +343,24 @@ facade"*).
   is assembled from the caller's `Draft`. What the engine owns there is the protocol.
   Passing a call straight to the provider is legitimate when the answer is not ours to
   keep; reach for the outbox when a side effect must survive a crash.
+  `list_shared_mailboxes`/`resolve_shared_mailbox` are the second pair: which mailboxes a
+  credential can open is the server's to say, and a discovered store becomes an account only
+  when the host onboards it — under an `AccountId` of its choosing, with a provider bound to
+  the returned handle through the adapter that produced it. Read
+  `Capabilities::shared_mailboxes()` first: `Enumerable` affords a list to pick from,
+  `ByAddress` needs the user to type an address, `Unsupported` means neither verb answers.
+  The re-exported `SharedMailbox`, `SharedMailboxes`, `SharedMailboxId` and `MailboxAccess`
+  are everything a host names along the way (`tests/shared_mailboxes.rs` imports nothing else).
 - **Reject host input at the facade, before any request.** `set_sender_name` refuses a
   name carrying a control character or longer than 128 characters, as
   `ApiError::InvalidInput`. The RFC 5322 assembler refuses the same bytes, but by then
   the user has a mailbox that cannot send and no idea why — and the error message names
   the offending codepoint rather than echoing it, since an error travels into logs and
   dialogs and would carry the injected payload with it.
+  `resolve_shared_mailbox` applies the same rule to the address a user typed: anything that is
+  not one `local@domain` of at most 254 octets, free of whitespace and control characters, is
+  `InvalidInput` before any request. A shape check, not a grammar — an adapter may refuse more
+  (Graph refuses the path separators it re-parses) — but nothing that fails it reaches one.
 - **The clock is a wall clock, not monotonic.** `now()` is whole-second and can
   step backward (NTP); do not write code or tests that assume monotonic `now()`.
   Lease safety across a step rests on the TTL + `StaleLease` reclaim in the sync
