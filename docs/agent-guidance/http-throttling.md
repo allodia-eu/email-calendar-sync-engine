@@ -21,6 +21,47 @@ named is what turns one throttle into several. **Both** forms are read (RFC 9110
 delta-seconds, and the HTTP-date form in all three syntaxes RFC 9110 §5.6.7 requires a
 recipient to accept.
 
+## A hiccup is absorbed; a schedule is reported
+
+**The funnel sleeps on a wait it chose, and hands back a wait the server named above five
+seconds.** That line is the whole of the design, and it is not about politeness to the user:
+
+- A backoff the engine picked is a guess at when a transient condition clears. Absorbing it
+  is what this crate exists for, and nobody above needs to know.
+- A number the *server* stated is not a guess. It is the reset of a real quota window, it can
+  be tens of seconds, and a task asleep on it is **holding a lane of the account's
+  `RequestGate`** — so one provider's exhausted quota stalls the account's calendar and
+  contacts too, against limits that are not theirs and have not been reached. Measured:
+  Gmail's quota is `gmail.googleapis.com`-specific, and one `GoogleClient` serves all three.
+
+So past five seconds the wait stops being a hiccup and becomes a scheduling decision, which
+the north star puts with the host ("Hosts own … platform scheduling"). The funnel returns the
+refusal with the instant attached, the caller's lane is released immediately, and the host
+comes back when the server said.
+
+**The instant travels on the reply, then on the error.** `Sent::stated_wait` reads it
+off a handed-back throttle — the same value whether the funnel learned it from a `Retry-After`
+header or from a body an adapter's classifier read, so an adapter has one thing to look at and
+no idea which it was. Each transport carries it into its own error, and each
+`From<XError> for ProviderError` puts it on `ProviderError::rate_limited`. From there:
+
+- **writes** get it free: `engine-store`'s `retry_delay(attempts, hint)` has always obeyed a
+  provider's instant outright, *past* its own 30-minute cap, because a server naming a time is
+  an instruction rather than a hint to average down. Until this existed it was never once
+  given one;
+- **reads** surface it as `ApiError::retry_after()`, the companion of `is_conflict()` and for
+  the same stated reason — a host should be able to automate a documented recovery without
+  parsing error text.
+
+It reaches a host **twice**, on purpose, and the two are for different jobs: through the error,
+which is what a scope schedules its next attempt from, and through `ThrottleEvent::stated`,
+which is what the log line says. A host that only reads the first can still act correctly; a
+host that only reads the second can still explain the pause.
+
+`None` means no server named an instant, never "retry now": either the reply is not a throttle,
+or it is one that said only *that* it was refusing. JMAP is the honest example — RFC 8620
+§3.6.1 names which limit was hit and nothing about when it clears.
+
 A date is honoured **only if it is strictly in the future**. An HTTP-date is always GMT, so
 there is no zone to get wrong, but the delay it implies is measured against *this device's*
 clock rather than the server's — a device an hour slow would otherwise read "available at
@@ -32,10 +73,11 @@ the total-wait budget declines it exactly as it declines a large delta-seconds.
 Jitter is added either way, including on top of `Retry-After`. The requests being throttled
 are concurrent, and twenty of them backing off by an identical amount retry in lockstep.
 
-Two bounds, stopping different things: **attempts** (5) stops a server that keeps saying `429`
-with a short `Retry-After`; **budget** (60 s total) stops a *single* long `Retry-After` from
-parking a task. Exceeding the budget hands the work to the next pass, which is right — a pass
-that gives up costs a delay, a task asleep for two minutes is indistinguishable from a hang.
+Three bounds, stopping different things: **attempts** (5) stops a server that keeps saying
+`429` with a short `Retry-After`; **budget** (60 s total) stops a run of backoffs from adding
+up to a park; and **the five-second bound above** stops a single stated wait from becoming one.
+Exceeding any of them hands the work back, which is right — a pass that gives up costs a
+delay, a task asleep for two minutes is indistinguishable from a hang.
 
 ## Reporting: the engine has no logger
 
@@ -186,9 +228,20 @@ Consequences:
 - **The `403` is the one that matters in practice**, because the adapter never fans out wide
   enough to meet the other. It is what "When the status is not the answer" exists for.
 - **Neither refusal carries a `Retry-After`** — checked against every header of both captures.
-  The `403` states the window's start instead, so the wait to the window's end is a number the
-  *server* named; `provider-google/src/throttle.rs` reads it, defensively, and every way it can
-  fail lands back on the backoff schedule.
+  The `403` states the window's start instead, in its `ErrorInfo` metadata, so the wait to the
+  window's end is a number the *server* named; `provider-google/src/throttle.rs` reads it
+  defensively, and every way it can fail lands back on the backoff schedule.
+- **But only about a third of refusals say when.** Across 14,710 refusals in three rested
+  bursts, 4,648 carried `window_start_time` and 10,062 did not — 42%, 23%, 29% burst by burst,
+  same account, minutes apart, every other metadata key identical. **Both shapes are captured**
+  (`quota_exceeded.json`, `quota_exceeded_untimed.json`), because one fixture on its own reads
+  as a guarantee, and this was within an hour of being written up as one. Treat the instant as
+  a bonus: two refusals in three carry nothing but the classification, and a host backs off on
+  its own schedule there.
+- A quota window is tens of seconds, so when the instant *is* named it is past the absorb
+  bound and goes back to the caller rather than being slept on. Proved end to end against the
+  live account in `tests/live_quota_throttle.rs` — refused, told 37.5 s, came back then,
+  succeeded.
 
 ### DAV bounds rate too, on one server and not at all on the other
 
@@ -261,11 +314,16 @@ Three properties hold the design together:
   body — `Response`'s consuming readers are unreachable through a `Deref`, so it does not
   compile.
 
-A classifier may also name a wait. Google's does: the `403` carries the quota window's start,
-so the time to the window's end is the server's own number and is honoured exactly as a
-`Retry-After` would be — never undercut, reported to the host as `server_asked`, and still
-subject to the total-wait budget. JMAP's does not, because RFC 8620's problem details say which
-limit was hit and nothing about when it clears.
+A classifier may also name a wait. Google's does when it can: the `403` carries the quota
+window's start about a third of the time (measured — see below), and where it does, the time to
+the window's end is the server's own number and is honoured exactly as a `Retry-After` would be
+— never undercut, reported to the host as `server_asked`, and still subject to the total-wait
+budget. JMAP's never does, because RFC 8620's problem details say which limit was hit and
+nothing about when it clears.
+
+**A classifier that cannot name a wait still classifies.** The two jobs are separate on
+purpose: recognising the refusal is what stops a `403` being read as "no permission", and is
+the part that must always work; naming the instant is an optimisation on top.
 
 **Classifying is not the same as waiting.** Google names four rate-limit reasons and the
 adapter calls all four `RateLimited`, rightly — a host backs off for any of them. Only
@@ -302,13 +360,18 @@ account, which is what that sentence looks like in practice.
 - **Rate is unbounded everywhere.** The gate bounds *width*, and on three of the five adapters
   width is not the quantity the server counts — Gmail bills units per minute, Stalwart's DAV
   endpoint trips somewhere between 50/s and 150/s, and nothing in the engine paces requests per
-  second. What exists now is the **reactive** half: a rate limit, once hit, is waited out
-  properly. The proactive half — a token bucket per account, which is a different instrument
+  second. What exists now is the **reactive** half: a rate limit, once hit, is classified,
+  waited out if brief, and otherwise reported with the instant it clears. The proactive half — a token bucket per account, which is a different instrument
   from `RequestGate` and would need a rate to be stated or learned — is deliberately not built.
   Two reasons, and the second is the real one: no server in this set states a rate the way JMAP
   states a width, so any bucket would be a guess; and a guess low enough to be safe on a
   drained quota is a guess that halves throughput on a rested one. Revisit it if a host reports
   quota refusals that the backoff does not absorb.
+- **A host that ignores `retry_after` is worse off than one that did not have it**, for a
+  wait between five seconds and a minute: it now gets a failed scope where a task used to
+  sleep and succeed. That is the deliberate trade — the sleep was holding the account's gate
+  lane and stalling its other providers — but it is a trade, and it lands on the host until
+  the host schedules from the number.
 - **A `ThrottleEvent` still does not say which ceiling was hit.** It now carries the status,
   which for Gmail distinguishes the two (`429` is concurrency, `403` is the quota) — but that
   is a coincidence of Gmail's, not a property of the type. Graph names its ceiling in the body

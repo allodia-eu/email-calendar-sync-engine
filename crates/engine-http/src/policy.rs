@@ -16,22 +16,29 @@ pub struct RetryPolicy {
     base: Duration,
     ceiling: Duration,
     budget: Duration,
+    absorbs_stated: Duration,
 }
 
 impl Default for RetryPolicy {
-    /// Five sends and at most a minute of waiting, doubling from 500 ms.
+    /// Five sends and at most a minute of waiting, doubling from 500 ms — and **at most five
+    /// seconds of it spent on an instant the server named**.
     ///
-    /// The schedule spans the two shapes of limit these providers impose. A per-second quota
-    /// (Gmail's concurrency ceiling) clears within the first doubling or two; a per-window
-    /// quota (Graph's requests-per-ten-minutes) does not clear at all on this timescale, and
-    /// there the `Retry-After` the server sends is what decides — usually to exceed the budget
-    /// and hand the work back to the next pass, which is the right answer.
+    /// The last bound is the one that decides where a wait belongs. A backoff the engine
+    /// chose is a guess at when a transient condition clears, and absorbing it is what this
+    /// crate is for. A number the *server* stated is not a guess: it is the reset of a real
+    /// quota window, it can be tens of seconds, and sleeping on it parks a task, holds the
+    /// account's gate lane and blocks every sibling provider behind a limit that is not
+    /// theirs. Above five seconds it stops being a hiccup and becomes a scheduling decision,
+    /// which the north star puts with the host — so the funnel hands it back with the instant
+    /// attached rather than sleeping on the host's behalf. See
+    /// [`Sent::stated_wait`](crate::Sent::stated_wait).
     fn default() -> Self {
         Self {
             attempts: 5,
             base: Duration::from_millis(500),
             ceiling: Duration::from_secs(30),
             budget: Duration::from_mins(1),
+            absorbs_stated: Duration::from_secs(5),
         }
     }
 }
@@ -48,6 +55,7 @@ impl RetryPolicy {
             base: Duration::ZERO,
             ceiling: Duration::ZERO,
             budget: Duration::ZERO,
+            absorbs_stated: Duration::ZERO,
         }
     }
 }
@@ -89,6 +97,11 @@ impl RetryPolicy {
         // it. A little is still needed — a whole wave handed the same `Retry-After` would
         // otherwise return in one block.
         let (floor, spread) = if let Some(asked) = attempt.retry_after {
+            // Long enough to be a scheduling decision rather than a hiccup. Handed back so
+            // the caller can act on the instant instead of a task sleeping on it.
+            if asked > self.absorbs_stated {
+                return None;
+            }
             (asked, (asked / 4).min(Duration::from_secs(1)))
         } else {
             // Equal jitter: half the backoff always, the other half spread. Full jitter can
@@ -228,15 +241,23 @@ mod tests {
     fn a_wait_an_adapter_read_out_of_a_body_is_the_servers_own_number() {
         // Gmail states the quota window's start in the refusal's `details`, so the wait to
         // its end is the server's word, not a guess — and is treated exactly as a
-        // `Retry-After` would be: never undercut, and reported to the host as its own.
+        // `Retry-After` would be, including by the bound above: absorbed while it is
+        // short, handed back once it is a schedule. A window with three seconds left is
+        // the first; a fresh one with fifty is the second.
         let policy = RetryPolicy::default();
-        let stated = Attempt {
+        let nearly_over = Attempt {
             throttled: true,
-            retry_after: Some(Duration::from_secs(11)),
+            retry_after: Some(Duration::from_secs(3)),
             ..refused(403)
         };
-        let wait = policy.next_delay(&stated, 0).expect("classified");
-        assert!(wait >= Duration::from_secs(11), "{wait:?}");
+        let wait = policy.next_delay(&nearly_over, 0).expect("classified");
+        assert!(wait >= Duration::from_secs(3), "{wait:?}");
+
+        let just_started = Attempt {
+            retry_after: Some(Duration::from_secs(50)),
+            ..nearly_over
+        };
+        assert!(policy.next_delay(&just_started, 0).is_none());
     }
 
     #[test]
@@ -277,16 +298,45 @@ mod tests {
     fn the_servers_own_number_wins_and_is_never_undercut() {
         let policy = RetryPolicy::default();
         let attempt = Attempt {
-            retry_after: Some(Duration::from_secs(8)),
+            retry_after: Some(Duration::from_secs(4)),
             ..refused(429)
         };
         let wait = policy.next_delay(&attempt, 0).expect("retryable");
         assert!(
-            wait >= Duration::from_secs(8),
+            wait >= Duration::from_secs(4),
             "jitter is added above the server's number, never around it: {wait:?}",
         );
         let jittered = policy.next_delay(&attempt, u64::MAX).expect("retryable");
-        assert!(jittered <= Duration::from_secs(9));
+        assert!(jittered <= Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_stated_wait_long_enough_to_be_a_schedule_is_not_absorbed() {
+        // The line between a hiccup and a scheduling decision. Below it the funnel sleeps
+        // and the caller never knows; above it the caller is handed the instant, because a
+        // task asleep for half a minute is holding the account's gate lane and blocking
+        // every sibling provider behind a quota that is not theirs.
+        let policy = RetryPolicy::default();
+        for absorbed in [1_u64, 3, 5] {
+            let attempt = Attempt {
+                retry_after: Some(Duration::from_secs(absorbed)),
+                ..refused(429)
+            };
+            assert!(
+                policy.next_delay(&attempt, HALFWAY).is_some(),
+                "{absorbed}s is a hiccup",
+            );
+        }
+        for reported in [6_u64, 11, 30, 59] {
+            let attempt = Attempt {
+                retry_after: Some(Duration::from_secs(reported)),
+                ..refused(429)
+            };
+            assert!(
+                policy.next_delay(&attempt, HALFWAY).is_none(),
+                "{reported}s belongs to whoever schedules, not to this task",
+            );
+        }
     }
 
     #[test]

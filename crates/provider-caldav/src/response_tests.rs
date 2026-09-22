@@ -1,7 +1,7 @@
 //! Unit tests for [`HttpResponse`](super::HttpResponse) — the pure response→outcome
 //! mapping (redirect detection, status classification, the write `ETag`) with no HTTP in
 //! sight. The reqwest path is `transport_tests.rs`; this is a sibling file so
-//! `transport.rs` stays under the line limit.
+//! `response.rs` stays under the line limit.
 
 use super::*;
 
@@ -12,6 +12,7 @@ fn response(status: u16, location: Option<&str>) -> HttpResponse {
         location: location.map(str::to_owned),
         etag: None,
         dav: None,
+        retry_after: None,
     }
 }
 
@@ -31,21 +32,13 @@ fn non_207_status_becomes_a_classified_error() {
         location: None,
         etag: None,
         dav: None,
+        retry_after: None,
     };
     let err = unauthorized.into_multistatus().unwrap_err();
     assert_eq!(
         err.failure_class(),
         engine_core::error::FailureClass::Authentication
     );
-}
-
-#[test]
-fn dav_method_tokens() {
-    assert_eq!(DavMethod::Propfind.as_str(), "PROPFIND");
-    assert_eq!(DavMethod::Get.as_str(), "GET");
-    assert_eq!(DavMethod::Report.as_str(), "REPORT");
-    assert_eq!(DavMethod::Put.as_str(), "PUT");
-    assert_eq!(DavMethod::Delete.as_str(), "DELETE");
 }
 
 #[test]
@@ -57,6 +50,7 @@ fn write_success_yields_the_new_etag() {
         location: None,
         etag: Some("\"v9\"".to_owned()),
         dav: None,
+        retry_after: None,
     };
     assert_eq!(
         created.into_write_etag().unwrap(),
@@ -68,6 +62,7 @@ fn write_success_yields_the_new_etag() {
         location: None,
         etag: None,
         dav: None,
+        retry_after: None,
     };
     assert_eq!(no_content.into_write_etag().unwrap(), None);
 }
@@ -82,6 +77,7 @@ fn write_precondition_failure_is_a_conflict() {
         location: None,
         etag: None,
         dav: None,
+        retry_after: None,
     };
     let err = precondition_failed.into_write_etag().unwrap_err();
     assert_eq!(

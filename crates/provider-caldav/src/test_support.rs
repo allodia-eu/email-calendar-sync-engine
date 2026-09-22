@@ -108,6 +108,7 @@ pub(crate) fn ok(body: &str) -> HttpResponse {
         location: None,
         etag: None,
         dav: None,
+        retry_after: None,
     }
 }
 
@@ -119,6 +120,7 @@ pub(crate) fn wrote(status: u16, etag: Option<&str>) -> HttpResponse {
         location: None,
         etag: etag.map(str::to_owned),
         dav: None,
+        retry_after: None,
     }
 }
 
@@ -131,6 +133,7 @@ pub(crate) fn options(dav: Option<&str>) -> HttpResponse {
         location: None,
         etag: None,
         dav: dav.map(str::to_owned),
+        retry_after: None,
     }
 }
 
@@ -142,5 +145,6 @@ pub(crate) fn status(status: u16, body: &str) -> HttpResponse {
         location: None,
         etag: None,
         dav: None,
+        retry_after: None,
     }
 }

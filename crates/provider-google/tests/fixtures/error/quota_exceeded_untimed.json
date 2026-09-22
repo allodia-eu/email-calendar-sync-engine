@@ -1,0 +1,39 @@
+{
+  "error": {
+    "code": 403,
+    "message": "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user' of service 'gmail.googleapis.com' for consumer 'project_number:000000000000'.",
+    "errors": [
+      {
+        "message": "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user' of service 'gmail.googleapis.com' for consumer 'project_number:000000000000'.",
+        "domain": "usageLimits",
+        "reason": "rateLimitExceeded"
+      }
+    ],
+    "status": "PERMISSION_DENIED",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "RATE_LIMIT_EXCEEDED",
+        "domain": "googleapis.com",
+        "metadata": {
+          "quota_limit_value": "6000",
+          "quota_location": "global",
+          "quota_metric": "gmail.googleapis.com/total_query_cost",
+          "consumer": "projects/000000000000",
+          "quota_unit": "1/min/{project}/{user}",
+          "service": "gmail.googleapis.com",
+          "quota_limit": "totalQueryCostPerMinutePerUser"
+        }
+      },
+      {
+        "@type": "type.googleapis.com/google.rpc.Help",
+        "links": [
+          {
+            "description": "Request a higher quota limit.",
+            "url": "https://cloud.google.com/docs/quotas/help/request_increase"
+          }
+        ]
+      }
+    ]
+  }
+}

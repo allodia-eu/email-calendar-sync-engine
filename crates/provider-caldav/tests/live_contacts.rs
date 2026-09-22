@@ -1,5 +1,6 @@
 //! Gated JMAP Contacts/CardDAV normalization parity against Stalwart.
 
+use core::future::Future;
 use std::time::Duration;
 
 use engine_core::{
@@ -15,6 +16,42 @@ use engine_provider::{ContactSourceSync, ContactsProvider};
 use provider_caldav::{CardDavConfig, CardDavProvider, Credentials};
 use provider_jmap::{Credentials as JmapCredentials, JmapConfig, JmapProvider};
 use stalwart_harness::Harness;
+
+/// Connects, honouring a throttle the way a host is now expected to.
+///
+/// Stalwart rate-limits its DAV endpoint, and the concurrency probe in this same crate
+/// drains that limiter on purpose. A suite running after it meets a `429` with half a
+/// minute still to run — and since #218's follow-up the engine does not sleep through a wait
+/// that long: it hands back the instant the server named, because parking a task on a quota
+/// window holds a lane of the account's gate and stalls everything else on it.
+///
+/// So the caller schedules, which here means this function. It is the smallest honest
+/// version of what a host does, and it is the reason the contract is worth having: the
+/// alternative is a suite that fails for a reason that was never about contacts.
+async fn connect_honouring_throttles<T, E, F, Fut>(what: &str, mut connect: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: Into<engine_provider::ProviderError>,
+{
+    for attempt in 0..3 {
+        match connect().await {
+            Ok(connected) => return connected,
+            Err(err) => {
+                // Through the neutral error, which is where the instant lives — and which
+                // is also the only view of it a host has.
+                let err: engine_provider::ProviderError = err.into();
+                let Some(wait) = err.retry_after() else {
+                    panic!("{what}: {err}");
+                };
+                let wait = Duration::new(wait.seconds(), wait.nanoseconds());
+                eprintln!("{what}: throttled on attempt {attempt}, waiting the {wait:?} asked");
+                tokio::time::sleep(wait + Duration::from_secs(1)).await;
+            }
+        }
+    }
+    panic!("{what}: still throttled after three attempts");
+}
 
 fn cards(sync: ContactSourceSync<ContactCard>) -> Vec<ContactCard> {
     let ContactSourceSync::Available { sync, .. } = sync else {
@@ -50,15 +87,16 @@ async fn jmap_and_carddav_normalize_the_same_seeded_person() {
         .wait_until_ready(Duration::from_secs(30))
         .expect("harness ready");
     let origin = format!("http://{}", harness.http_addr);
-    let carddav = CardDavProvider::connect(CardDavConfig::new(
-        &origin,
-        Credentials::Basic {
-            username: harness.account.clone(),
-            password: harness.password.clone(),
-        },
-    ))
-    .await
-    .expect("CardDAV connect");
+    let carddav = connect_honouring_throttles("CardDAV connect", || {
+        CardDavProvider::connect(CardDavConfig::new(
+            &origin,
+            Credentials::Basic {
+                username: harness.account.clone(),
+                password: harness.password.clone(),
+            },
+        ))
+    })
+    .await;
     let jmap = JmapProvider::connect(JmapConfig::new(
         origin,
         JmapCredentials::basic(&harness.account, &harness.password),
@@ -109,15 +147,16 @@ async fn a_seeded_photo_arrives_and_a_missing_one_is_an_absence_not_a_failure() 
         .wait_until_ready(Duration::from_secs(30))
         .expect("harness ready");
     let origin = format!("http://{}", harness.http_addr);
-    let carddav = CardDavProvider::connect(CardDavConfig::new(
-        &origin,
-        Credentials::Basic {
-            username: harness.account.clone(),
-            password: harness.password.clone(),
-        },
-    ))
-    .await
-    .expect("CardDAV connect");
+    let carddav = connect_honouring_throttles("CardDAV connect", || {
+        CardDavProvider::connect(CardDavConfig::new(
+            &origin,
+            Credentials::Basic {
+                username: harness.account.clone(),
+                password: harness.password.clone(),
+            },
+        ))
+    })
+    .await;
     let account = AccountId::try_from("contact-photos").unwrap();
     let carddav_cards = cards(carddav.sync_contacts(&account, None).await.unwrap());
 
@@ -213,15 +252,17 @@ async fn a_created_card_keeps_its_organization_and_title_through_a_patch() {
     harness
         .wait_until_ready(Duration::from_secs(30))
         .expect("harness ready");
-    let provider = CardDavProvider::connect(CardDavConfig::new(
-        format!("http://{}", harness.http_addr),
-        Credentials::Basic {
-            username: harness.account.clone(),
-            password: harness.password.clone(),
-        },
-    ))
-    .await
-    .expect("CardDAV connect");
+    let origin = format!("http://{}", harness.http_addr);
+    let provider = connect_honouring_throttles("CardDAV connect", || {
+        CardDavProvider::connect(CardDavConfig::new(
+            &origin,
+            Credentials::Basic {
+                username: harness.account.clone(),
+                password: harness.password.clone(),
+            },
+        ))
+    })
+    .await;
     let account = AccountId::try_from("contact-write").unwrap();
     let destination = provider
         .contact_destination()

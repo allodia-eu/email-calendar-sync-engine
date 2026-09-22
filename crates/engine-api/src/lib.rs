@@ -209,6 +209,30 @@ impl ApiError {
                 if err.class() == engine_core::error::FailureClass::Conflict
         )
     }
+
+    /// How long to wait before trying this again, where the **server named a time**.
+    ///
+    /// Set on a throttle the engine declined to absorb. `engine-http` waits out a hiccup
+    /// itself and never tells anyone; past a few seconds the wait stops being a hiccup and
+    /// becomes a scheduling decision, which the north star puts with the host — so the
+    /// instant comes back here instead of a task sleeping on it. A read refused this way
+    /// has done nothing and changed nothing; run the same call again once the wait has
+    /// passed.
+    ///
+    /// **`None` is not "retry now".** It means no server named an instant — either this is
+    /// not a throttle at all, or it is one that said only *that* it was refusing. Back off
+    /// on the host's own schedule there; the engine's writes already do, through the
+    /// outbox's own backoff.
+    ///
+    /// The companion of [`is_conflict`](Self::is_conflict), and for the same reason: a host
+    /// should be able to automate the documented recovery without parsing error text.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<engine_core::time::Duration> {
+        match self {
+            Self::Sync(SyncError::Provider(err)) => err.retry_after(),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -216,6 +240,38 @@ mod error_tests {
     use engine_provider::ProviderError;
 
     use super::*;
+
+    #[test]
+    fn a_throttled_call_tells_a_host_when_to_come_back() {
+        // The seam #218's follow-up exists for. A host cannot schedule around a quota
+        // window it has to parse out of an error string, and it should not have to sleep
+        // on one inside an engine call either.
+        let throttled = ApiError::Sync(SyncError::Provider(ProviderError::rate_limited(
+            "quota exceeded",
+            Some(engine_core::time::Duration::from_parts(0, 0, 0, 0, 47, 0).unwrap()),
+        )));
+        assert_eq!(
+            throttled
+                .retry_after()
+                .map(engine_core::time::Duration::seconds),
+            Some(47),
+        );
+    }
+
+    #[test]
+    fn nothing_else_names_an_instant() {
+        // `None` has to mean "no server said when", so every other failure answers it —
+        // including a throttle that named nothing, which is the JMAP case.
+        let silent = ApiError::Sync(SyncError::Provider(ProviderError::rate_limited(
+            "too many at once",
+            None,
+        )));
+        assert_eq!(silent.retry_after(), None);
+        let conflict = ApiError::Sync(SyncError::Provider(ProviderError::conflict("stale")));
+        assert_eq!(conflict.retry_after(), None);
+        assert_eq!(ApiError::Busy.retry_after(), None);
+        assert_eq!(ApiError::InvalidInput("bad".into()).retry_after(), None);
+    }
 
     #[test]
     fn conflict_classification_is_exposed_to_hosts() {

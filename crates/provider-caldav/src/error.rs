@@ -26,6 +26,10 @@ pub enum CalDavError {
         status: u16,
         /// The response body (possibly a WebDAV `DAV:error` document).
         body: String,
+        /// When the server said to come back, from [`engine_http::Sent::stated_wait`]. Stalwart
+        /// names one on a quota refusal (`Retry-After: 2688` on a full blob store); no DAV
+        /// RFC requires it, so this is frequently `None` and a derived backoff decides.
+        retry_after: Option<core::time::Duration>,
     },
 
     /// A WebDAV response body was not the XML the protocol requires.
@@ -58,6 +62,25 @@ impl CalDavError {
         Self::Status {
             status,
             body: body.into(),
+            retry_after: None,
+        }
+    }
+
+    /// Records when the server said this would clear, from [`engine_http::Sent::stated_wait`].
+    #[must_use]
+    pub(crate) fn with_retry_after(mut self, wait: Option<core::time::Duration>) -> Self {
+        if let Self::Status { retry_after, .. } = &mut self {
+            *retry_after = wait;
+        }
+        self
+    }
+
+    /// When the server said to come back, if it said.
+    #[must_use]
+    pub(crate) fn retry_after(&self) -> Option<core::time::Duration> {
+        match self {
+            Self::Status { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 
@@ -81,7 +104,7 @@ impl CalDavError {
     pub fn failure_class(&self) -> FailureClass {
         match self {
             Self::Transport(e) => transport_class(e),
-            Self::Status { status, body } => status_class(*status, body),
+            Self::Status { status, body, .. } => status_class(*status, body),
             // A malformed response/object is a protocol-level incompatibility:
             // retrying the same request will not fix it.
             Self::Xml(_) | Self::Ical(_) | Self::Protocol(_) => FailureClass::Permanent,
@@ -127,7 +150,14 @@ impl From<CalDavError> for ProviderError {
     fn from(err: CalDavError) -> Self {
         let class = err.failure_class();
         let detail = err.to_string();
-        ProviderError::new(class, detail).with_source(err)
+        // A rate limit is the one class that carries *when*: the outbox obeys a provider's
+        // instant outright, past its own derived cap, and a host schedules from it.
+        let error = if class == FailureClass::RateLimited {
+            ProviderError::rate_limited(detail, err.retry_after().map(Into::into))
+        } else {
+            ProviderError::new(class, detail)
+        };
+        error.with_source(err)
     }
 }
 

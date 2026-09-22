@@ -27,6 +27,14 @@ pub enum JmapError {
         status: u16,
         /// The response body (possibly a JSON problem-details document).
         body: String,
+        /// When the server said to come back, from [`engine_http::Sent::stated_wait`].
+        ///
+        /// Usually `None`, and honestly so: RFC 8620 §3.6.1 names *which* limit was hit
+        /// and says nothing about when it clears, so the concurrency refusal this adapter
+        /// classifies carries no instant. A server may still send a `Retry-After` on an
+        /// ordinary `429` — Stalwart does on a full blob store, asking for 2688 seconds —
+        /// and that is a number the outbox should obey rather than average down.
+        retry_after: Option<core::time::Duration>,
     },
 
     /// A response (session or API) was not the JSON the protocol requires.
@@ -74,6 +82,25 @@ impl JmapError {
         Self::Status {
             status,
             body: body.into(),
+            retry_after: None,
+        }
+    }
+
+    /// Records when the server said this would clear, from [`engine_http::Sent::stated_wait`].
+    #[must_use]
+    pub(crate) fn with_retry_after(mut self, wait: Option<core::time::Duration>) -> Self {
+        if let Self::Status { retry_after, .. } = &mut self {
+            *retry_after = wait;
+        }
+        self
+    }
+
+    /// When the server said to come back, if it said.
+    #[must_use]
+    pub(crate) fn retry_after(&self) -> Option<core::time::Duration> {
+        match self {
+            Self::Status { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 
@@ -100,7 +127,7 @@ impl JmapError {
     pub fn failure_class(&self) -> FailureClass {
         match self {
             Self::Transport(e) => transport_class(e),
-            Self::Status { status, body } => status_class(*status, body),
+            Self::Status { status, body, .. } => status_class(*status, body),
             // A malformed response/session is a protocol-level incompatibility:
             // retrying the same request will not fix it.
             Self::Json(_) | Self::Protocol(_) | Self::Session(_) | Self::MissingResponse(_) => {
@@ -226,247 +253,17 @@ impl From<JmapError> for ProviderError {
     fn from(err: JmapError) -> Self {
         let class = err.failure_class();
         let detail = err.to_string();
-        ProviderError::new(class, detail).with_source(err)
+        // A rate limit is the one class that carries *when*: the outbox obeys a provider's
+        // instant outright, past its own derived cap, and a host schedules from it.
+        let error = if class == FailureClass::RateLimited {
+            ProviderError::rate_limited(detail, err.retry_after().map(Into::into))
+        } else {
+            ProviderError::new(class, detail)
+        };
+        error.with_source(err)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn method_errors_classify_per_rfc_8620() {
-        assert_eq!(
-            JmapError::Method {
-                call_id: "1".into(),
-                error_type: "cannotCalculateChanges".into(),
-            }
-            .failure_class(),
-            FailureClass::NeedsResync
-        );
-        assert_eq!(
-            JmapError::Method {
-                call_id: "0".into(),
-                error_type: "rateLimit".into(),
-            }
-            .failure_class(),
-            FailureClass::RateLimited
-        );
-        assert_eq!(
-            JmapError::Method {
-                call_id: "0".into(),
-                error_type: "stateMismatch".into(),
-            }
-            .failure_class(),
-            FailureClass::Conflict
-        );
-        assert_eq!(
-            JmapError::Method {
-                call_id: "0".into(),
-                error_type: "unknownMethod".into(),
-            }
-            .failure_class(),
-            FailureClass::Permanent
-        );
-    }
-
-    #[test]
-    fn a_concurrency_limit_is_a_throttle_even_though_it_arrives_as_a_400() {
-        // Observed against Stalwart when a body warm overlapped more downloads than the
-        // session advertised. Read as its bare status this is Permanent, and a body
-        // dropped as permanent is one no later pass fetches again.
-        let refused = JmapError::Status {
-            status: 400,
-            body: r#"{"type":"urn:ietf:params:jmap:error:limit","status":400,
-                     "detail":"The request exceeds the maximum number of concurrent requests.",
-                     "limit":"maxConcurrentRequests"}"#
-                .to_owned(),
-        };
-        assert_eq!(refused.failure_class(), FailureClass::RateLimited);
-    }
-
-    /// The three `urn:ietf:params:jmap:error:limit` refusals Stalwart was made to send, and
-    /// the `429` it answers when the blob store itself is full. Captured 2026-09-20 by
-    /// tripping each limit on the harness in turn: concurrent uploads for the first, 17
-    /// calls in one request for the second, an 11 MB request for the third.
-    ///
-    /// The first is the interesting one, and it took some finding. Stalwart enforces
-    /// `maxConcurrentRequests` on **uploads** — 300 simultaneous API calls and 300
-    /// simultaneous blob *downloads* were all answered `200` — and reports it under the
-    /// `maxConcurrentRequests` name even though the session advertises a separate
-    /// `maxConcurrentUpload`. One counter, two names.
-    const CONCURRENCY: &str = include_str!("../tests/fixtures/error/concurrency_limit.json");
-    const TOO_MANY_CALLS: &str =
-        include_str!("../tests/fixtures/error/calls_in_request_limit.json");
-    const TOO_LARGE: &str = include_str!("../tests/fixtures/error/size_request_limit.json");
-    const BLOB_QUOTA: &str = include_str!("../tests/fixtures/error/blob_quota.json");
-
-    #[test]
-    fn the_send_funnel_waits_out_the_400_the_adapter_already_called_a_rate_limit() {
-        use engine_http::ThrottleClassifier as _;
-
-        // The two verdicts have to agree, because they are the same verdict: one names the
-        // failure for the caller, the other decides whether to wait. #218 is what it cost
-        // when only the first existed.
-        assert_eq!(
-            JmapError::Status {
-                status: 400,
-                body: CONCURRENCY.to_owned(),
-            }
-            .failure_class(),
-            FailureClass::RateLimited,
-        );
-        assert_eq!(
-            JmapThrottles.throttle(400, CONCURRENCY.as_bytes()),
-            Some(engine_http::Throttle::new()),
-        );
-    }
-
-    #[test]
-    fn the_request_shaped_limits_are_not_waited_out_either() {
-        use engine_http::ThrottleClassifier as _;
-
-        // The same type, the same status, and the opposite answer: these describe the
-        // request that was sent, so re-sending it unchanged fails identically and a wait
-        // buys nothing but the wait. Pinned against the server's real bytes in both
-        // directions, because one direction alone cannot show the reader is discriminating.
-        for body in [TOO_MANY_CALLS, TOO_LARGE] {
-            assert_eq!(JmapThrottles.throttle(400, body.as_bytes()), None, "{body}");
-        }
-    }
-
-    #[test]
-    fn the_blob_quota_429_needs_no_classifier_at_all() {
-        use engine_http::ThrottleClassifier as _;
-
-        // Stalwart's other refusal, met by the same probe: a full blob store, answered
-        // `429` with a `Retry-After` of about three quarters of an hour. Nothing here has
-        // to recognise it — the status rule waits out a `429` whatever sent it, and the
-        // policy's budget then declines a wait that long and hands the work to the next
-        // pass, which for a quota measured in hours is the only sane answer.
-        assert!(!JmapThrottles.reads_body_of(429));
-        assert_eq!(
-            JmapError::Status {
-                status: 429,
-                body: BLOB_QUOTA.to_owned(),
-            }
-            .failure_class(),
-            FailureClass::RateLimited,
-        );
-    }
-
-    #[test]
-    fn only_the_400_is_worth_reading_a_body_for() {
-        use engine_http::ThrottleClassifier as _;
-
-        assert!(JmapThrottles.reads_body_of(400));
-        for settled in [200_u16, 401, 404, 429, 500, 503] {
-            assert!(!JmapThrottles.reads_body_of(settled), "{settled}");
-        }
-        // And nothing that is not the problem-details shape is read as one.
-        for body in [&b""[..], b"<html>bad request</html>", b"{}", b"\xff\xfe"] {
-            assert_eq!(JmapThrottles.throttle(400, body), None, "{body:?}");
-        }
-    }
-
-    #[test]
-    fn the_other_request_limits_stay_permanent() {
-        // The same error type, and the opposite answer: these two describe the request
-        // that was sent, so re-sending it unchanged fails identically.
-        for limit in ["maxSizeRequest", "maxCallsInRequest"] {
-            let refused = JmapError::Status {
-                status: 400,
-                body: format!(r#"{{"type":"urn:ietf:params:jmap:error:limit","limit":"{limit}"}}"#),
-            };
-            assert_eq!(refused.failure_class(), FailureClass::Permanent, "{limit}");
-        }
-        // And a plain 400 with no problem details at all.
-        assert_eq!(
-            JmapError::Status {
-                status: 400,
-                body: "not json".to_owned(),
-            }
-            .failure_class(),
-            FailureClass::Permanent
-        );
-    }
-
-    #[test]
-    fn set_errors_classify_per_rfc_8620() {
-        // A target that moved on server-side is a conflict → re-sync then retry.
-        assert_eq!(
-            JmapError::set("e1", "notFound").failure_class(),
-            FailureClass::Conflict
-        );
-        assert_eq!(
-            JmapError::set("e1", "stateMismatch").failure_class(),
-            FailureClass::Conflict
-        );
-        // Quota/rate pushback is retryable after backoff.
-        assert_eq!(
-            JmapError::set("e1", "overQuota").failure_class(),
-            FailureClass::RateLimited
-        );
-        assert_eq!(
-            JmapError::set("e1", "serverPartialFail").failure_class(),
-            FailureClass::Retryable
-        );
-        // A request the server keeps rejecting is permanent.
-        assert_eq!(
-            JmapError::set("e1", "forbidden").failure_class(),
-            FailureClass::Permanent
-        );
-        assert_eq!(
-            JmapError::set("e1", "invalidPatch").failure_class(),
-            FailureClass::Permanent
-        );
-    }
-
-    #[test]
-    fn http_status_maps_to_class() {
-        assert_eq!(
-            JmapError::status(401, "no auth").failure_class(),
-            FailureClass::Authentication
-        );
-        assert_eq!(
-            JmapError::status(429, "slow").failure_class(),
-            FailureClass::RateLimited
-        );
-        assert_eq!(
-            JmapError::status(503, "down").failure_class(),
-            FailureClass::Retryable
-        );
-        assert_eq!(
-            JmapError::status(400, "bad").failure_class(),
-            FailureClass::Permanent
-        );
-    }
-
-    #[test]
-    fn converts_into_classified_provider_error_with_source() {
-        let provider: ProviderError = JmapError::Method {
-            call_id: "2".into(),
-            error_type: "cannotCalculateChanges".into(),
-        }
-        .into();
-        assert_eq!(provider.class(), FailureClass::NeedsResync);
-        assert!(provider.requires_resync());
-        assert!(std::error::Error::source(&provider).is_some());
-    }
-
-    #[test]
-    fn malformed_responses_are_permanent() {
-        assert_eq!(
-            JmapError::protocol("methodResponses missing").failure_class(),
-            FailureClass::Permanent
-        );
-        assert_eq!(
-            JmapError::session("no apiUrl").failure_class(),
-            FailureClass::Permanent
-        );
-        assert_eq!(
-            JmapError::MissingResponse("9".into()).failure_class(),
-            FailureClass::Permanent
-        );
-    }
-}
+#[path = "error_tests.rs"]
+mod tests;

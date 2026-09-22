@@ -210,6 +210,7 @@ mod tests {
             location: Some(location.to_owned()),
             etag: None,
             dav: None,
+            retry_after: None,
         }
     }
 
@@ -352,6 +353,7 @@ mod tests {
             location: Some("/dav/cal".to_owned()),
             etag: None,
             dav: None,
+            retry_after: None,
         };
         let exec = Replay::new(vec![
             redirect,
@@ -455,6 +457,7 @@ mod tests {
                 location: None,
                 etag: None,
                 dav: None,
+                retry_after: None,
             },
         ] {
             let exec = Replay::new(vec![response]);

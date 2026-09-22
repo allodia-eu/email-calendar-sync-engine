@@ -221,7 +221,15 @@ pub async fn send_retrying(request: RequestBuilder, retry: &RetryConfig) -> reqw
         );
         let (Some(wait), Some(next)) = (granted, replay) else {
             retry.report(status, number, waited, retry_after, true);
-            return Ok(Sent { response, body });
+            // The instant goes two ways, and both are needed: to the host's log through the
+            // event above, and to the *caller* here, which is what schedules the next
+            // attempt. Without the second, a `Retry-After` the funnel read for its own
+            // backoff never reaches the adapter, the outbox, or a scope's retry.
+            return Ok(Sent {
+                response,
+                body,
+                stated: retry_after,
+            });
         };
         retry.report(status, number, wait, retry_after, false);
         tokio::time::sleep(wait).await;
@@ -259,6 +267,7 @@ pub struct Sent {
     response: Response,
     /// The body, where the funnel had to read it to classify the reply.
     body: Option<Vec<u8>>,
+    stated: Option<Duration>,
 }
 
 impl Sent {
@@ -268,6 +277,7 @@ impl Sent {
         Self {
             response,
             body: None,
+            stated: None,
         }
     }
 
@@ -277,7 +287,24 @@ impl Sent {
         Self {
             response,
             body: Some(body),
+            stated: None,
         }
+    }
+
+    /// How long the server said to wait, on a throttled reply handed back rather than
+    /// absorbed.
+    ///
+    /// `None` on any reply that is not such a throttle, and on a throttle where no instant
+    /// was named — JMAP's concurrency refusal says which limit was hit and nothing about when
+    /// it clears, and a blind backoff is the honest answer there.
+    ///
+    /// An adapter reads this where it builds its error, so the number reaches
+    /// `ProviderError::rate_limited` and, through it, the outbox's `retry_delay` (which obeys
+    /// a provider's instant outright) and the host. **It is not a substitute for classifying
+    /// the reply**: this says when, never whether.
+    #[must_use]
+    pub const fn stated_wait(&self) -> Option<Duration> {
+        self.stated
     }
 
     /// The whole body as bytes, read now or already read here.
@@ -333,6 +360,7 @@ impl core::fmt::Debug for Sent {
         f.debug_struct("Sent")
             .field("status", &self.response.status())
             .field("body_read", &self.body.is_some())
+            .field("stated", &self.stated)
             .finish_non_exhaustive()
     }
 }

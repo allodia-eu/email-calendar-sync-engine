@@ -45,7 +45,8 @@ on the account.
 | `mail/modify_not_spam.json` | the same with `removeLabelIds:["SPAM"], addLabelIds:["INBOX"]` | the not-junk report; removing `SPAM` *alone* leaves the message in no place label at all |
 | `error/invalid_label_phishing.json` | the same with `addLabelIds:["PHISHING"]` | Gmail has no phishing label — `400 Invalid label`, so the verdict is refused rather than filed as junk |
 | `error/*.json` | a 400(label)/401/403(rate)/403(perm)/404/410 | `error` envelope → `FailureClass` mapping |
-| `error/quota_exceeded.json` | the `403` a sustained width-8 drain draws | Gmail's **per-minute quota** refusal, verbatim: `PERMISSION_DENIED` with `errors[0].reason: rateLimitExceeded`, and a `google.rpc.ErrorInfo` naming `totalQueryCostPerMinutePerUser`, `6000`, `1/min/{project}/{user}` and `window_start_time`. The window figure is what `src/throttle.rs` turns into a wait, so this file is where "the server named an instant" is pinned. |
+| `error/quota_exceeded.json` | the `403` a sustained width-8 drain draws | Gmail's **per-minute quota** refusal, verbatim: `PERMISSION_DENIED` with `errors[0].reason: rateLimitExceeded`, and a `google.rpc.ErrorInfo` naming `totalQueryCostPerMinutePerUser`, `6000`, `1/min/{project}/{user}` and `window_start_time`. The window figure is what `src/throttle.rs` turns into a wait, so this file is where "the server named an instant" is pinned — but see the next row, because this is the **minority** shape. |
+| `error/quota_exceeded_untimed.json` | the same call, a different refusal minutes later | The same `403` with the **same** `ErrorInfo` and **no** `window_start_time`. Two refusals in three look like this (14,710 measured; 32% carry the field), so the instant is a bonus and never a guarantee. Kept beside its twin so nobody reads one fixture as a contract. |
 | `error/concurrency_exceeded.json` | the `429` a salvo of 200 draws | Gmail's **other** limit: `RESOURCE_EXHAUSTED`, "Too many concurrent requests for user." Captured to keep the two apart — a count of refusals cannot say which one it counted. |
 
 ## Real-behavior findings (captured, not assumed)
@@ -110,8 +111,10 @@ on the account.
     meets the quota and never the ceiling, which is exactly why the repo recorded for months
     that Gmail "never sends a `429`": nothing here had ever asked wide enough. **Neither
     refusal carries a `Retry-After`** — every header of both captures was checked — but the
-    `403` names `window_start_time`, so the wait to the window's end is the server's own
-    number.
+    `403` names `window_start_time` **about a third of the time** — 4,648 of 14,710 refusals
+    across three rested bursts, 42%/23%/29% by burst, with every other metadata key identical
+    — and where it does, the wait to the window's end is the server's own number. Where it
+    does not, there is nothing to schedule from and a caller backs off on its own.
 
 ## Calendar files (`calendar/`)
 
