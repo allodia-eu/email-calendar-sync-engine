@@ -46,9 +46,9 @@ async fn a_throttle_that_clears_is_absorbed() {
     );
     let events = log.lock().unwrap();
     assert_eq!(events.len(), 1);
-    let (status, attempt, _, asked, gave_up) = events[0];
+    let (status, attempt, _, named, gave_up) = events[0];
     assert_eq!((status, attempt), (429, 0));
-    assert!(!asked, "no Retry-After was sent");
+    assert_eq!(named, None, "no Retry-After was sent");
     assert!(!gave_up);
 }
 
@@ -94,8 +94,8 @@ async fn the_servers_own_retry_after_decides_the_wait() {
         started.elapsed() >= Duration::from_secs(4),
         "backoff would have guessed 250ms and been refused again",
     );
-    let (_, _, delay, asked, _) = log.lock().unwrap()[0];
-    assert!(asked);
+    let (_, _, delay, named, _) = log.lock().unwrap()[0];
+    assert!(named.is_some());
     assert!(delay >= Duration::from_secs(4));
 }
 
@@ -127,7 +127,7 @@ async fn a_retry_after_given_as_a_date_is_honoured_too() {
         "waited {waited:?}, want the ~20s the date named",
     );
     assert!(
-        log.lock().unwrap()[0].3,
+        log.lock().unwrap()[0].3.is_some(),
         "reported as the server's own number"
     );
 }
@@ -152,8 +152,9 @@ async fn a_date_already_in_the_past_falls_back_to_the_backoff_schedule() {
         started.elapsed() >= Duration::from_millis(250),
         "it still backed off",
     );
-    assert!(
-        !log.lock().unwrap()[0].3,
+    assert_eq!(
+        log.lock().unwrap()[0].3,
+        None,
         "and did not credit the server with a number it could not use",
     );
 }
@@ -174,7 +175,37 @@ async fn a_retry_after_past_the_budget_hands_the_work_to_the_next_pass() {
     let events = log.lock().unwrap();
     assert_eq!(events.len(), 1);
     assert!(events[0].4, "reported as a give-up, not a silent stall");
-    assert!(events[0].3, "and as the server's own number");
+    // The number itself, not merely that there was one. On a give-up `delay` is the total
+    // already slept — nothing, here — so without this the host is told a request was
+    // abandoned and given no way to say when it could have been sent instead.
+    assert_eq!(events[0].3, Some(Duration::from_mins(15)));
+    assert_eq!(events[0].2, Duration::ZERO, "it never waited at all");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_number_the_server_named_is_not_the_number_we_waited() {
+    // The two are deliberately different, which is why one bool could not stand for both.
+    // While waiting, `delay` is the server's figure plus jitter — because a wave handed one
+    // `Retry-After` must not return in a block — and `stated` is the figure itself.
+    let (url, _) = scripted(vec![
+        Reply("429 Too Many Requests", "Retry-After: 4\r\n", ""),
+        Reply("200 OK", "", ""),
+    ]);
+    let (retry, log) = recording();
+    send_retrying(client().get(&url), &retry)
+        .await
+        .expect("sent");
+    let (_, _, delay, named, gave_up) = log.lock().unwrap()[0];
+    assert!(!gave_up);
+    assert_eq!(named, Some(Duration::from_secs(4)), "what the server said");
+    assert!(
+        delay >= Duration::from_secs(4),
+        "what we will sleep: {delay:?}"
+    );
+    assert!(
+        delay <= Duration::from_secs(5),
+        "jitter sits above the number, not around it: {delay:?}",
+    );
 }
 
 #[tokio::test(start_paused = true)]

@@ -115,13 +115,20 @@ impl RetryConfig {
         self
     }
 
-    fn report(&self, status: u16, attempt: u32, delay: Duration, asked: bool, gave_up: bool) {
+    fn report(
+        &self,
+        status: u16,
+        attempt: u32,
+        delay: Duration,
+        stated: Option<Duration>,
+        gave_up: bool,
+    ) {
         self.observer.throttled(&ThrottleEvent {
             provider: self.provider,
             status,
             attempt,
             delay,
-            server_asked: asked,
+            stated,
             gave_up,
         });
     }
@@ -213,12 +220,12 @@ pub async fn send_retrying(request: RequestBuilder, retry: &RetryConfig) -> reqw
             entropy(),
         );
         let (Some(wait), Some(next)) = (granted, replay) else {
-            retry.report(status, number, waited, retry_after.is_some(), true);
+            retry.report(status, number, waited, retry_after, true);
             return Ok(Sent { response, body });
         };
-        retry.report(status, number, wait.delay, wait.server_asked, false);
-        tokio::time::sleep(wait.delay).await;
-        waited = waited.saturating_add(wait.delay);
+        retry.report(status, number, wait, retry_after, false);
+        tokio::time::sleep(wait).await;
+        waited = waited.saturating_add(wait);
         number = number.saturating_add(1);
         pending = next;
     }

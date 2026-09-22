@@ -73,19 +73,12 @@ pub(crate) struct Attempt {
     pub(crate) waited: Duration,
 }
 
-/// A wait the policy granted.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Wait {
-    pub(crate) delay: Duration,
-    pub(crate) server_asked: bool,
-}
-
 impl RetryPolicy {
     /// The wait before sending again, or `None` to hand the reply back as it is.
     ///
     /// `entropy` is any spread of bits; only its low end is used, and only to place the delay
     /// inside its jitter window.
-    pub(crate) fn next_delay(&self, attempt: &Attempt, entropy: u64) -> Option<Wait> {
+    pub(crate) fn next_delay(&self, attempt: &Attempt, entropy: u64) -> Option<Duration> {
         if !attempt.throttled {
             return None;
         }
@@ -95,8 +88,8 @@ impl RetryPolicy {
         // Never earlier than the server asked: jitter is added above its number, not around
         // it. A little is still needed — a whole wave handed the same `Retry-After` would
         // otherwise return in one block.
-        let (floor, spread, server_asked) = if let Some(asked) = attempt.retry_after {
-            (asked, (asked / 4).min(Duration::from_secs(1)), true)
+        let (floor, spread) = if let Some(asked) = attempt.retry_after {
+            (asked, (asked / 4).min(Duration::from_secs(1)))
         } else {
             // Equal jitter: half the backoff always, the other half spread. Full jitter can
             // draw close to zero, which against a limiter that has not reset yet spends an
@@ -105,16 +98,13 @@ impl RetryPolicy {
                 .base
                 .saturating_mul(1_u32 << attempt.number.min(20))
                 .min(self.ceiling);
-            (doubled / 2, doubled / 2, false)
+            (doubled / 2, doubled / 2)
         };
         let delay = floor + scale(spread, entropy);
         if attempt.waited.saturating_add(delay) > self.budget {
             return None;
         }
-        Some(Wait {
-            delay,
-            server_asked,
-        })
+        Some(delay)
     }
 }
 
@@ -238,7 +228,7 @@ mod tests {
     fn a_wait_an_adapter_read_out_of_a_body_is_the_servers_own_number() {
         // Gmail states the quota window's start in the refusal's `details`, so the wait to
         // its end is the server's word, not a guess — and is treated exactly as a
-        // `Retry-After` would be: never undercut, and reported as `server_asked`.
+        // `Retry-After` would be: never undercut, and reported to the host as its own.
         let policy = RetryPolicy::default();
         let stated = Attempt {
             throttled: true,
@@ -246,8 +236,7 @@ mod tests {
             ..refused(403)
         };
         let wait = policy.next_delay(&stated, 0).expect("classified");
-        assert!(wait.server_asked);
-        assert!(wait.delay >= Duration::from_secs(11), "{:?}", wait.delay);
+        assert!(wait >= Duration::from_secs(11), "{wait:?}");
     }
 
     #[test]
@@ -262,10 +251,9 @@ mod tests {
             for entropy in [0, HALFWAY, u64::MAX] {
                 let delay = policy.next_delay(&attempt, entropy).expect("retryable");
                 assert!(
-                    delay.delay >= Duration::from_millis(low)
-                        && delay.delay <= Duration::from_millis(high),
-                    "attempt {number} with entropy {entropy} gave {:?}, want {low}..={high}ms",
-                    delay.delay,
+                    delay >= Duration::from_millis(low) && delay <= Duration::from_millis(high),
+                    "attempt {number} with entropy {entropy} gave {delay:?}, \
+                     want {low}..={high}ms",
                 );
             }
         }
@@ -275,11 +263,10 @@ mod tests {
     fn the_same_attempt_under_different_entropy_does_not_wake_at_one_instant() {
         let policy = RetryPolicy::default();
         let attempt = refused(429);
-        let first = policy.next_delay(&attempt, 1).expect("retryable").delay;
+        let first = policy.next_delay(&attempt, 1).expect("retryable");
         let second = policy
             .next_delay(&attempt, u64::MAX - 1)
-            .expect("retryable")
-            .delay;
+            .expect("retryable");
         assert_ne!(
             first, second,
             "a wave throttled together must not return together",
@@ -294,14 +281,12 @@ mod tests {
             ..refused(429)
         };
         let wait = policy.next_delay(&attempt, 0).expect("retryable");
-        assert!(wait.server_asked);
         assert!(
-            wait.delay >= Duration::from_secs(8),
-            "jitter is added above the server's number, never around it: {:?}",
-            wait.delay,
+            wait >= Duration::from_secs(8),
+            "jitter is added above the server's number, never around it: {wait:?}",
         );
         let jittered = policy.next_delay(&attempt, u64::MAX).expect("retryable");
-        assert!(jittered.delay <= Duration::from_secs(9));
+        assert!(jittered <= Duration::from_secs(9));
     }
 
     #[test]

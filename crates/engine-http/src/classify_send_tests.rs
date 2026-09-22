@@ -120,7 +120,7 @@ async fn a_classifier_can_add_a_throttle_and_never_take_one_away() {
 #[tokio::test(start_paused = true)]
 async fn a_wait_the_adapter_read_out_of_the_body_is_treated_as_the_servers_own() {
     // Gmail names no `Retry-After`, but its refusal carries the quota window's start, so
-    // the wait to the window's end is a number the server stated. It must be honoured like
+    // the wait to the window's end is a number the server named. It must be honoured like
     // a header would be — never undercut — and reported as the server's, since a host
     // logging "waited 11s because the server asked" is saying something true.
     let (url, served) = scripted(vec![
@@ -140,8 +140,8 @@ async fn a_wait_the_adapter_read_out_of_the_body_is_treated_as_the_servers_own()
         started.elapsed() >= Duration::from_secs(11),
         "backoff would have guessed 250ms, inside a window that had not reset",
     );
-    let (_, _, delay, asked, _) = log.lock().unwrap()[0];
-    assert!(asked, "reported as the server's own number");
+    let (_, _, delay, named, _) = log.lock().unwrap()[0];
+    assert!(named.is_some(), "reported as the server's own number");
     assert!(delay >= Duration::from_secs(11));
 }
 

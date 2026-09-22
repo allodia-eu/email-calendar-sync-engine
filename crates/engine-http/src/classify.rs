@@ -28,7 +28,7 @@ impl Throttle {
     /// to undercut, and as a number the policy's total-wait budget may still decline. Use it
     /// only for an instant the *server* stated. A delay the adapter guessed is a guess the
     /// backoff schedule already makes, and dressing one up as the server's word means a host's
-    /// log says `server_asked` about a number no server sent.
+    /// log reports a number no server ever sent.
     #[must_use]
     pub const fn after(after: Duration) -> Self {
         Self { after: Some(after) }

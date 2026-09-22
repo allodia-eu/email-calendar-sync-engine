@@ -59,7 +59,7 @@ fn token() -> Option<String> {
 #[derive(Debug, Clone, Copy)]
 struct Reported {
     status: u16,
-    server_asked: bool,
+    stated: Option<Duration>,
     gave_up: bool,
 }
 
@@ -78,7 +78,7 @@ async fn live_a_gmail_quota_refusal_is_waited_out_and_reported() {
     let retry = RetryConfig::default().with_observer(Arc::new(move |e: &ThrottleEvent<'_>| {
         sink.lock().expect("log").push(Reported {
             status: e.status,
-            server_asked: e.server_asked,
+            stated: e.stated,
             gave_up: e.gave_up,
         });
     }));
@@ -143,7 +143,7 @@ async fn live_a_gmail_quota_refusal_is_waited_out_and_reported() {
          something else",
     );
     assert!(
-        quota.iter().any(|e| e.server_asked),
+        quota.iter().any(|e| e.stated.is_some()),
         "no quota refusal named its own window. Gmail states `window_start_time` in the \
          refusal's `details`; if that has stopped arriving, the wait is now a blind backoff \
          against a minute-long window and `throttle.rs` needs re-measuring.",

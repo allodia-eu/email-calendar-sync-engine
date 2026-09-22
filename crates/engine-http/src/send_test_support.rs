@@ -60,7 +60,7 @@ pub(crate) fn scripted(script: Vec<Reply>) -> (String, Arc<AtomicUsize>) {
 }
 
 /// Every event the run reported, in order.
-pub(crate) type Log = Arc<Mutex<Vec<(u16, u32, Duration, bool, bool)>>>;
+pub(crate) type Log = Arc<Mutex<Vec<(u16, u32, Duration, Option<Duration>, bool)>>>;
 
 pub(crate) fn recording() -> (RetryConfig, Log) {
     let log: Log = Arc::new(Mutex::new(Vec::new()));
@@ -68,7 +68,7 @@ pub(crate) fn recording() -> (RetryConfig, Log) {
     let observer = move |e: &ThrottleEvent<'_>| {
         sink.lock()
             .unwrap()
-            .push((e.status, e.attempt, e.delay, e.server_asked, e.gave_up));
+            .push((e.status, e.attempt, e.delay, e.stated, e.gave_up));
     };
     (
         RetryConfig::default()

@@ -43,8 +43,12 @@ Nothing in the engine calls `log` or `tracing`; a host owns its I/O. A wait a us
 otherwise experience as an unexplained stall is reported through `ThrottleObserver`, which the
 host implements and logs. A host wires one the way it wires `SyncObserver`.
 
-A `ThrottleEvent` carries the provider label, status, attempt, delay, whether the server named
-the delay, and whether this attempt gave up. **It carries no URL** — a request path on a mail
+A `ThrottleEvent` carries the provider label, status, attempt, delay, **the instant the server
+named** where it named one, and whether this attempt gave up. `stated` and `delay` are
+different numbers on purpose: while waiting, `delay` is the server's figure plus jitter; on a
+give-up, `delay` is the total already slept — often nothing — and `stated` is the only thing
+that says when the work could have been sent instead. It replaced a `server_asked: bool`, which
+was exactly `stated.is_some()` and threw the figure away. **It carries no URL** — a request path on a mail
 API names a mailbox or a message, and these events are written to a diagnostic log a user
 attaches to a support request.
 
