@@ -24,8 +24,10 @@ pub(crate) struct HttpTransport {
     /// performs no request (Google has no session-discovery step), so these stay `None`
     /// until the adapter's first fetch.
     connection: ObservedConnection,
-    /// How a `429` is waited out. Gmail answers one past its per-mailbox concurrency
-    /// ceiling, which a page's fan-out sits deliberately close to.
+    /// How a throttle is waited out — including the one only a body can recognise. Gmail
+    /// refuses in two shapes: a `429` past its concurrency ceiling, which the shared status
+    /// rule handles, and a `403` when the per-minute quota runs out, which is the one an
+    /// ordinary pass meets and the one `crate::throttle` exists for.
     retry: RetryConfig,
 }
 
@@ -42,20 +44,27 @@ impl HttpTransport {
         tls: &TlsClientConfig,
         retry: &RetryConfig,
     ) -> Result<Self, GoogleError> {
-        let retry = retry.clone().labelled("gmail");
-        // The adapter's own fan-out width, applied account-wide — **not** a server ceiling,
+        let retry = retry
+            .clone()
+            .labelled("gmail")
+            // Gmail's per-minute quota refusal is a `403`, which the shared status rule
+            // reads as "not allowed" rather than "not yet". See `throttle.rs`.
+            .classifying(std::sync::Arc::new(crate::throttle::GoogleThrottles));
+        // The adapter's own fan-out width, applied account-wide — **not** Gmail's ceiling,
         // and the distinction matters.
         //
-        // Gmail has no concurrency ceiling in this range: measured on a rested quota, widths
-        // 5, 20 and 50 all ran 200 requests with **zero** refusals and throughput scaling
-        // linearly. What Gmail enforces is a *rate* (Total Query Cost units per minute per
-        // user), announced as `403 rateLimitExceeded`, and a width bound does not control a
-        // rate (`docs/agent-guidance/http-throttling.md`).
+        // Gmail does have a concurrency ceiling, measured as salvos with a full quota window's
+        // rest between widths: clean through 48, refusing from 64 upward with
+        // `429 "Too many concurrent requests for user."`, the share climbing with width. That
+        // is two to three times this number, so nothing the adapter does goes near it. What it
+        // *does* meet is the rate — Total Query Cost units per minute per user, announced as
+        // `403 rateLimitExceeded` — and a width bound does not control a rate
+        // (`docs/agent-guidance/http-throttling.md`).
         //
-        // It is still worth narrowing, for the reason the gate exists rather than for the
-        // reason Graph narrows: an account's mail, calendar and contacts providers would
-        // otherwise each run their own `MAX_CONCURRENT_GETS`-wide fan-out against one user's
-        // quota, and three times the width drains it three times as fast.
+        // So narrowing here is for the reason the gate exists rather than for the reason Graph
+        // narrows: an account's mail, calendar and contacts providers would otherwise each run
+        // their own `MAX_CONCURRENT_GETS`-wide fan-out against one user's quota, and three
+        // times the width drains it three times as fast.
         retry.gate().narrow_to(crate::fetch::MAX_CONCURRENT_GETS);
         Ok(Self {
             client: tls.reqwest_builder().build()?,
@@ -75,7 +84,7 @@ impl HttpTransport {
         content_type: Option<&str>,
         if_match: Option<&str>,
         body: Vec<u8>,
-    ) -> Result<reqwest::Response, GoogleError> {
+    ) -> Result<engine_http::Sent, GoogleError> {
         let mut request = self.client.request(method, url).bearer_auth(&self.token);
         if let Some(content_type) = content_type {
             request = request.header("Content-Type", content_type);
@@ -99,13 +108,13 @@ impl HttpTransport {
             let body = resp.text().await.unwrap_or_default();
             return Err(GoogleError::status(status.as_u16(), body));
         }
-        Ok(resp.bytes().await?.to_vec())
+        Ok(resp.bytes().await?)
     }
 }
 
 /// Turns a successful write response into its parsed JSON body, or `None` when the
 /// action carried none (`204`). A non-2xx is a classified [`GoogleError::Status`].
-async fn write_body(resp: reqwest::Response) -> Result<Option<Value>, GoogleError> {
+async fn write_body(resp: engine_http::Sent) -> Result<Option<Value>, GoogleError> {
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -130,7 +139,7 @@ impl GoogleTransport for HttpTransport {
             let body = resp.text().await.unwrap_or_default();
             return Err(GoogleError::status(status.as_u16(), body));
         }
-        Ok(resp.json::<Value>().await?)
+        Ok(serde_json::from_slice(&resp.bytes().await?)?)
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GoogleError> {
@@ -349,7 +358,12 @@ mod tests {
         .get(&base)
         .await
         .unwrap_err();
-        assert!(matches!(err, GoogleError::Transport(_)));
+        // `Json`, not `Transport`: the bytes arrived fine and are not the JSON the
+        // protocol requires, which is what that variant is for. It used to be `Transport`
+        // only because `reqwest::Response::json` wrapped the parse failure as a decode
+        // error of its own — and a reply now comes back through `engine_http::Sent`, whose
+        // bytes this crate parses itself. The class callers branch on is unchanged.
+        assert!(matches!(err, GoogleError::Json(_)));
         assert_eq!(err.failure_class(), FailureClass::Permanent);
     }
 

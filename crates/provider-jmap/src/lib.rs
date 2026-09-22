@@ -392,7 +392,11 @@ impl JmapClient {
         // stream, not a buffered representation; the shared status check rejects a
         // non-2xx before the caller treats the body as an event stream.
         let resp = self.transport.get_event_stream(&url).await?;
-        transport::error_for_status(resp).await
+        // The status is checked on the reply, and only then is the body taken out unread:
+        // an SSE stream has no end, so it is the one body nothing here may read.
+        transport::error_for_status(resp)
+            .await
+            .map(engine_http::Sent::into_streaming)
     }
 }
 

@@ -13,6 +13,7 @@ configures once and every provider inherits.
 |---|---|---|
 | `429` | every method | The request was refused, not performed. A replay cannot duplicate it. |
 | `503` | idempotent methods only | The server may have applied it and failed on the way back. A replayed `POST` is a message sent twice. |
+| a status the **adapter** recognises | as if it were a `429` | Two servers signal a throttle with something else, and each already knows it. See "When the status is not the answer". |
 | everything else | no | Including `5xx`: a failed pass is repeated by the sync above, and a blind retry of a write is not safe. |
 
 `Retry-After` wins where the server sends one — guessing shorter than a number the server
@@ -42,8 +43,12 @@ Nothing in the engine calls `log` or `tracing`; a host owns its I/O. A wait a us
 otherwise experience as an unexplained stall is reported through `ThrottleObserver`, which the
 host implements and logs. A host wires one the way it wires `SyncObserver`.
 
-A `ThrottleEvent` carries the provider label, status, attempt, delay, whether the server named
-the delay, and whether this attempt gave up. **It carries no URL** — a request path on a mail
+A `ThrottleEvent` carries the provider label, status, attempt, delay, **the instant the server
+named** where it named one, and whether this attempt gave up. `stated` and `delay` are
+different numbers on purpose: while waiting, `delay` is the server's figure plus jitter; on a
+give-up, `delay` is the total already slept — often nothing — and `stated` is the only thing
+that says when the work could have been sent instead. It replaced a `server_asked: bool`, which
+was exactly `stated.is_some()` and threw the figure away. **It carries no URL** — a request path on a mail
 API names a mailbox or a message, and these events are written to a diagnostic log a user
 attaches to a support request.
 
@@ -51,20 +56,23 @@ attaches to a support request.
 
 Surveyed across every adapter, because a throttle is not a provider-specific symptom:
 
-| Adapter | Signals a throttle as | Concurrency ceiling | Evidence | Narrows the gate |
-|---|---|---|---|---|
-| `provider-graph` | `429` (+ `Retry-After`) | **4 per mailbox** | Documented `MailboxConcurrency`, and measured: a sharp cliff, 4 clean over 460 requests and 5 refused 13% | **yes**, in `HttpTransport::new` |
-| `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | **The server states it** (RFC 8620 §2) — 4 on Stalwart, 10 on Fastmail | **yes**, in `JmapClient::connect`, once the session resolves |
-| `provider-google` | **`403` with a rate-limit `reason`**, `429` in theory | **none found** — clean at widths 5, 20 and 50 | Measured; see "Gmail bounds rate, not width" | yes, at `MAX_CONCURRENT_GETS`, but **not as a server ceiling** — see below |
-| `provider-caldav` + CardDAV | `429` (Stalwart); SabreDAV refuses nothing | **none found** — clean at widths 1–64 on both servers | Measured on two implementations; `provider-caldav/tests/live_concurrency.rs` | **no** |
-| `provider-imap` | n/a | 1 **per connection** | Not HTTP, and one connection is one command at a time | n/a — not an HTTP adapter |
+| Adapter | Signals a throttle as | Concurrency ceiling | Evidence | Narrows the gate | Classifies a body |
+|---|---|---|---|---|---|
+| `provider-graph` | `429` (+ `Retry-After`) | **4 per mailbox** | Documented `MailboxConcurrency`, and measured: a sharp cliff, 4 clean over 460 requests and 5 refused 13% | **yes**, in `HttpTransport::new` | no — the status is the whole answer |
+| `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | **The server states it** (RFC 8620 §2) — 4 on Stalwart, 10 on Fastmail | **yes**, in `JmapClient::connect`, once the session resolves | **yes**, `400` → `JmapThrottles` |
+| `provider-google` | **both**: `429` for concurrency, `403` for the per-minute quota | **between 48 and 64 per user**, measured | See "Gmail has two limits, and they are not the same limit" | yes, at `MAX_CONCURRENT_GETS` (20), comfortably under it | **yes**, `403` → `GoogleThrottles` |
+| `provider-caldav` + CardDAV | `429` (Stalwart); SabreDAV refuses nothing | **none found** — clean at widths 1–64 on both servers | Measured on two implementations; `provider-caldav/tests/live_concurrency.rs` | **no** | no — the status is the whole answer |
+| `provider-imap` | n/a | 1 **per connection** | Not HTTP, and one connection is one command at a time | n/a — not an HTTP adapter | n/a |
 
-⚠️ **Only Graph has a concurrency ceiling that a gate is the right instrument for.** JMAP's is
-honoured because the server states a number and ignoring a stated limit is indefensible
-whether or not it bites. Everywhere else the thing that refuses is a **rate**, and a width
-bound does not control a rate: halving the width of a drain that then runs twice as long
-delivers the same requests per second. Keep the two quantities apart — conflating them is how
-the Gmail figure below came to be wrong for months.
+⚠️ **Graph and Gmail both have a concurrency ceiling; Graph's is the one a gate is sized
+against.** Graph's is 4 and an ordinary pass walks straight into it. Gmail's is between 48 and
+64 and nothing this engine does goes near it — the adapter fans out 20 wide — so the gate is
+narrowed there for a different reason, stated below. JMAP's is honoured because the server
+states a number and ignoring a stated limit is indefensible whether or not it bites. On the
+DAV servers the thing that refuses is a **rate**, and a width bound does not control a rate:
+halving the width of a drain that then runs twice as long delivers the same requests per
+second. Keep the two quantities apart — conflating them is how the Gmail figures below came to
+be wrong twice, in opposite directions.
 
 ⚠️ **`provider-imap`'s `1` is the odd one out among the *widths*, and it is the reason
 `min`-ing these into a fan-out is wrong.** Every HTTP adapter's number is a bound on the
@@ -111,52 +119,76 @@ limit`. So it is concurrency, not the requests-per-window budget — that never 
 for the store's single write connection. A folder task that cannot get a lane waits at the gate,
 which costs a parked future and nothing else.
 
-### Gmail bounds rate, not width — and the old figure here measured the wrong thing
+### Gmail has two limits, and they are not the same limit
 
-This file used to record Gmail's ceiling as "20 per user — measured: 20 clean, 30 occasional,
-50 throttles a tenth". That was a **width** conclusion drawn from a **rate** experiment, and it
-is wrong in both directions: 50 is clean, and 5 is not, depending only on what ran before.
+This section has now been wrong twice, in opposite directions, and both times for the same
+reason: one probe, one conclusion. What follows is what three probes say.
 
-Run flat out with five-second pauses, a *fixed* width of 5 goes 0% → 21% → 82% refused across
-three consecutive blocks. Nothing about the width changed; the quota emptied. Re-run rested —
-75-second gaps, widths in randomised order, 100 requests a block:
+**It used to record a width that was really a rate.** "20 per user — 20 clean, 30 occasional,
+50 throttles a tenth" was a width conclusion drawn from a width experiment run flat out. Run
+that way a *fixed* width of 5 goes 0% → 21% → 82% refused across three consecutive blocks:
+nothing about the width changed, the quota emptied. Re-run rested — 75-second gaps, widths in
+randomised order, 100 requests a block — widths 5, 20 and 50 all ran 200 requests with **zero**
+refusals and throughput scaling linearly.
 
-| width | blocks | ok | refused | mean req/s |
-|---|---|---|---|---|
-| 5 | 2 | 200 | **0** | 14.7 |
-| 20 | 2 | 200 | **0** | 29.6 |
-| 50 | 2 | 200 | **0** | 50.5 |
+**Then it recorded "Gmail never sends a `429`", which is true only below 50.** The rested sweep
+stopped at width 50, and Gmail's concurrency ceiling is just above it. Re-run as salvos — W
+simultaneous `messages.get`s, five times, a full quota window's rest between widths, widths in
+randomised order so a monotone result cannot be drift:
 
-**No refusals at any width.** Throughput scales linearly with width, which is what "no
-concurrency ceiling in this range" looks like. What Gmail actually enforces it says itself, in
-the refusal body — no guessing required:
+| width | 8 | 16 | 32 | 48 | 64 | 96 | 128 | 200 |
+|---|---|---|---|---|---|---|---|---|
+| refused `429` | 0% | 0% | 0% | **0%** | **1.6%** | 2.5% | 8.4% | 10.4% |
+
+Clean through 48, refusing from 64, and the share climbs with width — the signature of a
+ceiling on requests in flight, and the same shape Graph's cliff has at 4. The refusal is a
+`429`:
+
+```
+429 RESOURCE_EXHAUSTED  rateLimitExceeded
+"Too many concurrent requests for user."
+```
+
+**And the quota limit is real, is separate, and is the one an ordinary pass meets.** Hold the
+width at 8 — far below the ceiling above — and sustain it, and the refusal is a `403`:
 
 ```
 403 PERMISSION_DENIED  rateLimitExceeded
 "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user'"
-  quota_limit:       totalQueryCostPerMinutePerUser
-  quota_limit_value: 6000
-  quota_unit:        1/min/{project}/{user}
+  quota_limit:        totalQueryCostPerMinutePerUser
+  quota_limit_value:  6000
+  quota_unit:         1/min/{project}/{user}
+  window_start_time:  1789912553
 ```
 
-**6,000 cost units per minute, per user, per project** — a budget spent over a rolling window,
-which is why the same width is clean on a rested quota and refused on a drained one, and why
-every "how wide can we go" measurement here has to start from rest.
+**6,000 cost units per minute, per user, per project** — a budget spent over a window, which is
+why the same width is clean on a rested quota and refused on a drained one, and why every "how
+wide can we go" measurement here has to start from rest.
 
-Across ~1,600 observed refusals, **every single one was a `403`. Gmail never sent a `429`.**
+So the two limits answer two different probes, and each one hides the other:
 
-Two consequences, and neither is comfortable:
+| Probe | Meets | Because |
+|---|---|---|
+| wide salvos, rested between | `429` concurrency | too many at once, quota barely touched |
+| narrow and sustained | `403` quota | quota drained, never more than 8 at once |
 
-- **The gate does not address Gmail's limit.** `provider-google` still narrows it to
-  `MAX_CONCURRENT_GETS`, and that is worth doing for a different reason — an account's mail,
-  calendar and contacts providers would otherwise each run their own 20-wide fan-out against
-  one user's quota — but it is the adapter's own measured fan-out width applied account-wide,
-  **not** a server ceiling. Do not describe it as one.
-- **`send_retrying` never waits out a `403`.** `retryable()` reads status alone (`429`, or
-  `503` when idempotent), so Gmail's *only* refusal shape falls straight through to the
-  adapter, which classifies it `RateLimited` and fails the scope. The work is delayed by a
-  whole pass rather than by a backoff. That was filed under Known gaps as an edge case; it is
-  not an edge case, it is Gmail's normal behaviour under load.
+Both are captured verbatim — `provider-google/tests/fixtures/error/concurrency_exceeded.json`
+and `quota_exceeded.json` — because a count of refusals cannot tell the next reader which
+limit was counted.
+
+Consequences:
+
+- **The gate is not sized against Gmail's ceiling, and should not be.** 20 is the adapter's own
+  fan-out width; the server's ceiling is somewhere past 48. Narrowing to 20 is still worth
+  doing, for the gate's own reason: an account's mail, calendar and contacts providers would
+  otherwise each run their own 20-wide fan-out against one user's quota, and three times the
+  width drains it three times as fast.
+- **The `403` is the one that matters in practice**, because the adapter never fans out wide
+  enough to meet the other. It is what "When the status is not the answer" exists for.
+- **Neither refusal carries a `Retry-After`** — checked against every header of both captures.
+  The `403` states the window's start instead, so the wait to the window's end is a number the
+  *server* named; `provider-google/src/throttle.rs` reads it, defensively, and every way it can
+  fail lands back on the backoff schedule.
 
 ### DAV bounds rate too, on one server and not at all on the other
 
@@ -191,38 +223,115 @@ So: the gate belongs wherever the host's per-account state lives, not on any one
 not on a `RetryConfig` shared process-wide — the policy and the observer genuinely are
 process-wide, so clone it per account through `gated` rather than building a second.
 
-**JMAP's is a `400`.** RFC 8620 §3.6.1 returns *every* request-level error with a `400`,
+## When the status is not the answer
+
+Two of the four adapters signal a throttle with a status that reads as something else, and
+**each of them already knows it** — the verdict simply arrived after the retry decision, which
+had read the status and moved on.
+
+| Adapter | Arrives as | Reads as | Really is |
+|---|---|---|---|
+| `provider-google` | `403 PERMISSION_DENIED` | no permission | the per-minute quota, when `errors[0].reason` is a rate-limit reason |
+| `provider-jmap` | `400` + `urn:ietf:params:jmap:error:limit` | a bad request | too many at once, when `limit` is `maxConcurrentRequests` |
+
+**The adapter reads the body; `engine-http` still owns every question about waiting.** A
+`RetryConfig` carries a `ThrottleClassifier` the adapter supplies through `classifying`, the
+same way it supplies its label through `labelled` — how a server says no is the one thing only
+the adapter knows. Putting a `serde_json` call in `send_retrying` instead would be shorter by a
+day and would end with four providers' error vocabularies in one `match` in the neutral crate.
+
+Three properties hold the design together:
+
+- **It is additive.** The status rule runs first and alone, so a `429` or an idempotent `503`
+  is waited out on exactly the path it always was. A classifier can turn a reply that was being
+  handed back into one that is waited out, and can never do the reverse.
+- **Bodies are read only where the adapter asked.** `reads_body_of(status)` is consulted before
+  anything is buffered, and claims `403` for Google and `400` for JMAP — nothing else. A
+  classifier that claimed `200` would buffer every page the adapter ever fetched.
+- **Nothing is reconstructed.** Reading a body used to mean losing the reply —
+  `Response::bytes` consumes `self` — so the first version of this took the reply apart and
+  built a new one around the bytes, copying the status, version, headers and extensions across
+  by hand. That is a list of fields somebody has to keep in step with reqwest, and one of them
+  was already nearly missed: `TlsInfo` lives in the extensions, and dropping it would have made
+  a throttled account the one account reporting no TLS version, with nothing failing to say so.
+  The URL could not be carried at all. So the body is drained through `Response::chunk`, which
+  takes `&mut self`, and **the reply handed back is the object the client produced**. `Sent`
+  wraps it: it derefs to the response for everything taken by reference, and its own `text`
+  and `bytes` hand back what was already read. A caller cannot reach past it to an empty
+  body — `Response`'s consuming readers are unreachable through a `Deref`, so it does not
+  compile.
+
+A classifier may also name a wait. Google's does: the `403` carries the quota window's start,
+so the time to the window's end is the server's own number and is honoured exactly as a
+`Retry-After` would be — never undercut, reported to the host as `server_asked`, and still
+subject to the total-wait budget. JMAP's does not, because RFC 8620's problem details say which
+limit was hit and nothing about when it clears.
+
+**Classifying is not the same as waiting.** Google names four rate-limit reasons and the
+adapter calls all four `RateLimited`, rightly — a host backs off for any of them. Only
+`rateLimitExceeded` and `userRateLimitExceeded` describe a limit the funnel can outlast;
+`dailyLimitExceeded` and `quotaExceeded` name a quota measured in days, so the classifier
+declines them and the reply goes straight back after one send, exactly as it did before any
+classifier existed. Retrying those five times would spend five requests to be told the same
+thing, for a window that clears tomorrow.
+
+### JMAP's `400`, and where it is actually enforced
+
+RFC 8620 §3.6.1 returns *every* request-level error with a `400`,
 `urn:ietf:params:jmap:error:limit` among them, and its `limit` property names which limit was
 hit. Only `maxConcurrentRequests` is one a client clears by waiting — `maxSizeRequest` and
-`maxCallsInRequest` describe the request that was sent. Read as a bare status this is
-`Permanent`, and a body dropped as permanent is one no later pass fetches again.
+`maxCallsInRequest` describe the request that was sent, and both are pinned as fixtures from
+the real server precisely so the reader can be shown discriminating between them.
 
-Note also that RFC 8620 scopes `maxConcurrentRequests` to the API endpoint and defines no
-companion for downloads — but a server may apply one number to both, and Stalwart does:
-exceeding it on a blob download is refused, not queued. So it is what bounds a body warm too,
-and it defaults to `1` when a session omits it rather than to a guess.
+RFC 8620 scopes `maxConcurrentRequests` to the API endpoint and defines no companion for
+downloads, but a server may apply one number to more than that. **Stalwart applies it to
+uploads and, as measured here, to nothing else:** 300 simultaneous API calls and 300
+simultaneous blob *downloads* were all answered `200`, while 16 simultaneous uploads drew six
+`400`s — reported under the name `maxConcurrentRequests` even though the session advertises a
+separate `maxConcurrentUpload`. One counter, two names. It still defaults to `1` when a session
+omits it, rather than to a guess.
+
+That is also why the refusal is only reachable at all with **more than one client**:
+`JmapClient::connect` narrows the account's gate to the stated number, so this adapter alone
+cannot exceed it. A gate bounds one account *in this process*; the server counts the user's
+other devices too. `provider-jmap/tests/live_concurrency_limit.rs` is four clients of one
+account, which is what that sentence looks like in practice.
 
 ## Known gaps
 
-- **Nothing waits out a rate limit, only a concurrency one.** `send_retrying` retries `429`
-  (and `503` when idempotent) and nothing else. That is exactly right for Graph, whose refusal
-  is a `429` carrying a `Retry-After`. It is exactly wrong for Gmail, whose refusal is a `403`
-  — *every one* of ~1,600 observed — which falls through unretried and costs a whole sync pass
-  instead of a backoff. Fixing it means reading a body in the shared layer, or having the
-  adapter classify before the retry decision rather than after; both are real designs and
-  neither is in #216's scope.
-- **A `ThrottleEvent` does not say which ceiling was hit**, or even that one was. Graph names
-  it in the body (`MailboxConcurrency`), Gmail in a `403` `reason`; neither reaches the host,
-  and the `403` never reaches the observer at all. So a diagnostic log cannot distinguish "too
-  many at once" from "too many this minute" — which is why #216 needed a live probe to answer
-  a question 31 recorded events could not.
-- **Rate is unbounded everywhere.** The gate bounds width, and on three of the five adapters
-  width is not what the server counts. Nothing in the engine paces requests per second.
+- **Rate is unbounded everywhere.** The gate bounds *width*, and on three of the five adapters
+  width is not the quantity the server counts — Gmail bills units per minute, Stalwart's DAV
+  endpoint trips somewhere between 50/s and 150/s, and nothing in the engine paces requests per
+  second. What exists now is the **reactive** half: a rate limit, once hit, is waited out
+  properly. The proactive half — a token bucket per account, which is a different instrument
+  from `RequestGate` and would need a rate to be stated or learned — is deliberately not built.
+  Two reasons, and the second is the real one: no server in this set states a rate the way JMAP
+  states a width, so any bucket would be a guess; and a guess low enough to be safe on a
+  drained quota is a guess that halves throughput on a rested one. Revisit it if a host reports
+  quota refusals that the backoff does not absorb.
+- **A `ThrottleEvent` still does not say which ceiling was hit.** It now carries the status,
+  which for Gmail distinguishes the two (`429` is concurrency, `403` is the quota) — but that
+  is a coincidence of Gmail's, not a property of the type. Graph names its ceiling in the body
+  (`MailboxConcurrency`) and JMAP in its `limit` property, and neither reaches the host. A
+  diagnostic log can now at least see that *something* was waited out, which before this it
+  could not: the `403` never reached the observer at all.
+- **A classifier reads a body it may not get.** `reads_body_of` is asked about a status, not a
+  content type, so a `403` served as HTML by a captive portal is buffered and parsed before
+  being declined. That is cheap and correct, but it is a body read for nothing; if a provider
+  ever claims a status whose replies are large, narrow it there rather than here.
+- **Google's `429` has no live test.** The concurrency ceiling is measured and captured, but
+  reaching it costs a salvo of 64+ requests, and the adapter fans out 20 wide — so a live test
+  would be provoking a limit the shipping code cannot reach, at real quota cost, to prove the
+  status rule that has worked since the crate landed. The `403` is the one with a live test
+  (`provider-google/tests/live_quota_throttle.rs`), because it is the one an ordinary pass
+  meets.
 - A transport failure (connection reset, timeout) is not retried here. Whether the server
   acted is unknowable from this layer, and the sync pass above already repeats a failed pass.
 - `Method::is_idempotent` answers `false` for the WebDAV extension methods, so a `503` on
   `PROPFIND`/`REPORT` is not retried even though their own RFCs say a replay is safe.
   Conservative in the safe direction.
-- Google's `403`-with-a-rate-limit-reason is classified as `RateLimited` by the adapter but is
-  not retried by `send_retrying`, which reads status alone. Sniffing a body to decide would
-  put provider knowledge in the shared layer; the adapter's classification is what carries it.
+- **JMAP's method-level `rateLimit`/`overQuota` are out of reach of all this.** They arrive
+  inside a `200 OK`, one per method call in a batch, so the HTTP funnel never sees a refusal to
+  wait out. The method layer classifies them `RateLimited` and the pass repeats — the same
+  whole-pass delay the `400` used to cost. Fixing it means retrying *a call within a batch*,
+  which is a different mechanism from this one.

@@ -222,8 +222,12 @@ async fn a_non_json_success_body_is_a_permanent_decode_error() {
     .get(&base)
     .await
     .unwrap_err();
-    // A body that does not decode is a permanent protocol mismatch.
-    assert!(matches!(err, GraphError::Transport(_)));
+    // A body that does not decode is a permanent protocol mismatch — and it is `Json`
+    // rather than `Transport`, because the bytes arrived fine and simply are not JSON.
+    // It used to be `Transport` only because `reqwest::Response::json` wrapped the parse
+    // failure as a decode error of its own; a reply now comes back through
+    // `engine_http::Sent`, whose bytes this crate parses itself. The class is unchanged.
+    assert!(matches!(err, GraphError::Json(_)));
     assert_eq!(err.failure_class(), FailureClass::Permanent);
 }
 

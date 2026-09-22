@@ -65,7 +65,7 @@ impl HttpTransport {
         &self,
         url: &str,
         extra_prefer: Option<&str>,
-    ) -> Result<reqwest::Response, GraphError> {
+    ) -> Result<engine_http::Sent, GraphError> {
         let prefer = match extra_prefer {
             Some(extra) => format!("IdType=\"ImmutableId\", {extra}"),
             None => "IdType=\"ImmutableId\"".to_owned(),
@@ -94,7 +94,7 @@ impl HttpTransport {
         content_type: Option<&str>,
         if_match: Option<&str>,
         body: Vec<u8>,
-    ) -> Result<reqwest::Response, GraphError> {
+    ) -> Result<engine_http::Sent, GraphError> {
         let mut request = self
             .client
             .request(method, url)
@@ -121,7 +121,7 @@ impl HttpTransport {
     /// Turns a byte response into its body, classifying a non-2xx. Shared by the
     /// authenticated and anonymous byte paths so they differ in exactly one thing:
     /// whether the bearer token is attached.
-    async fn collect_bytes(resp: reqwest::Response) -> Result<Vec<u8>, GraphError> {
+    async fn collect_bytes(resp: engine_http::Sent) -> Result<Vec<u8>, GraphError> {
         let status = resp.status();
         if !status.is_success() {
             // The `$value` error body is JSON like any other Graph error, so classify it
@@ -129,13 +129,13 @@ impl HttpTransport {
             let body = resp.text().await.unwrap_or_default();
             return Err(GraphError::status(status.as_u16(), body));
         }
-        Ok(resp.bytes().await?.to_vec())
+        Ok(resp.bytes().await?)
     }
 }
 
 /// Turns a successful write response into its parsed JSON body, or `None` when the
 /// action carried none (`202`/`204`). A non-2xx is a classified [`GraphError::Status`].
-async fn write_body(resp: reqwest::Response) -> Result<Option<Value>, GraphError> {
+async fn write_body(resp: engine_http::Sent) -> Result<Option<Value>, GraphError> {
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -158,7 +158,7 @@ impl GraphTransport for HttpTransport {
             let body = resp.text().await.unwrap_or_default();
             return Err(GraphError::status(status.as_u16(), body));
         }
-        Ok(resp.json::<Value>().await?)
+        Ok(serde_json::from_slice(&resp.bytes().await?)?)
     }
 
     async fn get_with_prefer(&self, url: &str, prefer: Option<&str>) -> Result<Value, GraphError> {
@@ -168,7 +168,7 @@ impl GraphTransport for HttpTransport {
             let body = resp.text().await.unwrap_or_default();
             return Err(GraphError::status(status.as_u16(), body));
         }
-        Ok(resp.json::<Value>().await?)
+        Ok(serde_json::from_slice(&resp.bytes().await?)?)
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GraphError> {

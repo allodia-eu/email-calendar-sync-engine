@@ -14,18 +14,33 @@ pub struct ThrottleEvent<'a> {
     /// behaviour is branching on provider kind, which is what the neutral facade exists to
     /// prevent.
     pub provider: &'a str,
-    /// The status that triggered the wait — `429`, or `503` on an idempotent request.
+    /// The status that triggered the wait — `429`, or `503` on an idempotent request, or
+    /// whatever else the adapter's
+    /// [`ThrottleClassifier`](crate::ThrottleClassifier) recognised in the body (Gmail's
+    /// `403`, JMAP's `400`). It is a status, not a diagnosis: it says what arrived, never
+    /// which ceiling was hit.
     pub status: u16,
     /// Which attempt was refused, counting the first send as `0`.
     pub attempt: u32,
     /// How long the engine will wait before sending again, or how long it waited in total
     /// when [`gave_up`](Self::gave_up) is set.
     pub delay: Duration,
-    /// Whether [`delay`](Self::delay) came from the server's own `Retry-After` rather than
-    /// from the backoff schedule. Worth logging: a server that names a number is describing a
-    /// real quota window, and "waiting 120s because the server asked" reads very differently
-    /// from the same wait chosen locally.
-    pub server_asked: bool,
+    /// The instant the **server itself** named — its `Retry-After`, or a wait an adapter's
+    /// classifier read out of the body — or `None` where the backoff schedule chose the delay
+    /// unaided.
+    ///
+    /// Worth logging for two reasons. A server that names a number is describing a real quota
+    /// window, and "waiting 120s because the server asked" reads very differently from the
+    /// same wait chosen locally. And it is **not** the same number as
+    /// [`delay`](Self::delay): while waiting, `delay` is this plus jitter; on a
+    /// [`gave_up`](Self::gave_up) event, `delay` is the total already slept — often zero —
+    /// and this is the only thing that says when to come back.
+    ///
+    /// Replaced a `server_asked: bool`, which was exactly `stated.is_some()` and threw the
+    /// number away. A log line that can say *how long* the server asked for is the difference
+    /// between "still limiting us, the rest waits for the next sync" and knowing when the
+    /// next sync will get anywhere.
+    pub stated: Option<Duration>,
     /// Set on the last event of a request that stayed throttled — the attempts or the total
     /// wait ran out and the `429` is being returned to the caller. Exactly one event per
     /// request carries this.
@@ -69,7 +84,7 @@ mod tests {
             status: 429,
             attempt: 1,
             delay: std::time::Duration::from_millis(750),
-            server_asked: false,
+            stated: None,
             gave_up: false,
         }
     }

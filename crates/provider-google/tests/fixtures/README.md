@@ -45,6 +45,8 @@ on the account.
 | `mail/modify_not_spam.json` | the same with `removeLabelIds:["SPAM"], addLabelIds:["INBOX"]` | the not-junk report; removing `SPAM` *alone* leaves the message in no place label at all |
 | `error/invalid_label_phishing.json` | the same with `addLabelIds:["PHISHING"]` | Gmail has no phishing label — `400 Invalid label`, so the verdict is refused rather than filed as junk |
 | `error/*.json` | a 400(label)/401/403(rate)/403(perm)/404/410 | `error` envelope → `FailureClass` mapping |
+| `error/quota_exceeded.json` | the `403` a sustained width-8 drain draws | Gmail's **per-minute quota** refusal, verbatim: `PERMISSION_DENIED` with `errors[0].reason: rateLimitExceeded`, and a `google.rpc.ErrorInfo` naming `totalQueryCostPerMinutePerUser`, `6000`, `1/min/{project}/{user}` and `window_start_time`. The window figure is what `src/throttle.rs` turns into a wait, so this file is where "the server named an instant" is pinned. |
+| `error/concurrency_exceeded.json` | the `429` a salvo of 200 draws | Gmail's **other** limit: `RESOURCE_EXHAUSTED`, "Too many concurrent requests for user." Captured to keep the two apart — a count of refusals cannot say which one it counted. |
 
 ## Real-behavior findings (captured, not assumed)
 
@@ -93,6 +95,23 @@ on the account.
    ["UNREAD","SENT","INBOX"]` straight from `messages.send`). That is what makes the live
    archive test meaningful: there is a real inbox membership to leave, so "it left the
    inbox" is a check that can actually fail.
+
+21. **Gmail refuses in two shapes, and which one you meet depends on how you ask.** Both
+    captured on 2026-09-20 from this account, minutes apart:
+
+    | Probe | Refusal | Says |
+    | --- | --- | --- |
+    | 200 simultaneous `messages.get` | `429 RESOURCE_EXHAUSTED` | "Too many concurrent requests for user." |
+    | 8 in flight, sustained | `403 PERMISSION_DENIED` | "Quota exceeded … 'Units per minute per user'" |
+
+    Swept properly — salvos of W, a full quota window's rest between widths, widths in
+    randomised order — the concurrency ceiling is clean through 48 and refuses from 64 up
+    (1.6%, then 2.5% at 96, 8.4% at 128, 10.4% at 200). The adapter fans out 20 wide, so it
+    meets the quota and never the ceiling, which is exactly why the repo recorded for months
+    that Gmail "never sends a `429`": nothing here had ever asked wide enough. **Neither
+    refusal carries a `Retry-After`** — every header of both captures was checked — but the
+    `403` names `window_start_time`, so the wait to the window's end is the server's own
+    number.
 
 ## Calendar files (`calendar/`)
 
@@ -217,4 +236,6 @@ handle → a placeholder.
     Query Cost" of 6000 units/minute/user and a `sync_email` snapshot fetches every
     message, so a handful in quick succession answers `403 rateLimitExceeded` — which reads
     like a permissions failure and is not. Live tests take one snapshot per phase and reuse
-    it.
+    it. The adapter now waits that `403` out rather than failing the scope (finding 21 and
+    `src/throttle.rs`), so a suite that meets it pauses; a suite that keeps spending faster
+    than 6,000 units a minute still outruns every window it waits for.

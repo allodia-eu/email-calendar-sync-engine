@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": 429,
+    "message": "Too many concurrent requests for user.",
+    "errors": [
+      {
+        "message": "Too many concurrent requests for user.",
+        "domain": "global",
+        "reason": "rateLimitExceeded"
+      }
+    ],
+    "status": "RESOURCE_EXHAUSTED"
+  }
+}

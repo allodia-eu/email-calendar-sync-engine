@@ -23,9 +23,10 @@
 //! - Both throttle as the width grows, which is the direct evidence that a batch of n counts as n
 //!   requests. Batch tolerates a somewhat wider window before it does.
 //!
-//! Note that a Gmail throttle here is a **`403 rateLimitExceeded`**, not a `429` — that is its
-//! only refusal shape (`http-throttling.md`), and counting only `429` made this suite report an
-//! ordinary throttle as a malformed probe.
+//! Note that the Gmail throttle *this* suite meets is a **`403 rateLimitExceeded`** rather than
+//! a `429`: at these widths the per-minute quota is what runs out, and the concurrency ceiling
+//! that does answer `429` sits above 48 (`http-throttling.md`). Counting only `429` made this
+//! suite report an ordinary throttle as a malformed probe.
 //!
 //! So the case for concurrency is bytes, simplicity, and the ability to yield a message as it
 //! lands rather than after a whole envelope parses — not speed. Re-run this before changing
@@ -207,12 +208,13 @@ async fn concurrent_round(
         .collect()
         .await;
     let bytes = results.iter().map(|(l, ..)| l).sum();
-    // **Gmail's throttle is a `403`, not a `429`.** Measured over ~1,600 refusals against a
-    // live account, it never sent a `429` once: it answers `403 rateLimitExceeded` with
-    // "Quota exceeded for quota metric 'Total Query Cost'"
-    // (`docs/agent-guidance/http-throttling.md`). Counting only `429` made this assertion
-    // fire on an ordinary throttle and call it a malformed probe, which is the opposite of
-    // what it is for — it exists to reject a *failure* being timed as if it were work.
+    // **Both of Gmail's refusals count as throttles here.** At these widths the one that
+    // arrives is the `403 rateLimitExceeded` quota refusal — "Quota exceeded for quota metric
+    // 'Total Query Cost'" — while the `429 "Too many concurrent requests for user."` needs a
+    // width past 48 (`docs/agent-guidance/http-throttling.md`). Counting only `429` made this
+    // assertion fire on an ordinary throttle and call it a malformed probe, which is the
+    // opposite of what it is for: it exists to reject a *failure* being timed as if it were
+    // work.
     let throttled = results
         .iter()
         .filter(|(_, s, _)| *s == 429 || *s == 403)

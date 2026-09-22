@@ -176,6 +176,40 @@ fn is_concurrency_limit(body: &str) -> bool {
         && problem.get("limit").and_then(serde_json::Value::as_str) == Some("maxConcurrentRequests")
 }
 
+/// Reads JMAP's concurrency refusal out of the `400` that carries it.
+///
+/// The counterpart of [`status_class`]'s `400` arm, wired into the shared send funnel so the
+/// refusal is *waited out* rather than merely named correctly. Before this the adapter
+/// classified it `RateLimited` and handed it back, and the body went unfetched until the
+/// next pass — #218.
+///
+/// Narrower than Google's classifier, because JMAP's problem details carry no reset instant:
+/// RFC 8620 §3.6.1 defines `type` and, for `:limit`, which `limit` was hit, and nothing about
+/// when it clears. A server that wants to name one has `Retry-After`, which the send funnel
+/// already reads off the headers.
+///
+/// This is a belt to [`RequestGate`](engine_http::RequestGate)'s braces rather than a
+/// replacement for it. `JmapClient::connect` narrows the account's gate to the session's
+/// `maxConcurrentRequests`, so this adapter's own requests should not reach the limit at
+/// all. They can anyway: a gate bounds one account *in this process*, and the server counts
+/// the user's other clients too.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct JmapThrottles;
+
+impl engine_http::ThrottleClassifier for JmapThrottles {
+    fn reads_body_of(&self, status: u16) -> bool {
+        // The only status JMAP overloads. A `429` needs no body, and every other `400` here
+        // — `maxSizeRequest`, `maxCallsInRequest`, a malformed envelope — describes the
+        // request that was sent and fails identically however long anything waits.
+        status == 400
+    }
+
+    fn throttle(&self, _status: u16, body: &[u8]) -> Option<engine_http::Throttle> {
+        let body = core::str::from_utf8(body).ok()?;
+        is_concurrency_limit(body).then(engine_http::Throttle::new)
+    }
+}
+
 /// Maps a reqwest transport error to a [`FailureClass`]. Connect/timeout failures
 /// are transient; a decode failure is a protocol problem.
 fn transport_class(err: &reqwest::Error) -> FailureClass {
@@ -249,6 +283,90 @@ mod tests {
                 .to_owned(),
         };
         assert_eq!(refused.failure_class(), FailureClass::RateLimited);
+    }
+
+    /// The three `urn:ietf:params:jmap:error:limit` refusals Stalwart was made to send, and
+    /// the `429` it answers when the blob store itself is full. Captured 2026-09-20 by
+    /// tripping each limit on the harness in turn: concurrent uploads for the first, 17
+    /// calls in one request for the second, an 11 MB request for the third.
+    ///
+    /// The first is the interesting one, and it took some finding. Stalwart enforces
+    /// `maxConcurrentRequests` on **uploads** — 300 simultaneous API calls and 300
+    /// simultaneous blob *downloads* were all answered `200` — and reports it under the
+    /// `maxConcurrentRequests` name even though the session advertises a separate
+    /// `maxConcurrentUpload`. One counter, two names.
+    const CONCURRENCY: &str = include_str!("../tests/fixtures/error/concurrency_limit.json");
+    const TOO_MANY_CALLS: &str =
+        include_str!("../tests/fixtures/error/calls_in_request_limit.json");
+    const TOO_LARGE: &str = include_str!("../tests/fixtures/error/size_request_limit.json");
+    const BLOB_QUOTA: &str = include_str!("../tests/fixtures/error/blob_quota.json");
+
+    #[test]
+    fn the_send_funnel_waits_out_the_400_the_adapter_already_called_a_rate_limit() {
+        use engine_http::ThrottleClassifier as _;
+
+        // The two verdicts have to agree, because they are the same verdict: one names the
+        // failure for the caller, the other decides whether to wait. #218 is what it cost
+        // when only the first existed.
+        assert_eq!(
+            JmapError::Status {
+                status: 400,
+                body: CONCURRENCY.to_owned(),
+            }
+            .failure_class(),
+            FailureClass::RateLimited,
+        );
+        assert_eq!(
+            JmapThrottles.throttle(400, CONCURRENCY.as_bytes()),
+            Some(engine_http::Throttle::new()),
+        );
+    }
+
+    #[test]
+    fn the_request_shaped_limits_are_not_waited_out_either() {
+        use engine_http::ThrottleClassifier as _;
+
+        // The same type, the same status, and the opposite answer: these describe the
+        // request that was sent, so re-sending it unchanged fails identically and a wait
+        // buys nothing but the wait. Pinned against the server's real bytes in both
+        // directions, because one direction alone cannot show the reader is discriminating.
+        for body in [TOO_MANY_CALLS, TOO_LARGE] {
+            assert_eq!(JmapThrottles.throttle(400, body.as_bytes()), None, "{body}");
+        }
+    }
+
+    #[test]
+    fn the_blob_quota_429_needs_no_classifier_at_all() {
+        use engine_http::ThrottleClassifier as _;
+
+        // Stalwart's other refusal, met by the same probe: a full blob store, answered
+        // `429` with a `Retry-After` of about three quarters of an hour. Nothing here has
+        // to recognise it — the status rule waits out a `429` whatever sent it, and the
+        // policy's budget then declines a wait that long and hands the work to the next
+        // pass, which for a quota measured in hours is the only sane answer.
+        assert!(!JmapThrottles.reads_body_of(429));
+        assert_eq!(
+            JmapError::Status {
+                status: 429,
+                body: BLOB_QUOTA.to_owned(),
+            }
+            .failure_class(),
+            FailureClass::RateLimited,
+        );
+    }
+
+    #[test]
+    fn only_the_400_is_worth_reading_a_body_for() {
+        use engine_http::ThrottleClassifier as _;
+
+        assert!(JmapThrottles.reads_body_of(400));
+        for settled in [200_u16, 401, 404, 429, 500, 503] {
+            assert!(!JmapThrottles.reads_body_of(settled), "{settled}");
+        }
+        // And nothing that is not the problem-details shape is read as one.
+        for body in [&b""[..], b"<html>bad request</html>", b"{}", b"\xff\xfe"] {
+            assert_eq!(JmapThrottles.throttle(400, body), None, "{body:?}");
+        }
     }
 
     #[test]
