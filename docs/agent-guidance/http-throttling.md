@@ -263,6 +263,14 @@ so the time to the window's end is the server's own number and is honoured exact
 subject to the total-wait budget. JMAP's does not, because RFC 8620's problem details say which
 limit was hit and nothing about when it clears.
 
+**Classifying is not the same as waiting.** Google names four rate-limit reasons and the
+adapter calls all four `RateLimited`, rightly — a host backs off for any of them. Only
+`rateLimitExceeded` and `userRateLimitExceeded` describe a limit the funnel can outlast;
+`dailyLimitExceeded` and `quotaExceeded` name a quota measured in days, so the classifier
+declines them and the reply goes straight back after one send, exactly as it did before any
+classifier existed. Retrying those five times would spend five requests to be told the same
+thing, for a window that clears tomorrow.
+
 ### JMAP's `400`, and where it is actually enforced
 
 RFC 8620 §3.6.1 returns *every* request-level error with a `400`,

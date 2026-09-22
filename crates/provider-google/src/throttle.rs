@@ -53,6 +53,21 @@ use crate::error::GoogleError;
 /// request, and waiting out either is waiting for something that will not change.
 const DECIDED_BY_ITS_BODY: &[u16] = &[403];
 
+/// The rate-limit reasons worth *waiting out*, as opposed to merely classifying.
+///
+/// Google names four, and [`GoogleError`] calls all four `RateLimited` — rightly, because a
+/// host should back off for any of them. Only these two describe a limit that clears on a
+/// timescale this funnel can outlast. `dailyLimitExceeded` and `quotaExceeded` name a quota
+/// measured in days: retrying one five times spends five requests to be told the same thing,
+/// and before a classifier existed the reply came straight back after one. So they stay
+/// classified and stop being retried, which is the behaviour they had all along.
+///
+/// The split is by Google's documented meanings rather than by capture — every one of the
+/// 14,710 refusals measured here was `rateLimitExceeded`, so there is no observed
+/// `dailyLimitExceeded` body to point at. That is the conservative direction: the reasons
+/// that stay are the ones measured to be short.
+const CLEARS_SOON: &[&str] = &["rateLimitExceeded", "userRateLimitExceeded"];
+
 /// How long a `totalQueryCostPerMinutePerUser` window runs.
 ///
 /// Named by the refusal itself as `1/min/{project}/{user}`; a unit naming any other period
@@ -79,9 +94,23 @@ impl ThrottleClassifier for GoogleThrottles {
 fn classify(status: u16, body: &[u8], now: SystemTime) -> Option<Throttle> {
     let body = core::str::from_utf8(body).ok()?;
     // The adapter's own classification, unchanged and not duplicated: whatever
-    // `GoogleError` calls a rate limit is what gets waited out, so the two can never drift
-    // into disagreeing about the same body.
-    if GoogleError::status(status, body).failure_class() != FailureClass::RateLimited {
+    // `GoogleError` calls a rate limit is the starting point, so the two can never drift
+    // into disagreeing about what a body *is*.
+    let refusal = GoogleError::status(status, body);
+    if refusal.failure_class() != FailureClass::RateLimited {
+        return None;
+    }
+    // Classifying and waiting are different questions, and this is the one place they part
+    // company: a daily quota is every bit as much a rate limit, and waiting for one here
+    // would spend five requests on a window measured in days.
+    let GoogleError::Status {
+        reason: Some(reason),
+        ..
+    } = &refusal
+    else {
+        return None;
+    };
+    if !CLEARS_SOON.contains(&reason.as_str()) {
         return None;
     }
     Some(quota_window_remaining(body, now).map_or_else(Throttle::new, Throttle::after))

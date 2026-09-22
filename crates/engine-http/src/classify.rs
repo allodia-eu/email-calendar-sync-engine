@@ -76,13 +76,21 @@ impl Throttle {
 pub trait ThrottleClassifier: Send + Sync {
     /// Whether a reply with this status is one whose body decides the question.
     ///
-    /// Asked before the body is read, and asked on every non-2xx reply, so it must be cheap
-    /// and must answer `false` for everything the status already settles.
+    /// Asked before the body is read, and asked on **every** reply the status rule did not
+    /// already settle — a `2xx` included — so it must be cheap and must answer `false` for
+    /// everything the status settles on its own.
     fn reads_body_of(&self, status: u16) -> bool;
 
     /// What that body turned out to be: `None` for a refusal that is exactly what its status
     /// says — a real `403 insufficientPermissions` is not a throttle and retrying it wastes
     /// a quota unit to be told the same thing.
+    ///
+    /// **Answering `Some` asserts the request was *refused*, not performed** — the reply is
+    /// then replayed whatever the method was, exactly as a `429` is, and unlike the `503`
+    /// rule, which retries only where a replay cannot duplicate a write. Both refusals
+    /// classified here are safe on that count (a request the server declined to run), but an
+    /// implementation that claimed a status a server can send *after* acting would turn one
+    /// write into two.
     ///
     /// `body` is the whole reply, unparsed. It may be empty, and it may not be JSON: a proxy
     /// between the engine and the provider can answer in HTML with any status it likes, so an

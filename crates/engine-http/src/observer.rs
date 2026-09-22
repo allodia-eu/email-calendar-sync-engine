@@ -14,7 +14,11 @@ pub struct ThrottleEvent<'a> {
     /// behaviour is branching on provider kind, which is what the neutral facade exists to
     /// prevent.
     pub provider: &'a str,
-    /// The status that triggered the wait — `429`, or `503` on an idempotent request.
+    /// The status that triggered the wait — `429`, or `503` on an idempotent request, or
+    /// whatever else the adapter's
+    /// [`ThrottleClassifier`](crate::ThrottleClassifier) recognised in the body (Gmail's
+    /// `403`, JMAP's `400`). It is a status, not a diagnosis: it says what arrived, never
+    /// which ceiling was hit.
     pub status: u16,
     /// Which attempt was refused, counting the first send as `0`.
     pub attempt: u32,

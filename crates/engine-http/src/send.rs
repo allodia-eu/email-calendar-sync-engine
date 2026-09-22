@@ -151,6 +151,12 @@ impl RetryConfig {
 /// the set. A reply a classifier had to read comes back through [`Sent`] with those bytes
 /// attached — the reply object itself is untouched, so nothing about it can be lost.
 ///
+/// A reply a classifier claims is replayed **whatever the method was**, on the same reasoning
+/// that lets a `429` be: a throttle is a request the server refused rather than performed, so
+/// a replay cannot apply it twice. That is a promise the classifier makes — see
+/// [`ThrottleClassifier::throttle`](crate::ThrottleClassifier::throttle) — not one the status
+/// carries, which is why the `503` rule still asks about idempotency and this does not.
+///
 /// # Errors
 ///
 /// Returns the `reqwest` error from building or sending the request, or from reading the

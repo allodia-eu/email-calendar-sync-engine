@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use engine_http::{Throttle, ThrottleClassifier};
 
 use super::{GoogleThrottles, classify, quota_window_remaining};
+use crate::error::GoogleError;
 
 /// The captured quota refusal: `403`, `PERMISSION_DENIED`, `reason: rateLimitExceeded`.
 const QUOTA: &str = include_str!("../tests/fixtures/error/quota_exceeded.json");
@@ -160,4 +161,40 @@ fn a_refusal_with_no_details_at_all_is_still_a_throttle() {
         classify(403, bare.as_bytes(), at(SERVED_AT)),
         Some(Throttle::new()),
     );
+}
+
+#[test]
+fn a_quota_measured_in_days_is_classified_but_not_waited_out() {
+    // Classifying and waiting are different questions. `GoogleError` calls all four of
+    // Google's rate-limit reasons `RateLimited`, and should: a host backs off for any of
+    // them. But the funnel can only outlast the short ones — retrying a daily quota five
+    // times spends five requests to be told the same thing, for a window that clears
+    // tomorrow. Before a classifier existed the reply came straight back after one send,
+    // and for these two it still does.
+    for long in ["dailyLimitExceeded", "quotaExceeded"] {
+        let refusal = QUOTA.replace("rateLimitExceeded", long);
+        assert_eq!(
+            GoogleError::status(403, &refusal).failure_class(),
+            engine_core::error::FailureClass::RateLimited,
+            "{long} is still a rate limit for the host",
+        );
+        assert_eq!(
+            classify(403, refusal.as_bytes(), at(SERVED_AT)),
+            None,
+            "{long} names a window this funnel cannot wait out",
+        );
+    }
+}
+
+#[test]
+fn the_short_reasons_are_still_waited_out() {
+    // The other half, so the narrowing above cannot quietly swallow the case the whole
+    // classifier exists for. `rateLimitExceeded` is what all 14,710 measured refusals said.
+    for short in ["rateLimitExceeded", "userRateLimitExceeded"] {
+        let refusal = QUOTA.replace("rateLimitExceeded", short);
+        assert!(
+            classify(403, refusal.as_bytes(), at(SERVED_AT)).is_some(),
+            "{short}",
+        );
+    }
 }
