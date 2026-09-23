@@ -20,7 +20,8 @@
 //!   [`tokio::task::spawn_blocking`]. A file database splits into one writer connection and a pool
 //!   of `query_only` readers (`pool.rs`), so a committing sync and a list read no longer queue
 //!   behind each other; an in-memory database keeps a single connection, because there each
-//!   connection is its own database.
+//!   connection is its own database. A call the runtime cancels while shutting down fails with
+//!   [`StoreError::Backend`](engine_store::StoreError::Backend) rather than panicking (`join.rs`).
 //!
 //! The FTS5 search index and the normalized structured-filter tables layer over
 //! this base in migration `V2` (`schema.rs`). On-demand message content (`V5`) splits
@@ -34,6 +35,7 @@ mod contact_ops;
 mod contact_store;
 mod convert;
 mod derived_ops;
+mod join;
 mod mail_ops;
 mod migrations;
 mod outbox_ops;
@@ -150,15 +152,13 @@ impl<C: Clock> SqliteStore<C> {
 
     /// Runs `f` against the **writer** on a blocking thread. Every transaction and
     /// every pragma that changes the database goes here.
-    async fn call<F, R>(&self, f: F) -> R
+    async fn call<F, R>(&self, f: F) -> Result<R>
     where
-        F: FnOnce(&mut Connection) -> R + Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
         let pool = Arc::clone(&self.pool);
-        tokio::task::spawn_blocking(move || f(&mut pool.writer()))
-            .await
-            .expect("sqlite blocking task panicked")
+        join::joined(tokio::task::spawn_blocking(move || f(&mut pool.writer()))).await
     }
 
     /// Runs `f` against a free **reader** on a blocking thread, so it does not wait
@@ -166,28 +166,24 @@ impl<C: Clock> SqliteStore<C> {
     ///
     /// Readers are `query_only`: routing a write here fails rather than silently
     /// falling back to the writer's lock.
-    async fn read<F, R>(&self, f: F) -> R
+    async fn read<F, R>(&self, f: F) -> Result<R>
     where
-        F: FnOnce(&Connection) -> R + Send + 'static,
+        F: FnOnce(&Connection) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
         let pool = Arc::clone(&self.pool);
-        tokio::task::spawn_blocking(move || f(&pool.reader()))
-            .await
-            .expect("sqlite blocking task panicked")
+        join::joined(tokio::task::spawn_blocking(move || f(&pool.reader()))).await
     }
 
     /// Runs `f` on a blocking thread **without** holding the connection lock — for
     /// filesystem blob I/O (a multi-megabyte read/write) that must not serialize the
     /// whole store behind the SQLite mutex the way [`Self::call`] does.
-    async fn block<F, R>(f: F) -> R
+    async fn block<F, R>(f: F) -> Result<R>
     where
-        F: FnOnce() -> R + Send + 'static,
+        F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        tokio::task::spawn_blocking(f)
-            .await
-            .expect("blob blocking task panicked")
+        join::joined(tokio::task::spawn_blocking(f)).await
     }
 
     /// Searches mail across `scopes`, returning ranked hits and the answer's
