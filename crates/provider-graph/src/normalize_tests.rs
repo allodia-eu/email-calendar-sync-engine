@@ -284,3 +284,10 @@ fn a_size_is_estimated_from_the_attachments_and_only_when_there_are_any() {
     let empty = message_from_json(&with_attachments(json!([]))).expect("message");
     assert_eq!(empty.size, None);
 }
+
+#[test]
+fn the_select_keeps_the_recipients_that_make_sender_an_address() {
+    // Without them Graph answers `sender` with an X.500 DN, not an address (`MESSAGE_SELECT`).
+    assert!(MESSAGE_SELECT.contains(&"sender"));
+    assert!(MESSAGE_SELECT.contains(&"toRecipients"));
+}

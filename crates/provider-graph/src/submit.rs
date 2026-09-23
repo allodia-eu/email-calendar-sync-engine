@@ -53,9 +53,9 @@ pub(crate) async fn send(client: &GraphClient, draft: &Draft) -> ProviderResult<
 /// (`/users/{shared}/sendMail`) sends *from that mailbox* whatever the draft's `From`
 /// says — and a message whose header disagrees with its sender misrepresents who wrote it.
 /// How Exchange treats the mismatch is not something to rely on, so it never reaches
-/// Exchange. Sending as the shared mailbox is exactly what such a client is for; Exchange
-/// then adds a `Sender:` naming the signed-in delegate, which clients render as "on behalf
-/// of" (`graph.md`).
+/// Exchange. Sending as the shared mailbox is exactly what such a client is for; live, the copy
+/// filed in the shared mailbox's Sent Items with `sender` naming the signed-in delegate, which
+/// clients render as "on behalf of" (`graph.md`).
 ///
 /// Only a **named** principal can be checked. A client bound to `/me` does not know its own
 /// address without asking the directory, and its `From` may legitimately differ anyway —

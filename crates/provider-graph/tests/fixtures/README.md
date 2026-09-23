@@ -368,6 +368,17 @@ earlier probe (PR #89) it says so, and where Graph has since changed it says tha
    The folder id is the same with and without `Prefer: IdType="ImmutableId"`.
 5. **Addresses are case-insensitive on this route.** The probe answered the same mailbox for
    the address in upper case.
+6. **Sending as the shared mailbox works, and files there.** One real email, with the user's
+   leave (2026-09-23, `live_shared_send.rs`): `POST /users/{shared}/sendMail` (MIME) answered
+   `202`. The copy was filed in the shared mailbox's Sent Items with `from` the shared address
+   and the pre-generated `Message-ID` kept; the signed-in user's own Sent Items got none.
+   `sender` named the delegate ("on behalf of"). No fixture: the copy carries three real
+   addresses and nothing in it drives a normalizer change.
+7. **`sender` is an address only when the recipients are selected with it.** The same copy read
+   with `$select=from,sender` gave the delegate's X.500 `legacyExchangeDN`
+   (`/O=EXCHANGELABS/…/CN=RECIPIENTS/CN=…`) as `sender.emailAddress.address`; add `toRecipients`
+   and it was the delegate's SMTP address. `MESSAGE_SELECT` keeps the recipients for that reason,
+   and a unit test holds it there.
 
 ## The throttle fixture is a captured refusal, not an invented one
 

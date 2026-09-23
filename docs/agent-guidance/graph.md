@@ -379,8 +379,22 @@ public constructor but the checking one, so no path splices an unchecked address
 that mailbox whatever the draft's `From` says. A draft whose `From` names another mailbox is
 refused before the request rather than resolved silently on the server — how Exchange treats
 the mismatch is not something to rely on (and not something to probe by sending real mail).
-Sending as the shared mailbox is what the client is for; Exchange then adds a `Sender:` naming
-the signed-in delegate, which clients render as "on behalf of".
+Sending as the shared mailbox is what the client is for.
+
+**Live-verified once (2026-09-23, `live_shared_send.rs`)**, with the one real email a run costs.
+`POST /users/{shared}/sendMail` with the MIME body answered `202`. The copy was filed in the
+**shared mailbox's** Sent Items, with `from` the shared address and the `Message-ID` preserved;
+the signed-in user's own Sent Items got no copy. So the receipt's `sent:<Message-ID>` key
+reconciles within the shared account, which is the one that syncs that folder. `sender` named
+the signed-in delegate, which clients render as "on behalf of". That is what this tenant's grant
+produced; the delegate's Exchange permission, not the engine, decides it.
+
+**`sender` is only an address when the recipients are selected too.** Read with
+`$select=from,sender` (or `sender` alone), the same Sent Items copy's `sender.emailAddress.address`
+was the delegate's X.500 `legacyExchangeDN` (`/O=EXCHANGELABS/…/CN=RECIPIENTS/CN=…`). Add
+`toRecipients` to the select and it was the delegate's SMTP address. `MESSAGE_SELECT` selects the
+recipients, so the normalizer gets an address; a narrower select would put a DN in
+`Envelope::sender`.
 
 - **This refuses a `From` that is an alias of the bound mailbox**, which Exchange would
   accept: telling an alias from a mistake needs the mailbox's `proxyAddresses`, a directory
