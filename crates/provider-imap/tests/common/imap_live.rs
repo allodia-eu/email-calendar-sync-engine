@@ -21,7 +21,7 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::Provider;
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapConfig, ImapProvider};
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
 /// A live IMAP server this suite can run against.
@@ -88,7 +88,11 @@ pub async fn connect_to(server: &Server, mailbox: &str, test: &str) -> Option<Li
         return None;
     };
     let host = addr.rsplit_once(':').map_or("localhost", |(host, _)| host);
-    let config = ImapConfig::new(addr.as_str(), host, server.account, server.password);
+    let config = ImapConfig::new(
+        addr.as_str(),
+        host,
+        Credentials::password(server.account, server.password),
+    );
     Some(
         ImapProvider::connect(
             &config,

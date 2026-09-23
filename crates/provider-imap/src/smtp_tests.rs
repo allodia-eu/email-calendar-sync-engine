@@ -6,7 +6,20 @@ use engine_rfc5322::assemble_message;
 use time::{OffsetDateTime, macros::datetime};
 
 use super::*;
-use crate::mock::{MockStream, script, written};
+use crate::{
+    credentials::Credentials,
+    mock::{MockStream, script, written},
+};
+
+/// The `SmtpAuth` a TLS submission presents. Taken by reference, so the credential is
+/// built by the caller and outlives it.
+fn auth(credentials: &Credentials) -> SmtpAuth<'_> {
+    SmtpAuth {
+        credentials,
+        host: "smtp.test.local",
+        port: Some(465),
+    }
+}
 
 fn draft(to: &[&str], body: &str) -> Draft {
     Draft::new(
@@ -355,6 +368,7 @@ async fn send_authenticates_with_auth_plain_over_the_stream() {
     ]);
     let (stream, recorded) = MockStream::new(server);
     let message = assembled(&draft(&["bob@test.local"], "hi"));
+    let credentials = Credentials::password("alice@test.local", "s3cret");
 
     let result = send(
         stream,
@@ -362,7 +376,7 @@ async fn send_authenticates_with_auth_plain_over_the_stream() {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(("alice@test.local", "s3cret")),
+        Some(auth(&credentials)),
     )
     .await
     .unwrap();
@@ -393,7 +407,7 @@ async fn an_auth_rejection_is_an_authentication_error() {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(("alice@test.local", "wrong")),
+        Some(auth(&Credentials::password("alice@test.local", "wrong"))),
     )
     .await
     .unwrap_err();
@@ -415,7 +429,7 @@ async fn auth_without_esmtp_is_a_protocol_error() {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(("user", "pass")),
+        Some(auth(&Credentials::password("user", "pass"))),
     )
     .await
     .unwrap_err();

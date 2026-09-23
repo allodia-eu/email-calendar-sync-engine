@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use engine_core::ids::{AccountId, MailboxId};
 use engine_provider::{MailEdit, Provider, WatchEvent};
-use provider_imap::{ImapConfig, ImapProvider, ImapWatcher};
+use provider_imap::{Credentials, ImapConfig, ImapProvider, ImapWatcher};
 use stalwart_harness::Harness;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
@@ -35,8 +35,7 @@ fn config_for(harness: &Harness) -> ImapConfig {
     ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        harness.account.as_str(),
-        harness.password.as_str(),
+        Credentials::password(harness.account.as_str(), harness.password.as_str()),
     )
 }
 
