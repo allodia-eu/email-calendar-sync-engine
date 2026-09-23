@@ -316,14 +316,14 @@ place — **`codecov.yml`** (`coverage.status.project.default.target` and
 `…patch.default.target`). CI's coverage job reads the floor from there with `yq`, and
 Codecov enforces both, so the number is defined once. Run the same check locally before
 `git push` so you catch a regression before CI does. The offline metric excludes the
-live/harness tests (they run in the gated `stalwart` job); the exclusion list mirrors
-CI's `COVERAGE_IGNORE` (see `.github/workflows/ci.yml`):
+live/harness tests (they run in the gated `stalwart` job) and the `dav-cli` debugging
+tool; the exclusion list mirrors CI's `COVERAGE_IGNORE` (see `.github/workflows/ci.yml`):
 
 ```sh
 cargo llvm-cov --no-report --workspace --all-features
 threshold="$(yq '.coverage.status.project.default.target' codecov.yml | tr -d '%')"   # single source
 cargo llvm-cov report --fail-under-lines "$threshold" \
-  --ignore-filename-regex 'stalwart-harness/|provider-[a-z]+/tests/'
+  --ignore-filename-regex 'stalwart-harness/|dav-cli/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/|provider-graph/tests/'
 ```
 
 New/changed lines must clear the **patch** target too, so cover new code. A provider's
