@@ -168,26 +168,35 @@ async fn a_file_store_reads_through_a_connection_that_cannot_write() {
 
     let insert = "INSERT INTO meta (key, value) VALUES ('probe', '1')";
     let refused = store
-        .read(move |conn| conn.execute(insert, []).map_err(|err| err.to_string()))
+        .read(move |conn| {
+            conn.execute(insert, [])
+                .map_err(|err| engine_store::StoreError::Backend(err.to_string()))
+        })
         .await;
     assert!(
-        refused.is_err_and(|err| err.contains("readonly")),
+        refused.is_err_and(|err| matches!(
+            err,
+            engine_store::StoreError::Backend(message) if message.contains("readonly")
+        )),
         "a reader must refuse a write outright"
     );
 
     // The same statement on the writer succeeds, so the refusal above is the routing
     // and not a broken schema.
     store
-        .call(move |conn| conn.execute(insert, []).expect("the writer accepts it"))
-        .await;
+        .call(move |conn| Ok(conn.execute(insert, []).expect("the writer accepts it")))
+        .await
+        .unwrap();
     let stored = store
         .read(|conn| {
-            conn.query_row("SELECT value FROM meta WHERE key = 'probe'", [], |row| {
-                row.get::<_, String>(0)
-            })
-            .expect("read it back")
+            Ok(conn
+                .query_row("SELECT value FROM meta WHERE key = 'probe'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .expect("read it back"))
         })
-        .await;
+        .await
+        .unwrap();
     assert_eq!(stored, "1", "a reader sees the writer's committed row");
 }
 
@@ -224,8 +233,10 @@ async fn a_pre_v14_row_is_listed_and_cancellable_but_never_claimed() {
                 [],
             )
             .expect("seed a pre-v14 row");
+            Ok(())
         })
-        .await;
+        .await
+        .unwrap();
     let op = PendingOpId::new(1);
 
     // Listed, and honest about what it is: the kind was never recorded.
