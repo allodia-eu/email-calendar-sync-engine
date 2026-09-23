@@ -46,7 +46,7 @@ mod scheduling;
 
 pub use engine::{
     CalendarDelete, CalendarWrite, ContactDelete, ContactReconciled, ContactWrite, Engine,
-    PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled, queued_draft,
+    MailboxSpan, PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled, queued_draft,
 };
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).

@@ -16,7 +16,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`; build a mailbox
   list with `mail_window` (the projected rows a list renders, across any set of accounts
   in one ordered answer), complete its conversations with `mail_on_threads` and resolve
-  a named message with `mail_by_keys`; read `mailboxes` / `messages` /
+  a named message with `mail_by_keys`; read one mailbox's messages between two instants with
+  `mail_in_mailbox_between` (newest first, capped, with the oldest date the store holds for that
+  mailbox beside them, so a host can tell "nothing older exists here" from "nothing older was
+  synced"); read `mailboxes` / `messages` /
   `calendars` / `events` and `search_mail` / `search_calendar` (which now also
   matches fetched **body** text); open a message with `message_body` (fetch-on-demand;
   caches the raw bytes on disk and the extracted text in SQLite, so reopen is a fast

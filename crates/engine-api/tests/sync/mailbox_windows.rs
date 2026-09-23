@@ -1,6 +1,7 @@
-//! One mailbox held further back than its account, through the facade a host drives.
+//! One mailbox held further back than its account, and read over a span of time, through the
+//! facade a host drives.
 
-use engine_api::{CalendarDate, Engine, MailboxWindows};
+use engine_api::{CalendarDate, Engine, MailboxWindows, UtcDateTime};
 
 use super::*;
 
@@ -67,4 +68,71 @@ async fn a_depth_reduction_prune_keeps_what_a_deeper_mailbox_holds() {
 
     assert_eq!(report.messages_removed, 2, "in-old and sent-older");
     assert_eq!(keys(&engine).await, vec!["sent-new", "sent-old"]);
+}
+
+#[tokio::test]
+async fn a_mailbox_span_returns_its_messages_newest_first_and_how_far_back_it_reaches() {
+    let engine = Engine::open_in_memory().unwrap();
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider()),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await;
+    let at = |text: &str| text.parse::<UtcDateTime>().unwrap();
+
+    let span = engine
+        .mail_in_mailbox_between(
+            &account(),
+            &sent(),
+            at("2024-06-01T00:00:00Z"),
+            at("2027-01-01T00:00:00Z"),
+            10,
+        )
+        .await
+        .unwrap();
+    let keys: Vec<&str> = span
+        .messages
+        .iter()
+        .map(|message| message.id.key().as_str())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["sent-new", "sent-old"],
+        "Sent only, newest first"
+    );
+    assert!(span.messages.iter().all(|m| m.mailboxes.contains(&sent())));
+    assert_eq!(
+        span.oldest,
+        Some(at("2024-02-01T09:00:00Z")),
+        "the oldest the mailbox holds, outside the span asked for"
+    );
+
+    let newest = engine
+        .mail_in_mailbox_between(
+            &account(),
+            &sent(),
+            at("2020-01-01T00:00:00Z"),
+            at("2027-01-01T00:00:00Z"),
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(newest.messages.len(), 1);
+    assert_eq!(newest.messages[0].id.key().as_str(), "sent-new");
+
+    let nothing = engine
+        .mail_in_mailbox_between(
+            &account(),
+            &MailboxId::try_from("never").unwrap(),
+            at("2020-01-01T00:00:00Z"),
+            at("2027-01-01T00:00:00Z"),
+            10,
+        )
+        .await
+        .unwrap();
+    assert!(nothing.messages.is_empty());
+    assert_eq!(nothing.oldest, None);
 }

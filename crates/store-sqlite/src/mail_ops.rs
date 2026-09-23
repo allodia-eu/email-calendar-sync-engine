@@ -4,7 +4,7 @@
 //! index and nothing else — no ranking of the whole account in the caller, and no JSON payload
 //! opened per row. The normalized object is still there; it is what opening a message reads.
 //!
-//! Three shapes, one projection:
+//! Four shapes, one projection:
 //!
 //! - **Newest** is a single ordered statement over the accounts named. Several accounts in one call
 //!   is the point: "all inboxes" is a predicate, not a loop with a merge above it.
@@ -12,6 +12,8 @@
 //!   `message_account_thread` / `message_account_key`. A conversation is a question about a handful
 //!   of messages; answering it by scanning the mailbox is what made opening one thread cost a
 //!   function of how much mail the account holds.
+//! - **Mailbox** is one mailbox over a span of time, walked down the same date index with the
+//!   membership answered per row by its primary key ([`mailbox`]).
 //!
 //! The order is `date_utc DESC, account DESC, scope_key DESC, provider_key DESC` throughout —
 //! newest first, undated last (descending, SQLite sorts `NULL` below every value), and **total**,
@@ -83,18 +85,34 @@ pub(crate) enum Selector {
     Threads(Vec<ThreadId>),
     /// The messages named by these keys.
     Keys(Vec<ProviderKey>),
+    /// One mailbox's messages dated within `[since, until)`.
+    Mailbox {
+        mailbox: MailboxId,
+        since: UtcDateTime,
+        until: UtcDateTime,
+    },
 }
 
 /// Takes ownership of a borrowed selector so it can cross onto the blocking pool, answering
-/// `None` when it names nothing — an empty thread or key list has no rows to find, and skipping
-/// the read is the difference between "no conversations to complete" and a statement that cannot
-/// match.
+/// `None` when it names nothing — an empty thread or key list, or an empty span, has no rows to
+/// find, and skipping the read is the difference between "no conversations to complete" and a
+/// statement that cannot match.
 pub(crate) fn own(select: MailSelector<'_>) -> Option<Selector> {
     match select {
         MailSelector::Newest => Some(Selector::Newest),
         MailSelector::Threads([]) | MailSelector::Keys([]) => None,
         MailSelector::Threads(threads) => Some(Selector::Threads(threads.to_vec())),
         MailSelector::Keys(keys) => Some(Selector::Keys(keys.to_vec())),
+        MailSelector::Mailbox { since, until, .. } if since >= until => None,
+        MailSelector::Mailbox {
+            mailbox,
+            since,
+            until,
+        } => Some(Selector::Mailbox {
+            mailbox: mailbox.clone(),
+            since,
+            until,
+        }),
     }
 }
 
@@ -123,6 +141,11 @@ pub(crate) fn list_mail(
             let values: Vec<&str> = keys.iter().map(ProviderKey::as_str).collect();
             seek(conn, accounts, "m.provider_key", &values, limit)
         }
+        Selector::Mailbox {
+            mailbox,
+            since,
+            until,
+        } => mailbox::in_mailbox(conn, accounts, mailbox, (*since, *until), limit),
     }
 }
 
@@ -360,8 +383,11 @@ fn sql_limit(limit: usize) -> i64 {
     i64::try_from(limit).unwrap_or(-1)
 }
 
+pub(crate) mod mailbox;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_mailbox;
 #[cfg(test)]
 mod tests_warming;
 

@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// A stored row with only the fields a case is about set; the rest are the empty message.
-fn row(key: &str, date: Option<&str>, thread: Option<&ThreadId>) -> MailRow {
+pub(super) fn row(key: &str, date: Option<&str>, thread: Option<&ThreadId>) -> MailRow {
     MailRow {
         key: pk(key),
         thread_id: thread.cloned(),
@@ -75,7 +75,7 @@ async fn seed<S: Store + StoreRead>(
 }
 
 /// The keys of a read, in the order it returned them.
-fn keys(rows: &[crate::read::MailListRow]) -> Vec<ProviderKey> {
+pub(super) fn keys(rows: &[crate::read::MailListRow]) -> Vec<ProviderKey> {
     rows.iter().map(|row| row.mail.key.clone()).collect()
 }
 

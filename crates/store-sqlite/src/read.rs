@@ -6,9 +6,9 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    ids::{AccountId, ProviderKey},
+    ids::{AccountId, MailboxId, ProviderKey},
     sync::SyncScope,
-    time::{ExpansionWindow, Horizon},
+    time::{ExpansionWindow, Horizon, UtcDateTime},
     write::PendingOpId,
 };
 use engine_store::{
@@ -77,6 +77,17 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
         };
         let accounts = accounts.to_vec();
         self.read(move |conn| mail_ops::list_mail(conn, &accounts, &select, limit))
+            .await
+    }
+
+    async fn oldest_in_mailbox(
+        &self,
+        account: &AccountId,
+        mailbox: &MailboxId,
+    ) -> Result<Option<UtcDateTime>> {
+        let account = account.clone();
+        let mailbox = mailbox.clone();
+        self.read(move |conn| mail_ops::mailbox::oldest_in_mailbox(conn, &account, &mailbox))
             .await
     }
 

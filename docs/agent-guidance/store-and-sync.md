@@ -950,8 +950,9 @@ construction detail (plain SQLite over OS file encryption by default, SQLCipher
 opt-in), so the same contract holds either way. A small `StoreRead` companion
 (lease-free object/key inspection, plus `account_scopes` to enumerate an account's
 claimed scopes, `scope_objects` to batch-read a scope's objects, and `list_mail` to read
-a mailbox list — a window, a conversation, or named messages — without reading the mail
-around it) backs the contract suite and the read path.
+a mailbox list — a window, a conversation, named messages, or one mailbox over a span of time —
+without reading the mail around it, beside `oldest_in_mailbox`, how far back the store holds a
+mailbox) backs the contract suite and the read path.
 
 Supporting types (abbreviated):
 
