@@ -385,9 +385,12 @@ Sending as the shared mailbox is what the client is for.
 `POST /users/{shared}/sendMail` with the MIME body answered `202`. The copy was filed in the
 **shared mailbox's** Sent Items, with `from` the shared address and the `Message-ID` preserved;
 the signed-in user's own Sent Items got no copy. So the receipt's `sent:<Message-ID>` key
-reconciles within the shared account, which is the one that syncs that folder. `sender` named
-the signed-in delegate, which clients render as "on behalf of". That is what this tenant's grant
-produced; the delegate's Exchange permission, not the engine, decides it.
+reconciles within the shared account, which is the one that syncs that folder. The message the
+recipient got carried `From:` the shared mailbox **and** `Sender:` the signed-in delegate, with
+the `Message-ID` still the one generated (read from the delivered message's source). That is
+"on behalf of" on the wire. A client that displays `Sender:` shows it as such, but the
+recipient's client in this test showed `From` alone, so a host should not promise the label.
+The delegate's Exchange permission, not the engine, decides whether `Sender:` is added.
 
 **`sender` is only an address when the recipients are selected too.** Read with
 `$select=from,sender` (or `sender` alone), the same Sent Items copy's `sender.emailAddress.address`

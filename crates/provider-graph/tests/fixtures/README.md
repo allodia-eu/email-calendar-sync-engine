@@ -372,8 +372,10 @@ earlier probe (PR #89) it says so, and where Graph has since changed it says tha
    leave (2026-09-23, `live_shared_send.rs`): `POST /users/{shared}/sendMail` (MIME) answered
    `202`. The copy was filed in the shared mailbox's Sent Items with `from` the shared address
    and the pre-generated `Message-ID` kept; the signed-in user's own Sent Items got none.
-   `sender` named the delegate ("on behalf of"). No fixture: the copy carries three real
-   addresses and nothing in it drives a normalizer change.
+   `sender` named the delegate, and the delivered message's source had `Sender:` the delegate
+   beside `From:` the shared mailbox, so "on behalf of" is on the wire. The recipient's client
+   still displayed `From` alone. No fixture: the copy carries three real addresses and nothing in
+   it drives a normalizer change.
 7. **`sender` is an address only when the recipients are selected with it.** The same copy read
    with `$select=from,sender` gave the delegate's X.500 `legacyExchangeDN`
    (`/O=EXCHANGELABS/…/CN=RECIPIENTS/CN=…`) as `sender.emailAddress.address`; add `toRecipients`
