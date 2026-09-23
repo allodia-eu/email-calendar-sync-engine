@@ -15,6 +15,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     capability::Extension,
+    error::ImapError,
     mail::mailbox_from_list,
     parse::ListRow,
     provider::ImapProvider,
@@ -32,9 +33,13 @@ impl<S> ImapProvider<S> {
     /// has to know whose mail is whose. A session without `NAMESPACE` answers "none", which
     /// reads as the credential owning every folder — what it always did.
     ///
+    /// A `NO` or `BAD` reads as "none" too, but only for this call: it is not kept, so the
+    /// next caller asks again. A refusal can be passing (`[UNAVAILABLE]`), and kept for the
+    /// provider's life it would leave every shared folder in the credential's own list.
+    ///
     /// # Errors
     ///
-    /// The classified failure of the `NAMESPACE` command.
+    /// The classified transport or protocol failure of the `NAMESPACE` command.
     pub(crate) async fn namespaces_on<T>(
         &self,
         connection: &mut Connection<T>,
@@ -46,7 +51,13 @@ impl<S> ImapProvider<S> {
             return Ok(namespaces.clone());
         }
         let namespaces = if connection.negotiated.has(Extension::Namespace) {
-            connection.namespace().await?
+            match connection.namespace().await {
+                Ok(namespaces) => namespaces,
+                // Not a failure that takes the folder list and every placement down with
+                // it, and not an answer to keep either.
+                Err(ImapError::No(_) | ImapError::Bad(_)) => return Ok(Namespaces::default()),
+                Err(err) => return Err(err.into()),
+            }
         } else {
             Namespaces::default()
         };

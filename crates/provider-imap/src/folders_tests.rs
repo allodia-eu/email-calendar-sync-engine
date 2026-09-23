@@ -145,6 +145,55 @@ async fn a_shared_store_the_server_lists_nothing_of_is_an_error_not_an_empty_mai
 }
 
 #[tokio::test]
+async fn a_refused_namespace_reads_as_none_and_the_own_folders_still_list() {
+    // A `NO` is an answer with no namespaces in it, like a server without the extension —
+    // not a failure that takes the folder list (and every Sent copy) down with it.
+    let (connection, _) = session(
+        &["NAMESPACE"],
+        &[
+            "a2 NO NAMESPACE not available\r\n",
+            "* LIST () \"/\" \"INBOX\"\r\na3 OK LIST completed\r\n",
+            "* STATUS \"INBOX\" (UNSEEN 1)\r\na4 OK done\r\n",
+        ],
+    )
+    .await;
+    let folders = folders(&provider(connection, None)).await;
+    let ids: Vec<&str> = folders.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(ids, ["INBOX"]);
+}
+
+#[tokio::test]
+async fn a_refusal_is_not_kept_so_the_next_sync_asks_again() {
+    // A `NO` can be passing (`[UNAVAILABLE]`). Kept for the provider's life, one would mix
+    // every shared folder into the credential's own list until the host rebuilt it.
+    let (connection, recorded) = session(
+        &["NAMESPACE"],
+        &[
+            "a2 NO [UNAVAILABLE] try again later\r\n",
+            "* LIST () \"/\" \"INBOX\"\r\na3 OK LIST completed\r\n",
+            "* STATUS \"INBOX\" (UNSEEN 1)\r\na4 OK done\r\n",
+            NAMESPACE,
+            "a5 OK NAMESPACE completed\r\n",
+            "* LIST () \"/\" \"INBOX\"\r\n",
+            "* LIST () \"/\" \"Shared Folders/bob@test.local/INBOX\"\r\n",
+            "a6 OK LIST completed\r\n",
+            "* STATUS \"INBOX\" (UNSEEN 1)\r\na7 OK done\r\n",
+        ],
+    )
+    .await;
+    let provider = provider(connection, None);
+    folders(&provider).await;
+    let ids: Vec<String> = folders(&provider)
+        .await
+        .iter()
+        .map(|f| f.id.as_str().to_owned())
+        .collect();
+    assert_eq!(written(&recorded).matches("NAMESPACE").count(), 2);
+    // The second answer was read, so bob's store is no longer taken for alice's own.
+    assert_eq!(ids, ["INBOX"]);
+}
+
+#[tokio::test]
 async fn without_acl_nobody_is_asked_for_rights_and_every_folder_is_the_owners() {
     let (connection, recorded) = session(
         &["NAMESPACE"],
