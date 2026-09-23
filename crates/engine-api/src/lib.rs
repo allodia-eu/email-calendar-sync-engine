@@ -84,8 +84,8 @@ pub use engine_core::{
     // fields it can already read, and would have to depend on `engine-core` directly — the
     // reach-around this re-export block exists to prevent.
     ids::{
-        AccountId, AddressBookId, CalendarId, ContactId, EventId, MessageIdHeader, PersonId,
-        ProviderKey, ThreadId, Uid,
+        AccountId, AddressBookId, CalendarId, ContactId, EventId, MailboxId, MessageIdHeader,
+        PersonId, ProviderKey, ThreadId, Uid,
     },
     mail::{
         AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxRole, Message,
@@ -105,7 +105,9 @@ pub use engine_core::{
     // scheduling payload needs to be able to name it.
     raw::RawIcal,
     recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
-    sync::{SyncScope, SyncWindow},
+    // `MailboxWindows` is what `StreamTuning::within` and the local prune take when a mailbox
+    // is held further back than its account.
+    sync::{MailboxWindows, SyncScope, SyncWindow},
     // `CalendarDateTime` is the type of `Event::start` and `Event::recurrence_id`, and `Duration`
     // the type of `Event::duration` — both public fields on a type this facade returns.
     time::{

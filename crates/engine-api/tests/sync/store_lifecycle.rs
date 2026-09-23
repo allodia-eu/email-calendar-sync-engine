@@ -182,7 +182,7 @@ async fn a_delta_cannot_re_admit_mail_from_outside_the_window() {
         .sync_mail(
             core::slice::from_ref(&provider),
             &account(),
-            windowed,
+            windowed.clone(),
             &quiet(),
         )
         .await;

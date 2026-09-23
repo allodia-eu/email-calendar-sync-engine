@@ -154,9 +154,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   immediately instead of waiting for the fixed `LEASE_TTL` or clearing state. This
   is not a normal `Busy` recovery path for live in-process contention.
 - **Re-export signature types.** Types that appear in the facade's own signatures
-  (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
+  (`AccountId`, `MailboxId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,
-  `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `CalendarDate`) are
+  `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `MailboxWindows`,
+  `CalendarDate`) are
   re-exported so a host depends on `engine-api` alone. The concrete provider still
   comes from the adapter crate.
 - **Display-side timezone resolution.** `resolve_instant` / `resolve_instant_in` /

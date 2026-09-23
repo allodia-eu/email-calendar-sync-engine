@@ -396,7 +396,8 @@ committed and reported. A large `fetch_batch` with a small `chunk_size` gives *b
 few round trips *and* row-as-it-arrives commits (`StreamTuning::responsive` is the
 interactive default, `bulk` the throughput one). `window` is the per-sync **depth**
 (`SyncWindow { since }`, `engine-core`) — a provider-neutral date floor, passed per sync so
-a host changes depth without reconnecting providers. It bounds the pass twice, and the two
+a host changes depth without reconnecting providers. It is carried as `MailboxWindows`: the
+account's `SyncWindow`, plus any mailbox held further back (below). It bounds the pass twice, and the two
 are different jobs:
 
 - **What is fetched.** Each adapter maps the floor to its protocol's date filter on the
@@ -424,6 +425,35 @@ and never tombstoned either. Depth on the snapshot path is the adapter's job, an
 `admits` compares **dates**, inclusively, against `received_at` falling back to `sent_at` —
 the same value `MailRow::date_utc` carries — and admits **undated** mail, which is not provably
 outside the window.
+
+**A mailbox held further back (`MailboxWindows`).** A host that wants one mailbox's longer
+history (a Sent folder) deepens it, `MailboxWindows::new(account).deepen(mailbox, window)`,
+rather than widening every mailbox. An override only deepens: a mailbox's window is the wider
+of the account's and its own. One rule decides, everywhere depth is decided: **a message is
+inside when the window of any mailbox it is filed in admits it** (`MailboxWindows::admits`).
+
+- **What is fetched.** A folder-bound scope (IMAP, Graph) fetches under its own folder's
+  window (`window_for`), so no adapter changes: each already takes the window per call.
+- **What an additive chunk stores.** Judged per message, by its own mailboxes. This is what
+  keeps a deeper pass's mail: a fresh IMAP backfill commits its older groups as *additive*
+  chunks before its completing reconcile, so judging them by the account window would drop the
+  deeper mail while its key stayed in `present`: fetched, never stored, never tombstoned.
+- **What a prune keeps.** `prune_account_mail_outside_window` takes the same `MailboxWindows`,
+  so a depth-reduction prune never deletes what a deeper pass fetched.
+- **Recipient coverage** records the **account** window: it claims how far back every
+  mailbox's recipients were observed, which a deeper Sent does not make true.
+- **The deeper pass runs on a re-snapshot.** A delta brings new arrivals only, so a host that
+  deepens a mailbox clears the mail cursors (`Engine::clear_mail_cursors`) and syncs, the same
+  as widening the account window.
+
+⚠️ **Known gap: an account-wide mail scope (JMAP, Gmail) fetches under the account window.**
+One enumeration serves every mailbox and `Provider::stream_email` takes a single `SyncWindow`,
+so the adapter cannot be told that one mailbox reaches further back. On those providers a
+deepened mailbox's older mail is not fetched, and a re-snapshot's reconcile tombstones what a
+delta admitted under the override. Deltas and the prune already apply the rule per message;
+closing the gap means handing the adapter the per-mailbox windows (a JMAP `Email/query`
+`OR` of `after` and `inMailbox`, a Gmail query per deepened label), which changes the
+`Provider` trait.
 
 **Change events (`SyncObserver` / `SyncCommit`).** After every committed chunk the
 orchestrator calls the caller's `SyncObserver::committed` with a `SyncCommit { scope,
@@ -613,6 +643,9 @@ returning a `PruneReport { messages_removed }` (`engine-store`).
 - **Undated mail is kept.** A message with no `date_utc` is not provably out of window, and a
   prune must never over-delete; a `NULL` date is left in place (an unbounded window is likewise
   a no-op — nothing is outside it).
+- A **deepened mailbox keeps its older mail**: pass the same `MailboxWindows` the account
+  syncs under, and a message filed in a deepened mailbox stays while that mailbox's window
+  admits it (above).
 - It reuses the scope **tombstone** (object + all derived search/thread/occurrence rows), so
   the removed mail leaves nothing orphaned and search/reads reflect it immediately — the same
   cleanup a snapshot reconciliation performs. It runs only over the account's **mail** scopes

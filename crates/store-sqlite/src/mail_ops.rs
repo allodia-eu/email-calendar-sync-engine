@@ -327,7 +327,7 @@ impl TryFrom<RawRow> for MailListRow {
 /// Graph ids are opaque URL-safe text — so it separates them unambiguously. An id that no longer
 /// validates is dropped rather than failing the read: it can only ever narrow what a folder view
 /// shows, never widen it.
-fn mailboxes(joined: Option<&str>) -> Vec<MailboxId> {
+pub(crate) fn mailboxes(joined: Option<&str>) -> Vec<MailboxId> {
     joined
         .unwrap_or_default()
         .split('\n')
