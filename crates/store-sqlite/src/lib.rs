@@ -21,7 +21,8 @@
 //!   of `query_only` readers (`pool.rs`), so a committing sync and a list read no longer queue
 //!   behind each other; an in-memory database keeps a single connection, because there each
 //!   connection is its own database. A call the runtime cancels while shutting down fails with
-//!   [`StoreError::Backend`](engine_store::StoreError::Backend) rather than panicking (`join.rs`).
+//!   [`StoreError::ShuttingDown`](engine_store::StoreError::ShuttingDown) rather than panicking
+//!   (`join.rs`).
 //!
 //! The FTS5 search index and the normalized structured-filter tables layer over
 //! this base in migration `V2` (`schema.rs`). On-demand message content (`V5`) splits

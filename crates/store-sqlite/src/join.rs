@@ -7,15 +7,14 @@ use tokio::task::JoinHandle;
 ///
 /// A task that panicked panics here too, with its own payload. A task that was **cancelled**
 /// was never run: a runtime shutting down cancels the blocking tasks it has not started, so
-/// the call fails with an error instead. Taken as a panic, every store call queued at shutdown
+/// the call fails with [`StoreError::ShuttingDown`] instead. Taken as a panic, every store call
+/// queued at shutdown
 /// becomes a crash report for an orderly exit.
 pub(crate) async fn joined<R>(task: JoinHandle<Result<R>>) -> Result<R> {
     match task.await {
         Ok(answer) => answer,
         Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-        Err(_) => Err(StoreError::Backend(
-            "the store call was cancelled before it ran: the runtime is shutting down".to_owned(),
-        )),
+        Err(_) => Err(StoreError::ShuttingDown),
     }
 }
 
@@ -38,10 +37,7 @@ mod tests {
         let task = tokio::spawn(std::future::pending::<engine_store::Result<()>>());
         task.abort();
         let answer = joined(task).await;
-        assert!(
-            matches!(answer, Err(StoreError::Backend(_))),
-            "a cancelled store call reads as a failed one: {answer:?}",
-        );
+        assert_eq!(answer, Err(StoreError::ShuttingDown));
     }
 
     #[tokio::test]
