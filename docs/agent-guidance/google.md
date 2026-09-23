@@ -363,10 +363,36 @@ events it may only see the busy times of. The adapter used to map `writer` to `o
 - `freeBusyReader` — busy times only (`CalendarAccess::free_busy_only`).
 
 An absent or unknown role reads as `reader`: visible and immutable, hiding a capability
-rather than inviting a rejected write. **Live-verified for `owner` and `reader`** — the two roles
-the throwaway account holds, which the old mapping also got right. `writer`,
-`writerWithoutPrivateAccess` and `freeBusyReader` need a *second* Google account to share a
-calendar from, so they are proven offline only (`cal_normalize_tests`).
+rather than inviting a rejected write.
+
+**All five are live-verified**, and against behaviour rather than the label. `owner` and
+`reader` are roles the throwaway holds on its own calendars (`live_calendar.rs`). The other
+three only exist on *another* account's calendar, so `live_calendar_roles.rs` takes a second
+account (`GOOGLE_SHARER_ACCESS_TOKEN`, calendar scope only). It shares one calendar per role
+with the throwaway and then tries, as the throwaway, everything the engine's answer makes a
+claim about. What Google allowed (2026-09-23):
+
+| Role | Read an event | Busy time | Add an event | Re-share | Delete the calendar |
+|---|---|---|---|---|---|
+| `writer` | yes | yes | yes | no | no |
+| `writerWithoutPrivateAccess` | yes | yes | yes | no | no |
+| `reader` | yes | yes | no | no | no |
+| `freeBusyReader` | **no** | yes | no | no | no |
+
+Three things the run found that a spec reading would not:
+
+- **A free/busy reader's `events.get` answers `200`**, with the times alone: no summary, no
+  creator. So "may read" is judged on seeing the event's details, not on the status; a probe
+  keyed on `200` would have called `freeBusyReader` a reader.
+- **A grant reaches event reads after the calendar list shows it.** One run was refused an
+  event on a `writerWithoutPrivateAccess` calendar that the next run read at once, and one read
+  the fresh subscriptions back missing from `calendarList`. The test therefore waits for the
+  list to settle, and probes each calendar until two rounds agree. It keeps any success it
+  sees, because nothing is revoked mid-run: a success is never an artefact, a refusal can be.
+- **A writer's entry names the owner** (`dataOwner`); a reader's does not.
+
+Restoring the old mapping fails the live test on `writer: share`. The captured entries are
+`tests/fixtures/calendar/calendars_shared_roles.json`, pinned offline in `cal_normalize_tests`.
 
 ## Shared mailboxes: Gmail has no usable mechanism
 

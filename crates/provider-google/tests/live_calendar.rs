@@ -31,16 +31,16 @@ async fn live_calendars_list() {
     let primary = objects.iter().find(|c| c.is_default).expect("primary");
     assert!(primary.access.may_write && primary.access.may_share && primary.access.may_delete);
     // The subscribed holiday calendar is `reader`: visible, immutable — a host that offered
-    // "add an event" there would have the write refused by the API.
+    // "add an event" there would have the write refused by the API. Found by its id, not as
+    // "the other one": an interrupted `live_calendar_roles.rs` run can leave more subscribed.
     let subscribed = objects
         .iter()
-        .find(|c| !c.is_default)
+        .find(|c| !c.is_default && c.id.as_str().contains("#holiday"))
         .expect("the subscribed holiday calendar");
     assert!(subscribed.access.may_read);
     assert!(!subscribed.access.may_write && !subscribed.access.may_share);
-    // NOT proven here: `writer`, `writerWithoutPrivateAccess` and `freeBusyReader`. Each
-    // needs a *second* Google account to share a calendar from, and there is one throwaway
-    // account, so their mapping is proven offline (`cal_normalize_tests`) and not live.
+    // The roles only another account's calendar can carry — `writer`,
+    // `writerWithoutPrivateAccess`, `freeBusyReader` — are proven in `live_calendar_roles.rs`.
 }
 
 #[tokio::test]

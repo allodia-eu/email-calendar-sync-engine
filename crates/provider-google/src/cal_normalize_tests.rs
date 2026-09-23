@@ -10,6 +10,9 @@ use serde_json::Value;
 use super::*;
 
 const CALENDARS: &str = include_str!("../tests/fixtures/calendar/calendars.json");
+/// Four calendars another account shared with this one, one per role, as its `calendarList`
+/// returned them (`live_calendar_roles.rs`, which also records what each role really allowed).
+const SHARED_ROLES: &str = include_str!("../tests/fixtures/calendar/calendars_shared_roles.json");
 const SINGLE: &str = include_str!("../tests/fixtures/calendar/event_single.json");
 const RECURRING: &str = include_str!("../tests/fixtures/calendar/event_recurring_master.json");
 const ALLDAY: &str = include_str!("../tests/fixtures/calendar/event_allday.json");
@@ -80,6 +83,37 @@ fn each_access_role_maps_to_the_grant_it_names() {
     for unknown in [None, Some("somethingNew")] {
         let fallback = access_role(unknown);
         assert!(fallback.may_read && !fallback.may_write);
+    }
+}
+
+#[test]
+fn a_calendar_shared_with_the_account_reads_as_what_its_role_was_seen_to_allow() {
+    // Each expectation is what Google let the grantee do, probed live on the calendar these
+    // entries came from: read an event's details, add one, re-share, delete the calendar, see
+    // its busy time. A writer's entry also names the owner (`dataOwner`); a reader's does not.
+    let doc: Value = serde_json::from_str(SHARED_ROLES).unwrap();
+    let seen = [
+        ("writer", [true, true, false, false, true]),
+        (
+            "writerWithoutPrivateAccess",
+            [true, true, false, false, true],
+        ),
+        ("reader", [true, false, false, false, true]),
+        ("freeBusyReader", [false, false, false, false, true]),
+    ];
+    let items = doc["items"].as_array().unwrap();
+    assert_eq!(items.len(), seen.len());
+    for (entry, (role, allowed)) in items.iter().zip(seen) {
+        assert_eq!(entry["accessRole"], role);
+        let access = calendar_from_json(entry).unwrap().access;
+        let mapped = [
+            access.may_read,
+            access.may_write,
+            access.may_share,
+            access.may_delete,
+            access.may_read_free_busy,
+        ];
+        assert_eq!(mapped, allowed, "{role}");
     }
 }
 
