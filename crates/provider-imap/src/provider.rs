@@ -107,17 +107,6 @@ impl ImapProvider<TlsStream<TcpStream>> {
     }
 }
 
-/// Formats a calendar date as the IMAP `d-Mon-yyyy` form `UID SEARCH SINCE` expects
-/// (RFC 9051 §6.4.4), e.g. 2026-03-18 → `18-Mar-2026`. The month is a fixed English
-/// abbreviation and the rest is digits, so the result is a safe, unquoted search atom.
-pub(crate) fn format_imap_date(date: time::Date) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let month = MONTHS[usize::from(u8::from(date.month())) - 1];
-    format!("{}-{month}-{}", date.day(), date.year())
-}
-
 impl<S> ImapProvider<S> {
     /// Builds a provider, advertising submission iff SMTP is configured, and recording
     /// the `tls_version` its dial negotiated (`None` when the stream is not TLS — the

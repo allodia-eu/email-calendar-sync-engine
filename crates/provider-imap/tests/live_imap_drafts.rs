@@ -16,7 +16,7 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
@@ -36,8 +36,7 @@ async fn connect(
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        harness.account.as_str(),
-        harness.password.as_str(),
+        Credentials::password(harness.account.as_str(), harness.password.as_str()),
     );
     ImapProvider::connect(
         &config,
