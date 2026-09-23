@@ -234,6 +234,9 @@ where
 
     let (store, clock) = make();
     outbox_cases::the_host_verbs_refuse_what_they_cannot_act_on(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::an_op_the_previous_process_left_in_flight_is_recovered(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.

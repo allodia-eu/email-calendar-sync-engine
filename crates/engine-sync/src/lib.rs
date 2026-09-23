@@ -320,6 +320,7 @@ mod observer;
 mod outbox;
 mod progress;
 mod recipients;
+mod sent_copies;
 mod stream;
 mod threading;
 pub use attachment::{
