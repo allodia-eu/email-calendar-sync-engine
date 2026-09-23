@@ -44,6 +44,7 @@ use crate::{
 
 mod contact;
 mod lifecycle;
+mod outbox;
 mod read;
 mod threading;
 mod write;

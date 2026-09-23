@@ -39,6 +39,8 @@ mod drafts;
 mod expansion;
 #[path = "sync/folder_scopes.rs"]
 mod folder_scopes;
+#[path = "sync/interrupted.rs"]
+mod interrupted;
 #[path = "sync/reads.rs"]
 mod reads;
 #[path = "sync/store_lifecycle.rs"]

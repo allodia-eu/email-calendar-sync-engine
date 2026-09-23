@@ -195,6 +195,13 @@ are one mechanism here, not alternatives.
   affected fencing token so an abandoned worker cannot later commit under its old
   lease. It is not an in-process contention workaround: a live `ScopeHeld` still
   means "retry after the current worker finishes."
+- `recover_interrupted_ops` is the same primitive for the outbox, under the same contract.
+  An op the dead process left `InFlight` is recorded as `interrupted_outcome` says, the
+  outcome its own failure would have had: a send may already be in front of its recipients,
+  so it awaits confirmation, and every other write is a retryable failure that parks, backs
+  off and eventually settles. Each one's token is bumped. Without it the op is claimable
+  again once its lease lapses (a claim's own predicate), which for a send is a second
+  delivery.
 
 ## The atomic apply
 
@@ -273,6 +280,11 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
   duplicate suppression then falls back to presentation-layer dedup
   (consistent with "UI/search dedup is presentation policy, not storage
   identity").
+  `engine_sync`'s mail stream plans them (`sent_copies.rs`) for sends in
+  `NeedsConfirmation` only, and only from a copy filed in a **Sent** mailbox, whole or moved
+  there by a state change (JMAP and Gmail send by moving the draft). A draft saved to the
+  server carries the same `Message-ID`, so a copy anywhere else proves nothing; a send still
+  `InFlight` records its own outcome.
 - **A change is whole, partial, or a removal.** `SyncUpdate::Delta` carries all three:
   `changed` (whole objects), `patched` (partials), `removed`. A partial names the fields that
   moved and nothing else, so the store writes those columns and leaves the rest — including the
@@ -938,6 +950,7 @@ pub trait Store: Send + Sync {
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()>;
     async fn forget_scope(&self, lease: SyncLease) -> Result<()>; // objects, rows, cursor
     async fn abandon_sync_leases(&self) -> Result<usize>; // startup recovery only
+    async fn recover_interrupted_ops(&self) -> Result<usize>; // startup recovery only
 
     // Outbox.
     async fn enqueue_pending_op(
@@ -1046,6 +1059,10 @@ Lock these as failing tests before implementing the store:
   every other scope alone; under a superseded lease it is rejected as `StaleLease`.
 - `abandon_sync_leases` frees held leases without clearing cursors, and fences out
   the abandoned worker by bumping the token.
+- `recover_interrupted_ops` takes an interrupted send to `NeedsConfirmation`, where no
+  claim reaches it however long ago its lease lapsed, and an interrupted edit back to
+  `Pending` with the attempt counted; it fences the dead worker, leaves an op nobody held
+  untouched, and changes nothing on a second call.
 - Container-before-member apply ordering holds, including under snapshot
   tombstoning. (The store enforces per-scope snapshot tombstoning and keeps
   scopes independent; the cross-scope *apply order* itself is an orchestrator

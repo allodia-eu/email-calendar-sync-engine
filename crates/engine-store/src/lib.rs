@@ -37,7 +37,7 @@ pub use lease::{
 };
 pub use outbox::{
     ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, OpRejection, PendingOpClaim, PendingOpRow,
-    PendingOpState, retry_delay,
+    PendingOpState, interrupted_outcome, retry_delay,
 };
 pub use read::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead};
 pub use source::{MessageBodyStore, MessageSourceCache, SourcesDropped};
