@@ -8,8 +8,9 @@ use engine_core::{
 use engine_provider::{Draft, EmailChunk, Provider, TlsVersion};
 use futures_util::StreamExt;
 
-use super::{ImapConfig, ImapProvider};
+use super::ImapProvider;
 use crate::{
+    ImapConfig,
     mock::{MockStream, script, written},
     transport::Connection,
 };
@@ -325,14 +326,12 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
     let (stream, _) = MockStream::new(imap);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    let provider = ImapProvider::build(
+    let provider = ImapProvider::with_connection_and_smtp(
         conn,
         MailboxId::try_from("INBOX").unwrap(),
-        Some(super::SmtpSender::Plaintext {
+        super::SmtpSender::Plaintext {
             addr: loopback_smtp(),
-        }),
-        None,
-        None,
+        },
     );
     assert!(provider.connection_info().capabilities.submission());
 

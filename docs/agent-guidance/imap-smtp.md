@@ -60,7 +60,8 @@ is authoritative for the `provider-caldav` calendar client.
   expunges via `CHANGEDSINCE`/`VANISHED`), `idle`/`watch` (the `IDLE` push primitives +
   the `ImapWatcher`), `smtp` (the submission *conversation*; the RFC 5322/MIME
   message assembly it feeds to `DATA` is the shared `engine-rfc5322` crate — see
-  **SMTP submission**), `provider` (the `Provider` impl).
+  **SMTP submission**), `pool` + `account` (the per-account connection budget — see
+  **Connections** below), `provider` (the `Provider` impl).
 
 ## How IMAP differs from JMAP (the shape)
 
@@ -81,6 +82,57 @@ is authoritative for the `provider-caldav` calendar client.
 - **A UIDVALIDITY reset is a snapshot.** When the server renumbers the UID space,
   every prior key is invalid; the next pass is a snapshot (rediscovery) that
   tombstones the stale rows — the IMAP analogue of JMAP `cannotCalculateChanges`.
+
+## Connections: one budget per account
+
+- **A host connects an account, then binds folders.** `ImapAccount::connect(&config,
+  connector)` dials once — proving the credentials and reading the capabilities every
+  folder's `ConnectionInfo` reports — and keeps that connection in the account's pool.
+  `ImapAccount::provider(mailbox)` dials nothing; `ImapAccount::watch(mailbox, keepalive)`
+  spends one connection for as long as the watcher lives. There is deliberately no
+  per-folder connect any more: the old `ImapProvider::connect` / `ImapWatcher::connect`
+  each dialled a socket they held for their whole lifetime, so an account's socket count
+  was a property of the *type* — one per bound folder, idle or not, all re-dialled in one
+  burst on every network drop (measured: 107 connections in four hours on one Android
+  device). Two `ImapAccount`s for one account are two budgets; build one.
+- **Why the engine must bound it, not the server.** IMAP has no way to learn a server's
+  connection limit, and only some servers say when it was hit: RFC 5530 has no "too many
+  connections" code. Yahoo answers with `NO [LIMIT]` at `LOGIN` (`RateLimited`, above);
+  Dovecot's `mail_max_userip_connections` (default 10) refuses at `LOGIN` with
+  `AUTHENTICATIONFAILED`, which reads as a *wrong password*, and a client that believes it
+  tells the user their sign-in expired. Either way the account does not connect, so the
+  only defence is never to need the limit. The budget is `pool::DEFAULT_MAX_CONNECTIONS` = 5 (Thunderbird
+  desktop's `max_cached_connections`), not host-configurable until a host needs it.
+- **Budget arithmetic: sockets, not borrows.** Workers (sync, writes, fetches, filing)
+  borrow a connection per call — a streamed pass for as long as the stream lives — and
+  wait when the budget is spent. A watch takes one out for good (a connection in `IDLE`
+  can only send `DONE`), and `reserve_watch` refuses the one that would leave no worker:
+  a budget spent on push is an account that can never sync. The refusal is
+  `InvalidState` (poll instead), and `ImapAccount::watch_headroom` lets a host warn
+  before offering the choice. A parked connection holds no permit, so the pool dials
+  only with nothing parked, and a watch reuses a parked connection rather than dialling
+  beside it — otherwise `parked + borrowed + watches` exceeds the ceiling.
+- **When a connection is proved alive.** A parked connection is checked with `NOOP`
+  before reuse once it has rested `pool::VALIDATE_AFTER_REST` (30 s, on the **wall**
+  clock — Linux's monotonic clock stops during suspend, so a laptop that slept an hour
+  would look like it rested a second). Younger ones are handed out unchecked, because a
+  sync pass's back-to-back calls would otherwise each pay a round trip. The two ways a
+  young connection can still be dead are closed elsewhere: **any call that fails does not
+  park its connection** (`PooledConnection::settle` — a `NO` leaves a usable session, a
+  dropped socket or desynchronised reply does not, and telling them apart at every call
+  site is more fragile than one extra dial after a rare refusal), and
+  `ImapAccount::invalidate` drops every resting connection for a host that has seen the
+  network change. A stream abandoned mid-fetch parks normally: `pending_tag` drains its
+  leftover response before the next command.
+- **The pool re-dials on its own.** A provider holds no socket, so a dead one is replaced
+  on the next call rather than failing every call until the host rebuilds the provider.
+  Every pool dial reports through the config's connect observer, so a host still sees
+  each socket the account opens. SMTP is outside the budget: it dials per send and closes.
+- **Proof.** `pool_tests.rs`/`account_tests.rs` count dials over scripted streams. The live
+  bound is `tests/live_imap_pool.rs`: twelve folders syncing at once beside a held watch
+  log in at most five times against Stalwart. It is an absence claim, so it carries a
+  control arm (an account per folder must log in twelve times) and was proved red by
+  lifting the ceiling (13 logins).
 
 ## IMAP specifics implemented
 
@@ -299,13 +351,15 @@ is authoritative for the `provider-caldav` calendar client.
   `engine-provider`'s `ProviderError` gained `needs_confirmation`/
   `requires_confirmation`, and `engine-sync`'s outbox honors it.
 - **Sent placement never fails a send, and is never silent.** Delivering and filing are
-  two operations here — SMTP dials fresh per send, the `APPEND` rides the standing IMAP
-  session — so a session that went stale while idle delivers the mail and loses the copy.
+  two operations here — SMTP dials fresh per send, the `APPEND` rides a pooled IMAP
+  connection that may have died since it was last used — so a connection that went stale
+  delivers the mail and loses the copy.
   Three rules follow, and the third is the one that was missing:
   1. A delivered send is **never** returned as an error for a filing failure. The mail has
      gone; a caller that saw `Err` would re-send it.
-  2. The placement is **retried once on a freshly dialed session**, because a dead standing
-     session is the expected cause, not an exotic one. The retry first asks whether the copy
+  2. The placement is **retried once on a connection proved alive** (`acquire_checked`: a
+     parked one that answers `NOOP`, else a fresh dial), because a dead pooled connection
+     is the expected cause, not an exotic one — the failed one is discarded, not parked. The retry first asks whether the copy
      is already there (`UID SEARCH HEADER Message-ID`, `place::find_placed_copy`) —
      `APPEND` is not idempotent, and a first attempt that committed but lost its response
      must not become two copies in Sent.
@@ -318,7 +372,7 @@ is authoritative for the `provider-caldav` calendar client.
   4. The host can then ask for the repair: `Provider::file_sent_copy` (→
      `ImapProvider::refile`, reached through `Engine::file_sent_copy`) files the copy of an
      already-delivered message and **sends nothing**. It is what a "try again" control calls,
-     so it probes on *every* attempt, standing session and fresh dial alike — a button gets
+     so it probes on *every* attempt, first connection and retry alike — a button gets
      pressed twice. It is deliberately **not** outbox-mediated: the outbox exists so a side
      effect is neither lost nor repeated across a crash, and this one is idempotent by
      construction and safe to ask for again.
@@ -452,14 +506,16 @@ is authoritative for the `provider-caldav` calendar client.
   it correct, because syncing a scope is idempotent. The host advertises `idle` from
   the post-auth `CAPABILITY` so it can offer an "as it comes in" strategy or fall back
   to polling.
-- **A dedicated connection, gated on `IDLE`.** A watcher opens its **own** connection
-  (the shared `connect_session` dial), separate from the `ImapProvider` that syncs the
-  mailbox — a connection in `IDLE` can only send `DONE`, so it cannot also `FETCH`.
-  Construction `EXAMINE`s the mailbox **read-only** (watching never writes or resets
-  `\Recent`) and fails fast with `InvalidState` if the server does not advertise `IDLE`.
-  One watcher watches one mailbox, mirroring the bound-mailbox sync model; the host
-  decides which (and how many) mailboxes warrant a standing connection against the
-  server's connection limit (usually just INBOX).
+- **A dedicated connection, gated on `IDLE`.** A watcher (`ImapAccount::watch`) takes its
+  **own** connection out of the account's pool for its lifetime, separate from the ones
+  the `ImapProvider` that syncs the mailbox borrows — a connection in `IDLE` can only send
+  `DONE`, so it cannot also `FETCH`. It holds a `WatchLease` on the account's budget,
+  released on **drop** (a watch task is aborted, not stopped). Construction `EXAMINE`s the
+  mailbox **read-only** (watching never writes or resets `\Recent`; it also reads any
+  backlog a reused connection carried) and fails fast with `InvalidState` if the server
+  does not advertise `IDLE` — or if the watch would take the account's last worker (see
+  **Connections**). One watcher watches one mailbox, mirroring the bound-mailbox sync
+  model; the host decides which mailboxes warrant one (usually just INBOX).
 - **The notification gap, closed three ways.** `IDLE` delivers unsolicited responses
   *only while a connection is actively idling*, so a change arriving in any other window
   is never re-sent. The watcher closes this by (1) **staying in `IDLE` continuously**

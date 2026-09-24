@@ -16,7 +16,7 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
@@ -39,13 +39,10 @@ async fn connect(
         harness.account.as_str(),
         harness.password.as_str(),
     );
-    ImapProvider::connect(
-        &config,
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP")
+    ImapAccount::connect(&config, no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP")
 }
 
 /// The account's folder carrying `role`, else `default_name`.

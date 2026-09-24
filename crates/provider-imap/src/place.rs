@@ -2,8 +2,8 @@
 //! the body of `save_draft`.
 //!
 //! Split from [`crate::filing`] (which owns the SMTP submission around it) because the
-//! placement runs on **two different connections**: the provider's standing session first,
-//! and — when that one is dead — a freshly dialed one. Everything here is therefore free
+//! placement can run on **two different connections**: a pooled one first, and — when that
+//! one is dead — another proved alive. Everything here is therefore free
 //! functions over a [`Connection<S>`] rather than methods on the provider, so one
 //! implementation serves both.
 

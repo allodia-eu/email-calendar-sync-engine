@@ -3,16 +3,17 @@
 //!
 //! # A separate connection, on purpose
 //!
-//! A watcher owns its **own** connection, distinct from the [`ImapProvider`](crate::ImapProvider)
-//! that syncs the mailbox. A connection in `IDLE` can only send `DONE` — it cannot
-//! `FETCH` — so multiplexing watch and sync onto one socket would mean tearing down
-//! `IDLE` on every change and racing the connection lock. Keeping them separate lets
+//! A watcher owns its **own** connection, distinct from the ones the
+//! [`ImapProvider`](crate::ImapProvider) that syncs the mailbox borrows. A connection in `IDLE` can
+//! only send `DONE` — it cannot `FETCH` — so multiplexing watch and sync onto one socket would mean
+//! tearing down `IDLE` on every change and racing the connection lock. Keeping them separate lets
 //! the watch connection **stay idling continuously** while the host runs a sync on the
 //! provider's connection, which is what closes the notification gap: a message arriving
 //! while the host syncs the previous one is still seen, because this connection never
-//! left `IDLE`. The cost is one extra connection per watched mailbox — the host decides
-//! which (and how many) mailboxes warrant it against the server's connection limit,
-//! exactly as it owns the bound-mailbox model for sync.
+//! left `IDLE`. The cost is one connection per watched mailbox, taken out of the account's
+//! budget for as long as the watcher lives ([`ImapAccount::watch`](crate::ImapAccount::watch)
+//! refuses the one that would leave nothing to sync with) — the host decides which mailboxes
+//! warrant it, exactly as it owns the bound-mailbox model for sync.
 //!
 //! # What a watcher does and does not do
 //!
@@ -31,18 +32,17 @@ use engine_core::ids::MailboxId;
 use engine_provider::{ProviderError, ProviderResult, Watch, WatchEvent};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    net::TcpStream,
     time::{Instant, timeout},
 };
-use tokio_rustls::{TlsConnector, client::TlsStream};
 
-use crate::{ImapConfig, connect::connect_session, idle, transport::Connection};
+use crate::{idle, pool::WatchLease, transport::Connection};
 
 /// The recommended IMAP `IDLE` keep-alive interval (28 minutes) — a margin under
 /// RFC 2177's guidance to re-issue `IDLE` at least every 29 minutes so the server does
 /// not log an idle connection off. A host passes its own interval to
-/// [`ImapWatcher::connect`] (a shorter one detects a dead connection sooner, at the
-/// cost of more wake-ups — useful on mobile); this is the default for a desktop watch.
+/// [`ImapAccount::watch`](crate::ImapAccount::watch) (a shorter one detects a dead connection
+/// sooner, at the cost of more wake-ups — useful on mobile); this is the default for a desktop
+/// watch.
 pub const DEFAULT_IDLE_KEEPALIVE: Duration = Duration::from_mins(28);
 
 /// The ceiling a host keep-alive is clamped to, so a too-long interval cannot let the
@@ -68,6 +68,10 @@ pub struct ImapWatcher<S> {
     mailbox: MailboxId,
     keepalive: Duration,
     state: WatchState,
+    /// This watch's claim on the account's connection budget, returned when the watcher is
+    /// dropped — stopped, or its task aborted. `None` only for a watcher the offline tests
+    /// build over a bare mock connection.
+    _lease: Option<WatchLease>,
 }
 
 impl<S> core::fmt::Debug for ImapWatcher<S> {
@@ -77,34 +81,6 @@ impl<S> core::fmt::Debug for ImapWatcher<S> {
             .field("keepalive", &self.keepalive)
             .field("idling", &matches!(self.state, WatchState::Idling { .. }))
             .finish_non_exhaustive()
-    }
-}
-
-impl ImapWatcher<TlsStream<TcpStream>> {
-    /// Opens a **dedicated** implicit-TLS connection, logs in, and binds `mailbox` for
-    /// a standing `IDLE` watch with the given `keepalive` (see [`DEFAULT_IDLE_KEEPALIVE`];
-    /// a host value is clamped to a sane range).
-    ///
-    /// The `connector` carries the host's trust policy, exactly as for
-    /// [`ImapProvider::connect`](crate::ImapProvider::connect) — the library bakes in no
-    /// root store. This is a separate connection from the provider's sync session
-    /// (see this module's docs).
-    ///
-    /// # Errors
-    ///
-    /// A [`ProviderError`] on a TCP/TLS/login failure, a bad server name, or — as
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState) —
-    /// a server that does not advertise `IDLE` (the host should fall back to polling).
-    pub async fn connect(
-        config: &ImapConfig,
-        connector: TlsConnector,
-        mailbox: MailboxId,
-        keepalive: Duration,
-    ) -> ProviderResult<Self> {
-        // A watcher only signals "something changed"; the negotiated TLS version is a
-        // fact of the *provider's* session (`ConnectionInfo`), not of this one.
-        let (conn, _tls_version) = connect_session(config, &connector).await?;
-        Self::start(conn, mailbox, keepalive).await
     }
 }
 
@@ -134,7 +110,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
             mailbox,
             keepalive: keepalive.clamp(MIN_KEEPALIVE, MAX_KEEPALIVE),
             state: WatchState::NotIdling,
+            _lease: None,
         })
+    }
+
+    /// Ties the watcher to its slot in the account's budget, so dropping it frees the slot.
+    pub(crate) fn with_lease(self, lease: WatchLease) -> Self {
+        Self {
+            _lease: Some(lease),
+            ..self
+        }
     }
 
     /// Ensures the connection is idling, issuing `IDLE` (and recording its tag +
@@ -195,7 +180,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
 
     /// Ends the watch gracefully — a `DONE` if currently idling — then drops the
     /// connection. Optional: dropping the watcher without calling this also releases the
-    /// connection; `stop` just lets the server see a clean end-of-`IDLE`.
+    /// connection and its slot in the account's budget; `stop` just lets the server see a
+    /// clean end-of-`IDLE`.
     ///
     /// # Errors
     ///

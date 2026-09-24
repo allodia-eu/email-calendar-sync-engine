@@ -35,8 +35,9 @@ use engine_core::{
 };
 use engine_provider::{Draft, PassMode, Provider};
 use futures_util::StreamExt as _;
-use provider_imap::{ImapConfig, ImapProvider, ImapWatcher};
-use tokio_rustls::TlsConnector;
+use provider_imap::{ImapAccount, ImapConfig};
+use tokio::net::TcpStream;
+use tokio_rustls::{TlsConnector, client::TlsStream};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -72,12 +73,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config = config.with_smtp_tls(format!("{smtp_host}:{smtp_port}"), smtp_host);
     }
 
-    let provider = ImapProvider::connect(
-        &config,
-        verifying_connector(),
-        MailboxId::try_from(mailbox.as_str())?,
-    )
-    .await?;
+    let imap = ImapAccount::connect(&config, verifying_connector()).await?;
+    let provider = imap.provider(MailboxId::try_from(mailbox.as_str())?);
     let account = AccountId::try_from("explore")?;
 
     // Folder list.
@@ -103,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Opt-in read-only push: watch the mailbox via IMAP IDLE and print events.
     if env::var("IMAP_IDLE").is_ok() {
-        idle_watch(&config, &mailbox).await?;
+        idle_watch(&imap, &mailbox).await?;
     }
 
     // Opt-in write: save a test draft to Drafts via IMAP APPEND (no SMTP).
@@ -251,7 +248,10 @@ async fn qresync_check<P: Provider>(
 /// yourself an email while it runs to watch the `Changed` notification arrive instantly
 /// — nothing is mutated. A 20-second keep-alive makes the periodic heartbeat visible in
 /// the window (a real desktop watch uses the 28-minute default).
-async fn idle_watch(config: &ImapConfig, mailbox: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn idle_watch(
+    imap: &ImapAccount<TlsStream<TcpStream>>,
+    mailbox: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
 
     let window: u64 = env::var("IMAP_IDLE_SECS")
@@ -262,13 +262,9 @@ async fn idle_watch(config: &ImapConfig, mailbox: &str) -> Result<(), Box<dyn st
         "\n[IDLE] watching {mailbox} for {window}s — send yourself an email to see it arrive \
          instantly (nothing is mutated)..."
     );
-    let mut watcher = ImapWatcher::connect(
-        config,
-        verifying_connector(),
-        MailboxId::try_from(mailbox)?,
-        Duration::from_secs(20),
-    )
-    .await?;
+    let mut watcher = imap
+        .watch(MailboxId::try_from(mailbox)?, Duration::from_secs(20))
+        .await?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(window);
     loop {

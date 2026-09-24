@@ -122,7 +122,7 @@ impl ImapConfig {
     /// Enables **implicit-TLS** SMTP submission via `smtp_addr` (`host:port`,
     /// typically `:465`), authenticating with `AUTH PLAIN` using the account
     /// credentials. The injected TLS connector (from
-    /// [`ImapProvider::connect`](crate::ImapProvider::connect)) secures the
+    /// [`ImapAccount::connect`](crate::ImapAccount::connect)) secures the
     /// connection from the first byte, presenting `server_name`.
     #[must_use]
     pub fn with_smtp_tls(
@@ -167,8 +167,8 @@ impl ImapConfig {
     /// TLS version: it owns a `tokio-rustls` stream, where the `reqwest`-backed
     /// adapters see only the peer certificate (`docs/agent-guidance/tls.md`).
     ///
-    /// The observer rides on the config, so an [`ImapWatcher`](crate::ImapWatcher)'s
-    /// dedicated connection — and any redial after a dropped session — is observed too.
+    /// The observer rides on the config, so every connection the account's pool dials — for
+    /// a sync, a watch, or a replacement for a dead one — is observed, not only the first.
     /// `Arc` so one host observer can be shared across the account's providers.
     ///
     /// [`ConnectStep::TlsEstablished`]: engine_provider::ConnectStep::TlsEstablished

@@ -8,11 +8,11 @@
 //!
 //! **Delivering and filing are two operations, and the second one can fail on its own.**
 //! SMTP dials a fresh connection per send, so a delivery succeeds over a session that has
-//! been idle for an hour; the `APPEND` rides the provider's standing IMAP session, which by
-//! then may be dead. That asymmetry is not hypothetical: it delivers the mail and loses the
-//! sender's copy, with nothing to reconcile against later. The response is `file_sent_copy`:
-//! retry once on a
-//! freshly dialed session, and when even that cannot file it, say so in the receipt
+//! been idle for an hour; the `APPEND` rides a connection from the account's pool, which may
+//! have died since it was last proved alive. That asymmetry is not hypothetical: it delivers the
+//! mail and loses the sender's copy, with nothing to reconcile against later. The response is
+//! `file_sent_copy`: retry once on another connection, proved alive first, and when even that
+//! cannot file it, say so in the receipt
 //! ([`engine_provider::SentCopy::Unfiled`]) — this crate emits no logs of its own, so the
 //! outcome travelling up *is* the diagnostic. What it must never do is fail the send: the
 //! mail is already gone, and a caller that treated filing as delivery would re-send it.
@@ -31,7 +31,6 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::{ImapConfig, SmtpSecurity, SmtpSettings},
-    connect::connect_session,
     error::ImapError,
     place::{Filing, append_to_role_folder, place_if_absent, placed_key},
     provider::ImapProvider,
@@ -105,32 +104,7 @@ struct Submission {
     ehlo: String,
 }
 
-/// What a fresh IMAP session needs, so a failed placement can be retried on a new
-/// connection instead of lost on a dead one.
-///
-/// Held only by a provider built by [`ImapProvider::connect`] — one built over a mock
-/// stream has no server to re-dial, and says so by carrying `None`.
-pub(crate) struct Redial {
-    config: ImapConfig,
-    connector: TlsConnector,
-}
-
-impl Redial {
-    /// Captures what [`connect_session`] needs to open another session like this one.
-    pub(crate) fn new(config: &ImapConfig, connector: &TlsConnector) -> Self {
-        let mut config = config.clone();
-        // A retry dial is not an account connecting: reporting `TlsEstablished` /
-        // `Authenticated` through the host's observer would put a second "connected" pair
-        // in its log for what is really one send finishing its filing.
-        config.connect_observer = None;
-        Self {
-            config,
-            connector: connector.clone(),
-        }
-    }
-}
-
-impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> {
     /// Submits `draft` over the provider's configured SMTP transport, opening a fresh
     /// connection per send. Plaintext and implicit TLS transmit directly; STARTTLS
     /// negotiates the cleartext upgrade, TLS-wraps the socket, then transmits over TLS.
@@ -143,7 +117,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     pub(crate) async fn submit(&self, draft: &Draft) -> ProviderResult<SubmissionReceipt> {
         let sender = self
             .smtp
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| ProviderError::invalid_state("no SMTP transport configured"))?;
         match sender {
             SmtpSender::Plaintext { addr } => {
@@ -308,14 +282,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         }
     }
 
-    /// Files the delivered message's Sent copy: on the provider's standing session, else
-    /// on a freshly dialed one.
+    /// Files the delivered message's Sent copy: on a pooled connection, else on another one
+    /// proved alive first.
     ///
-    /// The standing session is the one that goes stale — it may have sat unused since the
-    /// last sync while SMTP dialed fresh — so its failure is the *expected* path, not an
-    /// exceptional one. The retry re-dials and, before appending, asks whether the copy is
-    /// already there: the first attempt may have committed server-side and lost only its
-    /// response, and two copies in Sent is its own bug.
+    /// A pooled connection can be stale — handed out unchecked because it rested only briefly,
+    /// while SMTP dialed fresh — so its failure is an *expected* path, not an exceptional one.
+    /// The retry does not trust a young connection a second time and, before appending, asks
+    /// whether the copy is already there: the first attempt may have committed server-side and
+    /// lost only its response, and two copies in Sent is its own bug.
     ///
     /// # Errors
     ///
@@ -325,39 +299,38 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         filed: &[u8],
         draft: &Draft,
     ) -> Result<(String, Option<(u32, u32)>), String> {
-        let first = {
-            let mut connection = self.connection.lock().await;
-            append_to_role_folder(&mut connection, Filing::Sent, filed).await
+        let first = match self.session().await {
+            Ok(mut connection) => {
+                let result = append_to_role_folder(&mut connection, Filing::Sent, filed).await;
+                connection.settle(result)
+            }
+            Err(err) => Err(err),
         };
         let first = match first {
             Ok(placed) => return Ok(placed),
             Err(err) => err,
         };
-        let Some(redial) = self.redial.as_ref() else {
-            return Err(format!("{first}"));
-        };
-        self.refile_on_a_fresh_session(redial, filed, draft)
+        self.refile_on_a_checked_session(filed, draft)
             .await
             .map_err(|retry| format!("{first}; retry on a fresh session: {retry}"))
     }
 
-    /// The retry: dial a new session, and file the copy there unless it is already filed.
+    /// The retry: file the copy on a connection proved alive — a parked one that answers
+    /// `NOOP`, else a new dial — unless it is already filed.
     ///
     /// # Errors
     ///
     /// A classified [`ProviderError`] on a dial, `SEARCH` or `APPEND` failure.
-    async fn refile_on_a_fresh_session(
+    async fn refile_on_a_checked_session(
         &self,
-        redial: &Redial,
         filed: &[u8],
         draft: &Draft,
     ) -> ProviderResult<(String, Option<(u32, u32)>)> {
-        let (mut connection, _) = connect_session(&redial.config, &redial.connector)
-            .await
-            .map_err(ProviderError::from)?;
+        let mut connection = self.pool.acquire_checked().await?;
         // `APPEND` is not idempotent, so the probe inside asks before placing: a first
         // attempt that committed and lost its response must not become two copies.
-        place_if_absent(&mut connection, Filing::Sent, &draft.message_id, filed).await
+        let result = place_if_absent(&mut connection, Filing::Sent, &draft.message_id, filed).await;
+        connection.settle(result)
     }
 
     /// Files the Sent copy of a message that **has already been delivered** — the repair a
@@ -372,24 +345,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     ///
     /// # Errors
     ///
-    /// A classified [`ProviderError`] if neither the standing session nor a freshly dialed
-    /// one could file it. The caller may offer the retry again.
+    /// A classified [`ProviderError`] if neither a pooled connection nor one proved alive for
+    /// the retry could file it. The caller may offer the retry again.
     pub(crate) async fn refile(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
         // The filed copy keeps the Bcc header, exactly as the original filing would have.
         let filed = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
-        let first = {
-            let mut connection = self.connection.lock().await;
-            place_if_absent(&mut connection, Filing::Sent, &draft.message_id, &filed).await
+        let first = match self.session().await {
+            Ok(mut connection) => {
+                let result =
+                    place_if_absent(&mut connection, Filing::Sent, &draft.message_id, &filed).await;
+                connection.settle(result)
+            }
+            Err(err) => Err(err),
         };
         let (folder, append_uid) = match first {
             Ok(placed) => placed,
-            Err(standing) => match self.redial.as_ref() {
-                Some(redial) => {
-                    self.refile_on_a_fresh_session(redial, &filed, draft)
-                        .await?
-                }
-                None => return Err(standing),
-            },
+            Err(_pooled) => self.refile_on_a_checked_session(&filed, draft).await?,
         };
         Ok(placed_key(
             &folder,
@@ -410,8 +381,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     /// Returns a classified [`ProviderError`] on a transport or `APPEND` failure. Unlike
     /// a Sent copy this fails loudly: saving the draft is the whole operation.
     pub async fn save_draft(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
-        let mut connection = self.connection.lock().await;
-        crate::drafts::put_draft(&mut connection, draft, None).await
+        let mut connection = self.session().await?;
+        let result = crate::drafts::put_draft(&mut connection, draft, None).await;
+        connection.settle(result)
     }
 }
 
