@@ -34,6 +34,20 @@ is authoritative for the `provider-caldav` calendar client.
   exact sequence over a `MockStream`. A rejected `LOGIN` emits no `Authenticated`. The
   observer rides on `ImapConfig` (`config.rs`), so an `ImapWatcher`'s dedicated
   connection — which shares `connect_session` — is observed too.
+- **A refused `LOGIN` is not always a bad credential.** `NO` is `ImapError::Auth`
+  (`FailureClass::Authentication`), except a `NO` whose text opens with `[LIMIT]`
+  (RFC 5530), which is `ImapError::RateLimited` (`FailureClass::RateLimited`): the server
+  is refusing sessions for the account and never judged the password. A host that read it
+  as `Authentication` would ask the user to sign in again, which cannot help. Observed
+  live as `NO [LIMIT] LOGIN Rate limit hit.` on a session opened seconds after five
+  others had authenticated with the same credential. The rule is scoped to `LOGIN`:
+  RFC 5530's `LIMIT` is any implementation limit, so on `STORE` it can mean too many
+  keywords, which is `InvalidState` like any other `NO`. SMTP `AUTH` follows the same
+  rule in its own terms: a 4xx is "try again later" (RFC 5321 §4.2.1), so it is
+  `RateLimited` too, except RFC 4954's `432` (a password transition is needed), which only
+  the user can resolve and stays `Authentication`. Nothing in the adapter waits either
+  out; the class is the host's cue to back off (`http-throttling.md` covers the HTTP
+  adapters, where the engine does the waiting).
 - Layers: `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
   `ENABLE`/`SELECT [(CONDSTORE)]`/`UID FETCH [(CHANGEDSINCE … VANISHED)]`/`LIST`/
   `CREATE`/`APPEND`, literal handling), `transport_starttls` (the plaintext `STARTTLS`

@@ -187,9 +187,7 @@ where
             .await?;
         let (code, text) = smtp.read_reply().await?;
         if code != 235 {
-            return Err(ImapError::auth(format!(
-                "SMTP AUTH rejected: {code} {text}"
-            )));
+            return Err(auth_refusal(code, &text));
         }
     }
 
@@ -279,6 +277,18 @@ where
         return Err(ImapError::protocol(format!("EHLO/HELO refused: {code}")));
     }
     Ok((false, text))
+}
+
+/// Classifies a refused `AUTH`. A 4xx is "try again later" here as everywhere else
+/// ([`classify`]), so the credential was never judged; the exception is RFC 4954's `432`
+/// (a password transition is needed), which only the user can resolve.
+fn auth_refusal(code: u16, text: &str) -> ImapError {
+    let detail = format!("SMTP AUTH rejected: {code} {text}");
+    if (400..500).contains(&code) && code != 432 {
+        ImapError::rate_limited(detail)
+    } else {
+        ImapError::auth(detail)
+    }
 }
 
 fn is_success(code: u16) -> bool {
@@ -406,3 +416,7 @@ mod tests;
 #[cfg(test)]
 #[path = "smtp_starttls_tests.rs"]
 mod starttls_tests;
+
+#[cfg(test)]
+#[path = "smtp_auth_tests.rs"]
+mod auth_tests;
