@@ -26,6 +26,13 @@ pub enum ImapError {
     #[error("IMAP authentication failed: {0}")]
     Auth(String),
 
+    /// The server refused a sign-in for now rather than judging the credential: `LOGIN`
+    /// answered `NO [LIMIT]` (RFC 5530), too many connections or logins, or SMTP `AUTH`
+    /// answered a 4xx. Retrying after a backoff can succeed; asking the user to sign in
+    /// again cannot help.
+    #[error("server is limiting sign-ins for this account: {0}")]
+    RateLimited(String),
+
     /// A command returned a tagged `NO`: it is invalid in the resource's current
     /// state (e.g. `SELECT` of a missing mailbox), not retryable as-is.
     #[error("IMAP command rejected: {0}")]
@@ -52,6 +59,11 @@ impl ImapError {
     /// Builds an [`ImapError::Auth`].
     pub(crate) fn auth(detail: impl Into<String>) -> Self {
         Self::Auth(detail.into())
+    }
+
+    /// Builds an [`ImapError::RateLimited`].
+    pub(crate) fn rate_limited(detail: impl Into<String>) -> Self {
+        Self::RateLimited(detail.into())
     }
 
     /// Builds an [`ImapError::No`].
@@ -81,6 +93,7 @@ impl ImapError {
             // Connection/read/write/handshake failures are transient.
             Self::Io(_) | Self::Bye(_) => FailureClass::Retryable,
             Self::Auth(_) => FailureClass::Authentication,
+            Self::RateLimited(_) => FailureClass::RateLimited,
             // `NO` means "not now, in this state" — recompute, do not blind-retry.
             Self::No(_) => FailureClass::InvalidState,
             // `BAD`/malformed is a protocol-level incompatibility: the same request
@@ -114,6 +127,10 @@ mod tests {
         assert_eq!(
             ImapError::auth("LOGIN NO").failure_class(),
             FailureClass::Authentication
+        );
+        assert_eq!(
+            ImapError::rate_limited("[LIMIT] LOGIN").failure_class(),
+            FailureClass::RateLimited
         );
         assert_eq!(
             ImapError::no("SELECT nonexistent").failure_class(),

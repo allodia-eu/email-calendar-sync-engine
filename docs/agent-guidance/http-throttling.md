@@ -104,7 +104,7 @@ Surveyed across every adapter, because a throttle is not a provider-specific sym
 | `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | **The server states it** (RFC 8620 §2) — 4 on Stalwart, 10 on Fastmail | **yes**, in `JmapClient::connect`, once the session resolves | **yes**, `400` → `JmapThrottles` |
 | `provider-google` | **both**: `429` for concurrency, `403` for the per-minute quota | **between 48 and 64 per user**, measured | See "Gmail has two limits, and they are not the same limit" | yes, at `MAX_CONCURRENT_GETS` (20), comfortably under it | **yes**, `403` → `GoogleThrottles` |
 | `provider-caldav` + CardDAV | `429` (Stalwart); SabreDAV refuses nothing | **none found** — clean at widths 1–64 on both servers | Measured on two implementations; `provider-caldav/tests/live_concurrency.rs` | **no** | no — the status is the whole answer |
-| `provider-imap` | n/a | 1 **per connection** | Not HTTP, and one connection is one command at a time | n/a — not an HTTP adapter | n/a |
+| `provider-imap` | `NO [LIMIT]` to `LOGIN`, a 4xx to SMTP `AUTH` → `RateLimited`, waited out by nobody (`imap-smtp.md`) | 1 **per connection** | Not HTTP, and one connection is one command at a time | n/a — not an HTTP adapter | n/a |
 
 ⚠️ **Graph and Gmail both have a concurrency ceiling; Graph's is the one a gate is sized
 against.** Graph's is 4 and an ordinary pass walks straight into it. Gmail's is between 48 and
