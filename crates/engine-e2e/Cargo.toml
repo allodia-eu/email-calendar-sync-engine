@@ -1,0 +1,15 @@
+[package]
+name = "engine-e2e"
+description = "The neutral end-to-end protection layer (RFC 9787): walks a MIME message into its cryptographic envelope, payload and errant layers through registered mechanisms. Pure: no I/O, no async, no cryptography of its own."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+mail-parser = { workspace = true }
+
+[lints]
+workspace = true
