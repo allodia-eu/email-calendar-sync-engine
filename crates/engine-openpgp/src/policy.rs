@@ -59,6 +59,23 @@ pub(crate) fn self_signature_hash(hash: HashAlgorithm, created: u32) -> Acceptan
     }
 }
 
+/// Whether a message signature on `hash` may validate.
+///
+/// Never on MD5, SHA-1 or RIPEMD-160, whatever the signature's date: RFC 9580 §9.5
+/// allows an old one only if the data "has been in the secure custody of the user
+/// the whole time", and mail that sat in a server's mailbox has not.
+pub(crate) fn message_signature_hash(hash: HashAlgorithm) -> Acceptance {
+    match hash {
+        HashAlgorithm::Sha256
+        | HashAlgorithm::Sha384
+        | HashAlgorithm::Sha512
+        | HashAlgorithm::Sha224
+        | HashAlgorithm::Sha3_256
+        | HashAlgorithm::Sha3_512 => Acceptance::Accept,
+        _ => Acceptance::Refuse,
+    }
+}
+
 /// Whether a key may be used at all, by its algorithm and size.
 ///
 /// DSA never signs or verifies (RFC 9580 §12.5), Elgamal is never encrypted to

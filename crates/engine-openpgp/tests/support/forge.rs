@@ -11,7 +11,10 @@ use pgp::{
         Signature, SignatureConfig, SignatureType, Subpacket, SubpacketData, UserId,
     },
     ser::Serialize,
-    types::{Duration, KeyDetails, KeyVersion, Password, SignedUser, SigningKey, Tag, Timestamp},
+    types::{
+        Duration, Fingerprint, KeyDetails, KeyVersion, Password, SignedUser, SigningKey, Tag,
+        Timestamp,
+    },
 };
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -46,6 +49,7 @@ pub struct Sig {
     primary: bool,
     reason: Option<RevocationCode>,
     embedded: Option<Signature>,
+    intended: Vec<Fingerprint>,
 }
 
 impl Sig {
@@ -86,6 +90,12 @@ impl Sig {
 
     pub fn reason(mut self, reason: RevocationCode) -> Self {
         self.reason = Some(reason);
+        self
+    }
+
+    /// An Intended Recipient Fingerprint (RFC 9580 §5.2.3.36).
+    pub fn intended_for(mut self, fingerprint: Fingerprint) -> Self {
+        self.intended.push(fingerprint);
         self
     }
 
@@ -195,6 +205,11 @@ impl Forge {
                 Vec::new().into(),
             )));
         }
+        for fingerprint in spec.intended {
+            hashed.push(Subpacket::regular(
+                SubpacketData::IntendedRecipientFingerprint(fingerprint),
+            ));
+        }
         if let Some(embedded) = spec.embedded {
             hashed.push(Subpacket::regular(SubpacketData::EmbeddedSignature(
                 Box::new(embedded),
@@ -267,6 +282,26 @@ impl Forge {
                 &sub.public,
             )
             .expect("subkey revocation")
+    }
+
+    /// A binary or text document signature over `data`, by the primary key.
+    pub fn sign(
+        &mut self,
+        primary: &Primary,
+        typ: SignatureType,
+        spec: Sig,
+        data: &[u8],
+    ) -> Signature {
+        self.config(&primary.secret, typ, spec)
+            .sign(&primary.secret, &Password::empty(), data)
+            .expect("data signature")
+    }
+
+    /// A binary document signature over `data`, by a subkey.
+    pub fn sign_with_subkey(&mut self, sub: &Sub, spec: Sig, data: &[u8]) -> Signature {
+        self.config(&sub.secret, SignatureType::Binary, spec)
+            .sign(&sub.secret, &Password::empty(), data)
+            .expect("data signature")
     }
 
     /// The 0x19 back-signature a signing subkey makes over its primary key.
