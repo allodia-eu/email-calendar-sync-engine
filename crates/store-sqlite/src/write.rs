@@ -144,6 +144,12 @@ impl<C: Clock> Store for SqliteStore<C> {
             .await
     }
 
+    async fn recover_interrupted_ops(&self) -> Result<usize> {
+        let now = self.clock.now();
+        self.call(move |conn| outbox_ops::recover_interrupted(conn, now))
+            .await
+    }
+
     async fn mark_pending_op(&self, lease: &OpLease, outcome: PendingOutcome) -> Result<()> {
         let op_id = lease.op();
         let token = lease.token().get();

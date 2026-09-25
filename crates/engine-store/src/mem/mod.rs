@@ -43,6 +43,7 @@ use crate::{
 };
 
 mod contact;
+mod outbox;
 mod read;
 mod threading;
 mod write;

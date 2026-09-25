@@ -16,12 +16,13 @@ use engine_core::{
 };
 use engine_store::{
     ClaimRejection, FenceToken, LeasedPendingOp, MAX_ATTEMPTS, OpLease, OpRejection,
-    PendingOpClaim, PendingOpState, Result, StoreError, WorkerId, retry_delay,
+    PendingOpClaim, PendingOpState, Result, StoreError, WorkerId, interrupted_outcome, retry_delay,
 };
 use rusqlite::{Connection, OptionalExtension};
 
 use self::row::{
-    dependencies_met, is_due, is_runnable, load_account_ops, load_one_op, resource_held_elsewhere,
+    dependencies_met, is_due, is_runnable, load_account_ops, load_in_flight_ops, load_one_op,
+    resource_held_elsewhere,
 };
 use crate::convert;
 
@@ -252,6 +253,20 @@ pub(crate) fn mark(
     if convert::generation_from_i64(stored_token)? != token {
         return Err(StoreError::StaleLease);
     }
+    record(&tx, id, stored_attempts, now, outcome)?;
+    tx.commit().map_err(convert::backend)?;
+    Ok(())
+}
+
+/// Records `outcome` on op `id`, whose attempt count stood at `stored_attempts`: releases the
+/// lease, counts the attempt, and parks, settles or awaits confirmation as the outcome says.
+fn record(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    stored_attempts: i64,
+    now: UtcDateTime,
+    outcome: &PendingOutcome,
+) -> Result<()> {
     let attempts = u32::try_from(stored_attempts)
         .map_err(convert::backend)?
         .saturating_add(1);
@@ -293,8 +308,39 @@ pub(crate) fn mark(
         ),
     )
     .map_err(convert::backend)?;
-    tx.commit().map_err(convert::backend)?;
     Ok(())
+}
+
+/// Records every op left `InFlight` by a process that has ended as
+/// [`interrupted_outcome`] says, bumping each one's token so the dead worker's lease is
+/// stale, all in one transaction. Returns how many it recovered.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure.
+pub(crate) fn recover_interrupted(conn: &mut Connection, now: UtcDateTime) -> Result<usize> {
+    let tx = conn.transaction().map_err(convert::backend)?;
+    let mut recovered = 0;
+    for op in load_in_flight_ops(&tx)? {
+        // A row without a kind is never claimed, so it cannot have been left in flight by
+        // this build; leave it as the host can see it.
+        let Some(kind) = op.kind else { continue };
+        tx.execute(
+            "UPDATE pending_op SET token = token + 1 WHERE id = ?1",
+            [op.id],
+        )
+        .map_err(convert::backend)?;
+        record(
+            &tx,
+            op.id,
+            i64::from(op.attempts),
+            now,
+            &interrupted_outcome(kind),
+        )?;
+        recovered += 1;
+    }
+    tx.commit().map_err(convert::backend)?;
+    Ok(recovered)
 }
 
 /// Withdraws a queued op, settling it as `Cancelled` so nothing attempts it.

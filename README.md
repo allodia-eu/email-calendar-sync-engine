@@ -283,8 +283,10 @@ sequenceDiagram
 Every UI-visible write (send, flag, move, delete, calendar create/update/delete/RSVP, contact
 create/patch/delete) becomes a pending op in the store's outbox **first**, then a fenced worker
 performs the provider side effect and records the outcome. An ambiguous outcome — an SMTP
-connection lost after `DATA` — parks as `NeedsConfirmation` and is never blind-retried, so the
-engine cannot double-send mail. The states below are `PendingOpState`, which a host can read back
+connection lost after `DATA`, or a process that ended mid-send — parks as `NeedsConfirmation` and
+is never blind-retried, so the engine cannot double-send mail. A host calls
+`Engine::recover_interrupted_ops` at start-up so an op the last process left in flight is
+never claimed a second time. The states below are `PendingOpState`, which a host can read back
 for any op via `Engine::pending_op_state`.
 
 ```mermaid
@@ -294,13 +296,15 @@ stateDiagram-v2
     Pending --> InFlight: fenced worker claims it
     InFlight --> Succeeded: provider confirms
     InFlight --> Failed: provider rejects
-    InFlight --> NeedsConfirmation: ambiguous (SMTP lost after DATA)
+    InFlight --> NeedsConfirmation: ambiguous (SMTP lost after DATA, or the process ended mid-send)
+    InFlight --> Pending: the process ended mid-write (retried with backoff)
+    NeedsConfirmation --> Succeeded: its copy syncs back in Sent
     Succeeded --> [*]
     Failed --> [*]
     note right of NeedsConfirmation
         parked, never blind-retried —
-        awaits a sync, a Message-ID
-        lookup, or the host's decision
+        resolved by its copy in Sent,
+        or the host's decision
     end note
 ```
 
