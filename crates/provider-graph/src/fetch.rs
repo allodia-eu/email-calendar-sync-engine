@@ -99,7 +99,10 @@ async fn folder_tree(client: &GraphClient, root: &MailboxId) -> Result<Vec<Mailb
 }
 
 /// Resolves a well-known folder alias (`inbox`, `msgfolderroot`, …) to its id.
-async fn well_known_id(client: &GraphClient, alias: &str) -> Result<MailboxId, GraphError> {
+pub(crate) async fn well_known_id(
+    client: &GraphClient,
+    alias: &str,
+) -> Result<MailboxId, GraphError> {
     let doc = client
         .get(&client.url(&format!("/mailFolders/{alias}?$select=id")))
         .await?;

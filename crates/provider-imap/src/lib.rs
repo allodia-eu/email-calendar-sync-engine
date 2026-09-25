@@ -68,6 +68,7 @@ mod fetch_stream;
 mod filing;
 mod idle;
 mod mail;
+mod mailbox_write;
 mod mutate;
 mod parse;
 mod parse_body;

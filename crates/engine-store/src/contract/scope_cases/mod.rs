@@ -2,6 +2,7 @@
 //! maintenance, and release.
 
 mod apply;
+mod forget;
 mod lease;
 mod mail;
 mod occurrences;
@@ -14,6 +15,9 @@ pub(super) use self::{
         container_and_member_scopes_are_independent, reconciliation_resolves_matching_op,
         reconciliation_skips_regressed_op, replay_is_idempotent, snapshot_tombstones_only_absent,
         streaming_page_keeps_cursor,
+    },
+    forget::{
+        forget_scope_drops_objects_rows_and_cursor, forget_scope_under_a_stale_lease_is_rejected,
     },
     lease::{
         abandon_sync_leases_preserves_cursor_and_fences_old_worker, maintenance_is_lease_gated,

@@ -114,6 +114,20 @@ pub trait Store: Send + Sync {
     /// Returns `StoreError::Backend` on a backend failure.
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()>;
 
+    /// Drops everything a scope holds (its objects, their derived rows and its cursor) and
+    /// releases the lease, so the next claim starts from nothing. Consumes the lease.
+    ///
+    /// For a scope whose container is gone: a per-folder message scope whose folder has
+    /// left the account's folder list. Tombstoning the objects alone is not enough, because
+    /// a folder that comes back under the same name would resume from the old cursor and
+    /// never re-fetch what was dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::StaleLease` if `lease`'s token is no longer current for the
+    /// scope, or `StoreError::Backend` on a backend failure.
+    async fn forget_scope(&self, lease: SyncLease) -> Result<()>;
+
     /// Abandons every held sync lease after a host has established that any prior
     /// workers for this store are gone, preserving cursors and objects while
     /// bumping fencing tokens so abandoned workers cannot commit later.

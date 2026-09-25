@@ -761,7 +761,8 @@ one event never race on either provider.
   account's queue, keeps the ops it dispatches, and takes each under a **targeted** claim,
   because the batch claim would lease kinds it cannot run and hold them for a whole lease:
   the failure #202 removed from the inline path. It dispatches mail only so far
-  (`MailSubmit`, `MailEdit`, `MailReport`, `MailDraftPut`, `MailDraftDelete`), whose
+  (`MailSubmit`, `MailEdit`, `MailReport`, `MailDraftPut`, `MailDraftDelete`, `MailboxEdit`),
+  whose
   provider calls are complete in the
   payload; a calendar patch or delete takes the `base` event *beside* the request, so
   draining one means re-reading it and re-applying the stored intent, which is the conflict
@@ -794,6 +795,34 @@ one event never race on either provider.
 - **A draft's writes serialise on the resource its submission uses** (`draft:<Message-ID>`),
   so saving and sending one composition cannot run at once: whichever is claimed first holds
   the resource and the other waits.
+
+- **A folder change is judged when it runs, not when it was queued.**
+  `engine_sync::edit_mailbox` stores a `MailboxChange`: the host's intent, plus `seen`, the
+  place (name and parent) the user saw the folder in. It never stores the `MailboxEdit` the
+  intent comes to. Before anything is sent, inline or from the drainer, the op reads the
+  folder list from the server and plans against it (`outbox/mailbox_plan.rs`):
+  - a folder that is gone, or no longer at `seen`, is a `Conflict`, settled and never
+    sent. On JMAP, Graph and Gmail a folder id survives a rename, so without this a
+    queued rename would silently overwrite one made in another client while this device
+    was offline;
+  - a create that finds its folder already made, and a delete that finds nothing, are
+    **done** without a request: the op is retried, and a retry meets what the first
+    attempt did;
+  - the name a trashed folder takes inside Trash (`Bills`, `Bills 2` …) is chosen from
+    the list as it stands then.
+  Every change to one account's tree serialises on one resource (`mailbox-tree`), because
+  an IMAP rename moves the key of every folder beneath it. The names no transport accepts
+  (empty, surrounded by whitespace, a control character, `/`) are refused before enqueue
+  (`validate_mailbox_name`, which a host can call while the user types).
+- **A folder the list no longer holds takes its mail with it.** Where message sync is per
+  folder (IMAP, Graph) a folder's mail is its own scope, and on IMAP a rename is a new path,
+  so the old path's scope would otherwise keep a full copy of the mail that every search
+  finds. `forget_vanished_folders` runs after every applied folder list (in `sync_mail`,
+  before the fan-out, and in `reconcile_folders`) and forgets each per-folder scope
+  (`SyncScope::folder`) the list does not name, through `Store::forget_scope`: objects,
+  derived rows **and** cursor, since a folder that returns under the same path must start
+  over rather than resume past mail that was dropped. A list that arrives empty judges
+  nothing.
 
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the
@@ -874,6 +903,7 @@ pub trait Store: Send + Sync {
     ) -> Result<()>;
 
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()>;
+    async fn forget_scope(&self, lease: SyncLease) -> Result<()>; // objects, rows, cursor
     async fn abandon_sync_leases(&self) -> Result<usize>; // startup recovery only
 
     // Outbox.
@@ -979,6 +1009,8 @@ Lock these as failing tests before implementing the store:
   in its expected state resolves the op to `Succeeded` in the apply transaction.
 - A `release_sync_scope` under a superseded lease is a no-op and does not free a
   scope a newer lease holds.
+- `forget_scope` drops the scope's objects, derived rows and cursor and frees it, leaving
+  every other scope alone; under a superseded lease it is rejected as `StaleLease`.
 - `abandon_sync_leases` frees held leases without clearing cursors, and fences out
   the abandoned worker by bumping the token.
 - Container-before-member apply ordering holds, including under snapshot

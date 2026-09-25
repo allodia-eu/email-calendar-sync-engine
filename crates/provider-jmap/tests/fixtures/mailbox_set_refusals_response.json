@@ -1,0 +1,82 @@
+{
+  "methodResponses": [
+    [
+      "Mailbox/set",
+      {
+        "accountId": "e",
+        "oldState": "sai",
+        "newState": "sai",
+        "notCreated": {
+          "d": {
+            "type": "alreadyExists",
+            "description": "A mailbox with name 'probe-parent' already exists.",
+            "existingId": "h"
+          }
+        }
+      },
+      "0"
+    ],
+    [
+      "Mailbox/set",
+      {
+        "notUpdated": {
+          "i": {
+            "type": "alreadyExists",
+            "description": "A mailbox with name 'probe-sib' already exists.",
+            "existingId": "j"
+          }
+        }
+      },
+      "1"
+    ],
+    [
+      "Mailbox/set",
+      {
+        "notUpdated": {
+          "i": {
+            "type": "invalidProperties",
+            "description": "Parent ID does not exist."
+          }
+        }
+      },
+      "2"
+    ],
+    [
+      "Mailbox/set",
+      {
+        "notUpdated": {
+          "h": {
+            "type": "invalidProperties",
+            "description": "Mailbox cannot be a parent of itself.",
+            "properties": ["parentId"]
+          }
+        }
+      },
+      "3"
+    ],
+    [
+      "Mailbox/set",
+      {
+        "notUpdated": {
+          "zzz": {
+            "type": "notFound"
+          }
+        }
+      },
+      "4"
+    ],
+    [
+      "Mailbox/set",
+      {
+        "notDestroyed": {
+          "h": {
+            "type": "mailboxHasChild",
+            "description": "Mailbox has at least one children."
+          }
+        }
+      },
+      "5"
+    ]
+  ],
+  "sessionState": "8fff8b45"
+}

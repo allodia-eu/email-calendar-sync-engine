@@ -50,6 +50,7 @@ mod fetch;
 mod identity;
 mod json;
 mod mail;
+mod mailbox_write;
 mod mutate;
 mod provider;
 mod provider_calendar;

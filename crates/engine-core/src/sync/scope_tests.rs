@@ -17,6 +17,31 @@ fn scope_exposes_account() {
 }
 
 #[test]
+fn only_a_per_folder_message_scope_names_a_folder() {
+    let folder = MailboxId::try_from("Work").unwrap();
+    let imap = SyncScope::ImapMailbox {
+        account: account(),
+        mailbox: folder.clone(),
+    };
+    let graph = SyncScope::GraphFolder {
+        account: account(),
+        folder: folder.clone(),
+    };
+    assert_eq!(imap.folder(), Some(&folder));
+    assert_eq!(graph.folder(), Some(&folder));
+    for scope in [
+        SyncScope::GmailMessages { account: account() },
+        SyncScope::ImapMailboxList { account: account() },
+        SyncScope::JmapType {
+            account: account(),
+            data_type: JmapDataType::Email,
+        },
+    ] {
+        assert_eq!(scope.folder(), None);
+    }
+}
+
+#[test]
 fn search_domain_routes_objects_and_skips_containers() {
     use SearchDomain::{Calendar, Mail};
     let a = account();

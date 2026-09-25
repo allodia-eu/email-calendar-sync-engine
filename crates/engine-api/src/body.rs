@@ -208,6 +208,7 @@ mod tests {
         }
     }
 
+    impl engine_provider::MailboxWrites for BodyProvider {}
     impl CalendarWrites for BodyProvider {}
 
     #[tokio::test]
@@ -251,6 +252,7 @@ mod tests {
         }
     }
 
+    impl engine_provider::MailboxWrites for RelatedProvider {}
     impl CalendarWrites for RelatedProvider {}
 
     #[tokio::test]

@@ -240,6 +240,7 @@ impl Provider for FakeProvider {
     }
 }
 
+impl engine_provider::MailboxWrites for FakeProvider {}
 impl CalendarWrites for FakeProvider {}
 
 /// Wraps a [`FakeProvider`] and, inside `sync_mailboxes` (i.e. while the mailbox
@@ -296,6 +297,7 @@ impl Provider for GateProvider {
     }
 }
 
+impl engine_provider::MailboxWrites for GateProvider {}
 impl CalendarWrites for GateProvider {}
 
 /// Wraps a [`FakeProvider`] and overrides `submit_email` to succeed (filing the
@@ -414,6 +416,7 @@ impl Provider for SubmittingProvider {
     }
 }
 
+impl engine_provider::MailboxWrites for SubmittingProvider {}
 impl CalendarWrites for SubmittingProvider {}
 
 /// A provider that reports every verdict but acknowledges none — the JMAP/IMAP shape.
@@ -491,4 +494,5 @@ impl Provider for ReconcilingProvider {
     }
 }
 
+impl engine_provider::MailboxWrites for ReconcilingProvider {}
 impl CalendarWrites for ReconcilingProvider {}

@@ -18,7 +18,7 @@ use engine_store::{
 use serde::Serialize;
 
 use crate::{
-    Clock, SqliteStore, convert::expiry_after, outbox_ops, scope_key, scope_ops,
+    Clock, SqliteStore, convert::expiry_after, outbox_ops, purge, scope_key, scope_ops,
     scope_ops::OwnedUpdate, window_ops,
 };
 
@@ -106,6 +106,13 @@ impl<C: Clock> Store for SqliteStore<C> {
         let key = scope_key(lease.scope());
         let token = lease.token().get();
         self.call(move |conn| scope_ops::release(conn, &key, token))
+            .await
+    }
+
+    async fn forget_scope(&self, lease: SyncLease) -> Result<()> {
+        let key = scope_key(lease.scope());
+        let token = lease.token().get();
+        self.call(move |conn| purge::forget_scope(conn, &key, token))
             .await
     }
 

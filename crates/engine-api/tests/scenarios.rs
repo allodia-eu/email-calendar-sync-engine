@@ -235,6 +235,7 @@ impl Provider for SimProvider {
     }
 }
 
+impl engine_provider::MailboxWrites for SimProvider {}
 impl CalendarWrites for SimProvider {}
 
 /// The client's in-memory mailbox view, updated purely from streamed change events —

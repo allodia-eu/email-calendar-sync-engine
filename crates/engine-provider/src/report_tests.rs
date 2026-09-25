@@ -105,6 +105,7 @@ async fn the_default_provider_impl_rejects_rather_than_pretending() {
         }
     }
 
+    impl crate::MailboxWrites for Unsupported {}
     impl CalendarWrites for Unsupported {}
 
     let account = AccountId::try_from("account").unwrap();

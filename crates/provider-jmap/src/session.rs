@@ -211,6 +211,10 @@ impl Session {
                 verdicts: engine_provider::ReportVerdicts::all(),
                 evidence: engine_provider::ReportEvidence::Convention,
             });
+            // Changing the folder tree is `Mailbox/set`, which RFC 8621 §2.5 makes part of
+            // the same capability; a mailbox's `myRights` can still refuse one folder, and
+            // that refusal is a `forbidden` `SetError` (`crate::mailbox_write`).
+            capabilities = capabilities.with_mailbox_writes();
         }
         // Calendar writes (`CalendarEvent/set`) work on the same terms — RFC 8621/8984 make
         // `set` part of the calendars capability, and `isReadOnly` on the *calendar* account

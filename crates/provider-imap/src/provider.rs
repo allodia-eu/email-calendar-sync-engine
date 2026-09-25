@@ -19,8 +19,9 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt,
-    MessageReport, Provider, ProviderResult, ReportControls, ReportEvidence, ReportReceipt,
-    ReportVerdicts, ScopeSync, SubmissionReceipt, TlsVersion,
+    MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport, Provider, ProviderResult,
+    ReportControls, ReportEvidence, ReportReceipt, ReportVerdicts, ScopeSync, SubmissionReceipt,
+    TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -146,7 +147,9 @@ impl<S> ImapProvider<S> {
             .with_message_source()
             // Storing a draft is an `APPEND`, so it needs nothing submission needs: an
             // account with no SMTP transport configured can still keep drafts.
-            .with_mail_drafts();
+            .with_mail_drafts()
+            // `CREATE`/`RENAME`/`DELETE` are base protocol on both dialects.
+            .with_mailbox_writes();
         if smtp.is_some() {
             // Both submission capabilities ride the same SMTP transport: the assembler
             // (`engine-rfc5322`) builds the whole message, so this adapter owns every
@@ -401,6 +404,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     ) -> ProviderResult<ReportReceipt> {
         let mut connection = self.connection.lock().await;
         crate::report::report_message(&mut connection, report).await
+    }
+}
+
+/// Changes the account's folder tree (`CREATE`, `RENAME`, `DELETE`) over the one session.
+///
+/// A thin lock-and-call, like [`Provider::edit_mail`]: the path building, the fallbacks and
+/// the subscription bookkeeping live in `crate::mailbox_write`.
+#[async_trait]
+impl<S: AsyncRead + AsyncWrite + Unpin + Send> MailboxWrites for ImapProvider<S> {
+    async fn edit_mailbox(
+        &self,
+        _account: &AccountId,
+        edit: &MailboxEdit,
+    ) -> ProviderResult<MailboxEditReceipt> {
+        let mut connection = self.connection.lock().await;
+        crate::mailbox_write::edit_mailbox(&mut connection, edit).await
     }
 }
 

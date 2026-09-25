@@ -17,7 +17,7 @@ fn target() -> ProviderKey {
 
 /// A store plus the handle that moves its clock: `ManualClock` shares one instant, so
 /// the copy held here advances the one the store reads.
-fn store_and_clock() -> (SqliteStore<ManualClock>, ManualClock) {
+pub(super) fn store_and_clock() -> (SqliteStore<ManualClock>, ManualClock) {
     let clock = clock();
     (SqliteStore::open_in_memory(clock.clone()).unwrap(), clock)
 }
