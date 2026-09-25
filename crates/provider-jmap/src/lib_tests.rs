@@ -107,7 +107,7 @@ fn fuzz_entry_point_runs_without_panicking() {
 
 // A blocking single-shot mock HTTP server lets the live-only transport,
 // session discovery, and `execute` be exercised offline (no harness).
-fn mock_server(http_responses: Vec<String>) -> String {
+pub(crate) fn mock_server(http_responses: Vec<String>) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -121,7 +121,7 @@ fn mock_server(http_responses: Vec<String>) -> String {
     format!("http://{addr}")
 }
 
-fn http_ok(body: &str) -> String {
+pub(crate) fn http_ok(body: &str) -> String {
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -325,7 +325,7 @@ async fn submit_email_uploads_the_attachment_blob_through_the_real_client() {
     use engine_provider::{Draft, DraftAttachment, Provider};
 
     // connect(session) → resolve_context(Mailbox/Identity) → upload(blob) → send.
-    let context = r#"{"methodResponses":[["Mailbox/get",{"list":[{"id":"d","name":"Drafts","role":"drafts"},{"id":"s","name":"Sent","role":"sent"}]},"0"],["Identity/get",{"list":[{"id":"id1"}]},"1"]]}"#;
+    let context = r#"{"methodResponses":[["Mailbox/get",{"list":[{"id":"d","name":"Drafts","role":"drafts"},{"id":"s","name":"Sent","role":"sent"}]},"0"],["Identity/get",{"list":[{"id":"id1","email":"a@test.local"}]},"1"]]}"#;
     let sent = r#"{"methodResponses":[["Email/set",{"created":{"draft":{"id":"e9"}}},"0"],["EmailSubmission/set",{"created":{"sub":{"id":"sub1"}}},"1"]]}"#;
     let base = mock_server(vec![
         http_ok(RICH_SESSION_DOC),
@@ -413,7 +413,7 @@ async fn connect_reports_every_well_known_hop_then_auth_then_the_api_url() {
         http_redirect("/jmap/session"),
         http_ok(SESSION_DOC),
     ]);
-    let recorder = Arc::new(Recorder::default());
+    let recorder = std::sync::Arc::new(Recorder::default());
     JmapClient::connect(
         JmapConfig::new(base.clone(), Credentials::basic("a", "b"))
             .with_connect_observer(recorder.clone()),
@@ -437,7 +437,7 @@ async fn connect_reports_every_well_known_hop_then_auth_then_the_api_url() {
 #[tokio::test]
 async fn a_session_served_without_a_redirect_reports_no_hop() {
     let base = mock_server(vec![http_ok(SESSION_DOC)]);
-    let recorder = Arc::new(Recorder::default());
+    let recorder = std::sync::Arc::new(Recorder::default());
     JmapClient::connect(
         JmapConfig::new(base.clone(), Credentials::basic("a", "b"))
             .with_session_path("/jmap/session")
@@ -473,7 +473,7 @@ async fn credentials_in_the_connection_url_never_reach_the_observer() {
     // URL a step would carry. These steps exist to be logged (`north-star.md`).
     let base = mock_server(vec![http_redirect("/jmap/session"), http_ok(SESSION_DOC)]);
     let authority = base.strip_prefix("http://").unwrap();
-    let recorder = Arc::new(Recorder::default());
+    let recorder = std::sync::Arc::new(Recorder::default());
     JmapClient::connect(
         JmapConfig::new(
             format!("http://alice:hunter2@{authority}"),

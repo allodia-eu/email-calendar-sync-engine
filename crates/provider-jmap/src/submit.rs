@@ -43,7 +43,7 @@ pub(crate) async fn send(
     submission_account: &str,
     draft: &Draft,
 ) -> Result<SubmissionReceipt, JmapError> {
-    let context = resolve_context(executor, mail_account, submission_account).await?;
+    let context = resolve_context(executor, mail_account, submission_account, &draft.from).await?;
     // Attachment bytes must be uploaded first: the draft references each by the
     // server-assigned `blobId` (RFC 8620 §6.1), which can only be known after upload.
     let blob_ids = upload_attachments(executor, mail_account, draft).await?;
@@ -109,11 +109,13 @@ pub(crate) async fn upload_attachments(
     Ok(blob_ids)
 }
 
-/// Reads the Drafts/Sent mailbox ids and the submission identity id in one request.
+/// Reads the Drafts/Sent mailbox ids and the id of the identity that sends as `from`, in
+/// one request.
 async fn resolve_context(
     executor: &dyn Executor,
     mail_account: &str,
     submission_account: &str,
+    from: &EmailAddress,
 ) -> Result<SubmitContext, JmapError> {
     let mut req = Request::new([capability::CORE, capability::MAIL, capability::SUBMISSION]);
     let mailboxes = req.invoke("Mailbox/get", json!({ "accountId": mail_account }));
@@ -124,7 +126,7 @@ async fn resolve_context(
     Ok(SubmitContext {
         drafts: role_id(&mailbox_list, &MailboxRole::Drafts)?,
         sent: role_id(&mailbox_list, &MailboxRole::Sent)?,
-        identity: first_identity(resp.result(&identities)?)?,
+        identity: identity_for(resp.result(&identities)?, from)?,
     })
 }
 
@@ -137,16 +139,53 @@ pub(crate) fn role_id(mailboxes: &[Mailbox], role: &MailboxRole) -> Result<Strin
         .ok_or_else(|| JmapError::session(format!("account has no {role} mailbox")))
 }
 
-/// The first identity id (the default From identity).
-fn first_identity(result: &Value) -> Result<String, JmapError> {
-    result
+/// The id of the identity that sends as `from` (RFC 8621 §6).
+///
+/// **Not the first identity.** An account holds one identity per address it may send as,
+/// and a user who belongs to a shared mailbox gets that mailbox's too — which Stalwart lists
+/// *ahead of* the user's own. Taking the first submitted `From: alice@` under the
+/// `support@` identity, and the server refused it with `forbiddenFrom`.
+///
+/// An identity's `email` is the address the client MUST put in `From` when sending as it,
+/// except that a `*@domain` identity covers every address in that domain. So the exact
+/// address wins, then a wildcard covering it, and neither half of the comparison is
+/// case-sensitive in practice (RFC 5321 §2.3.11 for the domain). A `From` no identity
+/// covers is refused here, before anything is created: sending it under some other
+/// identity would be the client breaking the RFC's MUST, not the server's decision.
+fn identity_for(result: &Value, from: &EmailAddress) -> Result<String, JmapError> {
+    let identities: Vec<(&str, &str)> = result
         .get("list")
         .and_then(Value::as_array)
-        .and_then(|list| list.first())
-        .and_then(|identity| identity.get("id"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| JmapError::session("account has no submission identity"))
+        .into_iter()
+        .flatten()
+        .filter_map(|identity| {
+            Some((
+                identity.get("id").and_then(Value::as_str)?,
+                identity.get("email").and_then(Value::as_str)?,
+            ))
+        })
+        .collect();
+    if identities.is_empty() {
+        return Err(JmapError::session("account has no submission identity"));
+    }
+    let from_domain = from.email.rsplit_once('@').map(|(_, domain)| domain);
+    identities
+        .iter()
+        .find(|(_, email)| email.eq_ignore_ascii_case(&from.email))
+        .or_else(|| {
+            identities.iter().find(|(_, email)| {
+                email.strip_prefix("*@").is_some_and(|domain| {
+                    from_domain.is_some_and(|own| own.eq_ignore_ascii_case(domain))
+                })
+            })
+        })
+        .map(|(id, _)| (*id).to_owned())
+        .ok_or_else(|| {
+            JmapError::Refused(format!(
+                "no identity on this account may send as {:?}",
+                from.email
+            ))
+        })
 }
 
 /// Builds the `Email/set` create object for the draft, referencing the uploaded

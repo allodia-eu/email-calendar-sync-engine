@@ -463,7 +463,7 @@ async fn a_shared_mailbox_reads_its_own_identity_not_the_signed_in_user() {
         "/users/info@example.org?$select=displayName",
         jval!({ "displayName": "Info Desk", "mail": "info@example.org" }),
     )])
-    .with_principal(crate::MailboxPrincipal::user("info@example.org"));
+    .with_principal(crate::MailboxPrincipal::user("info@example.org").unwrap());
     let provider = GraphProvider::new(client, MailboxId::try_from("inbox").unwrap());
 
     let identities = provider.sender_identities(&account()).await.unwrap();

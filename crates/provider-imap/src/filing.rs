@@ -327,7 +327,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     ) -> Result<(String, Option<(u32, u32)>), String> {
         let first = {
             let mut connection = self.connection.lock().await;
-            append_to_role_folder(&mut connection, Filing::Sent, filed).await
+            match self.store_on(&mut connection).await {
+                Ok(store) => {
+                    append_to_role_folder(&mut connection, &store, Filing::Sent, filed).await
+                }
+                Err(err) => Err(err),
+            }
         };
         let first = match first {
             Ok(placed) => return Ok(placed),
@@ -355,9 +360,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         let (mut connection, _) = connect_session(&redial.config, &redial.connector)
             .await
             .map_err(ProviderError::from)?;
+        // The store is the provider's, not the session's: whichever connection places the
+        // copy, it goes in the Sent folder of the mail this provider covers.
+        let store = self.store_on(&mut connection).await?;
         // `APPEND` is not idempotent, so the probe inside asks before placing: a first
         // attempt that committed and lost its response must not become two copies.
-        place_if_absent(&mut connection, Filing::Sent, &draft.message_id, filed).await
+        place_if_absent(
+            &mut connection,
+            &store,
+            Filing::Sent,
+            &draft.message_id,
+            filed,
+        )
+        .await
     }
 
     /// Files the Sent copy of a message that **has already been delivered** — the repair a
@@ -379,7 +394,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         let filed = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
         let first = {
             let mut connection = self.connection.lock().await;
-            place_if_absent(&mut connection, Filing::Sent, &draft.message_id, &filed).await
+            match self.store_on(&mut connection).await {
+                Ok(store) => {
+                    place_if_absent(
+                        &mut connection,
+                        &store,
+                        Filing::Sent,
+                        &draft.message_id,
+                        &filed,
+                    )
+                    .await
+                }
+                Err(err) => Err(err),
+            }
         };
         let (folder, append_uid) = match first {
             Ok(placed) => placed,
@@ -411,7 +438,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     /// a Sent copy this fails loudly: saving the draft is the whole operation.
     pub async fn save_draft(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
         let mut connection = self.connection.lock().await;
-        crate::drafts::put_draft(&mut connection, draft, None).await
+        let store = self.store_on(&mut connection).await?;
+        crate::drafts::put_draft(&mut connection, &store, draft, None).await
     }
 }
 

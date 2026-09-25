@@ -21,12 +21,13 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     place::{Filing, find_placed_copy, placed_key, resolve_filing_folder},
+    store::MailStore,
     target::{Access, select_target},
     transport::Connection,
 };
 
-/// Stores `draft` in the account's Drafts folder, removing the copy named by
-/// `replacing`, and returns the new copy's key.
+/// Stores `draft` in `store`'s Drafts folder, removing the copy named by `replacing`, and
+/// returns the new copy's key.
 ///
 /// The key is the real one from UIDPLUS `APPENDUID` where the server offers it, else a
 /// `Message-ID`-derived key the next Drafts sync resolves. A saved draft keeps its `Bcc`
@@ -39,6 +40,7 @@ use crate::{
 /// superseded copy is **not** one (see the module note).
 pub(crate) async fn put_draft<S>(
     connection: &mut Connection<S>,
+    store: &MailStore,
     draft: &Draft,
     replacing: Option<&ProviderKey>,
 ) -> ProviderResult<ProviderKey>
@@ -46,7 +48,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let message = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
-    let folder = resolve_filing_folder(connection, Filing::Drafts).await?;
+    let folder = resolve_filing_folder(connection, store, Filing::Drafts).await?;
     let append_uid = connection
         .append(&folder, Filing::Drafts.flags(), &message)
         .await?;
@@ -54,7 +56,7 @@ where
     if let Some(superseded) = replacing {
         // Best effort by design: the new copy is stored, and reporting this as a failure
         // would have the caller append another.
-        let _ = remove(connection, superseded).await;
+        let _ = remove(connection, store, superseded).await;
     }
     Ok(placed_key(
         &folder,
@@ -73,16 +75,21 @@ where
 /// now names a different message, and deleting it would delete someone else's mail.
 pub(crate) async fn delete_draft<S>(
     connection: &mut Connection<S>,
+    store: &MailStore,
     draft: &ProviderKey,
 ) -> ProviderResult<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    remove(connection, draft).await
+    remove(connection, store, draft).await
 }
 
 /// The removal both paths share: address the copy, flag it `\Deleted`, expunge it.
-async fn remove<S>(connection: &mut Connection<S>, draft: &ProviderKey) -> ProviderResult<()>
+async fn remove<S>(
+    connection: &mut Connection<S>,
+    store: &MailStore,
+    draft: &ProviderKey,
+) -> ProviderResult<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
@@ -90,7 +97,7 @@ where
         // A key minted without UIDPLUS names the draft by the `Message-ID` we wrote, so
         // it has to be searched for before it can be addressed.
         Some(message_id) => {
-            let folder = resolve_filing_folder(connection, Filing::Drafts).await?;
+            let folder = resolve_filing_folder(connection, store, Filing::Drafts).await?;
             match find_placed_copy(connection, &folder, &message_id).await? {
                 Some((_validity, uid)) => uid,
                 // Nothing there under that `Message-ID`: the state the caller asked for.

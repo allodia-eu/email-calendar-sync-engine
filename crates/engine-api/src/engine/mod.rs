@@ -27,6 +27,7 @@ mod contact_reads;
 mod contacts;
 mod identities;
 mod reads;
+mod shared_mailboxes;
 mod sync;
 mod writes;
 

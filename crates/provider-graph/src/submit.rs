@@ -31,6 +31,7 @@ use crate::transport::GraphClient;
 /// (a header value carrying CR/LF/NUL) is permanent; a `400 ErrorMimeContentInvalidBase64String`
 /// is permanent; `401`/`429`/`5xx` classify as auth/rate-limit/retryable.
 pub(crate) async fn send(client: &GraphClient, draft: &Draft) -> ProviderResult<SubmissionReceipt> {
+    check_from_matches_principal(client, draft)?;
     // The filed variant keeps the `Bcc` header: Graph reads every recipient (To/Cc/Bcc)
     // from the MIME to build the delivery envelope and strips `Bcc` before delivering,
     // so the Sent-Items copy records whom the sender Bcc'd while no recipient sees it.
@@ -44,6 +45,38 @@ pub(crate) async fn send(client: &GraphClient, draft: &Draft) -> ProviderResult<
         sent_placeholder_key(draft),
         draft.message_id.clone(),
     ))
+}
+
+/// Refuses a draft whose `From` names another mailbox than the one this client posts to.
+///
+/// `sendMail` goes to the client's principal, so a client bound to a shared mailbox
+/// (`/users/{shared}/sendMail`) sends *from that mailbox* whatever the draft's `From`
+/// says — and a message whose header disagrees with its sender misrepresents who wrote it.
+/// How Exchange treats the mismatch is not something to rely on, so it never reaches
+/// Exchange. Sending as the shared mailbox is exactly what such a client is for; live, the
+/// delivered message carried `Sender:` naming the signed-in delegate beside the shared `From:`,
+/// "on behalf of" wherever a client displays it (`graph.md`).
+///
+/// Only a **named** principal can be checked. A client bound to `/me` does not know its own
+/// address without asking the directory, and its `From` may legitimately differ anyway —
+/// a delegate with Send As sends as a shared address through their own mailbox.
+///
+/// This refuses a `From` that is an **alias** of the bound mailbox, which Exchange itself
+/// would accept: telling an alias from a mistake needs the mailbox's `proxyAddresses`, a
+/// directory read. The exact workaround is to bind a client to the alias — `/users/{alias}`
+/// resolves to the same mailbox, and then endpoint and header agree.
+fn check_from_matches_principal(client: &GraphClient, draft: &Draft) -> ProviderResult<()> {
+    let Some(mailbox) = client.principal().address() else {
+        return Ok(());
+    };
+    if mailbox.eq_ignore_ascii_case(&draft.from.email) {
+        return Ok(());
+    }
+    Err(engine_provider::ProviderError::permanent(format!(
+        "this client sends from {mailbox:?}, not from the draft's {:?}; bind a client to \
+         the mailbox the message is from",
+        draft.from.email
+    )))
 }
 
 /// The placeholder key for the sent copy — `sent:<Message-ID>` — mirroring IMAP's
@@ -69,6 +102,31 @@ mod tests {
             "Subject",
             "Body",
         )
+    }
+
+    #[tokio::test]
+    async fn a_client_bound_to_a_shared_mailbox_sends_only_as_that_mailbox() {
+        use engine_core::error::FailureClass;
+
+        use crate::MailboxPrincipal;
+
+        // The route would accept anything, so the refusal has to happen before the request:
+        // a message whose `From` does not match the mailbox it leaves from is never sent.
+        let bound = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))])
+            .with_principal(MailboxPrincipal::user("shared@example.test").unwrap());
+        let err = send(&bound, &draft()).await.unwrap_err();
+        assert_eq!(err.class(), FailureClass::Permanent);
+        assert!(err.detail().contains("shared@example.test"), "{err}");
+
+        // Sending *as* the bound mailbox is what it is for, in any case.
+        let mut as_shared = draft();
+        as_shared.from = EmailAddress::new("Shared@Example.Test");
+        assert!(send(&bound, &as_shared).await.is_ok());
+
+        // A client on `/me` has no address to compare — and a Send As delegate legitimately
+        // sends a shared address through their own mailbox — so the draft goes as given.
+        let own = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
+        assert!(send(&own, &draft()).await.is_ok());
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ use engine_core::{
 use crate::{
     CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, MailEdit,
     MailEditReceipt, MessageReport, ProviderError, ProviderResult, ReportReceipt, ScopeSync,
-    SenderIdentity, SenderIdentityId, SubmissionReceipt, error::unsupported,
+    SenderIdentity, SenderIdentityId, SharedMailbox, SubmissionReceipt, error::unsupported,
 };
 // `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
 // rustdoc resolves those against the *module's* scope — a link that worked in the crate root
@@ -28,6 +28,7 @@ use crate::{
 )]
 use crate::{
     Capabilities, EmailChunk, IdentityControls, PageToken, PassMode, ReportControls, RsvpControls,
+    SharedMailboxes,
 };
 
 /// A read/sync provider adapter for one account's mail (and, as slices land,
@@ -390,6 +391,41 @@ pub trait Provider: CalendarWrites + Send + Sync {
     ) -> ProviderResult<()> {
         let _ = (account, identity, name);
         Err(unsupported("changing the sender name"))
+    }
+
+    /// Every mail store this credential can open besides the one it opens by default —
+    /// shared-mailbox discovery for a server that lists them (`crate::shared`).
+    ///
+    /// A fact about the **credential**, like [`connection_info`](Self::connection_info): it
+    /// takes no account, builds no scope and touches no store, and the answer is the same
+    /// whichever store this provider is bound to. Adapters advertising
+    /// [`SharedMailboxes::Enumerable`] override this; the default rejects.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`ProviderError`]. The default returns
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
+        Err(unsupported("listing shared mailboxes"))
+    }
+
+    /// The mail store at `address`, if this credential can open it.
+    ///
+    /// The default answers from [`list_shared_mailboxes`](Self::list_shared_mailboxes) on an
+    /// adapter advertising [`SharedMailboxes::Enumerable`], matching the address the way
+    /// [`SharedMailbox::answers_to`] does. An adapter that can only answer by address
+    /// ([`SharedMailboxes::ByAddress`]) overrides it.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`ProviderError`]:
+    /// [`FailureClass::Permanent`](engine_core::error::FailureClass::Permanent) when nothing
+    /// this credential can open answers to `address` — which on some transports includes a
+    /// mailbox that exists but was never shared with it, because the server will not say
+    /// which — and [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState)
+    /// on an adapter with no mechanism at all.
+    async fn resolve_shared_mailbox(&self, address: &str) -> ProviderResult<SharedMailbox> {
+        crate::shared::resolve_by_listing(self, address).await
     }
 
     /// The scope the account's calendars sync under. Defaults to the JMAP

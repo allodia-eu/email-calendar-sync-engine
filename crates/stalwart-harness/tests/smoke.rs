@@ -12,7 +12,9 @@
 
 use std::{net::TcpStream, sync::Arc, time::Duration};
 
-use stalwart_harness::{CONTACT_UID, GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, run_probe};
+use stalwart_harness::{
+    CONTACT_UID, GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, SHARED_GROUP_ACCOUNT, run_probe,
+};
 
 /// Return the configured harness, or `None` (skipping, with a note labelled by
 /// the current test's name) when Stalwart is absent.
@@ -96,6 +98,77 @@ fn imap_answers_and_seed_present() {
         probe.dup_subject_hits, 2,
         "the duplicate-Message-ID pair should both be present in INBOX"
     );
+}
+
+#[test]
+fn jmap_session_lists_the_shared_accounts() {
+    let Some(h) = ready_harness() else {
+        return;
+    };
+    let session = h.jmap_session().expect("JMAP session should be fetchable");
+    let accounts = session
+        .get("accounts")
+        .and_then(serde_json::Value::as_object)
+        .expect("session has an accounts object");
+    // Keyed by name: the ids are server-assigned and change with a fresh bootstrap.
+    let by_name = |name: &str| {
+        accounts
+            .values()
+            .find(|account| account.get("name").and_then(serde_json::Value::as_str) == Some(name))
+            .unwrap_or_else(|| panic!("session lists no account named {name}: {accounts:?}"))
+    };
+    let flag = |account: &serde_json::Value, name: &str| {
+        account.get(name).and_then(serde_json::Value::as_bool)
+    };
+    let owner = h.read_only_share_owner().address.clone();
+
+    // Alice's own store, and the two shared with her: the group mailbox and bob's INBOX.
+    assert_eq!(flag(by_name(&h.account), "isPersonal"), Some(true));
+    assert_eq!(
+        flag(by_name(SHARED_GROUP_ACCOUNT), "isPersonal"),
+        Some(false)
+    );
+    assert_eq!(flag(by_name(&owner), "isPersonal"), Some(false));
+
+    // The finding the engine's design rests on: bob's share says *writable* at the account
+    // level although the one mailbox it exposes grants read alone. If Stalwart ever says
+    // otherwise, the rationale in docs/agent-guidance/stalwart-harness.md needs revisiting.
+    assert_eq!(
+        flag(by_name(&owner), "isReadOnly"),
+        Some(false),
+        "the read-only share's account flag changed; revisit the per-folder-rights rationale"
+    );
+}
+
+#[test]
+fn imap_namespace_advertises_the_shared_stores() {
+    let Some(h) = ready_harness() else {
+        return;
+    };
+    let probe = imap_probe_over_tls(&h);
+    // RFC 2342's three positions are Personal, Other Users', Shared. Stalwart puts granted
+    // stores in the *second* while naming the prefix "Shared Folders" — the reason the
+    // engine treats both foreign positions alike rather than looking for the third.
+    assert!(
+        probe
+            .namespace
+            .starts_with(r#"* NAMESPACE (("" "/")) (("Shared Folders" "/"))"#),
+        "alice's NAMESPACE should carry the foreign prefix in the other-users' position: {:?}",
+        probe.namespace
+    );
+    // And a flat LIST interleaves both stores with her own folders — the gap attribution
+    // against NAMESPACE closes in the IMAP provider.
+    for shared_inbox in [
+        format!("Shared Folders/{SHARED_GROUP_ACCOUNT}/INBOX"),
+        format!("Shared Folders/{}/INBOX", h.read_only_share_owner().address),
+    ] {
+        assert!(
+            probe.mailboxes.contains(&shared_inbox),
+            "LIST should include {shared_inbox}: {:?}",
+            probe.mailboxes
+        );
+    }
+    assert!(probe.mailboxes.iter().any(|name| name == "INBOX"));
 }
 
 #[test]

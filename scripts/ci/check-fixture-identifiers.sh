@@ -42,10 +42,11 @@ exempt() {
     # Microsoft Graph OData annotations (`start@odata.type`). Not an address at all; it only
     # matches because the syntax reuses `@`.
     *@odata.*) return 0 ;;
-    # Google's own identifier formats: an event's iCalUID is `<opaque-id>@google.com` and a
-    # calendar id may be `<name>@group.v.calendar.google.com`. Rewriting these would make
-    # the fixtures describe a wire format Google does not emit.
-    *@google.com | *@group.v.calendar.google.com) return 0 ;;
+    # Google's own identifier formats: an event's iCalUID is `<opaque-id>@google.com`, a
+    # calendar id may be `<name>@group.v.calendar.google.com`, and a calendar created through
+    # the API is `<64 hex digits>@group.calendar.google.com`. Rewriting these would make the
+    # fixtures describe a wire format Google does not emit.
+    *@google.com | *@group.v.calendar.google.com | *@group.calendar.google.com) return 0 ;;
     # Company-owned mailboxes used by the live provider suites. Real, but ours, and named in
     # the live-test setup docs rather than belonging to a person.
     allodia.e2e@gmail.com | allodia-e2e@outlook.com) return 0 ;;

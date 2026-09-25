@@ -347,6 +347,63 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
   with it. An `EXDATE` value becomes an excluded override; an `RDATE` becomes an override that
   patches nothing, which is JSCalendar's way of saying "this instance happens as well".
 
+### `accessRole` → `CalendarAccess`: five roles, four different grants
+
+Google documents five values for a `calendarList` entry's `accessRole`, and collapsing any two
+tells a host it may do something the API refuses — or, for `freeBusyReader`, that it may read
+events it may only see the busy times of. The adapter used to map `writer` to `owner()` and
+`freeBusyReader` to `reader()`, which did both.
+
+- `owner` — everything, including "the additional ability to see and modify access levels of
+  other users": sharing, and deleting the calendar.
+- `writer`, `writerWithoutPrivateAccess` — read and write **events**, but neither re-share nor
+  delete the calendar, which stay the owner's. They differ only in whether a private event's
+  details are visible, which `CalendarAccess` does not model.
+- `reader` — see the events, change nothing.
+- `freeBusyReader` — busy times only (`CalendarAccess::free_busy_only`).
+
+An absent or unknown role reads as `reader`: visible and immutable, hiding a capability
+rather than inviting a rejected write.
+
+**All five are live-verified**, and against behaviour rather than the label. `owner` and
+`reader` are roles the throwaway holds on its own calendars (`live_calendar.rs`). The other
+three only exist on *another* account's calendar, so `live_calendar_roles.rs` takes a second
+account (`GOOGLE_SHARER_ACCESS_TOKEN`, calendar scope only). It shares one calendar per role
+with the throwaway and then tries, as the throwaway, everything the engine's answer makes a
+claim about. What Google allowed (2026-09-23):
+
+| Role | Read an event | Busy time | Add an event | Re-share | Delete the calendar |
+|---|---|---|---|---|---|
+| `writer` | yes | yes | yes | no | no |
+| `writerWithoutPrivateAccess` | yes | yes | yes | no | no |
+| `reader` | yes | yes | no | no | no |
+| `freeBusyReader` | **no** | yes | no | no | no |
+
+Three things the run found that a spec reading would not:
+
+- **A free/busy reader's `events.get` answers `200`**, with the times alone: no summary, no
+  creator. So "may read" is judged on seeing the event's details, not on the status; a probe
+  keyed on `200` would have called `freeBusyReader` a reader.
+- **A grant reaches event reads after the calendar list shows it.** One run was refused an
+  event on a `writerWithoutPrivateAccess` calendar that the next run read at once, and one read
+  the fresh subscriptions back missing from `calendarList`. The test therefore waits for the
+  list to settle, and probes each calendar until two rounds agree. It keeps any success it
+  sees, because nothing is revoked mid-run: a success is never an artefact, a refusal can be.
+- **A writer's entry names the owner** (`dataOwner`); a reader's does not.
+
+Restoring the old mapping fails the live test on `writer: share`. The captured entries are
+`tests/fixtures/calendar/calendars_shared_roles.json`, pinned offline in `cal_normalize_tests`.
+
+## Shared mailboxes: Gmail has no usable mechanism
+
+`GmailProvider` advertises `SharedMailboxes::Unsupported`, and that is a decision rather than
+an omission. Gmail delegation is a real product feature, but a user credential cannot reach it:
+the API route that would serve it, `users/{userId}` for another user, needs a **service
+account with domain-wide delegation** — a different credential model from the user bearer
+token this adapter holds. Advertising anything else would offer a host an onboarding flow that
+could only fail, so both discovery verbs keep their rejecting defaults (`providers.md`). Google
+*Calendar* sharing is a separate mechanism, the `accessRole` above.
+
 ## Testing (3-tier, mirroring Graph — `AGENTS.md` offline-mock caveat)
 
 1. **Offline** (always green): normalizers + error mapping against scrubbed captured

@@ -27,6 +27,10 @@ part of it.
 > see**, so this fixture cannot produce a collection she may not write — the read-only
 > `DAV:current-user-privilege-set` case is SabreDAV's to prove, and it seeds a shared
 > calendar for exactly that.
+>
+> That second fact is about **calendars**, and stays true. It is no longer true of her
+> *mail*: the shared-mailbox fixture below gives her one store she holds every right on and
+> one she may only read, which is what makes the read-only `MailboxAccess` path provable here.
 
 ## What it is
 
@@ -179,8 +183,9 @@ and the cross-compile build.
 | Account | Holds | Used for |
 | --- | --- | --- |
 | `alice@test.local` | **the whole shared seed** (mail, calendar, contacts) | every read/sync/write suite; several assert its exact mailbox and calendar counts |
-| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, and the **organizer** in the scheduling suite |
+| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, the **organizer** in the scheduling suite, and the **grantor** of the read-only share below |
 | `carol@test.local` | nothing | scratch: the **attendee** in the scheduling suite |
+| `support@test.local` | `12-shared.eml` in its INBOX | a **group** principal — a mailbox with no credentials of its own, which Alice belongs to |
 
 `Harness::scratch` exposes the two scratch accounts as a pair. They exist because
 some server behaviour cannot be observed without writing to a mailbox: RFC 6638
@@ -190,6 +195,32 @@ exchange through Alice would push her INBOX permanently over the exact count the
 mail suites assert, so the whole two-party exchange happens between Bob and Carol,
 where nothing counts what is delivered. Prefer a scratch account over relaxing an
 assertion on the seeded one.
+
+### The shared-mailbox fixture: two shares, deliberately unequal
+
+Alice can open two stores besides her own, and they differ in **rights**, because that
+contrast is the point:
+
+- **`support@test.local`** is a `Group` principal (`x:Account/set` with `"@type":"Group"`, and
+  Alice added through `memberGroupIds` on *her* principal) — the vendor-neutral analogue of a
+  Microsoft 365 shared mailbox. Alice holds **every** right on its folders (`rliteswkxpa`), and
+  its INBOX holds one seeded message found in none of hers.
+- **Bob grants Alice `lr`** on his INBOX, with an IMAP `SETACL` in `seed.sh` — nobody but its
+  owner can. Alice holds **read** alone. Bob's INBOX takes the scheduling suite's mail, so it is
+  asserted on only for its **rights**, never its contents.
+
+Both appear in Alice's JMAP session as `accounts` entries with `isPersonal: false` (and give her
+JMAP account a second `Identity`, the group's, listed **first**), and in her IMAP `LIST` under
+the `Shared Folders` prefix her `NAMESPACE` puts in RFC 2342's *Other Users'* position. The
+finding the fixture pins: Stalwart reports `isReadOnly: false` for **both** accounts —
+including Bob's, whose one mailbox grants read alone — so nothing above the folder tells them
+apart. The smoke suite asserts that flag, so if Stalwart changes its mind the rationale in
+`modeling.md` is revisited rather than silently outliving its evidence.
+
+`MYRIGHTS` on the `\Noselect` containers (`Shared Folders`, `Shared Folders/support@test.local`)
+answers `NO Mailbox does not exist.` — they are path components, not mailboxes — and pipelined
+`MYRIGHTS` complete out of order (`imap-smtp.md`). The Dovecot harness carries the same two
+shares with the same owners, so the IMAP contract runs against both (`docker/dovecot/README.md`).
 
 ## Rate limiters are disarmed on purpose
 
@@ -250,6 +281,7 @@ sequence numbers are deterministic) rather than by searching.
 | `09-jmap-sent.eml`       | `JmapSent` (**APPEND**ed)    | Its own object, and a recipient address used nowhere else in the seed, so the sent-observation assertion cannot be satisfied by another fixture. |
 | `10-report-junk.eml`     | `Reported` (**APPEND**ed)    | The junk/not-junk report tests' own message, on both the JMAP and IMAP side. |
 | `11-report-phishing.eml` | `Reported` (**APPEND**ed)    | A **second** message so the phishing test starts from one carrying neither `$junk` nor `$phishing`. |
+| `12-shared.eml`          | the **`support@` group mailbox's** INBOX | A shared store's sync returns *its* mail and not the credential's: this message is in none of Alice's folders. The group account collects a Sent copy per send-as-group run, so it is asserted on by `Message-ID`, never by count. |
 
 Folders `Archive` and `Projects` exercise non-INBOX mailboxes, and `Archive/Nested` plus
 `Archive/Nested/Deeper` make the list a **tree**: two levels, because one proves only that a

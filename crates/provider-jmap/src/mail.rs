@@ -18,7 +18,8 @@ use std::collections::BTreeSet;
 use engine_core::{
     ids::{BlobId, MailboxId, MessageId, MessageIdHeader, ThreadId},
     mail::{
-        EmailAddress, Keyword, MailState, MailStateChange, Mailbox, MailboxRole, Message, ThreadRef,
+        EmailAddress, Keyword, MailState, MailStateChange, Mailbox, MailboxAccess, MailboxRole,
+        Message, ThreadRef,
     },
     membership::Memberships,
 };
@@ -84,7 +85,36 @@ pub(crate) fn mailbox_from_json(value: &Value) -> Result<Mailbox, JmapError> {
         .get("unreadEmails")
         .and_then(Value::as_u64)
         .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
+    mailbox.access = mailbox_rights(value.get("myRights"));
     Ok(mailbox)
+}
+
+/// Reads a JMAP `MailboxRights` object (RFC 8621 §2) as [`MailboxAccess`].
+///
+/// A right missing *from* the object reads as withheld — the safe direction for a
+/// permission. The object missing altogether is a different thing: a server that reports no
+/// rights, whose folders are the user's own, and the honest reading there is
+/// [`MailboxAccess::owner`], what every caller assumed before rights were read at all.
+///
+/// `mayShare` is not in RFC 8621, but servers implementing mailbox sharing report it (Stalwart
+/// does), so it is read where present. `maySubmit` is not read: it says mail may be posted
+/// *into* the mailbox, which no client action depends on (`MailboxAccess`).
+fn mailbox_rights(rights: Option<&Value>) -> MailboxAccess {
+    let Some(rights) = rights.filter(|rights| rights.is_object()) else {
+        return MailboxAccess::owner();
+    };
+    let may = |name: &str| rights.get(name).and_then(Value::as_bool).unwrap_or(false);
+    MailboxAccess {
+        may_read_items: may("mayReadItems"),
+        may_add_items: may("mayAddItems"),
+        may_remove_items: may("mayRemoveItems"),
+        may_set_seen: may("maySetSeen"),
+        may_set_keywords: may("maySetKeywords"),
+        may_create_child: may("mayCreateChild"),
+        may_rename: may("mayRename"),
+        may_delete: may("mayDelete"),
+        may_share: may("mayShare"),
+    }
 }
 
 /// The `Email` properties a **state-only** read needs.

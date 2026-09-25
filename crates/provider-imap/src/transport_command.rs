@@ -11,52 +11,103 @@ pub(crate) fn quote(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// `LIST "" "*"` with the return options this session can use: `SPECIAL-USE` (RFC 6154)
-/// where the server advertised it, and `STATUS (UNSEEN)` (RFC 5819) where the caller wants
-/// the unread counts in the same round trip.
+/// The data an extended `LIST` asks to have returned beside each row (RFC 5258 §6). Each is
+/// set only where the session advertised the extension that defines it: a return option a
+/// server does not know is a `BAD`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ListReturn {
+    /// `SPECIAL-USE` (RFC 6154): the role attributes on each `* LIST` line.
+    pub(crate) special_use: bool,
+    /// `STATUS (UNSEEN)` (RFC 5819): a `* STATUS` line with each folder's unread count.
+    pub(crate) unseen: bool,
+    /// `MYRIGHTS` (RFC 8440): a `* MYRIGHTS` line with the caller's rights on each folder.
+    pub(crate) myrights: bool,
+}
+
+/// `LIST "" <pattern>` with the `returning` options. `pattern` arrives quoted and encoded
+/// for this session's wire (`Connection::quoted_name`) — `"*"` for every folder, or one
+/// store's subtree (`crate::store`).
 ///
 /// An **extended** `LIST` returns exactly the extended data its return options name
 /// (RFC 5258 §3), so an option left out is data not returned — including data the same
 /// server volunteers on a plain `LIST`.
-pub(crate) fn list_command(special_use: bool, status_unseen: bool) -> String {
+pub(crate) fn list_command(pattern: &str, returning: ListReturn) -> String {
     let mut options: Vec<&str> = Vec::new();
-    if special_use {
+    if returning.special_use {
         options.push("SPECIAL-USE");
     }
-    if status_unseen {
+    if returning.unseen {
         options.push("STATUS (UNSEEN)");
     }
-    if options.is_empty() {
-        return r#"LIST "" "*""#.to_owned();
+    if returning.myrights {
+        options.push("MYRIGHTS");
     }
-    format!(r#"LIST "" "*" RETURN ({})"#, options.join(" "))
+    if options.is_empty() {
+        return format!(r#"LIST "" {pattern}"#);
+    }
+    format!(r#"LIST "" {pattern} RETURN ({})"#, options.join(" "))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const ROLES: ListReturn = ListReturn {
+        special_use: true,
+        unseen: false,
+        myrights: false,
+    };
+
     #[test]
     fn a_plain_list_carries_no_return_clause() {
         // A `RETURN (…)` the server never advertised support for is a `BAD`.
-        assert_eq!(list_command(false, false), r#"LIST "" "*""#);
+        assert_eq!(
+            list_command(r#""*""#, ListReturn::default()),
+            r#"LIST "" "*""#
+        );
     }
 
     #[test]
     fn each_advertised_extension_adds_its_own_option() {
         assert_eq!(
-            list_command(true, false),
+            list_command(r#""*""#, ROLES),
             r#"LIST "" "*" RETURN (SPECIAL-USE)"#
         );
+        let unseen = ListReturn {
+            unseen: true,
+            ..ListReturn::default()
+        };
         assert_eq!(
-            list_command(false, true),
+            list_command(r#""*""#, unseen),
             r#"LIST "" "*" RETURN (STATUS (UNSEEN))"#
         );
-        // Both, in one round trip: an extended `LIST` returns only what it is asked for,
-        // so the counts must not cost the roles.
+        let myrights = ListReturn {
+            myrights: true,
+            ..ListReturn::default()
+        };
         assert_eq!(
-            list_command(true, true),
-            r#"LIST "" "*" RETURN (SPECIAL-USE STATUS (UNSEEN))"#
+            list_command(r#""*""#, myrights),
+            r#"LIST "" "*" RETURN (MYRIGHTS)"#
+        );
+        // All three, in one round trip: an extended `LIST` returns only what it is asked
+        // for, so the counts and the rights must not cost the roles.
+        let all = ListReturn {
+            special_use: true,
+            unseen: true,
+            myrights: true,
+        };
+        assert_eq!(
+            list_command(r#""*""#, all),
+            r#"LIST "" "*" RETURN (SPECIAL-USE STATUS (UNSEEN) MYRIGHTS)"#
+        );
+    }
+
+    #[test]
+    fn a_stores_subtree_is_listed_by_its_own_pattern() {
+        // A shared store is asked for alone, and keeps the options the session can use.
+        assert_eq!(
+            list_command(r#""Shared Folders/bob@test.local/*""#, ROLES),
+            r#"LIST "" "Shared Folders/bob@test.local/*" RETURN (SPECIAL-USE)"#
         );
     }
 

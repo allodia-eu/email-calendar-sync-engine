@@ -306,11 +306,11 @@ multi-account:
   is special at the store/sync/search layer.
 - **The credential is shared.** Credentials live outside the store (host-owned —
   `north-star.md`), so several accounts can map to the same token. The host's
-  account onboarding owns the credential → accounts mapping and the
-  add-a-shared-mailbox flow (deferred).
+  account onboarding owns the credential → accounts mapping; the engine answers
+  which mailboxes that credential can open (below).
 - **The provider differs only by a `MailboxPrincipal`.** `GraphClient::for_mailbox`
   roots every request at `/me` (`MailboxPrincipal::Me`) or `/users/{address}`
-  (`MailboxPrincipal::user`); the rest of the provider — folder list, role
+  (`MailboxPrincipal::User`); the rest of the provider — folder list, role
   resolution, snapshot/delta, re-fetch — is principal-agnostic. This stays in
   `provider-graph`: a Graph-specific URL detail does **not** belong in generic
   `engine-core` types (AGENTS hard rule).
@@ -318,8 +318,110 @@ multi-account:
   (`north-star.md`). Search/threading remain per-account.
 
 So adding a shared mailbox is, for the engine, just another account pointed at a
-`User` principal. (Not live-verified — a personal Microsoft account cannot host
-shared mailboxes; verification awaits a work/school account.)
+`User` principal. **Live-verified** against a real Microsoft 365 tenant
+(`tools/graph-oauth --profile m365`, `tests/live_shared.rs`, gated on `GRAPH_SHARED_MAILBOX`
+so it skips for the personal account the rest of the live suite uses — and so no real
+address is ever written into the repository).
+
+### Onboarding: `resolve_shared_mailbox`, and only that
+
+- **There is no list route.** Nothing in Graph answers "which mailboxes have been shared with
+  me", so the adapter advertises `SharedMailboxes::ByAddress`, leaves `list_shared_mailboxes`
+  at its rejecting default, and a host asks the user to type an address. The resolver probes
+  `GET /users/{addr}/mailFolders/inbox?$select=id` — a mail-folder read, needing only the
+  `Mail.Read*.Shared` scope a sync of that mailbox needs anyway.
+- **Binding is `MailboxPrincipal::shared(&handle)`**, the handle being the address the probe
+  succeeded for. It re-checks the handle rather than trusting it, since a host stores it
+  between the two calls.
+- **Graph will not say that a mailbox exists but is not shared with you.** A real tenant
+  answered three different `404`s — `ErrorInvalidUser`, `MailboxNotEnabledForRESTAPI`,
+  `ErrorItemNotFound` ("Default folder Inbox not found", which #89 recorded for a group) — and
+  never `403`: #89 probed every mailbox of a tenant, unshared ones included, so an unshared
+  mailbox is a `404` too. So `Permanent` means **not resolvable by
+  you**, never "does not exist". `403 ErrorAccessDenied` is the credential's *grant* falling
+  short of the route and classifies `Authentication`, because a re-consent fixes it. A
+  throttle or outage keeps its own class: a probe whose whole answer is a status code must
+  never read a `429` as "no such mailbox".
+- **The caller's own mailbox is refused, under any address.** `/users/{own address}` answers
+  `200` like any shared mailbox — as does any alias — and a host would onboard the signed-in
+  mailbox a second time. Addresses cannot be compared (an alias is another string), but
+  **Inbox ids can**: probed live, the Inbox id was identical through `/me`,
+  `/users/{own upn}` and `/users/{own address in upper case}`, and different for the shared
+  mailbox. So the resolver reads `/me/mailFolders/inbox?$select=id` too and refuses a match;
+  a credential with no mailbox of its own (`404`) stands the check down.
+
+### An address is a URL path segment: validate, then encode
+
+The address is user input, and every request the client makes splices it into a path.
+Probed against a real tenant on 2026-09-22:
+
+- **Graph decodes the segment once and re-parses the path**, so percent-encoding does not
+  contain a slash: `/users/a@b.example%2FmailFolders%2Fsentitems/mailFolders/inbox` answers
+  `400 "Resource not found for the segment 'mailFolders'"`. `%252F` arrives as a literal
+  `%2F` (one decode), and `%3F`, `%23`, `%3C`, `;` all come back as data inside an
+  `ErrorInvalidUser` message.
+- **`..` segments are refused by Graph today** (`400 "The request URL must not contain '..'
+  path segments."`, every encoding tried) and `/users/me` is `400
+  TargetIdShouldNotBeMeOrWhitespace`. The predecessor of this code (PR #89) recorded
+  `/users/..%2Fme/mailFolders/inbox` answering **`200` with the signed-in user's own Inbox**.
+  The guard is Microsoft's and recent, which is exactly why the adapter does not rely on it.
+
+So `MailboxAddress::new` (behind both `MailboxPrincipal::user` and `::shared`) refuses `/`,
+`\`, whitespace, control characters and anything that is not one `local@domain`, and
+`MailboxPrincipal::root` percent-encodes the rest — `@` and `+` stay literal, as Graph's own
+documented URLs carry them, and the `#` in an Entra guest UPN (`user_partner#EXT#@tenant`)
+travels encoded as data. `MailboxPrincipal::User` holds a `MailboxAddress`, which has no
+public constructor but the checking one, so no path splices an unchecked address.
+
+### Submission sends as the mailbox it posts to
+
+`sendMail` posts to the client's principal, so a client bound to a shared mailbox sends *from*
+that mailbox whatever the draft's `From` says. A draft whose `From` names another mailbox is
+refused before the request rather than resolved silently on the server — how Exchange treats
+the mismatch is not something to rely on (and not something to probe by sending real mail).
+Sending as the shared mailbox is what the client is for.
+
+**Live-verified once (2026-09-23, `live_shared_send.rs`)**, with the one real email a run costs.
+`POST /users/{shared}/sendMail` with the MIME body answered `202`. The copy was filed in the
+**shared mailbox's** Sent Items, with `from` the shared address and the `Message-ID` preserved;
+the signed-in user's own Sent Items got no copy. So the receipt's `sent:<Message-ID>` key
+reconciles within the shared account, which is the one that syncs that folder. The message the
+recipient got carried `From:` the shared mailbox **and** `Sender:` the signed-in delegate, with
+the `Message-ID` still the one generated (read from the delivered message's source). That is
+"on behalf of" on the wire. A client that displays `Sender:` shows it as such, but the
+recipient's client in this test showed `From` alone, so a host should not promise the label.
+The delegate's Exchange permission, not the engine, decides whether `Sender:` is added.
+
+**`sender` is only an address when the recipients are selected too.** Read with
+`$select=from,sender` (or `sender` alone), the same Sent Items copy's `sender.emailAddress.address`
+was the delegate's X.500 `legacyExchangeDN` (`/O=EXCHANGELABS/…/CN=RECIPIENTS/CN=…`). Add
+`toRecipients` to the select and it was the delegate's SMTP address. `MESSAGE_SELECT` selects the
+recipients, so the normalizer gets an address; a narrower select would put a DN in
+`Envelope::sender`.
+
+- **This refuses a `From` that is an alias of the bound mailbox**, which Exchange would
+  accept: telling an alias from a mistake needs the mailbox's `proxyAddresses`, a directory
+  read. The exact workaround is to bind a client to the alias — `/users/{alias}` resolves to
+  the same mailbox, and then endpoint and header agree.
+- **A client on `/me` is unchecked**: it does not know its own address without a directory
+  read, and a delegate with *Send As* legitimately sends a shared address through their own
+  mailbox.
+
+### Delegated `mailboxSettings` is self-only (settled, do not re-litigate)
+
+`mailboxSettings` carries `userPurpose`, Graph's shared-vs-user-vs-room discriminator, and has
+**no `.Shared` scope variant**. With `MailboxSettings.ReadWrite` granted, `/me/mailboxSettings`
+answers `200` (and does carry `userPurpose`) while `/users/{shared}/mailboxSettings` answers
+`403 ErrorAccessDenied` even with Full Access — re-observed 2026-09-22, and reported upstream
+with the identical symptom in
+[OfficeDev/office-js#6057](https://github.com/OfficeDev/office-js/issues/6057). So the engine
+has no mailbox *kind* and cannot have one on this credential model; that would need an
+application permission, a different credential model and a separate decision.
+
+Graph grants Full Access all-or-nothing per mailbox and reports no folder rights, so a Graph
+folder is `MailboxAccess::owner()` (`modeling.md`). Folder-level Outlook delegation (one
+shared Inbox rather than the whole mailbox) is not reported by Graph at all — a documented
+limitation, not a silent one.
 
 ## Known limitations (documented, not bugs)
 

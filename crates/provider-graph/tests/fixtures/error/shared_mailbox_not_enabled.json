@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "MailboxNotEnabledForRESTAPI",
+    "message": "The mailbox is either inactive, soft-deleted, or is hosted on-premise."
+  }
+}

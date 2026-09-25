@@ -17,6 +17,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     error::ImapResult,
     mail::{mailbox_from_list, message_key},
+    store::MailStore,
     transport::Connection,
     transport_command::quote,
 };
@@ -65,7 +66,7 @@ impl Filing {
     }
 }
 
-/// Resolves the real folder for `filing` — the account's folder carrying the matching
+/// Resolves the real folder for `filing` in `store` — its folder carrying the matching
 /// SPECIAL-USE role, else the conventional name (created if missing) — and `APPEND`s
 /// `message` flagged per `filing`, returning the folder used and the UIDPLUS `APPENDUID`
 /// if the server supports it.
@@ -76,67 +77,72 @@ impl Filing {
 /// a rejected `LIST`/`APPEND`.
 pub(crate) async fn append_to_role_folder<S>(
     connection: &mut Connection<S>,
+    store: &MailStore,
     filing: Filing,
     message: &[u8],
 ) -> ProviderResult<(String, Option<(u32, u32)>)>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let folder = resolve_filing_folder(connection, filing).await?;
+    let folder = resolve_filing_folder(connection, store, filing).await?;
     let append_uid = connection.append(&folder, filing.flags(), message).await?;
     Ok((folder, append_uid))
 }
 
-/// The folder `filing` places into: the account's folder carrying the role, else the
-/// conventional name, created if it does not exist (an "already exists" rejection is
-/// ignored).
+/// The folder `filing` places into: `store`'s folder carrying the role, else the
+/// conventional name **inside that store**, created if it does not exist (an "already
+/// exists" rejection is ignored).
+///
+/// Qualified by the store because an unqualified fallback resolves in the credential's own
+/// namespace: a shared mailbox with no `\Sent` would otherwise have its sent copy filed —
+/// and on some servers created — among the credential's own folders.
 ///
 /// # Errors
 ///
 /// A classified [`ProviderError`](engine_provider::ProviderError) on a `LIST` failure.
 pub(crate) async fn resolve_filing_folder<S>(
     connection: &mut Connection<S>,
+    store: &MailStore,
     filing: Filing,
 ) -> ProviderResult<String>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    if let Some(name) = resolve_role_folder(connection, filing.role()).await? {
+    if let Some(name) = resolve_role_folder(connection, store, filing.role()).await? {
         return Ok(name);
     }
-    let name = filing.default_folder().to_owned();
+    let name = store.qualify(filing.default_folder());
     let _ = connection.create(&name).await;
     Ok(name)
 }
 
-/// Finds the account's folder carrying `role` (RFC 6154 SPECIAL-USE) via `LIST`; `None`
-/// when the server advertises none.
+/// Finds `store`'s folder carrying `role` (RFC 6154 SPECIAL-USE); `None` when it has none.
+///
+/// Only `store`'s folders are candidates. A flat `LIST` interleaves every principal's, and
+/// both a shared mailbox and the credential carry a `\Sent` — which one came first would be
+/// the server's listing order deciding whose Sent Items receive the copy.
 ///
 /// Returns the **decoded** name, the same form a [`Mailbox`](engine_core::mail::Mailbox)
 /// id carries, so a message key built from it matches the one the folder list produced.
 /// [`crate::transport`] re-encodes it for the `SELECT`/`APPEND` that follow.
 async fn resolve_role_folder<S>(
     connection: &mut Connection<S>,
+    store: &MailStore,
     role: MailboxRole,
 ) -> ImapResult<Option<String>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let modified_utf7 = connection.names_are_modified_utf7();
-    let rows = connection.list().await?;
+    let rows = connection.list(&store.list_pattern()).await?;
     Ok(rows
         .iter()
-        .find(|row| {
-            mailbox_from_list(row, modified_utf7)
-                .is_some_and(|mailbox| mailbox.role.as_ref() == Some(&role))
+        .filter_map(|row| {
+            let selectable = !crate::unseen::has_noselect(&row.attributes);
+            store.adopt(mailbox_from_list(row, modified_utf7)?, selectable)
         })
-        .map(|row| {
-            if modified_utf7 {
-                crate::utf7::decode(&row.name)
-            } else {
-                row.name.clone()
-            }
-        }))
+        .find(|mailbox| mailbox.role.as_ref() == Some(&role))
+        .map(|mailbox| mailbox.id.as_str().to_owned()))
 }
 
 /// Places `message` for `filing` **only if a copy of `message_id` is not already there**.
@@ -152,6 +158,7 @@ where
 /// a rejected `LIST`/`SELECT`/`SEARCH`/`APPEND`.
 pub(crate) async fn place_if_absent<S>(
     connection: &mut Connection<S>,
+    store: &MailStore,
     filing: Filing,
     message_id: &MessageIdHeader,
     message: &[u8],
@@ -159,7 +166,7 @@ pub(crate) async fn place_if_absent<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let folder = resolve_filing_folder(connection, filing).await?;
+    let folder = resolve_filing_folder(connection, store, filing).await?;
     if let Some(existing) = find_placed_copy(connection, &folder, message_id).await? {
         return Ok((folder, Some(existing)));
     }
