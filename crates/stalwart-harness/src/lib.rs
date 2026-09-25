@@ -19,6 +19,7 @@
 //! the provider clients' job in build-order steps 4–5; this crate only proves
 //! the fixture is up, reachable on every protocol, and seeded.
 
+mod dated_mail;
 mod http;
 mod imap;
 mod smtp;
@@ -269,11 +270,20 @@ impl Harness {
     /// Returns [`HarnessError::Protocol`] on a non-200 status and
     /// [`HarnessError::Json`] if the body is not valid JSON.
     pub fn jmap_session(&self) -> Result<serde_json::Value, HarnessError> {
+        self.jmap_session_as(self.auth())
+    }
+
+    /// The JMAP session resource as `auth` — any account, not only the seeded one.
+    ///
+    /// # Errors
+    /// Returns [`HarnessError::Protocol`] on a non-200 status and
+    /// [`HarnessError::Json`] if the body is not valid JSON.
+    pub fn jmap_session_as(&self, auth: (&str, &str)) -> Result<serde_json::Value, HarnessError> {
         let resp = http::request(
             &self.http_addr,
             "GET",
             "/jmap/session",
-            Some(self.auth()),
+            Some(auth),
             &[],
             &[],
         )?;
@@ -369,11 +379,24 @@ impl Harness {
     /// # Errors
     /// Propagates transport/parse failures from the HTTP probe.
     pub fn jmap_post(&self, body: &[u8]) -> Result<HttpResponse, HarnessError> {
+        self.jmap_post_as(self.auth(), body)
+    }
+
+    /// `POST` a raw JMAP request body to `/jmap/` as `auth` — any account, not only the seeded
+    /// one. The same caveat as [`jmap_post`](Self::jmap_post) applies.
+    ///
+    /// # Errors
+    /// Propagates transport/parse failures from the HTTP probe.
+    pub fn jmap_post_as(
+        &self,
+        auth: (&str, &str),
+        body: &[u8],
+    ) -> Result<HttpResponse, HarnessError> {
         http::request(
             &self.http_addr,
             "POST",
             "/jmap/",
-            Some(self.auth()),
+            Some(auth),
             &[("Content-Type", "application/json")],
             body,
         )

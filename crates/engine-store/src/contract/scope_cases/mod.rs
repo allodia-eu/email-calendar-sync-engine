@@ -4,6 +4,7 @@
 mod apply;
 mod lease;
 mod mail;
+mod mailbox;
 mod occurrences;
 mod read;
 mod state_change;
@@ -26,6 +27,7 @@ pub(super) use self::{
         list_mail_on_threads_gathers_only_the_named_threads,
         list_mail_orders_by_date_and_excludes_tombstones,
     },
+    mailbox::a_mailbox_span_reads_one_mailbox_between_two_instants,
     occurrences::{
         scope_occurrences_keep_overrides_and_drop_with_the_event,
         scope_occurrences_reads_the_overlapping_window,

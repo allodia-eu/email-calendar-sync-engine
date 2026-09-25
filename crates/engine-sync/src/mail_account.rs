@@ -28,7 +28,7 @@ use crate::{
     MailboxScope, StreamTuning, SyncError, SyncObserver,
     mail_report::{FolderSync, MailSyncReport, SyncTiming},
     recipients, run_scope,
-    stream::{FolderPass, stream_email},
+    stream::{FolderPass, folder_of, stream_email},
     threading::repair_thread_index_if_damaged,
 };
 
@@ -119,9 +119,12 @@ where
         return fail_early(observer, account, repaired, mailboxes, err, started);
     }
 
-    let folders = run_folders(providers, store, account, &req, tuning, observer, &sent).await;
+    let folders = run_folders(providers, store, account, &req, &tuning, observer, &sent).await;
 
-    let coverage = recipients::record_coverage(store, account, tuning.window, !sent.is_empty());
+    // The account's window, not a deepened mailbox's: coverage says how far back *every*
+    // mailbox's recipients have been observed.
+    let coverage =
+        recipients::record_coverage(store, account, tuning.window.account(), !sent.is_empty());
     let account_steps = repaired.and(coverage.await);
     observer.account_sync_finished(account);
 
@@ -187,7 +190,7 @@ where
             };
         }
     };
-    let folders = run_folders(providers, store, account, &req, tuning, observer, &sent).await;
+    let folders = run_folders(providers, store, account, &req, &tuning, observer, &sent).await;
     observer.account_sync_finished(account);
 
     MailSyncReport {
@@ -211,7 +214,7 @@ async fn run_folders<P, S, O>(
     store: &S,
     account: &AccountId,
     req: &LeaseRequest,
-    tuning: StreamTuning,
+    tuning: &StreamTuning,
     observer: &O,
     sent: &BTreeSet<MailboxId>,
 ) -> Vec<FolderSync>
@@ -316,11 +319,7 @@ async fn stored_inbox<S: StoreRead>(store: &S, account: &AccountId) -> Option<Ma
 
 /// Whether a mail scope is the one for `mailbox`.
 fn names_mailbox(scope: &SyncScope, mailbox: &MailboxId) -> bool {
-    match scope {
-        SyncScope::ImapMailbox { mailbox: named, .. }
-        | SyncScope::GraphFolder { folder: named, .. } => named == mailbox,
-        _ => false,
-    }
+    folder_of(scope) == Some(mailbox)
 }
 
 #[cfg(test)]

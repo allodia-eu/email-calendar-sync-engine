@@ -1,8 +1,13 @@
-//! The sync depth window.
+//! The sync depth window, for an account and for the mailboxes held further back than it.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::time::{CalendarDate, UtcDateTime};
+use crate::{
+    ids::MailboxId,
+    time::{CalendarDate, UtcDateTime},
+};
 
 /// How far back a mail sync fetches — the "sync depth" a host bounds a first
 /// snapshot/backfill to, so a large mailbox syncs only recent mail.
@@ -78,11 +83,165 @@ impl SyncWindow {
         };
         CalendarDate::new(date.year(), date.month(), date.day()).is_ok_and(|date| date >= floor)
     }
+
+    /// Whichever of `self` and `other` reaches further back.
+    fn wider(self, other: Self) -> Self {
+        match (self.since, other.since) {
+            (Some(ours), Some(theirs)) => Self::since(ours.min(theirs)),
+            _ => Self::full(),
+        }
+    }
+}
+
+/// One account's sync window, with some of its mailboxes held further back than the rest.
+///
+/// A host that wants one mailbox's longer history (its Sent mail, say) deepens that mailbox here
+/// rather than widening the whole account. A deepened mailbox is never held to *less* than the
+/// account's window: its window is the wider of the two, so an override can only reach further
+/// back.
+///
+/// A message filed in several mailboxes (a JMAP or Gmail message) belongs inside when the window
+/// of **any** of them admits it. On a provider whose mail scope is one folder (IMAP, Graph) a
+/// message is filed in exactly that folder, so the rule reduces to the folder's own window.
+///
+/// What a pass fetches, what a delta may store and what a local prune keeps all read the depth
+/// from here, so the three cannot disagree about a mailbox (`store-and-sync.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MailboxWindows {
+    account: SyncWindow,
+    deeper: BTreeMap<MailboxId, SyncWindow>,
+}
+
+impl MailboxWindows {
+    /// The account's window, with no mailbox held further back.
+    #[must_use]
+    pub fn new(account: SyncWindow) -> Self {
+        Self {
+            account,
+            deeper: BTreeMap::new(),
+        }
+    }
+
+    /// Holds `mailbox` to `window` wherever that reaches further back than the account's
+    /// (builder-style). A second call for the same mailbox replaces the first.
+    #[must_use]
+    pub fn deepen(mut self, mailbox: MailboxId, window: SyncWindow) -> Self {
+        self.deeper.insert(mailbox, window);
+        self
+    }
+
+    /// The account's own window: the one every mailbox that was not deepened syncs under.
+    #[must_use]
+    pub fn account(&self) -> SyncWindow {
+        self.account
+    }
+
+    /// The window `mailbox` syncs under: the wider of the account's and its own.
+    #[must_use]
+    pub fn window_for(&self, mailbox: &MailboxId) -> SyncWindow {
+        self.deeper
+            .get(mailbox)
+            .map_or(self.account, |own| self.account.wider(*own))
+    }
+
+    /// Whether a message filed in `mailboxes` and dated `date` belongs inside: the window of any
+    /// mailbox it is filed in admits it, by the rules of [`SyncWindow::admits`]. Undated mail is
+    /// admitted, as it is there.
+    #[must_use]
+    pub fn admits<'a>(
+        &self,
+        mailboxes: impl IntoIterator<Item = &'a MailboxId>,
+        date: Option<UtcDateTime>,
+    ) -> bool {
+        self.account.admits(date)
+            || mailboxes
+                .into_iter()
+                .any(|mailbox| self.deeper.get(mailbox).is_some_and(|own| own.admits(date)))
+    }
+}
+
+impl From<SyncWindow> for MailboxWindows {
+    fn from(account: SyncWindow) -> Self {
+        Self::new(account)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn date(year: i32, month: u8, day: u8) -> CalendarDate {
+        CalendarDate::new(year, month, day).unwrap()
+    }
+
+    fn mailbox(id: &str) -> MailboxId {
+        MailboxId::try_from(id).unwrap()
+    }
+
+    #[test]
+    fn a_deepened_mailbox_reaches_back_and_every_other_keeps_the_account_window() {
+        let account = SyncWindow::since(date(2026, 4, 1));
+        let windows = MailboxWindows::new(account)
+            .deepen(mailbox("sent"), SyncWindow::since(date(2024, 4, 1)));
+
+        assert_eq!(windows.account(), account);
+        assert_eq!(
+            windows.window_for(&mailbox("sent")),
+            SyncWindow::since(date(2024, 4, 1))
+        );
+        assert_eq!(windows.window_for(&mailbox("inbox")), account);
+    }
+
+    #[test]
+    fn an_override_never_narrows_a_mailbox() {
+        let account = SyncWindow::since(date(2026, 4, 1));
+        let narrower = MailboxWindows::new(account)
+            .deepen(mailbox("sent"), SyncWindow::since(date(2026, 6, 1)));
+        assert_eq!(narrower.window_for(&mailbox("sent")), account);
+
+        // An unbounded account window is already the widest there is.
+        let full = MailboxWindows::new(SyncWindow::full())
+            .deepen(mailbox("sent"), SyncWindow::since(date(2024, 4, 1)));
+        assert_eq!(full.window_for(&mailbox("sent")), SyncWindow::full());
+
+        // And an unbounded override holds that mailbox over its whole history.
+        let everything = MailboxWindows::new(account).deepen(mailbox("sent"), SyncWindow::full());
+        assert_eq!(everything.window_for(&mailbox("sent")), SyncWindow::full());
+    }
+
+    #[test]
+    fn a_message_is_admitted_when_any_mailbox_it_is_filed_in_admits_it() {
+        let windows = MailboxWindows::new(SyncWindow::since(date(2026, 4, 1)))
+            .deepen(mailbox("sent"), SyncWindow::since(date(2024, 4, 1)));
+        let old = Some("2025-01-10T09:00:00Z".parse::<UtcDateTime>().unwrap());
+        let older = Some("2023-01-10T09:00:00Z".parse::<UtcDateTime>().unwrap());
+
+        assert!(windows.admits(&[mailbox("sent")], old));
+        assert!(
+            windows.admits(&[mailbox("inbox"), mailbox("sent")], old),
+            "filed in the deepened mailbox as well as another"
+        );
+        assert!(!windows.admits(&[mailbox("inbox")], old));
+        assert!(
+            !windows.admits(&[mailbox("sent")], older),
+            "past the override too"
+        );
+        assert!(windows.admits(&[mailbox("inbox")], None), "undated is kept");
+        assert!(
+            windows.admits(
+                core::iter::empty(),
+                Some("2026-05-01T00:00:00Z".parse().unwrap())
+            ),
+            "the account window alone admits in-window mail"
+        );
+    }
+
+    #[test]
+    fn a_plain_window_converts_with_no_mailbox_deepened() {
+        let account = SyncWindow::since(date(2026, 4, 1));
+        assert_eq!(MailboxWindows::from(account), MailboxWindows::new(account));
+        assert_eq!(MailboxWindows::default().account(), SyncWindow::full());
+    }
 
     #[test]
     fn full_window_has_no_floor() {
