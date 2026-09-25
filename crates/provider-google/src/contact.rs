@@ -222,6 +222,7 @@ impl Provider for GoogleContactProvider {
     }
 }
 
+impl engine_provider::MailboxWrites for GoogleContactProvider {}
 impl CalendarWrites for GoogleContactProvider {}
 
 #[async_trait]

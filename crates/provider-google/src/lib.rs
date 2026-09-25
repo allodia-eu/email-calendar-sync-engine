@@ -42,6 +42,7 @@ mod fetch;
 mod http_transport;
 mod identity;
 mod json;
+mod labels_write;
 mod mutate;
 mod normalize;
 mod provider;

@@ -22,9 +22,9 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
-    MailEdit, MailEditReceipt, PageToken, PassMode, Provider, ProviderResult, ReportControls,
-    ReportEvidence, ReportVerdicts, ScopeSync, SenderIdentity, SubmissionReceipt, SyncKind,
-    split_page,
+    MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, PageToken, PassMode,
+    Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts, ScopeSync,
+    SenderIdentity, SubmissionReceipt, SyncKind, split_page,
 };
 
 use crate::{fetch, transport::GraphClient};
@@ -75,6 +75,8 @@ impl GraphProvider {
             capabilities: Capabilities::none()
                 .with_mail()
                 .with_mail_writes()
+                // Create, rename, move, trash and delete a folder (`crate::mailbox_write`).
+                .with_mailbox_writes()
                 // A draft is created from the same MIME `/sendMail` takes, into the
                 // account's Drafts folder by Graph's own default (`crate::drafts`).
                 .with_mail_drafts()
@@ -360,6 +362,18 @@ impl Provider for GraphProvider {
     }
 }
 
+/// Folder changes are account-level, like submission: any of an account's folder-bound
+/// providers can make one (`crate::mailbox_write`).
+#[async_trait]
+impl MailboxWrites for GraphProvider {
+    async fn edit_mailbox(
+        &self,
+        _account: &AccountId,
+        edit: &MailboxEdit,
+    ) -> ProviderResult<MailboxEditReceipt> {
+        crate::mailbox_write::edit_mailbox(&self.client, edit).await
+    }
+}
 impl CalendarWrites for GraphProvider {}
 
 #[cfg(test)]

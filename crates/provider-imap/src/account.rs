@@ -229,7 +229,9 @@ fn capabilities<S>(connection: &Connection<S>, smtp: bool) -> Capabilities {
         .with_message_source()
         // Storing a draft is an `APPEND`, so it needs nothing submission needs: an account with
         // no SMTP transport configured can still keep drafts.
-        .with_mail_drafts();
+        .with_mail_drafts()
+        // `CREATE`/`RENAME`/`DELETE` are base protocol on both dialects.
+        .with_mailbox_writes();
     if smtp {
         // Both submission capabilities ride the same SMTP transport: the assembler
         // (`engine-rfc5322`) builds the whole message, so this adapter owns every
