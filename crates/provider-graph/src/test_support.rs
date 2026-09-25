@@ -48,12 +48,26 @@ struct Fake {
     /// read requested — the fake answers the same fixture whatever the header says, so
     /// nothing else here could tell a right header from a wrong one.
     prefers: PreferLog,
+    /// Every request, as `(method, url, body)`, so a write test can assert what was sent
+    /// even though the answer is canned.
+    requests: RequestLog,
 }
+
+/// The `(method, url, body)` of every request a fake received, in order.
+pub(crate) type RequestLog = Arc<Mutex<Vec<(&'static str, String, Option<Value>)>>>;
 
 /// The `(url, Prefer)` pairs a fake was asked for, shared with the test that built it.
 pub(crate) type PreferLog = Arc<Mutex<Vec<(String, Option<String>)>>>;
 
 impl Fake {
+    fn log(&self, method: &'static str, url: &str, body: &[u8]) {
+        let body = (!body.is_empty()).then(|| serde_json::from_slice(body).unwrap_or(Value::Null));
+        self.requests
+            .lock()
+            .expect("requests lock")
+            .push((method, url.to_owned(), body));
+    }
+
     fn route(&self, url: &str) -> Result<&FakeRoute, GraphError> {
         self.routes
             .iter()
@@ -74,6 +88,7 @@ impl GraphTransport for Fake {
     }
 
     async fn get(&self, url: &str) -> Result<Value, GraphError> {
+        self.log("GET", url, &[]);
         match self.route(url)? {
             Ok(doc) => Ok(doc.clone()),
             Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
@@ -102,8 +117,9 @@ impl GraphTransport for Fake {
         &self,
         url: &str,
         _content_type: &str,
-        _body: Vec<u8>,
+        body: Vec<u8>,
     ) -> Result<Option<Value>, GraphError> {
+        self.log("POST", url, &body);
         // Like every offline fake, the request body is ignored — a matched route's canned
         // answer is served regardless of what was sent (`AGENTS.md`); the *request shape*
         // (valid base64 MIME, `text/plain`) is asserted by the mock-server transport test
@@ -120,8 +136,9 @@ impl GraphTransport for Fake {
         url: &str,
         _content_type: &str,
         _if_match: Option<&str>,
-        _body: Vec<u8>,
+        body: Vec<u8>,
     ) -> Result<Option<Value>, GraphError> {
+        self.log("PATCH", url, &body);
         // Body/If-Match ignored (canned answer, `AGENTS.md`); the request shape is
         // asserted by the mock-server transport test and the live test.
         match self.route(url)? {
@@ -132,6 +149,7 @@ impl GraphTransport for Fake {
     }
 
     async fn delete(&self, url: &str, _if_match: Option<&str>) -> Result<(), GraphError> {
+        self.log("DELETE", url, &[]);
         match self.route(url)? {
             Ok(_) => Ok(()),
             Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
@@ -158,20 +176,30 @@ pub(crate) fn fake_client_fallible(routes: Vec<(&str, FakeRoute)>) -> GraphClien
 /// Like [`fake_client_fallible`], plus the log of what each request asked for in its
 /// `Prefer` header.
 pub(crate) fn fake_client_recording(routes: Vec<(&str, FakeRoute)>) -> (GraphClient, PreferLog) {
+    let (client, prefers, _) = fake_client_logged(routes);
+    (client, prefers)
+}
+
+/// Like [`fake_client_recording`], plus the log of every request's method, URL and body.
+pub(crate) fn fake_client_logged(
+    routes: Vec<(&str, FakeRoute)>,
+) -> (GraphClient, PreferLog, RequestLog) {
     let routes = routes
         .into_iter()
         .map(|(key, answer)| (key.to_owned(), answer))
         .collect();
     let prefers: PreferLog = Arc::default();
+    let requests: RequestLog = Arc::default();
     let client = GraphClient::with_transport(
         Box::new(Fake {
             routes,
             unauthenticated: Mutex::new(Vec::new()),
             prefers: Arc::clone(&prefers),
+            requests: Arc::clone(&requests),
         }),
         "https://graph.test".to_owned(),
     );
-    (client, prefers)
+    (client, prefers, requests)
 }
 
 /// Parses a fixture string into JSON.

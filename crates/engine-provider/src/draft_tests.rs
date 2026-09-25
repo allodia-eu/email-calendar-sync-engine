@@ -62,6 +62,7 @@ async fn storing_a_draft_defaults_to_unsupported() {
 /// Two adapters that both reject cannot tell those apart, so this one succeeds.
 struct FakeDrafts;
 
+impl crate::MailboxWrites for FakeDrafts {}
 impl crate::CalendarWrites for FakeDrafts {}
 
 #[async_trait::async_trait]

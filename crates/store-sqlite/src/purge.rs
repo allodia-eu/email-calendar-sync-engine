@@ -113,5 +113,43 @@ fn purge_account(conn: &mut Connection, account: &str) -> Result<()> {
     Ok(())
 }
 
+/// Drops one scope's rows from every scope-keyed table and clears its cursor, window and
+/// lease, if `token` is still the scope's generation. The `sync_scope` row itself stays, so
+/// the generation does and a lease older than this one remains fenced out.
+///
+/// # Errors
+///
+/// Returns [`engine_store::StoreError::StaleLease`] when `token` is not current, or
+/// [`engine_store::StoreError::Backend`] on a backend failure.
+pub(crate) fn forget_scope(conn: &mut Connection, scope_key: &str, token: u64) -> Result<()> {
+    let tx = conn.transaction().map_err(backend)?;
+    let current: Option<i64> = crate::sql::query_opt(
+        &tx,
+        "SELECT token FROM sync_scope WHERE scope_key = ?1",
+        [scope_key],
+        |r| r.get(0),
+    )?;
+    if !current.is_some_and(|t| crate::convert::generation_from_i64(t).is_ok_and(|g| g == token)) {
+        return Err(engine_store::StoreError::StaleLease);
+    }
+    for table in SCOPE_TABLES {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE scope_key = ?1"),
+            [scope_key],
+        )
+        .map_err(backend)?;
+    }
+    tx.execute(
+        "UPDATE sync_scope
+         SET cursor = NULL, lease_expiry = NULL,
+             horizon_start = NULL, horizon_end = NULL, expansion_zone = NULL
+         WHERE scope_key = ?1",
+        [scope_key],
+    )
+    .map_err(backend)?;
+    tx.commit().map_err(backend)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

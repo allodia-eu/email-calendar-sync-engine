@@ -270,6 +270,7 @@ impl Provider for CalendarServer {
         Ok(ScopeSync::new(SyncUpdate::delta(changed, removed), next))
     }
 }
+impl engine_provider::MailboxWrites for CalendarServer {}
 
 #[async_trait::async_trait]
 impl CalendarWrites for CalendarServer {

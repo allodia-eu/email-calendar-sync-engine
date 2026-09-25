@@ -20,9 +20,9 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
-    MailEdit, MailEditReceipt, PageToken, PassMode, Provider, ProviderResult, ReportControls,
-    ReportEvidence, ReportVerdicts, ScopeSync, SenderIdentity, SenderIdentityId, SubmissionReceipt,
-    SyncKind, split_page,
+    MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, PageToken, PassMode,
+    Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts, ScopeSync,
+    SenderIdentity, SenderIdentityId, SubmissionReceipt, SyncKind, split_page,
 };
 
 use crate::{fetch, mutate, submit, transport::GoogleClient};
@@ -65,6 +65,9 @@ impl GmailProvider {
                 .with_mail()
                 .with_message_source()
                 .with_mail_writes()
+                // Folders are labels, which the full `mail.google.com` scope may create,
+                // rename and remove (`crate::labels_write`).
+                .with_mailbox_writes()
                 // Gmail keeps drafts as objects of their own, so a re-save replaces one
                 // in place rather than creating and deleting (`crate::drafts`). Whether
                 // *this* token holds the scope the collection needs is a scope question
@@ -315,6 +318,17 @@ impl Provider for GmailProvider {
         report: &engine_provider::MessageReport,
     ) -> ProviderResult<engine_provider::ReportReceipt> {
         crate::report::report_message(&self.client, report).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MailboxWrites for GmailProvider {
+    async fn edit_mailbox(
+        &self,
+        _account: &AccountId,
+        edit: &MailboxEdit,
+    ) -> ProviderResult<MailboxEditReceipt> {
+        crate::labels_write::edit(&self.client, edit).await
     }
 }
 

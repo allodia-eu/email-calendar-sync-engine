@@ -155,6 +155,10 @@ where
     let (store, clock) = make();
     scope_cases::release_with_stale_token_is_noop(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::forget_scope_drops_objects_rows_and_cursor(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::forget_scope_under_a_stale_lease_is_rejected(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::structured_index_rows_replace_and_clear(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::account_scopes_enumerates_an_accounts_scopes(&store, &clock).await;

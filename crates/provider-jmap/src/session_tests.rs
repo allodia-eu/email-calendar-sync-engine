@@ -218,6 +218,7 @@ fn read_only_account_does_not_advertise_mail_writes() {
     // Mail is readable, but the read-only account cannot write.
     assert!(session.capabilities().mail());
     assert!(!session.capabilities().mail_writes());
+    assert!(!session.capabilities().mailbox_writes());
 }
 
 #[test]

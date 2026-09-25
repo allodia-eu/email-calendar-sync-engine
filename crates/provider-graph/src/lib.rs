@@ -52,6 +52,7 @@ mod fetch;
 mod http_transport;
 mod identity;
 mod json;
+mod mailbox_write;
 mod mutate;
 mod normalize;
 mod normalize_state;

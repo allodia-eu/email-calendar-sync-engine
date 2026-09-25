@@ -15,8 +15,8 @@ use engine_core::{
 
 use crate::{
     CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, MailEdit,
-    MailEditReceipt, MessageReport, ProviderError, ProviderResult, ReportReceipt, ScopeSync,
-    SenderIdentity, SenderIdentityId, SubmissionReceipt, error::unsupported,
+    MailEditReceipt, MailboxWrites, MessageReport, ProviderError, ProviderResult, ReportReceipt,
+    ScopeSync, SenderIdentity, SenderIdentityId, SubmissionReceipt, error::unsupported,
 };
 // `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
 // rustdoc resolves those against the *module's* scope — a link that worked in the crate root
@@ -40,7 +40,7 @@ use crate::{
 /// scope granularity. Adapters own protocol pagination, batching, retries, and
 /// quirks; the store owns atomic application.
 #[async_trait]
-pub trait Provider: CalendarWrites + Send + Sync {
+pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     /// Everything this adapter learned about its connection once it was established:
     /// the data domains it can serve ([`ConnectionInfo::capabilities`]) and the
     /// transport versions the server negotiated.

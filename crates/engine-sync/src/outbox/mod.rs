@@ -22,6 +22,8 @@ mod contact;
 mod drafts;
 mod drain;
 mod mail;
+mod mailbox;
+mod mailbox_plan;
 
 use core::time::Duration;
 
@@ -42,6 +44,8 @@ use engine_store::{
 pub use mail::{
     MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
 };
+pub use mailbox::{MailboxEditOutcome, edit_mailbox};
+pub use mailbox_plan::{MailboxChange, MailboxNameError, MailboxPlace, validate_mailbox_name};
 // Tokio's own `Instant`, so the wait's bound holds under a paused test clock too.
 use tokio::time::Instant;
 

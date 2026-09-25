@@ -197,6 +197,7 @@ mod tests {
         }
     }
 
+    impl engine_provider::MailboxWrites for AttachmentProvider {}
     impl CalendarWrites for AttachmentProvider {}
 
     fn account() -> AccountId {

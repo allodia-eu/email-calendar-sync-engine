@@ -46,7 +46,7 @@ mod scheduling;
 
 pub use engine::{
     CalendarDelete, CalendarWrite, ContactDelete, ContactReconciled, ContactWrite, Engine,
-    PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled, queued_draft,
+    MailboxWrite, PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled, queued_draft,
 };
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
@@ -84,8 +84,8 @@ pub use engine_core::{
     // fields it can already read, and would have to depend on `engine-core` directly — the
     // reach-around this re-export block exists to prevent.
     ids::{
-        AccountId, AddressBookId, CalendarId, ContactId, EventId, MessageIdHeader, PersonId,
-        ProviderKey, ThreadId, Uid,
+        AccountId, AddressBookId, CalendarId, ContactId, EventId, MailboxId, MessageIdHeader,
+        PersonId, ProviderKey, ThreadId, Uid,
     },
     mail::{
         AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxRole, Message,
@@ -136,11 +136,11 @@ pub use engine_provider::{
     CalendarWrites, Capabilities, ContactDestination, ContactPhoto, ContactsProvider,
     ContentIdHeader, DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition,
     DraftCalendar, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp,
-    EventWrite, EventWriteReceipt, IdentityControls, MailEdit, MailEditReceipt, MessageReport,
-    Occurrence, OverrideSurvival, PatchTarget, Provider, RecurrenceEdit, ReplyDelivery,
-    ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls,
-    RsvpResponse, SenderIdentity, SenderIdentityId, SentCopy, SubmissionReceipt, TextEdit,
-    WriteGuard, WritePrecondition,
+    EventWrite, EventWriteReceipt, IdentityControls, MailEdit, MailEditReceipt, MailboxEdit,
+    MailboxEditReceipt, MailboxWrites, MessageReport, Occurrence, OverrideSurvival, PatchTarget,
+    Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence, ReportReceipt,
+    ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse, SenderIdentity, SenderIdentityId,
+    SentCopy, SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,
@@ -156,9 +156,10 @@ pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
     ContactSourceReport, ContactSyncReport, ContactWriteOutcome, DraftPut, DrainOutcome,
     DrainReport, DrainedOp, EventSyncReport, FolderSync, HorizonExpansion, IgnoreCommits,
-    MailEditOutcome, MailSyncReport, PeopleRebuildReport, ProgressSnapshot, PutDraftOutcome,
-    ReportOutcome, StreamTuning, SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming,
-    ThreadRebuildReport, UnexpandableEvent,
+    MailEditOutcome, MailSyncReport, MailboxChange, MailboxEditOutcome, MailboxNameError,
+    MailboxPlace, PeopleRebuildReport, ProgressSnapshot, PutDraftOutcome, ReportOutcome,
+    StreamTuning, SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming,
+    ThreadRebuildReport, UnexpandableEvent, validate_mailbox_name,
 };
 pub use scheduling::InboundScheduling;
 

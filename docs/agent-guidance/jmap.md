@@ -294,6 +294,21 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   server silently drops is treated as a `notFound` conflict, never a false success.
   The `mail_writes` capability is advertised whenever the account exposes mail and is
   not `isReadOnly`. Outbox-mediated by `engine-sync::edit_mail` (`crate::mutate`).
+- **Folder writes (`edit_mailbox`).** One `Mailbox/set` per edit (`crate::mailbox_write`):
+  `Create` → `create` with `isSubscribed: true`; `Update` and `Trash` → an `update` of
+  `name` + `parentId` (trashing is a move under Trash, so the mail and subfolders go with
+  it); `Delete` → a `Mailbox/get` of every `parentId`, then one `destroy` of the subtree
+  **deepest first** with `onDestroyRemoveEmails: true`, because RFC 8621 refuses a mailbox
+  with children (`mailboxHasChild`). Mailbox ids survive rename and move, so every receipt
+  but a create's names the id it was given. Stalwart's answers, measured and pinned in
+  `mailbox_set_refusals_response.json`: a sibling of the same name is `alreadyExists` **with
+  an `existingId`** (a create resolves to it, since the op is retried; an update is a
+  `Conflict`); a missing parent and a parent inside the folder are both `invalidProperties`
+  (only the cycle names `parentId`), classified `Conflict` unless the error names `name`
+  alone; a missing target is `notFound`. Stalwart applies a `destroy` list in array order;
+  RFC 8620 does not promise that, so a server that reorders would refuse the parent until a
+  retry. `mailbox_writes` rides the `mail_writes` gate. Live: `tests/live_mailbox_writes.rs`,
+  as the scratch account `carol@`.
 - **Push (EventSource → `Watch`).** `JmapWatcher` holds a **dedicated** long-lived
   `text/event-stream` connection to the session `eventSourceUrl` (RFC 8620 §7.3;
   opened `types=Email,Mailbox&closeafter=no&ping=<secs>`), parses the Server-Sent
