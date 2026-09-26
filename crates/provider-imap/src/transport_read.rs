@@ -28,7 +28,7 @@ const MAX_LITERAL: usize = 64 * 1024 * 1024;
 /// sends nothing and reports nothing, and holds the read until the OS gives up retransmitting,
 /// which is many minutes. A server answers a `UID FETCH` in milliseconds, so a minute of nothing
 /// is not a slow server.
-pub(crate) const BODY_READ_STALL: Duration = Duration::from_secs(60);
+pub(crate) const BODY_READ_STALL: Duration = Duration::from_mins(1);
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// Reads one logical line: bytes through the next `\n`, with any `{n}` literal
