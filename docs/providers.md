@@ -170,7 +170,7 @@ It speaks **IMAP4rev2** (RFC 9051) where a server offers it and **IMAP4rev1** (R
 ```rust
 use engine_core::ids::MailboxId;
 use engine_tls::TlsClientConfig;
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{ImapAccount, ImapConfig};
 
 let tls = TlsClientConfig::bundled();
 let mut config = ImapConfig::new(
@@ -186,12 +186,10 @@ config = config.with_since(time::macros::date!(2026-01-01));
 // Optional: enable SMTP submission over implicit TLS + AUTH PLAIN.
 config = config.with_smtp_tls("smtp.example.com:465", "smtp.example.com");
 
-let provider = ImapProvider::connect(
-    &config,
-    tls.connector(),
-    MailboxId::try_from("INBOX")?,
-)
-.await?;
+// One per account: it holds the account's connection budget.
+let imap = ImapAccount::connect(&config, tls.connector()).await?;
+// One per folder, all sharing that budget. Binding a folder dials nothing.
+let provider = imap.provider(MailboxId::try_from("INBOX")?);
 ```
 
 A plaintext, no-auth SMTP MX (for local fixtures) can be configured with `config.with_smtp("mx.example.com:25")`.
@@ -199,9 +197,10 @@ A plaintext, no-auth SMTP MX (for local fixtures) can be configured with `config
 ### Notes
 
 - An `ImapProvider` is **bound to one mailbox** for email sync. The folder list syncs at the account level; per-folder email sync is the host's job.
+- Build **one `ImapAccount` per account** and bind every folder through it: the account holds at most five connections, shared by every folder's provider and watcher, and re-dials a dead one on the next call.
 - A mail object's identity is `(mailbox, UIDVALIDITY, UID)`. A copy in another folder is a distinct object.
 - On servers that advertise `QRESYNC`, a delta sync reconciles flag changes and expunges in one round trip. Servers without it fall back to new-arrivals-only deltas, with periodic re-snapshots via `Engine::clear_mail_cursors`.
-- `IDLE` uses a dedicated connection per watched mailbox; the watcher emits `Changed`/`KeepAlive` events, and the host runs a normal sync on each change.
+- `IDLE` uses a dedicated connection per watched mailbox (`ImapAccount::watch`), taken from the account's budget until the watcher is dropped; the watcher emits `Changed`/`KeepAlive` events, and the host runs a normal sync on each change.
 
 ## CalDAV and CardDAV
 

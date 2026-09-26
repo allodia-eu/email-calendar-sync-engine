@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use engine_core::ids::{AccountId, MailboxId};
 use engine_provider::{MailEdit, Provider, WatchEvent};
-use provider_imap::{ImapConfig, ImapProvider, ImapWatcher};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
@@ -44,13 +44,10 @@ async fn connect(
     harness: &Harness,
     mailbox: &str,
 ) -> ImapProvider<TlsStream<tokio::net::TcpStream>> {
-    ImapProvider::connect(
-        &config_for(harness),
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP")
+    ImapAccount::connect(&config_for(harness), no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -83,14 +80,15 @@ async fn live_idle_pushes_a_change_notification() {
 
     // The watcher on its own dedicated connection (a short keep-alive; the change is
     // expected within seconds, well before it would matter).
-    let watcher = ImapWatcher::connect(
-        &config_for(&harness),
-        no_verify_connector(),
-        MailboxId::try_from("Idle").unwrap(),
-        Duration::from_secs(20),
-    )
-    .await
-    .expect("watcher (Stalwart advertises IDLE)");
+    let watcher = ImapAccount::connect(&config_for(&harness), no_verify_connector())
+        .await
+        .expect("connect the watching account")
+        .watch(
+            MailboxId::try_from("Idle").unwrap(),
+            Duration::from_secs(20),
+        )
+        .await
+        .expect("watcher (Stalwart advertises IDLE)");
 
     // Drive the watch in a task; it blocks in IDLE until the server pushes a change.
     let watch = tokio::spawn(async move {

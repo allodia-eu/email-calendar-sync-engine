@@ -2,13 +2,15 @@
 //! email, syncing the account's folder list under the per-account
 //! [`SyncScope::ImapMailboxList`].
 //!
-//! The connection is stateful (one TLS socket, sequential commands), so it is held
-//! behind an async [`Mutex`] — concurrent `stream_email` calls serialize onto
-//! the one IMAP session, which is exactly IMAP's model. Method execution is generic
-//! over the stream, so the offline tests drive the full `Provider` surface over a
-//! mock while [`ImapProvider::connect`] uses a `tokio-rustls` TLS stream.
+//! A provider owns no connection. Each call borrows one from its account's pool
+//! ([`crate::pool`]) for exactly as long as the call runs — a streamed pass for as long as the
+//! stream lives — so a provider that is not syncing holds no socket, and concurrent calls run
+//! on separate connections up to the account's budget and wait beyond it. Method execution is
+//! generic over the stream, so the offline tests drive the full `Provider` surface over a mock
+//! while [`ImapAccount::connect`](crate::ImapAccount::connect) uses a `tokio-rustls` TLS
+//! stream.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use engine_core::{
@@ -18,24 +20,16 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt,
-    MessageReport, Provider, ProviderResult, ReportControls, ReportEvidence, ReportReceipt,
-    ReportVerdicts, ScopeSync, SubmissionReceipt, TlsVersion,
+    CalendarWrites, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt, MessageReport,
+    Provider, ProviderResult, ReportReceipt, ScopeSync, SubmissionReceipt,
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::TcpStream,
-    sync::Mutex,
-};
-use tokio_rustls::{TlsConnector, client::TlsStream};
+use futures_util::StreamExt;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    config::ImapConfig,
-    connect::connect_session,
-    error::ImapError,
-    filing::{Redial, SmtpSender, resolve_smtp},
+    filing::SmtpSender,
     mail::mailbox_from_list,
-    transport::Connection,
+    pool::{ImapPool, PooledConnection},
 };
 
 /// The IMAP folder list carries no sync token (a `LIST` re-snapshots it each pass),
@@ -43,19 +37,16 @@ use crate::{
 const FOLDER_LIST_CURSOR: &str = "imap-folders";
 
 /// An IMAP read/sync provider bound to a single mailbox for its email scope, with
-/// optional SMTP submission.
+/// optional SMTP submission. Made by [`ImapAccount::provider`](crate::ImapAccount::provider).
 pub struct ImapProvider<S> {
-    /// `pub(crate)` so the [`crate::filing`] submission/draft helpers (split out to
-    /// keep this file under the size limit) can lock the shared IMAP session.
-    pub(crate) connection: Mutex<Connection<S>>,
+    /// The account's connections, shared with every other folder's provider and watcher.
+    /// `pub(crate)` so the [`crate::filing`] submission/draft helpers (split out to keep this
+    /// file under the size limit) can borrow a session.
+    pub(crate) pool: Arc<ImapPool<S>>,
     mailbox: MailboxId,
     /// The resolved SMTP transport, or `None` when submission is unconfigured.
     /// `pub(crate)` so [`crate::filing`] (which owns the submission dispatch) reads it.
-    pub(crate) smtp: Option<SmtpSender>,
-    /// What a fresh IMAP session needs, so a Sent copy that fails to file over the
-    /// standing session above is retried on a new one rather than lost. `None` for a
-    /// provider built over a mock stream, which has no server to re-dial.
-    pub(crate) redial: Option<Redial>,
+    pub(crate) smtp: Option<Arc<SmtpSender>>,
     /// The sync-depth window floor: when set, a snapshot fetches only mail delivered
     /// on or after this date (`ImapConfig::with_since`). `None` syncs the whole mailbox.
     since: Option<time::Date>,
@@ -75,36 +66,6 @@ impl<S> core::fmt::Debug for ImapProvider<S> {
     }
 }
 
-impl ImapProvider<TlsStream<TcpStream>> {
-    /// Connects over implicit TLS, logs in, and binds `mailbox` for the email scope.
-    ///
-    /// The `connector` carries the host's trust policy — the library never bakes in
-    /// a root store, so a mobile host (or the self-signed test fixture) injects its
-    /// own (`docs/agent-guidance/imap-smtp.md`).
-    ///
-    /// # Errors
-    ///
-    /// [`ImapError`] on a TCP/TLS/login failure or a bad server name.
-    pub async fn connect(
-        config: &ImapConfig,
-        connector: TlsConnector,
-        mailbox: MailboxId,
-    ) -> Result<Self, ImapError> {
-        // Resolve the SMTP sender first (cloning the connector), so SMTP-over-TLS can
-        // re-dial with the host's trust policy after the IMAP connect consumes it.
-        let smtp = config
-            .smtp
-            .as_ref()
-            .map(|settings| resolve_smtp(settings, &connector, config));
-        let (connection, tls_version) = connect_session(config, &connector).await?;
-        let mut provider = Self::build(connection, mailbox, smtp, config.since, tls_version);
-        // Only a provider that dialed knows how to dial again — which is what lets a Sent
-        // copy that fails to file over this session be retried on a fresh one.
-        provider.redial = Some(Redial::new(config, &connector));
-        Ok(provider)
-    }
-}
-
 /// Formats a calendar date as the IMAP `d-Mon-yyyy` form `UID SEARCH SINCE` expects
 /// (RFC 9051 §6.4.4), e.g. 2026-03-18 → `18-Mar-2026`. The month is a fixed English
 /// abbreviation and the rest is digits, so the result is a safe, unquoted search atom.
@@ -117,69 +78,36 @@ pub(crate) fn format_imap_date(date: time::Date) -> String {
 }
 
 impl<S> ImapProvider<S> {
-    /// Builds a provider, advertising submission iff SMTP is configured, and recording
-    /// the `tls_version` its dial negotiated (`None` when the stream is not TLS — the
-    /// offline mock).
-    fn build(
-        connection: Connection<S>,
+    /// A provider bound to `mailbox`, borrowing from `pool`. The account computes the rest once
+    /// for all of its providers (`crate::account`).
+    pub(crate) fn new(
+        pool: Arc<ImapPool<S>>,
         mailbox: MailboxId,
-        smtp: Option<SmtpSender>,
+        smtp: Option<Arc<SmtpSender>>,
         since: Option<time::Date>,
-        tls_version: Option<TlsVersion>,
+        connection_info: ConnectionInfo,
     ) -> Self {
-        // Mail writes (`UID STORE`/`MOVE`/`EXPUNGE`) and body fetch (`UID FETCH
-        // BODY.PEEK[]`) need no extra config — every IMAP session can issue them — so
-        // those capabilities are unconditional, unlike submission which depends on a
-        // configured SMTP transport.
-        let mut capabilities = Capabilities::none()
-            .with_mail()
-            .with_mail_writes()
-            // All three registered keywords are expressible; whether the *server* stores
-            // them is a per-mailbox fact (`\*` in `PERMANENTFLAGS`) that only a `SELECT`
-            // can answer, so the report path checks it per call and refuses rather than
-            // writing a flag the server discards (`crate::report`). The evidence is
-            // `Convention`: IMAP has no way to say whether anything trained on the keyword.
-            .with_mail_report(ReportControls {
-                verdicts: ReportVerdicts::all(),
-                evidence: ReportEvidence::Convention,
-            })
-            .with_message_source()
-            // Storing a draft is an `APPEND`, so it needs nothing submission needs: an
-            // account with no SMTP transport configured can still keep drafts.
-            .with_mail_drafts();
-        if smtp.is_some() {
-            // Both submission capabilities ride the same SMTP transport: the assembler
-            // (`engine-rfc5322`) builds the whole message, so this adapter owns every
-            // `Content-Type` parameter — including the `method=` that makes an iTIP object a
-            // scheduling message rather than a calendar file (RFC 6047 §2.4). Contrast JMAP,
-            // which hands the server a body structure and cannot.
-            capabilities = capabilities.with_submission().with_scheduling_submission();
-        }
-        // Push (`IDLE`, RFC 2177) is gated on the server advertising it post-auth, so a
-        // host knows whether to offer an "as it comes in" strategy or fall back to
-        // polling. The watcher itself opens a *separate* connection (`crate::watch`).
-        if connection.idle_available() {
-            capabilities = capabilities.with_idle();
-        }
         Self {
-            connection: Mutex::new(connection),
+            pool,
             mailbox,
             smtp,
-            redial: None,
             since,
-            connection_info: ConnectionInfo {
-                tls_version,
-                ..ConnectionInfo::new(capabilities)
-            },
+            connection_info,
         }
     }
 
-    /// Wraps an already-open, logged-in connection bound to `mailbox` (mail only).
-    /// Offline tests use this over a mock stream; the live path is
-    /// [`ImapProvider::connect`].
+    /// Wraps an already-open, logged-in connection bound to `mailbox` (mail only), in an
+    /// account of its own that cannot dial another. Offline tests use this over a mock stream;
+    /// the live path is [`ImapAccount::connect`](crate::ImapAccount::connect).
     #[cfg(test)]
-    pub(crate) fn with_connection(connection: Connection<S>, mailbox: MailboxId) -> Self {
-        Self::build(connection, mailbox, None, None, None)
+    pub(crate) fn with_connection(
+        connection: crate::transport::Connection<S>,
+        mailbox: MailboxId,
+    ) -> Self
+    where
+        S: 'static,
+    {
+        crate::ImapAccount::offline(connection, None).provider(mailbox)
     }
 
     /// Wraps a mock IMAP `connection` but with an injected `smtp` sender, so the
@@ -187,16 +115,30 @@ impl<S> ImapProvider<S> {
     /// server (the IMAP filing side degrades gracefully over the exhausted mock).
     #[cfg(test)]
     pub(crate) fn with_connection_and_smtp(
-        connection: Connection<S>,
+        connection: crate::transport::Connection<S>,
         mailbox: MailboxId,
         smtp: SmtpSender,
-    ) -> Self {
-        Self::build(connection, mailbox, Some(smtp), None, None)
+    ) -> Self
+    where
+        S: 'static,
+    {
+        crate::ImapAccount::offline(connection, Some(smtp)).provider(mailbox)
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> {
+    /// Borrows a connection for one call. `pub(crate)` for the same reason as `pool`.
+    ///
+    /// # Errors
+    ///
+    /// The classified dial failure, when nothing is parked and a new connection cannot open.
+    pub(crate) async fn session(&self) -> ProviderResult<PooledConnection<S>> {
+        Ok(self.pool.acquire().await?)
     }
 }
 
 #[async_trait]
-impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for ImapProvider<S> {
     fn connection_info(&self) -> ConnectionInfo {
         self.connection_info
     }
@@ -226,23 +168,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         // `LIST` alone carries no unread count, so the folder list either asks for it
         // in the same round trip (LIST-STATUS) or probes each mailbox afterwards —
         // `unseen` owns that choice and its cost.
-        let (modified_utf7, rows, unseen) = {
-            let mut connection = self.connection.lock().await;
-            // The dialect decides how the names in these rows are encoded, and it is a
-            // property of the session, so it is read under the same lock as the rows.
-            let modified_utf7 = connection.names_are_modified_utf7();
-            let (rows, unseen) = if connection
-                .negotiated
-                .has(crate::capability::Extension::ListStatus)
-            {
-                connection.list_with_unseen().await?
-            } else {
-                let rows = connection.list().await?;
-                let unseen = crate::unseen::unseen_by_probing(&mut connection, &rows).await?;
-                (rows, unseen)
-            };
-            (modified_utf7, rows, unseen)
+        let mut connection = self.session().await?;
+        // The dialect decides how the names in these rows are encoded, and it is a property of
+        // the session, so it is read from the same connection as the rows.
+        let modified_utf7 = connection.names_are_modified_utf7();
+        let listed = if connection
+            .negotiated
+            .has(crate::capability::Extension::ListStatus)
+        {
+            connection.list_with_unseen().await
+        } else {
+            match connection.list().await {
+                Ok(rows) => crate::unseen::unseen_by_probing(&mut connection, &rows)
+                    .await
+                    .map(|unseen| (rows, unseen)),
+                Err(err) => Err(err),
+            }
         };
+        let (rows, unseen) = connection.settle(listed)?;
         let mailboxes: Vec<Mailbox> = rows
             .iter()
             .filter_map(|row| {
@@ -293,14 +236,38 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         } else {
             self.default_sync_window()
         };
-        Box::pin(crate::stream::stream_email(
-            &self.connection,
-            &self.mailbox,
-            cursor,
-            window,
-            fetch_batch,
-            chunk_size,
-        ))
+        Box::pin(async_stream::stream! {
+            let mut connection = match self.session().await {
+                Ok(connection) => connection,
+                Err(err) => {
+                    yield Err(err);
+                    return;
+                }
+            };
+            // The stream holds its connection for as long as it lives, and hands it back
+            // healthy only if every item was: a pass that failed mid-way has left the session
+            // in a state no one should inherit. One abandoned mid-fetch parks normally — the
+            // connection drains the leftover response before its next command.
+            let mut failed = false;
+            {
+                let pass = crate::stream::stream_email(
+                    &mut connection,
+                    &self.mailbox,
+                    cursor,
+                    window,
+                    fetch_batch,
+                    chunk_size,
+                );
+                futures_util::pin_mut!(pass);
+                while let Some(item) = pass.next().await {
+                    failed = item.is_err();
+                    yield item;
+                }
+            }
+            if failed {
+                connection.discard();
+            }
+        })
     }
 
     /// Submits `draft` over the configured SMTP transport and files the sent copy in
@@ -324,7 +291,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
 
     /// Files the Sent copy of an already-delivered message, for a host repairing a
     /// submission that came back `Unfiled` (`crate::filing`). Idempotent: it probes for the
-    /// copy before placing one, on the standing session and on a freshly dialed retry.
+    /// copy before placing one, on the first connection and on the retry alike.
     async fn file_sent_copy(
         &self,
         _account: &AccountId,
@@ -336,7 +303,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
     /// Stores a draft in the account's `\\Drafts` folder (`APPEND`), removing the copy it
     /// supersedes.
     ///
-    /// A thin lock-and-call, like [`Provider::edit_mail`]: the ordering rule that decides
+    /// A thin borrow-and-call, like [`Provider::edit_mail`]: the ordering rule that decides
     /// whether a partial failure duplicates a draft or loses one lives in `crate::drafts`,
     /// so it stays stream-generic and unit-testable.
     async fn put_draft(
@@ -345,21 +312,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         draft: &Draft,
         replacing: Option<&ProviderKey>,
     ) -> ProviderResult<ProviderKey> {
-        let mut connection = self.connection.lock().await;
-        crate::drafts::put_draft(&mut connection, draft, replacing).await
+        let mut connection = self.session().await?;
+        let result = crate::drafts::put_draft(&mut connection, draft, replacing).await;
+        connection.settle(result)
     }
 
     /// Removes a stored draft (`UID STORE \\Deleted` + `UID EXPUNGE`), reporting one that
     /// is already gone as done.
     async fn delete_draft(&self, _account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
-        let mut connection = self.connection.lock().await;
-        crate::drafts::delete_draft(&mut connection, draft).await
+        let mut connection = self.session().await?;
+        let result = crate::drafts::delete_draft(&mut connection, draft).await;
+        connection.settle(result)
     }
 
     /// Applies a [`MailEdit`] to the bound mailbox: mark-read/flag (`UID STORE`),
     /// move (`UID MOVE`), or permanent delete (`UID STORE \Deleted` + `UID EXPUNGE`).
     ///
-    /// A thin lock-and-call: the mutation logic (key parse, the SELECT + UIDVALIDITY
+    /// A thin borrow-and-call: the mutation logic (key parse, the SELECT + UIDVALIDITY
     /// guard, command dispatch) lives in the `mutate` module so it stays
     /// stream-generic and unit-testable. A stale UID (its mailbox's `UIDVALIDITY`
     /// changed) is a [`ProviderError::conflict`](engine_provider::ProviderError::conflict).
@@ -368,13 +337,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         _account: &AccountId,
         edit: &MailEdit,
     ) -> ProviderResult<MailEditReceipt> {
-        let mut connection = self.connection.lock().await;
-        crate::mutate::edit_mail(&mut connection, edit).await
+        let mut connection = self.session().await?;
+        let result = crate::mutate::edit_mail(&mut connection, edit).await;
+        connection.settle(result)
     }
 
     /// Fetches a message's raw RFC 5322 source (`UID FETCH BODY.PEEK[]`).
     ///
-    /// A thin lock-and-call: the fetch logic (key parse, the SELECT + UIDVALIDITY
+    /// A thin borrow-and-call: the fetch logic (key parse, the SELECT + UIDVALIDITY
     /// guard, the body read) lives in the `fetch` module so it stays stream-generic
     /// and unit-testable. The message is addressed by its own key, so any of the
     /// account's folders can be read over this one bound session; a stale UID (its
@@ -385,13 +355,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         _account: &AccountId,
         message: &Message,
     ) -> ProviderResult<engine_core::raw::RawMime> {
-        let mut connection = self.connection.lock().await;
-        crate::fetch::fetch_message_source(&mut connection, message.id.key()).await
+        let mut connection = self.session().await?;
+        let result = crate::fetch::fetch_message_source(&mut connection, message.id.key()).await;
+        connection.settle(result)
     }
 
     /// Reports a message as junk / not junk / phishing.
     ///
-    /// A thin lock-and-call, like [`Provider::edit_mail`]: the keyword choice, the
+    /// A thin borrow-and-call, like [`Provider::edit_mail`]: the keyword choice, the
     /// `PERMANENTFLAGS` check and the move live in `crate::report` so they stay
     /// stream-generic and unit-testable.
     async fn report_message(
@@ -399,12 +370,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         _account: &AccountId,
         report: &MessageReport,
     ) -> ProviderResult<ReportReceipt> {
-        let mut connection = self.connection.lock().await;
-        crate::report::report_message(&mut connection, report).await
+        let mut connection = self.session().await?;
+        let result = crate::report::report_message(&mut connection, report).await;
+        connection.settle(result)
     }
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin + Send> CalendarWrites for ImapProvider<S> {}
+impl<S> CalendarWrites for ImapProvider<S> where
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static
+{
+}
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]

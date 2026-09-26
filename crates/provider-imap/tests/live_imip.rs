@@ -44,7 +44,7 @@ use engine_core::{
 use engine_provider::{Draft, DraftCalendar, MailEdit, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::{IgnoreCommits, StreamTuning, submit_mail, sync_mail};
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
 use tokio_rustls::{TlsConnector, client::TlsStream};
@@ -86,13 +86,10 @@ async fn connect(
     if submit {
         config = config.with_smtp(harness.smtp_addr.as_str());
     }
-    ImapProvider::connect(
-        &config,
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP")
+    ImapAccount::connect(&config, no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP")
 }
 
 /// The account's real Sent folder (its `\Sent` SPECIAL-USE name — "Sent Items" on
