@@ -26,7 +26,7 @@ The engine never assumes OpenPGP above the mechanism line. Every type a host see
 
 | Crate | Holds | Depends on crypto? |
 |---|---|---|
-| `engine-core` (`e2e` module) | `Mechanism`, `CertificateId`, `LayerKind`, `SignatureVerdict` (+ `SenderBinding`, `ChainStatus`, `UnusableReason`, `IssuerHint`), `DecryptionOutcome` (+ `Integrity`, `Warning`), `Summary` and its derivation | No |
+| `engine-core` (`e2e` module) | `Mechanism`, `CertificateId`, `CertificateFacts` (+ `CertificateStatus`, `Revocation`, `RevocationReach`, `CertificateProblem`), `LayerKind`, `SignatureVerdict` (+ `SenderBinding`, `ChainStatus`, `UnusableReason`, `IssuerHint`), `DecryptionOutcome` (+ `Integrity`, `Warning`), `Summary` and its derivation | No |
 | `engine-e2e` | The layer walk, `LayerRecogniser`, `Envelope`, `Walked`, the exact bytes a detached signature covers | No |
 | a mechanism crate: `engine-openpgp` (`openpgp.md`) | Recognition of its layers, verification, decryption, composition, certificate semantics | Yes |
 

@@ -334,8 +334,11 @@
     "scope": "policy",
     "area": "certificates",
     "note": "A signing subkey without a valid embedded 0x19 back-signature is not usable for signing.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_signing_subkey_needs_its_back_signature",
+      "a_back_signature_from_another_key_does_not_count"
+    ]
   },
   {
     "id": "rfc9580-5.2.1.15-1",
@@ -532,8 +535,11 @@
     "scope": "policy",
     "area": "certificates",
     "note": "Every subkey needs a valid binding; key-level facts come from the right self-signature per key version.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_subkey_is_not_usable_before_its_binding",
+      "a_version_6_key_takes_its_flags_and_expiry_from_the_direct_key_signature"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.10-2",
@@ -565,8 +571,12 @@
     "scope": "policy",
     "area": "certificates",
     "note": "The most recent valid self-signature at the evaluation time wins.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "the_most_recent_valid_self_signature_wins",
+      "a_newer_self_signature_that_does_not_verify_is_ignored",
+      "a_self_signature_expires_with_its_signature_expiration_time"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.10-5",
@@ -587,8 +597,10 @@
     "scope": "policy",
     "area": "certificates",
     "note": "A v6 key without a valid Direct Key signature is unusable.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_version_6_key_needs_a_direct_key_signature"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.10-7",
@@ -598,8 +610,11 @@
     "scope": "policy",
     "area": "certificates",
     "note": "A certificate is usable without a User ID; only sender binding needs one.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "the_rfc_9580_version_6_certificate_is_usable_and_binds_no_address",
+      "a_version_4_key_without_user_ids_falls_back_to_a_direct_key_signature"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.11-1",
@@ -750,8 +765,10 @@
     "scope": "policy",
     "area": "certificates",
     "note": "Among User IDs flagged primary, the one with the most recent self-signature wins.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_version_4_key_prefers_its_primary_user_id"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.29-1",
@@ -790,8 +807,12 @@
     "scope": "policy",
     "area": "certificates",
     "note": "Revocation reasons are read and decide hard versus soft revocation.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_compromised_key_is_revoked_retroactively",
+      "a_superseded_key_is_revoked_from_then_on",
+      "a_revoked_user_id_no_longer_binds_its_address"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.31-2",
@@ -801,8 +822,14 @@
     "scope": "policy",
     "area": "certificates",
     "note": "Compromise (and no reason, or an unknown one) revokes retroactively; superseded, retired and User ID no longer valid keep older signatures valid.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_compromised_key_is_revoked_retroactively",
+      "a_superseded_key_is_revoked_from_then_on",
+      "a_hard_subkey_revocation_reaches_back",
+      "a_soft_subkey_revocation_applies_from_its_date",
+      "a_revocation_without_a_reason_is_hard"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.32-1",
@@ -1644,8 +1671,11 @@
     "excerpt": "Each Subkey packet MUST be followed by one Signature packet, which should be a Subkey Binding signature issued by the top-level key. For subkeys that can issue signatures, the Subkey Binding signature MUST contain an Embedded Signature subpacket with a Primary Key Binding signature (Type ID 0x19) issued by the subkey on the top- level key.",
     "scope": "policy",
     "area": "certificates",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_signing_subkey_needs_its_back_signature",
+      "a_subkey_is_not_usable_before_its_binding"
+    ]
   },
   {
     "id": "rfc9580-10.1.5-4",
@@ -1986,8 +2016,11 @@
     "scope": "policy",
     "area": "verify",
     "note": "Under 2048 bits refused; 2048 to 3071 accepted with Warning::WeakPublicKey (DEVIATION from SHOULD NOT, openpgp.md).",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "an_rsa_2048_key_is_usable_with_a_warning",
+      "rsa_under_2048_bits_and_dsa_are_refused"
+    ]
   },
   {
     "id": "rfc9580-12.5-1",
@@ -2008,8 +2041,10 @@
     "scope": "policy",
     "area": "verify",
     "note": "DSA keys never sign or verify.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "rsa_under_2048_bits_and_dsa_are_refused"
+    ]
   },
   {
     "id": "rfc9580-12.6-1",
@@ -2183,8 +2218,10 @@
     "scope": "policy",
     "area": "certificates",
     "note": "Preferences, flags and expiry are read from hashed subpackets only.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "key_flags_are_read_from_the_hashed_area_only"
+    ]
   },
   {
     "id": "rfc9580-13.14-1",
