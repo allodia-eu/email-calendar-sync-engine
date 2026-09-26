@@ -13,6 +13,8 @@ use engine_core::{e2e::CertificateId, time::UtcDateTime};
 pub use keys::{ComponentKey, EncryptionPurpose};
 use pgp::{
     composed::{Deserializable, SignedPublicKey},
+    crypto::public_key::PublicKeyAlgorithm,
+    packet::{PublicKey, PublicSubkey, Signature},
     ser::Serialize,
     types::{KeyDetails, KeyVersion},
 };
@@ -89,6 +91,61 @@ impl Certificate {
     /// Evaluates the certificate at `time`.
     pub fn at(&self, time: UtcDateTime) -> CertificateView {
         CertificateView::evaluate(&self.key, &self.id, time)
+    }
+
+    /// The key, primary or subkey, that a signature names as its issuer, whatever
+    /// its standing: whether it may sign is asked separately. An issuer fingerprint
+    /// decides when the signature carries one; a key ID only when it does not.
+    pub(crate) fn issuer(&self, signature: &Signature) -> Option<KeyMaterial<'_>> {
+        let fingerprints = signature.issuer_fingerprint();
+        let key_ids = signature.issuer_key_id();
+        let named = |key: &dyn KeyDetails| {
+            if fingerprints.is_empty() {
+                key_ids.contains(&&key.legacy_key_id())
+            } else {
+                fingerprints.contains(&&key.fingerprint())
+            }
+        };
+        if named(&self.key.primary_key) {
+            return Some(KeyMaterial::Primary(&self.key.primary_key));
+        }
+        self.key
+            .public_subkeys
+            .iter()
+            .find(|subkey| named(&subkey.key))
+            .map(|subkey| KeyMaterial::Subkey(&subkey.key))
+    }
+}
+
+/// A key a signature can be checked against.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum KeyMaterial<'c> {
+    Primary(&'c PublicKey),
+    Subkey(&'c PublicSubkey),
+}
+
+impl KeyMaterial<'_> {
+    /// Whether `signature` verifies over `data` with this key.
+    pub(crate) fn verifies(self, signature: &Signature, data: &[u8]) -> bool {
+        match self {
+            Self::Primary(key) => signature.verify(key, data).is_ok(),
+            Self::Subkey(key) => signature.verify(key, data).is_ok(),
+        }
+    }
+
+    /// The key's own fingerprint.
+    pub(crate) fn fingerprint(self) -> Vec<u8> {
+        match self {
+            Self::Primary(key) => key.fingerprint().as_bytes().to_vec(),
+            Self::Subkey(key) => key.fingerprint().as_bytes().to_vec(),
+        }
+    }
+
+    pub(crate) fn algorithm(self) -> PublicKeyAlgorithm {
+        match self {
+            Self::Primary(key) => key.algorithm(),
+            Self::Subkey(key) => key.algorithm(),
+        }
     }
 }
 

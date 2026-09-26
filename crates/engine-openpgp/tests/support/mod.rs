@@ -28,6 +28,20 @@ pub fn gnupg(name: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
+/// A detached signature GnuPG made over [`signed_entity`].
+pub fn gnupg_signature(name: &str) -> Vec<u8> {
+    gnupg(&format!("signatures/{name}"))
+}
+
+/// The MIME entity the GnuPG signatures cover.
+pub fn signed_entity() -> Vec<u8> {
+    let path = format!(
+        "{}/tests/fixtures/gnupg/signed-entity.txt",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"))
+}
+
 /// RFC 9580 Appendix A.3: a version 6 certificate with no User ID.
 pub const RFC9580_A3: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----
 
