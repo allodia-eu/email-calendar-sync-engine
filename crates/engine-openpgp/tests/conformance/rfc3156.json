@@ -1,0 +1,193 @@
+[
+  {
+    "id": "rfc3156-2-1",
+    "section": "2",
+    "keyword": "REQUIRED",
+    "excerpt": "The ASCII armor output is the REQUIRED method for data transfer.",
+    "scope": "policy",
+    "area": "compose",
+    "note": "Every signature and ciphertext part is armoured.",
+    "status": "planned",
+    "tests": []
+  },
+  {
+    "id": "rfc3156-2-2",
+    "section": "2",
+    "keyword": "SHOULD",
+    "excerpt": "When the amount of data to be transmitted requires that it be sent in many parts, the MIME message/partial mechanism SHOULD be used rather than the multi-part ASCII armor OpenPGP format.",
+    "scope": "not-applicable",
+    "note": "The engine never splits a message; multi-part armour is not produced."
+  },
+  {
+    "id": "rfc3156-3-1",
+    "section": "3",
+    "keyword": "MUST",
+    "excerpt": "Additionally, implementations MUST make sure that no trailing whitespace is present after the MIME encoding has been applied.",
+    "scope": "policy",
+    "area": "compose",
+    "note": "The strict canonical mode in engine-rfc5322 quoted-printable-encodes trailing whitespace.",
+    "status": "planned",
+    "tests": []
+  },
+  {
+    "id": "rfc3156-4-1",
+    "section": "4",
+    "keyword": "MUST",
+    "excerpt": "OpenPGP encrypted data is denoted by the \"multipart/encrypted\" content type, described in [2], and MUST have a \"protocol\" parameter value of \"application/pgp-encrypted\". Note that the value of the parameter MUST be enclosed in quotes.",
+    "scope": "policy",
+    "area": "recognise",
+    "note": "Read: the protocol decides the mechanism, compared without regard to case; quoting is invisible after parsing. Composing always quotes.",
+    "status": "covered",
+    "tests": [
+      "an_encryption_layer_is_recognised_by_its_protocol",
+      "a_multipart_encrypted_for_another_protocol_is_not_ours"
+    ]
+  },
+  {
+    "id": "rfc3156-4-2",
+    "section": "4",
+    "keyword": "MUST",
+    "excerpt": "The multipart/encrypted MIME body MUST consist of exactly two body parts, the first with content type \"application/pgp-encrypted\". This body contains the control information. A message complying with this standard MUST contain a \"Version: 1\" field in this body.",
+    "scope": "policy",
+    "area": "recognise",
+    "note": "Read: two parts with the right types, or the layer is malformed. The control part's body is not checked: nothing in it is used, and a strict check would only turn tolerable mail into damaged mail.",
+    "status": "covered",
+    "tests": [
+      "an_encryption_layer_with_the_wrong_structure_is_malformed"
+    ]
+  },
+  {
+    "id": "rfc3156-4-3",
+    "section": "4",
+    "keyword": "MUST",
+    "excerpt": "The second MIME body part MUST contain the actual encrypted data. It MUST be labeled with a content type of \"application/octet-stream\".",
+    "scope": "policy",
+    "area": "recognise",
+    "status": "covered",
+    "tests": [
+      "an_encryption_layer_is_recognised_by_its_protocol",
+      "an_encryption_layer_with_the_wrong_structure_is_malformed"
+    ]
+  },
+  {
+    "id": "rfc3156-5-1",
+    "section": "5",
+    "keyword": "MUST",
+    "excerpt": "OpenPGP signed messages are denoted by the \"multipart/signed\" content type, described in [2], with a \"protocol\" parameter which MUST have a value of \"application/pgp-signature\" (MUST be quoted).",
+    "scope": "policy",
+    "area": "recognise",
+    "status": "covered",
+    "tests": [
+      "a_signing_layer_is_recognised_by_its_protocol",
+      "a_multipart_signed_for_another_protocol_is_not_ours"
+    ]
+  },
+  {
+    "id": "rfc3156-5-2",
+    "section": "5",
+    "keyword": "MUST",
+    "excerpt": "The \"micalg\" parameter for the \"application/pgp-signature\" protocol MUST contain exactly one hash-symbol of the format \"pgp-<hash- identifier>\", where <hash-identifier> identifies the Message Integrity Check (MIC) algorithm used to generate the signature.",
+    "scope": "policy",
+    "area": "recognise",
+    "note": "Read: ignored. The signature packet names its hash, and it is inside what is verified; a wrong or missing micalg changes nothing a reader can be misled by. Composing sets it from the signature.",
+    "status": "covered",
+    "tests": [
+      "micalg_does_not_decide_recognition"
+    ]
+  },
+  {
+    "id": "rfc3156-5-3",
+    "section": "5",
+    "keyword": "MUST",
+    "excerpt": "The multipart/signed body MUST consist of exactly two parts. The first part contains the signed data in MIME canonical format, including a set of appropriate content headers describing the data.",
+    "scope": "policy",
+    "area": "recognise",
+    "note": "The arity is checked by the engine-e2e walk for every mechanism.",
+    "status": "covered",
+    "tests": [
+      "a_multipart_signed_without_exactly_two_parts_is_malformed_not_a_layer"
+    ]
+  },
+  {
+    "id": "rfc3156-5-4",
+    "section": "5",
+    "keyword": "MUST",
+    "excerpt": "The second body MUST contain the OpenPGP digital signature. It MUST be labeled with a content type of \"application/pgp-signature\".",
+    "scope": "policy",
+    "area": "recognise",
+    "status": "covered",
+    "tests": [
+      "a_signing_layer_whose_signature_part_is_mislabelled_is_malformed"
+    ]
+  },
+  {
+    "id": "rfc3156-5-5",
+    "section": "5",
+    "keyword": "MUST",
+    "excerpt": "(1) The data to be signed MUST first be converted to its content- type specific canonical form. For text/plain, this means conversion to an appropriate character set and conversion of line endings to the canonical <CR><LF> sequence.",
+    "scope": "policy",
+    "area": "compose",
+    "note": "Read side: bare LF is converted to CRLF before verification (engine-e2e).",
+    "status": "covered",
+    "tests": [
+      "lf_only_transport_is_canonicalised_to_crlf"
+    ]
+  },
+  {
+    "id": "rfc3156-5-6",
+    "section": "5",
+    "keyword": "MUST",
+    "excerpt": "(2) An appropriate Content-Transfer-Encoding is then applied; see section 3. In particular, line endings in the encoded data MUST use the canonical <CR><LF> sequence where appropriate (note that the canonical line ending may or may not be present on the last line of encoded data and MUST NOT be included in the signature if absent).",
+    "scope": "policy",
+    "area": "compose",
+    "note": "Read side: the CRLF before the boundary is excluded from the signed data (engine-e2e).",
+    "status": "covered",
+    "tests": [
+      "the_crlf_before_the_boundary_is_not_signed"
+    ]
+  },
+  {
+    "id": "rfc3156-5-7",
+    "section": "5",
+    "keyword": "MUST",
+    "excerpt": "(4) As described in section 3 of this document, any trailing whitespace MUST then be removed from the signed material.",
+    "scope": "policy",
+    "area": "compose",
+    "note": "Composing encodes trailing whitespace away; reading verifies the bytes as they are.",
+    "status": "planned",
+    "tests": []
+  },
+  {
+    "id": "rfc3156-5-8",
+    "section": "5",
+    "keyword": "MUST",
+    "excerpt": "(5) As described in [2], the digital signature MUST be calculated over both the data to be signed and its set of content headers.",
+    "scope": "policy",
+    "area": "compose",
+    "note": "Read side: the signed range starts at the protected part's first header byte (engine-e2e).",
+    "status": "covered",
+    "tests": [
+      "the_crlf_before_the_boundary_is_not_signed"
+    ]
+  },
+  {
+    "id": "rfc3156-5-9",
+    "section": "5",
+    "keyword": "MUST",
+    "excerpt": "(6) The signature MUST be generated detached from the signed data so that the process does not alter the signed data in any way.",
+    "scope": "policy",
+    "area": "compose",
+    "status": "planned",
+    "tests": []
+  },
+  {
+    "id": "rfc3156-6.2-1",
+    "section": "6.2",
+    "keyword": "REQUIRED",
+    "excerpt": "Messages which are encrypted and signed in this combined fashion are REQUIRED to follow the same canonicalization rules as multipart/signed objects.",
+    "scope": "policy",
+    "area": "compose",
+    "status": "planned",
+    "tests": []
+  }
+]

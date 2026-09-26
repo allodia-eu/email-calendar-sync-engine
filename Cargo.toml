@@ -160,6 +160,11 @@ sha2 = { version = "0.11.0", default-features = false }
 # `engine-tls` hands a host to show (`docs/agent-guidance/tls.md`). `std` only: none of the
 # crate's builder or signature halves.
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
+# OpenPGP (RFC 9580) for `engine-openpgp`: rPGP, pure Rust with no `unsafe`, audited in
+# 2024, shipped by Delta Chat for years. Pinned exactly because 0.x releases break. Default
+# features off: `bzip2` is the only default and pulls a compression codec for a MAY-level
+# algorithm (RFC 9580 §9.4) nothing current sends. No `draft-pqc` (see openpgp.md).
+pgp = { version = "=0.20.0", default-features = false }
 # IDNA domain canonicalization for conservative cross-provider contact identity.
 # Only the email domain is folded; the local part remains byte/case exact
 # (`docs/agent-guidance/contacts.md`).
@@ -175,6 +180,7 @@ engine-http = { path = "crates/engine-http" }
 engine-tls = { path = "crates/engine-tls" }
 engine-mime = { path = "crates/engine-mime" }
 engine-e2e = { path = "crates/engine-e2e" }
+engine-openpgp = { path = "crates/engine-openpgp" }
 # The iCalendar layer is transport-neutral: iMIP carries it over *mail* on every
 # account type, so it cannot live inside the CalDAV adapter (see the crate docs).
 engine-ical = { path = "crates/engine-ical" }
