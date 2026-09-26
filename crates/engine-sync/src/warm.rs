@@ -18,10 +18,10 @@ use crate::SyncError;
 /// `(index into messages, outcome)` for every message, in the order they complete.
 ///
 /// For messages the caller knows are not warm, such as a page of
-/// [`MailStore::mail_missing_body`](engine_store::MailStore): nothing is looked up first, so a
-/// message that was already cached is fetched again. The caches are written best-effort, like
-/// every read-through cache here: a failed write leaves the message on the work list for the
-/// next pass rather than failing a fetch that succeeded. Takes no lease.
+/// [`MessageBodyStore::mail_missing_body`](engine_store::MessageBodyStore::mail_missing_body):
+/// nothing is looked up first, so a message that was already cached is fetched again. The caches
+/// are written best-effort, like every read-through cache here: a failed write leaves the message
+/// on the work list for the next pass rather than failing a fetch that succeeded. Takes no lease.
 ///
 /// A message's failure is its own: a stale or expunged IMAP target is a `Conflict` (re-sync,
 /// then retry), and the other messages of the batch are unaffected.

@@ -78,7 +78,7 @@ impl Engine {
 
     /// Warms the caches of many messages at once: fetches their raw sources in as few
     /// provider requests as the transport allows
-    /// ([`ConnectionInfo::sources_per_request`](crate::ConnectionInfo)), and caches each
+    /// (`ConnectionInfo::sources_per_request`), and caches each
     /// message's bytes, extracted text and derived list snippet the moment it arrives, as
     /// [`message_body`](Self::message_body) plus
     /// [`ensure_message_source`](Self::ensure_message_source) would. Yields
