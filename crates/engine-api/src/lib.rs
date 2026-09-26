@@ -139,8 +139,8 @@ pub use engine_provider::{
     EventWrite, EventWriteReceipt, IdentityControls, MailEdit, MailEditReceipt, MessageReport,
     Occurrence, OverrideSurvival, PatchTarget, Provider, RecurrenceEdit, ReplyDelivery,
     ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls,
-    RsvpResponse, SenderIdentity, SenderIdentityId, SentCopy, SubmissionReceipt, TextEdit,
-    WriteGuard, WritePrecondition,
+    RsvpResponse, SenderIdentity, SenderIdentityId, SentCopy, SourceStream, SubmissionReceipt,
+    TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,

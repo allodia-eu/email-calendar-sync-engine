@@ -15,8 +15,8 @@ use crate::{
     capability::Negotiated,
     error::{ImapError, ImapResult},
     parse::{self, FetchRow, ListRow},
-    transport_read::BODY_READ_STALL,
     transport_command::{list_command, quote},
+    transport_read::BODY_READ_STALL,
 };
 
 /// A connected IMAP session over a generic async byte stream.
@@ -296,7 +296,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// concurrent flag update) cannot return the wrong message's bytes.
     pub(crate) async fn uid_fetch_body(&mut self, uid: u32) -> ImapResult<Option<Vec<u8>>> {
         let response = self
-            .command_within(&format!("UID FETCH {uid} (BODY.PEEK[])"), Some(BODY_READ_STALL))
+            .command_within(
+                &format!("UID FETCH {uid} (BODY.PEEK[])"),
+                Some(BODY_READ_STALL),
+            )
             .await?;
         Ok(crate::parse_body::parse_fetch_body(&response.untagged, uid))
     }

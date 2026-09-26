@@ -21,7 +21,7 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarWrites, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt, MessageReport,
-    Provider, ProviderResult, ReportReceipt, ScopeSync, SubmissionReceipt,
+    Provider, ProviderResult, ReportReceipt, ScopeSync, SourceStream, SubmissionReceipt,
 };
 use futures_util::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -146,6 +146,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
     fn connection_info(&self) -> ConnectionInfo {
         self.connection_info
             .with_concurrent_fetches(self.pool.worker_capacity())
+            .with_sources_per_request(crate::fetch_batch::SOURCES_PER_REQUEST)
     }
 
     /// IMAP folder-list state is per account, so the mailbox container syncs under
@@ -361,6 +362,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         message: &Message,
     ) -> ProviderResult<engine_core::raw::RawMime> {
         crate::fetch::fetch_from_pool(&self.pool, message.id.key()).await
+    }
+
+    /// Fetches many messages' sources with one `UID FETCH <set> (BODY.PEEK[])` per mailbox,
+    /// streaming each as it arrives (`crate::fetch_batch`). Any folder's provider can fetch
+    /// any of the account's messages, as [`Provider::fetch_message_source`] can.
+    fn fetch_message_sources<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        messages: &'a [Message],
+    ) -> SourceStream<'a> {
+        crate::fetch_batch::fetch_batch(&self.pool, messages)
     }
 
     /// Reports a message as junk / not junk / phishing.

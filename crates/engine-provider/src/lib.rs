@@ -41,6 +41,7 @@ mod provider;
 #[cfg(feature = "http")]
 mod redirect;
 mod report;
+mod sources;
 mod stream;
 mod submit;
 mod sync;
@@ -71,6 +72,7 @@ pub use redirect::redirect_target;
 pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };
+pub use sources::{SourceStream, one_at_a_time};
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};
 pub use submit::{
     ContentIdError, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,

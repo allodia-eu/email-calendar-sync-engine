@@ -19,7 +19,7 @@ use crate::{
     ContactWriteReceipt, ContactsProvider, Draft, EmailStream, EventDeletion, EventDraft,
     EventEdit, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport,
     Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
-    SubmissionReceipt,
+    SourceStream, SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -123,6 +123,14 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         message: &Message,
     ) -> ProviderResult<RawMime> {
         (**self).fetch_message_source(account, message).await
+    }
+
+    fn fetch_message_sources<'a>(
+        &'a self,
+        account: &'a AccountId,
+        messages: &'a [Message],
+    ) -> SourceStream<'a> {
+        (**self).fetch_message_sources(account, messages)
     }
 
     async fn report_message(

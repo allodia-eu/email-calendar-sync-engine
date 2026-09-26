@@ -71,6 +71,7 @@ mod cursor;
 mod drafts;
 mod error;
 mod fetch;
+mod fetch_batch;
 mod fetch_stream;
 mod filing;
 mod idle;

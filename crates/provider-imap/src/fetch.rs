@@ -41,7 +41,7 @@ pub(crate) async fn fetch_from_pool<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
-    let mailbox = parse_message_key(key.as_str()).map(|(mailbox, _, _)| mailbox);
+    let mailbox = parse_message_key(key.as_str()).map(|(mailbox, ..)| mailbox);
     let first = async {
         let mut connection = match mailbox {
             Some(mailbox) => pool.acquire_for(mailbox).await?,

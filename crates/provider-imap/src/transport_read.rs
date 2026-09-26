@@ -45,7 +45,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// [`read_line`](Self::read_line), failing with [`std::io::ErrorKind::TimedOut`] once
     /// `stall` passes without a byte arriving. A literal is read in pieces so that the bound
     /// is on each wait, never on the whole literal.
-    pub(crate) async fn read_line_within(&mut self, stall: Option<Duration>) -> ImapResult<Vec<u8>> {
+    pub(crate) async fn read_line_within(
+        &mut self,
+        stall: Option<Duration>,
+    ) -> ImapResult<Vec<u8>> {
         let mut line = Vec::new();
         loop {
             let before = line.len();
@@ -74,7 +77,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             return Ok(line);
         }
     }
-
 }
 
 /// Awaits one read, bounded by `stall` when there is one.
@@ -113,4 +115,3 @@ fn trailing_literal_len(line: &[u8]) -> Option<usize> {
     }
     std::str::from_utf8(digits).ok()?.parse().ok()
 }
-

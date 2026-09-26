@@ -60,20 +60,15 @@
 //!
 //! # A dial refused beside connections that work
 //!
-//! Five is our number, not the server's, and the server's is shared with every other client the
-//! user runs. So a dial can fail while the account already holds connections that work, and
-//! failing the caller for it would turn "the server allows fewer sessions than we asked for"
-//! into a failed sync or an unread body. While another worker holds a connection, a caller whose
-//! dial failed waits for one to come back instead of failing, and fails only once no worker is
-//! left to wait for.
-//!
-//! When the server *answered* the dial with a refusal (a `LOGIN` `NO`, which is what a session
-//! limit looks like on Dovecot and Gmail, `NO [LIMIT]`, or a `BYE` at the greeting), the pool
-//! also lowers its ceiling by that one connection, so it stops asking for a session it has just
-//! been told it cannot have. A `NO` to a credential that other sessions of this account are
-//! logged in with right now is not a verdict on the credential. The ceiling comes back on
-//! [`ImapPool::invalidate`], because a network change is also a new address, and per-address is
-//! how Dovecot counts. A dial that failed without an answer (the network) lowers nothing.
+//! Five is our number, not the server's, and the server's is shared with every client the user
+//! runs, so a dial can fail while the account holds connections that work. While another worker
+//! holds one, a caller whose dial failed waits for it to come back instead of failing, and fails
+//! only once no worker is left to wait for. When the server *answered* with a refusal (a `LOGIN`
+//! `NO`, which is how Dovecot and Gmail say it, `NO [LIMIT]`, or a `BYE` at the greeting), the
+//! ceiling also drops by that connection, so the pool stops asking for a session it was just
+//! refused: a `NO` to a credential other sessions are logged in with right now is no verdict on
+//! the credential. [`ImapPool::invalidate`] restores it, since a new network is a new address and
+//! Dovecot counts per address. A dial that failed without an answer lowers nothing.
 
 use std::{
     collections::VecDeque,

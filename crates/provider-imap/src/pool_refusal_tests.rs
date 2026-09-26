@@ -84,11 +84,19 @@ async fn a_refusal_lowers_the_ceiling_so_the_pool_stops_asking() {
         async move { pool.acquire().await.map(drop) }
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(pool.ceiling(), 4, "the refused session is still counted as available");
+    assert_eq!(
+        pool.ceiling(),
+        4,
+        "the refused session is still counted as available"
+    );
     assert_eq!(pool.worker_capacity(), 4);
 
     drop(first);
-    tokio::time::timeout(SOON, third).await.unwrap().unwrap().unwrap();
+    tokio::time::timeout(SOON, third)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     drop(second);
     // Two connections are parked and the ceiling is four: the next two callers reuse them, and
     // no further dial is attempted until they are both out.
@@ -109,7 +117,11 @@ async fn a_network_change_restores_a_lowered_ceiling() {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     drop(held);
-    tokio::time::timeout(SOON, waiting).await.unwrap().unwrap().unwrap();
+    tokio::time::timeout(SOON, waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     assert_eq!(pool.ceiling(), 4);
 
     // A new network is a new address, and a per-address limit starts again.
@@ -132,7 +144,11 @@ async fn an_unanswered_dial_waits_without_lowering_the_ceiling() {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     drop(held);
-    tokio::time::timeout(SOON, waiting).await.unwrap().unwrap().unwrap();
+    tokio::time::timeout(SOON, waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     assert_eq!(pool.ceiling(), 5);
 }
 
@@ -148,7 +164,11 @@ async fn a_refused_dial_with_nothing_to_wait_for_fails() {
         panic!("the dial was refused, so there is no connection to hand out");
     };
     assert!(matches!(err, ImapError::Auth(_)), "{err}");
-    assert_eq!(pool.ceiling(), 5, "a refusal with nothing held is not a limit");
+    assert_eq!(
+        pool.ceiling(),
+        5,
+        "a refusal with nothing held is not a limit"
+    );
 }
 
 #[tokio::test]

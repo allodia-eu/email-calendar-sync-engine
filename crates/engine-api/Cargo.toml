@@ -30,6 +30,9 @@ thiserror = { workspace = true }
 # `OffsetDateTime::now_utc` needs time's `std` feature; require it explicitly so the
 # crate keeps compiling even if the workspace dep ever turns default features off.
 time = { workspace = true, features = ["std"] }
+# Maps the per-message outcomes of `Engine::warm_message_sources` onto `ApiError` as they
+# stream.
+futures-util = { workspace = true }
 
 [dev-dependencies]
 # `sync` adds tokio::sync::oneshot, used to deterministically interleave two syncs
@@ -37,9 +40,6 @@ time = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
 tempfile = { workspace = true }
-# The streaming `Provider::stream_email` test fakes yield a single-chunk stream via
-# `futures_util::stream::iter`.
-futures-util = { workspace = true }
 
 [lints]
 workspace = true
