@@ -25,10 +25,12 @@
 //! One budget per account, spent two ways:
 //!
 //! * **Workers** are fungible. A caller acquires one, the pool hands back a connection that is
-//!   already authenticated, and parks it again on drop. It does not try to hand back one that
-//!   already has the caller's mailbox selected: every caller `SELECT`s anyway, because the `SELECT`
-//!   response *is* the data it needs (`UIDVALIDITY`, `UIDNEXT`, `HIGHESTMODSEQ`), so such a
-//!   preference would save nothing.
+//!   already authenticated, and parks it again on drop. A caller that names a mailbox
+//!   ([`ImapPool::acquire_for`]) is handed a parked connection that already has it open when there
+//!   is one: a body read there skips its `EXAMINE` (`crate::transport_select`), which is half the
+//!   round trips of a warm that reads a folder's bodies one after another. Every other caller
+//!   `SELECT`s anyway, because the `SELECT` response *is* the data it needs (`UIDVALIDITY`,
+//!   `UIDNEXT`, `HIGHESTMODSEQ`), so a preference would save it nothing.
 //! * **Watches** are not. A connection in `IDLE` is blocked mid-command: to reuse it you must send
 //!   `DONE`, await the tagged completion, work, and re-`IDLE`, which means a window where the
 //!   mailbox is not being watched at all. So a watch takes a connection *out* of the pool for its
@@ -55,12 +57,29 @@
 //! connection can still be dead are covered elsewhere: a call that fails does not park its
 //! connection ([`PooledConnection::settle`]), and a host that sees the network change drops every
 //! resting connection at once ([`ImapPool::invalidate`]).
+//!
+//! # A dial refused beside connections that work
+//!
+//! Five is our number, not the server's, and the server's is shared with every other client the
+//! user runs. So a dial can fail while the account already holds connections that work, and
+//! failing the caller for it would turn "the server allows fewer sessions than we asked for"
+//! into a failed sync or an unread body. While another worker holds a connection, a caller whose
+//! dial failed waits for one to come back instead of failing, and fails only once no worker is
+//! left to wait for.
+//!
+//! When the server *answered* the dial with a refusal (a `LOGIN` `NO`, which is what a session
+//! limit looks like on Dovecot and Gmail, `NO [LIMIT]`, or a `BYE` at the greeting), the pool
+//! also lowers its ceiling by that one connection, so it stops asking for a session it has just
+//! been told it cannot have. A `NO` to a credential that other sessions of this account are
+//! logged in with right now is not a verdict on the credential. The ceiling comes back on
+//! [`ImapPool::invalidate`], because a network change is also a new address, and per-address is
+//! how Dovecot counts. A dial that failed without an answer (the network) lowers nothing.
 
 use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime},
 };
@@ -69,10 +88,11 @@ use engine_provider::{ProviderError, ProviderResult};
 use futures_util::future::BoxFuture;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore},
 };
 
-use crate::{error::ImapError, transport::Connection};
+pub(crate) use crate::pool_lease::{PooledConnection, WatchLease};
+use crate::{error::ImapError, pool_lease::ReleaseWatch, transport::Connection};
 
 /// The most connections one account may hold open at once, across workers and watches.
 ///
@@ -117,7 +137,8 @@ struct Parked<S> {
 /// A bounded pool of authenticated IMAP connections for one account.
 pub(crate) struct ImapPool<S> {
     dial: Dial<S>,
-    /// One permit per connection the account may hold — workers and watches alike.
+    /// One permit per connection the account may hold — workers and watches alike. Its total is
+    /// always [`ceiling`](Self::ceiling).
     permits: Arc<Semaphore>,
     /// Authenticated connections not currently in use. A plain `std::sync::Mutex` because it is
     /// only ever held to push or pop, never across an `await` — which is what lets a dropped
@@ -127,6 +148,15 @@ pub(crate) struct ImapPool<S> {
     /// refuse to starve the workers.
     watches: Mutex<usize>,
     max_connections: usize,
+    /// The ceiling in force: `max_connections`, less one for each session the server refused
+    /// beside connections this account already held (see the module docs).
+    ceiling: AtomicUsize,
+    /// Worker connections currently borrowed, so a caller whose dial failed knows whether one
+    /// is coming back.
+    workers: AtomicUsize,
+    /// Signalled whenever a worker's borrow ends, parked or discarded, for the callers waiting
+    /// on one after a failed dial.
+    returned: Notify,
     /// See [`VALIDATE_AFTER_REST`]; a parameter so the tests can make every reuse a checked one.
     validate_after: Duration,
     generation: AtomicU64,
@@ -136,6 +166,7 @@ impl<S> core::fmt::Debug for ImapPool<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ImapPool")
             .field("max_connections", &self.max_connections)
+            .field("ceiling", &self.ceiling())
             .field("available", &self.permits.available_permits())
             .field("parked", &self.parked.lock().map_or(0, |p| p.len()))
             .finish_non_exhaustive()
@@ -161,15 +192,24 @@ impl<S> ImapPool<S> {
             parked: Mutex::new(VecDeque::new()),
             watches: Mutex::new(0),
             max_connections,
+            ceiling: AtomicUsize::new(max_connections),
+            workers: AtomicUsize::new(0),
+            returned: Notify::new(),
             validate_after,
             generation: AtomicU64::new(0),
         })
     }
 
-    /// The pool's ceiling — every connection this account may hold, workers and watches.
+    /// The pool's configured ceiling — every connection this account may hold, workers and
+    /// watches, before any server refusal lowered it.
     #[cfg(test)]
     pub(crate) fn max_connections(&self) -> usize {
         self.max_connections
+    }
+
+    /// The ceiling in force now.
+    pub(crate) fn ceiling(&self) -> usize {
+        self.ceiling.load(Ordering::SeqCst)
     }
 
     /// Parks a connection that was dialled outside the pool, so the next caller reuses it — the
@@ -178,37 +218,64 @@ impl<S> ImapPool<S> {
         self.park(connection, self.generation.load(Ordering::SeqCst));
     }
 
+    fn reserved_watches(&self) -> usize {
+        *self.watches.lock().expect("pool watch counter poisoned")
+    }
+
     /// How many more watches may be reserved before the workers' floor is reached. The host
     /// reads this to warn *before* offering the user a choice that cannot be honoured.
     pub(crate) fn watch_headroom(&self) -> usize {
-        let reserved = *self.watches.lock().expect("pool watch counter poisoned");
-        self.max_connections
+        self.ceiling()
             .saturating_sub(MIN_WORKER_CONNECTIONS)
-            .saturating_sub(reserved)
+            .saturating_sub(self.reserved_watches())
     }
 
-    /// Marks every connection dialled so far as superseded, so none is reused, and drops the
-    /// ones currently resting. In-flight guards finish normally and are discarded on drop.
+    /// How many connections workers can hold at once right now: the ceiling less the watches.
+    /// It moves as watches come and go, and when a refusal lowers the ceiling.
+    pub(crate) fn worker_capacity(&self) -> usize {
+        self.ceiling()
+            .saturating_sub(self.reserved_watches())
+            .max(MIN_WORKER_CONNECTIONS)
+    }
+
+    /// Marks every connection dialled so far as superseded, so none is reused, drops the ones
+    /// currently resting, and restores a ceiling a refusal lowered. In-flight guards finish
+    /// normally and are discarded on drop.
     ///
     /// This is the answer to a network that went away: the sockets look open and are not, and
-    /// `NOOP`-ing each one costs a timeout apiece.
+    /// `NOOP`-ing each one costs a timeout apiece. The ceiling comes back with it because the
+    /// device now dials from a different address, and a server's session limit is commonly
+    /// counted per address.
     pub(crate) fn invalidate(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.parked
             .lock()
             .expect("pool parked-connection mutex poisoned")
             .clear();
+        let lowered = self
+            .max_connections
+            .saturating_sub(self.ceiling.swap(self.max_connections, Ordering::SeqCst));
+        self.permits.add_permits(lowered);
     }
 
-    /// Pops the most recently parked connection — the one likeliest to be alive and to need no
+    /// Pops a parked connection: one with `mailbox` open when the caller named one and there is
+    /// one, else the most recently parked, which is the likeliest to be alive and to need no
     /// check. Connections from a superseded generation are dropped along the way.
-    fn take_parked(&self, generation: u64) -> Option<Parked<S>> {
+    fn take_parked(&self, generation: u64, mailbox: Option<&str>) -> Option<Parked<S>> {
         let mut parked = self
             .parked
             .lock()
             .expect("pool parked-connection mutex poisoned");
         parked.retain(|candidate| candidate.generation >= generation);
-        parked.pop_back()
+        let open = mailbox.and_then(|mailbox| {
+            parked
+                .iter()
+                .rposition(|candidate| candidate.connection.open_validity(mailbox).is_some())
+        });
+        match open {
+            Some(at) => parked.remove(at),
+            None => parked.pop_back(),
+        }
     }
 
     /// Whether a parked connection must answer `NOOP` before it is handed out. A clock that
@@ -235,6 +302,37 @@ impl<S> ImapPool<S> {
                 rested_at: SystemTime::now(),
             });
     }
+
+    /// Ends a worker's borrow: parks its connection when it has one to give back, and wakes
+    /// the callers waiting on a connection after a failed dial.
+    pub(crate) fn give_back(&self, connection: Option<Connection<S>>, generation: u64) {
+        if let Some(connection) = connection {
+            self.park(connection, generation);
+        }
+        self.workers.fetch_sub(1, Ordering::SeqCst);
+        self.returned.notify_waiters();
+    }
+
+    /// Returns a watch's slot to the workers.
+    pub(crate) fn release_watch_slot(&self) {
+        let mut watches = self.watches.lock().expect("pool watch counter poisoned");
+        *watches = watches.saturating_sub(1);
+    }
+
+    /// Gives up the connection `permit` stood for, for as long as the ceiling stays lowered.
+    fn lower_ceiling(&self, permit: OwnedSemaphorePermit) {
+        permit.forget();
+        self.ceiling.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Whether a failed dial was the server declining a session, rather than a path that failed.
+/// Only an answer lowers the ceiling: a network that is down says nothing about the server.
+fn refuses_sessions(err: &ImapError) -> bool {
+    matches!(
+        err,
+        ImapError::Auth(_) | ImapError::RateLimited(_) | ImapError::Bye(_)
+    )
 }
 
 /// The two operations that actually touch a connection, so they carry the stream bound the
@@ -249,9 +347,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapPool<S> {
     ///
     /// # Errors
     ///
-    /// [`ImapError`] if a fresh connection has to be dialled and the dial fails.
+    /// [`ImapError`] if a fresh connection has to be dialled, the dial fails, and no other
+    /// worker holds a connection to wait for.
     pub(crate) async fn acquire(self: &Arc<Self>) -> Result<PooledConnection<S>, ImapError> {
-        self.acquire_worker(false).await
+        self.acquire_worker(None, false).await
+    }
+
+    /// [`acquire`](Self::acquire), preferring a parked connection that already has `mailbox`
+    /// open — for a read that can then skip opening it.
+    ///
+    /// # Errors
+    ///
+    /// As [`acquire`](Self::acquire).
+    pub(crate) async fn acquire_for(
+        self: &Arc<Self>,
+        mailbox: &str,
+    ) -> Result<PooledConnection<S>, ImapError> {
+        self.acquire_worker(Some(mailbox), false).await
     }
 
     /// [`acquire`](Self::acquire), but proving any parked connection alive however briefly it
@@ -260,38 +372,63 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapPool<S> {
     ///
     /// # Errors
     ///
-    /// [`ImapError`] if a fresh connection has to be dialled and the dial fails.
+    /// As [`acquire`](Self::acquire).
     pub(crate) async fn acquire_checked(
         self: &Arc<Self>,
     ) -> Result<PooledConnection<S>, ImapError> {
-        self.acquire_worker(true).await
+        self.acquire_worker(None, true).await
     }
 
     async fn acquire_worker(
         self: &Arc<Self>,
+        mailbox: Option<&str>,
         always_check: bool,
     ) -> Result<PooledConnection<S>, ImapError> {
-        let permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .expect("pool semaphore is never closed");
-        let (connection, generation) = self.take_or_dial(always_check).await?;
-        Ok(PooledConnection {
-            connection: Some(connection),
-            generation,
-            pool: Arc::clone(self),
-            _permit: permit,
-        })
+        loop {
+            let permit = Arc::clone(&self.permits)
+                .acquire_owned()
+                .await
+                .expect("pool semaphore is never closed");
+            // Armed before the dial, so a connection handed back while the dial is failing still
+            // wakes this caller.
+            let mut returned = std::pin::pin!(self.returned.notified());
+            returned.as_mut().enable();
+            let err = match self.take_or_dial(mailbox, always_check).await {
+                Ok((connection, generation)) => {
+                    self.workers.fetch_add(1, Ordering::SeqCst);
+                    return Ok(PooledConnection::new(
+                        connection,
+                        generation,
+                        Arc::clone(self),
+                        permit,
+                    ));
+                }
+                Err(err) => err,
+            };
+            if self.workers.load(Ordering::SeqCst) == 0 {
+                return Err(err);
+            }
+            if refuses_sessions(&err) {
+                self.lower_ceiling(permit);
+            } else {
+                drop(permit);
+            }
+            returned.await;
+        }
     }
 
     /// Hands out a usable parked connection, or dials one when none is left — never both, so a
     /// dial only happens with nothing on the shelf and the permit its caller holds is the only
     /// thing standing for the new socket.
-    async fn take_or_dial(&self, always_check: bool) -> Result<(Connection<S>, u64), ImapError> {
+    async fn take_or_dial(
+        &self,
+        mailbox: Option<&str>,
+        always_check: bool,
+    ) -> Result<(Connection<S>, u64), ImapError> {
         let generation = self.generation.load(Ordering::SeqCst);
         // A failed check is not an error — it is a connection that died while resting, which is
         // the normal fate of a socket on a device that sleeps.
-        while let Some(mut parked) = self.take_parked(generation) {
+        while let Some(mut parked) = self.take_parked(generation, mailbox) {
             if !self.needs_check(&parked, always_check) || is_alive(&mut parked.connection).await {
                 return Ok((parked.connection, parked.generation));
             }
@@ -316,16 +453,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapPool<S> {
     ) -> ProviderResult<(Connection<S>, WatchLease)> {
         {
             let mut watches = self.watches.lock().expect("pool watch counter poisoned");
+            let ceiling = self.ceiling();
             // Refuse the reservation that would take the last worker: with a budget of 5 this
             // allows 4 watches and always keeps 1 free to sync. The host's own limit on watched
             // folders is normally stricter — this is the floor that makes over-reserving
             // impossible, not the policy that makes it sensible.
-            if *watches + MIN_WORKER_CONNECTIONS >= self.max_connections {
+            if *watches + MIN_WORKER_CONNECTIONS >= ceiling {
                 return Err(ProviderError::invalid_state(format!(
-                    "cannot watch another folder: {} of this account's {} connections are \
+                    "cannot watch another folder: {} of this account's {ceiling} connections are \
                      already reserved for push, and at least {MIN_WORKER_CONNECTIONS} must stay \
                      free to sync",
-                    *watches, self.max_connections,
+                    *watches,
                 )));
             }
             *watches += 1;
@@ -336,11 +474,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapPool<S> {
             .acquire_owned()
             .await
             .expect("pool semaphore is never closed");
-        let lease = WatchLease {
-            watches: Arc::clone(self) as Arc<dyn ReleaseWatch>,
-            permit: Some(permit),
-        };
-        let (connection, _generation) = self.take_or_dial(false).await?;
+        let lease = WatchLease::new(Arc::clone(self) as Arc<dyn ReleaseWatch>, permit);
+        let (connection, _generation) = self.take_or_dial(None, false).await?;
         Ok((connection, lease))
     }
 }
@@ -359,106 +494,10 @@ async fn is_alive<S: AsyncRead + AsyncWrite + Unpin + Send>(
     connection.command("NOOP").await.is_ok()
 }
 
-/// Releases a watch's slot in the account's budget. Object-safe so a [`WatchLease`] can hold it
-/// without being generic over the stream type — a lease is handed to `ImapWatcher`, and making
-/// it generic would spread `S` across the watcher's whole public surface for no benefit.
-trait ReleaseWatch: Send + Sync {
-    fn release_watch(&self);
-}
-
-impl<S: Send + Sync + 'static> ReleaseWatch for ImapPool<S> {
-    fn release_watch(&self) {
-        let mut watches = self.watches.lock().expect("pool watch counter poisoned");
-        *watches = watches.saturating_sub(1);
-    }
-}
-
-/// A watch's claim on one connection in the account's budget, released when dropped.
-///
-/// Held by the watcher beside its connection. Dropping it — whether the watch stopped
-/// gracefully or its task was aborted — returns the slot, which is why it is a guard rather
-/// than a pair of `reserve`/`release` calls a caller can forget to balance.
-pub(crate) struct WatchLease {
-    watches: Arc<dyn ReleaseWatch>,
-    permit: Option<OwnedSemaphorePermit>,
-}
-
-impl core::fmt::Debug for WatchLease {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("WatchLease").finish_non_exhaustive()
-    }
-}
-
-impl Drop for WatchLease {
-    fn drop(&mut self) {
-        if self.permit.is_some() {
-            self.watches.release_watch();
-        }
-    }
-}
-
-/// A worker connection borrowed from the pool, parked again when dropped.
-///
-/// Derefs to the connection, so a caller that used to lock a mutex changes only how it obtains
-/// the guard.
-pub(crate) struct PooledConnection<S> {
-    /// `Some` until dropped; `Option` only so `Drop` can move the connection back into the pool.
-    connection: Option<Connection<S>>,
-    generation: u64,
-    pool: Arc<ImapPool<S>>,
-    /// Held for the guard's life; returning it is what lets the next caller in.
-    _permit: OwnedSemaphorePermit,
-}
-
-impl<S> PooledConnection<S> {
-    /// Abandons this connection instead of parking it — for a caller that has left the session
-    /// in a state the next borrower must not inherit.
-    pub(crate) fn discard(mut self) {
-        self.connection = None;
-    }
-
-    /// Ends the borrow on the outcome of the work done with it: a success parks the connection,
-    /// a failure discards it.
-    ///
-    /// A failure does not say *which* kind it was — a server `NO` leaves a perfectly good
-    /// session, a dropped socket or a desynchronised response does not — and telling them apart
-    /// at every call site is more fragile than paying one dial after the rare clean refusal.
-    /// What must never happen is the next caller inheriting a dead socket that has not rested
-    /// long enough to be checked.
-    pub(crate) fn settle<T, E>(self, result: Result<T, E>) -> Result<T, E> {
-        if result.is_err() {
-            self.discard();
-        }
-        result
-    }
-}
-
-impl<S> core::ops::Deref for PooledConnection<S> {
-    type Target = Connection<S>;
-
-    fn deref(&self) -> &Self::Target {
-        self.connection
-            .as_ref()
-            .expect("a pooled connection is only taken in Drop")
-    }
-}
-
-impl<S> core::ops::DerefMut for PooledConnection<S> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.connection
-            .as_mut()
-            .expect("a pooled connection is only taken in Drop")
-    }
-}
-
-impl<S> Drop for PooledConnection<S> {
-    fn drop(&mut self) {
-        if let Some(connection) = self.connection.take() {
-            self.pool.park(connection, self.generation);
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "pool_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "pool_refusal_tests.rs"]
+mod refusal_tests;

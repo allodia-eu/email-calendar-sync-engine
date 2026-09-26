@@ -139,8 +139,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
 
 #[async_trait]
 impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for ImapProvider<S> {
+    /// The negotiated facts, and as many overlapping body fetches as the account has worker
+    /// connections for right now: each fetch borrows its own from the pool, so the width is the
+    /// pool's, less the connections its watches hold. Read per call, because it moves as
+    /// watches start and stop and when a server's refusal lowers the ceiling.
     fn connection_info(&self) -> ConnectionInfo {
         self.connection_info
+            .with_concurrent_fetches(self.pool.worker_capacity())
     }
 
     /// IMAP folder-list state is per account, so the mailbox container syncs under
@@ -344,20 +349,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
 
     /// Fetches a message's raw RFC 5322 source (`UID FETCH BODY.PEEK[]`).
     ///
-    /// A thin borrow-and-call: the fetch logic (key parse, the SELECT + UIDVALIDITY
-    /// guard, the body read) lives in the `fetch` module so it stays stream-generic
-    /// and unit-testable. The message is addressed by its own key, so any of the
-    /// account's folders can be read over this one bound session; a stale UID (its
-    /// mailbox's `UIDVALIDITY` changed) is a
+    /// The fetch logic (which connection, key parse, the EXAMINE + UIDVALIDITY guard,
+    /// the body read, one retry on a lost connection) lives in the `fetch` module so it
+    /// stays stream-generic and unit-testable. The message is addressed by its own key,
+    /// so any of the account's folders can be read through any folder's provider; a
+    /// stale UID (its mailbox's `UIDVALIDITY` changed) is a
     /// [`ProviderError::conflict`](engine_provider::ProviderError::conflict).
     async fn fetch_message_source(
         &self,
         _account: &AccountId,
         message: &Message,
     ) -> ProviderResult<engine_core::raw::RawMime> {
-        let mut connection = self.session().await?;
-        let result = crate::fetch::fetch_message_source(&mut connection, message.id.key()).await;
-        connection.settle(result)
+        crate::fetch::fetch_from_pool(&self.pool, message.id.key()).await
     }
 
     /// Reports a message as junk / not junk / phishing.

@@ -7,20 +7,17 @@
 //! the read/sync slice needs (`LOGIN`, `SELECT`, `UID SEARCH`, `UID FETCH`, `LIST`,
 //! `LOGOUT`); the higher-level snapshot/delta logic lives in [`crate::sync`].
 
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use std::time::Duration;
+
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::{
     capability::Negotiated,
     error::{ImapError, ImapResult},
-    parse::{self, FetchRow, ListRow, SelectData},
+    parse::{self, FetchRow, ListRow},
+    transport_read::BODY_READ_STALL,
     transport_command::{list_command, quote},
 };
-
-/// The largest `{n}` literal we will read into memory. A hostile or buggy server
-/// could announce an enormous literal (`* {4000000000}`); the cap bounds the
-/// allocation so adversarial input cannot exhaust memory (`north-star.md` security).
-/// Generous enough for any real metadata response (and future body fetches).
-const MAX_LITERAL: usize = 64 * 1024 * 1024;
 
 /// A connected IMAP session over a generic async byte stream.
 pub(crate) struct Connection<S> {
@@ -41,6 +38,8 @@ pub(crate) struct Connection<S> {
     /// [`Connection::command`] drains the leftover response to this tag before issuing
     /// its own, so the connection self-heals rather than desyncing.
     pub(crate) pending_tag: Option<String>,
+    /// The mailbox this session has open, if any ([`crate::transport_select`]).
+    pub(crate) selected: Option<crate::transport_select::Selection>,
 }
 
 impl<S> core::fmt::Debug for Connection<S> {
@@ -66,6 +65,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             tag: 0,
             negotiated: Negotiated::default(),
             pending_tag: None,
+            selected: None,
         };
         connection.read_greeting().await?;
         Ok(connection)
@@ -113,44 +113,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Ok(())
     }
 
-    /// Reads one logical line: bytes through the next `\n`, with any `{n}` literal
-    /// the line announces inlined (the n bytes, then the continuation). Literals
-    /// can themselves announce further literals, so this loops.
-    ///
-    /// `pub(crate)` so the IDLE read loop ([`crate::idle`]) can consume the
-    /// unsolicited untagged responses the server streams while idling, reusing the
-    /// same literal-aware framing as the command path.
-    pub(crate) async fn read_line(&mut self) -> ImapResult<Vec<u8>> {
-        let mut line = Vec::new();
-        loop {
-            let before = line.len();
-            let read = self.inner.read_until(b'\n', &mut line).await?;
-            if read == 0 {
-                return Err(ImapError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed mid-response",
-                )));
-            }
-            if let Some(len) = trailing_literal_len(&line[before..]) {
-                if len > MAX_LITERAL {
-                    return Err(ImapError::protocol(format!(
-                        "server announced a {len}-byte literal exceeding the {MAX_LITERAL}-byte cap"
-                    )));
-                }
-                let mut literal = vec![0u8; len];
-                self.inner.read_exact(&mut literal).await?;
-                line.extend_from_slice(&literal);
-                continue;
-            }
-            return Ok(line);
-        }
-    }
-
     /// Sends a tagged command and collects its untagged responses and completion
     /// detail. A `NO`/`BAD` completion is an error. `pub(crate)` so the STARTTLS
     /// preamble (`crate::transport_starttls`) can issue `CAPABILITY`/`STARTTLS` over
     /// the plaintext connection reusing the tagged round trip.
     pub(crate) async fn command(&mut self, command: &str) -> ImapResult<Response> {
+        self.command_within(command, None).await
+    }
+
+    /// [`command`](Self::command), with its response bounded by `stall` as
+    /// [`read_line_within`](Self::read_line_within) bounds a line.
+    async fn command_within(
+        &mut self,
+        command: &str,
+        stall: Option<Duration>,
+    ) -> ImapResult<Response> {
         // If a streamed `UID FETCH` was abandoned mid-response, finish reading it to
         // its tag first so this command's reply is not corrupted by leftover lines.
         self.drain_pending().await?;
@@ -158,15 +135,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let request = format!("{tag} {command}\r\n");
         self.inner.write_all(request.as_bytes()).await?;
         self.inner.flush().await?;
-        self.read_response(&tag).await
+        self.read_response_within(&tag, stall).await
     }
 
     /// Reads untagged responses until this command's tagged completion.
     pub(crate) async fn read_response(&mut self, tag: &str) -> ImapResult<Response> {
+        self.read_response_within(tag, None).await
+    }
+
+    async fn read_response_within(
+        &mut self,
+        tag: &str,
+        stall: Option<Duration>,
+    ) -> ImapResult<Response> {
         let mut untagged = Vec::new();
         let prefix = format!("{tag} ");
         loop {
-            let line = self.read_line().await?;
+            let line = self.read_line_within(stall).await?;
             if let Some(body) = strip_ascii_prefix(&line, b"* ") {
                 untagged.push(body.to_vec());
                 continue;
@@ -255,36 +240,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Ok(())
     }
 
-    /// `SELECT mailbox`, returning its UID space and message count. Response codes
-    /// in either an untagged `* OK [..]` or the tagged completion are honored.
-    pub(crate) async fn select(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self
-            .command(&format!("SELECT {}", self.quoted_name(mailbox)))
-            .await?;
-        parse::parse_select(&response.into_all_lines())
-    }
-
-    /// `SELECT mailbox (CONDSTORE)` — opens the mailbox CONDSTORE-aware (RFC 7162
-    /// §3.1.8) so the response carries `[HIGHESTMODSEQ n]`, the baseline a QRESYNC
-    /// delta records in its cursor. Used in place of [`Connection::select`] for the
-    /// sync path on a QRESYNC session.
-    pub(crate) async fn select_condstore(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self
-            .command(&format!("SELECT {} (CONDSTORE)", self.quoted_name(mailbox)))
-            .await?;
-        parse::parse_select(&response.into_all_lines())
-    }
-
-    /// `EXAMINE mailbox` — the read-only `SELECT` (RFC 9051 §6.3.2): same response
-    /// shape, but opens the mailbox without write intent and does not reset
-    /// `\Recent`, so a body peek needs no write access to the folder.
-    pub(crate) async fn examine(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self
-            .command(&format!("EXAMINE {}", self.quoted_name(mailbox)))
-            .await?;
-        parse::parse_select(&response.into_all_lines())
-    }
-
     /// `UID FETCH <set> (<items>)`, returning the parsed rows.
     pub(crate) async fn uid_fetch(&mut self, set: &str, items: &str) -> ImapResult<Vec<FetchRow>> {
         let response = self.command(&format!("UID FETCH {set} ({items})")).await?;
@@ -341,7 +296,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// concurrent flag update) cannot return the wrong message's bytes.
     pub(crate) async fn uid_fetch_body(&mut self, uid: u32) -> ImapResult<Option<Vec<u8>>> {
         let response = self
-            .command(&format!("UID FETCH {uid} (BODY.PEEK[])"))
+            .command_within(&format!("UID FETCH {uid} (BODY.PEEK[])"), Some(BODY_READ_STALL))
             .await?;
         Ok(crate::parse_body::parse_fetch_body(&response.untagged, uid))
     }
@@ -438,20 +393,6 @@ impl Response {
         lines.push(self.detail.into_bytes());
         lines
     }
-}
-
-/// The literal length a line announces (`…{n}` or `…{n+}` before its CRLF), if any.
-fn trailing_literal_len(line: &[u8]) -> Option<usize> {
-    let trimmed = line.strip_suffix(b"\n")?;
-    let trimmed = trimmed.strip_suffix(b"\r").unwrap_or(trimmed);
-    let inside = trimmed.strip_suffix(b"}")?;
-    let inside = inside.strip_suffix(b"+").unwrap_or(inside);
-    let open = inside.iter().rposition(|&b| b == b'{')?;
-    let digits = &inside[open + 1..];
-    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    std::str::from_utf8(digits).ok()?.parse().ok()
 }
 
 /// Strips an ASCII prefix, returning the remainder without its trailing CRLF.
