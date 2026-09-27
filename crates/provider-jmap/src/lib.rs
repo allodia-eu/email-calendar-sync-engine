@@ -32,7 +32,9 @@
 //!   (`docs/agent-guidance/jmap.md`).
 
 mod auth;
+mod base64;
 mod blob;
+mod blob_batch;
 mod calendar;
 mod calendar_patch;
 mod calendar_rsvp;

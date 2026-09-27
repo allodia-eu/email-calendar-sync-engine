@@ -25,6 +25,8 @@ pub(crate) mod capability {
     pub(crate) const CALENDARS: &str = "urn:ietf:params:jmap:calendars";
     /// `urn:ietf:params:jmap:contacts` (RFC 9610).
     pub(crate) const CONTACTS: &str = "urn:ietf:params:jmap:contacts";
+    /// `urn:ietf:params:jmap:blob` (RFC 9404): `Blob/get`, many blobs' bytes in one call.
+    pub(crate) const BLOB: &str = "urn:ietf:params:jmap:blob";
 }
 
 /// One method call: `[name, arguments, callId]`.
