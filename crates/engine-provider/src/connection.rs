@@ -233,6 +233,10 @@ pub struct ConnectionInfo {
     /// so an adapter sets this from its own provider's documented or measured ceiling, not
     /// from a number that sounds safe.
     pub concurrent_fetches: usize,
+    /// How many message sources one [`Provider::fetch_message_sources`](crate::Provider)
+    /// call can bring back in a single request. Always at least 1, which says a batch is
+    /// fetched one message at a time and a caller gains nothing by making one larger.
+    pub sources_per_request: usize,
 }
 
 impl ConnectionInfo {
@@ -245,7 +249,16 @@ impl ConnectionInfo {
             tls_version: None,
             http_version: None,
             concurrent_fetches: 1,
+            sources_per_request: 1,
         }
+    }
+
+    /// The same connection, reporting that one source-batch request carries up to `n`
+    /// messages. Clamped to at least 1.
+    #[must_use]
+    pub const fn with_sources_per_request(mut self, n: usize) -> Self {
+        self.sources_per_request = if n == 0 { 1 } else { n };
+        self
     }
 
     /// The same connection, reporting that `n` single-object fetches may be in flight at

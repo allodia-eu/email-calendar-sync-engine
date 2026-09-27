@@ -322,6 +322,7 @@ mod progress;
 mod recipients;
 mod stream;
 mod threading;
+mod warm;
 pub use attachment::{
     fetch_message_attachment, fetch_message_attachments, fetch_message_scheduling,
     fetch_message_source,
@@ -347,6 +348,7 @@ pub use outbox::{
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::StreamTuning;
 pub use threading::{ThreadRebuildReport, rebuild_thread_index};
+pub use warm::warm_message_sources;
 
 #[cfg(test)]
 mod tests;

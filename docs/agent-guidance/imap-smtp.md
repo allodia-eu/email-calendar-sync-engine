@@ -124,6 +124,15 @@ is authoritative for the `provider-caldav` calendar client.
   `ImapAccount::invalidate` drops every resting connection for a host that has seen the
   network change. A stream abandoned mid-fetch parks normally: `pending_tag` drains its
   leftover response before the next command.
+- **A dial refused beside working connections waits, and lowers the ceiling.** Five is our
+  number, and the server's limit is shared with every other client of the user's. A caller
+  whose dial fails while another *worker* holds a connection waits for one to come back
+  rather than failing; it fails only once no worker is left. When the server *answered*
+  (`LOGIN` `NO`, `NO [LIMIT]`, `BYE` at the greeting) the ceiling also drops by that
+  connection, since a `NO` to a credential other sessions are logged in with right now is
+  a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
+  a new network being a new address. An unanswered dial (the network) lowers nothing.
+  Proof: `pool_refusal_tests.rs`.
 - **The pool re-dials on its own.** A provider holds no socket, so a dead one is replaced
   on the next call rather than failing every call until the host rebuilds the provider.
   Every pool dial reports through the config's connect observer, so a host still sees
@@ -483,13 +492,36 @@ is authoritative for the `provider-caldav` calendar client.
   `edit_mail` when it chooses. Fetching the whole source (not just the text part) is
   lossless and serves the body, inline CID resources, and downloadable attachments from
   the cached raw with no re-fetch (`providers.md`, `store-and-sync.md`).
-- **Read-only open + shared guard.** Resolution is shared with the edit path via
-  `target::select_target`: parse the key, reject a `CR`/`LF` mailbox (`InvalidState`),
-  open, and guard `UIDVALIDITY` (mismatch → **`Conflict`**). A body read opens the
-  mailbox with **`EXAMINE`** (read-only), not `SELECT`, so it takes no write-intent
+- **Read-only open + shared guard.** Resolution is shared with the edit path
+  (`target.rs`): parse the key, reject a `CR`/`LF` mailbox (`InvalidState`), open, and
+  guard `UIDVALIDITY` (mismatch → **`Conflict`**). A body read opens the mailbox with
+  **`EXAMINE`** (read-only, `examine_target`), not `SELECT`, so it takes no write-intent
   open, leaves `\Recent` untouched, and works on a read-only folder. A `UID FETCH`
   that returns no data — the UID was expunged since the last sync — is also a
   **`Conflict`** (re-sync, then drop), not a permanent failure.
+- **A session remembers the mailbox it has open** (`transport_select.rs`), and a read
+  there skips its `EXAMINE`: a UID cannot change during a session (RFC 9051 §2.3.1.1),
+  so the `UIDVALIDITY` read at selection holds for as long as the selection does. The
+  selection is forgotten *before* a `SELECT`/`EXAMINE` is sent, because a refused one
+  deselects (§6.3.1). A write always `SELECT`s again. `ImapPool::acquire_for(mailbox)`
+  hands a read a parked connection that already has its mailbox open.
+- **A read that goes silent is a lost connection.** Every read of a body response is
+  bounded by `transport_read::BODY_READ_STALL` (60 s) of *silence*, never of the whole
+  body, and fails `Retryable`; a single fetch that lost its connection is tried once more
+  on one proved alive (`fetch::fetch_from_pool`).
+- **Batches: one `UID FETCH <set> (BODY.PEEK[])` per mailbox** (`fetch_batch.rs`,
+  `Provider::fetch_message_sources`). A warm of thousands of bodies one request at a time
+  spends its time on round trips, not bytes; a set costs one round trip plus its bytes,
+  and each body is handed on as it parses off the wire (`next_fetch_body`), so a batch
+  holds one message in memory at a time. Rows arrive in the server's order and may carry
+  their `UID` after the literal (`parse_any_fetch_body`). A stale `UIDVALIDITY` or an
+  expunged UID is a `Conflict` for that message alone; a batch that lost its connection
+  asks once more, for what it had not received, on a connection proved alive.
+  `ConnectionInfo::sources_per_request` (25) and `concurrent_fetches` (the pool's
+  `worker_capacity`: the ceiling less the watches, read per call) tell a host how to cut
+  and overlap them. Proof: `tests/live_imap_body_batch.rs` against Stalwart and both
+  Dovecot dialects, byte-equal with the single fetch, and a control arm asking for UIDs
+  the server does not hold.
 
 ## Push (IMAP IDLE, RFC 2177)
 

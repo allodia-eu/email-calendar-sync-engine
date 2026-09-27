@@ -16,7 +16,7 @@ use engine_core::{
 use crate::{
     CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, MailEdit,
     MailEditReceipt, MessageReport, ProviderError, ProviderResult, ReportReceipt, ScopeSync,
-    SenderIdentity, SenderIdentityId, SubmissionReceipt, error::unsupported,
+    SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt, error::unsupported,
 };
 // `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
 // rustdoc resolves those against the *module's* scope — a link that worked in the crate root
@@ -316,6 +316,23 @@ pub trait Provider: CalendarWrites + Send + Sync {
     ) -> ProviderResult<RawMime> {
         let _ = (account, message);
         Err(unsupported("message source fetch"))
+    }
+
+    /// Fetches the raw sources of `messages`, yielding each as `(index into messages,
+    /// result)` as it arrives, in whatever order the transport delivers them. Every index is
+    /// yielded exactly once, and a failure is that message's alone unless the transport says
+    /// otherwise in the error.
+    ///
+    /// A transport that can carry several sources in one request overrides this and reports
+    /// how many in [`ConnectionInfo::sources_per_request`]. The default fetches them one after
+    /// another through [`fetch_message_source`](Self::fetch_message_source), so a caller may
+    /// use this whatever the adapter.
+    fn fetch_message_sources<'a>(
+        &'a self,
+        account: &'a AccountId,
+        messages: &'a [Message],
+    ) -> SourceStream<'a> {
+        crate::sources::one_at_a_time(self, account, messages)
     }
 
     /// Reports `report.target` to the provider as junk, not junk, or phishing.
