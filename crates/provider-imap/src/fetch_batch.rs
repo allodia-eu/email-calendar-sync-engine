@@ -47,7 +47,8 @@ struct Wanted {
 /// [`Conflict`](engine_core::error::FailureClass::Conflict) for that message alone. A group
 /// that lost its connection part-way, or never got one, asks once more for what it had not
 /// yet received, on a connection proved alive; after that the rest of the group carries the
-/// failure.
+/// failure. A group whose response failed for any other reason asks for what it had not yet
+/// received one message at a time, so one unreadable message fails alone.
 pub(crate) fn fetch_batch<'a, S>(
     pool: &'a Arc<ImapPool<S>>,
     messages: &'a [Message],
@@ -173,6 +174,17 @@ where
                             let err = ProviderError::from(err);
                             if again(&mut retried, &err) {
                                 continue 'attempts;
+                            }
+                            // A failure the connection did not cause (a literal over the cap,
+                            // a line that does not parse, a `NO`) may be one message's, and
+                            // the rest of the set must not carry it: each is asked for alone.
+                            if err.class() != FailureClass::Retryable && wanted.len() > 1 {
+                                for each in wanted.drain(..) {
+                                    let key = messages[each.index].id.key();
+                                    let alone = crate::fetch::fetch_from_pool(pool, key).await;
+                                    yield (each.index, alone);
+                                }
+                                break 'attempts;
                             }
                             for each in wanted.drain(..) {
                                 yield (each.index, Err(copy(&err)));

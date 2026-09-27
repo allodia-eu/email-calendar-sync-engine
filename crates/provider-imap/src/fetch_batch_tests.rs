@@ -210,6 +210,38 @@ async fn a_batch_that_loses_its_connection_twice_reports_the_rest_as_lost() {
 }
 
 #[tokio::test]
+async fn a_message_that_breaks_the_response_fails_alone() {
+    // UID 43 announces a literal over the cap, which ends the set's response. The messages
+    // behind it are asked for one at a time, so only 43 fails.
+    let oversized = "* 43 FETCH (UID 43 BODY[] {99999999999}\r\n";
+    let cut = [examine("a1", 7), body(42, "first"), oversized.to_owned()].concat();
+    let again = [examine("a1", 7), oversized.to_owned()].concat();
+    let last = [
+        examine("a1", 7),
+        body(44, "third"),
+        "a2 OK FETCH completed\r\n".to_owned(),
+    ]
+    .concat();
+    let (pool, _recordings) = pool_over(vec![cut, again, last]);
+    let messages = [
+        message("imap:v7:u42@INBOX"),
+        message("imap:v7:u43@INBOX"),
+        message("imap:v7:u44@INBOX"),
+    ];
+
+    let outcomes = run(&pool, &messages).await;
+
+    assert_eq!(
+        outcomes,
+        vec![
+            (0, Ok(b"first".to_vec())),
+            (1, Err(FailureClass::Permanent)),
+            (2, Ok(b"third".to_vec())),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn an_unparseable_key_is_refused_before_the_wire() {
     let (pool, recordings) = pool_over(vec![]);
     let messages = [message("imap:v7:u42@INBOX\r\na9 DELETE INBOX")];
