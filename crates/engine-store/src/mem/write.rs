@@ -19,10 +19,7 @@ use crate::{
     apply::{ApplyBatch, DerivedWrite, SyncApplied},
     error::{Result, StoreError},
     lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease},
-    outbox::{
-        ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, OpRejection, PendingOpClaim, PendingOpState,
-        retry_delay,
-    },
+    outbox::{ClaimRejection, LeasedPendingOp, OpRejection, PendingOpClaim, PendingOpState},
     store::Store,
 };
 
@@ -243,6 +240,10 @@ impl<C: Clock> Store for MemStore<C> {
         Ok(abandoned)
     }
 
+    async fn recover_interrupted_ops(&self) -> Result<usize> {
+        Ok(self.recover_interrupted())
+    }
+
     async fn enqueue_pending_op(&self, account: AccountId, op: PendingOp) -> Result<PendingOpId> {
         let mut inner = self.lock();
         let idem = (account.clone(), op.idempotency_key.clone());
@@ -406,34 +407,7 @@ impl<C: Clock> Store for MemStore<C> {
         if lease.token() != op.token {
             return Err(StoreError::StaleLease);
         }
-        op.lease_expiry = None;
-        op.attempts = op.attempts.saturating_add(1);
-        match outcome {
-            PendingOutcome::Succeeded { .. } => {
-                op.state = PendingOpState::Succeeded;
-                op.next_attempt_at = None;
-                op.failure_class = None;
-                op.detail = None;
-            }
-            PendingOutcome::Failed { class, retry_after } => {
-                op.failure_class = Some(class);
-                op.detail = None;
-                // A class that a plain retry cannot fix settles now; so does one that
-                // has used up its attempts. Everything else parks and comes back.
-                if class.is_retryable() && op.attempts < MAX_ATTEMPTS {
-                    op.state = PendingOpState::Pending;
-                    op.next_attempt_at = now.checked_add(retry_delay(op.attempts, retry_after));
-                } else {
-                    op.state = PendingOpState::Failed;
-                    op.next_attempt_at = None;
-                }
-            }
-            PendingOutcome::NeedsConfirmation { detail } => {
-                op.state = PendingOpState::NeedsConfirmation;
-                op.next_attempt_at = None;
-                op.detail = Some(detail);
-            }
-        }
+        super::outbox::record(op, outcome, now);
         Ok(())
     }
 

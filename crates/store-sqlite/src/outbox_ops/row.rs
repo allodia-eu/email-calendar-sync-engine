@@ -106,6 +106,19 @@ pub(super) fn load_account_ops(tx: &Transaction<'_>, account: &str) -> Result<Ve
     raws.into_iter().map(parse_op_row).collect()
 }
 
+/// Every op in `InFlight`, across accounts, in id order.
+pub(super) fn load_in_flight_ops(tx: &Transaction<'_>) -> Result<Vec<LoadedOp>> {
+    let sql = format!("SELECT {OP_COLUMNS} FROM pending_op WHERE state = 'InFlight' ORDER BY id");
+    let mut stmt = tx.prepare(&sql).map_err(convert::backend)?;
+    let raws = stmt
+        .query_map([], read_op_row)
+        .map_err(convert::backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(convert::backend)?;
+
+    raws.into_iter().map(parse_op_row).collect()
+}
+
 /// One op row as stored, in [`OP_COLUMNS`] order.
 type OpRow = (
     i64,

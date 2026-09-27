@@ -127,6 +127,22 @@ pub trait Store: Send + Sync {
     /// Returns `StoreError::Backend` on a backend failure.
     async fn abandon_sync_leases(&self) -> Result<usize>;
 
+    /// Records every op left `InFlight` by a process that is gone as
+    /// [`interrupted_outcome`](crate::interrupted_outcome) says, and bumps its fencing token
+    /// so the dead worker cannot record under its old lease. Ops nobody held are untouched.
+    ///
+    /// The outbox's half of [`abandon_sync_leases`](Store::abandon_sync_leases), with the
+    /// same contract: call it at process start-up, when every lease belongs to a process
+    /// that has ended, and never to break contention in a live one. Without it an op cut off
+    /// in flight is claimable again once its lease lapses, and a send would go out twice.
+    ///
+    /// Returns the number of ops recovered.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn recover_interrupted_ops(&self) -> Result<usize>;
+
     /// Durably enqueues a pending op for `account`, idempotent by the op's
     /// idempotency key: re-enqueuing the same key returns the existing
     /// [`PendingOpId`] and creates no duplicate.

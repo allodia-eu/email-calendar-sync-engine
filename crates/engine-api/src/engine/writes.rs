@@ -265,6 +265,23 @@ impl Engine {
         Ok(self.store.list_pending_ops(account.clone()).await?)
     }
 
+    /// Recovers the outbox ops the previous process left in flight, returning how many.
+    ///
+    /// Call it at start-up beside [`abandon_sync_leases`](Self::abandon_sync_leases), before
+    /// any write or drain runs, under the same condition: every lease belongs to a process
+    /// that has ended. A send cut off in flight may already have been delivered, so it
+    /// awaits confirmation, where [`outbox`](Self::outbox) lists it and nothing runs it
+    /// again; every other write retries as a retryable failure does. Without this an op cut
+    /// off in flight is claimable again once its lease lapses, and for a send that claim is
+    /// a second delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn recover_interrupted_ops(&self) -> Result<usize, ApiError> {
+        Ok(self.store.recover_interrupted_ops().await?)
+    }
+
     /// Withdraws a queued op so it is never attempted, returning `None` when it was
     /// withdrawn and the reason when it could not be.
     ///

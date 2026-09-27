@@ -210,6 +210,22 @@ impl ApiError {
         )
     }
 
+    /// Whether this call **never ran** because the runtime it was queued on is shutting
+    /// down.
+    ///
+    /// Not a failure of the account, the server or the store: nothing was attempted and
+    /// nothing was written, and the next launch does the work. A host that reports failures
+    /// (a status badge, a log line, a count) should report the process ending instead, or
+    /// nothing at all.
+    #[must_use]
+    pub fn is_shutting_down(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(StoreError::ShuttingDown)
+                | Self::Sync(SyncError::Store(StoreError::ShuttingDown))
+        )
+    }
+
     /// How long to wait before trying this again, where the **server named a time**.
     ///
     /// Set on a throttle the engine declined to absorb. `engine-http` waits out a hiccup
@@ -283,5 +299,20 @@ mod error_tests {
         let transient = ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip")));
         assert!(!transient.is_conflict(), "retryable is not a conflict");
         assert!(!ApiError::Busy.is_conflict(), "Busy is not a conflict");
+    }
+
+    #[test]
+    fn a_call_the_shutdown_cancelled_is_told_apart_from_a_failure() {
+        // Both shapes a store call cancelled at shutdown reaches a host in: a direct store
+        // read, and a sync whose apply never ran.
+        assert!(ApiError::Store(StoreError::ShuttingDown).is_shutting_down());
+        assert!(ApiError::Sync(SyncError::Store(StoreError::ShuttingDown)).is_shutting_down());
+
+        assert!(!ApiError::Store(StoreError::Backend("disk full".into())).is_shutting_down());
+        assert!(
+            !ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip")))
+                .is_shutting_down()
+        );
+        assert!(!ApiError::Busy.is_shutting_down());
     }
 }

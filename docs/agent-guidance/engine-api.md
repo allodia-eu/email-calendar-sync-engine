@@ -153,6 +153,15 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   preserving cursors, so a cold backfill resumes from its last committed checkpoint
   immediately instead of waiting for the fixed `LEASE_TTL` or clearing state. This
   is not a normal `Busy` recovery path for live in-process contention.
+  `Engine::recover_interrupted_ops` is its outbox half and is called beside it: an op the
+  dead process left `InFlight` is claimable again once its lease lapses, so a send cut off
+  after the server took it would be delivered twice. Recovery parks such a send in
+  `NeedsConfirmation` and retries every other write as a retryable failure
+  (`engine_store::interrupted_outcome`).
+- **A call the runtime cancelled is not a failure.** When a host drops the engine's runtime
+  with work queued, each store call that never ran fails with `StoreError::ShuttingDown`,
+  and `ApiError::is_shutting_down()` says so, so a host reports the process ending rather
+  than a failed sync. Nothing ran and nothing was written; the next launch does the work.
 - **Re-export signature types.** Types that appear in the facade's own signatures
   (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,
