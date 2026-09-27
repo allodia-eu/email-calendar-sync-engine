@@ -103,9 +103,9 @@ pub struct CoreLimits {
     ///
     /// A Fastmail measurement taken through a download URL rebased onto the API origin is
     /// not a measurement of downloads: that origin answers `200` with an HTML page for the
-    /// download path, which is quick. Fastmail serves blobs from an origin of its own, which
-    /// this adapter leaves alone: it rebases a template only when the template shares the
-    /// API's origin (`rebase_template`).
+    /// download path, which is quick. Fastmail serves blobs from an origin of its own, and this
+    /// adapter downloads from exactly the URL Fastmail advertised: it rewrites a template onto
+    /// the connection only when the template is on the API's own origin (`rebase_template`).
     pub max_concurrent_requests: usize,
 }
 
