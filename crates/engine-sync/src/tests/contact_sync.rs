@@ -23,6 +23,7 @@ impl Provider for FakeContacts {
     }
 }
 
+impl engine_provider::MailboxWrites for FakeContacts {}
 impl CalendarWrites for FakeContacts {}
 
 #[async_trait::async_trait]

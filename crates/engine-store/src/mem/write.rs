@@ -217,17 +217,13 @@ impl<C: Clock> Store for MemStore<C> {
         Ok(())
     }
 
-    // Takes the lease by value to consume it (the trait contract: a released
-    // lease must not be reused); its fields are read by reference internally.
-    #[allow(clippy::needless_pass_by_value)]
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()> {
-        let mut inner = self.lock();
-        if let Some(cell) = inner.scopes.get_mut(lease.scope())
-            && cell.token == lease.token()
-        {
-            cell.lease_expiry = None;
-        }
+        self.release_scope(&lease);
         Ok(())
+    }
+
+    async fn forget_scope(&self, lease: SyncLease) -> Result<()> {
+        self.forget_scope_under(&lease)
     }
 
     async fn abandon_sync_leases(&self) -> Result<usize> {

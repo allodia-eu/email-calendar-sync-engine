@@ -192,6 +192,7 @@ impl Provider for FakeMail {
         Ok(ReportReceipt::new(report.target.clone()))
     }
 }
+impl engine_provider::MailboxWrites for FakeMail {}
 
 #[async_trait::async_trait]
 impl CalendarWrites for FakeMail {

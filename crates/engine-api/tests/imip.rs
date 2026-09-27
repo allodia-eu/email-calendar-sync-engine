@@ -49,6 +49,7 @@ impl Provider for SourceProvider {
     }
 }
 
+impl engine_provider::MailboxWrites for SourceProvider {}
 impl CalendarWrites for SourceProvider {}
 
 /// The engine, a provider serving the captured invitation, and a message to read it as.

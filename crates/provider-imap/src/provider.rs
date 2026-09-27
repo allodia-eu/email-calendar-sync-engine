@@ -20,8 +20,9 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt, MessageReport,
-    Provider, ProviderResult, ReportReceipt, ScopeSync, SourceStream, SubmissionReceipt,
+    CalendarWrites, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt, MailboxEdit,
+    MailboxEditReceipt, MailboxWrites, MessageReport, Provider, ProviderResult, ReportReceipt,
+    ScopeSync, SourceStream, SubmissionReceipt,
 };
 use futures_util::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -387,6 +388,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
     ) -> ProviderResult<ReportReceipt> {
         let mut connection = self.session().await?;
         let result = crate::report::report_message(&mut connection, report).await;
+        connection.settle(result)
+    }
+}
+
+/// Changes the account's folder tree (`CREATE`, `RENAME`, `DELETE`) over a pooled session.
+///
+/// A thin borrow-and-call, like [`Provider::edit_mail`]: the path building, the fallbacks and
+/// the subscription bookkeeping live in `crate::mailbox_write`.
+#[async_trait]
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> MailboxWrites for ImapProvider<S> {
+    async fn edit_mailbox(
+        &self,
+        _account: &AccountId,
+        edit: &MailboxEdit,
+    ) -> ProviderResult<MailboxEditReceipt> {
+        let mut connection = self.session().await?;
+        let result = crate::mailbox_write::edit_mailbox(&mut connection, edit).await;
         connection.settle(result)
     }
 }

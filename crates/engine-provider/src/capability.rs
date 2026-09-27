@@ -36,6 +36,7 @@ pub struct Capabilities {
     mail: bool,
     mail_writes: bool,
     mail_drafts: bool,
+    pub(crate) mailbox_writes: bool,
     /// `None` when the adapter cannot report a message at all; otherwise which
     /// verdicts it can express and how much the provider tells us. One field rather
     /// than several, so "acknowledged but cannot report" is unrepresentable.
@@ -78,6 +79,7 @@ impl Capabilities {
             mail: false,
             mail_writes: false,
             mail_drafts: false,
+            mailbox_writes: false,
             mail_report: None,
             message_source: false,
             sender_identities: None,

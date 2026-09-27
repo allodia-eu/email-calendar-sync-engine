@@ -130,6 +130,9 @@ pub enum PendingOpKind {
     MailDraftPut,
     /// Removing a stored draft: discarded, or sent and now stale.
     MailDraftDelete,
+    /// Changing an account's folder tree: creating, renaming, moving, trashing or deleting
+    /// a folder.
+    MailboxEdit,
     /// Creating an event.
     CalendarCreate,
     /// Applying an edit to a stored event.
@@ -155,12 +158,13 @@ impl PendingOpKind {
     /// a new variant impossible to forget: adding one there is a compile error, and the
     /// round-trip test over this list is what then catches a missing decode arm, which no
     /// compiler sees because decoding matches strings.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::MailSubmit,
         Self::MailEdit,
         Self::MailReport,
         Self::MailDraftPut,
         Self::MailDraftDelete,
+        Self::MailboxEdit,
         Self::CalendarCreate,
         Self::CalendarPatch,
         Self::CalendarDocument,
