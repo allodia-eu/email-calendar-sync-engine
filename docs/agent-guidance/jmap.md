@@ -309,8 +309,12 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   6,679 messages (1.1 GB) at the session's width of 4: `Blob/get` batches warmed all of them
   in 9.1 s, while one download per message drew `429 Too Many Requests` after 549, because
   Stalwart also rate-limits requests per account and a batch sends a 25th as many. Fastmail
-  implements the extension but refuses it to an API-token client (`403 unknownCapability`,
-  "Disallowed capabilities for this type/client"), so there it stays one download per message.
+  refuses the extension to an API-token client (`403 unknownCapability`, "Disallowed
+  capabilities for this type/client") and grants it to an OAuth-authorised one. It paces an
+  account's blob reads at about 25 a second either way: a first warm of 6,733 messages (956 MB)
+  through `Blob/get` over OAuth took 268.5 s, the same 25 a second one download per message
+  gets, at 3.6 MB/s on a 200 Mbit/s line. On Fastmail a batch therefore saves requests, not
+  time.
   Proof: `tests/live_blob_batch.rs`, byte-equal with the download and with a `notFound`
   control arm.
 - **Mail writes (`edit_mail`).** The three provider-neutral edits (`modeling.md`)
