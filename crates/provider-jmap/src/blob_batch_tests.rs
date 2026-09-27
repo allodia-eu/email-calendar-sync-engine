@@ -200,3 +200,67 @@ async fn a_server_without_blob_get_is_answered_by_downloads() {
     );
     assert_eq!(executor.download_urls.lock().unwrap().len(), 2);
 }
+
+/// Downloads that stay in flight for a scheduler turn, counting how many overlap.
+struct Overlapping {
+    inner: FakeExecutor,
+    now: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Executor for Overlapping {
+    async fn execute(
+        &self,
+        request: &crate::request::Request,
+    ) -> Result<crate::request::Response, crate::error::JmapError> {
+        self.inner.execute(request).await
+    }
+
+    async fn download(&self, url: &str) -> Result<Vec<u8>, crate::error::JmapError> {
+        use std::sync::atomic::Ordering;
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        let body = self.inner.download(url).await;
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        body
+    }
+
+    async fn upload(
+        &self,
+        url: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Result<String, crate::error::JmapError> {
+        self.inner.upload(url, media_type, bytes).await
+    }
+
+    fn session(&self) -> &crate::session::Session {
+        self.inner.session()
+    }
+}
+
+#[tokio::test]
+async fn a_batch_of_large_messages_downloads_them_side_by_side() {
+    // A batch holding several large messages would otherwise hold its request slot for the
+    // sum of their downloads, one after another.
+    let executor = Overlapping {
+        inner: FakeExecutor::from_session(&session(), vec![]).with_download_body(b"bytes"),
+        now: std::sync::atomic::AtomicUsize::new(0),
+        peak: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let messages: Vec<Message> = (0..8)
+        .map(|i| message(&format!("M{i}"), &format!("BIG{i}"), Some(INLINE_MAX + 1)))
+        .collect();
+
+    let outcomes: Vec<_> = fetch_batch(&executor, &messages).collect().await;
+
+    assert_eq!(outcomes.len(), 8);
+    let peak = executor.peak.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(peak > 1, "the downloads ran one after another");
+    assert!(
+        peak <= 4,
+        "more in flight ({peak}) than the session's width allows"
+    );
+}

@@ -72,7 +72,19 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   bad request and is not one; `JmapThrottles` is what tells the shared send funnel to wait it
   out (`http-throttling.md`). Because connect narrows the gate, this adapter alone cannot
   reach the limit — it takes a second client of the same account, which is what
-  `tests/live_concurrency_limit.rs` sets up.
+  `tests/live_concurrency_limit.rs` sets up. What servers do *past* the number differs, and is
+  why the gate covers downloads as well: a hosted Stalwart (Thundermail) refuses the
+  downloads beyond it with that `400`, where the harness's did not; Fastmail says 10, refuses
+  nothing, and paces an account's downloads at about 25 a second whatever the width (5 to 100
+  in flight, HTTP/2 or HTTP/1.1, all measured at 25), so width past the number buys nothing
+  there either.
+- **Stalwart also limits requests per account over time**, separately from concurrency: the
+  harness and Thundermail both answer `429` after about 1,000 requests in a minute, with a
+  problem-details body ("try again in a few seconds") and **no `Retry-After`**, so the funnel
+  falls back to its own backoff. Measured on Thundermail: 4,000 downloads at the session's
+  width of 4 were throttled at requests 996, 1,999, 3,027 and 4,059, and averaged 19 a second
+  against about 40 unthrottled. A warm at one request per message therefore cannot pass about
+  1,000 messages a minute there; `Blob/get` (below) needs a 25th as many requests.
 - **Session discovery + URL policy.** The session is fetched (well-known →
   redirect handled), then capabilities, account ids (per `primaryAccounts`, *not*
   assumed), and the core limits are read. `JmapClient::connect` reports the phase to
@@ -286,7 +298,9 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `Blob/get` with `properties: ["data:asBase64", "size"]`, and `sources_per_request` is 25;
   elsewhere it stays 1 and the batch is one download per message. A message over
   `INLINE_MAX` (1 MiB), or of unknown size, is downloaded on its own, since base64 carries a
-  third more bytes and past that size the overhead costs more than the round trip saved. A
+  third more bytes and past that size the overhead costs more than the round trip saved;
+  those downloads are overlapped, up to the session's width, so a batch holding several does
+  not hold its request slot for their sum. A
   blob in `notFound` fails that message alone (`Permanent`, as a `404` download does); one
   returned truncated, or with data that disagrees with its `size`, is downloaded instead. A
   call refused for any reason but load (e.g. `unknownMethod`) falls back to downloads; one
@@ -294,8 +308,11 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   server that asked for fewer requests with more. **Measured on Stalwart** over a mailbox of
   6,679 messages (1.1 GB) at the session's width of 4: `Blob/get` batches warmed all of them
   in 9.1 s, while one download per message drew `429 Too Many Requests` after 549, because
-  Stalwart also rate-limits requests per account and a batch sends a 25th as many. Proof:
-  `tests/live_blob_batch.rs`, byte-equal with the download and with a `notFound` control arm.
+  Stalwart also rate-limits requests per account and a batch sends a 25th as many. Fastmail
+  implements the extension but refuses it to an API-token client (`403 unknownCapability`,
+  "Disallowed capabilities for this type/client"), so there it stays one download per message.
+  Proof: `tests/live_blob_batch.rs`, byte-equal with the download and with a `notFound`
+  control arm.
 - **Mail writes (`edit_mail`).** The three provider-neutral edits (`modeling.md`)
   fold onto **one** `Email/set`: `SetKeywords` → a `keywords/<kw>` PatchObject
   (`true` to set, `null` to clear; the `<kw>` is JSON-pointer-escaped, since a JMAP

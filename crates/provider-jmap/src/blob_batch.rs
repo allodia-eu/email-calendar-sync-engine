@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use engine_core::{error::FailureClass, mail::Message, raw::RawMime};
 use engine_provider::{ProviderError, SourceStream};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 
 use crate::{
@@ -48,7 +49,8 @@ const INLINE_BYTES_PER_CALL: u64 = 8 * 1024 * 1024;
 /// `maxObjectsInGet` and [`INLINE_BYTES_PER_CALL`] allow; the rest are downloaded one at a
 /// time. A blob the server reports `notFound` fails that message alone, as a download of it
 /// would. A blob the call returned without its data (truncated, or answered neither way) is
-/// downloaded instead. A call the server refused for any reason but load falls back to
+/// downloaded instead, as are the large messages, overlapped. A call the server refused for any
+/// reason but load falls back to
 /// downloading its messages; one refused for load, or lost to the transport, fails them, so
 /// the host tries again on its next pass rather than adding requests to a server that asked
 /// for fewer.
@@ -103,9 +105,18 @@ pub(crate) fn fetch_batch<'a>(
             }
         }
 
-        for index in alone {
-            let one = crate::blob::message_source(executor, &messages[index]).await;
-            yield (index, one.map_err(ProviderError::from));
+        // Overlapped, so a batch holding a few large messages does not hold its request slot
+        // for their sum. The account's request gate bounds how many of these and every other
+        // request are in flight together, so this cannot go past what the server allows.
+        let width = executor.session().limits().max_concurrent_requests.max(1);
+        let mut downloads = futures_util::stream::iter(alone)
+            .map(|index| async move {
+                let one = crate::blob::message_source(executor, &messages[index]).await;
+                (index, one.map_err(ProviderError::from))
+            })
+            .buffer_unordered(width);
+        while let Some(outcome) = downloads.next().await {
+            yield outcome;
         }
     })
 }

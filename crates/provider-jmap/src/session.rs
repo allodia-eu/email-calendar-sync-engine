@@ -94,14 +94,18 @@ pub struct CoreLimits {
     /// requests.
     ///
     /// Reading it rather than picking a number is what makes this right on both servers
-    /// seen so far: Stalwart says 4 and enforces it, Fastmail says 10. Measured against a
-    /// live Fastmail account over 80 bodies, throughput is linear the whole way up —
-    /// 5.4 bodies/s at 1, 21.1 at 4, **48.5 at 10** — so a constant tuned for either server
-    /// would be wrong for the other by about a factor of two in one direction or the other.
+    /// seen so far. Stalwart says 4, and a hosted deployment refuses the downloads beyond it
+    /// with that `400`. Fastmail says 10 and queues rather than refuses, and paces an
+    /// account's downloads at about 25 a second whatever the width: measured over 500
+    /// uncached messages at each of 5, 10, 20, 50 and 100 in flight, on HTTP/2 and HTTP/1.1,
+    /// the rate stayed at 25 and each request simply waited longer. So a width past the
+    /// advertised number is refused on one server and buys nothing on the other.
     ///
-    /// Note that Fastmail did not *refuse* a 16-wide drain, which was faster still (63.7).
-    /// The advertised number is respected anyway: it is what the server asked for, one of
-    /// these two servers enforces it with a hard `400`, and 9× is not worth the refusals.
+    /// A Fastmail measurement taken through a download URL rebased onto the API origin is
+    /// not a measurement of downloads: that origin answers `200` with an HTML page for the
+    /// download path, which is quick. Fastmail serves blobs from an origin of its own, which
+    /// this adapter leaves alone: it rebases a template only when the template shares the
+    /// API's origin (`rebase_template`).
     pub max_concurrent_requests: usize,
 }
 
