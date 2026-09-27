@@ -5,7 +5,7 @@
 
 use engine_core::{
     ids::{AccountId, MailboxId},
-    sync::{JmapDataType, SyncScope, SyncWindow},
+    sync::{JmapDataType, MailboxWindows, SyncScope, SyncWindow},
     time::CalendarDate,
 };
 use engine_store::{ManualClock, PruneReport};
@@ -17,6 +17,11 @@ use crate::{SqliteStore, convert};
 /// The floor date the tests prune against: `2026-04-01`, inclusive.
 fn floor() -> CalendarDate {
     CalendarDate::new(2026, 4, 1).unwrap()
+}
+
+/// The account window the tests prune to, with no mailbox held further back.
+fn windows() -> MailboxWindows {
+    SyncWindow::since(floor()).into()
 }
 
 fn account(id: &str) -> AccountId {
@@ -198,7 +203,7 @@ fn fts_matches(conn: &Connection, term: &str) -> i64 {
 #[test]
 fn removes_only_mail_dated_before_the_floor() {
     let (mut conn, a_mail, ..) = seed();
-    let report = prune_account_mail(&mut conn, &account("a"), &floor().to_string()).unwrap();
+    let report = prune_account_mail(&mut conn, &account("a"), &windows()).unwrap();
 
     // Exactly the one out-of-window message is removed.
     assert_eq!(
@@ -231,7 +236,7 @@ fn removes_only_mail_dated_before_the_floor() {
 #[test]
 fn tombstone_clears_every_derived_kind_for_the_pruned_mail() {
     let (mut conn, a_mail, ..) = seed();
-    prune_account_mail(&mut conn, &account("a"), &floor().to_string()).unwrap();
+    prune_account_mail(&mut conn, &account("a"), &windows()).unwrap();
 
     // The pruned message's object and each derived kind are gone; its neighbours keep
     // theirs, so the delete was surgical.
@@ -247,7 +252,7 @@ fn tombstone_clears_every_derived_kind_for_the_pruned_mail() {
 #[test]
 fn leaves_other_accounts_untouched() {
     let (mut conn, _, b_mail, _) = seed();
-    prune_account_mail(&mut conn, &account("a"), &floor().to_string()).unwrap();
+    prune_account_mail(&mut conn, &account("a"), &windows()).unwrap();
 
     // b-old is out of window but belongs to account b, so pruning a must keep it.
     assert_eq!(count(&conn, "object", &b_mail, "b-old"), 1);
@@ -258,7 +263,7 @@ fn leaves_other_accounts_untouched() {
 #[test]
 fn skips_non_mail_scopes() {
     let (mut conn, _, _, a_cal) = seed();
-    let report = prune_account_mail(&mut conn, &account("a"), &floor().to_string()).unwrap();
+    let report = prune_account_mail(&mut conn, &account("a"), &windows()).unwrap();
 
     // The calendar object is dated before the floor but lives in a non-mail scope, so
     // the mail prune never considers it — nor its occurrence.
@@ -277,8 +282,7 @@ fn skips_non_mail_scopes() {
 #[test]
 fn pruning_an_unknown_account_removes_nothing() {
     let (mut conn, a_mail, ..) = seed();
-    let report =
-        prune_account_mail(&mut conn, &account("never-synced"), &floor().to_string()).unwrap();
+    let report = prune_account_mail(&mut conn, &account("never-synced"), &windows()).unwrap();
     assert_eq!(report, PruneReport::default());
     assert_eq!(count(&conn, "object", &a_mail, "old"), 1);
 }
@@ -335,7 +339,7 @@ fn body_matches(conn: &Connection, term: &str) -> i64 {
 #[test]
 fn pruned_mail_takes_its_cached_body_and_source_with_it() {
     let (mut conn, ..) = seed();
-    prune_account_mail(&mut conn, &account("a"), &floor().to_string()).unwrap();
+    prune_account_mail(&mut conn, &account("a"), &windows()).unwrap();
 
     // The caches are the bulk of what an account occupies on disk, so they follow the
     // message out of the window rather than outliving it.
@@ -366,10 +370,56 @@ fn a_copy_still_live_in_another_scope_keeps_its_cached_body_and_source() {
     )
     .unwrap();
 
-    prune_account_mail(&mut conn, &account("a"), &floor().to_string()).unwrap();
+    prune_account_mail(&mut conn, &account("a"), &windows()).unwrap();
 
     for table in ["message_body", "message_source"] {
         assert_eq!(cached(&conn, table, "a", "old"), 1, "{table} dropped old");
     }
     assert_eq!(body_matches(&conn, "alpha"), 1);
+}
+
+/// Refiles one seeded message into exactly `mailboxes`.
+fn refile(conn: &Connection, scope_key: &str, key: &str, mailboxes: &[&str]) {
+    conn.execute(
+        "DELETE FROM membership WHERE scope_key = ?1 AND provider_key = ?2 AND kind = 'mailbox'",
+        (scope_key, key),
+    )
+    .unwrap();
+    for mailbox in mailboxes {
+        conn.execute(
+            "INSERT INTO membership (scope_key, provider_key, kind, value)
+             VALUES (?1, ?2, 'mailbox', ?3)",
+            (scope_key, key, mailbox),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn a_deepened_mailbox_keeps_its_older_mail_and_no_other_mailbox_does() {
+    let (mut conn, a_mail, ..) = seed();
+    for (key, date, mailboxes) in [
+        ("sent-old", "2025-06-01T09:00:00Z", &["sent"][..]),
+        ("both-old", "2025-06-01T09:00:00Z", &["inbox", "sent"][..]),
+        ("sent-ancient", "2023-01-01T09:00:00Z", &["sent"][..]),
+    ] {
+        seed_mail(&conn, &a_mail, key, Some(date), key);
+        refile(&conn, &a_mail, key, mailboxes);
+    }
+    let deepened = windows().deepen(
+        MailboxId::try_from("sent").unwrap(),
+        SyncWindow::since(CalendarDate::new(2025, 1, 1).unwrap()),
+    );
+
+    let report = prune_account_mail(&mut conn, &account("a"), &deepened).unwrap();
+
+    // `old` is in the Inbox only; `sent-ancient` is past even Sent's window.
+    assert_eq!(report.messages_removed, 2);
+    for gone in ["old", "sent-ancient"] {
+        assert_eq!(count(&conn, "object", &a_mail, gone), 0, "{gone} kept");
+    }
+    // Filed in Sent, or in Sent as well as the Inbox, it is inside Sent's window.
+    for kept in ["sent-old", "both-old", "edge", "new", "undated"] {
+        assert_eq!(count(&conn, "object", &a_mail, kept), 1, "{kept} dropped");
+    }
 }

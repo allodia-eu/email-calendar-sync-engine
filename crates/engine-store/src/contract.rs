@@ -171,6 +171,8 @@ where
     let (store, clock) = make();
     scope_cases::list_mail_by_keys_resolves_named_messages(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::a_mailbox_span_reads_one_mailbox_between_two_instants(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::a_resent_object_keeps_the_columns_no_provider_supplies(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::a_reply_joins_its_original_across_scopes(&store, &clock).await;

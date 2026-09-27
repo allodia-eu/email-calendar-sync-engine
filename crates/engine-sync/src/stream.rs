@@ -24,7 +24,7 @@ use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
     mail::Message,
     search_index::project_state_change,
-    sync::{SyncState, SyncUpdate, SyncWindow},
+    sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{EmailChunk, PassMode, Provider};
 use engine_store::{ApplyBatch, LeaseRequest, Store, StoreError, StoreRead, SyncApplied};
@@ -39,7 +39,8 @@ use crate::{
 /// batching from commit granularity.
 ///
 /// - [`window`](Self::window): the sync-depth bound (a snapshot/backfill fetches only mail on or
-///   after it); the full history by default.
+///   after it); the full history by default. It is the account's window, with any mailbox the host
+///   deepened ([`MailboxWindows::deepen`]) held further back.
 /// - [`fetch_batch`](Self::fetch_batch): objects per provider round trip (`0` = the provider's
 ///   protocol maximum). Larger = fewer round trips.
 /// - [`chunk_size`](Self::chunk_size): objects committed and reported per chunk (`0` = one chunk
@@ -47,10 +48,10 @@ use crate::{
 ///
 /// A large `fetch_batch` with a small `chunk_size` is the sweet spot: few round
 /// trips *and* immediate row-by-row rendering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamTuning {
-    /// The sync-depth window (full history by default).
-    pub window: SyncWindow,
+    /// The sync-depth window per mailbox (full history by default).
+    pub window: MailboxWindows,
     /// Objects per network round trip (`0` = provider maximum).
     pub fetch_batch: usize,
     /// Objects committed and reported per chunk (`0` = one chunk per batch).
@@ -62,7 +63,7 @@ impl StreamTuning {
     #[must_use]
     pub fn new(fetch_batch: usize, chunk_size: usize) -> Self {
         Self {
-            window: SyncWindow::full(),
+            window: MailboxWindows::default(),
             fetch_batch,
             chunk_size,
         }
@@ -73,7 +74,7 @@ impl StreamTuning {
     #[must_use]
     pub fn responsive() -> Self {
         Self {
-            window: SyncWindow::full(),
+            window: MailboxWindows::default(),
             fetch_batch: 200,
             chunk_size: 3,
         }
@@ -84,16 +85,18 @@ impl StreamTuning {
     #[must_use]
     pub fn bulk() -> Self {
         Self {
-            window: SyncWindow::full(),
+            window: MailboxWindows::default(),
             fetch_batch: 500,
             chunk_size: 100,
         }
     }
 
-    /// Bounds this tuning to a sync-depth `window` (builder-style).
+    /// Bounds this tuning to a sync-depth `window` (builder-style): a plain
+    /// [`SyncWindow`](engine_core::sync::SyncWindow) for the whole account, or
+    /// [`MailboxWindows`] to hold some mailboxes further back.
     #[must_use]
-    pub fn within(mut self, window: SyncWindow) -> Self {
-        self.window = window;
+    pub fn within(mut self, window: impl Into<MailboxWindows>) -> Self {
+        self.window = window.into();
         self
     }
 }
@@ -116,7 +119,7 @@ pub(crate) struct FolderPass<'a, S, O> {
     /// The lease every scope in this pass claims under.
     pub(crate) req: &'a LeaseRequest,
     /// Depth window, fetch batching and commit granularity.
-    pub(crate) tuning: StreamTuning,
+    pub(crate) tuning: &'a StreamTuning,
     /// Told about every committed chunk.
     pub(crate) observer: &'a O,
     /// The account's Sent mailboxes, resolved once for the whole pass.
@@ -146,6 +149,12 @@ where
         sent,
     } = *pass;
     let scope = provider.email_scope(account);
+    // A folder-bound scope fetches under its own mailbox's window. An account-wide one (JMAP,
+    // Gmail) is one enumeration serving every mailbox, and the adapter takes a single window,
+    // so it fetches under the account's; its deltas are still admitted per mailbox below.
+    let window = folder_of(&scope).map_or(tuning.window.account(), |mailbox| {
+        tuning.window.window_for(mailbox)
+    });
     let mut reclaims = 0u32;
     'restart: loop {
         let claim = store
@@ -161,7 +170,7 @@ where
         let mut stream = provider.stream_email(
             account,
             pass_cursor.as_ref(),
-            tuning.window,
+            window,
             tuning.fetch_batch,
             tuning.chunk_size,
         );
@@ -186,7 +195,7 @@ where
             let total = chunk.total;
             let is_reconcile_final = chunk.is_reconcile_final();
             let projected = Instant::now();
-            let (update, advance_to) = build_update(chunk, tuning.window, &mut present);
+            let (update, advance_to) = build_update(chunk, &tuning.window, &mut present);
             let mut derived = derive_messages(changed_of(&update));
             for change in update.patched() {
                 derived.push_state_change(project_state_change(change));
@@ -284,7 +293,7 @@ impl RunningApplied {
 /// how a message moved into Sent by a state change was invisible to the recipient observations.
 fn build_update(
     chunk: EmailChunk,
-    window: SyncWindow,
+    window: &MailboxWindows,
     present: &mut BTreeSet<ProviderKey>,
 ) -> (SyncUpdate<Message>, Option<SyncState>) {
     let EmailChunk {
@@ -323,15 +332,37 @@ fn build_update(
     (update.with_patched(patched), advance_to)
 }
 
-/// The messages a window admits, by the date the store will sort and filter them on.
-fn admitted(changed: Vec<Message>, window: SyncWindow) -> Vec<Message> {
-    if !window.is_bounded() {
+/// The messages a window admits, by the mailboxes they are filed in and the date the store will
+/// sort and filter them on.
+///
+/// A message in a deepened mailbox is judged by that mailbox's window, so a pass that fetched a
+/// folder further back keeps what it fetched: a fresh IMAP backfill commits its groups as
+/// additive chunks before its completing reconcile, and those chunks pass through here.
+fn admitted(changed: Vec<Message>, window: &MailboxWindows) -> Vec<Message> {
+    if !window.account().is_bounded() {
         return changed;
     }
     changed
         .into_iter()
-        .filter(|message| window.admits(message.received_at.or(message.sent_at)))
+        .filter(|message| {
+            window.admits(
+                message.mailboxes.iter(),
+                message.received_at.or(message.sent_at),
+            )
+        })
         .collect()
+}
+
+/// The one mailbox a mail scope is bound to, where the protocol syncs mail per folder (IMAP,
+/// Graph). `None` for a scope that holds the whole account's mail.
+pub(crate) fn folder_of(scope: &SyncScope) -> Option<&MailboxId> {
+    match scope {
+        SyncScope::ImapMailbox { mailbox, .. }
+        | SyncScope::GraphFolder {
+            folder: mailbox, ..
+        } => Some(mailbox),
+        _ => None,
+    }
 }
 
 /// The upserted objects of an update (a delta's `changed` or a snapshot's `objects`).

@@ -53,7 +53,7 @@ pub(super) fn seed(
 }
 
 /// The `detail` column of every step of a query's plan, joined.
-fn plan(conn: &Connection, sql: &str, params: &[Value]) -> String {
+pub(super) fn plan(conn: &Connection, sql: &str, params: &[Value]) -> String {
     crate::sql::query_all(
         conn,
         &format!("EXPLAIN QUERY PLAN {sql}"),

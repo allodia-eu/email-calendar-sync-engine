@@ -155,7 +155,9 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `Email/changes` takes no filter, so a delta carries an old message moved into scope; the
   engine drops it on apply (`SyncWindow::admits`, `store-and-sync.md`), which is where the
   bound holds for every adapter. `default_sync_window` (the full history) backs the
-  whole-scope `sync_email` drain.
+  whole-scope `sync_email` drain. A mailbox the host holds further back (`MailboxWindows`)
+  is **not** expressed in the `Email/query`: the one `Email` scope serves every mailbox and
+  the adapter receives the account's window (`store-and-sync.md`, known gap).
 - **Delta vs snapshot.** First sync (no cursor) is a snapshot; thereafter a delta,
   recovering to a snapshot on a `cannotCalculateChanges` method error (mapped to
   `FailureClass::NeedsResync`) — recovery happens on the first page, so a recovered

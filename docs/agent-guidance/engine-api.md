@@ -16,7 +16,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`; build a mailbox
   list with `mail_window` (the projected rows a list renders, across any set of accounts
   in one ordered answer), complete its conversations with `mail_on_threads` and resolve
-  a named message with `mail_by_keys`; read `mailboxes` / `messages` /
+  a named message with `mail_by_keys`; read one mailbox's messages between two instants with
+  `mail_in_mailbox_between` (newest first, capped, with the oldest date the store holds for that
+  mailbox beside them, so a host can tell "nothing older exists here" from "nothing older was
+  synced"); read `mailboxes` / `messages` /
   `calendars` / `events` and `search_mail` / `search_calendar` (which now also
   matches fetched **body** text); open a message with `message_body` (fetch-on-demand;
   caches the raw bytes on disk and the extracted text in SQLite, so reopen is a fast
@@ -154,9 +157,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   immediately instead of waiting for the fixed `LEASE_TTL` or clearing state. This
   is not a normal `Busy` recovery path for live in-process contention.
 - **Re-export signature types.** Types that appear in the facade's own signatures
-  (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
+  (`AccountId`, `MailboxId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,
-  `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `CalendarDate`) are
+  `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `MailboxWindows`,
+  `CalendarDate`) are
   re-exported so a host depends on `engine-api` alone. The concrete provider still
   comes from the adapter crate.
 - **Display-side timezone resolution.** `resolve_instant` / `resolve_instant_in` /

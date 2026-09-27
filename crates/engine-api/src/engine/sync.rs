@@ -3,7 +3,7 @@
 
 use engine_core::{
     ids::AccountId,
-    sync::{SearchDomain, SyncWindow},
+    sync::{MailboxWindows, SearchDomain},
     time::TimeZoneId,
 };
 use engine_provider::{ContactsProvider, Provider};
@@ -271,6 +271,11 @@ impl Engine {
     /// the same mail locally, producing the state that re-snapshot would, so the app can
     /// enforce the new depth immediately and wait to reconcile until the next sync.
     ///
+    /// `window` is the account's [`SyncWindow`](crate::SyncWindow), or the
+    /// [`MailboxWindows`] the account syncs under when a mailbox is held further back; a
+    /// message filed in a deepened mailbox is kept while that mailbox's window admits it, so
+    /// this never removes what a deeper pass fetched.
+    ///
     /// It keeps in-window and undated mail (an undated message is not provably out of
     /// window), non-mail data, account metadata, and every other account; each removed
     /// message takes its derived search/thread/occurrence rows with it (the same
@@ -287,7 +292,7 @@ impl Engine {
     pub async fn prune_account_mail_outside_window(
         &self,
         account: &AccountId,
-        window: SyncWindow,
+        window: impl Into<MailboxWindows>,
     ) -> Result<PruneReport, ApiError> {
         Ok(self
             .store

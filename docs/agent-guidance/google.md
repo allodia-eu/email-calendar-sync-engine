@@ -147,7 +147,9 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   body warm overlapping a snapshot used to be able to exceed it. The persisted cursor
   is that captured `historyId` (messages arriving mid-snapshot are re-reported by the
   first delta — idempotent). This is a **reconciling** pass (its present set tombstones
-  absent rows). A `SyncWindow` floor windows the enumeration to `q: after:<epoch>`.
+  absent rows). A `SyncWindow` floor windows the enumeration to `q: after:<epoch>`. A
+  label the host holds further back (`MailboxWindows`) is not expressed in that query: the
+  adapter receives the account's window (`store-and-sync.md`, known gap).
 - **Delta** (cursor `Some`): `history.list?startHistoryId=…` returns
   `messagesAdded`/`labelsAdded`/`labelsRemoved` — whose message objects are **partials**
   (id + labelIds only) — and `messagesDeleted`, which tombstones. This is an **additive**

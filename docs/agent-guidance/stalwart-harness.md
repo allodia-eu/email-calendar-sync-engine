@@ -179,7 +179,7 @@ and the cross-compile build.
 | Account | Holds | Used for |
 | --- | --- | --- |
 | `alice@test.local` | **the whole shared seed** (mail, calendar, contacts) | every read/sync/write suite; several assert its exact mailbox and calendar counts |
-| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, and the **organizer** in the scheduling suite |
+| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, the **organizer** in the scheduling suite, and the dated mail the mailbox-window suites plant (`Harness::plant_dated_email_as`) and remove again |
 | `carol@test.local` | nothing | scratch: the **attendee** in the scheduling suite |
 
 `Harness::scratch` exposes the two scratch accounts as a pair. They exist because
@@ -190,6 +190,10 @@ exchange through Alice would push her INBOX permanently over the exact count the
 mail suites assert, so the whole two-party exchange happens between Bob and Carol,
 where nothing counts what is delivered. Prefer a scratch account over relaxing an
 assertion on the seeded one.
+
+Mail older than a sync window cannot be seeded by `APPEND` (the seeder stamps the moment of
+seeding), so a depth test plants it in a scratch account over JMAP with the `receivedAt` it
+needs, which Stalwart also serves as the IMAP `INTERNALDATE`, and removes it when it ends.
 
 ## Rate limiters are disarmed on purpose
 

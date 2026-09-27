@@ -15,4 +15,4 @@ mod window;
 pub use scope::{JmapDataType, ObjectKind, SearchDomain, SyncScope};
 pub use state::SyncState;
 pub use update::{Keyed, NoPatch, SyncObject, SyncUpdate};
-pub use window::SyncWindow;
+pub use window::{MailboxWindows, SyncWindow};
