@@ -362,3 +362,26 @@ async fn capabilities_and_scopes_come_from_the_session() {
         }
     );
 }
+
+#[test]
+fn a_batch_carries_many_sources_only_where_the_account_answers_blob_get() {
+    let without = provider(vec![]);
+    assert_eq!(without.connection_info().sources_per_request, 1);
+
+    let session = json!({
+        "capabilities": {
+            "urn:ietf:params:jmap:core": { "maxObjectsInGet": 500 },
+            "urn:ietf:params:jmap:mail": {},
+            "urn:ietf:params:jmap:blob": {}
+        },
+        "accounts": { "c": { "accountCapabilities": { "urn:ietf:params:jmap:blob": {} } } },
+        "primaryAccounts": { "urn:ietf:params:jmap:mail": "c" },
+        "apiUrl": "https://mail.test.local/jmap/",
+        "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}"
+    });
+    let with = JmapProvider::with_executor(Box::new(FakeExecutor::from_session(&session, vec![])));
+    assert_eq!(
+        with.connection_info().sources_per_request,
+        crate::blob_batch::SOURCES_PER_REQUEST
+    );
+}

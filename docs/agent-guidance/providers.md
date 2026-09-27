@@ -115,12 +115,13 @@ If product pressure changes the order, the domain model tests still need JMAP an
 - **`sources_per_request` is how many message sources one `fetch_message_sources` call carries
   in a single request.** `1` (the default, which fetches one at a time through
   `fetch_message_source`) says a caller gains nothing from larger batches; `provider-imap`
-  answers a batch with one `UID FETCH <set> (BODY.PEEK[])` per mailbox and reports 25. A warm
-  cuts its work list into batches of this size and runs `concurrent_fetches` of them at once
-  (`Engine::warm_message_sources`), so on IMAP a first sync costs a round trip per batch rather
-  than per message. The HTTP adapters keep the default and overlap single fetches instead;
-  whether a batch endpoint of theirs can return the raw source this path caches is not yet
-  surveyed.
+  answers a batch with one `UID FETCH <set> (BODY.PEEK[])` per mailbox and reports 25;
+  `provider-jmap` answers with one `Blob/get` (RFC 9404) where the mail account advertises the
+  blob extension, and reports 25 there and 1 elsewhere (`jmap.md`). A warm cuts its work list
+  into batches of this size and runs `concurrent_fetches` of them at once
+  (`Engine::warm_message_sources`), so a first sync costs a round trip per batch rather than
+  per message. Graph and Google keep the default and overlap single fetches; whether a batch
+  endpoint of theirs can return the raw source this path caches is not yet surveyed.
 - **The connect phase is observable; the connect *state* is not modeled.** `ConnectionInfo` reports the *outcome* of a connect — it is sync and infallible, so it can only describe a connection that already exists. What happened on the way there is reported as it happens, through a `ConnectObserver` an adapter's **config** carries (`ImapConfig`/`JmapConfig`/`CalDavConfig::with_connect_observer`, each holding an `Option<Arc<dyn ConnectObserver>>`). Carrying it on the config, rather than as a `connect` argument, means a host that rebuilds a provider from that config after a dropped session observes the redial for free. The default is no observer, so the seam is additive. The payload is a borrowed `ConnectStep<'_>`: `Redirected { from, to }` (one per well-known `30x` hop the adapter resolves itself), `TlsEstablished(TlsVersion)`, `Authenticated`, `Discovered { endpoint }`. Shape and no-op default (`IgnoreConnectSteps`) mirror `engine-sync`'s `SyncObserver`, including the blanket impl over `Fn`.
   - **Redaction is a type-level guarantee, not a convention.** `Redirected` and `Discovered` carry `Cow<'_, str>` and their variants are `#[non_exhaustive]`, so only `engine-provider` constructs them: an adapter must go through `ConnectStep::redirected`/`::discovered`, which strip the whole `userinfo@` component from a URL's authority. A `Location` or an advertised `apiUrl` may carry `user:pw@`, and these steps exist to feed logs, which `north-star.md` forbids secrets from reaching. A clean URL borrows; a `@` outside the authority (a path, a relative CalDAV href) is untouched.
   - **Steps, never states.** There is deliberately no `Disconnected`/`Connecting`/`Connected` machine in the engine: three of the four adapters are only constructible via a completed `connect()`, so `Connecting` is unobservable through any accessor, and `connection_info()` cannot detect a socket that has since died. A **host** owns that state machine; the engine gives it the inputs — the `connect()` future, its `Ok`/`Err`, the `FailureClass`, the `ConnectionInfo`, and these steps.

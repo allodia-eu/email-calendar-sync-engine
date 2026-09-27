@@ -131,6 +131,9 @@ pub struct Session {
     contact_account_id: Option<String>,
     limits: CoreLimits,
     capabilities: engine_provider::Capabilities,
+    /// Whether the mail account answers `Blob/get` (RFC 9404), so a body warm can read many
+    /// messages' sources in one call (`crate::blob_batch`).
+    blob_get: bool,
     state: Option<String>,
 }
 
@@ -260,6 +263,14 @@ impl Session {
             .and_then(|c| c.get(capability::CORE))
             .map(parse_limits)
             .unwrap_or_default();
+        // RFC 9404 advertises the extension for the session and, per account, the accounts it
+        // covers; a blob read is scoped to an account, so it is the mail account's that counts.
+        let blob_get = has(capability::BLOB)
+            && mail_account_id.as_deref().is_some_and(|account| {
+                value
+                    .pointer(&format!("/accounts/{account}/accountCapabilities"))
+                    .is_some_and(|account_caps| account_caps.get(capability::BLOB).is_some())
+            });
 
         Ok(Self {
             api_url,
@@ -272,6 +283,7 @@ impl Session {
             contact_account_id,
             limits,
             capabilities,
+            blob_get,
             state: value
                 .get("state")
                 .and_then(Value::as_str)
@@ -348,6 +360,11 @@ impl Session {
         self.contact_account_id
             .as_deref()
             .ok_or_else(|| JmapError::session("no primary contacts account"))
+    }
+
+    /// Whether the mail account answers `Blob/get` (RFC 9404).
+    pub(crate) fn blob_get(&self) -> bool {
+        self.blob_get
     }
 
     /// The server's batching limits.
