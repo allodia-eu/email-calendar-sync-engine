@@ -35,18 +35,23 @@ mod calendar_write;
 mod capability;
 mod capability_calendar;
 mod capability_contacts;
+mod capability_mailbox;
+mod capability_submission;
 mod connect_observer;
 mod connection;
 mod contact;
 mod error;
 mod identity;
 mod mail_edit;
+mod mailbox_edit;
+mod mailbox_write;
 mod page;
 mod provider;
 #[cfg(feature = "http")]
 mod redirect;
 mod report;
 mod shared;
+mod sources;
 mod stream;
 mod submit;
 mod sync;
@@ -70,6 +75,8 @@ pub use contact::{
 pub use error::{ProviderError, ProviderResult};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use mail_edit::{MailEdit, MailEditReceipt};
+pub use mailbox_edit::{MailboxEdit, MailboxEditReceipt};
+pub use mailbox_write::MailboxWrites;
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;
 #[cfg(feature = "http")]
@@ -78,6 +85,7 @@ pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };
 pub use shared::{SharedMailbox, SharedMailboxes};
+pub use sources::{SourceStream, one_at_a_time};
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};
 pub use submit::{
     ContentIdError, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,

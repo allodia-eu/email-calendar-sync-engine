@@ -61,6 +61,27 @@ async fn login_failure_maps_to_authentication() {
 }
 
 #[tokio::test]
+async fn a_login_refused_with_limit_is_rate_limited_not_a_bad_password() {
+    // Observed from a live server that had accepted the same credentials on five sessions
+    // seconds earlier. Read as an authentication failure, a host tells the user their
+    // password is wrong and asks for it again.
+    for refusal in [
+        "a1 NO [LIMIT] LOGIN Rate limit hit.\r\n",
+        "a1 NO [limit] too many sessions\r\n",
+    ] {
+        let (stream, _) = MockStream::new(script(&[GREETING, refusal]));
+        let mut conn = Connection::open(stream).await.unwrap();
+
+        let err = conn.login("alice@test.local", "pw").await.unwrap_err();
+        assert!(
+            matches!(err, ImapError::RateLimited(_)),
+            "{refusal}: {err:?}"
+        );
+        assert_eq!(err.failure_class(), FailureClass::RateLimited, "{refusal}");
+    }
+}
+
+#[tokio::test]
 async fn a_bye_greeting_is_a_retryable_error() {
     let (stream, _) = MockStream::new(script(&["* BYE server too busy\r\n"]));
     let err = Connection::open(stream).await.unwrap_err();

@@ -24,7 +24,7 @@ use engine_core::{
 use engine_provider::{Draft, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::{IgnoreCommits, StreamTuning, submit_mail, sync_mail};
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
@@ -55,13 +55,10 @@ async fn connect_starttls(
         harness.password.as_str(),
     )
     .with_starttls();
-    ImapProvider::connect(
-        &config,
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP STARTTLS")
+    ImapAccount::connect(&config, no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP STARTTLS")
 }
 
 /// Connects a STARTTLS `ImapProvider` bound to `mailbox` with **SMTP submission over
@@ -81,13 +78,10 @@ async fn connect_starttls_submitter(
         harness.smtp_starttls_addr.as_str(),
         host_of(&harness.smtp_starttls_addr),
     );
-    ImapProvider::connect(
-        &config,
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP+SMTP STARTTLS")
+    ImapAccount::connect(&config, no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP+SMTP STARTTLS")
 }
 
 /// Connects an **implicit-TLS** IMAP provider (993) bound to `mailbox` with **SMTP
@@ -107,13 +101,10 @@ async fn connect_tls_submitter(
         harness.smtp_tls_addr.as_str(),
         host_of(&harness.smtp_tls_addr),
     );
-    ImapProvider::connect(
-        &config,
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP + implicit-TLS SMTP")
+    ImapAccount::connect(&config, no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP + implicit-TLS SMTP")
 }
 
 async fn load<T: DeserializeOwned>(store: &Store, scope: &SyncScope, key: &ProviderKey) -> T {

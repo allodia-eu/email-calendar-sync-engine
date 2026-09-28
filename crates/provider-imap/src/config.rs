@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 
-use engine_core::ids::SharedMailboxId;
 use engine_provider::ConnectObserver;
 
 /// How the IMAP session is secured: TLS from the first byte (port 993), or a
@@ -58,7 +57,6 @@ pub struct ImapConfig {
     pub(crate) smtp: Option<SmtpSettings>,
     pub(crate) since: Option<time::Date>,
     pub(crate) connect_observer: Option<Arc<dyn ConnectObserver>>,
-    pub(crate) shared_mailbox: Option<SharedMailboxId>,
 }
 
 impl ImapConfig {
@@ -81,25 +79,7 @@ impl ImapConfig {
             smtp: None,
             since: None,
             connect_observer: None,
-            shared_mailbox: None,
         }
-    }
-
-    /// Scopes the provider to a mail store shared **with** the credential rather than to
-    /// the credential's own: `handle` is what
-    /// [`list_shared_mailboxes`](engine_provider::Provider::list_shared_mailboxes) or
-    /// [`resolve_shared_mailbox`](engine_provider::Provider::resolve_shared_mailbox) handed
-    /// back — the store's path under the server's shared namespace.
-    ///
-    /// The folder list then covers that store alone, re-rooted so it reads like any account
-    /// (its `INBOX` is the Inbox), and a sent copy or a draft is filed in *its* Sent and
-    /// Drafts. The mailbox a provider is bound to must be one of that store's folders, from
-    /// its own folder list; a host building the provider that lists folders may bind any
-    /// placeholder, exactly as it does for the credential's own store.
-    #[must_use]
-    pub fn with_shared_mailbox(mut self, handle: SharedMailboxId) -> Self {
-        self.shared_mailbox = Some(handle);
-        self
     }
 
     /// Secures the IMAP session with **STARTTLS** (port 143) instead of implicit TLS:
@@ -142,7 +122,7 @@ impl ImapConfig {
     /// Enables **implicit-TLS** SMTP submission via `smtp_addr` (`host:port`,
     /// typically `:465`), authenticating with `AUTH PLAIN` using the account
     /// credentials. The injected TLS connector (from
-    /// [`ImapProvider::connect`](crate::ImapProvider::connect)) secures the
+    /// [`ImapAccount::connect`](crate::ImapAccount::connect)) secures the
     /// connection from the first byte, presenting `server_name`.
     #[must_use]
     pub fn with_smtp_tls(
@@ -187,8 +167,8 @@ impl ImapConfig {
     /// TLS version: it owns a `tokio-rustls` stream, where the `reqwest`-backed
     /// adapters see only the peer certificate (`docs/agent-guidance/tls.md`).
     ///
-    /// The observer rides on the config, so an [`ImapWatcher`](crate::ImapWatcher)'s
-    /// dedicated connection — and any redial after a dropped session — is observed too.
+    /// The observer rides on the config, so every connection the account's pool dials — for
+    /// a sync, a watch, or a replacement for a dead one — is observed, not only the first.
     /// `Arc` so one host observer can be shared across the account's providers.
     ///
     /// [`ConnectStep::TlsEstablished`]: engine_provider::ConnectStep::TlsEstablished
@@ -217,7 +197,6 @@ impl core::fmt::Debug for ImapConfig {
             .field("username", &self.username)
             .field("security", &self.security)
             .field("since", &self.since)
-            .field("shared_mailbox", &self.shared_mailbox)
             .finish_non_exhaustive()
     }
 }

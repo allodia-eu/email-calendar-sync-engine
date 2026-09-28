@@ -12,9 +12,11 @@
 //! caller's outbox (`engine-sync`). The pre-generated `Message-ID` is echoed in the
 //! receipt so the sent copy reconciles when it syncs back (`store-and-sync.md`).
 
+use std::collections::{BTreeSet, HashSet};
+
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Mailbox, MailboxRole},
+    mail::{EmailAddress, Keyword, Mailbox, MailboxRole},
 };
 use engine_provider::{Draft, SubmissionReceipt};
 use serde_json::{Map, Value, json};
@@ -23,6 +25,7 @@ use crate::{
     error::JmapError,
     executor::Executor,
     mail::mailbox_from_json,
+    mutate::keyword_pointer,
     request::{Request, capability},
     submit_body::body,
     sync_ops::objects,
@@ -71,11 +74,13 @@ pub(crate) async fn send(
     );
 
     let resp = executor.execute(&req).await?;
-    parse_receipt(
+    let receipt = parse_receipt(
         resp.result(&email_set)?,
         resp.result(&submission_set)?,
         &draft.message_id,
-    )
+    )?;
+    let kept = tag_sent_copy(executor, mail_account, receipt.email_key.as_str(), draft).await;
+    Ok(receipt.with_sent_copy_keywords(kept))
 }
 
 /// Uploads every draft attachment's bytes, returning the `blobId`s in attachment
@@ -194,7 +199,7 @@ pub(crate) fn build_draft(drafts_mailbox: &str, draft: &Draft, blob_ids: &[Strin
     let mut mailbox_ids = Map::new();
     mailbox_ids.insert(drafts_mailbox.to_owned(), Value::Bool(true));
     let (body_structure, body_values) = body(draft, blob_ids);
-    json!({
+    let mut create = json!({
         "mailboxIds": mailbox_ids,
         "keywords": { "$draft": true, "$seen": true },
         "from": [address(&draft.from)],
@@ -203,7 +208,25 @@ pub(crate) fn build_draft(drafts_mailbox: &str, draft: &Draft, blob_ids: &[Strin
         "messageId": [draft.message_id.as_str()],
         "bodyStructure": body_structure,
         "bodyValues": body_values,
-    })
+    });
+    // The Bcc header stays on the stored copy, as on every other transport's filed copy:
+    // RFC 8621 §7.5 has the server remove it during delivery.
+    for (property, addresses) in [("cc", &draft.cc), ("bcc", &draft.bcc)] {
+        if !addresses.is_empty() {
+            create[property] = addresses.iter().map(address).collect();
+        }
+    }
+    if let Some(parent) = &draft.in_reply_to {
+        create["inReplyTo"] = json!([parent.as_str()]);
+    }
+    if !draft.references.is_empty() {
+        create["references"] = draft
+            .references
+            .iter()
+            .map(MessageIdHeader::as_str)
+            .collect();
+    }
+    create
 }
 
 /// Builds the `EmailSubmission/set` create object and the `onSuccessUpdateEmail`
@@ -214,7 +237,7 @@ fn build_submission(context: &SubmitContext, draft: &Draft) -> (Value, Value) {
         "identityId": context.identity,
         "envelope": {
             "mailFrom": { "email": draft.from.email },
-            "rcptTo": draft.to.iter().map(|a| json!({ "email": a.email })).collect::<Vec<_>>(),
+            "rcptTo": envelope_recipients(draft),
         },
     });
     let mut patch = Map::new();
@@ -224,6 +247,84 @@ fn build_submission(context: &SubmitContext, draft: &Draft) -> (Value, Value) {
     let mut on_success = Map::new();
     on_success.insert("#sub".to_owned(), Value::Object(patch));
     (create, Value::Object(on_success))
+}
+
+/// Every recipient of `draft`, To + Cc + Bcc, deduplicated case-insensitively.
+///
+/// Bcc is reached through the envelope alone once the server has removed its header, so a
+/// submission that listed only To would never deliver to Cc or Bcc.
+fn envelope_recipients(draft: &Draft) -> Vec<Value> {
+    let mut seen = HashSet::new();
+    draft
+        .to
+        .iter()
+        .chain(&draft.cc)
+        .chain(&draft.bcc)
+        .filter(|recipient| seen.insert(recipient.email.to_ascii_lowercase()))
+        .map(|recipient| json!({ "email": recipient.email }))
+        .collect()
+}
+
+/// Sets `draft.sent_copy_keywords` on the filed copy `email_id`, returning the ones it
+/// carries. Asks nothing, and costs no request, when the draft wants none.
+///
+/// A request of its own after the send, rather than part of the create or of
+/// `onSuccessUpdateEmail`: the create is also a saved draft's, which must not carry them, and
+/// a keyword the server refuses inside `onSuccessUpdateEmail` would fail the whole patch and
+/// leave the sent copy in Drafts. Nor can it ride the send's request as an update of
+/// `#draft`: Stalwart answers an update keyed by a creation id `notFound` (observed live).
+/// The message has gone by now, so any failure here costs the keywords and nothing else.
+async fn tag_sent_copy(
+    executor: &dyn Executor,
+    mail_account: &str,
+    email_id: &str,
+    draft: &Draft,
+) -> BTreeSet<Keyword> {
+    let Some(update) = keyword_update(mail_account, email_id, draft) else {
+        return BTreeSet::new();
+    };
+    let mut req = Request::new([capability::CORE, capability::MAIL]);
+    let call = req.invoke("Email/set", update);
+    match executor.execute(&req).await {
+        Ok(resp) => kept_keywords(resp.result(&call), draft),
+        Err(_) => BTreeSet::new(),
+    }
+}
+
+/// The `Email/set` that puts `draft.sent_copy_keywords` on `email_id`, or `None` when the
+/// draft asks for none.
+fn keyword_update(mail_account: &str, email_id: &str, draft: &Draft) -> Option<Value> {
+    if draft.sent_copy_keywords.is_empty() {
+        return None;
+    }
+    let patch: Map<String, Value> = draft
+        .sent_copy_keywords
+        .iter()
+        .map(|keyword| (keyword_pointer(keyword.as_str()), Value::Bool(true)))
+        .collect();
+    let mut update = Map::new();
+    update.insert(email_id.to_owned(), Value::Object(patch));
+    Some(json!({ "accountId": mail_account, "update": update }))
+}
+
+/// The keywords the filed copy carries after [`keyword_update`]: every one when the server
+/// applied the update, none when it refused it or answered without reporting it applied.
+fn kept_keywords(result: Result<&Value, JmapError>, draft: &Draft) -> BTreeSet<Keyword> {
+    let applied = result.ok().is_some_and(|result| {
+        result
+            .get("updated")
+            .and_then(Value::as_object)
+            .is_some_and(|updated| !updated.is_empty())
+            && result
+                .get("notUpdated")
+                .and_then(Value::as_object)
+                .is_none_or(Map::is_empty)
+    });
+    if applied {
+        draft.sent_copy_keywords.clone()
+    } else {
+        BTreeSet::new()
+    }
 }
 
 /// A JMAP `EmailAddress` object, omitting a null display name.
@@ -283,115 +384,5 @@ pub(crate) fn set_error(result: &Value, creation_id: &str, method: &str) -> Jmap
 }
 
 #[cfg(test)]
-mod tests {
-    use engine_core::error::FailureClass;
-
-    use super::*;
-
-    fn send_response() -> Value {
-        serde_json::from_str(include_str!("../tests/fixtures/submit_send_response.json")).unwrap()
-    }
-
-    fn results(doc: &Value) -> (Value, Value) {
-        // methodResponses: [Email/set "0", EmailSubmission/set "1", implicit Email/set "1"]
-        let responses = doc["methodResponses"].as_array().unwrap();
-        (responses[0][1].clone(), responses[1][1].clone())
-    }
-
-    fn message_id() -> MessageIdHeader {
-        MessageIdHeader::new("step4-send-probe-0002@test.local").unwrap()
-    }
-
-    #[test]
-    fn parses_the_sent_email_key_and_echoes_message_id() {
-        let doc = send_response();
-        let (email, submission) = results(&doc);
-        let receipt = parse_receipt(&email, &submission, &message_id()).unwrap();
-        // The created email id (kept across the Drafts→Sent move) is the resolved key.
-        assert_eq!(receipt.email_key.as_str(), "bmaaaaal");
-        assert_eq!(receipt.message_id, message_id());
-    }
-
-    #[test]
-    fn email_set_error_classifies_and_aborts() {
-        let email = json!({
-            "notCreated": { "draft": { "type": "invalidProperties", "properties": ["from"] } }
-        });
-        let submission = json!({ "created": { "sub": { "id": "x" } } });
-        let err = parse_receipt(&email, &submission, &message_id()).unwrap_err();
-        assert_eq!(err.failure_class(), FailureClass::Permanent);
-    }
-
-    #[test]
-    fn submission_error_classifies_after_email_created() {
-        // The observed Stalwart failure when identityId is missing.
-        let email = json!({ "created": { "draft": { "id": "e1" } } });
-        let submission = json!({
-            "notCreated": { "sub": { "type": "invalidProperties", "properties": ["identityId"] } }
-        });
-        let err = parse_receipt(&email, &submission, &message_id()).unwrap_err();
-        assert_eq!(err.failure_class(), FailureClass::Permanent);
-    }
-
-    #[test]
-    fn rate_limited_submission_is_retryable() {
-        let email = json!({ "created": { "draft": { "id": "e1" } } });
-        let submission = json!({ "notCreated": { "sub": { "type": "rateLimit" } } });
-        let err = parse_receipt(&email, &submission, &message_id()).unwrap_err();
-        assert!(err.failure_class().is_retryable());
-    }
-
-    #[test]
-    fn build_draft_targets_drafts_and_carries_message_id() {
-        let context = SubmitContext {
-            drafts: "d".to_owned(),
-            sent: "e".to_owned(),
-            identity: "b".to_owned(),
-        };
-        let draft = Draft::new(
-            message_id(),
-            EmailAddress::named("Alice", "alice@test.local"),
-            vec![EmailAddress::new("bob@test.local")],
-            "Subject",
-            "Body",
-        );
-        let create = build_draft(&context.drafts, &draft, &[]);
-        assert_eq!(create["mailboxIds"]["d"], json!(true));
-        assert_eq!(create["keywords"]["$draft"], json!(true));
-        assert_eq!(create["messageId"][0], "step4-send-probe-0002@test.local");
-        assert_eq!(create["from"][0]["email"], "alice@test.local");
-
-        let (submission, on_success) = build_submission(&context, &draft);
-        assert_eq!(submission["emailId"], "#draft");
-        assert_eq!(submission["identityId"], "b");
-        // onSuccessUpdateEmail moves Drafts→Sent and clears $draft.
-        assert_eq!(on_success["#sub"]["mailboxIds/d"], Value::Null);
-        assert_eq!(on_success["#sub"]["mailboxIds/e"], json!(true));
-        assert_eq!(on_success["#sub"]["keywords/$draft"], Value::Null);
-    }
-
-    #[test]
-    fn build_draft_carries_html_as_alternative_body() {
-        let context = SubmitContext {
-            drafts: "d".to_owned(),
-            sent: "e".to_owned(),
-            identity: "b".to_owned(),
-        };
-        let draft = Draft::new(
-            message_id(),
-            EmailAddress::new("alice@test.local"),
-            vec![EmailAddress::new("bob@test.local")],
-            "Subject",
-            "Plain",
-        )
-        .with_html_body("<p>Plain</p>");
-
-        let create = build_draft(&context.drafts, &draft, &[]);
-
-        assert_eq!(create["bodyStructure"]["type"], "multipart/alternative");
-        assert_eq!(create["bodyStructure"]["subParts"][0]["partId"], "text");
-        assert_eq!(create["bodyStructure"]["subParts"][1]["partId"], "html");
-        assert_eq!(create["bodyValues"]["text"]["value"], "Plain");
-        assert_eq!(create["bodyValues"]["html"]["value"], "<p>Plain</p>");
-    }
-}
+#[path = "submit_tests.rs"]
+mod tests;

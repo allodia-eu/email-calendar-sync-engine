@@ -72,7 +72,19 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   bad request and is not one; `JmapThrottles` is what tells the shared send funnel to wait it
   out (`http-throttling.md`). Because connect narrows the gate, this adapter alone cannot
   reach the limit — it takes a second client of the same account, which is what
-  `tests/live_concurrency_limit.rs` sets up.
+  `tests/live_concurrency_limit.rs` sets up. What servers do *past* the number differs, and is
+  why the gate covers downloads as well: a hosted Stalwart (Thundermail) refuses the
+  downloads beyond it with that `400`, where the harness's did not; Fastmail says 10, refuses
+  nothing, and paces an account's downloads at about 25 a second whatever the width (5 to 100
+  in flight, HTTP/2 or HTTP/1.1, all measured at 25), so width past the number buys nothing
+  there either.
+- **Stalwart also limits requests per account over time**, separately from concurrency: the
+  harness and Thundermail both answer `429` after about 1,000 requests in a minute, with a
+  problem-details body ("try again in a few seconds") and **no `Retry-After`**, so the funnel
+  falls back to its own backoff. Measured on Thundermail: 4,000 downloads at the session's
+  width of 4 were throttled at requests 996, 1,999, 3,027 and 4,059, and averaged 19 a second
+  against about 40 unthrottled. A warm at one request per message therefore cannot pass about
+  1,000 messages a minute there; `Blob/get` (below) needs a 25th as many requests.
 - **Session discovery + URL policy.** The session is fetched (well-known →
   redirect handled), then capabilities, account ids (per `primaryAccounts`, *not*
   assumed), and the core limits are read. `JmapClient::connect` reports the phase to
@@ -196,7 +208,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `Email/set` create, into the mailbox carrying the Drafts **role**, with
   `keywords: { "$draft": true, "$seen": true }` — just no `EmailSubmission/set` after
   it. One `build_draft` serves both, so a saved draft and a sent one cannot drift apart
-  in shape.
+  in shape, and a saved draft keeps its Cc, Bcc and threading headers for the resume.
 - ⚠️ **There is no way to edit a stored draft, and this was measured rather than assumed.**
   RFC 8621 §4.6 makes `keywords` and `mailboxIds` the only mutable `Email` properties, and
   Stalwart agrees: an `Email/set` `update` naming `subject`, `bodyValues`, `bodyStructure`
@@ -238,10 +250,26 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `identityId`**, so a send first resolves the Drafts/Sent mailbox ids and the
   identity (`Mailbox/get` + `Identity/get`) before the batched create. The
   `onSuccessUpdateEmail` produces an implicit second `Email/set` response sharing
-  the submission's call id. `SetError`s classify through the same `FailureClass`
-  taxonomy. Sending is outbox-mediated by `engine-sync::submit_mail`: a durable
-  `PendingOp` (carrying the serialized draft, idempotent by `Message-ID`) precedes
-  the provider call; the result is recorded under the op lease.
+  the submission's call id. The created `Email` is the sender's copy, so it carries
+  every recipient header **including `bcc`**, plus `inReplyTo` and `references`: RFC
+  8621 §7.5 has the server **remove the Bcc header during delivery**, which is the same
+  filed-copy shape `engine-rfc5322` gives the other transports. The envelope is sent
+  explicitly, `rcptTo` = To + Cc + Bcc deduplicated case-insensitively as SMTP's
+  `RCPT TO` is: a Bcc recipient is reached through the envelope alone. Both halves are
+  pinned live (`tests/live_submit_recipients.rs`), because the server accepts a create
+  naming only `to` without complaint and delivers to nobody else. A draft's
+  `sent_copy_keywords` are set by an `Email/set` **update of its own, in a second
+  request** addressed to the id the send created, and only when it asks for any: the
+  create also serves saved drafts, which must not carry them; a keyword refused inside
+  `onSuccessUpdateEmail` would fail the whole patch and leave the copy in Drafts; and
+  Stalwart answers an update keyed by the creation id `#draft` in the same request
+  `notFound` (observed live). The receipt keeps every keyword when the update comes back
+  `updated`, and none on `notUpdated`, a method error or a failed request, none of which
+  touches the send (`tests/live_sent_copy_keywords.rs`). `SetError`s classify
+  through the same `FailureClass` taxonomy. Sending is outbox-mediated by
+  `engine-sync::submit_mail`: a durable `PendingOp` (carrying the serialized draft,
+  idempotent by `Message-ID`) precedes the provider call; the result is recorded under
+  the op lease.
   - **The identity is the one for the draft's `From`, never simply the first.** An account
     holds one identity per address it may send as, and membership of a group mailbox gives
     it the group's — which Stalwart lists **ahead of** the user's own. Taking `list[0]`
@@ -291,6 +319,31 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   body (and, later, attachments), so JMAP reaches read parity with the IMAP/Graph
   reading path — the source is fetched lazily on first open and cached by the store,
   never synced eagerly.
+- **Batched source fetch (`fetch_message_sources`, `blob_batch.rs`).** Where the *mail
+  account* advertises the blob extension (RFC 9404: `urn:ietf:params:jmap:blob` in the
+  session **and** in that account's `accountCapabilities`), many sources come back in one
+  `Blob/get` with `properties: ["data:asBase64", "size"]`, and `sources_per_request` is 25;
+  elsewhere it stays 1 and the batch is one download per message. A message over
+  `INLINE_MAX` (1 MiB), or of unknown size, is downloaded on its own, since base64 carries a
+  third more bytes and past that size the overhead costs more than the round trip saved;
+  those downloads are overlapped, up to the session's width, so a batch holding several does
+  not hold its request slot for their sum. A
+  blob in `notFound` fails that message alone (`Permanent`, as a `404` download does); one
+  returned truncated, or with data that disagrees with its `size`, is downloaded instead. A
+  call refused for any reason but load (e.g. `unknownMethod`) falls back to downloads; one
+  refused for load or lost to the transport fails its messages, rather than answering a
+  server that asked for fewer requests with more. **Measured on Stalwart** over a mailbox of
+  6,679 messages (1.1 GB) at the session's width of 4: `Blob/get` batches warmed all of them
+  in 9.1 s, while one download per message drew `429 Too Many Requests` after 549, because
+  Stalwart also rate-limits requests per account and a batch sends a 25th as many. Fastmail
+  refuses the extension to an API-token client (`403 unknownCapability`, "Disallowed
+  capabilities for this type/client") and grants it to an OAuth-authorised one. It paces an
+  account's blob reads at about 25 a second either way: a first warm of 6,733 messages (956 MB)
+  through `Blob/get` over OAuth took 268.5 s, the same 25 a second one download per message
+  gets, at 3.6 MB/s on a 200 Mbit/s line. On Fastmail a batch therefore saves requests, not
+  time.
+  Proof: `tests/live_blob_batch.rs`, byte-equal with the download and with a `notFound`
+  control arm.
 - **Mail writes (`edit_mail`).** The three provider-neutral edits (`modeling.md`)
   fold onto **one** `Email/set`: `SetKeywords` → a `keywords/<kw>` PatchObject
   (`true` to set, `null` to clear; the `<kw>` is JSON-pointer-escaped, since a JMAP
@@ -305,6 +358,21 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   server silently drops is treated as a `notFound` conflict, never a false success.
   The `mail_writes` capability is advertised whenever the account exposes mail and is
   not `isReadOnly`. Outbox-mediated by `engine-sync::edit_mail` (`crate::mutate`).
+- **Folder writes (`edit_mailbox`).** One `Mailbox/set` per edit (`crate::mailbox_write`):
+  `Create` → `create` with `isSubscribed: true`; `Update` and `Trash` → an `update` of
+  `name` + `parentId` (trashing is a move under Trash, so the mail and subfolders go with
+  it); `Delete` → a `Mailbox/get` of every `parentId`, then one `destroy` of the subtree
+  **deepest first** with `onDestroyRemoveEmails: true`, because RFC 8621 refuses a mailbox
+  with children (`mailboxHasChild`). Mailbox ids survive rename and move, so every receipt
+  but a create's names the id it was given. Stalwart's answers, measured and pinned in
+  `mailbox_set_refusals_response.json`: a sibling of the same name is `alreadyExists` **with
+  an `existingId`** (a create resolves to it, since the op is retried; an update is a
+  `Conflict`); a missing parent and a parent inside the folder are both `invalidProperties`
+  (only the cycle names `parentId`), classified `Conflict` unless the error names `name`
+  alone; a missing target is `notFound`. Stalwart applies a `destroy` list in array order;
+  RFC 8620 does not promise that, so a server that reorders would refuse the parent until a
+  retry. `mailbox_writes` rides the `mail_writes` gate. Live: `tests/live_mailbox_writes.rs`,
+  as the scratch account `carol@`.
 - **Push (EventSource → `Watch`).** `JmapWatcher` holds a **dedicated** long-lived
   `text/event-stream` connection to the session `eventSourceUrl` (RFC 8620 §7.3;
   opened `types=Email,Mailbox&closeafter=no&ping=<secs>`), parses the Server-Sent

@@ -124,16 +124,31 @@ fn search_with_no_matches_is_empty() {
 
 #[test]
 fn search_reads_the_extended_esearch_all_set() {
-    // A server may answer the extended ESEARCH form instead; the `ALL` sequence-set's
-    // numbers are collected (range endpoints suffice for the lowest UID the caller needs).
+    // An IMAP4rev2 server always answers the extended ESEARCH form, and compacts the `ALL`
+    // set into ranges. Every UID in a range matched: a backfill fetches this list, so a
+    // parser that kept only the endpoints synced two messages of a window that matched a
+    // whole folder.
     assert_eq!(
         parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 5:8"#])),
-        vec![5, 8]
+        vec![5, 6, 7, 8]
     );
     assert_eq!(
         parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 1:3,7"#])),
-        vec![1, 3, 7]
+        vec![1, 2, 3, 7]
     );
+    // A range may name its ends in either order (RFC 9051 `seq-range`).
+    assert_eq!(
+        parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 9:7"#])),
+        vec![7, 8, 9]
+    );
+}
+
+#[test]
+fn a_hostile_esearch_range_is_bounded() {
+    // A server announcing every UID there could be must not make the client allocate
+    // for them.
+    let uids = parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 1:4294967295"#]));
+    assert_eq!(uids.len(), super::MAX_SEARCH_UIDS);
 }
 
 #[test]

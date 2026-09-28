@@ -1,5 +1,5 @@
-//! The repair: a Sent copy that cannot be filed over the provider's standing IMAP session
-//! is filed over a freshly dialed one.
+//! The repair: a Sent copy that cannot be filed over a pooled IMAP connection is filed over a
+//! freshly dialed one.
 //!
 //! This needs a **real dial**, so it runs against in-process TLS servers rather than the
 //! `MockStream` the rest of the filing tests use — the whole point is what happens when the
@@ -25,7 +25,7 @@ use tokio_rustls::{
     rustls::{ServerConfig, pki_types::PrivatePkcs8KeyDer},
 };
 
-use crate::{ImapProvider, config::ImapConfig};
+use crate::{ImapAccount, ImapProvider, config::ImapConfig};
 
 /// A self-signed cert and the acceptor presenting it, plus a connector trusting only it.
 fn tls_pair() -> (
@@ -266,17 +266,14 @@ async fn provider_over(
         "pw",
     )
     .with_smtp_tls(format!("127.0.0.1:{smtp_port}"), "127.0.0.1");
-    let provider = ImapProvider::connect(
-        &config,
-        connector,
-        MailboxId::try_from("INBOX").expect("mailbox"),
-    )
-    .await
-    .expect("connect");
+    let provider = ImapAccount::connect(&config, connector)
+        .await
+        .map(|account| account.provider(MailboxId::try_from("INBOX").expect("mailbox")))
+        .expect("connect");
     (provider, appends)
 }
 
-/// The fix, end to end: the standing session is dead by the time the send needs it, and the
+/// The fix, end to end: the pooled connection is dead by the time the send needs it, and the
 /// Sent copy still lands — on a session dialed for the purpose.
 #[tokio::test]
 async fn a_dead_standing_session_does_not_lose_the_sent_copy() {

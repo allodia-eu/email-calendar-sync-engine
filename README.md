@@ -102,7 +102,7 @@ let provider = JmapProvider::connect(config).await?;
 ```rust
 use engine_core::ids::MailboxId;
 use engine_tls::TlsClientConfig;
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{ImapAccount, ImapConfig};
 
 let tls = TlsClientConfig::bundled();
 let config = ImapConfig::new(
@@ -112,12 +112,10 @@ let config = ImapConfig::new(
     "app-password",
 );
 
-let provider = ImapProvider::connect(
-    &config,
-    tls.connector(),
-    MailboxId::try_from("INBOX")?,
-)
-.await?;
+// One per account: it holds the account's connection budget.
+let imap = ImapAccount::connect(&config, tls.connector()).await?;
+// One per folder, all sharing that budget. Binding a folder dials nothing.
+let provider = imap.provider(MailboxId::try_from("INBOX")?);
 ```
 
 ### Sync mail

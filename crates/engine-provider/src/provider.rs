@@ -15,8 +15,9 @@ use engine_core::{
 
 use crate::{
     CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, MailEdit,
-    MailEditReceipt, MessageReport, ProviderError, ProviderResult, ReportReceipt, ScopeSync,
-    SenderIdentity, SenderIdentityId, SharedMailbox, SubmissionReceipt, error::unsupported,
+    MailEditReceipt, MailboxWrites, MessageReport, ProviderError, ProviderResult, ReportReceipt,
+    ScopeSync, SenderIdentity, SenderIdentityId, SharedMailbox, SourceStream, SubmissionReceipt,
+    error::unsupported,
 };
 // `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
 // rustdoc resolves those against the *module's* scope — a link that worked in the crate root
@@ -41,7 +42,7 @@ use crate::{
 /// scope granularity. Adapters own protocol pagination, batching, retries, and
 /// quirks; the store owns atomic application.
 #[async_trait]
-pub trait Provider: CalendarWrites + Send + Sync {
+pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     /// Everything this adapter learned about its connection once it was established:
     /// the data domains it can serve ([`ConnectionInfo::capabilities`]) and the
     /// transport versions the server negotiated.
@@ -319,6 +320,23 @@ pub trait Provider: CalendarWrites + Send + Sync {
         Err(unsupported("message source fetch"))
     }
 
+    /// Fetches the raw sources of `messages`, yielding each as `(index into messages,
+    /// result)` as it arrives, in whatever order the transport delivers them. Every index is
+    /// yielded exactly once, and a failure is that message's alone unless the transport says
+    /// otherwise in the error.
+    ///
+    /// A transport that can carry several sources in one request overrides this and reports
+    /// how many in [`ConnectionInfo::sources_per_request`]. The default fetches them one after
+    /// another through [`fetch_message_source`](Self::fetch_message_source), so a caller may
+    /// use this whatever the adapter.
+    fn fetch_message_sources<'a>(
+        &'a self,
+        account: &'a AccountId,
+        messages: &'a [Message],
+    ) -> SourceStream<'a> {
+        crate::sources::one_at_a_time(self, account, messages)
+    }
+
     /// Reports `report.target` to the provider as junk, not junk, or phishing.
     ///
     /// A report is not a move: the provider files the message itself, so a caller that
@@ -394,12 +412,10 @@ pub trait Provider: CalendarWrites + Send + Sync {
     }
 
     /// Every mail store this credential can open besides the one it opens by default —
-    /// shared-mailbox discovery for a server that lists them (`crate::shared`).
-    ///
-    /// A fact about the **credential**, like [`connection_info`](Self::connection_info): it
-    /// takes no account, builds no scope and touches no store, and the answer is the same
-    /// whichever store this provider is bound to. Adapters advertising
-    /// [`SharedMailboxes::Enumerable`] override this; the default rejects.
+    /// shared-mailbox discovery for a server that lists them (`crate::shared`). A fact about
+    /// the **credential**, like [`connection_info`](Self::connection_info): it takes no
+    /// account, touches no store, and is the same whichever store this provider is bound to.
+    /// Adapters advertising [`SharedMailboxes::Enumerable`] override this; the default rejects.
     ///
     /// # Errors
     ///
@@ -420,10 +436,10 @@ pub trait Provider: CalendarWrites + Send + Sync {
     ///
     /// A classified [`ProviderError`]:
     /// [`FailureClass::Permanent`](engine_core::error::FailureClass::Permanent) when nothing
-    /// this credential can open answers to `address` — which on some transports includes a
-    /// mailbox that exists but was never shared with it, because the server will not say
-    /// which — and [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState)
-    /// on an adapter with no mechanism at all.
+    /// this credential can open answers to `address` (on some transports including a mailbox
+    /// never shared with it: the server will not say which), and
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState) on an
+    /// adapter with no mechanism at all.
     async fn resolve_shared_mailbox(&self, address: &str) -> ProviderResult<SharedMailbox> {
         crate::shared::resolve_by_listing(self, address).await
     }

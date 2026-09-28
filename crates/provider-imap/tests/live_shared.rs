@@ -4,10 +4,10 @@
 //! a full share and a read-only one — is `live_imap_shared_contract.rs`, run against Dovecot
 //! too.
 //!
-//! The host's flow is the one exercised: scope a provider with
-//! `ImapConfig::with_shared_mailbox`, list the store's folders through a provider bound to a
-//! placeholder, then bind one per folder to an id *from that list* — no path is built here
-//! that a host could not have been handed.
+//! The host's flow is the one exercised: log in once, take the shared store's view of that
+//! account with `ImapAccount::with_shared_mailbox`, list the store's folders through a provider
+//! bound to a placeholder, then bind one per folder to an id *from that list* — no path is
+//! built here that a host could not have been handed.
 //!
 //! Every assertion is on content the harness controls — folder roles, rights letters, a
 //! `Message-ID` — never on a server-assigned UID. Skips with no `STALWART_IMAP_ADDR`.
@@ -21,11 +21,12 @@ use engine_core::{
     sync::{SyncObject, SyncUpdate},
 };
 use engine_provider::{Draft, Provider, SharedMailbox, SharedMailboxes};
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::{Harness, SHARED_GROUP_ACCOUNT};
 use tokio_rustls::client::TlsStream;
 
 type Live = ImapProvider<TlsStream<tokio::net::TcpStream>>;
+type LiveAccount = ImapAccount<TlsStream<tokio::net::TcpStream>>;
 
 fn account() -> AccountId {
     AccountId::try_from("live-shared").unwrap()
@@ -55,22 +56,21 @@ fn config(harness: &Harness, user: &str, password: &str) -> ImapConfig {
     )
 }
 
-async fn connect(config: &ImapConfig, mailbox: &str) -> Live {
-    ImapProvider::connect(
+async fn login(config: &ImapConfig) -> LiveAccount {
+    ImapAccount::connect(
         config,
         engine_tls::TlsClientConfig::dangerous_accept_any().connector(),
-        MailboxId::try_from(mailbox).unwrap(),
     )
     .await
     .expect("connect IMAP")
 }
 
-async fn as_alice(harness: &Harness, mailbox: &str) -> Live {
-    connect(
-        &config(harness, &harness.account, &harness.password),
-        mailbox,
-    )
-    .await
+fn bind(account: &LiveAccount, mailbox: &str) -> Live {
+    account.provider(MailboxId::try_from(mailbox).unwrap())
+}
+
+async fn as_alice(harness: &Harness) -> LiveAccount {
+    login(&config(harness, &harness.account, &harness.password)).await
 }
 
 fn snapshot<T: SyncObject>(update: SyncUpdate<T>) -> Vec<T> {
@@ -106,17 +106,20 @@ fn has_message_id(messages: &[Message], id: &str) -> bool {
         .any(|m| m.envelope.message_id.iter().any(|i| i.as_str() == id))
 }
 
-/// Discovers `address` as alice, then scopes a config to it — the two halves of
-/// onboarding.
-async fn scoped_to(harness: &Harness, address: &str) -> (SharedMailbox, ImapConfig) {
-    let store = as_alice(harness, "INBOX")
-        .await
+/// Logs in with `config`, discovers `address`, then takes that store's view of the account —
+/// the two halves of onboarding, over one login.
+async fn scoped_to(config: &ImapConfig, address: &str) -> (SharedMailbox, LiveAccount) {
+    let account = login(config).await;
+    let store = bind(&account, "INBOX")
         .resolve_shared_mailbox(address)
         .await
         .unwrap_or_else(|err| panic!("{address} should resolve: {err}"));
-    let config = config(harness, &harness.account, &harness.password)
-        .with_shared_mailbox(store.handle.clone());
-    (store, config)
+    let shared = account.with_shared_mailbox(store.handle.clone());
+    (store, shared)
+}
+
+fn alice(harness: &Harness) -> ImapConfig {
+    config(harness, &harness.account, &harness.password)
 }
 
 #[tokio::test]
@@ -131,7 +134,10 @@ async fn live_a_credential_nothing_is_shared_with_gets_an_empty_list_not_a_refus
     // capability says so, and the honest answer is an empty list — "none yet", which a host
     // can show — rather than a refusal it would have to explain.
     let owner = harness.read_only_share_owner().clone();
-    let bob = connect(&config(&harness, &owner.address, &owner.password), "INBOX").await;
+    let bob = bind(
+        &login(&config(&harness, &owner.address, &owner.password)).await,
+        "INBOX",
+    );
     assert_eq!(
         bob.connection_info().capabilities.shared_mailboxes(),
         SharedMailboxes::Enumerable
@@ -144,22 +150,20 @@ async fn live_a_handle_the_credential_cannot_open_is_refused() {
     let Some(harness) = ready("live_a_handle_the_credential_cannot_open_is_refused") else {
         return;
     };
+    let alice = as_alice(&harness).await;
     // Well-formed, under the shared namespace — and nothing there for alice.
-    let gone = config(&harness, &harness.account, &harness.password).with_shared_mailbox(
+    let gone = alice.with_shared_mailbox(
         SharedMailboxId::try_from("Shared Folders/nobody@test.local").unwrap(),
     );
-    let err = connect(&gone, "INBOX")
-        .await
+    let err = bind(&gone, "INBOX")
         .sync_mailboxes(&account(), None)
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);
 
     // Not under any foreign namespace at all: not a handle discovery produced.
-    let bogus = config(&harness, &harness.account, &harness.password)
-        .with_shared_mailbox(SharedMailboxId::try_from("Archive").unwrap());
-    let err = connect(&bogus, "INBOX")
-        .await
+    let bogus = alice.with_shared_mailbox(SharedMailboxId::try_from("Archive").unwrap());
+    let err = bind(&bogus, "INBOX")
         .sync_mailboxes(&account(), None)
         .await
         .unwrap_err();
@@ -179,10 +183,9 @@ async fn live_a_draft_for_a_store_without_drafts_never_lands_in_the_credentials_
     // folder. Qualified, it targets bob's store, which Stalwart refuses outright
     // (`NO [CANNOT] … create root folders under shared folders`). The failure is the proof.
     let owner = harness.read_only_share_owner().address.clone();
-    let (_, config) = scoped_to(&harness, &owner).await;
-    let shared = connect(&config, "INBOX").await;
-    let inbox = folders(&shared).await.remove(0);
-    let shared = connect(&config, inbox.id.as_str()).await;
+    let (_, store) = scoped_to(&alice(&harness), &owner).await;
+    let inbox = folders(&bind(&store, "INBOX")).await.remove(0);
+    let shared = bind(&store, inbox.id.as_str());
 
     let message_id = "imap-shared-draft-probe@test.local";
     let draft = Draft::new(
@@ -198,12 +201,13 @@ async fn live_a_draft_for_a_store_without_drafts_never_lands_in_the_credentials_
         .expect_err("the fallback targets the share, which refuses the CREATE");
     assert!(!err.is_retryable(), "{err}");
 
-    let own_drafts = folders(&as_alice(&harness, "INBOX").await)
+    let own = as_alice(&harness).await;
+    let own_drafts = folders(&bind(&own, "INBOX"))
         .await
         .into_iter()
         .find(|f| f.role == Some(MailboxRole::Drafts))
         .expect("alice has a Drafts");
-    let drafts = mail(&as_alice(&harness, own_drafts.id.as_str()).await).await;
+    let drafts = mail(&bind(&own, own_drafts.id.as_str())).await;
     assert!(!has_message_id(&drafts, message_id), "{drafts:?}");
 }
 
@@ -213,9 +217,9 @@ async fn live_a_message_sent_as_the_group_is_filed_in_the_groups_sent() {
     else {
         return;
     };
-    let (_, config) = scoped_to(&harness, SHARED_GROUP_ACCOUNT).await;
-    let config = config.with_smtp(harness.smtp_addr.as_str());
-    let listing = folders(&connect(&config, "INBOX").await).await;
+    let config = alice(&harness).with_smtp(harness.smtp_addr.as_str());
+    let (_, store) = scoped_to(&config, SHARED_GROUP_ACCOUNT).await;
+    let listing = folders(&bind(&store, "INBOX")).await;
     let group_sent = listing
         .iter()
         .find(|f| f.role == Some(MailboxRole::Sent))
@@ -226,7 +230,7 @@ async fn live_a_message_sent_as_the_group_is_filed_in_the_groups_sent() {
         .find(|f| f.role == Some(MailboxRole::Inbox))
         .unwrap()
         .clone();
-    let shared = connect(&config, inbox.id.as_str()).await;
+    let shared = bind(&store, inbox.id.as_str());
 
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -248,13 +252,14 @@ async fn live_a_message_sent_as_the_group_is_filed_in_the_groups_sent() {
         receipt.email_key.as_str(),
         group_sent.id.as_str()
     );
-    let sent = mail(&connect(&config, group_sent.id.as_str()).await).await;
+    let sent = mail(&bind(&store, group_sent.id.as_str())).await;
     assert!(has_message_id(&sent, &message_id));
-    let own_sent = folders(&as_alice(&harness, "INBOX").await)
+    let alice = as_alice(&harness).await;
+    let own_sent = folders(&bind(&alice, "INBOX"))
         .await
         .into_iter()
         .find(|f| f.role == Some(MailboxRole::Sent))
         .expect("alice has a Sent");
-    let own = mail(&as_alice(&harness, own_sent.id.as_str()).await).await;
+    let own = mail(&bind(&alice, own_sent.id.as_str())).await;
     assert!(!has_message_id(&own, &message_id), "filed in alice's Sent");
 }

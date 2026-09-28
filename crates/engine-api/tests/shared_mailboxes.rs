@@ -12,7 +12,7 @@ use engine_api::{
     ApiError, Capabilities, Engine, FailureClass, Mailbox, MailboxAccess, Provider, SharedMailbox,
     SharedMailboxId, SharedMailboxes, SyncError,
 };
-use engine_provider::{CalendarWrites, ConnectionInfo, ProviderResult};
+use engine_provider::{CalendarWrites, ConnectionInfo, MailboxWrites, ProviderResult};
 
 /// An enumerable adapter that counts how often it is asked, so a test can show a refused
 /// address never reached it.
@@ -41,6 +41,7 @@ impl Provider for Enumerable {
 }
 
 impl CalendarWrites for Enumerable {}
+impl MailboxWrites for Enumerable {}
 
 #[tokio::test]
 async fn a_host_lists_and_resolves_through_the_facade() {

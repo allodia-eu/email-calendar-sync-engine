@@ -14,7 +14,7 @@ use engine_core::{
 use engine_provider::Provider;
 use engine_sync::{
     ensure_message_source, fetch_inline_parts, fetch_message_attachment, fetch_message_attachments,
-    fetch_message_body, fetch_message_source,
+    fetch_message_body, fetch_message_source, warm_message_sources,
 };
 
 use crate::{ApiError, Engine, engine::map_sync_error};
@@ -74,6 +74,29 @@ impl Engine {
         ensure_message_source(provider, &self.store, account, message)
             .await
             .map_err(map_sync_error)
+    }
+
+    /// Warms the caches of many messages at once: fetches their raw sources in as few
+    /// provider requests as the transport allows
+    /// (`ConnectionInfo::sources_per_request`), and caches each
+    /// message's bytes, extracted text and derived list snippet the moment it arrives, as
+    /// [`message_body`](Self::message_body) plus
+    /// [`ensure_message_source`](Self::ensure_message_source) would. Yields
+    /// `(index into messages, outcome)` for every message, in the order they complete.
+    ///
+    /// For messages known not to be warm, such as a page of
+    /// [`mail_missing_body`](Self::mail_missing_body): nothing is looked up before fetching.
+    /// A message's failure is its own (a stale IMAP target is a `Conflict`: re-sync via
+    /// [`Engine::clear_mail_cursors`], then retry). Takes **no** lease.
+    pub fn warm_message_sources<'a, P: Provider + ?Sized>(
+        &'a self,
+        provider: &'a P,
+        account: &'a AccountId,
+        messages: &'a [Message],
+    ) -> impl futures_util::Stream<Item = (usize, Result<(), ApiError>)> + Send + 'a {
+        use futures_util::StreamExt;
+        warm_message_sources(provider, &self.store, account, messages)
+            .map(|(index, outcome)| (index, outcome.map_err(map_sync_error)))
     }
 
     /// Returns the raw RFC 5322 source of `message` — the bytes the sender's server
@@ -208,6 +231,7 @@ mod tests {
         }
     }
 
+    impl engine_provider::MailboxWrites for BodyProvider {}
     impl CalendarWrites for BodyProvider {}
 
     #[tokio::test]
@@ -251,6 +275,7 @@ mod tests {
         }
     }
 
+    impl engine_provider::MailboxWrites for RelatedProvider {}
     impl CalendarWrites for RelatedProvider {}
 
     #[tokio::test]

@@ -27,7 +27,9 @@ use engine_core::{
     mail::{EmailAddress, MailboxAccess, MailboxRole, Message},
     sync::SyncUpdate,
 };
-use engine_provider::{Draft, Provider, SharedMailbox, SharedMailboxes};
+use engine_provider::{
+    Draft, MailboxEdit, MailboxWrites, Provider, SharedMailbox, SharedMailboxes,
+};
 use imap_live::{
     FULL_SHARE_OWNER, LiveProvider, READ_ONLY_SHARE_OWNER, SERVERS, Server, connect,
     connect_shared, folders,
@@ -271,5 +273,57 @@ async fn a_draft_saved_in_a_full_share_lands_in_that_shares_drafts() {
             .delete_draft(&AccountId::try_from("live-harness").unwrap(), &key)
             .await
             .expect(label);
+    }
+}
+
+#[tokio::test]
+async fn a_top_level_folder_made_in_a_full_share_is_never_the_credentials_own() {
+    // A folder with no parent goes at the top of the store the provider covers. Both harness
+    // servers refuse a root folder there even to a grantee with every right — Stalwart with
+    // `NO [CANNOT]`, Dovecot with `NO [NOPERM]` — and the refusal is the proof the path named
+    // the share: unqualified, either would have made it beside the credential's own `INBOX`
+    // and answered `OK`. A server that does allow it must put it inside the store.
+    let test = "a_top_level_folder_made_in_a_full_share_is_never_the_credentials_own";
+    let account = AccountId::try_from("live-harness").unwrap();
+    for server in &SERVERS {
+        let Some((store, _)) = shared_store(server, FULL_SHARE_OWNER, test).await else {
+            continue;
+        };
+        let label = server.label;
+        let shared = connect_shared(server, &store.handle, "INBOX", test)
+            .await
+            .unwrap();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("shared-folder-{nonce}");
+        let create = MailboxEdit::Create {
+            name: name.clone(),
+            parent: None,
+        };
+        match shared.edit_mailbox(&account, &create).await {
+            Ok(receipt) => {
+                let made = receipt.mailbox.expect("a create names what it made");
+                let listed = folders(&shared).await;
+                let found = listed.iter().find(|f| f.id == made);
+                assert!(
+                    found.is_some_and(|f| f.name == name && f.parent.is_none()),
+                    "{label}: {made:?} is not a top-level folder of the share: {listed:?}"
+                );
+                shared
+                    .edit_mailbox(&account, &MailboxEdit::Delete { target: made })
+                    .await
+                    .expect(label);
+            }
+            Err(err) => assert!(!err.is_retryable(), "{label}: {err}"),
+        }
+
+        let own = connect(server, test).await.unwrap();
+        let own_folders = folders(&own).await;
+        assert!(
+            own_folders.iter().all(|f| f.name != name),
+            "{label}: made among the credential's own folders"
+        );
     }
 }

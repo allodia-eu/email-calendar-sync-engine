@@ -87,7 +87,8 @@ impl<S> ImapProvider<S> {
         }
     }
 
-    /// Refuses `folder` unless it belongs to the store this provider covers.
+    /// Refuses `folder` unless it belongs to the store this provider covers, asking over
+    /// `connection` if the namespaces are not known yet.
     ///
     /// Read against the namespaces, not as a string prefix: `…/support@test.local.invalid/INBOX`
     /// begins with the handle `…/support@test.local` and is another owner's store.
@@ -95,13 +96,16 @@ impl<S> ImapProvider<S> {
     /// # Errors
     ///
     /// As [`store_on`](Self::store_on), and `InvalidState` for a folder outside the store.
-    pub(crate) async fn check_in_store(&self, folder: &MailboxId) -> ProviderResult<()>
+    pub(crate) async fn check_in_store<T>(
+        &self,
+        connection: &mut Connection<T>,
+        folder: &MailboxId,
+    ) -> ProviderResult<()>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
+        T: AsyncRead + AsyncWrite + Unpin + Send,
     {
-        let mut connection = self.connection.lock().await;
         if self
-            .store_on(&mut connection)
+            .store_on(connection)
             .await?
             .relative(folder.as_str())
             .is_some()

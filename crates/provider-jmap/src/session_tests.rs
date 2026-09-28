@@ -110,6 +110,8 @@ fn reads_capabilities_and_limits() {
     .unwrap();
     let caps = session.capabilities();
     assert!(caps.mail() && caps.submission() && caps.calendars());
+    // Submission ⇒ the filed copy can be given keywords.
+    assert!(caps.sent_copy_keywords());
     // Mail + a download template ⇒ on-demand message-source fetch is advertised.
     assert!(caps.message_source());
     // Mail + a writable account ⇒ mail writes (`Email/set`) are advertised.
@@ -252,6 +254,7 @@ fn read_only_account_does_not_advertise_mail_writes() {
     // Mail is readable, but the read-only account cannot write.
     assert!(session.capabilities().mail());
     assert!(!session.capabilities().mail_writes());
+    assert!(!session.capabilities().mailbox_writes());
 }
 
 #[test]

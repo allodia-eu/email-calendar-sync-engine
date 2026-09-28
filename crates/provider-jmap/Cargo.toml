@@ -24,6 +24,8 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 # `try_stream!` builds the email chunk stream from the member-page loop.
 async-stream = { workspace = true }
+# `buffer_unordered` overlaps a batch's individual downloads (`blob_batch`).
+futures-util = { workspace = true }
 
 [features]
 # Exposes `fuzz_parse` for the `fuzz/` cargo-fuzz target; off in normal builds.

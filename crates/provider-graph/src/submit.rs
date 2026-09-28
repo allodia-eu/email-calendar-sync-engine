@@ -143,6 +143,18 @@ mod tests {
         assert_eq!(receipt.message_id.as_str(), "graph-send-0001@test.local");
     }
 
+    /// Graph keeps no keyword the engine can write, so a draft that asks for some is still
+    /// sent and filed, and the receipt says none were kept.
+    #[tokio::test]
+    async fn sent_copy_keywords_are_reported_not_kept() {
+        let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
+        let draft =
+            draft().with_sent_copy_keyword(engine_core::mail::Keyword::new("project-x").unwrap());
+        let receipt = send(&client, &draft).await.unwrap();
+        assert!(receipt.sent_copy.is_filed());
+        assert!(receipt.sent_copy_keywords.is_empty());
+    }
+
     #[tokio::test]
     async fn a_malformed_mime_rejection_is_permanent() {
         use engine_core::error::FailureClass;

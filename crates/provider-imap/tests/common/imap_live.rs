@@ -21,7 +21,7 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::Provider;
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
 /// A live IMAP server this suite can run against.
@@ -92,7 +92,7 @@ pub async fn connect_to(server: &Server, mailbox: &str, test: &str) -> Option<Li
 }
 
 /// Like [`connect_to`], scoped to the shared store `handle` names — the binding a host makes
-/// after discovery (`ImapConfig::with_shared_mailbox`).
+/// after discovery (`ImapAccount::with_shared_mailbox`).
 pub async fn connect_shared(
     server: &Server,
     handle: &SharedMailboxId,
@@ -116,19 +116,14 @@ async fn dial(
         return None;
     };
     let host = addr.rsplit_once(':').map_or("localhost", |(host, _)| host);
-    let mut config = ImapConfig::new(addr.as_str(), host, server.account, server.password);
-    if let Some(handle) = shared {
-        config = config.with_shared_mailbox(handle.clone());
-    }
-    Some(
-        ImapProvider::connect(
-            &config,
-            no_verify_connector(),
-            MailboxId::try_from(mailbox).unwrap(),
-        )
+    let config = ImapConfig::new(addr.as_str(), host, server.account, server.password);
+    let mut account = ImapAccount::connect(&config, no_verify_connector())
         .await
-        .unwrap_or_else(|err| panic!("connect to the {} harness: {err}", server.label)),
-    )
+        .unwrap_or_else(|err| panic!("connect to the {} harness: {err}", server.label));
+    if let Some(handle) = shared {
+        account = account.with_shared_mailbox(handle.clone());
+    }
+    Some(account.provider(MailboxId::try_from(mailbox).unwrap()))
 }
 
 /// One account's folders as the provider reports them.

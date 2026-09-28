@@ -172,7 +172,7 @@ pub(crate) enum MailStore {
         /// The namespaces whose folders are someone else's.
         foreign: Vec<Namespace>,
     },
-    /// One store under a foreign namespace, bound with `ImapConfig::with_shared_mailbox`.
+    /// One store under a foreign namespace, bound with `ImapAccount::with_shared_mailbox`.
     Shared {
         /// The store's own path as a namespace: the handle, and the delimiter below it.
         root: Namespace,
@@ -245,6 +245,14 @@ impl MailStore {
             Self::Own { .. } => name.to_owned(),
             Self::Shared { root } => root.join(name),
         }
+    }
+
+    /// Whether `name` is this store's Inbox: `INBOX` at its top, or a shared store's root —
+    /// the folder [`adopt`](Self::adopt) names `INBOX` where the server makes the root the
+    /// inbox, and otherwise a container whose rename would take the whole store with it.
+    pub(crate) fn is_inbox(&self, name: &str) -> bool {
+        self.relative(name)
+            .is_some_and(|path| path.is_empty() || path.eq_ignore_ascii_case("INBOX"))
     }
 
     /// Takes a folder into this store's tree, or `None` when it is not this store's.

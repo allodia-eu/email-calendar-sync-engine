@@ -20,7 +20,7 @@ use engine_core::{
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MessageReport, PageToken,
     PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
-    SharedMailbox, SubmissionReceipt, SyncKind, split_page,
+    SharedMailbox, SourceStream, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
@@ -159,6 +159,11 @@ impl Provider for JmapProvider {
             // The server named this in its session; nothing here needs to guess it.
             ..ConnectionInfo::new(self.capabilities)
                 .with_concurrent_fetches(self.executor.session().limits().max_concurrent_requests)
+                .with_sources_per_request(if self.executor.session().blob_get() {
+                    crate::blob_batch::SOURCES_PER_REQUEST
+                } else {
+                    1
+                })
         }
     }
 
@@ -367,6 +372,21 @@ impl Provider for JmapProvider {
         // `downloadUrl` blob template using the message's synced `blobId`; one
         // credential (the connected client) backs the fetch, like every other call.
         Ok(crate::blob::message_source(self.executor.as_ref(), message).await?)
+    }
+
+    /// Many messages' sources in as few `Blob/get` calls as the batch allows, where the mail
+    /// account answers the blob extension (RFC 9404, `crate::blob_batch`); one download per
+    /// message otherwise.
+    fn fetch_message_sources<'a>(
+        &'a self,
+        account: &'a AccountId,
+        messages: &'a [Message],
+    ) -> SourceStream<'a> {
+        if self.executor.session().blob_get() {
+            crate::blob_batch::fetch_batch(self.executor.as_ref(), messages)
+        } else {
+            engine_provider::one_at_a_time(self, account, messages)
+        }
     }
 
     /// Sends `draft` — refusing outright if it carries an iTIP scheduling object, which

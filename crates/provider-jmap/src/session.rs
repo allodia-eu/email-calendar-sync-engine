@@ -98,14 +98,18 @@ pub struct CoreLimits {
     /// requests.
     ///
     /// Reading it rather than picking a number is what makes this right on both servers
-    /// seen so far: Stalwart says 4 and enforces it, Fastmail says 10. Measured against a
-    /// live Fastmail account over 80 bodies, throughput is linear the whole way up —
-    /// 5.4 bodies/s at 1, 21.1 at 4, **48.5 at 10** — so a constant tuned for either server
-    /// would be wrong for the other by about a factor of two in one direction or the other.
+    /// seen so far. Stalwart says 4, and a hosted deployment refuses the downloads beyond it
+    /// with that `400`. Fastmail says 10 and queues rather than refuses, and paces an
+    /// account's downloads at about 25 a second whatever the width: measured over 500
+    /// uncached messages at each of 5, 10, 20, 50 and 100 in flight, on HTTP/2 and HTTP/1.1,
+    /// the rate stayed at 25 and each request simply waited longer. So a width past the
+    /// advertised number is refused on one server and buys nothing on the other.
     ///
-    /// Note that Fastmail did not *refuse* a 16-wide drain, which was faster still (63.7).
-    /// The advertised number is respected anyway: it is what the server asked for, one of
-    /// these two servers enforces it with a hard `400`, and 9× is not worth the refusals.
+    /// A Fastmail measurement taken through a download URL rebased onto the API origin is
+    /// not a measurement of downloads: that origin answers `200` with an HTML page for the
+    /// download path, which is quick. Fastmail serves blobs from an origin of its own, and this
+    /// adapter downloads from exactly the URL Fastmail advertised: it rewrites a template onto
+    /// the connection only when the template is on the API's own origin (`rebase_template`).
     pub max_concurrent_requests: usize,
 }
 
@@ -141,6 +145,9 @@ pub struct Session {
     bound: Option<String>,
     limits: CoreLimits,
     capabilities: engine_provider::Capabilities,
+    /// Whether the mail account answers `Blob/get` (RFC 9404), so a body warm can read many
+    /// messages' sources in one call (`crate::blob_batch`).
+    blob_get: bool,
     state: Option<String>,
 }
 
@@ -242,6 +249,10 @@ impl Session {
                 verdicts: engine_provider::ReportVerdicts::all(),
                 evidence: engine_provider::ReportEvidence::Convention,
             });
+            // Changing the folder tree is `Mailbox/set`, which RFC 8621 §2.5 makes part of
+            // the same capability; a mailbox's `myRights` can still refuse one folder, and
+            // that refusal is a `forbidden` `SetError` (`crate::mailbox_write`).
+            capabilities = capabilities.with_mailbox_writes();
         }
         // Calendar writes (`CalendarEvent/set`) work on the same terms — RFC 8621/8984 make
         // `set` part of the calendars capability, and `isReadOnly` on the *calendar* account
@@ -298,6 +309,16 @@ impl Session {
             .map(parse_limits)
             .unwrap_or_default();
         let submission_account_id = account_for(capability::SUBMISSION);
+        // RFC 9404 advertises the extension for the session and, per account, the accounts it
+        // covers; a blob read is scoped to an account, so it is the mail account's that counts
+        // — the bound one, when this client opens a shared mailbox.
+        let blob_get = has(capability::BLOB)
+            && mail_account_id.as_deref().is_some_and(|id| {
+                accounts
+                    .iter()
+                    .flatten()
+                    .any(|account| account.id == id && account.supports(capability::BLOB))
+            });
         let bound = bound.map(|account| account.id.clone());
 
         Ok(Self {
@@ -313,6 +334,7 @@ impl Session {
             bound,
             limits,
             capabilities,
+            blob_get,
             state: value
                 .get("state")
                 .and_then(Value::as_str)
@@ -405,6 +427,11 @@ impl Session {
         })
     }
 
+    /// Whether the mail account answers `Blob/get` (RFC 9404).
+    pub(crate) fn blob_get(&self) -> bool {
+        self.blob_get
+    }
+
     /// The server's batching limits.
     #[must_use]
     pub fn limits(&self) -> CoreLimits {
@@ -436,6 +463,7 @@ fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabiliti
         // (`crate::identity`).
         caps = caps
             .with_submission()
+            .with_sent_copy_keywords()
             .with_sender_identities(engine_provider::IdentityControls::Writable);
     }
     if has(capability::CALENDARS) {

@@ -22,6 +22,7 @@ impl Provider for NoMechanism {
 }
 
 impl CalendarWrites for NoMechanism {}
+impl crate::MailboxWrites for NoMechanism {}
 
 /// The JMAP/IMAP shape: it lists, and implements nothing else — resolving comes from the
 /// default. `fail_listing` stands in for the transport failing mid-discovery.
@@ -52,6 +53,7 @@ impl Provider for Lists {
 }
 
 impl CalendarWrites for Lists {}
+impl crate::MailboxWrites for Lists {}
 
 /// The Graph shape: it cannot list, so it answers for an address itself.
 struct AnswersByAddress;
@@ -68,6 +70,7 @@ impl Provider for AnswersByAddress {
 }
 
 impl CalendarWrites for AnswersByAddress {}
+impl crate::MailboxWrites for AnswersByAddress {}
 
 /// Mirrors how `engine-api` reaches the verbs: through a generic bound. Calling
 /// `boxed.list_shared_mailboxes()` directly would auto-deref to the adapter inside and

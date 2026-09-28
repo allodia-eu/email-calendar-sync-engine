@@ -30,6 +30,7 @@ use crate::{
     recipients, run_scope,
     stream::{FolderPass, stream_email},
     threading::repair_thread_index_if_damaged,
+    vanished,
 };
 
 /// How many of an account's folders sync at once.
@@ -106,6 +107,13 @@ where
     let mailboxes = run_scope(store, account, &MailboxScope(first), &req)
         .await
         .map(|run| run.into_applied().0);
+    // Before the fan-out, so a folder that has just left the list is not synced once more.
+    let forgotten = match &mailboxes {
+        Ok(_) => vanished::forget_vanished_folders(store, account, &req)
+            .await
+            .map(|_| ()),
+        Err(_) => Ok(()),
+    };
 
     // Once per account, not once per folder. Both read and write the whole account's recipient
     // state, so running them per folder had every folder redo the same work concurrently.
@@ -122,7 +130,7 @@ where
     let folders = run_folders(providers, store, account, &req, tuning, observer, &sent).await;
 
     let coverage = recipients::record_coverage(store, account, tuning.window, !sent.is_empty());
-    let account_steps = repaired.and(coverage.await);
+    let account_steps = repaired.and(forgotten).and(coverage.await);
     observer.account_sync_finished(account);
 
     MailSyncReport {

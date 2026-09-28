@@ -289,6 +289,40 @@ mark-reads + flags it (asserting the re-sync reflects both keywords), moves it t
 (asserting it leaves the inbox), and permanent-deletes it — all against the real account.
 The `Mail.ReadWrite` delegated scope is required.
 
+## Folder writes (create, rename, move, trash, delete)
+
+`edit_mailbox` maps the neutral [`MailboxEdit`] onto the `mailFolder` verbs
+(`crate::mailbox_write`), and the mail provider advertises `mailbox_writes`. Folder writes
+are account-level, so any folder-bound provider makes them.
+
+| edit | request |
+|---|---|
+| `Create` | `POST /mailFolders/{parent}/childFolders {displayName}`; the top level is the well-known `msgfolderroot`, which the parent slot accepts |
+| `Update` | `GET /mailFolders/{id}?$select=id,displayName,parentFolderId`, then `PATCH {displayName}` if the name differs and `POST …/move {destinationId}` if the parent does |
+| `Trash` | the same rename-then-move, into the Deleted Items id the host resolved |
+| `Delete` | `POST /mailFolders/{id}/permanentDelete` |
+
+- **A folder id does not move.** Containers take no part in immutable ids, "but their
+  regular IDs were already constant" (outlook-immutable-id). The receipt still names the
+  id the move answered with.
+- **The rename goes first.** On `Trash` the name was chosen to be free in Deleted Items, and
+  the folder's own name may already be taken there.
+- **`Delete` is `permanentDelete`**, which removes the folder and its items and does not
+  place the folder in Purges; the docs leave `DELETE` saying only that the folder is
+  deleted, and Outlook's own delete is a move to Deleted Items, which `Trash` already is.
+  `permanentDelete` is served on the global cloud only. A `404` is success: the op behind
+  it is retried.
+- **A duplicate create is answered with the existing folder**: on `409` or
+  `ErrorFolderExists` the parent's `childFolders` is read and a folder of **exactly** that
+  name is the success a retry meets. One differing only in case is a `Conflict`, as are a
+  `404` on an update or trash and a duplicate on a rename or move.
+
+**Live verification is pending.** The offline tests assert every request's method, path and
+body, over response bodies that follow the documented shapes and are marked as not observed;
+`ErrorFolderExists` in particular is the code Exchange is known to use, not one captured
+here. `tests/live_mailbox_writes.rs` covers every edit and cleans up after itself, and has
+not run against a mailbox yet.
+
 ## Shared mailboxes (the multi-mailbox model)
 
 One signed-in user (one OAuth credential) can access several mailboxes: their own

@@ -255,7 +255,8 @@ const fn is_a_mail_write(kind: PendingOpKind) -> bool {
         | PendingOpKind::MailEdit
         | PendingOpKind::MailReport
         | PendingOpKind::MailDraftPut
-        | PendingOpKind::MailDraftDelete => true,
+        | PendingOpKind::MailDraftDelete
+        | PendingOpKind::MailboxEdit => true,
         PendingOpKind::CalendarCreate
         | PendingOpKind::CalendarPatch
         | PendingOpKind::CalendarDocument

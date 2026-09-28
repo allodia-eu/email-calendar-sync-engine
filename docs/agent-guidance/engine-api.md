@@ -36,7 +36,11 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   addresses — see `calendar-semantics.md`); and
   write with `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
   `create_calendar_event` / `patch_calendar_event` / `delete_calendar_event`
-  (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`.
+  (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`, and change
+  the folder tree with `edit_mailbox` (create, rename or move, trash, delete: a
+  `MailboxChange` carrying where the user saw the folder, checked against the server's list
+  before anything is sent), which re-reads the folder list afterwards; after a drain pass
+  lands a queued one, `reconcile_folders` is that same re-read.
   Contact hosts use `sync_address_books`, source-bound `sync_contact_cards`, or
   combined `sync_contacts`; browse via generation-bound `people_page` and
   `person`; list one account's books with `address_books` and one person's live
@@ -184,7 +188,8 @@ Step 6 lands in small, tested slices. Order and status:
    `ApiError::Query`.
 3. **Writes / outbox — _done_.** `Engine::submit_mail` drives `engine-sync`'s outbox
    `submit_mail` (durable op → claim → provider send → record), returning a
-   `SubmitOutcome` (sent key, `Message-ID`, op id); a failed send is recorded
+   `SubmitOutcome` (sent key, `Message-ID`, op id, what became of the Sent copy and
+   which of the draft's `sent_copy_keywords` it carries); a failed send is recorded
    `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the
    outbox never blind-retries. `Engine::pending_op_state` exposes
    `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an

@@ -22,7 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     place::{Filing, find_placed_copy, placed_key, resolve_filing_folder},
     store::MailStore,
-    target::{Access, select_target},
+    target::select_target,
     transport::Connection,
 };
 
@@ -104,7 +104,7 @@ where
                 None => return Ok(()),
             }
         }
-        None => select_target(connection, draft, Access::ReadWrite).await?.1,
+        None => select_target(connection, draft).await?.1,
     };
 
     let set = uid.to_string();

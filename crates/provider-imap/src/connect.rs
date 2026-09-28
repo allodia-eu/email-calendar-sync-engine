@@ -20,11 +20,9 @@ use crate::{
 };
 
 /// Opens a TCP + implicit-TLS connection, logs in, and negotiates capabilities
-/// (ENABLE QRESYNC + record IDLE) — the shared dial both [`ImapProvider::connect`]
-/// and [`ImapWatcher::connect`](crate::watch::ImapWatcher::connect) build their session
-/// on. Factored out so a watcher opens its **own** dedicated connection (push needs a
-/// standing IDLE socket separate from the sync socket) without duplicating the
-/// connect/login/negotiate sequence or exposing the config's private fields.
+/// (ENABLE QRESYNC + record IDLE) — the one dial behind
+/// [`ImapAccount::connect`](crate::ImapAccount::connect) and every connection the account's
+/// pool opens after it, so the first connection and the hundredth are made the same way.
 ///
 /// Returns the session together with the TLS version its handshake agreed — the one
 /// point where the concrete stream type is still visible, before it is erased behind

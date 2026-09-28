@@ -402,8 +402,19 @@ fn sweep(
                 match account.authed(client.get(url)).send() {
                     Ok(response) => {
                         let status = response.status().as_u16();
+                        // A `200` carrying a web page is not a body. Fastmail answers the
+                        // download path on its API origin that way, so a rebased template
+                        // measured the page and reported it as a fast download.
+                        let page = response
+                            .headers()
+                            .get("content-type")
+                            .and_then(|value| value.to_str().ok())
+                            .is_some_and(|kind| kind.starts_with("text/html"));
                         let len = response.bytes().map(|b| b.len()).unwrap_or(0);
-                        if status == 200 {
+                        if status == 200 && page {
+                            bad.fetch_add(1, Ordering::Relaxed);
+                            first_bad.lock().unwrap().get_or_insert(status);
+                        } else if status == 200 {
                             bytes.fetch_add(len, Ordering::Relaxed);
                         } else {
                             bad.fetch_add(1, Ordering::Relaxed);
