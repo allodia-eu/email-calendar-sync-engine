@@ -298,13 +298,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
     async fn file_sent_copy(&self, filed: &[u8], draft: &Draft) -> Result<Placed, String> {
         let first = match self.session().await {
             Ok(mut connection) => {
-                let result = append_to_role_folder(
-                    &mut connection,
-                    Filing::Sent,
-                    filed,
-                    &draft.sent_copy_keywords,
-                )
-                .await;
+                let result = match self.store_on(&mut connection).await {
+                    Ok(store) => {
+                        append_to_role_folder(
+                            &mut connection,
+                            &store,
+                            Filing::Sent,
+                            filed,
+                            &draft.sent_copy_keywords,
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
+                };
                 connection.settle(result)
             }
             Err(err) => Err(err),
@@ -330,16 +336,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         draft: &Draft,
     ) -> ProviderResult<Placed> {
         let mut connection = self.pool.acquire_checked().await?;
-        // `APPEND` is not idempotent, so the probe inside asks before placing: a first
-        // attempt that committed and lost its response must not become two copies.
-        let result = place_if_absent(
-            &mut connection,
-            Filing::Sent,
-            &draft.message_id,
-            filed,
-            &draft.sent_copy_keywords,
-        )
-        .await;
+        // The store is the provider's, not the session's: whichever connection places the
+        // copy, it goes in the Sent folder of the mail this provider covers. `APPEND` is not
+        // idempotent, so the probe inside asks before placing: a first attempt that committed
+        // and lost its response must not become two copies.
+        let result = match self.store_on(&mut connection).await {
+            Ok(store) => {
+                place_if_absent(
+                    &mut connection,
+                    &store,
+                    Filing::Sent,
+                    &draft.message_id,
+                    filed,
+                    &draft.sent_copy_keywords,
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        };
         connection.settle(result)
     }
 
@@ -362,14 +376,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         let filed = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
         let first = match self.session().await {
             Ok(mut connection) => {
-                let result = place_if_absent(
-                    &mut connection,
-                    Filing::Sent,
-                    &draft.message_id,
-                    &filed,
-                    &draft.sent_copy_keywords,
-                )
-                .await;
+                let result = match self.store_on(&mut connection).await {
+                    Ok(store) => {
+                        place_if_absent(
+                            &mut connection,
+                            &store,
+                            Filing::Sent,
+                            &draft.message_id,
+                            &filed,
+                            &draft.sent_copy_keywords,
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
+                };
                 connection.settle(result)
             }
             Err(err) => Err(err),
@@ -398,7 +418,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
     /// a Sent copy this fails loudly: saving the draft is the whole operation.
     pub async fn save_draft(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
         let mut connection = self.session().await?;
-        let result = crate::drafts::put_draft(&mut connection, draft, None).await;
+        let result = match self.store_on(&mut connection).await {
+            Ok(store) => crate::drafts::put_draft(&mut connection, &store, draft, None).await,
+            Err(err) => Err(err),
+        };
         connection.settle(result)
     }
 }

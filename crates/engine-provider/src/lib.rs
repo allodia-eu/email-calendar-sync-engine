@@ -18,6 +18,11 @@
 //! observable through [`ConnectStep`] and [`ConnectObserver`], which an adapter's
 //! config carries.
 //!
+//! A credential often reaches more than its own mailbox. [`SharedMailboxes`] and
+//! [`SharedMailbox`] are the discovery seam for that (`shared`): they answer *which stores
+//! can I open*, and stop there — a discovered store becomes an ordinary account bound with
+//! the same credential, so no scope, cursor or account kind is added.
+//!
 //! The trait is deliberately **shaped by JMAP** and kept minimal: it covers the
 //! mail spine (mailboxes + email), calendar, submission, and contact contracts.
 //! It depends only on `engine-core`; network access
@@ -45,6 +50,7 @@ mod provider;
 #[cfg(feature = "http")]
 mod redirect;
 mod report;
+mod shared;
 mod sources;
 mod stream;
 mod submit;
@@ -78,6 +84,7 @@ pub use redirect::redirect_target;
 pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };
+pub use shared::{SharedMailbox, SharedMailboxes};
 pub use sources::{SourceStream, one_at_a_time};
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};
 pub use submit::{

@@ -121,6 +121,7 @@ on the account.
 | Fixture | Real call | Protects |
 | --- | --- | --- |
 | `calendar/calendars.json` | `GET /calendar/v3/users/me/calendarList` | calendar-list → `Calendar` (primary + a reader-role holiday calendar; access role, colour) |
+| `calendar/calendars_shared_roles.json` | the same call on the throwaway, after a **second account** granted it one calendar per role (`live_calendar_roles.rs`); the four entries as returned, the list wrapper around them assembled | `writer`, `writerWithoutPrivateAccess`, `reader`, `freeBusyReader` → `CalendarAccess`, held against what each role was seen to allow. Scrubbed: each id's 64 hex digits (Google's `@group.calendar.google.com` format kept) and the owner's address in a writer's `dataOwner` |
 | `calendar/events_list.json` | `GET /calendar/v3/calendars/primary/events?singleEvents=false` | the event page (masters kept with `RRULE`) + `nextSyncToken` |
 | `calendar/events_delta.json` | same, replaying the `syncToken` | delta shape: an updated event + a `status:"cancelled"` tombstone + a new `nextSyncToken` |
 | `calendar/event_single.json` | one timed event | single event + attendees/location/organizer |

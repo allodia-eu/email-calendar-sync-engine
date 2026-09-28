@@ -12,12 +12,15 @@
 //! that borrow from the pool, so however many folders a host binds, the account's sockets stay
 //! under one budget.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
-use engine_core::ids::MailboxId;
+use engine_core::ids::{MailboxId, SharedMailboxId};
 use engine_provider::{
     Capabilities, ConnectionInfo, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    TlsVersion,
+    SharedMailboxes, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -26,12 +29,14 @@ use tokio::{
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
 use crate::{
+    capability::Extension,
     config::ImapConfig,
     connect::connect_session,
     error::ImapError,
     filing::{SmtpSender, resolve_smtp},
     pool::{DEFAULT_MAX_CONNECTIONS, Dial, ImapPool, VALIDATE_AFTER_REST},
     provider::ImapProvider,
+    store::Namespaces,
     transport::Connection,
     watch::ImapWatcher,
 };
@@ -40,7 +45,9 @@ use crate::{
 /// needs to know about the server.
 ///
 /// Build **one per account** and bind every folder through it. Two `ImapAccount`s for the same
-/// account are two budgets, which is the bug this type exists to prevent.
+/// account are two budgets, which is the bug this type exists to prevent. A mail store shared
+/// with the credential is no exception: it is opened by the same login, so it is reached
+/// through [`with_shared_mailbox`](Self::with_shared_mailbox), which spends the same budget.
 pub struct ImapAccount<S> {
     pool: Arc<ImapPool<S>>,
     /// Shared by every provider this account binds; each send dials its own SMTP connection.
@@ -50,6 +57,12 @@ pub struct ImapAccount<S> {
     /// The capabilities and TLS version the first connection negotiated. Every connection in
     /// the pool dials the same server as the same user, so this describes all of them.
     connection_info: ConnectionInfo,
+    /// The shared mail store this account's providers cover, or `None` for the credential's
+    /// own (`with_shared_mailbox`).
+    shared_mailbox: Option<SharedMailboxId>,
+    /// The server's `NAMESPACE` answer, learned the first time a provider needs it
+    /// (`crate::folders`) and kept for every provider of the login, whichever store it covers.
+    namespaces: Arc<OnceLock<Namespaces>>,
 }
 
 impl<S> core::fmt::Debug for ImapAccount<S> {
@@ -58,6 +71,7 @@ impl<S> core::fmt::Debug for ImapAccount<S> {
             .field("pool", &self.pool)
             .field("since", &self.since)
             .field("connection_info", &self.connection_info)
+            .field("shared_mailbox", &self.shared_mailbox)
             .finish_non_exhaustive()
     }
 }
@@ -130,6 +144,8 @@ impl<S> ImapAccount<S> {
                 tls_version,
                 ..ConnectionInfo::new(capabilities)
             },
+            shared_mailbox: None,
+            namespaces: Arc::new(OnceLock::new()),
         }
     }
 
@@ -151,6 +167,33 @@ impl<S> ImapAccount<S> {
         Self::build(connection, dial, smtp, None, None)
     }
 
+    /// The same account, covering a mail store shared **with** the credential rather than the
+    /// credential's own: `handle` is what
+    /// [`list_shared_mailboxes`](engine_provider::Provider::list_shared_mailboxes) or
+    /// [`resolve_shared_mailbox`](engine_provider::Provider::resolve_shared_mailbox) handed
+    /// back — the store's path under the server's shared namespace. Dials nothing.
+    ///
+    /// Its providers list that store's folders alone, re-rooted so they read like any
+    /// account's (its `INBOX` is the Inbox), and file a sent copy or a draft in *its* Sent and
+    /// Drafts. The mailbox a provider is bound to must be one of that store's folders, from
+    /// its own folder list; a host building the provider that lists folders may bind any
+    /// placeholder, exactly as it does for the credential's own store.
+    ///
+    /// The store is opened by the same login, so it borrows from this account's pool rather
+    /// than dialling a pool of its own: the server's connection limit is per login, and a
+    /// second budget would spend it twice.
+    #[must_use]
+    pub fn with_shared_mailbox(&self, handle: SharedMailboxId) -> Self {
+        Self {
+            pool: Arc::clone(&self.pool),
+            smtp: self.smtp.clone(),
+            since: self.since,
+            connection_info: self.connection_info,
+            shared_mailbox: Some(handle),
+            namespaces: Arc::clone(&self.namespaces),
+        }
+    }
+
     /// A provider bound to `mailbox` for its email scope, drawing its connections from this
     /// account's pool. Dials nothing.
     #[must_use]
@@ -161,6 +204,8 @@ impl<S> ImapAccount<S> {
             self.smtp.clone(),
             self.since,
             self.connection_info,
+            self.shared_mailbox.clone(),
+            Arc::clone(&self.namespaces),
         )
     }
 
@@ -249,6 +294,15 @@ fn capabilities<S>(connection: &Connection<S>, smtp: bool) -> Capabilities {
     // whether to offer an "as it comes in" strategy or fall back to polling.
     if connection.idle_available() {
         capabilities = capabilities.with_idle();
+    }
+    // Shares are listable where the server can say whose mail is whose (`NAMESPACE`) and can
+    // grant access at all (`ACL`, RFC 4314 — how one IMAP user shares with another). Gmail and
+    // Outlook.com advertise `NAMESPACE` alone; claiming a list there would offer a picker that
+    // can never fill. Unlike the folder list, this is read off the negotiation, so it costs no
+    // command (`crate::folders`).
+    if connection.negotiated.has(Extension::Namespace) && connection.negotiated.has(Extension::Acl)
+    {
+        capabilities = capabilities.with_shared_mailboxes(SharedMailboxes::Enumerable);
     }
     capabilities
 }

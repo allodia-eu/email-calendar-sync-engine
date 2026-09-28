@@ -6,6 +6,7 @@ use engine_provider::{MailboxEdit, MailboxEditReceipt};
 use super::edit_mailbox;
 use crate::{
     mock::{MockStream, Recorded, script, written},
+    store::{MailStore, Namespace},
     transport::Connection,
 };
 
@@ -33,8 +34,19 @@ async fn logged_in(server: Vec<u8>) -> (Connection<MockStream>, Recorded) {
     (conn, recorded)
 }
 
-/// Runs `edit` against a server answering `replies` after greeting, login and `list`.
+/// Runs `edit` on the credential's own store against a server answering `replies` after
+/// greeting, login and `list`.
 async fn run(
+    list: &str,
+    replies: &[&str],
+    edit: &MailboxEdit,
+) -> (engine_provider::ProviderResult<MailboxEditReceipt>, String) {
+    run_in(&MailStore::Own { foreign: vec![] }, list, replies, edit).await
+}
+
+/// [`run`], on `store`.
+async fn run_in(
+    store: &MailStore,
     list: &str,
     replies: &[&str],
     edit: &MailboxEdit,
@@ -42,9 +54,31 @@ async fn run(
     let mut parts = vec![GREETING, LOGIN_OK, list];
     parts.extend_from_slice(replies);
     let (mut conn, recorded) = logged_in(script(&parts)).await;
-    let result = edit_mailbox(&mut conn, edit).await;
+    let result = edit_mailbox(&mut conn, store, edit).await;
     (result, written(&recorded))
 }
+
+/// The `support@` store shared under Stalwart's `Shared Folders` namespace.
+fn support() -> MailStore {
+    MailStore::Shared {
+        root: Namespace {
+            prefix: "Shared Folders/support@test.local".into(),
+            delimiter: Some("/".into()),
+        },
+    }
+}
+
+/// `a2`'s `LIST` for a credential that also sees `support@`'s store, Stalwart's shape: the
+/// store's root is a `\Noselect` container holding its `INBOX` and `Work/Old`.
+const SHARED_TREE: &str = concat!(
+    "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n",
+    "* LIST (\\Noselect \\HasChildren) \"/\" \"Shared Folders\"\r\n",
+    "* LIST (\\Noselect \\HasChildren) \"/\" \"Shared Folders/support@test.local\"\r\n",
+    "* LIST (\\HasNoChildren) \"/\" \"Shared Folders/support@test.local/INBOX\"\r\n",
+    "* LIST (\\HasChildren) \"/\" \"Shared Folders/support@test.local/Work\"\r\n",
+    "* LIST (\\HasNoChildren) \"/\" \"Shared Folders/support@test.local/Work/Old\"\r\n",
+    "a2 OK LIST done\r\n",
+);
 
 #[tokio::test]
 async fn a_new_folder_is_created_under_its_parent_in_the_wire_encoding_and_subscribed() {
@@ -311,4 +345,86 @@ async fn the_inbox_is_refused_before_the_server_is_asked_anything() {
 
     assert_eq!(result.unwrap_err().class(), FailureClass::InvalidState);
     assert!(!sent.contains("LIST"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_top_level_folder_of_a_shared_store_is_made_inside_that_store() {
+    let create = MailboxEdit::Create {
+        name: "Receipts".into(),
+        parent: None,
+    };
+    let replies = ["a3 OK CREATE\r\n", "a4 OK SUBSCRIBE\r\n"];
+    let (result, sent) = run_in(&support(), SHARED_TREE, &replies, &create).await;
+
+    // Unqualified, the folder would be the credential's own, beside its `INBOX`.
+    assert_eq!(
+        result.unwrap(),
+        MailboxEditReceipt::resolved(id("Shared Folders/support@test.local/Receipts"))
+    );
+    assert!(
+        sent.contains("a3 CREATE \"Shared Folders/support@test.local/Receipts\""),
+        "{sent}"
+    );
+}
+
+#[tokio::test]
+async fn a_folder_moved_to_the_top_of_a_shared_store_stays_in_it() {
+    let update = MailboxEdit::Update {
+        target: id("Shared Folders/support@test.local/Work/Old"),
+        name: "Old".into(),
+        parent: None,
+    };
+    let replies = ["a3 OK RENAME\r\n", "a4 OK\r\n", "a5 OK\r\n"];
+    let (result, sent) = run_in(&support(), SHARED_TREE, &replies, &update).await;
+
+    assert_eq!(
+        result.unwrap(),
+        MailboxEditReceipt::resolved(id("Shared Folders/support@test.local/Old"))
+    );
+    assert!(
+        sent.contains(
+            "a3 RENAME \"Shared Folders/support@test.local/Work/Old\" \
+             \"Shared Folders/support@test.local/Old\""
+        ),
+        "{sent}"
+    );
+}
+
+#[tokio::test]
+async fn a_shared_store_s_inbox_is_refused_in_either_server_shape() {
+    // Stalwart lists the store's inbox as `INBOX` below its root.
+    let stalwart = MailboxEdit::Delete {
+        target: id("Shared Folders/support@test.local/INBOX"),
+    };
+    let (result, sent) = run_in(&support(), SHARED_TREE, &[], &stalwart).await;
+    assert_eq!(result.unwrap_err().class(), FailureClass::InvalidState);
+    assert!(!sent.contains("LIST"), "{sent}");
+
+    // Dovecot makes the root itself the inbox, which the folder list names `INBOX`.
+    let dovecot = MailStore::Shared {
+        root: Namespace {
+            prefix: "shared/support@test.local".into(),
+            delimiter: Some("/".into()),
+        },
+    };
+    let rename = MailboxEdit::Update {
+        target: id("shared/support@test.local"),
+        name: "Elsewhere".into(),
+        parent: None,
+    };
+    let (result, sent) = run_in(&dovecot, SHARED_TREE, &[], &rename).await;
+    assert_eq!(result.unwrap_err().class(), FailureClass::InvalidState);
+    assert!(!sent.contains("LIST"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_shared_store_keeps_its_reserved_inbox_name_too() {
+    let create = MailboxEdit::Create {
+        name: "inbox".into(),
+        parent: None,
+    };
+    let (result, sent) = run_in(&support(), SHARED_TREE, &[], &create).await;
+
+    assert_eq!(result.unwrap_err().class(), FailureClass::InvalidState);
+    assert!(!sent.contains("CREATE"), "{sent}");
 }

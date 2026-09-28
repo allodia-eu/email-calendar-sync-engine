@@ -57,6 +57,14 @@ impl core::fmt::Debug for GmailProvider {
 impl GmailProvider {
     /// Binds a connected client for Gmail read/sync, on-demand source fetch, mail writes,
     /// and submission.
+    ///
+    /// Note what is **not** advertised: shared mailboxes. Gmail delegation is a real product
+    /// feature, but not one a user credential reaches — the route that would serve it,
+    /// `users/{userId}` for another user, needs a service account with domain-wide
+    /// delegation. So the capability stays
+    /// [`SharedMailboxes::Unsupported`](engine_provider::SharedMailboxes::Unsupported) and
+    /// both discovery verbs keep their rejecting defaults, rather than offering an onboarding
+    /// flow that could only fail (`google.md`).
     #[must_use]
     pub fn new(client: GoogleClient) -> Self {
         Self {

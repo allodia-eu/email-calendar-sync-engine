@@ -85,12 +85,12 @@ pub use engine_core::{
     // reach-around this re-export block exists to prevent.
     ids::{
         AccountId, AddressBookId, CalendarId, ContactId, EventId, MailboxId, MessageIdHeader,
-        PersonId, ProviderKey, ThreadId, Uid,
+        PersonId, ProviderKey, SharedMailboxId, ThreadId, Uid,
     },
     mail::{
-        AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxRole, Message,
-        MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword, ThreadProvenance,
-        ThreadRef,
+        AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxAccess, MailboxRole,
+        Message, MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword,
+        ThreadProvenance, ThreadRef,
     },
     // The set-of-containers type an `Event`'s `calendars` and a `Message`'s mailbox memberships
     // are expressed in.
@@ -140,7 +140,8 @@ pub use engine_provider::{
     MailboxEditReceipt, MailboxWrites, MessageReport, Occurrence, OverrideSurvival, PatchTarget,
     Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence, ReportReceipt,
     ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse, SenderIdentity, SenderIdentityId,
-    SentCopy, SourceStream, SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
+    SentCopy, SharedMailbox, SharedMailboxes, SourceStream, SubmissionReceipt, TextEdit,
+    WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,

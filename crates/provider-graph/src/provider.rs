@@ -24,7 +24,7 @@ use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
     MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, PageToken, PassMode,
     Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts, ScopeSync,
-    SenderIdentity, SubmissionReceipt, SyncKind, split_page,
+    SenderIdentity, SharedMailbox, SharedMailboxes, SubmissionReceipt, SyncKind, split_page,
 };
 
 use crate::{fetch, transport::GraphClient};
@@ -97,7 +97,11 @@ impl GraphProvider {
                 // Readable, never writable: the mailbox's display name is a directory
                 // attribute a tenant administrator owns, so an editor here would offer an
                 // edit that cannot land (`crate::identity`).
-                .with_sender_identities(IdentityControls::ReadOnly),
+                .with_sender_identities(IdentityControls::ReadOnly)
+                // Graph cannot list the mailboxes shared with a credential, only answer for
+                // one named by address (`crate::shared`). Unconditional: it is a property of
+                // the credential, and one granted nothing simply resolves nothing.
+                .with_shared_mailboxes(SharedMailboxes::ByAddress),
             since: None,
         }
     }
@@ -359,6 +363,14 @@ impl Provider for GraphProvider {
         report: &engine_provider::MessageReport,
     ) -> ProviderResult<engine_provider::ReportReceipt> {
         crate::report::report_message(&self.client, report).await
+    }
+
+    /// Checks that this credential can open the mailbox at `address`, and that it is not
+    /// the credential's own (`crate::shared`). The only discovery Graph offers: no route
+    /// lists the mailboxes shared with a credential, so enumeration stays at its rejecting
+    /// default.
+    async fn resolve_shared_mailbox(&self, address: &str) -> ProviderResult<SharedMailbox> {
+        crate::shared::resolve(&self.client, address).await
     }
 }
 

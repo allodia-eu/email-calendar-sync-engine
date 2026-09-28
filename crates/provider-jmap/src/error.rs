@@ -74,6 +74,11 @@ pub enum JmapError {
     /// The session resource was missing a required field.
     #[error("invalid JMAP session: {0}")]
     Session(String),
+
+    /// The adapter refused a request before sending it, because the protocol says the
+    /// client must not: a draft whose `From` no identity on the account may send as.
+    #[error("refused before sending: {0}")]
+    Refused(String),
 }
 
 impl JmapError {
@@ -130,9 +135,11 @@ impl JmapError {
             Self::Status { status, body, .. } => status_class(*status, body),
             // A malformed response/session is a protocol-level incompatibility:
             // retrying the same request will not fix it.
-            Self::Json(_) | Self::Protocol(_) | Self::Session(_) | Self::MissingResponse(_) => {
-                FailureClass::Permanent
-            }
+            Self::Json(_)
+            | Self::Protocol(_)
+            | Self::Session(_)
+            | Self::MissingResponse(_)
+            | Self::Refused(_) => FailureClass::Permanent,
             Self::Method { error_type, .. } => method_class(error_type),
             Self::Set { error_type, .. } => set_error_class(error_type),
         }

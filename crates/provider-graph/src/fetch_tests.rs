@@ -411,7 +411,8 @@ async fn folders_address_a_shared_mailbox() {
             "../tests/fixtures/wellknown/msgfolderroot.json"
         )),
     ));
-    let client = fake_client(routes).with_principal(MailboxPrincipal::user("info@example.org"));
+    let client =
+        fake_client(routes).with_principal(MailboxPrincipal::user("info@example.org").unwrap());
     assert!(folders(&client).await.is_ok());
 }
 

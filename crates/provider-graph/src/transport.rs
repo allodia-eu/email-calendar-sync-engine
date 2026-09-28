@@ -201,6 +201,20 @@ impl GraphClient {
         format!("{}{}{path}", self.base, self.principal.root())
     }
 
+    /// Builds an absolute URL rooted at a mailbox **other than** this client's — the
+    /// shared-mailbox probe, which asks about an address the client is not bound to, and
+    /// then about the signed-in user's own (`crate::shared`).
+    pub(crate) fn principal_url(&self, principal: &MailboxPrincipal, path: &str) -> String {
+        format!("{}{}{path}", self.base, principal.root())
+    }
+
+    /// The mailbox this client's requests are rooted at — read by submission, which must
+    /// not send a message whose `From` names another mailbox than the one it posts to
+    /// (`crate::submit`).
+    pub(crate) fn principal(&self) -> &MailboxPrincipal {
+        &self.principal
+    }
+
     /// Builds an absolute Graph URL that is not rooted at a mailbox principal
     /// (organization contacts and directory users).
     pub(crate) fn global_url(&self, path: &str) -> String {
@@ -366,7 +380,7 @@ mod tests {
         // `…/users/info@example.org/mailFolders('Inbox')/messages`.
         let shared = GraphClient::for_mailbox(
             "t",
-            MailboxPrincipal::user("info@example.org"),
+            MailboxPrincipal::user("info@example.org").unwrap(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
         )

@@ -11,12 +11,19 @@
 //! mailbox), and a client that lists only subscribed folders would lose one we moved. So a
 //! write re-subscribes what it made and unsubscribes what it removed, and a server that
 //! refuses either is not a failed write: the folder change itself went through.
+//!
+//! Every edit is made in one store (`crate::store`): the credential's own, or the shared
+//! mailbox the provider is bound to. The folders an edit names come from that store's list,
+//! so they are its already; what the store decides is where the **top level** is — a folder
+//! made or moved there with no parent — and which folder is the Inbox no edit may touch.
 
 use engine_core::ids::MailboxId;
 use engine_provider::{MailboxEdit, MailboxEditReceipt, ProviderError, ProviderResult};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{error::ImapError, target::reject_control_chars, transport::Connection};
+use crate::{
+    error::ImapError, store::MailStore, target::reject_control_chars, transport::Connection,
+};
 
 /// One folder as `LIST` reported it, with its name decoded to the form a
 /// [`MailboxId`] carries.
@@ -51,7 +58,7 @@ impl Tree {
         S: AsyncRead + AsyncWrite + Unpin + Send,
     {
         let modified_utf7 = connection.names_are_modified_utf7();
-        let rows = connection.list().await?;
+        let rows = connection.list("*").await?;
         let folders = rows
             .into_iter()
             .map(|row| Listed {
@@ -94,30 +101,31 @@ impl Tree {
     }
 }
 
-/// Applies one [`MailboxEdit`] over `connection`.
+/// Applies one [`MailboxEdit`] to `store`'s tree over `connection`.
 ///
 /// # Errors
 ///
 /// A folder that is gone, or a destination already taken, is a
 /// [`ProviderError::conflict`]; a name carrying the hierarchy delimiter, a subfolder on a
-/// server with no hierarchy, or a change to `INBOX` is a [`ProviderError::invalid_state`];
-/// anything else is the IMAP failure, classified.
+/// server with no hierarchy, or a change to the store's Inbox is a
+/// [`ProviderError::invalid_state`]; anything else is the IMAP failure, classified.
 pub(crate) async fn edit_mailbox<S>(
     connection: &mut Connection<S>,
+    store: &MailStore,
     edit: &MailboxEdit,
 ) -> ProviderResult<MailboxEditReceipt>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     if let Some(target) = edit.target()
-        && target.as_str().eq_ignore_ascii_case("INBOX")
+        && store.is_inbox(target.as_str())
     {
         return Err(ProviderError::invalid_state("INBOX cannot be changed"));
     }
     let tree = Tree::read(connection).await?;
     match edit {
         MailboxEdit::Create { name, parent } => {
-            let path = child_path(&tree, parent.as_ref(), name)?;
+            let path = child_path(&tree, store, parent.as_ref(), name)?;
             if tree.get(&path).is_none() {
                 match connection.create(&path).await {
                     Ok(()) => {}
@@ -134,7 +142,7 @@ where
             name,
             parent,
         } => {
-            let path = child_path(&tree, parent.as_ref(), name)?;
+            let path = child_path(&tree, store, parent.as_ref(), name)?;
             rename(connection, &tree, target.as_str(), &path).await?;
             resolved(&path)
         }
@@ -147,7 +155,7 @@ where
                 return Err(ProviderError::conflict("the Trash folder is gone"));
             };
             if !bin.has_attribute("\\Noinferiors") && bin.delimiter.is_some() {
-                let path = child_path(&tree, Some(trash), name)?;
+                let path = child_path(&tree, store, Some(trash), name)?;
                 match rename(connection, &tree, target.as_str(), &path).await {
                     Ok(()) => return resolved(&path),
                     // A Trash that cannot hold folders after all: empty the folders
@@ -168,8 +176,14 @@ where
     }
 }
 
-/// The full path of a folder called `name` inside `parent` (the top level when `None`).
-fn child_path(tree: &Tree, parent: Option<&MailboxId>, name: &str) -> ProviderResult<String> {
+/// The full path of a folder called `name` inside `parent`, or at the top of `store` when
+/// `None` — which for a shared store is below its root, not beside the credential's `INBOX`.
+fn child_path(
+    tree: &Tree,
+    store: &MailStore,
+    parent: Option<&MailboxId>,
+    name: &str,
+) -> ProviderResult<String> {
     reject_control_chars(name)?;
     let delimiter = tree.delimiter(parent.map(MailboxId::as_str));
     if let Some(d) = &delimiter
@@ -183,7 +197,7 @@ fn child_path(tree: &Tree, parent: Option<&MailboxId>, name: &str) -> ProviderRe
         if name.eq_ignore_ascii_case("INBOX") {
             return Err(ProviderError::invalid_state("INBOX is reserved"));
         }
-        return Ok(name.to_owned());
+        return Ok(store.qualify(name));
     };
     let Some(d) = delimiter else {
         return Err(ProviderError::invalid_state(

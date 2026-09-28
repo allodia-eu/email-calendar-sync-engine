@@ -1,0 +1,79 @@
+{
+  "items": [
+    {
+      "accessRole": "writer",
+      "backgroundColor": "#cd74e6",
+      "colorId": "23",
+      "conferenceProperties": {
+        "allowedConferenceSolutionTypes": [
+          "hangoutsMeet"
+        ]
+      },
+      "dataOwner": "sharer@example.test",
+      "defaultReminders": [],
+      "etag": "\"1790153355604447\"",
+      "foregroundColor": "#000000",
+      "id": "0000000000000000000000000000000000000000000000000000000000000001@group.calendar.google.com",
+      "kind": "calendar#calendarListEntry",
+      "selected": true,
+      "summary": "engine live role probe: writer",
+      "timeZone": "UTC"
+    },
+    {
+      "accessRole": "writerWithoutPrivateAccess",
+      "backgroundColor": "#d06b64",
+      "colorId": "2",
+      "conferenceProperties": {
+        "allowedConferenceSolutionTypes": [
+          "hangoutsMeet"
+        ]
+      },
+      "dataOwner": "sharer@example.test",
+      "defaultReminders": [],
+      "etag": "\"1790153365039071\"",
+      "foregroundColor": "#000000",
+      "id": "0000000000000000000000000000000000000000000000000000000000000002@group.calendar.google.com",
+      "kind": "calendar#calendarListEntry",
+      "selected": true,
+      "summary": "engine live role probe: writerWithoutPrivateAccess",
+      "timeZone": "UTC"
+    },
+    {
+      "accessRole": "reader",
+      "backgroundColor": "#b3dc6c",
+      "colorId": "10",
+      "conferenceProperties": {
+        "allowedConferenceSolutionTypes": [
+          "hangoutsMeet"
+        ]
+      },
+      "defaultReminders": [],
+      "etag": "\"1790153372997567\"",
+      "foregroundColor": "#000000",
+      "id": "0000000000000000000000000000000000000000000000000000000000000003@group.calendar.google.com",
+      "kind": "calendar#calendarListEntry",
+      "selected": true,
+      "summary": "engine live role probe: reader",
+      "timeZone": "UTC"
+    },
+    {
+      "accessRole": "freeBusyReader",
+      "backgroundColor": "#9a9cff",
+      "colorId": "17",
+      "conferenceProperties": {
+        "allowedConferenceSolutionTypes": [
+          "hangoutsMeet"
+        ]
+      },
+      "defaultReminders": [],
+      "etag": "\"1790153382006879\"",
+      "foregroundColor": "#000000",
+      "id": "0000000000000000000000000000000000000000000000000000000000000004@group.calendar.google.com",
+      "kind": "calendar#calendarListEntry",
+      "selected": true,
+      "summary": "engine live role probe: freeBusyReader",
+      "timeZone": "UTC"
+    }
+  ],
+  "kind": "calendar#calendarList"
+}

@@ -19,7 +19,7 @@ use crate::{
     ContactWriteReceipt, ContactsProvider, Draft, EmailStream, EventDeletion, EventDraft,
     EventEdit, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MailboxEdit,
     MailboxEditReceipt, MailboxWrites, MessageReport, Provider, ProviderResult, ReportReceipt,
-    ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
+    ScopeSync, SenderIdentity, SenderIdentityId, SharedMailbox, SourceStream, SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -152,6 +152,14 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         name: &str,
     ) -> ProviderResult<()> {
         (**self).set_sender_name(account, identity, name).await
+    }
+
+    async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
+        (**self).list_shared_mailboxes().await
+    }
+
+    async fn resolve_shared_mailbox(&self, address: &str) -> ProviderResult<SharedMailbox> {
+        (**self).resolve_shared_mailbox(address).await
     }
 
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {

@@ -209,12 +209,14 @@ mod calendar;
 mod contact;
 mod dav;
 mod mail;
+mod shared;
 
 pub use account::AccountId;
 pub use calendar::{CalendarId, EventId, Uid};
 pub use contact::{AddressBookId, ContactId, PersonId};
 pub use dav::DavCollectionId;
 pub use mail::{BlobId, MailboxId, MessageId, MessageIdHeader, PartId, ThreadId};
+pub use shared::SharedMailboxId;
 
 #[cfg(test)]
 mod tests {

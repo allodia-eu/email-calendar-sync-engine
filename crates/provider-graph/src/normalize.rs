@@ -85,6 +85,12 @@ fn estimated_size(value: &Value) -> Option<u64> {
     (total > 0).then(|| total.saturating_mul(4) / 3 + BODY_ALLOWANCE)
 }
 
+/// The message properties every sync reads.
+///
+/// **Keep the recipients in it.** Graph resolves `sender` to an SMTP address only when the
+/// recipients are selected alongside it: live, a message sent on behalf of a shared mailbox read
+/// back with `sender` but no `toRecipients` named the delegate by X.500 `legacyExchangeDN`, which
+/// the normalizer would store in `Envelope::sender` as though it were an address (`graph.md`).
 pub(crate) const MESSAGE_SELECT: &[&str] = &[
     "id",
     "internetMessageId",

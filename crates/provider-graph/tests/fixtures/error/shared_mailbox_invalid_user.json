@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "ErrorInvalidUser",
+    "message": "The requested user 'no-such-mailbox@example.test' is invalid."
+  }
+}

@@ -73,4 +73,10 @@ pub use store::Store;
 ///   so a meeting organized outside Exchange carries one identity in the iMIP message that
 ///   announced it and another in the calendar that filed it, and scheduling reconciliation keying
 ///   on that value (RFC 5546 §2.1.5) matches neither, until the re-snapshot re-reads it.
-pub const NORMALIZER_VERSION: u32 = 5;
+/// - `6`: a mailbox carries the caller's [`MailboxAccess`](engine_core::mail::MailboxAccess), read
+///   from JMAP `myRights` and the IMAP `MYRIGHTS` letters. A stored mailbox holds no rights and
+///   loads as the `owner()` default — writable, deletable, renamable — which is wrong for every
+///   folder whose owner granted less, such as each folder of a store shared read-only. A JMAP
+///   folder list is a delta, so an unchanged mailbox would keep the default indefinitely; the
+///   re-snapshot is what makes each one say what it really allows.
+pub const NORMALIZER_VERSION: u32 = 6;

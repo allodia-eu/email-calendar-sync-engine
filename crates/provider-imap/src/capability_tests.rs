@@ -121,3 +121,13 @@ fn special_use_is_asked_for_wherever_it_is_advertised_whatever_the_dialect() {
     assert!(folded_only.has(Extension::SpecialUse));
     assert!(!folded_only.must_request_special_use());
 }
+
+#[test]
+fn list_myrights_is_had_only_where_advertised_on_either_dialect() {
+    // RFC 8440 is neither folded into rev2 nor announced with `ENABLE`: it only adds a
+    // `LIST` return option, which a server that never advertised it answers with `BAD`.
+    assert!(!Extension::ListMyrights.folded_into_rev2());
+    assert!(!Extension::ListMyrights.needs_enable());
+    assert!(caps(&["IMAP4rev1", "LIST-MYRIGHTS"]).has(Extension::ListMyrights));
+    assert!(!caps(&["IMAP4rev1", "ACL"]).has(Extension::ListMyrights));
+}

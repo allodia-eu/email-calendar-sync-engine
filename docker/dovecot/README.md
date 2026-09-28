@@ -18,6 +18,33 @@ a different protocol *dialect* from Stalwart rather than merely a different impl
 | `* ENABLED` casing | `IMAP4rev2` | — | `IMAP4REV2` |
 | Tagged completion | `LIST completed` | `List completed (0.028 + 0.000 + 0.027 secs).` | same prose form |
 
+### Shared mailboxes (ACL + a shared namespace)
+
+`harness.conf` turns on the ACL plugin (`acl`, `imap_acl`, `acl_driver = vfile`), an
+`acl_sharing_map` dictionary (without it Dovecot cannot list who shared what with a user, and
+the shared namespace comes back empty) and a `type = shared` namespace under `shared/$user/`.
+The entrypoint then mirrors the Stalwart fixture's two unequal shares with the **same owners**,
+so one contract (`live_imap_shared_contract.rs`) runs against both: `support@test.local` gives
+alice every right on its folders and holds `12-shared.eml`, and `bob@test.local` gives her `lr`
+on his INBOX. The static passdb lets both owners in without provisioning.
+
+Where Dovecot's sharing differs from Stalwart's, and what each difference proved:
+
+| | Stalwart | Dovecot |
+| --- | --- | --- |
+| Namespace position / prefix | *Other Users'*, `Shared Folders` | *Other Users'*, `shared/` (trailing delimiter) |
+| A shared store's inbox | `…/INBOX` under a `\Noselect` root | **the root itself**, selectable (`…/INBOX` an unlisted alias) |
+| SPECIAL-USE in a shared store | the owner's roles | none (they are configured on the personal namespace) |
+| How rights are read | pipelined `MYRIGHTS`, completed out of order | `RETURN (MYRIGHTS)` on the folder `LIST` (RFC 8440) |
+| A full grant as reported | `rliteswkxpa` | `lrwstipekxacd` |
+
+The root-as-inbox shape is the one that mattered: code written against Stalwart alone dropped
+the root as a container, which on Dovecot loses the shared store's Inbox and makes a share of
+one INBOX list nothing at all. Two setup facts worth not rediscovering: an `auto = subscribe`
+folder exists only *virtually* until something opens it, and `doveadm acl set` on one answers
+`No local acl file path` — so the entrypoint opens each folder (`doveadm mailbox status`)
+before granting on it.
+
 Things this fixture proves that **Stalwart cannot** (see "Which server proves what" in
 [`imap-smtp.md`](../../docs/agent-guidance/imap-smtp.md)):
 
