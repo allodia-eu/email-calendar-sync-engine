@@ -72,7 +72,7 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 | mail read/write | yes | yes | — | yes | yes |
 | submission | yes | optional SMTP | — | yes | yes |
 | iMIP submission | — | with SMTP | — | yes | yes |
-| keywords on the Sent copy | yes | with SMTP, where the folder allows new keywords | — | named ones, as categories | — |
+| keywords on the Sent copy | yes | with SMTP, where the folder allows new keywords | — | named ones, as categories | named ones, as labels |
 | push | EventSource | IDLE | — | — | — |
 | calendar read/write | yes | — | yes | yes | yes |
 | calendar write guard | absent | — | enforced ETag | enforced ETag | enforced ETag |
@@ -98,8 +98,10 @@ Two rows deserve a note, because they are the ones a host is tempted to hard-cod
   no free-form keyword, only named categories the person sees, so it keeps a keyword only when the
   host registered a `KeywordName` for it (`GraphProvider::with_keyword_names`): the name to create
   it under and every name it may already exist under, which sync also reads back as the keyword
-  ([`graph.md`](agent-guidance/graph.md)). Gmail keeps none yet, so it files the copy without them.
-  A keyword never fails a send.
+  ([`graph.md`](agent-guidance/graph.md)). Gmail keeps it the same way, as a label hidden from its
+  label list, which sync reads as the keyword rather than as a folder
+  (`GmailProvider::with_keyword_names`, [`google.md`](agent-guidance/google.md)). A keyword never
+  fails a send.
 - **Server-side scheduling** (`calendar_scheduling`) means the *server* emits the iTIP, so the
   caller must not also send one. CalDAV **discovers** it (RFC 6638 §2 gives a probeable answer, and
   SabreDAV without its scheduling plugin is a real `false`). JMAP advertises it because the adapter
