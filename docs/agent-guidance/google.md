@@ -115,6 +115,14 @@ Gmail labels drive all three of the message's independent axes (`modeling.md`):
   `SPAM`→Junk, `IMPORTANT`→Important, plus the synthetic All-Mail→All; category/chat/
   custom labels are roleless mailboxes.
 
+- **A label standing for a keyword** is neither. Gmail stores no free-form keyword, so a host
+  that wants one kept registers a `KeywordName` (`GmailProvider::with_keyword_names`): the name
+  to create the label under and every name it may already exist under. A label under any of
+  those names, ignoring case, is left out of the label list and out of every message's
+  membership, and the message carries the keyword instead (`crate::named_labels`). The adapter
+  learns the ids from each label-list read, or from a read of its own before the first one, and
+  a move leaves such a label on the message, since it is state rather than a place.
+
 `threadId` → the provider-assigned thread (`ThreadProvenance::ProviderAssigned`), never
 re-grouped by local derivation. The `Message-Id` header (mixed-case in the wire, so
 lookup is case-insensitive) is preserved bracket-stripped as a threading **hint**, never
@@ -200,6 +208,13 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   captured finding), so reconcile-by-`Message-ID` would not match — but `send` **returns
   the sent message's id** in its response, so the receipt uses that directly (no reconcile
   round-trip, unlike SMTP/Graph `sendMail`, which return nothing).
+  With that id in hand, a keyword the draft asks for on its filed copy
+  (`Draft::sent_copy_keywords`) is kept as the label standing for it: an existing label under
+  any of the keyword's names, else one created under `KeywordName::create_as` with
+  `labelListVisibility: labelHide` and `messageListVisibility: show`, then one
+  `messages.modify` adding it. A `409` on the create (another device won by a moment) reads
+  the list again. Nothing in it fails the send; what was kept is in
+  `SubmissionReceipt::sent_copy_keywords`.
 
 - **`put_draft` / `delete_draft`** → the `users.drafts` collection. Gmail is the **one
   transport in this workspace with a draft object of its own**, so this is the only

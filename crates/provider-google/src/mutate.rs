@@ -25,7 +25,10 @@ use engine_core::{
 };
 use engine_provider::{MailEdit, MailEditReceipt, ProviderError, ProviderResult};
 
-use crate::{error::GoogleError, fetch, normalize::ALL_MAIL_ID, transport::GoogleClient};
+use crate::{
+    error::GoogleError, fetch, named_labels::NamedLabels, normalize::ALL_MAIL_ID,
+    transport::GoogleClient,
+};
 
 /// The Gmail system label id for the Trash place — a `MoveTo` here uses `messages.trash`.
 const TRASH_LABEL: &str = "TRASH";
@@ -46,6 +49,7 @@ const UNTOUCHABLE_ON_MOVE: &[&str] = &["SENT", "DRAFT", "CHAT", "UNREAD", "STARR
 pub(crate) async fn edit(
     client: &GoogleClient,
     edit: &MailEdit,
+    named: &NamedLabels,
 ) -> ProviderResult<MailEditReceipt> {
     let key = edit.target();
     match edit {
@@ -53,7 +57,7 @@ pub(crate) async fn edit(
             let (add_labels, remove_labels) = keyword_label_delta(add, remove)?;
             modify(client, key, &add_labels, &remove_labels).await?;
         }
-        MailEdit::MoveTo { destination, .. } => move_to(client, key, destination).await?,
+        MailEdit::MoveTo { destination, .. } => move_to(client, key, destination, named).await?,
         MailEdit::Delete { .. } => {
             // Permanent delete (past Trash), enabled by the full mail.google.com scope.
             client
@@ -66,7 +70,8 @@ pub(crate) async fn edit(
 
 /// Moves `key` to `destination`: `messages.trash` for the Trash label, otherwise a
 /// replacement `modify` that leaves the message in exactly the destination (bar
-/// preserved state/system labels).
+/// preserved state/system labels, and the labels standing for a keyword: those are state
+/// too, not a place).
 ///
 /// A move to the synthetic All-Mail id is the **archive**, and is the one destination
 /// that is added to *nothing*: [`ALL_MAIL_ID`] is an id this adapter reserves for the
@@ -78,6 +83,7 @@ async fn move_to(
     client: &GoogleClient,
     key: &ProviderKey,
     destination: &MailboxId,
+    named: &NamedLabels,
 ) -> Result<(), GoogleError> {
     if destination.as_str() == TRASH_LABEL {
         client
@@ -93,7 +99,11 @@ async fn move_to(
     let current = fetch::message_labels(client, key).await?;
     let remove: Vec<String> = current
         .into_iter()
-        .filter(|current| current != label && !UNTOUCHABLE_ON_MOVE.contains(&current.as_str()))
+        .filter(|current| {
+            current != label
+                && !UNTOUCHABLE_ON_MOVE.contains(&current.as_str())
+                && !named.contains(current)
+        })
         .collect();
     let remove_refs: Vec<&str> = remove.iter().map(String::as_str).collect();
     let add: &[&str] = if label == ALL_MAIL_ID {

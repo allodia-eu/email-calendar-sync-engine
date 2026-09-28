@@ -303,6 +303,19 @@ async fn setting_a_name_patches_the_send_as_resource_and_nothing_else() {
 }
 
 #[test]
+fn gmail_keeps_a_sent_copy_keyword_only_once_it_has_a_label_name() {
+    let provider = GmailProvider::new(fake_client(vec![]));
+    assert!(!provider.connection_info().capabilities.sent_copy_keywords());
+    let named = engine_provider::KeywordName::new(
+        engine_core::mail::Keyword::new("project-x").unwrap(),
+        "Project X",
+    )
+    .unwrap();
+    let provider = GmailProvider::new(fake_client(vec![])).with_keyword_names(vec![named]);
+    assert!(provider.connection_info().capabilities.sent_copy_keywords());
+}
+
+#[test]
 fn gmail_advertises_a_writable_sender_name() {
     let provider = GmailProvider::new(fake_client(vec![]));
     assert_eq!(

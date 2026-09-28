@@ -44,6 +44,7 @@ mod identity;
 mod json;
 mod labels_write;
 mod mutate;
+mod named_labels;
 mod normalize;
 mod provider;
 mod report;
