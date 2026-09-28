@@ -15,6 +15,14 @@ use crate::{
 
 /// The captured label list: system labels, and the user labels `Label_1`…`Label_4`.
 const LABELS: &str = include_str!("../tests/fixtures/mail/labels.json");
+/// A live `labels.create` answer for a hidden label (`Label_6`).
+const CREATED: &str = include_str!("../tests/fixtures/mail/label_created_hidden.json");
+/// A live `409` for a create whose name the account already has.
+const CONFLICT: &str = include_str!("../tests/fixtures/error/label_name_conflict.json");
+
+fn fixture(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
 
 fn keyword() -> Keyword {
     Keyword::new("project-x").unwrap()
@@ -135,11 +143,7 @@ async fn a_named_label_is_not_a_folder() {
 
 #[tokio::test]
 async fn a_label_the_account_has_under_any_name_is_used_as_it_is() {
-    let (client, log) = routed(
-        captured_list(),
-        Ok(json!({ "id": "Label_new" })),
-        Ok(json!({})),
-    );
+    let (client, log) = routed(captured_list(), Ok(fixture(CREATED)), Ok(json!({})));
     let kept = Labels::new(names())
         .tag_sent_copy(&client, &sent(), &draft())
         .await;
@@ -153,11 +157,7 @@ async fn a_label_the_account_has_under_any_name_is_used_as_it_is() {
 
 #[tokio::test]
 async fn with_no_label_under_any_name_one_is_created_hidden_from_the_label_list() {
-    let (client, log) = routed(
-        unnamed_list(),
-        Ok(json!({ "id": "Label_new" })),
-        Ok(json!({})),
-    );
+    let (client, log) = routed(unnamed_list(), Ok(fixture(CREATED)), Ok(json!({})));
     let labels = Labels::new(names());
     let kept = labels.tag_sent_copy(&client, &sent(), &draft()).await;
     assert_eq!(kept, [keyword()].into());
@@ -171,18 +171,18 @@ async fn with_no_label_under_any_name_one_is_created_hidden_from_the_label_list(
     );
     assert_eq!(
         posted(&log, "/messages/sent-message-1/modify"),
-        [json!({ "addLabelIds": ["Label_new"], "removeLabelIds": [] })]
+        [json!({ "addLabelIds": ["Label_6"], "removeLabelIds": [] })]
     );
     let named = labels.resolved(&client).await.unwrap();
     assert!(
-        named.contains("Label_new"),
+        named.contains("Label_6"),
         "the new label is read as the keyword before the next label-list read"
     );
 }
 
 #[tokio::test]
 async fn a_label_that_cannot_be_had_or_a_refused_modify_keeps_nothing() {
-    let conflict = Err((409, json!({ "error": { "code": 409 } })));
+    let conflict = Err((409, fixture(CONFLICT)));
     let (client, log) = routed(unnamed_list(), conflict, Ok(json!({})));
     let kept = Labels::new(names())
         .tag_sent_copy(&client, &sent(), &draft())
@@ -210,4 +210,11 @@ async fn a_keyword_without_a_name_costs_no_request() {
         Labels::default().resolved(&client).await.unwrap(),
         NamedLabels::default()
     );
+}
+
+#[test]
+fn a_hidden_label_as_gmail_lists_it_stands_for_the_keyword() {
+    let registered = [KeywordName::new(keyword(), "Fixture keyword label").unwrap()];
+    let listed = NamedLabels::from_list(&[fixture(CREATED)], &registered);
+    assert!(listed.contains("Label_6"));
 }

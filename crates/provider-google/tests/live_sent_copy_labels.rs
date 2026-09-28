@@ -11,6 +11,7 @@ use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey},
     mail::{EmailAddress, Keyword, Mailbox, Message},
     sync::SyncUpdate,
+    time::CalendarDate,
 };
 use engine_provider::{Draft, KeywordName, MailEdit, MailboxEdit, MailboxWrites, Provider};
 use provider_google::{GmailProvider, GoogleClient};
@@ -38,7 +39,16 @@ fn provider(token: &str, names: Vec<KeywordName>) -> GmailProvider {
         &engine_http::RetryConfig::default(),
     )
     .expect("client");
-    GmailProvider::new(client).with_keyword_names(names)
+    GmailProvider::new(client)
+        .with_since(yesterday())
+        .with_keyword_names(names)
+}
+
+/// A day back, so the snapshots read only this run's mail: four whole-account snapshots in a
+/// minute exceed Gmail's per-user query quota.
+fn yesterday() -> CalendarDate {
+    let day = time::OffsetDateTime::now_utc().date() - time::Duration::days(1);
+    CalendarDate::new(day.year(), u8::from(day.month()), day.day()).unwrap()
 }
 
 fn draft(unique: u128, which: &str) -> Draft {
