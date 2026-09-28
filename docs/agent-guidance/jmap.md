@@ -208,7 +208,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `Email/set` create, into the mailbox carrying the Drafts **role**, with
   `keywords: { "$draft": true, "$seen": true }` — just no `EmailSubmission/set` after
   it. One `build_draft` serves both, so a saved draft and a sent one cannot drift apart
-  in shape.
+  in shape, and a saved draft keeps its Cc, Bcc and threading headers for the resume.
 - ⚠️ **There is no way to edit a stored draft, and this was measured rather than assumed.**
   RFC 8621 §4.6 makes `keywords` and `mailboxIds` the only mutable `Email` properties, and
   Stalwart agrees: an `Email/set` `update` naming `subject`, `bodyValues`, `bodyStructure`
@@ -250,10 +250,18 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `identityId`**, so a send first resolves the Drafts/Sent mailbox ids and the
   identity (`Mailbox/get` + `Identity/get`) before the batched create. The
   `onSuccessUpdateEmail` produces an implicit second `Email/set` response sharing
-  the submission's call id. `SetError`s classify through the same `FailureClass`
-  taxonomy. Sending is outbox-mediated by `engine-sync::submit_mail`: a durable
-  `PendingOp` (carrying the serialized draft, idempotent by `Message-ID`) precedes
-  the provider call; the result is recorded under the op lease.
+  the submission's call id. The created `Email` is the sender's copy, so it carries
+  every recipient header **including `bcc`**, plus `inReplyTo` and `references`: RFC
+  8621 §7.5 has the server **remove the Bcc header during delivery**, which is the same
+  filed-copy shape `engine-rfc5322` gives the other transports. The envelope is sent
+  explicitly, `rcptTo` = To + Cc + Bcc deduplicated case-insensitively as SMTP's
+  `RCPT TO` is: a Bcc recipient is reached through the envelope alone. Both halves are
+  pinned live (`tests/live_submit_recipients.rs`), because the server accepts a create
+  naming only `to` without complaint and delivers to nobody else. `SetError`s classify
+  through the same `FailureClass` taxonomy. Sending is outbox-mediated by
+  `engine-sync::submit_mail`: a durable `PendingOp` (carrying the serialized draft,
+  idempotent by `Message-ID`) precedes the provider call; the result is recorded under
+  the op lease.
 - **Sender identities.** `Identity/get` and `Identity/set` (RFC 8621 §6) back the
   neutral `sender_identities`/`set_sender_name` verbs (`providers.md`). They belong to
   the **submission** capability, not to mail, so every request names
