@@ -55,6 +55,7 @@ mod mail_account;
 mod mail_edit;
 mod mail_sync;
 mod mailbox_edit;
+mod sent_copy_keywords;
 mod state_change;
 mod streaming;
 mod streaming_resume;
@@ -164,6 +165,16 @@ impl FakeMail {
             .state_delta
             .lock()
             .expect("keyword delta mutex poisoned") = changes;
+        self
+    }
+
+    /// Keeps a draft's sent-copy keywords after the send rather than within it: the shape of an
+    /// adapter whose server files the copy on its own a moment later.
+    fn keeping_keywords_after_the_send(mut self) -> Self {
+        self.caps = self
+            .caps
+            .with_sent_copy_keywords()
+            .with_sent_copy_keywords_deferred();
         self
     }
 

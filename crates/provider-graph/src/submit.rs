@@ -20,26 +20,19 @@ use engine_core::ids::ProviderKey;
 use engine_provider::{Draft, ProviderResult, SubmissionReceipt};
 use time::OffsetDateTime;
 
-use crate::{
-    categories::{Categories, FIND_SCHEDULE},
-    transport::GraphClient,
-};
+use crate::transport::GraphClient;
 
 /// Sends `draft`: assembles the RFC 5322 message, base64-encodes it, and `POST`s it to
-/// `sendMail` in MIME format. Once it is accepted, the filed copy is given the category of
-/// each keyword the draft asks for that `categories` has a name for (`crate::categories`);
-/// that step never fails the send.
+/// `sendMail` in MIME format. The receipt keeps none of the draft's
+/// [`sent_copy_keywords`](Draft::sent_copy_keywords): `sendMail` files the copy a moment later,
+/// so they are kept by an edit the outbox records after the send (`crate::categories`).
 ///
 /// # Errors
 ///
 /// A classified [`ProviderError`](engine_provider::ProviderError): an assembly failure
 /// (a header value carrying CR/LF/NUL) is permanent; a `400 ErrorMimeContentInvalidBase64String`
 /// is permanent; `401`/`429`/`5xx` classify as auth/rate-limit/retryable.
-pub(crate) async fn send(
-    client: &GraphClient,
-    draft: &Draft,
-    categories: &Categories,
-) -> ProviderResult<SubmissionReceipt> {
+pub(crate) async fn send(client: &GraphClient, draft: &Draft) -> ProviderResult<SubmissionReceipt> {
     // The filed variant keeps the `Bcc` header: Graph reads every recipient (To/Cc/Bcc)
     // from the MIME to build the delivery envelope and strips `Bcc` before delivering,
     // so the Sent-Items copy records whom the sender Bcc'd while no recipient sees it.
@@ -49,11 +42,10 @@ pub(crate) async fn send(
     client
         .post(&client.url("/sendMail"), "text/plain", body)
         .await?;
-    let kept = categories.tag_sent_copy(client, draft, FIND_SCHEDULE).await;
-    Ok(
-        SubmissionReceipt::filed(sent_placeholder_key(draft), draft.message_id.clone())
-            .with_sent_copy_keywords(kept),
-    )
+    Ok(SubmissionReceipt::filed(
+        sent_placeholder_key(draft),
+        draft.message_id.clone(),
+    ))
 }
 
 /// The placeholder key for the sent copy — `sent:<Message-ID>` — mirroring IMAP's
@@ -85,9 +77,7 @@ mod tests {
     async fn send_posts_to_sendmail_and_echoes_message_id() {
         // A 202-no-body route (`Value::Null`) models a successful sendMail.
         let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
-        let receipt = send(&client, &draft(), &Categories::default())
-            .await
-            .unwrap();
+        let receipt = send(&client, &draft()).await.unwrap();
         // The sent copy has no server id, so the key is Message-ID-derived and the
         // Message-ID is echoed for sync-time reconciliation.
         assert_eq!(
@@ -97,16 +87,29 @@ mod tests {
         assert_eq!(receipt.message_id.as_str(), "graph-send-0001@test.local");
     }
 
-    /// Graph keeps a keyword only as a named category, so a draft asking for one with no
-    /// name registered is still sent and filed, and the receipt says it was not kept.
+    /// The send answers as soon as `sendMail` accepts the message: it does not wait for the
+    /// copy to be filed, and keeps none of the draft's keywords itself. The outbox's follow-up
+    /// edit keeps them (`crate::categories`).
     #[tokio::test]
-    async fn a_keyword_without_a_name_is_reported_not_kept() {
-        let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
+    async fn a_send_answers_without_looking_for_its_copy() {
+        let (client, _, requests) = crate::test_support::fake_client_logged(vec![(
+            "/sendMail",
+            Ok(serde_json::Value::Null),
+        )]);
         let draft =
             draft().with_sent_copy_keyword(engine_core::mail::Keyword::new("project-x").unwrap());
-        let receipt = send(&client, &draft, &Categories::default()).await.unwrap();
+        let receipt = send(&client, &draft).await.unwrap();
         assert!(receipt.sent_copy.is_filed());
         assert!(receipt.sent_copy_keywords.is_empty());
+        assert_eq!(
+            receipt.email_key.as_str(),
+            "sent:graph-send-0001@test.local"
+        );
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            1,
+            "sendMail and nothing else"
+        );
     }
 
     #[tokio::test]
@@ -117,9 +120,7 @@ mod tests {
             "error": { "code": "ErrorMimeContentInvalidBase64String", "message": "bad" }
         });
         let client = fake_client_fallible(vec![("/sendMail", Err((400, body)))]);
-        let err = send(&client, &draft(), &Categories::default())
-            .await
-            .unwrap_err();
+        let err = send(&client, &draft()).await.unwrap_err();
         assert_eq!(err.class(), FailureClass::Permanent);
     }
 
@@ -131,9 +132,7 @@ mod tests {
         let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
         let mut poisoned = draft();
         poisoned.subject = "Hi\r\nBcc: victim@evil.example".to_owned();
-        let err = send(&client, &poisoned, &Categories::default())
-            .await
-            .unwrap_err();
+        let err = send(&client, &poisoned).await.unwrap_err();
         assert_eq!(err.class(), FailureClass::Permanent);
     }
 
@@ -161,7 +160,7 @@ mod tests {
                 ContentIdHeader::new("c1@test.local").unwrap(),
                 vec![1, 2, 3],
             ));
-        let receipt = send(&client, &draft, &Categories::default()).await.unwrap();
+        let receipt = send(&client, &draft).await.unwrap();
         assert_eq!(receipt.message_id.as_str(), "graph-send-0001@test.local");
 
         let request = rx

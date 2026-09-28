@@ -98,7 +98,10 @@ Two rows deserve a note, because they are the ones a host is tempted to hard-cod
   no free-form keyword, only named categories the person sees, so it keeps a keyword only when the
   host registered a `KeywordName` for it (`GraphProvider::with_keyword_names`): the name to create
   it under and every name it may already exist under, which sync also reads back as the keyword
-  ([`graph.md`](agent-guidance/graph.md)). Gmail keeps it the same way, as a label hidden from its
+  ([`graph.md`](agent-guidance/graph.md)). Graph files the copy on its own a moment after the send,
+  so it keeps them **after** it (`sent_copy_keywords_deferred`): the receipt reports none, the
+  outbox records a `MailEdit::SetKeywords` on the copy's key that the drainer applies, retrying
+  until the copy is there, and what the copy carries is read from sync. Gmail keeps it the same way, as a label hidden from its
   label list, which sync reads as the keyword rather than as a folder
   (`GmailProvider::with_keyword_names`, [`google.md`](agent-guidance/google.md)). A keyword never
   fails a send.
@@ -379,6 +382,7 @@ The `engine_provider::Capabilities` bitset tells the engine what a connected acc
 | `submission` | The account can submit/send new mail. |
 | `scheduling_submission` | Submission can carry an iTIP object as an iMIP scheduling part (RFC 6047), rather than as a plain calendar attachment. |
 | `sent_copy_keywords` | The adapter sets a draft's `sent_copy_keywords` on the filed Sent copy; the server may still decline, so the receipt says which were kept. |
+| `sent_copy_keywords_deferred` | The adapter keeps them after the send rather than within it: the receipt reports none, and the outbox records a `MailEdit::SetKeywords` for the drainer to apply. |
 | `idle` | The provider can watch for push notifications and emit `WatchEvent`s. |
 | `calendars` | The account can read/sync calendars and events. |
 | `calendar_writes` | The account can create/update/delete calendar events; query its guard strength. |

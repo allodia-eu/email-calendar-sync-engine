@@ -190,7 +190,9 @@ Step 6 lands in small, tested slices. Order and status:
    `submit_mail` (durable op → claim → provider send → record), returning a
    `SubmitOutcome` (sent key, `Message-ID`, op id, what became of the Sent copy and
    which of the draft's `sent_copy_keywords` it carries; a provider that keeps a keyword only as
-   a named category needs a `KeywordName`, re-exported here); a failed send is recorded
+   a named category needs a `KeywordName`, re-exported here, and one that keeps them after the
+   send (`Capabilities::sent_copy_keywords_deferred`) reports none and has the outbox record a
+   `MailEdit::SetKeywords` a later `drain_outbox` applies); a failed send is recorded
    `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the
    outbox never blind-retries. `Engine::pending_op_state` exposes
    `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an

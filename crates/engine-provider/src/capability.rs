@@ -38,6 +38,7 @@ pub struct Capabilities {
     mail_drafts: bool,
     pub(crate) mailbox_writes: bool,
     pub(crate) sent_copy_keywords: bool,
+    pub(crate) sent_copy_keywords_deferred: bool,
     /// `None` when the adapter cannot report a message at all; otherwise which
     /// verdicts it can express and how much the provider tells us. One field rather
     /// than several, so "acknowledged but cannot report" is unrepresentable.
@@ -82,6 +83,7 @@ impl Capabilities {
             mail_drafts: false,
             mailbox_writes: false,
             sent_copy_keywords: false,
+            sent_copy_keywords_deferred: false,
             mail_report: None,
             message_source: false,
             sender_identities: None,

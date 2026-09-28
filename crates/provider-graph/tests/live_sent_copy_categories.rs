@@ -2,6 +2,10 @@
 //! copy as an Outlook category, reads back through sync as the keyword, and that a second
 //! device registering the names in another order reuses the category already in use.
 //!
+//! The send keeps nothing itself: the outbox records a `SetKeywords` edit on the copy's
+//! placeholder key, and the drainer applies it. This drives that edit the way the drainer
+//! does, again while it answers retryable, so what is proven is the adapter's half.
+//!
 //! Skips unless `GRAPH_ACCESS_TOKEN` is set; run it as `live_provider.rs` describes. Every
 //! message it sends is addressed to the test account itself, and deleted at the end along
 //! with the copy delivered to the Inbox. The category names carry the run's own suffix, so a
@@ -9,7 +13,8 @@
 //! nothing behind once they are gone.
 
 use engine_core::{
-    ids::{AccountId, MailboxId, MessageIdHeader},
+    error::FailureClass,
+    ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey},
     mail::{EmailAddress, Keyword, Message},
     sync::SyncUpdate,
 };
@@ -78,6 +83,44 @@ async fn await_in(provider: &GraphProvider, message_id: &MessageIdHeader) -> Mes
     panic!("{} never appeared", message_id.as_str());
 }
 
+/// Sends `draft` and applies the edit the outbox records for its keywords, as the drainer
+/// would: again after each retryable answer, while the copy is not in Sent Items yet.
+async fn send_and_tag(provider: &GraphProvider, message_id: &MessageIdHeader) {
+    let receipt = provider
+        .submit_email(&account(), &draft(message_id))
+        .await
+        .expect("send");
+    assert!(
+        receipt.sent_copy_keywords.is_empty(),
+        "the send keeps nothing itself, so nothing reads as kept before the edit lands"
+    );
+    let edit = MailEdit::SetKeywords {
+        target: receipt.email_key.clone(),
+        add: [keyword()].into(),
+        remove: std::collections::BTreeSet::default(),
+    };
+    for _ in 0..30 {
+        match provider.edit_mail(&account(), &edit).await {
+            Ok(done) => {
+                assert_ne!(
+                    done.message_key, receipt.email_key,
+                    "the edit resolves the placeholder to the copy's own id"
+                );
+                let _: ProviderKey = done.message_key;
+                return;
+            }
+            Err(err) => {
+                assert_eq!(err.class(), FailureClass::Retryable, "{err}");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+    }
+    panic!(
+        "the copy of {} never took the category",
+        message_id.as_str()
+    );
+}
+
 async fn delete(provider: &GraphProvider, message: &Message) {
     let _ = provider
         .edit_mail(&account(), &MailEdit::delete(message.id.key().clone()))
@@ -111,14 +154,7 @@ async fn live_the_sent_copy_carries_the_keyword_as_a_category_and_a_second_name_
     let inbox = provider(&token, "inbox", named(&english, &dutch));
 
     let first = MessageIdHeader::new(format!("graph-cat-a-{unique}@allodia-e2e.test")).unwrap();
-    let receipt = first_device
-        .submit_email(&account(), &draft(&first))
-        .await
-        .expect("send");
-    assert!(
-        receipt.sent_copy_keywords.contains(&keyword()),
-        "the receipt reports the category kept"
-    );
+    send_and_tag(&first_device, &first).await;
     let first_copy = await_in(&first_device, &first).await;
     assert!(
         first_copy.keywords.contains(&keyword()),
@@ -127,11 +163,7 @@ async fn live_the_sent_copy_carries_the_keyword_as_a_category_and_a_second_name_
     );
 
     let second = MessageIdHeader::new(format!("graph-cat-b-{unique}@allodia-e2e.test")).unwrap();
-    let receipt = second_device
-        .submit_email(&account(), &draft(&second))
-        .await
-        .expect("send");
-    assert!(receipt.sent_copy_keywords.contains(&keyword()));
+    send_and_tag(&second_device, &second).await;
     let second_copy = await_in(&english_only, &second).await;
     assert!(
         second_copy.keywords.contains(&keyword()),

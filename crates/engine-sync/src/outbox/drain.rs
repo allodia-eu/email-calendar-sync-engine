@@ -294,10 +294,14 @@ where
                         .mark_pending_op(
                             &leased.lease,
                             PendingOutcome::Succeeded {
-                                provider_key: receipt.email_key,
+                                provider_key: receipt.email_key.clone(),
                             },
                         )
                         .await?;
+                    super::mail::record_deferred_keywords(
+                        provider, store, account, &draft, &receipt,
+                    )
+                    .await;
                     Ok(Ran::keyed(
                         match receipt.sent_copy {
                             SentCopy::Filed => DrainOutcome::Succeeded,
