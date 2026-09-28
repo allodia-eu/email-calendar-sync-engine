@@ -22,12 +22,12 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
-    MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, PageToken, PassMode,
-    Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts, ScopeSync,
-    SenderIdentity, SubmissionReceipt, SyncKind, split_page,
+    KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
+    PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
+    ScopeSync, SenderIdentity, SubmissionReceipt, SyncKind, split_page,
 };
 
-use crate::{fetch, transport::GraphClient};
+use crate::{categories::Categories, fetch, transport::GraphClient};
 
 /// The folder list is re-discovered as a snapshot each pass (`GET /me/mailFolders`),
 /// so it carries no provider cursor of its own — like IMAP's folder list.
@@ -49,6 +49,8 @@ pub struct GraphProvider {
     /// the whole folder). The streaming [`Provider::stream_email`] takes its window
     /// per call instead.
     since: Option<CalendarDate>,
+    /// The keywords kept as categories ([`GraphProvider::with_keyword_names`]).
+    categories: Categories,
 }
 
 impl core::fmt::Debug for GraphProvider {
@@ -99,6 +101,7 @@ impl GraphProvider {
                 // edit that cannot land (`crate::identity`).
                 .with_sender_identities(IdentityControls::ReadOnly),
             since: None,
+            categories: Categories::default(),
         }
     }
 
@@ -109,6 +112,22 @@ impl GraphProvider {
     #[must_use]
     pub fn with_since(mut self, since: CalendarDate) -> Self {
         self.since = Some(since);
+        self
+    }
+
+    /// Keeps each of `names`' keywords as an Outlook category under one of its names.
+    ///
+    /// Graph stores no free-form keyword, so a keyword a draft asks for on its filed copy
+    /// ([`Draft::sent_copy_keywords`]) is kept only when it has a name here, and sync reports
+    /// a message carrying any of a keyword's names as carrying the keyword. With at least one
+    /// name, the adapter advertises
+    /// [`sent_copy_keywords`](Capabilities::sent_copy_keywords).
+    #[must_use]
+    pub fn with_keyword_names(mut self, names: Vec<KeywordName>) -> Self {
+        if !names.is_empty() {
+            self.capabilities = self.capabilities.with_sent_copy_keywords();
+        }
+        self.categories = Categories::new(names);
         self
     }
 }
@@ -229,6 +248,7 @@ impl Provider for GraphProvider {
                     cursor,
                     page_token.as_ref(),
                     floor,
+                    self.categories.names(),
                 )
                 .await
                 {
@@ -314,7 +334,7 @@ impl Provider for GraphProvider {
         _account: &AccountId,
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
-        crate::submit::send(&self.client, draft).await
+        crate::submit::send(&self.client, draft, &self.categories).await
     }
 
     /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (a `PATCH` of

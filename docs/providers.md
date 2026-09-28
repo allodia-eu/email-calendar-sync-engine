@@ -72,7 +72,7 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 | mail read/write | yes | yes | — | yes | yes |
 | submission | yes | optional SMTP | — | yes | yes |
 | iMIP submission | — | with SMTP | — | yes | yes |
-| keywords on the Sent copy | yes | with SMTP, where the folder allows new keywords | — | — | — |
+| keywords on the Sent copy | yes | with SMTP, where the folder allows new keywords | — | named ones, as categories | — |
 | push | EventSource | IDLE | — | — | — |
 | calendar read/write | yes | — | yes | yes | yes |
 | calendar write guard | absent | — | enforced ETag | enforced ETag | enforced ETag |
@@ -94,9 +94,12 @@ Two rows deserve a note, because they are the ones a host is tempted to hard-cod
   which the copy carries (`SubmissionReceipt::sent_copy_keywords`, surfaced as
   `SubmitOutcome::sent_copy_keywords`). IMAP puts them on the `APPEND`, but only where the Sent
   folder's `PERMANENTFLAGS` carries `\*`: elsewhere the server would answer `OK` and keep nothing,
-  so the copy is filed without them. JMAP sets them with an `Email/set` after the send. Graph and
-  Gmail keep no custom keyword the engine can write, so they file the copy without them. A keyword
-  never fails or delays a send.
+  so the copy is filed without them. JMAP sets them with an `Email/set` after the send. Graph keeps
+  no free-form keyword, only named categories the person sees, so it keeps a keyword only when the
+  host registered a `KeywordName` for it (`GraphProvider::with_keyword_names`): the name to create
+  it under and every name it may already exist under, which sync also reads back as the keyword
+  ([`graph.md`](agent-guidance/graph.md)). Gmail keeps none yet, so it files the copy without them.
+  A keyword never fails a send.
 - **Server-side scheduling** (`calendar_scheduling`) means the *server* emits the iTIP, so the
   caller must not also send one. CalDAV **discovers** it (RFC 6638 §2 gives a probeable answer, and
   SabreDAV without its scheduling plugin is a real `false`). JMAP advertises it because the adapter

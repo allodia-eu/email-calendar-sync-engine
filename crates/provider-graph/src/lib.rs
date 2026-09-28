@@ -40,6 +40,7 @@ mod cal_recur;
 mod cal_recur_render;
 mod cal_write;
 mod calendar;
+mod categories;
 mod contact;
 mod contact_normalize;
 mod contact_photo;

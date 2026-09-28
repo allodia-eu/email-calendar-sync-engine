@@ -1,0 +1,13 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('testuser%40example.test')/mailFolders('sentitems')/messages(categories)",
+  "value": [
+    {
+      "@odata.etag": "W/\"etag-2\"",
+      "id": "message-1",
+      "categories": [
+        "Fixture category"
+      ]
+    }
+  ],
+  "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders('sentitems')/messages?%24filter=categories%2fany(c%3ac+eq+%27Fixture+category%27)+or+categories%2fany(c%3ac+eq+%27Fixture+categorie%27)&%24select=categories&%24top=1&%24skip=1"
+}
