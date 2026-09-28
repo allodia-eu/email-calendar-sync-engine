@@ -178,6 +178,37 @@ whole message the caller assembled — pre-generated `Message-ID`, threading, `C
   Graph preserves it in the MIME form (`tests/live_provider.rs`, gated on
   `GRAPH_ACCESS_TOKEN`). The `Mail.Send` delegated scope is required.
 
+### Keywords on the filed copy, as categories
+
+Graph stores no free-form keyword. The nearest thing is `categories`, a list of names on each
+message that Outlook shows the person. So a keyword a draft asks for on its filed copy
+(`Draft::sent_copy_keywords`) is kept only when the host registered a name for it
+(`GraphProvider::with_keyword_names`, taking `KeywordName`s), and only then does the adapter
+advertise `sent_copy_keywords` (`crate::categories`).
+
+- **After the send, never inside it.** `sendMail` answers `202` and files the copy a moment
+  later, with no id. The copy is looked up in Sent Items by the `internetMessageId` the MIME
+  carried (`$filter=internetMessageId eq '<…>'`), after each wait of a short schedule (five
+  tries over about five seconds; a live mailbox shows it within about three), and given the
+  category with a `PATCH {categories}` that keeps any the person set. The message is delivered
+  before any of it starts: a copy not found or a refused `PATCH` only leaves the keyword out of
+  `SubmissionReceipt::sent_copy_keywords`.
+- **One category per keyword, whatever the device's language.** Before its first tag an adapter
+  asks Sent Items for a message already carrying any of the keyword's names
+  (`categories/any(c:c eq '…') or …`) and settles on the name it finds, creating the category
+  under `KeywordName::create_as` only when none is in use. The master category list
+  (`/me/outlook/masterCategories`) would answer directly, but reading it takes
+  `MailboxSettings.Read`, which a mail client has no other use for. A category set on a message
+  is **not** added to the master list (live-verified), so Outlook shows it without a colour.
+- **Read back through sync.** `categories` is in both `$select`s (`MESSAGE_SELECT` and
+  `MESSAGE_STATE_SELECT`), and a category matching a registered name, ignoring case, is reported
+  as the keyword. Any other category is the person's own and reports nothing. A category change
+  arrives in the folder's `messages/delta` (live-verified).
+- **Live-verified** (`tests/live_sent_copy_categories.rs`): the receipt keeps the keyword, the
+  Sent copy syncs back carrying it, and a second adapter registering the names the other way
+  round tags its copy with the category the first created. The copy delivered to the Inbox
+  carries none.
+
 ## Drafts
 
 `put_draft` stores a draft with `POST /me/messages` carrying the **same base64 MIME**
@@ -259,8 +290,9 @@ different Graph shapes (Graph models mail state as typed properties, not a keywo
 - **`SetKeywords` → `PATCH /messages/{id}` `{isRead, flag}`.** `$seen`→`isRead` (bool),
   `$flagged`→`flag.flagStatus` (`flagged`/`notFlagged`). These are the **only** two
   writable keyword-like properties Graph exposes, so any other keyword is **rejected**
-  (`InvalidState`), never silently dropped — `$draft` is read-only and Graph categories
-  are a separate concept. Both sides empty is a no-op (no request). The edits are
+  (`InvalidState`), never silently dropped — `$draft` is read-only, and a category is
+  written only as a named keyword on a sent message's filed copy (see "Keywords on the
+  filed copy, as categories"). Both sides empty is a no-op (no request). The edits are
   **unconditional** (no `If-Match`): the `MailEdit` shape carries no ETag guard, like
   IMAP `UID STORE` and JMAP `Email/set`.
 - **`MoveTo` → `POST /messages/{id}/move` `{destinationId}`.** Immutable ids are stable

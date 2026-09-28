@@ -37,6 +37,7 @@ mod connection;
 mod contact;
 mod error;
 mod identity;
+mod keyword_name;
 mod mail_edit;
 mod mailbox_edit;
 mod mailbox_write;
@@ -68,6 +69,7 @@ pub use contact::{
 };
 pub use error::{ProviderError, ProviderResult};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
+pub use keyword_name::{KeywordName, keyword_named};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use mailbox_edit::{MailboxEdit, MailboxEditReceipt};
 pub use mailbox_write::MailboxWrites;

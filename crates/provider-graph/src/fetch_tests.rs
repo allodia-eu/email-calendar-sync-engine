@@ -191,6 +191,7 @@ async fn snapshot_page_yields_full_objects_and_a_delta_cursor() {
         None,
         None,
         None,
+        &[],
     )
     .await
     .unwrap();
@@ -214,13 +215,13 @@ async fn snapshot_follows_nextlink_across_pages() {
         .unwrap_or(next);
     // Page 1 from the initial call; page 2 from following the real nextLink.
     let client = fake_client(vec![("messages/delta", p1.clone()), (next_path, p2)]);
-    let first = messages_page(&client, &inbox(), None, None, None)
+    let first = messages_page(&client, &inbox(), None, None, None, &[])
         .await
         .unwrap();
     assert_eq!(first.changed.len(), 1);
     // Following the real nextLink reaches page 2 — proving continuation works.
     let token = first.next_page.expect("a nextLink continuation");
-    let second = messages_page(&client, &inbox(), None, Some(&token), None)
+    let second = messages_page(&client, &inbox(), None, Some(&token), None, &[])
         .await
         .unwrap();
     assert_eq!(second.changed.len(), 1);
@@ -235,11 +236,11 @@ async fn a_lightweight_partial_resolves_to_state_and_removed_tombstones() {
     let client = fake_client(vec![
         ("delta-token-1", json(CHANGED)),
         (
-            "$select=id,isRead,isDraft,flag,lastModifiedDateTime,changeKey",
+            "$select=id,isRead,isDraft,flag,categories,lastModifiedDateTime,changeKey",
             json(STATE),
         ),
     ]);
-    let page = messages_page(&client, &inbox(), Some(&cursor), None, None)
+    let page = messages_page(&client, &inbox(), Some(&cursor), None, None, &[])
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Delta);
@@ -278,7 +279,7 @@ async fn a_lightweight_partial_resolves_to_state_and_removed_tombstones() {
 
     // A removed entry → an inline tombstone, no re-fetch.
     let client = fake_client(vec![("delta-token-1", json(REMOVED))]);
-    let page = messages_page(&client, &inbox(), Some(&cursor), None, None)
+    let page = messages_page(&client, &inbox(), Some(&cursor), None, None, &[])
         .await
         .unwrap();
     assert_eq!(page.removed.len(), 1);
@@ -300,7 +301,7 @@ async fn a_snapshot_entry_without_an_etag_is_still_a_whole_message() {
         ("messages/delta", snapshot),
         ("/me/messages/", json(DETAIL)),
     ]);
-    let page = messages_page(&client, &inbox(), None, None, None)
+    let page = messages_page(&client, &inbox(), None, None, None, &[])
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
@@ -317,7 +318,7 @@ async fn incremental_delta_uses_a_full_changed_entry_without_refetch() {
     // "changed entries are full objects" common case.
     let cursor = SyncState::new("https://graph.test/me/mailFolders/folder-inbox/delta-token-1");
     let client = fake_client(vec![("delta-token-1", json(CHANGED_FULL))]);
-    let page = messages_page(&client, &inbox(), Some(&cursor), None, None)
+    let page = messages_page(&client, &inbox(), Some(&cursor), None, None, &[])
         .await
         .unwrap();
     assert_eq!(page.changed.len(), 1);
@@ -329,13 +330,13 @@ async fn incremental_delta_uses_a_full_changed_entry_without_refetch() {
 async fn a_response_without_a_value_array_is_a_protocol_error() {
     let client = fake_client(vec![("messages/delta", json(r#"{"unexpected":true}"#))]);
     assert!(
-        messages_page(&client, &inbox(), None, None, None)
+        messages_page(&client, &inbox(), None, None, None, &[])
             .await
             .is_err()
     );
     // An unrouted request surfaces the fake's error rather than hanging.
     assert!(
-        messages_page(&fake_client(vec![]), &inbox(), None, None, None)
+        messages_page(&fake_client(vec![]), &inbox(), None, None, None, &[])
             .await
             .is_err()
     );
@@ -440,7 +441,7 @@ async fn delta_refetch_skips_a_message_that_404s() {
     let cursor = SyncState::new(
         "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=x",
     );
-    let page = messages_page(&client, &inbox(), Some(&cursor), None, None)
+    let page = messages_page(&client, &inbox(), Some(&cursor), None, None, &[])
         .await
         .unwrap();
     assert!(page.changed.is_empty());
@@ -453,7 +454,7 @@ async fn delta_refetch_propagates_a_non_404_failure() {
     let cursor = SyncState::new("https://graph.test/me/mailFolders/folder-inbox/delta-token-1");
     let client = fake_client(vec![("delta-token-1", json(CHANGED))]);
     assert!(
-        messages_page(&client, &inbox(), Some(&cursor), None, None)
+        messages_page(&client, &inbox(), Some(&cursor), None, None, &[])
             .await
             .is_err()
     );

@@ -46,7 +46,8 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
   `message` row and the `membership` junction, and a `Message` read back out of storage is
   completed from there (`store-and-sync.md`). A second copy in the payload could only ever be a
   copy that disagrees. A new state axis — Graph's `categories` next — is a field on `MailState`,
-  not a new mechanism.
+  not a new mechanism. Until then a category reaches the model only as a keyword a host named
+  (`KeywordName`), on the keyword axis; the person's own categories are not modelled.
 - A **partial** report is silent, never negative. `MailState::mailboxes` is `Option` because
   `None` means "this protocol cannot move a message under a stable key", not "no mailboxes"; a
   `RevisionTokens` field left `None` on a partial means "not reported", not "gone", and

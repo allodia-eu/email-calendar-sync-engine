@@ -326,7 +326,8 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
   that disagrees.
 
   **Adding a state axis is adding a field to `MailState`**, not a new mechanism — Graph's
-  `categories` is the next one, and it needs that field plus a `membership` kind. A thread is
+  `categories` is the next one, and it needs that field plus a `membership` kind. A category a
+  host registered a name for already travels as a keyword (`KeywordName`, `graph.md`). A thread is
   present in the payload only when the **provider** assigned it, because then it is the provider's
   word; a derived one is the engine's and lives in the row alone.
 
