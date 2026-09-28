@@ -188,7 +188,8 @@ Step 6 lands in small, tested slices. Order and status:
    `ApiError::Query`.
 3. **Writes / outbox — _done_.** `Engine::submit_mail` drives `engine-sync`'s outbox
    `submit_mail` (durable op → claim → provider send → record), returning a
-   `SubmitOutcome` (sent key, `Message-ID`, op id); a failed send is recorded
+   `SubmitOutcome` (sent key, `Message-ID`, op id, what became of the Sent copy and
+   which of the draft's `sent_copy_keywords` it carries); a failed send is recorded
    `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the
    outbox never blind-retries. `Engine::pending_op_state` exposes
    `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an

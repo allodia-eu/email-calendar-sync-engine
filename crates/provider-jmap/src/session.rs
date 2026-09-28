@@ -421,6 +421,7 @@ fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabiliti
         // (`crate::identity`).
         caps = caps
             .with_submission()
+            .with_sent_copy_keywords()
             .with_sender_identities(engine_provider::IdentityControls::Writable);
     }
     if has(capability::CALENDARS) {

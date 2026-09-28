@@ -12,11 +12,11 @@
 //! caller's outbox (`engine-sync`). The pre-generated `Message-ID` is echoed in the
 //! receipt so the sent copy reconciles when it syncs back (`store-and-sync.md`).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Mailbox, MailboxRole},
+    mail::{EmailAddress, Keyword, Mailbox, MailboxRole},
 };
 use engine_provider::{Draft, SubmissionReceipt};
 use serde_json::{Map, Value, json};
@@ -25,6 +25,7 @@ use crate::{
     error::JmapError,
     executor::Executor,
     mail::mailbox_from_json,
+    mutate::keyword_pointer,
     request::{Request, capability},
     submit_body::body,
     sync_ops::objects,
@@ -73,11 +74,13 @@ pub(crate) async fn send(
     );
 
     let resp = executor.execute(&req).await?;
-    parse_receipt(
+    let receipt = parse_receipt(
         resp.result(&email_set)?,
         resp.result(&submission_set)?,
         &draft.message_id,
-    )
+    )?;
+    let kept = tag_sent_copy(executor, mail_account, receipt.email_key.as_str(), draft).await;
+    Ok(receipt.with_sent_copy_keywords(kept))
 }
 
 /// Uploads every draft attachment's bytes, returning the `blobId`s in attachment
@@ -221,6 +224,68 @@ fn envelope_recipients(draft: &Draft) -> Vec<Value> {
         .filter(|recipient| seen.insert(recipient.email.to_ascii_lowercase()))
         .map(|recipient| json!({ "email": recipient.email }))
         .collect()
+}
+
+/// Sets `draft.sent_copy_keywords` on the filed copy `email_id`, returning the ones it
+/// carries. Asks nothing, and costs no request, when the draft wants none.
+///
+/// A request of its own after the send, rather than part of the create or of
+/// `onSuccessUpdateEmail`: the create is also a saved draft's, which must not carry them, and
+/// a keyword the server refuses inside `onSuccessUpdateEmail` would fail the whole patch and
+/// leave the sent copy in Drafts. Nor can it ride the send's request as an update of
+/// `#draft`: Stalwart answers an update keyed by a creation id `notFound` (observed live).
+/// The message has gone by now, so any failure here costs the keywords and nothing else.
+async fn tag_sent_copy(
+    executor: &dyn Executor,
+    mail_account: &str,
+    email_id: &str,
+    draft: &Draft,
+) -> BTreeSet<Keyword> {
+    let Some(update) = keyword_update(mail_account, email_id, draft) else {
+        return BTreeSet::new();
+    };
+    let mut req = Request::new([capability::CORE, capability::MAIL]);
+    let call = req.invoke("Email/set", update);
+    match executor.execute(&req).await {
+        Ok(resp) => kept_keywords(resp.result(&call), draft),
+        Err(_) => BTreeSet::new(),
+    }
+}
+
+/// The `Email/set` that puts `draft.sent_copy_keywords` on `email_id`, or `None` when the
+/// draft asks for none.
+fn keyword_update(mail_account: &str, email_id: &str, draft: &Draft) -> Option<Value> {
+    if draft.sent_copy_keywords.is_empty() {
+        return None;
+    }
+    let patch: Map<String, Value> = draft
+        .sent_copy_keywords
+        .iter()
+        .map(|keyword| (keyword_pointer(keyword.as_str()), Value::Bool(true)))
+        .collect();
+    let mut update = Map::new();
+    update.insert(email_id.to_owned(), Value::Object(patch));
+    Some(json!({ "accountId": mail_account, "update": update }))
+}
+
+/// The keywords the filed copy carries after [`keyword_update`]: every one when the server
+/// applied the update, none when it refused it or answered without reporting it applied.
+fn kept_keywords(result: Result<&Value, JmapError>, draft: &Draft) -> BTreeSet<Keyword> {
+    let applied = result.ok().is_some_and(|result| {
+        result
+            .get("updated")
+            .and_then(Value::as_object)
+            .is_some_and(|updated| !updated.is_empty())
+            && result
+                .get("notUpdated")
+                .and_then(Value::as_object)
+                .is_none_or(Map::is_empty)
+    });
+    if applied {
+        draft.sent_copy_keywords.clone()
+    } else {
+        BTreeSet::new()
+    }
 }
 
 /// A JMAP `EmailAddress` object, omitting a null display name.

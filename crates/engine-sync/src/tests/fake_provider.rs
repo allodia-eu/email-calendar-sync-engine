@@ -137,7 +137,8 @@ impl Provider for FakeMail {
             Ok(SubmissionReceipt::filed(
                 ProviderKey::new("sent-1").unwrap(),
                 draft.message_id.clone(),
-            ))
+            )
+            .with_sent_copy_keywords(draft.sent_copy_keywords.clone()))
         }
     }
 

@@ -199,3 +199,55 @@ fn build_draft_carries_html_as_alternative_body() {
     assert_eq!(create["bodyValues"]["text"]["value"], "Plain");
     assert_eq!(create["bodyValues"]["html"]["value"], "<p>Plain</p>");
 }
+
+fn keyword(value: &str) -> Keyword {
+    Keyword::new(value).unwrap()
+}
+
+fn tagged_draft() -> Draft {
+    addressed_draft()
+        .with_sent_copy_keyword(keyword("project-x"))
+        .with_sent_copy_keyword(keyword("a/b~c"))
+}
+
+#[test]
+fn a_draft_without_sent_copy_keywords_asks_nothing() {
+    assert!(keyword_update("c", "e1", &addressed_draft()).is_none());
+}
+
+#[test]
+fn sent_copy_keywords_are_an_update_of_the_filed_copy() {
+    let update = keyword_update("c", "e1", &tagged_draft()).unwrap();
+    assert_eq!(update["accountId"], "c");
+    assert_eq!(
+        update["update"]["e1"],
+        json!({ "keywords/project-x": true, "keywords/a~1b~0c": true })
+    );
+}
+
+#[test]
+fn the_created_email_carries_no_sent_copy_keyword() {
+    // `build_draft` also saves drafts, which must not carry the sent copy's keywords; the
+    // send sets them in a call of its own once the copy is filed.
+    let create = build_draft("d", &tagged_draft(), &[]);
+    assert_eq!(create["keywords"], json!({ "$draft": true, "$seen": true }));
+}
+
+#[test]
+fn an_applied_keyword_update_keeps_every_keyword() {
+    let result = json!({ "updated": { "bmaaaaal": null } });
+    assert_eq!(
+        kept_keywords(Ok(&result), &tagged_draft()),
+        BTreeSet::from([keyword("project-x"), keyword("a/b~c")])
+    );
+}
+
+#[test]
+fn a_refused_keyword_update_keeps_none() {
+    let refused = json!({ "notUpdated": { "e1": { "type": "forbidden" } } });
+    assert!(kept_keywords(Ok(&refused), &tagged_draft()).is_empty());
+    let silent = json!({});
+    assert!(kept_keywords(Ok(&silent), &tagged_draft()).is_empty());
+    let failed = JmapError::protocol("method error");
+    assert!(kept_keywords(Err(failed), &tagged_draft()).is_empty());
+}

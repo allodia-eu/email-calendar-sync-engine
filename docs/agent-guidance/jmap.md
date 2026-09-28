@@ -257,7 +257,15 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   explicitly, `rcptTo` = To + Cc + Bcc deduplicated case-insensitively as SMTP's
   `RCPT TO` is: a Bcc recipient is reached through the envelope alone. Both halves are
   pinned live (`tests/live_submit_recipients.rs`), because the server accepts a create
-  naming only `to` without complaint and delivers to nobody else. `SetError`s classify
+  naming only `to` without complaint and delivers to nobody else. A draft's
+  `sent_copy_keywords` are set by an `Email/set` **update of its own, in a second
+  request** addressed to the id the send created, and only when it asks for any: the
+  create also serves saved drafts, which must not carry them; a keyword refused inside
+  `onSuccessUpdateEmail` would fail the whole patch and leave the copy in Drafts; and
+  Stalwart answers an update keyed by the creation id `#draft` in the same request
+  `notFound` (observed live). The receipt keeps every keyword when the update comes back
+  `updated`, and none on `notUpdated`, a method error or a failed request, none of which
+  touches the send (`tests/live_sent_copy_keywords.rs`). `SetError`s classify
   through the same `FailureClass` taxonomy. Sending is outbox-mediated by
   `engine-sync::submit_mail`: a durable `PendingOp` (carrying the serialized draft,
   idempotent by `Message-ID`) precedes the provider call; the result is recorded under

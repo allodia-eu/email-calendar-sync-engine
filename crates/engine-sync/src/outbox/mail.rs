@@ -5,9 +5,11 @@
 //! provider call → record the outcome under the lease.
 
 use core::time::Duration;
+use std::collections::BTreeSet;
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey},
+    mail::Keyword,
     write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider, SentCopy};
@@ -33,6 +35,12 @@ pub struct SubmitOutcome {
     /// ignores it drops it for good: nothing later can rediscover a copy that was never
     /// written to the server.
     pub sent_copy: SentCopy,
+    /// Which of the draft's [`Draft::sent_copy_keywords`] the filed copy carries; see
+    /// [`SubmissionReceipt::sent_copy_keywords`](engine_provider::SubmissionReceipt::sent_copy_keywords).
+    ///
+    /// Like [`Self::sent_copy`], only this outcome carries it: a send the outbox drains
+    /// later reports nothing, and the copy's keywords are then read from the next sync.
+    pub sent_copy_keywords: BTreeSet<Keyword>,
 }
 
 /// Sends `draft` through the outbox: durable op → claim → provider submit → record.
@@ -90,6 +98,7 @@ where
                 email_key: receipt.email_key,
                 message_id: receipt.message_id,
                 sent_copy: receipt.sent_copy,
+                sent_copy_keywords: receipt.sent_copy_keywords,
             })
         }
         Err(err) => {
