@@ -11,7 +11,10 @@
 //! Tier-1 metadata only: the raw RFC 5322 source is not materialized here (durable
 //! blob storage is a later store sub-step), matching `provider-jmap`.
 
-use std::{collections::BTreeSet, ops::Range};
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    ops::Range,
+};
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ProviderKey},
@@ -85,8 +88,11 @@ pub(crate) fn message_from_fetch(
     message
 }
 
-/// Normalizes one `LIST` row into a [`Mailbox`]; `None` for an unusable
-/// (`\NonExistent` or empty-named) entry.
+/// Normalizes one `LIST` row into a [`Mailbox`]; `None` for an empty-named entry.
+///
+/// A `\Noselect` or `\NonExistent` row is a level of the hierarchy rather than a folder, and
+/// comes back with [`Mailbox::selectable`] cleared. Whether a `\NonExistent` one belongs in the
+/// list at all depends on the rest of it, which is [`mailboxes_from_list`]'s question.
 ///
 /// `modified_utf7` says how this session's wire encodes names — IMAP4rev1 does, IMAP4rev2
 /// does not (RFC 9051 §5.1) — and must come from what the session *negotiated*, never from
@@ -106,9 +112,6 @@ pub(crate) fn message_from_fetch(
 /// Role matching runs on the **full** path: `INBOX` is a reserved name at the top level, and a
 /// folder called `Sent` inside another one is not the account's Sent.
 pub(crate) fn mailbox_from_list(row: &ListRow, modified_utf7: bool) -> Option<Mailbox> {
-    if has_attribute(&row.attributes, "NonExistent") {
-        return None;
-    }
     let name = if modified_utf7 {
         crate::utf7::decode(&row.name)
     } else {
@@ -122,7 +125,50 @@ pub(crate) fn mailbox_from_list(row: &ListRow, modified_utf7: bool) -> Option<Ma
     // RFC 3501 §7.2.2 `\Noinferiors`; with no delimiter there is no level to make.
     mailbox.accepts_children =
         delimiter.is_some() && !has_attribute(&row.attributes, "Noinferiors");
+    mailbox.selectable = !is_hierarchy_level(&row.attributes);
     Some(mailbox)
+}
+
+/// Normalizes a whole `LIST` response, keeping each mailbox beside the row it came from.
+///
+/// A `\NonExistent` row is kept only while a listed folder sits beneath it. Dovecot answers the
+/// extended `LIST` this way for the parent of a folder made inside one nobody made (the plain
+/// `LIST` says `\Noselect`), and dropping it would leave that folder's parent missing from the
+/// tree. Without a folder beneath it, it names nothing a host could show.
+pub(crate) fn mailboxes_from_list(
+    rows: &[ListRow],
+    modified_utf7: bool,
+) -> Vec<(&ListRow, Mailbox)> {
+    let mapped: Vec<_> = rows
+        .iter()
+        .filter_map(|row| Some((row, mailbox_from_list(row, modified_utf7)?)))
+        .collect();
+    let by_id: HashMap<&MailboxId, &Mailbox> = mapped.iter().map(|(_, m)| (&m.id, m)).collect();
+    let mut holding: HashSet<&MailboxId> = HashSet::new();
+    for (row, mailbox) in &mapped {
+        if has_attribute(&row.attributes, "NonExistent") {
+            continue;
+        }
+        let mut above = mailbox.parent.as_ref();
+        while let Some(parent) = above
+            && holding.insert(parent)
+        {
+            above = by_id.get(parent).and_then(|m| m.parent.as_ref());
+        }
+    }
+    let holding: HashSet<MailboxId> = holding.into_iter().cloned().collect();
+    mapped
+        .into_iter()
+        .filter(|(row, mailbox)| {
+            !has_attribute(&row.attributes, "NonExistent") || holding.contains(&mailbox.id)
+        })
+        .collect()
+}
+
+/// Whether a `LIST` row names a level of the hierarchy that cannot be selected. RFC 9051
+/// §7.3.1: `\NonExistent` implies `\Noselect`.
+pub(crate) fn is_hierarchy_level(attributes: &[String]) -> bool {
+    has_attribute(attributes, "Noselect") || has_attribute(attributes, "NonExistent")
 }
 
 /// Maps IMAP flags to engine [`Keyword`]s. The four standard system flags map to

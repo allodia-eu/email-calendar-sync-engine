@@ -29,7 +29,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     filing::SmtpSender,
-    mail::mailbox_from_list,
+    mail::mailboxes_from_list,
     pool::{ImapPool, PooledConnection},
 };
 
@@ -182,14 +182,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
             }
         };
         let (rows, unseen) = connection.settle(listed)?;
-        let mailboxes: Vec<Mailbox> = rows
-            .iter()
-            .filter_map(|row| {
-                let mut mailbox = mailbox_from_list(row, modified_utf7)?;
+        let mailboxes: Vec<Mailbox> = mailboxes_from_list(&rows, modified_utf7)
+            .into_iter()
+            .map(|(row, mut mailbox)| {
                 // Absent stays absent: a mailbox the server did not count must not
                 // read as one with nothing unread.
                 mailbox.unread_count = unseen.get(&row.name).copied();
-                Some(mailbox)
+                mailbox
             })
             .collect();
         // `LIST` is a full snapshot every pass, so every folder is `present`.

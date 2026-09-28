@@ -608,6 +608,16 @@ credential.
   Gmail reads its hierarchy out of a name too and lands elsewhere, because nothing hands it
   fragment rows: `provider-google`'s `nest_labels` splits only where the prefix is a label the
   account actually has, so `Work/Clients` with no `Work` beside it stays one label.
+- **A level of the tree that holds no mail stays in the list, as `Mailbox::selectable: false`.**
+  `\Noselect` rows (Gmail's `[Gmail]`, the parent of a folder made inside one nobody made) are
+  where their children hang, so dropping one orphans them; `SELECT` or `STATUS` on one is an
+  error, so a host neither opens nor syncs it, and `unseen` never probes it. `\NonExistent`
+  implies `\Noselect` (RFC 9051 §7.3.1), and **the same folder can arrive either way**: for a
+  parent nobody created, Dovecot answers the plain `LIST` with `\Noselect \HasChildren` and the
+  extended one (`RETURN (…)`, which is what this crate sends wherever it is offered) with a bare
+  `\NonExistent`. So `mail::mailboxes_from_list` keeps a `\NonExistent` row while a listed
+  folder sits beneath it and drops it otherwise, when it names nothing a host could draw.
+  Stalwart never produces either: it makes a real parent. `live_mailbox_writes` pins both.
 - **An unknown escape in a quoted string is kept, not refused.** `QUOTED-CHAR` allows `\` only
   before `"` or `\` (RFC 9051 §4.3), so anything else is a server getting it wrong. A protocol
   error there is scoped to the whole response rather than the one string, so refusing takes every

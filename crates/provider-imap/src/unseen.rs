@@ -22,6 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     error::{ImapError, ImapResult},
+    mail::is_hierarchy_level,
     parse::ListRow,
     tokenize::{Item, items_of},
     transport::Connection,
@@ -132,8 +133,8 @@ fn unseen_of(attributes: &[Item]) -> Option<u32> {
 /// Fills in every listed mailbox's unread count with one `STATUS` each — the fallback
 /// for a server without `LIST-STATUS`.
 ///
-/// `\Noselect` rows are skipped (they are hierarchy nodes, and `STATUS` on one is an
-/// error, not a zero), and a mailbox the server *refuses* (`NO`/`BAD`) is left uncounted
+/// `\Noselect` and `\NonExistent` rows are skipped (they are hierarchy nodes, and `STATUS` on one
+/// is an error, not a zero), and a mailbox the server *refuses* (`NO`/`BAD`) is left uncounted
 /// rather than failing the whole folder list — one unreadable folder must not cost the
 /// user every other folder's badge. Probing stops at [`MAX_STATUS_PROBES`].
 ///
@@ -155,7 +156,7 @@ where
     let mut counts = HashMap::new();
     for row in rows
         .iter()
-        .filter(|row| !has_noselect(&row.attributes))
+        .filter(|row| !is_hierarchy_level(&row.attributes))
         .take(MAX_STATUS_PROBES)
     {
         match connection.status_unseen(&row.name).await {
@@ -167,13 +168,6 @@ where
         }
     }
     Ok(counts)
-}
-
-/// Whether a `LIST` row carries `\Noselect` — a container that holds no messages.
-fn has_noselect(attributes: &[String]) -> bool {
-    attributes
-        .iter()
-        .any(|attribute| attribute.eq_ignore_ascii_case("\\Noselect"))
 }
 
 #[cfg(test)]

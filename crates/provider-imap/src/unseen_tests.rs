@@ -190,6 +190,8 @@ async fn probing_asks_per_mailbox_and_skips_noselect_containers() {
             row("INBOX", &["\\HasNoChildren"]),
             // A hierarchy node: STATUS on one is an error, so it is never asked.
             row("Work", &["\\Noselect", "\\HasChildren"]),
+            // RFC 9051 §7.3.1: `\NonExistent` implies `\Noselect`.
+            row("Placeholder", &["\\NonExistent"]),
             row("Work/Clients", &["\\HasNoChildren"]),
         ],
     )
@@ -206,6 +208,7 @@ async fn probing_asks_per_mailbox_and_skips_noselect_containers() {
         "{sent}"
     );
     assert!(!sent.contains(r#"STATUS "Work" "#), "{sent}");
+    assert!(!sent.contains("Placeholder"), "{sent}");
 }
 
 #[tokio::test]

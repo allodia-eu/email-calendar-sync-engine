@@ -11,8 +11,9 @@ use crate::{extended::ExtendedProperties, ids::MailboxId, version::RevisionToken
 /// are three separate things. Membership of messages in this collection is
 /// modeled on the message side, not here. Per-mailbox access rights remain
 /// provider-specific and, when needed, are carried in
-/// [`extended`](Mailbox::extended) rather than asserted as universal fields; the one
-/// exception is [`accepts_children`](Mailbox::accepts_children).
+/// [`extended`](Mailbox::extended) rather than asserted as universal fields; the
+/// exceptions are [`accepts_children`](Mailbox::accepts_children) and
+/// [`selectable`](Mailbox::selectable).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mailbox {
     /// The collection's stable id.
@@ -51,6 +52,12 @@ pub struct Mailbox {
     /// decides from it what to offer, and all four transports can answer it.
     #[serde(default = "accepts_children_unless_told")]
     pub accepts_children: bool,
+    /// Whether the collection can be opened to list its messages. `false` for a level of the
+    /// hierarchy that holds none: IMAP `\Noselect` (Gmail's `[Gmail]`, a server's parent of a
+    /// nested folder), or a JMAP mailbox without `mayReadItems`. A host keeps it in the tree,
+    /// so its children stay under it, and neither opens nor syncs it.
+    #[serde(default = "selectable_unless_stated")]
+    pub selectable: bool,
     /// Per-object revision tokens, if the provider supplies any.
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
@@ -71,6 +78,7 @@ impl Mailbox {
             subscribed: true,
             unread_count: None,
             accepts_children: true,
+            selectable: true,
             revisions: RevisionTokens::none(),
             extended: ExtendedProperties::new(),
         }
@@ -78,6 +86,11 @@ impl Mailbox {
 }
 
 const fn accepts_children_unless_told() -> bool {
+    true
+}
+
+/// A row stored before [`Mailbox::selectable`] existed is a folder a host could open.
+const fn selectable_unless_stated() -> bool {
     true
 }
 
@@ -96,6 +109,7 @@ mod tests {
         assert!(mailbox.parent.is_none());
         assert!(mailbox.role.is_none());
         assert!(mailbox.subscribed);
+        assert!(mailbox.selectable);
         // Absent, not zero: a mailbox nobody has counted yet is not an empty one.
         assert!(mailbox.unread_count.is_none());
     }
@@ -125,6 +139,8 @@ mod tests {
         assert!(loaded.unread_count.is_none());
         // Nothing was known against it, so nothing is withheld: the server still answers.
         assert!(loaded.accepts_children);
+        // Every folder stored before the field existed was one a host could open.
+        assert!(loaded.selectable);
     }
 
     #[test]
@@ -138,6 +154,14 @@ mod tests {
                 .unwrap()
                 .accepts_children
         );
+    }
+
+    #[test]
+    fn a_container_roundtrips_as_one() {
+        let mut container = Mailbox::new(id("work"), "Work");
+        container.selectable = false;
+        let json = serde_json::to_string(&container).unwrap();
+        assert_eq!(serde_json::from_str::<Mailbox>(&json).unwrap(), container);
     }
 
     #[test]

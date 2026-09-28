@@ -91,6 +91,12 @@ pub(crate) fn mailbox_from_json(value: &Value) -> Result<Mailbox, JmapError> {
         .get("unreadEmails")
         .and_then(Value::as_u64)
         .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
+    // RFC 8621 §2: without `mayReadItems` no `Email/query` may filter on the mailbox, so to the
+    // user it is a level of the hierarchy, as a shared account's parent folder often is.
+    mailbox.selectable = value
+        .pointer("/myRights/mayReadItems")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     Ok(mailbox)
 }
 
@@ -288,6 +294,18 @@ mod tests {
         assert!(all.iter().any(|m| m.name == "Projects" && m.role.is_none()));
         assert!(all.iter().any(|m| m.role == Some(MailboxRole::Sent)));
         assert!(all.iter().any(|m| m.role == Some(MailboxRole::Trash)));
+    }
+
+    #[test]
+    fn a_mailbox_whose_items_cannot_be_read_is_not_selectable() {
+        // Every captured mailbox grants `mayReadItems`.
+        assert!(mailboxes().iter().all(|m| m.selectable));
+
+        let refused = serde_json::json!({ "id": "m", "myRights": { "mayReadItems": false } });
+        assert!(!mailbox_from_json(&refused).unwrap().selectable);
+        // No rights reported says nothing against opening it.
+        let silent = serde_json::json!({ "id": "m" });
+        assert!(mailbox_from_json(&silent).unwrap().selectable);
     }
 
     #[test]
