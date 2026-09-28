@@ -83,6 +83,8 @@ fn reads_capabilities_and_limits() {
         Session::parse(&session_doc(), &base, SessionUrlPolicy::RebaseToConnection).unwrap();
     let caps = session.capabilities();
     assert!(caps.mail() && caps.submission() && caps.calendars());
+    // Submission ⇒ the filed copy can be given keywords.
+    assert!(caps.sent_copy_keywords());
     // Mail + a download template ⇒ on-demand message-source fetch is advertised.
     assert!(caps.message_source());
     // Mail + a writable account ⇒ mail writes (`Email/set`) are advertised.

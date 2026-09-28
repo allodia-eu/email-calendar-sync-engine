@@ -60,6 +60,7 @@ async fn scopes_are_imap_shaped() {
     // advertises them — unlike submission, which is gated on a configured SMTP.
     assert!(provider.connection_info().capabilities.mail_writes());
     assert!(!provider.connection_info().capabilities.submission());
+    assert!(!provider.connection_info().capabilities.sent_copy_keywords());
     assert!(!provider.connection_info().capabilities.calendars());
     // This provider's connection never ran CAPABILITY negotiation, so push (IDLE) is
     // not advertised — it is gated on the server, like submission is on SMTP.
@@ -334,6 +335,7 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
         },
     );
     assert!(provider.connection_info().capabilities.submission());
+    assert!(provider.connection_info().capabilities.sent_copy_keywords());
 
     let receipt = provider
         .submit_email(&account(), &submit_draft())
@@ -341,6 +343,31 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
         .unwrap();
     assert_eq!(receipt.email_key.as_str(), "imap:v12:u3@Sent");
     assert_eq!(receipt.message_id.as_str(), "offline-send@host");
+}
+
+#[tokio::test]
+async fn submit_email_reports_the_keywords_the_filed_copy_carries() {
+    let imap = script(&[
+        GREETING,
+        LOGIN_OK,
+        "* LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\na2 OK LIST done\r\n",
+        "* OK [UIDVALIDITY 12] v\r\n* OK [PERMANENTFLAGS (\\Seen \\*)] ok\r\na3 OK SELECT done\r\n",
+        "+ OK send literal\r\n",
+        "a4 OK [APPENDUID 12 3] APPEND completed\r\n",
+    ]);
+    let (stream, _) = MockStream::new(imap);
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let smtp = super::SmtpSender::Plaintext {
+        addr: loopback_smtp(),
+    };
+    let provider =
+        ImapProvider::with_connection_and_smtp(conn, MailboxId::try_from("INBOX").unwrap(), smtp);
+    let keyword = engine_core::mail::Keyword::new("project-x").unwrap();
+    let draft = submit_draft().with_sent_copy_keyword(keyword.clone());
+
+    let receipt = provider.submit_email(&account(), &draft).await.unwrap();
+    assert_eq!(receipt.sent_copy_keywords, [keyword].into());
 }
 
 #[tokio::test]

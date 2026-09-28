@@ -31,6 +31,7 @@ mod capability;
 mod capability_calendar;
 mod capability_contacts;
 mod capability_mailbox;
+mod capability_submission;
 mod connect_observer;
 mod connection;
 mod contact;

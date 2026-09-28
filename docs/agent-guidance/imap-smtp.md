@@ -326,6 +326,18 @@ is authoritative for the `provider-caldav` calendar client.
   attachment bodies are base64 encoded, and non-ASCII attachment filenames use
   RFC 5987-style `filename*` / `name*` parameters. (Long encoded-words are not yet
   folded into 75-octet runs — a later refinement.)
+- **Keywords on the Sent copy.** A draft's `sent_copy_keywords` ride the Sent `APPEND` as
+  flags, and only where the folder's `PERMANENTFLAGS` carries `\*` (RFC 9051 §7.1):
+  without it the server answers `OK` and keeps no new keyword, the same silent success
+  `report.rs` refuses. Reading `PERMANENTFLAGS` needs a `SELECT`, which the first attempt
+  issues only when the draft asks for keywords, so an ordinary send costs nothing extra;
+  the retry reads it from the `SELECT` its probe already makes, and gives a copy it finds
+  already placed the keywords with an idempotent `+FLAGS`. A `SELECT` or `STORE` that
+  fails leaves them out rather than failing the placement. The receipt's
+  `sent_copy_keywords` names the ones the copy carries; a `PERMANENTFLAGS` that lists a
+  keyword by name without `\*` counts as not allowing it, since only `\*` is parsed. The
+  repair (`refile`) sets them the same way and returns only the key, so what it kept is
+  read from the next sync (`place.rs`, `tests/live_imap_sent_keywords.rs`).
 - **Folder resolution.** The sent copy / draft is filed into the account's **real
   folder for the role**, discovered via the `\Sent`/`\Drafts` SPECIAL-USE attribute
   in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
