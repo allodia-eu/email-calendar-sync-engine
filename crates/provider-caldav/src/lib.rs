@@ -41,6 +41,7 @@
 
 mod calendar;
 mod carddav;
+mod carddav_config;
 mod carddav_ops;
 mod dav;
 mod discovery;
@@ -62,13 +63,18 @@ mod vcard_write;
 mod write;
 
 #[cfg(test)]
+mod carddav_class_tests;
+#[cfg(test)]
 mod carddav_tests;
 #[cfg(test)]
 mod carddav_unit_tests;
 #[cfg(test)]
+mod carddav_write_tests;
+#[cfg(test)]
 mod vcard_tests;
 
-pub use carddav::{CardDavConfig, CardDavProvider};
+pub use carddav::CardDavProvider;
+pub use carddav_config::CardDavConfig;
 pub use error::CalDavError;
 pub use provider::{CalDavConfig, CalDavProvider};
 pub use transport::Credentials;

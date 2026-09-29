@@ -170,7 +170,9 @@ mail/calendar/identity scopes.
 
 - `CardDavProvider` shares DAV HTTP/TLS primitives with CalDAV but has separate
   discovery, normalization, and write code.
-- Discover address-book homes and collections. Prefer RFC 6578 `sync-collection`;
+- Discover address-book homes, ask the home whether it advertises the
+  `addressbook` class, and only then list collections: a home without it offers
+  no contacts. Prefer RFC 6578 `sync-collection`;
   use CTag/per-resource ETag comparison when the server lacks it.
 - Fetch changed cards with `addressbook-multiget`, requesting `getetag` and
   `address-data`.
