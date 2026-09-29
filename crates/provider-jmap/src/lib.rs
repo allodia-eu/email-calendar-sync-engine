@@ -54,6 +54,7 @@ mod json;
 mod mail;
 mod mailbox_write;
 mod mutate;
+mod participant_identity;
 mod provider;
 mod provider_calendar;
 mod report;

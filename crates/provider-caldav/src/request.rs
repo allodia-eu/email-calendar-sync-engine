@@ -4,11 +4,13 @@
 //! interpolates the opaque sync-token). They request exactly the properties the
 //! normalizers read, so a server returns nothing extra to parse.
 
-/// `PROPFIND` (Depth 0) for the principal and its calendar home (RFC 6764 §6).
+/// `PROPFIND` (Depth 0) for the principal, its calendar home (RFC 6764 §6) and the addresses
+/// it schedules as (RFC 6638 §2.4.1).
 pub(crate) const PRINCIPAL_PROPFIND: &str = concat!(
     r#"<?xml version="1.0" encoding="utf-8"?>"#,
     r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
-    r#"<d:prop><d:current-user-principal/><c:calendar-home-set/></d:prop></d:propfind>"#,
+    r#"<d:prop><d:current-user-principal/><c:calendar-home-set/>"#,
+    r#"<c:calendar-user-address-set/></d:prop></d:propfind>"#,
 );
 
 /// `PROPFIND` (Depth 1) listing a calendar home's collections and their metadata.

@@ -19,9 +19,9 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
-    EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError, ProviderResult,
-    RsvpControls, ScopeSync, SyncKind, WriteGuard,
+    CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo, EventDeletion, EventDraft,
+    EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError,
+    ProviderResult, RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
 
 /// What a Google RSVP can and cannot control.
@@ -264,6 +264,16 @@ impl CalendarWrites for GoogleCalendarProvider {
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
         cal_write::delete_event(&self.client, self.calendar_id(), deletion).await
+    }
+
+    /// The account's primary calendar id, which is the address Google organises and answers
+    /// as for every calendar the account holds (`cal_fetch`).
+    async fn calendar_user_addresses(
+        &self,
+        _account: &AccountId,
+    ) -> ProviderResult<CalendarUserAddresses> {
+        let address = crate::cal_fetch::primary_calendar_address(&self.client).await?;
+        Ok(CalendarUserAddresses::Known(vec![address]))
     }
 }
 

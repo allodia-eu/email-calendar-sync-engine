@@ -59,6 +59,30 @@ async fn connect(addr: &str, user: &str, pass: &str) -> CalDavProvider {
     panic!("could not connect to SabreDAV harness: {last_err:?}");
 }
 
+/// SabreDAV reaches its home in two steps, so the principal's address set is read at connect.
+/// It lists the principal's own path beside the `mailto:`, which is not an email address and
+/// is left out.
+#[tokio::test]
+async fn sabredav_recognises_the_accounts_own_address() {
+    let Some((addr, user, pass)) = harness() else {
+        eprintln!(
+            "skipping sabredav_recognises_the_accounts_own_address: SABREDAV_HTTP_ADDR unset"
+        );
+        return;
+    };
+    let provider = connect(&addr, &user, &pass).await;
+    let addresses = engine_provider::CalendarWrites::calendar_user_addresses(
+        &provider,
+        &AccountId::try_from("sabredav-calendar-user-live").unwrap(),
+    )
+    .await
+    .expect("address set");
+    assert_eq!(
+        addresses,
+        engine_provider::CalendarUserAddresses::Known(vec![user])
+    );
+}
+
 async fn load<T: DeserializeOwned>(
     store: &SqliteStore<ManualClock>,
     scope: &SyncScope,

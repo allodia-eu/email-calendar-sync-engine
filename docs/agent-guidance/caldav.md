@@ -152,7 +152,17 @@ are split escape-aware so the writer and the parser agree.
   config's `ConnectObserver` (`providers.md`), and `ConnectStep::Discovered` with the
   resolved calendar home once discovery settles. The principal → home-set second step
   is **not** a redirect and emits nothing: it is a second `PROPFIND` of a *different*
-  resource, not the same resource moving. **A hop's `Location` is resolved against the
+  resource, not the same resource moving.
+- **The same `PROPFIND` asks for the principal's `calendar-user-address-set`** (RFC 6638
+  §2.4.1), the addresses the server schedules as for this user, read through
+  `CalendarWrites::calendar_user_addresses`. Only the principal carries it: Stalwart names
+  the home at its well-known target and answers the set `404` there, so a `404` at any
+  other resource is not an answer. Discovery keeps the set when it read the principal
+  itself (the strict two-step flow), and otherwise the provider asks the principal when a
+  host does, which adds no request to a connect. A principal that does not report the set is
+  `NotEnabled`: the property is required on one that schedules. Only `mailto:` entries are
+  kept; SabreDAV lists the principal's own path beside the address, which is not one.
+- **A hop's `Location` is resolved against the
   href that issued it** (`href::redirect_href`): discovery walks in href space, so a bare
   path is left for the executor to resolve onto the connection, but once a hop has moved
   to an absolute URL the next one belongs to *that* origin, and leaving it a path walks

@@ -15,11 +15,11 @@ use engine_core::{
 };
 
 use crate::{
-    CalendarWrites, ConnectionInfo, ContactDestination, ContactPhoto, ContactSourceSync,
-    ContactWriteReceipt, ContactsProvider, Draft, EmailStream, EventDeletion, EventDraft,
-    EventEdit, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MailboxEdit,
-    MailboxEditReceipt, MailboxWrites, MessageReport, Provider, ProviderResult, ReportReceipt,
-    ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
+    CalendarUserAddresses, CalendarWrites, ConnectionInfo, ContactDestination, ContactPhoto,
+    ContactSourceSync, ContactWriteReceipt, ContactsProvider, Draft, EmailStream, EventDeletion,
+    EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
+    MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport, Provider, ProviderResult,
+    ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -225,6 +225,13 @@ impl<P: CalendarWrites + ?Sized> CalendarWrites for Box<P> {
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
         (**self).delete_event(account, base, deletion).await
+    }
+
+    async fn calendar_user_addresses(
+        &self,
+        account: &AccountId,
+    ) -> ProviderResult<CalendarUserAddresses> {
+        (**self).calendar_user_addresses(account).await
     }
 }
 
