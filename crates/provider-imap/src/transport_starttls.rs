@@ -28,6 +28,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             tag: 0,
             negotiated: Negotiated::default(),
             pending_tag: None,
+            selected: None,
         }
     }
 

@@ -3,11 +3,10 @@
 //!
 //! Split from [`crate::provider`] (which is at the file-size limit) because it answers a
 //! different question: that module is the [`Provider`](engine_provider::Provider)
-//! surface a host drives, this one is how a session comes to exist at all. Two callers
-//! share it, which is why it is not a method —
-//! [`ImapProvider::connect`](crate::ImapProvider::connect) and
-//! [`ImapWatcher::connect`](crate::ImapWatcher::connect), the latter needing its **own**
-//! connection because a socket in `IDLE` cannot also `FETCH`.
+//! surface a host drives, this one is how a session comes to exist at all. It is not a
+//! method because it runs before there is anything to call one on: the first connection
+//! [`ImapAccount::connect`](crate::ImapAccount::connect) opens, and every one the account's
+//! pool opens after it, watches included.
 
 use engine_provider::{ConnectObserver, ConnectStep, TlsVersion};
 use tokio::{
@@ -24,13 +23,11 @@ use crate::{
     transport::Connection,
 };
 
-/// Opens a TCP + implicit-TLS connection, authenticates, and negotiates capabilities
-/// (ENABLE QRESYNC + record IDLE) — the shared dial both
-/// [`ImapProvider::connect`](crate::ImapProvider::connect) and
-/// [`ImapWatcher::connect`](crate::watch::ImapWatcher::connect) build their session on.
-/// Factored out so a watcher opens its **own** dedicated connection (push needs a
-/// standing IDLE socket separate from the sync socket) without duplicating the
-/// connect/authenticate/negotiate sequence or exposing the config's private fields.
+/// Opens a TCP + TLS connection (implicit or `STARTTLS`), authenticates with the config's
+/// [`Credentials`], and negotiates capabilities (ENABLE QRESYNC + record IDLE): the one
+/// dial behind [`ImapAccount::connect`](crate::ImapAccount::connect) and every connection
+/// the account's pool opens after it, so the first connection and the hundredth are made
+/// the same way and present the same credential.
 ///
 /// Returns the session together with the TLS version its handshake agreed — the one
 /// point where the concrete stream type is still visible, before it is erased behind

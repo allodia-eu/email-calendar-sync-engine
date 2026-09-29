@@ -180,6 +180,24 @@ async fn a_flat_refusal_with_no_challenge_is_still_an_authentication_error() {
     assert!(!sent.contains("MAIL FROM"), "{sent}");
 }
 
+/// A token refused for now is not a token refused: read as `Authentication`, a host would
+/// send the user through a sign-in that cannot help. The same rule as `AUTH PLAIN`.
+#[tokio::test]
+async fn a_deferred_token_is_rate_limited_not_a_bad_credential() {
+    let credentials = Credentials::oauth2("alice@example.com", "tok");
+    let (outcome, _) = submit(
+        script(&[
+            "220 mail ESMTP\r\n",
+            "250-mail\r\n250 AUTH XOAUTH2\r\n",
+            "454 4.7.0 Temporary authentication failure\r\n",
+        ]),
+        &credentials,
+    )
+    .await;
+    let err = outcome.expect_err("a deferral must fail the send");
+    assert_eq!(err.failure_class(), FailureClass::RateLimited, "{err:?}");
+}
+
 #[tokio::test]
 async fn a_server_offering_no_oauth_mechanism_says_what_it_does_offer() {
     let credentials = Credentials::oauth2("alice@example.com", "tok");

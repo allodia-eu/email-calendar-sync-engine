@@ -6,20 +6,7 @@ use engine_rfc5322::assemble_message;
 use time::{OffsetDateTime, macros::datetime};
 
 use super::*;
-use crate::{
-    credentials::Credentials,
-    mock::{MockStream, script, written},
-};
-
-/// The `SmtpAuth` a TLS submission presents. Taken by reference, so the credential is
-/// built by the caller and outlives it.
-fn auth(credentials: &Credentials) -> SmtpAuth<'_> {
-    SmtpAuth {
-        credentials,
-        host: "smtp.test.local",
-        port: Some(465),
-    }
-}
+use crate::mock::{MockStream, script, written};
 
 fn draft(to: &[&str], body: &str) -> Draft {
     Draft::new(
@@ -351,91 +338,6 @@ async fn a_bad_greeting_or_malformed_reply_errors() {
         )
         .await
         .is_err()
-    );
-}
-
-#[tokio::test]
-async fn send_authenticates_with_auth_plain_over_the_stream() {
-    let server = script(&[
-        "220 mail ESMTP\r\n",
-        "250-mail\r\n250 AUTH PLAIN\r\n",
-        "235 2.7.0 authenticated\r\n",
-        "250 2.1.0 OK\r\n",
-        "250 2.1.5 OK\r\n",
-        "354 go ahead\r\n",
-        "250 2.0.0 queued\r\n",
-        "221 bye\r\n",
-    ]);
-    let (stream, recorded) = MockStream::new(server);
-    let message = assembled(&draft(&["bob@test.local"], "hi"));
-    let credentials = Credentials::password("alice@test.local", "s3cret");
-
-    let result = send(
-        stream,
-        "test.local",
-        "alice@test.local",
-        &recipients(&["bob@test.local"]),
-        &message,
-        Some(auth(&credentials)),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(result.disposition, Disposition::Delivered);
-    let sent = written(&recorded);
-    assert!(sent.contains("AUTH PLAIN "), "{sent}");
-    // The password is base64 in the SASL token, never in the clear.
-    assert!(
-        !sent.contains("s3cret"),
-        "credentials leaked in the clear: {sent}"
-    );
-}
-
-#[tokio::test]
-async fn an_auth_rejection_is_an_authentication_error() {
-    let server = script(&[
-        "220 mail\r\n",
-        "250 AUTH PLAIN\r\n",
-        "535 5.7.8 bad credentials\r\n",
-    ]);
-    let (stream, _) = MockStream::new(server);
-    let message = assembled(&draft(&["bob@test.local"], "hi"));
-
-    let err = send(
-        stream,
-        "test.local",
-        "alice@test.local",
-        &recipients(&["bob@test.local"]),
-        &message,
-        Some(auth(&Credentials::password("alice@test.local", "wrong"))),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        err.failure_class(),
-        engine_core::error::FailureClass::Authentication
-    );
-}
-
-#[tokio::test]
-async fn auth_without_esmtp_is_a_protocol_error() {
-    // EHLO is refused (HELO-only), so AUTH cannot run.
-    let server = script(&["220 mail\r\n", "502 no EHLO\r\n", "250 OK\r\n"]);
-    let (stream, _) = MockStream::new(server);
-    let message = assembled(&draft(&["bob@test.local"], "hi"));
-    let err = send(
-        stream,
-        "test.local",
-        "alice@test.local",
-        &recipients(&["bob@test.local"]),
-        &message,
-        Some(auth(&Credentials::password("user", "pass"))),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        err.failure_class(),
-        engine_core::error::FailureClass::Permanent
     );
 }
 

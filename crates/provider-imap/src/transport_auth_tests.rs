@@ -272,3 +272,18 @@ async fn an_endless_stream_of_challenges_is_abandoned_rather_than_looped_on() {
         "{outcome:?}"
     );
 }
+
+#[tokio::test]
+async fn a_token_refused_with_limit_is_rate_limited_not_a_bad_token() {
+    // The `LOGIN` rule, on the other way in: the server is refusing sessions, and a host
+    // that read it as a bad token would send the user through a sign-in that cannot help.
+    let (outcome, _) = authenticate(script(&[
+        GREETING,
+        "* CAPABILITY IMAP4rev1 SASL-IR AUTH=OAUTHBEARER\r\n",
+        "a1 OK CAPABILITY done\r\n",
+        "a2 NO [LIMIT] Too many sessions\r\n",
+    ]))
+    .await;
+    let err = outcome.expect_err("a refusal must fail");
+    assert!(matches!(err, ImapError::RateLimited(_)), "{err:?}");
+}

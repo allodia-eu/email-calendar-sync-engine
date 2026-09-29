@@ -19,7 +19,7 @@ use engine_core::{
     sync::SyncState,
     time::CalendarDate,
 };
-use engine_provider::{PageToken, SyncKind, SyncPage};
+use engine_provider::{KeywordName, PageToken, SyncKind, SyncPage};
 use serde_json::Value;
 
 use crate::{
@@ -99,7 +99,10 @@ async fn folder_tree(client: &GraphClient, root: &MailboxId) -> Result<Vec<Mailb
 }
 
 /// Resolves a well-known folder alias (`inbox`, `msgfolderroot`, …) to its id.
-async fn well_known_id(client: &GraphClient, alias: &str) -> Result<MailboxId, GraphError> {
+pub(crate) async fn well_known_id(
+    client: &GraphClient,
+    alias: &str,
+) -> Result<MailboxId, GraphError> {
     let doc = client
         .get(&client.url(&format!("/mailFolders/{alias}?$select=id")))
         .await?;
@@ -120,7 +123,11 @@ async fn optional_well_known_id(
 }
 
 /// Re-fetches one full message by id (the delta changed-id re-fetch).
-pub(crate) async fn message(client: &GraphClient, id: &MessageId) -> Result<Message, GraphError> {
+pub(crate) async fn message(
+    client: &GraphClient,
+    id: &MessageId,
+    names: &[KeywordName],
+) -> Result<Message, GraphError> {
     let select = MESSAGE_SELECT.join(",");
     let doc = client
         .get(&client.url(&format!(
@@ -128,7 +135,7 @@ pub(crate) async fn message(client: &GraphClient, id: &MessageId) -> Result<Mess
             id.as_str()
         )))
         .await?;
-    message_from_json(&doc)
+    message_from_json(&doc, names)
 }
 
 /// Fetches one message's raw RFC 822 MIME via the `$value` endpoint — the source the
@@ -146,12 +153,16 @@ pub(crate) async fn message_source(
 
 /// Reads one message's **state** through the narrow `$select` — what an etag-less delta
 /// entry costs to resolve, in place of [`message`]'s whole object.
-async fn message_state(client: &GraphClient, key: &ProviderKey) -> Result<MailState, GraphError> {
+async fn message_state(
+    client: &GraphClient,
+    key: &ProviderKey,
+    names: &[KeywordName],
+) -> Result<MailState, GraphError> {
     let select = MESSAGE_STATE_SELECT.join(",");
     let doc = client
         .get(&client.url(&format!("/messages/{}?$select={select}", key.as_str())))
         .await?;
-    state_from_json(&doc)
+    state_from_json(&doc, names)
 }
 
 /// Fetches one page of the bound folder's messages (see the module docs). `floor`
@@ -164,6 +175,7 @@ pub(crate) async fn messages_page(
     cursor: Option<&SyncState>,
     page: Option<&PageToken>,
     floor: Option<CalendarDate>,
+    names: &[KeywordName],
 ) -> Result<SyncPage<Message>, GraphError> {
     let kind = if cursor.is_none() {
         SyncKind::Snapshot
@@ -194,7 +206,7 @@ pub(crate) async fn messages_page(
         // `present`, so one here would be tombstoned at the end of the pass.
         if kind == SyncKind::Delta && entry.get("@odata.etag").is_none() {
             let key = entry_key(entry)?;
-            match message_state(client, &key).await {
+            match message_state(client, &key, names).await {
                 Ok(state) => patched.push(MailStateChange::new(key, state)),
                 // Deleted/moved in the race since the delta → skip; a later delta
                 // reports the removal, so the pass is not wedged.
@@ -204,10 +216,10 @@ pub(crate) async fn messages_page(
             continue;
         }
         let full = if entry.get("@odata.etag").is_some() {
-            message_from_json(entry)?
+            message_from_json(entry, names)?
         } else {
             let id = MessageId::new(entry_key(entry)?);
-            match message(client, &id).await {
+            match message(client, &id, names).await {
                 Ok(full) => full,
                 Err(GraphError::Status { status: 404, .. }) => continue,
                 Err(other) => return Err(other),

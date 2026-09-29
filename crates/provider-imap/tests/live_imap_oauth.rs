@@ -37,7 +37,7 @@ use engine_core::{
 };
 use engine_provider::{Draft, Provider};
 use futures_util::StreamExt as _;
-use provider_imap::{Credentials, ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapAccount, ImapConfig};
 use tokio_rustls::TlsConnector;
 
 /// The account under test, from the environment; `None` skips.
@@ -105,13 +105,10 @@ macro_rules! target {
 #[tokio::test]
 async fn an_access_token_authenticates_and_the_session_works() {
     let target = target!();
-    let provider = ImapProvider::connect(
-        &target.config(&target.token),
-        connector(),
-        MailboxId::try_from(target.mailbox.as_str()).expect("mailbox"),
-    )
-    .await
-    .expect("the access token must authenticate");
+    let provider = ImapAccount::connect(&target.config(&target.token), connector())
+        .await
+        .expect("the access token must authenticate")
+        .provider(MailboxId::try_from(target.mailbox.as_str()).expect("mailbox"));
 
     // Authenticating is not the same as having a usable session: a `LIST` proves the
     // server really moved into the authenticated state rather than answering `OK` and
@@ -149,11 +146,7 @@ async fn a_rejected_token_is_an_authentication_failure_rather_than_a_hang() {
     // rather than only an assertion on the outcome.
     let corrupted = format!("{}-not-a-valid-token", target.token);
     let config = target.config(&corrupted);
-    let attempt = ImapProvider::connect(
-        &config,
-        connector(),
-        MailboxId::try_from(target.mailbox.as_str()).expect("mailbox"),
-    );
+    let attempt = ImapAccount::connect(&config, connector());
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), attempt)
         .await
         .expect("the server's rejection must arrive, not hang the dial");
@@ -179,13 +172,10 @@ async fn a_token_also_authenticates_smtp_submission() {
     let config = target
         .config(&target.token)
         .with_smtp_tls(format!("{smtp_host}:{smtp_port}"), smtp_host.clone());
-    let provider = ImapProvider::connect(
-        &config,
-        connector(),
-        MailboxId::try_from(target.mailbox.as_str()).expect("mailbox"),
-    )
-    .await
-    .expect("authenticate");
+    let provider = ImapAccount::connect(&config, connector())
+        .await
+        .expect("authenticate")
+        .provider(MailboxId::try_from(target.mailbox.as_str()).expect("mailbox"));
 
     // Addressed to the account itself, so a live run never mails a third party.
     let message_id =

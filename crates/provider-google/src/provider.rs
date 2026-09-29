@@ -20,12 +20,12 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
-    MailEdit, MailEditReceipt, PageToken, PassMode, Provider, ProviderResult, ReportControls,
-    ReportEvidence, ReportVerdicts, ScopeSync, SenderIdentity, SenderIdentityId, SubmissionReceipt,
-    SyncKind, split_page,
+    KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
+    PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
+    ScopeSync, SenderIdentity, SenderIdentityId, SubmissionReceipt, SyncKind, split_page,
 };
 
-use crate::{fetch, mutate, submit, transport::GoogleClient};
+use crate::{fetch, mutate, named_labels::Labels, submit, transport::GoogleClient};
 
 /// The label list is re-discovered as a snapshot each pass (`GET /users/me/labels`), so
 /// it carries no provider cursor of its own — like IMAP's folder list.
@@ -44,6 +44,8 @@ pub struct GmailProvider {
     /// windows its initial snapshot under (`None` syncs the whole account). Streaming
     /// callers pass a window per call.
     since: Option<CalendarDate>,
+    /// The keywords kept as labels ([`GmailProvider::with_keyword_names`]).
+    labels: Labels,
 }
 
 impl core::fmt::Debug for GmailProvider {
@@ -65,6 +67,9 @@ impl GmailProvider {
                 .with_mail()
                 .with_message_source()
                 .with_mail_writes()
+                // Folders are labels, which the full `mail.google.com` scope may create,
+                // rename and remove (`crate::labels_write`).
+                .with_mailbox_writes()
                 // Gmail keeps drafts as objects of their own, so a re-save replaces one
                 // in place rather than creating and deleting (`crate::drafts`). Whether
                 // *this* token holds the scope the collection needs is a scope question
@@ -92,6 +97,7 @@ impl GmailProvider {
                 // (`crate::identity`).
                 .with_sender_identities(IdentityControls::Writable),
             since: None,
+            labels: Labels::default(),
         }
     }
 
@@ -101,6 +107,22 @@ impl GmailProvider {
     #[must_use]
     pub fn with_since(mut self, since: CalendarDate) -> Self {
         self.since = Some(since);
+        self
+    }
+
+    /// Keeps each of `names`' keywords as a Gmail label under one of its names.
+    ///
+    /// Gmail stores no free-form keyword, so a keyword a draft asks for on its filed copy
+    /// ([`Draft::sent_copy_keywords`]) is kept only when it has a name here. A label under any
+    /// of a keyword's names is then read as that keyword: it leaves the label list and every
+    /// message's memberships, and the message carries the keyword instead. With at least one
+    /// name, the adapter advertises [`sent_copy_keywords`](Capabilities::sent_copy_keywords).
+    #[must_use]
+    pub fn with_keyword_names(mut self, names: Vec<KeywordName>) -> Self {
+        if !names.is_empty() {
+            self.capabilities = self.capabilities.with_sent_copy_keywords();
+        }
+        self.labels = Labels::new(names);
         self
     }
 }
@@ -142,7 +164,8 @@ impl Provider for GmailProvider {
         _account: &AccountId,
         _cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
-        let mailboxes = fetch::labels(&self.client).await?;
+        let (mailboxes, named) = fetch::labels(&self.client, self.labels.names()).await?;
+        self.labels.remember(named);
         // `labels.list` is a full snapshot every pass, so every label is present.
         let present: BTreeSet<ProviderKey> = mailboxes.iter().map(|m| m.id.key().clone()).collect();
         Ok(ScopeSync::new(
@@ -182,9 +205,12 @@ impl Provider for GmailProvider {
             // The account historyId captured before a snapshot enumeration, carried as
             // the snapshot's persisted cursor.
             let mut snapshot_cursor: Option<SyncState> = None;
+            let named = self.labels.resolved(&self.client).await?;
             let final_cursor = loop {
                 let page = if let Some(delta_cursor) = cursor {
-                    match fetch::delta_page(&self.client, delta_cursor, page_token.as_ref()).await {
+                    match fetch::delta_page(&self.client, delta_cursor, page_token.as_ref(), &named)
+                        .await
+                    {
                         Ok(page) => page,
                         // Gmail has aged the stored historyId out of its window (`404`):
                         // it cannot produce a delta from that cursor again. Drop it and
@@ -209,7 +235,8 @@ impl Provider for GmailProvider {
                         snapshot_cursor = Some(fetch::current_history_id(&self.client).await?);
                     }
                     let history = snapshot_cursor.as_ref().expect("captured above");
-                    fetch::snapshot_page(&self.client, page_token.as_ref(), floor, history).await?
+                    fetch::snapshot_page(&self.client, page_token.as_ref(), floor, history, &named)
+                        .await?
                 };
 
                 // Decide the pass mode once, from the first page: a snapshot reconciles
@@ -283,7 +310,8 @@ impl Provider for GmailProvider {
         _account: &AccountId,
         edit: &MailEdit,
     ) -> ProviderResult<MailEditReceipt> {
-        mutate::edit(&self.client, edit).await
+        let named = self.labels.resolved(&self.client).await?;
+        mutate::edit(&self.client, edit, &named).await
     }
 
     /// Sends `draft` via `messages.send` in base64url MIME (`submit`), returning the sent
@@ -293,7 +321,7 @@ impl Provider for GmailProvider {
         _account: &AccountId,
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
-        submit::send(&self.client, draft).await
+        submit::send(&self.client, draft, &self.labels).await
     }
 
     async fn sender_identities(&self, _account: &AccountId) -> ProviderResult<Vec<SenderIdentity>> {
@@ -315,6 +343,17 @@ impl Provider for GmailProvider {
         report: &engine_provider::MessageReport,
     ) -> ProviderResult<engine_provider::ReportReceipt> {
         crate::report::report_message(&self.client, report).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MailboxWrites for GmailProvider {
+    async fn edit_mailbox(
+        &self,
+        _account: &AccountId,
+        edit: &MailboxEdit,
+    ) -> ProviderResult<MailboxEditReceipt> {
+        crate::labels_write::edit(&self.client, edit).await
     }
 }
 

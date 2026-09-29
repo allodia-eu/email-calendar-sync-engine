@@ -22,11 +22,10 @@
 //! Previews are **not** hydrated here (reading bodies would defeat fast metadata
 //! streaming); a host fetches bodies on demand for the rows it shows.
 //!
-//! The returned stream holds the connection's [`Mutex`](tokio::sync::Mutex) guard for
-//! its whole lifetime (the session is stateful and sequential — one command at a
-//! time), so a host must drive **one** email stream over a given connection at a time;
-//! it must not poll two concurrently over the same connection (each folder gets its
-//! own connection, so the per-folder fan-out is unaffected).
+//! The returned stream borrows the connection mutably for its whole lifetime (the session is
+//! stateful and sequential — one command at a time). The provider lends it one from the
+//! account's pool for the pass (`crate::provider`), so concurrent passes run on separate
+//! connections.
 
 use engine_core::{
     ids::{MailboxId, ProviderKey},
@@ -36,10 +35,7 @@ use engine_core::{
 use engine_provider::{EmailChunk, PassMode, ProviderError, ProviderResult, SyncKind, split_page};
 use futures_util::Stream;
 use time::Month;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    sync::Mutex,
-};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     cursor::MailboxCursor,
@@ -51,7 +47,7 @@ use crate::{
 
 /// Streams the bound mailbox's email for one pass. See the module docs.
 pub(crate) fn stream_email<'a, S>(
-    connection: &'a Mutex<Connection<S>>,
+    conn: &'a mut Connection<S>,
     mailbox: &'a MailboxId,
     cursor: Option<&'a SyncState>,
     window: SyncWindow,
@@ -62,7 +58,6 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     async_stream::try_stream! {
-        let mut conn = connection.lock().await;
         let qresync = conn.qresync_enabled();
         let select = if qresync {
             conn.select_condstore(mailbox.as_str()).await?
@@ -70,7 +65,7 @@ where
             conn.select(mailbox.as_str()).await?
         };
         let uid_validity = select.uid_validity;
-        let uid_next = effective_uid_next(&mut conn, &select).await?;
+        let uid_next = effective_uid_next(conn, &select).await?;
         let prior = cursor.and_then(MailboxCursor::decode);
         let since = imap_since(window)?;
 
@@ -105,14 +100,14 @@ where
             // on the next uninterrupted pass.
             let is_fresh = prior.is_none();
             let (groups, windowed_total) =
-                backfill_groups(&mut conn, high, since.as_deref(), fetch_batch).await?;
+                backfill_groups(conn, high, since.as_deref(), fetch_batch).await?;
             // The progress denominator: the in-window count when bounded, else the
             // mailbox's message count from SELECT.
             let total = windowed_total
                 .or_else(|| Some(usize::try_from(select.exists).unwrap_or(usize::MAX)));
             let empty = groups.is_empty();
             let scan = backfill_scan(
-                &mut conn,
+                conn,
                 mailbox,
                 uid_validity,
                 groups,
@@ -147,7 +142,7 @@ where
             // Reuse the SELECT already done above — the mailbox stays selected across
             // the pass, so the page path must not re-SELECT.
             let page = sync_page_selected(
-                &mut conn,
+                conn,
                 mailbox,
                 &select,
                 uid_next,

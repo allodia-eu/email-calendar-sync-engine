@@ -25,6 +25,8 @@ on the account.
 | Fixture | Real call | Protects |
 | --- | --- | --- |
 | `mail/settings_send_as.json` | `users.settings.sendAs.list` | The shape a real account's send-as list has: `displayName` is present and **empty** on a mailbox nobody has named, which is what the adapter reads as "no name" rather than as a blank one. |
+| `mail/label_created_hidden.json` | `POST /gmail/v1/users/me/labels` with `labelListVisibility: labelHide`, `messageListVisibility: show` | the create a label standing for a keyword answers with: the new id, and both visibilities echoed as sent |
+| `error/label_name_conflict.json` | the same create again, for a name the account already has | the `409` another device's create leaves behind, on which the adapter reads the list again rather than creating a second label |
 | `mail/draft_created.json` | `POST /gmail/v1/users/me/drafts` | the draft object a create returns: a `drafts` id plus the message it wraps, already labelled `DRAFT` |
 | `mail/draft_updated.json` | `PUT /gmail/v1/users/me/drafts/{id}` on that draft | the same **draft** id with a **new** message id under it: what makes Gmail the one adapter whose draft key survives a re-save |
 | `error/draft_not_found.json` | `DELETE …/drafts/{id}` on a draft already deleted | the `404` a retried draft delete meets, so a retryable op settles rather than parking |

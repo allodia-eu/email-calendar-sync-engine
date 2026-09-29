@@ -1,10 +1,11 @@
 //! Outbound mail submission shapes.
 
 use core::fmt;
+use std::collections::BTreeSet;
 
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::EmailAddress,
+    mail::{EmailAddress, Keyword},
     scheduling::ScheduleMethod,
 };
 use serde::{Deserialize, Serialize};
@@ -62,6 +63,16 @@ pub struct Draft {
     /// original (non-reply) message. Defaulted for back-compat like `in_reply_to`.
     #[serde(default)]
     pub references: Vec<MessageIdHeader>,
+    /// Keywords to set on the **sender's filed copy** in Sent, never on what the recipients
+    /// receive: a keyword is mailbox state, not a header.
+    ///
+    /// A request, not a promise. An adapter that cannot store them files the copy without
+    /// them and says so in [`SubmissionReceipt::sent_copy_keywords`]; the send never fails
+    /// over a keyword. Whether an adapter tries at all is
+    /// [`Capabilities::sent_copy_keywords`](crate::Capabilities::sent_copy_keywords).
+    /// Defaulted so a payload serialized before this field still deserializes.
+    #[serde(default)]
+    pub sent_copy_keywords: BTreeSet<Keyword>,
 }
 
 impl Draft {
@@ -90,6 +101,7 @@ impl Draft {
             calendar: None,
             in_reply_to: None,
             references: Vec::new(),
+            sent_copy_keywords: BTreeSet::new(),
         }
     }
 
@@ -167,6 +179,13 @@ impl Draft {
     #[must_use]
     pub fn with_calendar(mut self, calendar: DraftCalendar) -> Self {
         self.calendar = Some(calendar);
+        self
+    }
+
+    /// Asks for `keyword` on the sender's filed copy ([`Self::sent_copy_keywords`]).
+    #[must_use]
+    pub fn with_sent_copy_keyword(mut self, keyword: Keyword) -> Self {
+        self.sent_copy_keywords.insert(keyword);
         self
     }
 }
@@ -414,6 +433,12 @@ pub struct SubmissionReceipt {
     pub message_id: MessageIdHeader,
     /// What became of the sender's own copy.
     pub sent_copy: SentCopy,
+    /// Which of the draft's [`Draft::sent_copy_keywords`] the filed copy carries.
+    ///
+    /// Empty when the draft asked for none, when the copy was not filed, and when the
+    /// adapter or the server could not keep them. A keyword the draft asked for and this
+    /// set lacks was **not** stored; the send itself is unaffected.
+    pub sent_copy_keywords: BTreeSet<Keyword>,
 }
 
 impl SubmissionReceipt {
@@ -424,6 +449,7 @@ impl SubmissionReceipt {
             email_key,
             message_id,
             sent_copy: SentCopy::Filed,
+            sent_copy_keywords: BTreeSet::new(),
         }
     }
 
@@ -442,7 +468,15 @@ impl SubmissionReceipt {
             sent_copy: SentCopy::Unfiled {
                 detail: detail.into(),
             },
+            sent_copy_keywords: BTreeSet::new(),
         }
+    }
+
+    /// Records the keywords the filed copy carries ([`Self::sent_copy_keywords`]).
+    #[must_use]
+    pub fn with_sent_copy_keywords(mut self, keywords: BTreeSet<Keyword>) -> Self {
+        self.sent_copy_keywords = keywords;
+        self
     }
 }
 

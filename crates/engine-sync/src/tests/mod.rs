@@ -49,15 +49,17 @@ mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
 mod drafts;
-mod drain;
+pub(super) mod drain;
 mod fake_provider;
 mod mail_account;
 mod mail_edit;
 mod mail_sync;
+mod mailbox_edit;
 mod state_change;
 mod streaming;
 mod streaming_resume;
 mod submit;
+mod vanished;
 
 /// A way the fake provider can fail, so a test can drive one failure path without the
 /// provider carrying a flag per path.

@@ -13,6 +13,10 @@
 //!
 //! # Shape (and how it differs from JMAP)
 //!
+//! - **An account is connected once; folders are bound to it.** [`ImapAccount::connect`] dials and
+//!   logs in, and every [`ImapProvider`] and [`ImapWatcher`] is made from it, borrowing from one
+//!   bounded pool of connections. IMAP gives a client no way to learn a server's connection limit,
+//!   and exceeding it surfaces as a failed login, so the budget is the engine's to keep (`pool`).
 //! - **Email scope is per mailbox.** A JMAP account has one `Email` scope; an IMAP account has one
 //!   [`SyncScope::ImapMailbox`](engine_core::sync::SyncScope) per folder. So an [`ImapProvider`] is
 //!   **bound to a single mailbox** for email: its
@@ -54,6 +58,8 @@
 //!   pre-authentication `CAPABILITY`/`EHLO` **before** a credential exists. The question account
 //!   setup asks first; no credential is sent, and nothing is attempted that a provider would record
 //!   as a failed sign-in.
+//! - `pool` / `account` — the account's bounded, reusable connections, and [`ImapAccount`], the one
+//!   handle per account that every folder's provider and watcher is made from.
 //! - `provider` — [`ImapProvider`], the [`Provider`](engine_provider::Provider) impl.
 //! - `idle` / `watch` — push via `IDLE` (RFC 2177): [`ImapWatcher`] holds a dedicated standing
 //!   connection and turns the `IDLE`/`DONE` keep-alive loop into a
@@ -63,6 +69,7 @@
 //! Tier-1 metadata only: like step 4, the raw RFC 5322 body is not materialized
 //! yet (durable blob storage is a later store sub-step).
 
+mod account;
 mod base64;
 mod bodystructure;
 mod capability;
@@ -73,15 +80,19 @@ mod dial;
 mod drafts;
 mod error;
 mod fetch;
+mod fetch_batch;
 mod fetch_stream;
 mod filing;
 mod idle;
 mod mail;
+mod mailbox_write;
 mod mutate;
 mod parse;
 mod parse_body;
 mod parse_qresync;
 mod place;
+mod pool;
+mod pool_lease;
 mod probe;
 mod provider;
 mod qresync;
@@ -98,6 +109,8 @@ mod transport;
 mod transport_append;
 mod transport_auth;
 mod transport_command;
+mod transport_read;
+mod transport_select;
 mod transport_session;
 mod transport_starttls;
 mod unseen;
@@ -109,6 +122,7 @@ mod integration;
 #[cfg(test)]
 mod mock;
 
+pub use account::ImapAccount;
 pub use config::{ImapConfig, ImapSecurity};
 pub use credentials::Credentials;
 pub use error::ImapError;

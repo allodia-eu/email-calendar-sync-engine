@@ -51,7 +51,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{ImapConfig, ImapProvider};
+    use crate::{ImapAccount, ImapConfig, ImapProvider};
 
     #[test]
     fn only_the_two_versions_rustls_can_negotiate_map() {
@@ -143,13 +143,10 @@ mod tests {
             "127.0.0.1",
             crate::credentials::Credentials::password("u", "pw"),
         );
-        ImapProvider::connect(
-            &config,
-            tls.connector(),
-            MailboxId::try_from("INBOX").expect("mailbox"),
-        )
-        .await
-        .expect("connect")
+        ImapAccount::connect(&config, tls.connector())
+            .await
+            .map(|account| account.provider(MailboxId::try_from("INBOX").expect("mailbox")))
+            .expect("connect")
     }
 
     #[tokio::test]

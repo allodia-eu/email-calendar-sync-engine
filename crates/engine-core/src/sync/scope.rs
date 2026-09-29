@@ -315,6 +315,20 @@ impl SyncScope {
         }
     }
 
+    /// The folder whose messages this scope holds, where message sync is per folder (IMAP,
+    /// Graph); `None` for every other scope, an account-wide message scope included.
+    ///
+    /// What ties a message scope to its container: a scope whose folder has left the
+    /// account's folder list holds messages nothing will ever sync again.
+    #[must_use]
+    pub fn folder(&self) -> Option<&MailboxId> {
+        match self {
+            Self::ImapMailbox { mailbox, .. } => Some(mailbox),
+            Self::GraphFolder { folder, .. } => Some(folder),
+            _ => None,
+        }
+    }
+
     /// The kind of member object this scope holds, or `None` for a scope whose objects
     /// are not host-facing view objects (a JMAP `Thread` or `EmailSubmission`).
     ///

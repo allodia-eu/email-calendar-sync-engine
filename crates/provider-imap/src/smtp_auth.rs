@@ -36,7 +36,8 @@ pub(crate) struct SmtpAuth<'a> {
 /// # Errors
 ///
 /// [`ImapError::Auth`] if the server rejects the credential, or (for a token) if it
-/// advertises no OAuth mechanism — the message names what it did offer, because the
+/// advertises no OAuth mechanism; [`ImapError::RateLimited`] if it defers the attempt with a
+/// 4xx other than `432` — the message names what it did offer, because the
 /// usual cause is a token pointed at an account that only takes a password.
 pub(crate) async fn authenticate<S>(
     smtp: &mut SmtpStream<S>,
@@ -54,9 +55,7 @@ where
                 .await?;
             let (code, text) = smtp.read_reply().await?;
             if code != 235 {
-                return Err(ImapError::auth(format!(
-                    "SMTP AUTH rejected: {code} {text}"
-                )));
+                return Err(refusal(code, &text));
             }
             Ok(())
         }
@@ -101,9 +100,7 @@ where
         return Ok(());
     }
     if code != 334 {
-        return Err(ImapError::auth(format!(
-            "SMTP AUTH rejected: {code} {text}"
-        )));
+        return Err(refusal(code, &text));
     }
     let challenge = sasl::describe_challenge(&text);
     smtp.write_line(mechanism.cancel_response()).await?;
@@ -113,9 +110,20 @@ where
     } else {
         format!("{text} ({challenge})")
     };
-    Err(ImapError::auth(format!(
-        "SMTP AUTH rejected: {code} {described}"
-    )))
+    Err(refusal(code, &described))
+}
+
+/// Classifies a refused `AUTH`, whichever mechanism was refused. A 4xx is "try again later"
+/// here as everywhere else ([`crate::smtp`]'s reply classification), so the credential was
+/// never judged; the exception is RFC 4954's `432` (a password transition is needed), which
+/// only the user can resolve.
+fn refusal(code: u16, text: &str) -> ImapError {
+    let detail = format!("SMTP AUTH rejected: {code} {text}");
+    if (400..500).contains(&code) && code != 432 {
+        ImapError::rate_limited(detail)
+    } else {
+        ImapError::auth(detail)
+    }
 }
 
 /// The SASL mechanisms an `EHLO` reply advertised, from its `AUTH …` line (RFC 4954

@@ -21,7 +21,7 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::Provider;
-use provider_imap::{Credentials, ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
 /// A live IMAP server this suite can run against.
@@ -94,13 +94,10 @@ pub async fn connect_to(server: &Server, mailbox: &str, test: &str) -> Option<Li
         Credentials::password(server.account, server.password),
     );
     Some(
-        ImapProvider::connect(
-            &config,
-            no_verify_connector(),
-            MailboxId::try_from(mailbox).unwrap(),
-        )
-        .await
-        .unwrap_or_else(|err| panic!("connect to the {} harness: {err}", server.label)),
+        ImapAccount::connect(&config, no_verify_connector())
+            .await
+            .unwrap_or_else(|err| panic!("connect to the {} harness: {err}", server.label))
+            .provider(MailboxId::try_from(mailbox).unwrap()),
     )
 }
 

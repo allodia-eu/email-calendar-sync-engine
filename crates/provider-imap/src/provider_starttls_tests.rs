@@ -22,7 +22,7 @@ use tokio_rustls::{
     rustls::{ServerConfig, pki_types::PrivatePkcs8KeyDer},
 };
 
-use crate::{ImapConfig, ImapProvider};
+use crate::{ImapAccount, ImapConfig, ImapProvider};
 
 /// Serves one IMAP `STARTTLS` connect: the plaintext greeting and `CAPABILITY` (both
 /// advertising `STARTTLS`) plus the `STARTTLS` command, then upgrades the raw socket and
@@ -103,13 +103,11 @@ async fn starttls_connect_upgrades_and_reports_the_negotiated_version() {
         crate::credentials::Credentials::password("alice", "pw"),
     )
     .with_starttls();
-    let provider: ImapProvider<TlsStream<TcpStream>> = ImapProvider::connect(
-        &config,
-        tls.connector(),
-        MailboxId::try_from("INBOX").expect("mailbox"),
-    )
-    .await
-    .expect("STARTTLS connect");
+    let provider: ImapProvider<TlsStream<TcpStream>> =
+        ImapAccount::connect(&config, tls.connector())
+            .await
+            .map(|account| account.provider(MailboxId::try_from("INBOX").expect("mailbox")))
+            .expect("STARTTLS connect");
 
     let info = provider.connection_info();
     // The version is read off the *post-upgrade* handshake, proving the socket really

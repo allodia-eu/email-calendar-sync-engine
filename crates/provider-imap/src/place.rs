@@ -2,24 +2,39 @@
 //! the body of `save_draft`.
 //!
 //! Split from [`crate::filing`] (which owns the SMTP submission around it) because the
-//! placement runs on **two different connections**: the provider's standing session first,
-//! and — when that one is dead — a freshly dialed one. Everything here is therefore free
+//! placement can run on **two different connections**: a pooled one first, and — when that
+//! one is dead — another proved alive. Everything here is therefore free
 //! functions over a [`Connection<S>`] rather than methods on the provider, so one
 //! implementation serves both.
 
+use std::collections::BTreeSet;
+
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::MailboxRole,
+    mail::{Keyword, MailboxRole},
 };
 use engine_provider::ProviderResult;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     error::ImapResult,
-    mail::{mailbox_from_list, message_key},
+    mail::{keyword_to_flag, mailbox_from_list, message_key},
+    parse::SelectData,
     transport::Connection,
     transport_command::quote,
 };
+
+/// Where a placement put the copy, and which of the keywords asked for it carries.
+#[derive(Debug)]
+pub(crate) struct Placed {
+    /// The folder, decoded.
+    pub(crate) folder: String,
+    /// `(UIDVALIDITY, UID)` of the copy, when the server said.
+    pub(crate) append_uid: Option<(u32, u32)>,
+    /// The keywords asked for that the copy carries: all of them where the folder allows
+    /// new keywords, none where it does not.
+    pub(crate) keywords: BTreeSet<Keyword>,
+}
 
 /// Where a placed copy is filed. One value ties together the SPECIAL-USE role used
 /// to resolve the server's real folder, the conventional folder name to fall back
@@ -63,12 +78,43 @@ impl Filing {
             Self::Drafts => "\\Draft \\Seen",
         }
     }
+
+    /// [`Self::flags`] plus `keywords`, each flag once.
+    fn flags_with(self, keywords: &BTreeSet<Keyword>) -> String {
+        let base = self.flags();
+        let mut flags = base.to_owned();
+        for flag in keywords.iter().map(keyword_to_flag) {
+            if !base.split(' ').any(|own| own.eq_ignore_ascii_case(&flag)) {
+                flags.push(' ');
+                flags.push_str(&flag);
+            }
+        }
+        flags
+    }
+}
+
+/// The keywords of `asked` that `selected` lets a client store: all of them when its
+/// `PERMANENTFLAGS` carries `\*`, none otherwise.
+///
+/// Without `\*` a server accepts the `APPEND` flags with a plain `OK` and keeps no new
+/// keyword (RFC 9051 §7.1), so asking would read as kept and be gone on the next `FETCH`.
+/// A `PERMANENTFLAGS` that names a keyword individually is read as not allowing it: the
+/// conservative reading, since the parse records only `\*`.
+fn keepable(selected: &SelectData, asked: &BTreeSet<Keyword>) -> BTreeSet<Keyword> {
+    if selected.permanent_flags_allow_new {
+        asked.clone()
+    } else {
+        BTreeSet::new()
+    }
 }
 
 /// Resolves the real folder for `filing` — the account's folder carrying the matching
 /// SPECIAL-USE role, else the conventional name (created if missing) — and `APPEND`s
-/// `message` flagged per `filing`, returning the folder used and the UIDPLUS `APPENDUID`
-/// if the server supports it.
+/// `message` flagged per `filing` plus whichever of `keywords` the folder keeps.
+///
+/// Asking for keywords costs a `SELECT`, the only way to read `PERMANENTFLAGS`; asking for
+/// none costs nothing. A `SELECT` that fails leaves the keywords out rather than failing the
+/// placement: they are never worth the copy.
 ///
 /// # Errors
 ///
@@ -78,13 +124,29 @@ pub(crate) async fn append_to_role_folder<S>(
     connection: &mut Connection<S>,
     filing: Filing,
     message: &[u8],
-) -> ProviderResult<(String, Option<(u32, u32)>)>
+    keywords: &BTreeSet<Keyword>,
+) -> ProviderResult<Placed>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let folder = resolve_filing_folder(connection, filing).await?;
-    let append_uid = connection.append(&folder, filing.flags(), message).await?;
-    Ok((folder, append_uid))
+    let keywords = if keywords.is_empty() {
+        BTreeSet::new()
+    } else {
+        connection
+            .select(&folder)
+            .await
+            .map(|selected| keepable(&selected, keywords))
+            .unwrap_or_default()
+    };
+    let append_uid = connection
+        .append(&folder, &filing.flags_with(&keywords), message)
+        .await?;
+    Ok(Placed {
+        folder,
+        append_uid,
+        keywords,
+    })
 }
 
 /// The folder `filing` places into: the account's folder carrying the role, else the
@@ -150,21 +212,45 @@ where
 ///
 /// A classified [`ProviderError`](engine_provider::ProviderError) on a transport failure or
 /// a rejected `LIST`/`SELECT`/`SEARCH`/`APPEND`.
+///
+/// A copy already there is given `keywords` too: the attempt that placed it may not have
+/// set them, and `+FLAGS` is idempotent. A `STORE` that fails leaves them out rather than
+/// failing the placement.
 pub(crate) async fn place_if_absent<S>(
     connection: &mut Connection<S>,
     filing: Filing,
     message_id: &MessageIdHeader,
     message: &[u8],
-) -> ProviderResult<(String, Option<(u32, u32)>)>
+    keywords: &BTreeSet<Keyword>,
+) -> ProviderResult<Placed>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let folder = resolve_filing_folder(connection, filing).await?;
-    if let Some(existing) = find_placed_copy(connection, &folder, message_id).await? {
-        return Ok((folder, Some(existing)));
+    let (selected, existing) = probe_placed_copy(connection, &folder, message_id).await?;
+    let mut keywords = keepable(&selected, keywords);
+    if let Some((_, uid)) = existing {
+        if !keywords.is_empty() {
+            let flags: Vec<String> = keywords.iter().map(keyword_to_flag).collect();
+            let item = format!("+FLAGS.SILENT ({})", flags.join(" "));
+            if connection.uid_store(&uid.to_string(), &item).await.is_err() {
+                keywords.clear();
+            }
+        }
+        return Ok(Placed {
+            folder,
+            append_uid: existing,
+            keywords,
+        });
     }
-    let append_uid = connection.append(&folder, filing.flags(), message).await?;
-    Ok((folder, append_uid))
+    let append_uid = connection
+        .append(&folder, &filing.flags_with(&keywords), message)
+        .await?;
+    Ok(Placed {
+        folder,
+        append_uid,
+        keywords,
+    })
 }
 
 /// Looks for an already-placed copy of `message_id` in `folder`, returning its
@@ -189,6 +275,18 @@ pub(crate) async fn find_placed_copy<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    Ok(probe_placed_copy(connection, folder, message_id).await?.1)
+}
+
+/// [`find_placed_copy`], also returning what the `SELECT` said about the folder.
+async fn probe_placed_copy<S>(
+    connection: &mut Connection<S>,
+    folder: &str,
+    message_id: &MessageIdHeader,
+) -> ProviderResult<(SelectData, Option<(u32, u32)>)>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
     let selected = connection.select(folder).await?;
     // The header value is server-facing input only in the sense that we minted it; quote it
     // anyway, so a `Message-ID` carrying a quote or backslash cannot break the command.
@@ -196,7 +294,8 @@ where
     let uids = connection.uid_search(&criteria).await?;
     // A duplicate would mean an earlier retry already doubled it; the highest UID is the
     // one a later sync will settle on either way.
-    Ok(uids.iter().max().map(|uid| (selected.uid_validity, *uid)))
+    let found = uids.iter().max().map(|uid| (selected.uid_validity, *uid));
+    Ok((selected, found))
 }
 
 /// The key for a message just placed in `folder`: the real key from UIDPLUS `APPENDUID`,
@@ -218,3 +317,7 @@ pub(crate) fn placed_key(
 #[cfg(test)]
 #[path = "place_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "place_keyword_tests.rs"]
+mod keyword_tests;

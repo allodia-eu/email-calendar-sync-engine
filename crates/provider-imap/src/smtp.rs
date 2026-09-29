@@ -475,3 +475,7 @@ mod starttls_tests;
 #[cfg(test)]
 #[path = "smtp_probe_tests.rs"]
 mod probe_tests;
+
+#[cfg(test)]
+#[path = "smtp_password_auth_tests.rs"]
+mod password_auth_tests;

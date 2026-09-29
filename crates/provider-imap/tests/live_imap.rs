@@ -23,7 +23,7 @@ use engine_core::{
 use engine_provider::{Draft, Provider};
 use engine_store::{MailSelector, ManualClock, StoreRead, WorkerId};
 use engine_sync::{IgnoreCommits, StreamTuning, SyncCommit, submit_mail, sync_mail};
-use provider_imap::{Credentials, ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
@@ -51,13 +51,10 @@ async fn connect(
         host,
         Credentials::password(harness.account.as_str(), harness.password.as_str()),
     );
-    ImapProvider::connect(
-        &config,
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP")
+    ImapAccount::connect(&config, no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP")
 }
 
 /// Connects an `ImapProvider` bound to `mailbox` with SMTP submission enabled.
@@ -75,13 +72,10 @@ async fn connect_submitter(
         Credentials::password(harness.account.as_str(), harness.password.as_str()),
     )
     .with_smtp(harness.smtp_addr.as_str());
-    ImapProvider::connect(
-        &config,
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP+SMTP")
+    ImapAccount::connect(&config, no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP+SMTP")
 }
 
 async fn load<T: DeserializeOwned>(store: &Store, scope: &SyncScope, key: &ProviderKey) -> T {

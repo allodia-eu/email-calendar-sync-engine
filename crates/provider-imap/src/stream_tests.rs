@@ -5,7 +5,6 @@
 use engine_core::{ids::MailboxId, sync::SyncWindow};
 use engine_provider::{EmailChunk, PassMode};
 use futures_util::StreamExt;
-use tokio::sync::Mutex;
 
 use super::stream_email;
 use crate::{
@@ -58,16 +57,16 @@ fn inbox() -> MailboxId {
     MailboxId::try_from("INBOX").unwrap()
 }
 
-async fn logged_in(server: Vec<u8>) -> (Mutex<Connection<MockStream>>, crate::mock::Recorded) {
+async fn logged_in(server: Vec<u8>) -> (Connection<MockStream>, crate::mock::Recorded) {
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    (Mutex::new(conn), recorded)
+    (conn, recorded)
 }
 
 /// Drains a streamed pass into its chunks.
 async fn drain(
-    conn: &Mutex<Connection<MockStream>>,
+    conn: &mut Connection<MockStream>,
     cursor: Option<&str>,
     batch: usize,
     chunk: usize,
@@ -105,11 +104,11 @@ async fn cold_backfill_streams_newest_group_first_and_checkpoints_each_group() {
         &fetch_resp("a4", &[3, 4, 5]),
         &fetch_resp("a5", &[1, 2]),
     ]);
-    let (conn, recorded) = logged_in(server).await;
+    let (mut conn, recorded) = logged_in(server).await;
 
     // chunk_size 0 → one chunk per group (3 groups); the last carries the completed
     // cursor, so no extra marker.
-    let chunks = drain(&conn, None, 3, 0).await;
+    let chunks = drain(&mut conn, None, 3, 0).await;
 
     assert_eq!(chunks.len(), 3);
     // The intermediate groups are additive checkpoints; the last reconciles.
@@ -151,9 +150,9 @@ async fn a_small_chunk_size_commits_within_a_group() {
     // the group's terminal checkpointed chunk — row-as-it-arrives within one FETCH.
     let select = select_resp("a2", 1000, 9, 8);
     let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[6, 7, 8])]);
-    let (conn, _) = logged_in(server).await;
+    let (mut conn, _) = logged_in(server).await;
 
-    let chunks = drain(&conn, None, 8, 2).await;
+    let chunks = drain(&mut conn, None, 8, 2).await;
     // Held pair (no checkpoint), then the group's terminal chunk. It is the last (and
     // only) group of a fresh pass, so it reconciles and advances to the completed cursor.
     assert_eq!(chunks.len(), 2);
@@ -184,9 +183,9 @@ async fn a_backfill_resumes_below_its_watermark() {
         &fetch_resp("a3", &[3, 4, 5]),
         &fetch_resp("a4", &[1, 2]),
     ]);
-    let (conn, recorded) = logged_in(server).await;
+    let (mut conn, recorded) = logged_in(server).await;
 
-    let chunks = drain(&conn, Some("v1000;n9;b6"), 3, 0).await;
+    let chunks = drain(&mut conn, Some("v1000;n9;b6"), 3, 0).await;
     // Two group chunks (last completes); the already-synced group (6:8) is NOT refetched.
     assert_eq!(chunks.len(), 2);
     assert_eq!(key_of(&chunks[0], 0), "imap:v1000:u3@INBOX");
@@ -222,11 +221,10 @@ async fn a_windowed_backfill_fetches_only_the_in_window_uids() {
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    let conn = Mutex::new(conn);
 
     let window = SyncWindow::since(engine_core::time::CalendarDate::new(2026, 1, 1).unwrap());
     let mailbox = inbox();
-    let mut stream = Box::pin(stream_email(&conn, &mailbox, None, window, 2, 0));
+    let mut stream = Box::pin(stream_email(&mut conn, &mailbox, None, window, 2, 0));
     let mut chunks = Vec::new();
     while let Some(item) = stream.next().await {
         chunks.push(item.unwrap());
@@ -247,9 +245,9 @@ async fn a_delta_delegates_to_the_page_path_and_is_additive() {
     // UIDNEXT advanced 9 → 11, so UIDs 9,10 are fetched as an additive pass.
     let select = select_resp("a2", 1000, 11, 10);
     let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[9, 10])]);
-    let (conn, _) = logged_in(server).await;
+    let (mut conn, _) = logged_in(server).await;
 
-    let chunks = drain(&conn, Some("v1000;n9"), 50, 0).await;
+    let chunks = drain(&mut conn, Some("v1000;n9"), 50, 0).await;
     let upserted: usize = chunks.iter().map(|c| c.changed.len()).sum();
     assert_eq!(upserted, 2, "the two new arrivals");
     assert!(chunks.iter().all(|c| c.mode == PassMode::Additive));
@@ -267,9 +265,9 @@ async fn a_uidvalidity_reset_reconciles_via_the_page_path() {
     // is rediscovered as a reconciling snapshot that tombstones the renumbered rows.
     let select = select_resp("a2", 1000, 4, 3);
     let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[1, 2, 3])]);
-    let (conn, _) = logged_in(server).await;
+    let (mut conn, _) = logged_in(server).await;
 
-    let chunks = drain(&conn, Some("v999;n50"), 50, 0).await;
+    let chunks = drain(&mut conn, Some("v999;n50"), 50, 0).await;
     assert!(chunks.iter().any(|c| c.mode == PassMode::Reconcile));
     assert!(chunks.last().unwrap().is_reconcile_final());
     let present: usize = chunks.iter().map(|c| c.present.len()).sum();
@@ -290,9 +288,9 @@ async fn an_empty_mailbox_backfill_yields_only_a_completing_marker() {
     // emits a single empty completing chunk that advances straight to steady state.
     let select = select_resp("a2", 1000, 1, 0);
     let server = script(&[GREETING, LOGIN_OK, &select]);
-    let (conn, recorded) = logged_in(server).await;
+    let (mut conn, recorded) = logged_in(server).await;
 
-    let chunks = drain(&conn, None, 50, 0).await;
+    let chunks = drain(&mut conn, None, 50, 0).await;
     assert_eq!(chunks.len(), 1);
     assert!(chunks[0].changed.is_empty());
     // A fresh pass reconciles even when empty, so an emptied mailbox tombstones every
@@ -305,7 +303,7 @@ async fn an_empty_mailbox_backfill_yields_only_a_completing_marker() {
     );
 }
 
-/// Opens a bare (un-`Mutex`ed) connection for the transport-level streamed-fetch tests.
+/// Opens a bare connection for the transport-level streamed-fetch tests.
 async fn open_conn(server: Vec<u8>) -> Connection<MockStream> {
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();

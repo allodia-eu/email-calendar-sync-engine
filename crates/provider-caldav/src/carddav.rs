@@ -204,6 +204,7 @@ impl Provider for CardDavProvider {
     }
 }
 
+impl engine_provider::MailboxWrites for CardDavProvider {}
 impl CalendarWrites for CardDavProvider {}
 
 #[async_trait]

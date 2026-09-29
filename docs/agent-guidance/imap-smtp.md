@@ -30,12 +30,27 @@ is authoritative for the `provider-caldav` calendar client.
   connect-observer seam (`providers.md`), followed by `ConnectStep::Authenticated` once
   the credential is accepted — and nothing else: IMAP dials a known address and runs no
   discovery, so it has no `Redirected`/`Discovered` step. Both are emitted from
-  `open_session`, the stream-generic half of the dial, so the offline suite asserts the
+  `finish_session`, the stream-generic half of the dial, so the offline suite asserts the
   exact sequence over a `MockStream`. A rejected credential emits no `Authenticated`. The
   observer rides on `ImapConfig` (`config.rs`), so an `ImapWatcher`'s dedicated
   connection — which shares `connect_session` — is observed too.
-- Layers: `dial` (the connect sequence itself — TCP, TLS, authenticate, negotiate —
-  shared by `ImapProvider::connect` and the watcher's own connection),
+- **A refused `LOGIN` is not always a bad credential.** `NO` is `ImapError::Auth`
+  (`FailureClass::Authentication`), except a `NO` whose text opens with `[LIMIT]`
+  (RFC 5530), which is `ImapError::RateLimited` (`FailureClass::RateLimited`): the server
+  is refusing sessions for the account and never judged the password. A host that read it
+  as `Authentication` would ask the user to sign in again, which cannot help. Observed
+  live as `NO [LIMIT] LOGIN Rate limit hit.` on a session opened seconds after five
+  others had authenticated with the same credential. The rule is scoped to `LOGIN`:
+  RFC 5530's `LIMIT` is any implementation limit, so on `STORE` it can mean too many
+  keywords, which is `InvalidState` like any other `NO`. An `AUTHENTICATE` carrying a token
+  is classified the same way, since it is the other way into a session. SMTP `AUTH`, with a
+  password or a token, follows the same rule in its own terms: a 4xx is "try again later"
+  (RFC 5321 §4.2.1), so it is `RateLimited` too, except RFC 4954's `432` (a password
+  transition is needed), which only the user can resolve and stays `Authentication`. Nothing in the adapter waits either
+  out; the class is the host's cue to back off (`http-throttling.md` covers the HTTP
+  adapters, where the engine does the waiting).
+- Layers: `dial` (the connect sequence itself: TCP, TLS, authenticate, negotiate; behind
+  `ImapAccount::connect` and every connection the account's pool opens after it),
   `credentials`/`sasl` (a password or an OAuth 2.0 access token, and the two SASL
   mechanisms that carry a token — see **Authentication** below),
   `probe` (what a server accepts, read *before* there is a credential to present),
@@ -52,7 +67,8 @@ is authoritative for the `provider-caldav` calendar client.
   expunges via `CHANGEDSINCE`/`VANISHED`), `idle`/`watch` (the `IDLE` push primitives +
   the `ImapWatcher`), `smtp` (the submission *conversation*; the RFC 5322/MIME
   message assembly it feeds to `DATA` is the shared `engine-rfc5322` crate — see
-  **SMTP submission**), `provider` (the `Provider` impl).
+  **SMTP submission**), `pool` + `account` (the per-account connection budget — see
+  **Connections** below), `provider` (the `Provider` impl).
 
 ## How IMAP differs from JMAP (the shape)
 
@@ -73,6 +89,66 @@ is authoritative for the `provider-caldav` calendar client.
 - **A UIDVALIDITY reset is a snapshot.** When the server renumbers the UID space,
   every prior key is invalid; the next pass is a snapshot (rediscovery) that
   tombstones the stale rows — the IMAP analogue of JMAP `cannotCalculateChanges`.
+
+## Connections: one budget per account
+
+- **A host connects an account, then binds folders.** `ImapAccount::connect(&config,
+  connector)` dials once — proving the credentials and reading the capabilities every
+  folder's `ConnectionInfo` reports — and keeps that connection in the account's pool.
+  `ImapAccount::provider(mailbox)` dials nothing; `ImapAccount::watch(mailbox, keepalive)`
+  spends one connection for as long as the watcher lives. There is deliberately no
+  per-folder connect any more: the old `ImapProvider::connect` / `ImapWatcher::connect`
+  each dialled a socket they held for their whole lifetime, so an account's socket count
+  was a property of the *type* — one per bound folder, idle or not, all re-dialled in one
+  burst on every network drop (measured: 107 connections in four hours on one Android
+  device). Two `ImapAccount`s for one account are two budgets; build one.
+- **Why the engine must bound it, not the server.** IMAP has no way to learn a server's
+  connection limit, and only some servers say when it was hit: RFC 5530 has no "too many
+  connections" code. Yahoo answers with `NO [LIMIT]` at `LOGIN` (`RateLimited`, above);
+  Dovecot's `mail_max_userip_connections` (default 10) refuses at `LOGIN` with
+  `AUTHENTICATIONFAILED`, which reads as a *wrong password*, and a client that believes it
+  tells the user their sign-in expired. Either way the account does not connect, so the
+  only defence is never to need the limit. The budget is `pool::DEFAULT_MAX_CONNECTIONS` = 5 (Thunderbird
+  desktop's `max_cached_connections`), not host-configurable until a host needs it.
+- **Budget arithmetic: sockets, not borrows.** Workers (sync, writes, fetches, filing)
+  borrow a connection per call — a streamed pass for as long as the stream lives — and
+  wait when the budget is spent. A watch takes one out for good (a connection in `IDLE`
+  can only send `DONE`), and `reserve_watch` refuses the one that would leave no worker:
+  a budget spent on push is an account that can never sync. The refusal is
+  `InvalidState` (poll instead), and `ImapAccount::watch_headroom` lets a host warn
+  before offering the choice. A parked connection holds no permit, so the pool dials
+  only with nothing parked, and a watch reuses a parked connection rather than dialling
+  beside it — otherwise `parked + borrowed + watches` exceeds the ceiling.
+- **When a connection is proved alive.** A parked connection is checked with `NOOP`
+  before reuse once it has rested `pool::VALIDATE_AFTER_REST` (30 s, on the **wall**
+  clock — Linux's monotonic clock stops during suspend, so a laptop that slept an hour
+  would look like it rested a second). Younger ones are handed out unchecked, because a
+  sync pass's back-to-back calls would otherwise each pay a round trip. The two ways a
+  young connection can still be dead are closed elsewhere: **any call that fails does not
+  park its connection** (`PooledConnection::settle` — a `NO` leaves a usable session, a
+  dropped socket or desynchronised reply does not, and telling them apart at every call
+  site is more fragile than one extra dial after a rare refusal), and
+  `ImapAccount::invalidate` drops every resting connection for a host that has seen the
+  network change. A stream abandoned mid-fetch parks normally: `pending_tag` drains its
+  leftover response before the next command.
+- **A dial refused beside working connections waits, and lowers the ceiling.** Five is our
+  number, and the server's limit is shared with every other client of the user's. A caller
+  whose dial fails while another *worker* holds a connection waits for one to come back
+  rather than failing; it fails only once no worker is left. When the server *answered*
+  (`LOGIN` `NO`, `NO [LIMIT]`, `BYE` at the greeting) the ceiling also drops by that
+  connection, since a `NO` to a credential other sessions are logged in with right now is
+  a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
+  a new network being a new address. An unanswered dial (the network) lowers nothing.
+  Proof: `pool_refusal_tests.rs`.
+- **The pool re-dials on its own.** A provider holds no socket, so a dead one is replaced
+  on the next call rather than failing every call until the host rebuilds the provider.
+  Every pool dial reports through the config's connect observer, so a host still sees
+  each socket the account opens. SMTP is outside the budget: it dials per send and closes.
+- **Proof.** `pool_tests.rs`/`account_tests.rs` count dials over scripted streams. The live
+  bound is `tests/live_imap_pool.rs`: twelve folders syncing at once beside a held watch
+  log in at most five times against Stalwart. It is an absence claim, so it carries a
+  control arm (an account per folder must log in twelve times) and was proved red by
+  lifting the ceiling (13 logins).
 
 ## IMAP specifics implemented
 
@@ -387,6 +463,18 @@ credential.
   attachment bodies are base64 encoded, and non-ASCII attachment filenames use
   RFC 5987-style `filename*` / `name*` parameters. (Long encoded-words are not yet
   folded into 75-octet runs — a later refinement.)
+- **Keywords on the Sent copy.** A draft's `sent_copy_keywords` ride the Sent `APPEND` as
+  flags, and only where the folder's `PERMANENTFLAGS` carries `\*` (RFC 9051 §7.1):
+  without it the server answers `OK` and keeps no new keyword, the same silent success
+  `report.rs` refuses. Reading `PERMANENTFLAGS` needs a `SELECT`, which the first attempt
+  issues only when the draft asks for keywords, so an ordinary send costs nothing extra;
+  the retry reads it from the `SELECT` its probe already makes, and gives a copy it finds
+  already placed the keywords with an idempotent `+FLAGS`. A `SELECT` or `STORE` that
+  fails leaves them out rather than failing the placement. The receipt's
+  `sent_copy_keywords` names the ones the copy carries; a `PERMANENTFLAGS` that lists a
+  keyword by name without `\*` counts as not allowing it, since only `\*` is parsed. The
+  repair (`refile`) sets them the same way and returns only the key, so what it kept is
+  read from the next sync (`place.rs`, `tests/live_imap_sent_keywords.rs`).
 - **Folder resolution.** The sent copy / draft is filed into the account's **real
   folder for the role**, discovered via the `\Sent`/`\Drafts` SPECIAL-USE attribute
   in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
@@ -430,13 +518,15 @@ credential.
   `engine-provider`'s `ProviderError` gained `needs_confirmation`/
   `requires_confirmation`, and `engine-sync`'s outbox honors it.
 - **Sent placement never fails a send, and is never silent.** Delivering and filing are
-  two operations here — SMTP dials fresh per send, the `APPEND` rides the standing IMAP
-  session — so a session that went stale while idle delivers the mail and loses the copy.
+  two operations here — SMTP dials fresh per send, the `APPEND` rides a pooled IMAP
+  connection that may have died since it was last used — so a connection that went stale
+  delivers the mail and loses the copy.
   Three rules follow, and the third is the one that was missing:
   1. A delivered send is **never** returned as an error for a filing failure. The mail has
      gone; a caller that saw `Err` would re-send it.
-  2. The placement is **retried once on a freshly dialed session**, because a dead standing
-     session is the expected cause, not an exotic one. The retry first asks whether the copy
+  2. The placement is **retried once on a connection proved alive** (`acquire_checked`: a
+     parked one that answers `NOOP`, else a fresh dial), because a dead pooled connection
+     is the expected cause, not an exotic one — the failed one is discarded, not parked. The retry first asks whether the copy
      is already there (`UID SEARCH HEADER Message-ID`, `place::find_placed_copy`) —
      `APPEND` is not idempotent, and a first attempt that committed but lost its response
      must not become two copies in Sent.
@@ -449,7 +539,7 @@ credential.
   4. The host can then ask for the repair: `Provider::file_sent_copy` (→
      `ImapProvider::refile`, reached through `Engine::file_sent_copy`) files the copy of an
      already-delivered message and **sends nothing**. It is what a "try again" control calls,
-     so it probes on *every* attempt, standing session and fresh dial alike — a button gets
+     so it probes on *every* attempt, first connection and retry alike — a button gets
      pressed twice. It is deliberately **not** outbox-mediated: the outbox exists so a side
      effect is neither lost nor repeated across a crash, and this one is idempotent by
      construction and safe to ask for again.
@@ -545,6 +635,45 @@ credential.
   caller re-syncs, then retries) rather than a blind write against the wrong message.
   An unparseable target key is `InvalidState` (rejected before any command).
 
+## Folder writes
+
+`edit_mailbox` applies a neutral `MailboxEdit` over the provider's one session
+(`mailbox_write.rs`; the `MailboxWrites` impl is a lock-and-call).
+`Capabilities::mailbox_writes` is unconditional: `CREATE`, `RENAME` and `DELETE` are base
+protocol on both dialects.
+
+- **The key is the path, so it moves.** A folder's path is built from the parent's path, the
+  hierarchy delimiter `LIST` reported for it, and the leaf name. `RENAME` changes that path and
+  the server renames every folder beneath it too (RFC 9051 §6.3.6), so every receipt names the
+  path the folder has **after** the edit. Each edit starts with one `LIST` and judges against
+  it.
+- **Names.** A leaf carrying the delimiter would make levels nobody asked for, and a
+  subfolder on a server whose delimiter is `NIL` has nowhere to go; both are `InvalidState`
+  before anything is sent, as is any edit of `INBOX` and a top-level folder called `INBOX`.
+  Names go through `quoted_name`, so rev1 sends modified UTF-7 (`Reçus` → `Re&AOc-us`).
+- **`Create`** → `CREATE "<path>"`, then `SUBSCRIBE`. A path the `LIST` already holds is not
+  created again, and `NO [ALREADYEXISTS]` is success: a retry meets what the first attempt
+  made.
+- **`Update`** → `RENAME "<from>" "<to>"`. `NO [NONEXISTENT]` or `[ALREADYEXISTS]` is a
+  `Conflict`, as is a destination the `LIST` already holds (refused without a request).
+- **`Trash`** → `RENAME` under the Trash folder. Where Trash is `\Noinferiors`, or the
+  `RENAME` is refused with `[CANNOT]`, the folder is emptied instead: each selectable folder of
+  the subtree is `SELECT`ed and `UID MOVE 1:* "<Trash>"`, then the subtree is deleted. The
+  receipt is then `removed()`, because no folder remains.
+- **`Delete`** → `DELETE` of the folder and everything beneath it, deepest first, after an
+  `EXAMINE "INBOX"` so no session holds a mailbox that is about to go. `NO [NONEXISTENT]`
+  and a target the `LIST` does not hold are success.
+- **Subscriptions do not follow a `RENAME`** (RFC 9051 keeps them apart from the mailbox), and
+  a client listing only subscribed folders would lose a folder we moved. So a rename
+  unsubscribes each old path of the subtree and subscribes each new one, and a delete
+  unsubscribes. A refusal of either is ignored: the folder change itself went through.
+
+Proven live on Stalwart (as the scratch account `carol@`) and both Dovecot dialects by
+`tests/live_mailbox_writes.rs`: create (including a non-ASCII name), create again, rename with
+a child following, a move to the top level and back, a missing target as `Conflict`, a trash
+that keeps the subfolder and its mail, and a permanent delete that is repeatable. Emptying the
+folders into Trash is proven offline only: all three servers file a folder inside Trash.
+
 ## Body fetch (Tier-3 source)
 
 - **`fetch_message_source`** returns a message's whole raw RFC 5322 source over the
@@ -560,13 +689,36 @@ credential.
   `edit_mail` when it chooses. Fetching the whole source (not just the text part) is
   lossless and serves the body, inline CID resources, and downloadable attachments from
   the cached raw with no re-fetch (`providers.md`, `store-and-sync.md`).
-- **Read-only open + shared guard.** Resolution is shared with the edit path via
-  `target::select_target`: parse the key, reject a `CR`/`LF` mailbox (`InvalidState`),
-  open, and guard `UIDVALIDITY` (mismatch → **`Conflict`**). A body read opens the
-  mailbox with **`EXAMINE`** (read-only), not `SELECT`, so it takes no write-intent
+- **Read-only open + shared guard.** Resolution is shared with the edit path
+  (`target.rs`): parse the key, reject a `CR`/`LF` mailbox (`InvalidState`), open, and
+  guard `UIDVALIDITY` (mismatch → **`Conflict`**). A body read opens the mailbox with
+  **`EXAMINE`** (read-only, `examine_target`), not `SELECT`, so it takes no write-intent
   open, leaves `\Recent` untouched, and works on a read-only folder. A `UID FETCH`
   that returns no data — the UID was expunged since the last sync — is also a
   **`Conflict`** (re-sync, then drop), not a permanent failure.
+- **A session remembers the mailbox it has open** (`transport_select.rs`), and a read
+  there skips its `EXAMINE`: a UID cannot change during a session (RFC 9051 §2.3.1.1),
+  so the `UIDVALIDITY` read at selection holds for as long as the selection does. The
+  selection is forgotten *before* a `SELECT`/`EXAMINE` is sent, because a refused one
+  deselects (§6.3.1). A write always `SELECT`s again. `ImapPool::acquire_for(mailbox)`
+  hands a read a parked connection that already has its mailbox open.
+- **A read that goes silent is a lost connection.** Every read of a body response is
+  bounded by `transport_read::BODY_READ_STALL` (60 s) of *silence*, never of the whole
+  body, and fails `Retryable`; a single fetch that lost its connection is tried once more
+  on one proved alive (`fetch::fetch_from_pool`).
+- **Batches: one `UID FETCH <set> (BODY.PEEK[])` per mailbox** (`fetch_batch.rs`,
+  `Provider::fetch_message_sources`). A warm of thousands of bodies one request at a time
+  spends its time on round trips, not bytes; a set costs one round trip plus its bytes,
+  and each body is handed on as it parses off the wire (`next_fetch_body`), so a batch
+  holds one message in memory at a time. Rows arrive in the server's order and may carry
+  their `UID` after the literal (`parse_any_fetch_body`). A stale `UIDVALIDITY` or an
+  expunged UID is a `Conflict` for that message alone; a batch that lost its connection
+  asks once more, for what it had not received, on a connection proved alive.
+  `ConnectionInfo::sources_per_request` (25) and `concurrent_fetches` (the pool's
+  `worker_capacity`: the ceiling less the watches, read per call) tell a host how to cut
+  and overlap them. Proof: `tests/live_imap_body_batch.rs` against Stalwart and both
+  Dovecot dialects, byte-equal with the single fetch, and a control arm asking for UIDs
+  the server does not hold.
 
 ## Push (IMAP IDLE, RFC 2177)
 
@@ -583,14 +735,16 @@ credential.
   it correct, because syncing a scope is idempotent. The host advertises `idle` from
   the post-auth `CAPABILITY` so it can offer an "as it comes in" strategy or fall back
   to polling.
-- **A dedicated connection, gated on `IDLE`.** A watcher opens its **own** connection
-  (the shared `connect_session` dial), separate from the `ImapProvider` that syncs the
-  mailbox — a connection in `IDLE` can only send `DONE`, so it cannot also `FETCH`.
-  Construction `EXAMINE`s the mailbox **read-only** (watching never writes or resets
-  `\Recent`) and fails fast with `InvalidState` if the server does not advertise `IDLE`.
-  One watcher watches one mailbox, mirroring the bound-mailbox sync model; the host
-  decides which (and how many) mailboxes warrant a standing connection against the
-  server's connection limit (usually just INBOX).
+- **A dedicated connection, gated on `IDLE`.** A watcher (`ImapAccount::watch`) takes its
+  **own** connection out of the account's pool for its lifetime, separate from the ones
+  the `ImapProvider` that syncs the mailbox borrows — a connection in `IDLE` can only send
+  `DONE`, so it cannot also `FETCH`. It holds a `WatchLease` on the account's budget,
+  released on **drop** (a watch task is aborted, not stopped). Construction `EXAMINE`s the
+  mailbox **read-only** (watching never writes or resets `\Recent`; it also reads any
+  backlog a reused connection carried) and fails fast with `InvalidState` if the server
+  does not advertise `IDLE` — or if the watch would take the account's last worker (see
+  **Connections**). One watcher watches one mailbox, mirroring the bound-mailbox sync
+  model; the host decides which mailboxes warrant one (usually just INBOX).
 - **The notification gap, closed three ways.** `IDLE` delivers unsolicited responses
   *only while a connection is actively idling*, so a change arriving in any other window
   is never re-sent. The watcher closes this by (1) **staying in `IDLE` continuously**
@@ -625,6 +779,12 @@ credential.
   client credentials — that is deliberate (`north-star.md`: hosts own account
   onboarding). A host reconnects with a fresh token. Nothing is lost by this: syncing a
   scope is idempotent, so the reconnected session resumes from the same cursor.
+  The account's pool dials with the token `ImapAccount::connect` was given, so once it
+  expires a *new* pooled connection is refused while the sessions already open keep
+  working (a session outlives the token that opened it). The pool reads that `NO` as it
+  reads any refusal beside working connections: it lowers the ceiling and waits for a
+  worker, and the caller sees `Authentication` only once no worker is left. That is the
+  host's cue to connect the account again with a fresh token, which builds a new pool.
 - **Yahoo itself is still unproven end to end.** Both *mechanisms* are proven live
   against Gmail (below), and Yahoo advertises the same two, so there is no untested code
   path left. What has not run is Yahoo's own server: its mail scope needs a

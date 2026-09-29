@@ -261,10 +261,13 @@ pub(crate) fn parse_search(lines: &[Vec<u8>]) -> Vec<u32> {
     Vec::new()
 }
 
-/// Collects the UID numbers from an `ESEARCH` response's `ALL <sequence-set>`: the
-/// tokens after `ALL`, split on the set's `,` and range `:` separators. Range
-/// endpoints (not the expanded interior) are returned — enough for the lowest UID the
-/// window floor needs, and a close-enough count for the progress denominator.
+/// The most UIDs one search result is expanded to. A bound on what a hostile server's
+/// `ALL 1:4294967295` can make the client allocate, far above any mailbox a window covers.
+pub(crate) const MAX_SEARCH_UIDS: usize = 4_000_000;
+
+/// Collects every UID an `ESEARCH` response's `ALL <sequence-set>` names: the set after
+/// `ALL`, split on `,`, each `a:b` range expanded in full. Every UID in a range matched,
+/// and the caller fetches the list, so a range must not be read as its two ends.
 fn esearch_all_uids<'a>(mut tokens: impl Iterator<Item = &'a str>) -> Vec<u32> {
     let found_all = tokens
         .by_ref()
@@ -275,10 +278,16 @@ fn esearch_all_uids<'a>(mut tokens: impl Iterator<Item = &'a str>) -> Vec<u32> {
     let Some(set) = tokens.next() else {
         return Vec::new();
     };
-    set.split(',')
-        .flat_map(|range| range.split(':'))
-        .filter_map(|number| number.parse().ok())
-        .collect()
+    let mut uids = Vec::new();
+    for range in set.split(',') {
+        let (first, last) = range.split_once(':').unwrap_or((range, range));
+        let (Ok(first), Ok(last)) = (first.parse::<u32>(), last.parse::<u32>()) else {
+            continue;
+        };
+        let room = MAX_SEARCH_UIDS.saturating_sub(uids.len());
+        uids.extend((first.min(last)..=first.max(last)).take(room));
+    }
+    uids
 }
 
 /// Reads `UID FETCH` untagged responses into [`FetchRow`]s. Rows without a `UID`

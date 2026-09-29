@@ -61,6 +61,7 @@ Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
   `messages.get`, fanned out `MAX_CONCURRENT_GETS` at a time), the history delta
   (`history.list`), and the raw-source fetch.
 - **`mutate`/`submit`** — `edit_mail` (label deltas) and `submit_email` (`messages.send`).
+- **`labels_write`**: `edit_mailbox`, the folder changes (below).
 - **`provider`** — `GmailProvider`, the `Provider` impl.
 
 ## The base URL
@@ -113,6 +114,14 @@ Gmail labels drive all three of the message's independent axes (`modeling.md`):
 - **Roles** (label list): `INBOX`→Inbox, `SENT`→Sent, `DRAFT`→Drafts, `TRASH`→Trash,
   `SPAM`→Junk, `IMPORTANT`→Important, plus the synthetic All-Mail→All; category/chat/
   custom labels are roleless mailboxes.
+
+- **A label standing for a keyword** is neither. Gmail stores no free-form keyword, so a host
+  that wants one kept registers a `KeywordName` (`GmailProvider::with_keyword_names`): the name
+  to create the label under and every name it may already exist under. A label under any of
+  those names, ignoring case, is left out of the label list and out of every message's
+  membership, and the message carries the keyword instead (`crate::named_labels`). The adapter
+  learns the ids from each label-list read, or from a read of its own before the first one, and
+  a move leaves such a label on the message, since it is state rather than a place.
 
 `threadId` → the provider-assigned thread (`ThreadProvenance::ProviderAssigned`), never
 re-grouped by local derivation. The `Message-Id` header (mixed-case in the wire, so
@@ -199,6 +208,13 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   captured finding), so reconcile-by-`Message-ID` would not match — but `send` **returns
   the sent message's id** in its response, so the receipt uses that directly (no reconcile
   round-trip, unlike SMTP/Graph `sendMail`, which return nothing).
+  With that id in hand, a keyword the draft asks for on its filed copy
+  (`Draft::sent_copy_keywords`) is kept as the label standing for it: an existing label under
+  any of the keyword's names, else one created under `KeywordName::create_as` with
+  `labelListVisibility: labelHide` and `messageListVisibility: show`, then one
+  `messages.modify` adding it. A `409` on the create (another device won by a moment) reads
+  the list again. Nothing in it fails the send; what was kept is in
+  `SubmissionReceipt::sent_copy_keywords`.
 
 - **`put_draft` / `delete_draft`** → the `users.drafts` collection. Gmail is the **one
   transport in this workspace with a draft object of its own**, so this is the only
@@ -238,6 +254,28 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
 - **The full `mail.google.com` scope covers the collection**, so no separate
   `gmail.compose` consent is needed. An account whose token lacks it fails at the call,
   which no capability could have predicted (`Scopes` above).
+
+## Folder changes (labels)
+
+`edit_mailbox` (`labels_write`) works on the raw label list, by **full** name, because the
+nesting lives in the name alone (above):
+
+| Edit | Gmail |
+|---|---|
+| create | `labels.create` named `<parent's full name>/<name>`; a label already of that name is the result, so a retry makes nothing twice |
+| rename / move | `labels.patch {name}` on the label **and every label beneath it**, those first and the folder last, so a cut-short attempt leaves the folder under its old name for the retry to finish. Every new name is checked against the list before anything is written: a clash found halfway would split the tree |
+| trash | Gmail cannot nest a label under `TRASH`. Each message in the subtree that is filed nowhere else goes to Trash (`messages.batchModify` `addLabelIds:["TRASH"]`, a thousand ids per call: `TRASH` is documented as manually applicable, and one call per thousand beats one `messages.trash` each against the query-cost quota), then `labels.delete` each label, deepest first, which unlinks it from every message. "Filed elsewhere" means `INBOX`, `SENT`, `DRAFT`, or a user label outside the subtree; `IMPORTANT`, the categories and the state labels are not places. `messages.list` leaves out Trash, so a retry resumes rather than repeats |
+| delete | `labels.delete` of the subtree, deepest first; a `404` is removed. Mail is not destroyed: Gmail keeps it in All Mail |
+
+Label ids never move, so every receipt names the id the edit started with, and a trash names
+none. A system label, a system parent and the synthetic All Mail are refused as
+`InvalidState` before anything is sent; a label gone from the list is a `Conflict`.
+
+⚠️ **Live verification is pending.** The request shapes are pinned offline through the recording
+fake (`labels_write_tests`), from the documented API, not from captured replies.
+`tests/live_mailbox_writes.rs` drives create, rename, move, trash and delete on a throwaway label
+tree, but it cannot reach the trash branch that sends mail to Trash: the only message it can make
+is one sent to itself, and `SENT` is a placement.
 
 ## Google Calendar
 
