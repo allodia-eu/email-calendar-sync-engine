@@ -87,7 +87,13 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   1,000 messages a minute there; `Blob/get` (below) needs a 25th as many requests.
 - **Session discovery + URL policy.** The session is fetched (well-known →
   redirect handled), then capabilities, account ids (per `primaryAccounts`, *not*
-  assumed), and the core limits are read. `JmapClient::connect` reports the phase to
+  assumed), and the core limits are read. **A domain is offered per account, not per server**
+  (RFC 8620 §2): mail, submission, calendars and contacts each count only when the server lists
+  the capability, `primaryAccounts` names an account for it, and that account's
+  `accountCapabilities` lists it too. Each domain is read from its own primary account, which
+  may differ from mail's. An account object missing the (required) `accountCapabilities` map is
+  taken at the server's word, and a capability with no primary account is not offered, since
+  every call for it is addressed to that account. `JmapClient::connect` reports the phase to
   the config's `ConnectObserver` (`providers.md`): one `ConnectStep::Redirected` per
   hop it resolves itself (both sides fully resolved, so a host sees the hop it could
   replay), `ConnectStep::Authenticated` when the session responds `2xx` with the

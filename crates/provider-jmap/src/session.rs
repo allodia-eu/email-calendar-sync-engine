@@ -188,7 +188,9 @@ impl Session {
 
         let caps = value.get("capabilities");
         let has = |urn: &str| caps.is_some_and(|c| c.get(urn).is_some());
-        let mut capabilities = build_capabilities(has);
+        let mut capabilities = build_capabilities(|urn| {
+            has(urn) && account_offers(value, account_for(urn).as_deref(), urn)
+        });
         // On-demand raw-source fetch (Tier-3 bodies) works whenever the server
         // exposes mail and a download template — see [`crate::fetch::message_source`].
         if capabilities.mail() && download_url.is_some() {
@@ -381,7 +383,10 @@ impl Session {
         self.limits
     }
 
-    /// The data domains the server advertises.
+    /// What this account offers: each data domain its primary account lists in
+    /// `accountCapabilities`, where the server supports it too, plus what follows from those
+    /// (writes, push, raw sources). A host reads `mail()`, `submission()`, `calendars()` and
+    /// `contacts()` here to offer only the domains the signed-in account has.
     #[must_use]
     pub fn capabilities(&self) -> engine_provider::Capabilities {
         self.capabilities
@@ -409,7 +414,22 @@ fn account_is_read_only(session: &Value, mail_account_id: Option<&str>) -> bool 
         .unwrap_or(false)
 }
 
-/// Builds the engine capability set from a "has this URN?" predicate.
+/// Whether `account`, the primary account for `urn`, offers it: its `accountCapabilities` lists
+/// the URN. A server may support a domain that a given account lacks, and the account's list is
+/// what says so (RFC 8620 §2). A capability with no primary account is not offered, since every
+/// call for it is addressed to that account. An account object without the (required) map is
+/// taken at the server's word.
+fn account_offers(session: &Value, account: Option<&str>, urn: &str) -> bool {
+    let Some(id) = account else {
+        return false;
+    };
+    session
+        .pointer(&format!("/accounts/{id}/accountCapabilities"))
+        .and_then(Value::as_object)
+        .is_none_or(|account_caps| account_caps.contains_key(urn))
+}
+
+/// Builds the engine capability set from a "does this account offer this URN?" predicate.
 fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabilities {
     let mut caps = engine_provider::Capabilities::none();
     if has(capability::MAIL) {
@@ -455,3 +475,7 @@ fn parse_limits(core: &Value) -> CoreLimits {
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "session_account_tests.rs"]
+mod account_tests;

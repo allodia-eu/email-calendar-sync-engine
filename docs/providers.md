@@ -149,6 +149,10 @@ For OAuth providers, use `Credentials::bearer("access-token")`. Servers that gen
 ### Notes
 
 - The JMAP account id is read from the session's `primaryAccounts`, not assumed.
+- Which of mail, submission, calendars and contacts an account offers is read from the primary
+  account of each capability and that account's `accountCapabilities`, not from the server's own
+  list: a server can support calendars for an account that has none. `Session::capabilities()`
+  (through `JmapClient::session()`) answers it after connecting.
 - Contact writes need an address book: call `with_contact_address_book` with an id
   from `sync_address_books`. Until then the provider offers no contact destination —
   there is no well-known default book to guess.
