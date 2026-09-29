@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use engine_provider::ConnectObserver;
 
-use crate::credentials::Credentials;
+use crate::credentials::{CredentialSource, Credentials};
 
 /// How the IMAP session is secured: TLS from the first byte (port 993), or a
 /// cleartext connection upgraded in place with `STARTTLS` (port 143). Both present
@@ -60,14 +60,14 @@ pub(crate) struct SmtpSettings {
     pub(crate) security: SmtpSecurity,
 }
 
-/// How to connect an [`ImapProvider`](crate::ImapProvider): the address, the TLS
-/// server name, and [`Credentials`]. `Debug` redacts the secret (`north-star.md`
+/// How to connect an [`ImapAccount`](crate::ImapAccount): the address, the TLS server name,
+/// and where its [`Credentials`] come from. `Debug` redacts the secret (`north-star.md`
 /// security).
 #[derive(Clone)]
 pub struct ImapConfig {
     pub(crate) addr: String,
     pub(crate) server_name: String,
-    pub(crate) credentials: Credentials,
+    pub(crate) credentials: Arc<dyn CredentialSource>,
     pub(crate) security: ImapSecurity,
     pub(crate) smtp: Option<SmtpSettings>,
     pub(crate) since: Option<time::Date>,
@@ -86,10 +86,23 @@ impl ImapConfig {
         server_name: impl Into<String>,
         credentials: Credentials,
     ) -> Self {
+        Self::from_credential_source(addr, server_name, Arc::new(credentials))
+    }
+
+    /// [`new`](Self::new), with the credential asked of `source` on every dial rather than
+    /// fixed: what an account signing in with OAuth needs, since its pool keeps dialling long
+    /// after the token it connected with has expired. A refused token is renewed once
+    /// ([`CredentialSource::renew`]).
+    #[must_use]
+    pub fn from_credential_source(
+        addr: impl Into<String>,
+        server_name: impl Into<String>,
+        source: Arc<dyn CredentialSource>,
+    ) -> Self {
         Self {
             addr: addr.into(),
             server_name: server_name.into(),
-            credentials,
+            credentials: source,
             security: ImapSecurity::ImplicitTls,
             smtp: None,
             since: None,

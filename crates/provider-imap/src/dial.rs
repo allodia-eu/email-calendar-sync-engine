@@ -8,6 +8,8 @@
 //! [`ImapAccount::connect`](crate::ImapAccount::connect) opens, and every one the account's
 //! pool opens after it, watches included.
 
+use std::future::Future;
+
 use engine_provider::{ConnectObserver, ConnectStep, TlsVersion};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -17,8 +19,8 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::{ImapConfig, ImapSecurity},
-    credentials::Credentials,
-    error::ImapError,
+    credentials::{Credentials, with_renewal},
+    error::{ImapError, ImapResult},
     tls_info,
     transport::Connection,
 };
@@ -35,20 +37,55 @@ use crate::{
 ///
 /// # Errors
 ///
-/// [`ImapError`] on a TCP/TLS/authentication failure or a bad server name.
+/// [`ImapError`] on a TCP/TLS/authentication failure or a bad server name, or
+/// [`ImapError::Credential`] when the config's source has no credential to give.
 pub(crate) async fn connect_session(
     config: &ImapConfig,
     connector: &TlsConnector,
 ) -> Result<(Connection<TlsStream<TcpStream>>, Option<TlsVersion>), ImapError> {
-    let (connection, tls_version) = open_secured(
-        &config.addr,
-        &config.server_name,
-        config.security,
-        connector,
-    )
-    .await?;
-    let connection = finish_session(connection, tls_version, config).await?;
-    Ok((connection, tls_version))
+    dial_with(config, || {
+        open_secured(
+            &config.addr,
+            &config.server_name,
+            config.security,
+            connector,
+        )
+    })
+    .await
+}
+
+/// The authenticated half of a dial over whatever `open` connects: asks the config's
+/// [`CredentialSource`](crate::CredentialSource) for a credential, and when the server
+/// refuses it and the source renews it, opens a **fresh** connection and presents the
+/// renewal. One re-dial at most, and none for a password, whose source never renews.
+///
+/// A new connection rather than a second `AUTHENTICATE` on the refused one, because a
+/// server may close a connection after a failed sign-in, and one that does not has still
+/// counted the attempt.
+///
+/// Generic over the stream so the offline suite drives it over scripted connections.
+///
+/// # Errors
+///
+/// As [`connect_session`].
+pub(crate) async fn dial_with<S, F, Fut>(
+    config: &ImapConfig,
+    mut open: F,
+) -> ImapResult<(Connection<S>, Option<TlsVersion>)>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ImapResult<(Connection<S>, Option<TlsVersion>)>>,
+{
+    with_renewal(config.credentials.as_ref(), |credentials| {
+        let opening = open();
+        async move {
+            let (connection, tls_version) = opening.await?;
+            let connection = finish_session(connection, tls_version, config, &credentials).await?;
+            Ok((connection, tls_version))
+        }
+    })
+    .await
 }
 
 /// Connects to `addr`, secures the socket, and reads the greeting: the half of a dial
@@ -96,9 +133,9 @@ pub(crate) async fn open_secured(
     Ok((connection, tls_version))
 }
 
-/// Authenticates and negotiates the dialect over an already-greeted `connection`,
-/// reporting [`ConnectStep::TlsEstablished`] (when the handshake agreed a version), then
-/// [`ConnectStep::Authenticated`], then [`ConnectStep::Negotiated`] to the config's
+/// Authenticates with `credentials` and negotiates the dialect over an already-greeted
+/// `connection`, reporting [`ConnectStep::TlsEstablished`] (when the handshake agreed a version),
+/// then [`ConnectStep::Authenticated`], then [`ConnectStep::Negotiated`] to the config's
 /// observer.
 ///
 /// Generic over the stream, which is what lets the offline suite assert the exact step
@@ -113,6 +150,7 @@ pub(crate) async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     mut connection: Connection<S>,
     tls_version: Option<TlsVersion>,
     config: &ImapConfig,
+    credentials: &Credentials,
 ) -> Result<Connection<S>, ImapError> {
     let observer: &dyn ConnectObserver = config.connect_observer();
     if let Some(version) = tls_version {
@@ -121,7 +159,7 @@ pub(crate) async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     // A password logs in; an access token goes over SASL, with the mechanism chosen
     // from what this server advertises (`crate::sasl`). Either way the next line is the
     // same: the observer is told the session is authenticated, not *how*.
-    match &config.credentials {
+    match credentials {
         Credentials::Password { username, password } => {
             connection.login(username, password).await?;
         }
@@ -153,3 +191,7 @@ pub(crate) async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
 #[cfg(test)]
 #[path = "dial_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "dial_renewal_tests.rs"]
+mod renewal_tests;

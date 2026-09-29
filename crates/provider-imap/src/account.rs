@@ -64,9 +64,9 @@ impl<S> core::fmt::Debug for ImapAccount<S> {
 
 impl ImapAccount<TlsStream<TcpStream>> {
     /// Connects over TLS (implicit or STARTTLS, per the config) and authenticates with the
-    /// config's [`Credentials`](crate::Credentials), a password or an OAuth 2.0 access token,
-    /// proving them and reading the server's capabilities. The connection is kept for the first
-    /// folder that needs one.
+    /// [`Credentials`](crate::Credentials) the config's source gives, a password or an OAuth
+    /// 2.0 access token, proving them and reading the server's capabilities. The connection is kept
+    /// for the first folder that needs one.
     ///
     /// The `connector` carries the host's trust policy — the library never bakes in a root
     /// store, so a mobile host (or the self-signed test fixture) injects its own
@@ -95,10 +95,9 @@ impl ImapAccount<TlsStream<TcpStream>> {
 }
 
 /// The pool's dial for a live account: the same TCP, TLS and authentication sequence as the
-/// first connection, from the same config, so every pooled connection presents the same
-/// [`Credentials`](crate::Credentials). An access token that has expired since
-/// [`ImapAccount::connect`] fails the dial as an authentication error, which is the host's
-/// signal to refresh the token and connect the account again.
+/// first connection, from the same config. Each dial asks the config's
+/// [`CredentialSource`](crate::CredentialSource) afresh, so a connection opened an hour after
+/// [`ImapAccount::connect`] presents a token that is valid then.
 fn dial_tls(config: ImapConfig, connector: TlsConnector) -> Dial<TlsStream<TcpStream>> {
     let config = Arc::new(config);
     Arc::new(move || {

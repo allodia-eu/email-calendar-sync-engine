@@ -124,7 +124,7 @@ mod mock;
 
 pub use account::ImapAccount;
 pub use config::{ImapConfig, ImapSecurity};
-pub use credentials::Credentials;
+pub use credentials::{CredentialSource, Credentials};
 pub use error::ImapError;
 pub use probe::{AuthOffer, probe_imap_auth, probe_smtp_auth};
 pub use provider::ImapProvider;

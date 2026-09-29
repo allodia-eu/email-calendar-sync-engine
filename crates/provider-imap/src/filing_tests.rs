@@ -23,22 +23,22 @@ fn resolve_smtp_maps_each_security_mode_to_its_sender() {
     let sender = resolve_smtp(plain.smtp.as_ref().unwrap(), &connector, &plain);
     assert!(matches!(&sender, SmtpSender::Plaintext { addr } if addr == "h:25"));
     // The fixture's local MX takes no credential at all.
-    assert!(sender.auth().is_none());
+    assert!(sender.auth(&Credentials::password("u", "p")).is_none());
 
     let tls = config().with_smtp_tls("h:465", "smtp.example.com");
     let sender = resolve_smtp(tls.smtp.as_ref().unwrap(), &connector, &tls);
     assert!(matches!(
         &sender,
-        SmtpSender::ImplicitTls { addr, server_name, credentials, .. }
-            if addr == "h:465" && server_name == "smtp.example.com" && credentials.username() == "u"
+        SmtpSender::ImplicitTls { addr, server_name, .. }
+            if addr == "h:465" && server_name == "smtp.example.com"
     ));
 
     let starttls = config().with_smtp_starttls("h:587", "smtp.example.com");
     let sender = resolve_smtp(starttls.smtp.as_ref().unwrap(), &connector, &starttls);
     assert!(matches!(
         &sender,
-        SmtpSender::StartTls { addr, server_name, credentials, .. }
-            if addr == "h:587" && server_name == "smtp.example.com" && credentials.username() == "u"
+        SmtpSender::StartTls { addr, server_name, .. }
+            if addr == "h:587" && server_name == "smtp.example.com"
     ));
 }
 
@@ -54,7 +54,8 @@ fn an_authenticating_sender_names_its_own_host_and_port() {
     )
     .with_smtp_tls("smtp.example.com:465", "smtp.example.com");
     let sender = resolve_smtp(config.smtp.as_ref().unwrap(), &connector(), &config);
-    let auth = sender.auth().expect("a TLS sender authenticates");
+    let presented = Credentials::oauth2("u@example.com", "tok");
+    let auth = sender.auth(&presented).expect("a TLS sender authenticates");
     assert_eq!(auth.host, "smtp.example.com");
     assert_eq!(auth.port, Some(465));
     assert_eq!(auth.credentials.username(), "u@example.com");

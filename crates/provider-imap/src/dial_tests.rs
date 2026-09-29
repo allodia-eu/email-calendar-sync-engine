@@ -29,7 +29,18 @@ async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     tls_version: Option<TlsVersion>,
     config: &ImapConfig,
 ) -> Result<Connection<S>, ImapError> {
-    finish_session(Connection::open(stream).await?, tls_version, config).await
+    let credentials = config
+        .credentials
+        .credentials()
+        .await
+        .map_err(ImapError::Credential)?;
+    finish_session(
+        Connection::open(stream).await?,
+        tls_version,
+        config,
+        &credentials,
+    )
+    .await
 }
 
 /// Records connect steps as the log lines a host would emit.

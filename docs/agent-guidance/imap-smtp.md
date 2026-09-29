@@ -139,7 +139,10 @@ is authoritative for the `provider-caldav` calendar client.
   connection, since a `NO` to a credential other sessions are logged in with right now is
   a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
   a new network being a new address. An unanswered dial (the network) lowers nothing.
-  Proof: `pool_refusal_tests.rs`.
+  A refused **token** first gets its one renewal (**Authentication** below), so an expired
+  token that a fresh one replaces never reaches the pool as a refusal; only a fresh token
+  refused as well does, and that is the session limit again. Proof: `pool_refusal_tests.rs`,
+  `dial_renewal_tests.rs`.
 - **The pool re-dials on its own.** A provider holds no socket, so a dead one is replaced
   on the next call rather than failing every call until the host rebuilds the provider.
   Every pool dial reports through the config's connect observer, so a host still sees
@@ -312,9 +315,31 @@ is authoritative for the `provider-caldav` calendar client.
 `Password` (IMAP `LOGIN`, SMTP `AUTH PLAIN`) or `OAuth2` (a bearer access token over
 SASL). That is the same shape `provider-jmap` and `provider-caldav` already expose, and
 the same posture as Graph and Google: **the engine stays OAuth-agnostic** — acquiring,
-storing and refreshing the token is the host's job (`north-star.md`). An expired token
-surfaces as `ImapError::Auth` → `FailureClass::Authentication`, which is the host's
-signal to refresh and reconnect; this adapter refreshes nothing itself.
+storing and refreshing the token is the host's job (`north-star.md`).
+
+**Every dial asks for its credential.** The config holds a `CredentialSource`, not a
+credential: an async trait with `credentials()` (what to present now) and `renew(refused)`
+(a replacement after the server refused one, `None` by default). A `Credentials` is its own
+source, which is what `ImapConfig::new` wraps; a host whose account signs in with OAuth
+passes its token store to `ImapConfig::from_credential_source`. The source is asked once
+per connection the account's pool dials and once per SMTP submission, because the pool
+dials for as long as the host runs and a token lives about an hour: a pool that presented
+the token it connected with would lose every new connection an hour in, while the sessions
+already open went on working. A session outlives the token that opened it, so nothing
+renews an open one.
+
+- **A refused token is renewed once, on a fresh connection.** An `Auth` refusal asks the
+  source's `renew`; a replacement is presented on a new connection (a server may drop a
+  connection after a failed sign-in, and counts the attempt either way). One re-dial at
+  most. A password's source never renews, so a refused password is never sent again: the
+  same secret to the same server gets the same answer, at a provider that may be counting
+  towards a lockout. The same rule wraps SMTP, where `AUTH` precedes `MAIL FROM`, so a
+  retried submission has sent nothing. Proof: `dial_renewal_tests.rs` and
+  `filing_smtp_server_tests.rs`.
+- **A source that cannot produce a credential dials nothing.** It fails with
+  `ImapError::Credential`, classified as the source classified it: a revoked grant is
+  `Authentication`, an unreachable token endpoint is retryable. It is not a session
+  refusal, so the pool's ceiling does not move.
 
 **The mechanism is negotiated, never configured.** Two SASL mechanisms carry a bearer
 token, and providers disagree about which:
@@ -773,18 +798,6 @@ folders into Trash is proven offline only: all three servers file a folder insid
 
 ## Known limitations (documented, not bugs)
 
-- **Token refresh is the host's, and a session does not renew itself.** An access token
-  that expires mid-session fails the next command with `FailureClass::Authentication`;
-  the adapter does not refresh and redial, because it holds no refresh token and no
-  client credentials — that is deliberate (`north-star.md`: hosts own account
-  onboarding). A host reconnects with a fresh token. Nothing is lost by this: syncing a
-  scope is idempotent, so the reconnected session resumes from the same cursor.
-  The account's pool dials with the token `ImapAccount::connect` was given, so once it
-  expires a *new* pooled connection is refused while the sessions already open keep
-  working (a session outlives the token that opened it). The pool reads that `NO` as it
-  reads any refusal beside working connections: it lowers the ceiling and waits for a
-  worker, and the caller sees `Authentication` only once no worker is left. That is the
-  host's cue to connect the account again with a fresh token, which builds a new pool.
 - **Yahoo itself is still unproven end to end.** Both *mechanisms* are proven live
   against Gmail (below), and Yahoo advertises the same two, so there is no untested code
   path left. What has not run is Yahoo's own server: its mail scope needs a
