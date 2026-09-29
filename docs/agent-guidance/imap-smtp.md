@@ -28,10 +28,10 @@ is authoritative for the `provider-caldav` calendar client.
   `connect_session`); it describes the IMAP session, not the per-send SMTP dial. For
   the same reason it is the only one to emit `ConnectStep::TlsEstablished` on the
   connect-observer seam (`providers.md`), followed by `ConnectStep::Authenticated` once
-  `LOGIN` succeeds — and nothing else: IMAP dials a known address and runs no
+  the credential is accepted — and nothing else: IMAP dials a known address and runs no
   discovery, so it has no `Redirected`/`Discovered` step. Both are emitted from
-  `open_session`, the stream-generic half of the dial, so the offline suite asserts the
-  exact sequence over a `MockStream`. A rejected `LOGIN` emits no `Authenticated`. The
+  `finish_session`, the stream-generic half of the dial, so the offline suite asserts the
+  exact sequence over a `MockStream`. A rejected credential emits no `Authenticated`. The
   observer rides on `ImapConfig` (`config.rs`), so an `ImapWatcher`'s dedicated
   connection — which shares `connect_session` — is observed too.
 - **A refused `LOGIN` is not always a bad credential.** `NO` is `ImapError::Auth`
@@ -42,13 +42,20 @@ is authoritative for the `provider-caldav` calendar client.
   live as `NO [LIMIT] LOGIN Rate limit hit.` on a session opened seconds after five
   others had authenticated with the same credential. The rule is scoped to `LOGIN`:
   RFC 5530's `LIMIT` is any implementation limit, so on `STORE` it can mean too many
-  keywords, which is `InvalidState` like any other `NO`. SMTP `AUTH` follows the same
-  rule in its own terms: a 4xx is "try again later" (RFC 5321 §4.2.1), so it is
-  `RateLimited` too, except RFC 4954's `432` (a password transition is needed), which only
-  the user can resolve and stays `Authentication`. Nothing in the adapter waits either
+  keywords, which is `InvalidState` like any other `NO`. An `AUTHENTICATE` carrying a token
+  is classified the same way, since it is the other way into a session. SMTP `AUTH`, with a
+  password or a token, follows the same rule in its own terms: a 4xx is "try again later"
+  (RFC 5321 §4.2.1), so it is `RateLimited` too, except RFC 4954's `432` (a password
+  transition is needed), which only the user can resolve and stays `Authentication`. Nothing in the adapter waits either
   out; the class is the host's cue to back off (`http-throttling.md` covers the HTTP
   adapters, where the engine does the waiting).
-- Layers: `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
+- Layers: `dial` (the connect sequence itself: TCP, TLS, authenticate, negotiate; behind
+  `ImapAccount::connect` and every connection the account's pool opens after it),
+  `credentials`/`sasl` (a password or an OAuth 2.0 access token, and the two SASL
+  mechanisms that carry a token — see **Authentication** below),
+  `probe` (what a server accepts, read *before* there is a credential to present),
+  `transport_auth`/`smtp_auth` (the `AUTHENTICATE`/`AUTH` exchanges those drive),
+  `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
   `ENABLE`/`SELECT [(CONDSTORE)]`/`UID FETCH [(CHANGEDSINCE … VANISHED)]`/`LIST`/
   `CREATE`/`APPEND`, literal handling), `transport_starttls` (the plaintext `STARTTLS`
   preamble + the raw-socket unwrap and greeting-less `resume` for the upgrade — see
@@ -132,7 +139,10 @@ is authoritative for the `provider-caldav` calendar client.
   connection, since a `NO` to a credential other sessions are logged in with right now is
   a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
   a new network being a new address. An unanswered dial (the network) lowers nothing.
-  Proof: `pool_refusal_tests.rs`.
+  A refused **token** first gets its one renewal (**Authentication** below), so an expired
+  token that a fresh one replaces never reaches the pool as a refusal; only a fresh token
+  refused as well does, and that is the session limit again. Proof: `pool_refusal_tests.rs`,
+  `dial_renewal_tests.rs`.
 - **The pool re-dials on its own.** A provider holds no socket, so a dead one is replaced
   on the next call rather than failing every call until the host rebuilds the provider.
   Every pool dial reports through the config's connect observer, so a host still sees
@@ -298,6 +308,158 @@ is authoritative for the `provider-caldav` calendar client.
   `LIST` with `List completed (0.003 + 0.000 secs).` — four items whose first word is the
   keyword and whose last is a bare `.`, so read as data it invents a mailbox named `.`.
 
+
+## Authentication: a password or an OAuth 2.0 token
+
+`ImapConfig::new(addr, server_name, credentials)` takes a **`Credentials`** —
+`Password` (IMAP `LOGIN`, SMTP `AUTH PLAIN`) or `OAuth2` (a bearer access token over
+SASL). That is the same shape `provider-jmap` and `provider-caldav` already expose, and
+the same posture as Graph and Google: **the engine stays OAuth-agnostic** — acquiring,
+storing and refreshing the token is the host's job (`north-star.md`).
+
+**Every dial asks for its credential.** The config holds a `CredentialSource`, not a
+credential: an async trait with `credentials()` (what to present now) and `renew(refused)`
+(a replacement after the server refused one, `None` by default). A `Credentials` is its own
+source, which is what `ImapConfig::new` wraps; a host whose account signs in with OAuth
+passes its token store to `ImapConfig::from_credential_source`. The source is asked once
+per connection the account's pool dials and once per SMTP submission, because the pool
+dials for as long as the host runs and a token lives about an hour: a pool that presented
+the token it connected with would lose every new connection an hour in, while the sessions
+already open went on working. A session outlives the token that opened it, so nothing
+renews an open one.
+
+- **A refused token is renewed once, on a fresh connection.** An `Auth` refusal asks the
+  source's `renew`; a replacement is presented on a new connection (a server may drop a
+  connection after a failed sign-in, and counts the attempt either way). One re-dial at
+  most. A password's source never renews, so a refused password is never sent again: the
+  same secret to the same server gets the same answer, at a provider that may be counting
+  towards a lockout. The same rule wraps SMTP, where `AUTH` precedes `MAIL FROM`, so a
+  retried submission has sent nothing. Proof: `dial_renewal_tests.rs` and
+  `filing_smtp_server_tests.rs`.
+- **A source that cannot produce a credential dials nothing.** It fails with
+  `ImapError::Credential`, classified as the source classified it: a revoked grant is
+  `Authentication`, an unreachable token endpoint is retryable. It is not a session
+  refusal, so the pool's ceiling does not move.
+
+**The mechanism is negotiated, never configured.** Two SASL mechanisms carry a bearer
+token, and providers disagree about which:
+
+| Provider | IMAP advertises | Source |
+| --- | --- | --- |
+| Gmail | `AUTH=XOAUTH2` **and** `AUTH=OAUTHBEARER` | **observed** |
+| Yahoo / AOL | `AUTH=XOAUTH2` **and** `AUTH=OAUTHBEARER` | **observed** |
+| Microsoft 365 | `AUTH=XOAUTH2` only | documented |
+| Stalwart | both | documented |
+
+⚠️ **Yahoo's row contradicts Yahoo's own documentation**, which presents `OAUTHBEARER`
+as *the* mechanism for its IMAP and never mentions `XOAUTH2` there. The server
+advertises both. Both real capability lines are captured verbatim in `sasl_tests.rs`, so
+the preference order below rests on observed bytes rather than on a vendor page — which
+is the difference between a fix and a guess, and here it inverted the answer.
+
+So `sasl::select` reads the server's own `AUTH=` list and picks. Nothing above this
+crate knows which provider it is talking to — a host that had to ask would be the engine
+leaking its job outward ("Provider-neutral by default", `AGENTS.md`), and there is
+deliberately **no knob**, because a caller able to pin a mechanism would be encoding the
+provider in its configuration.
+
+**`OAUTHBEARER` wins where both are offered, and the reason is testability.** Every
+server this repo can reach offers both, so the preference decides only which of the two
+code paths ever runs live — and `OAUTHBEARER` is the one more likely to be subtly wrong:
+it is newer (RFC 7628, 2015), it carries a GS2 header and `host`/`port` pairs `XOAUTH2`
+does not, and its rejection is acknowledged with `AQ==` rather than an empty line.
+`XOAUTH2` is a decade-old de-facto standard whose exact bytes Google publishes. Given one
+live proof to spend, it buys more on the standard mechanism. `XOAUTH2` stays the fallback
+and is what a server offering only it (Microsoft 365) gets.
+
+Preferring the other way round was the first attempt here, on the reasoning that
+`XOAUTH2` is what every deployed client sends and is therefore the better-trodden path.
+That is true, and it is the wrong trade: it would have left `OAUTHBEARER` — the riskier
+implementation — running against **no** live server at all, since the argument that Yahoo
+would exercise it rested on a documentation claim the server disproves.
+
+- **Both protocols carry the same bytes**, which is why `sasl.rs` is protocol-neutral:
+  IMAP frames the blob as `AUTHENTICATE <mech> <base64>` and SMTP as
+  `AUTH <mech> <base64>` (RFC 4959 / RFC 4954). `OAUTHBEARER` is a GS2 header plus
+  `%x01`-separated pairs — `n,a=<user>,^Ahost=…^Aport=…^Aauth=Bearer <token>^A^A` —
+  and `XOAUTH2` the flatter `user=…^Aauth=Bearer …^A^A`. The `host`/`port` describe
+  **the connection the response rides on**, so an SMTP submission sends its own host and
+  port, never the IMAP session's; `port` is dropped rather than invented when the dial
+  address carried no parsable one (RFC 7628 §3.1 makes it optional for a bearer token).
+  The initial response is only sent inline where `SASL-IR` is advertised; otherwise the
+  client names the mechanism, waits for the bare `+`, and sends the blob on its own line
+  — the two-step form every server takes.
+- **A rejected token answers with a challenge, not an error — and then waits.** Both
+  mechanisms describe the refusal in base64 JSON (`{"status":"invalid_token",…}`) and
+  will not send the tagged `NO` (or the SMTP `535`) until the client acknowledges: a
+  single `%x01`, base64 `AQ==`, for `OAUTHBEARER` (RFC 7628 §3.2.3), and an **empty
+  line** for `XOAUTH2`. A client that skips the acknowledgement does not get an
+  authentication error, it gets a **stalled connection** — so this is not politeness, it
+  is what turns an expired token into a failure a host can act on. The decoded challenge
+  travels in the error, because it is the only place the server says *whether* the token
+  was expired, wrongly scoped, or issued for another account.
+- **A token is never downgraded into a password attempt.** A server advertising no OAuth
+  mechanism fails with an `Auth` error naming what it *did* offer — the usual cause is an
+  OAuth credential pointed at an account that only takes a password — and no credential
+  reaches the wire.
+- **Credential components are screened before encoding.** `%x01` is the key/value
+  separator itself, so a token carrying one could append its own `auth=` pair; CR/LF/NUL
+  would break out of the command line the base64 rides on. Rejected up front — the same
+  guard `smtp.rs` applies to envelope addresses and `engine-rfc5322` to header values.
+- **The pre-auth `CAPABILITY` is a third call, not a duplicate of the other two.** The
+  session already asks before `STARTTLS` (is the upgrade offered?) and again after
+  authenticating (what does *this* session get — servers advertise a different set once
+  they know who is asking, which is why that one cannot be optimized away). An OAuth dial
+  adds one in between, because the mechanism list and `SASL-IR` are only knowable before
+  the credential is sent.
+- **Getting a Yahoo token is the hard part, and it is not a code problem.** Yahoo does
+  not self-serve mail scopes: `mail-r`/`mail-w` are granted only after a developer-access
+  review (<https://senders.yahooinc.com/developer/developer-access/>). `tools/yahoo-oauth`
+  drives the flow once that is approved — authorization code, no PKCE, out-of-band
+  redirect, HTTP Basic at the token endpoint, all as Yahoo documents. Its `check` command
+  prints the scopes a token actually carries, which is the first thing to look at when
+  IMAP answers `AUTHENTICATE` with `NO`: a token minted without approved mail scope looks
+  perfectly valid and opens nothing.
+
+### Asking before there is a credential: `probe_imap_auth` / `probe_smtp_auth`
+
+A host setting up an account has to decide **which credential to ask the user for**, and
+that decision is only the server's to make. `probe_imap_auth(addr, server_name, security,
+connector)` and `probe_smtp_auth(…, ehlo_domain, connector)` (`probe.rs`) dial, read the
+pre-authentication `CAPABILITY` / `EHLO`, and return an `AuthOffer`: the advertised
+mechanisms verbatim, plus `password` and `oauth`. They share `dial::open_secured` with
+the real connect, so a probe is byte-for-byte the dial an account would make, minus the
+credential.
+
+- **Nothing is presented, and nothing is recorded against the account.** RFC 7628 §3.2.2
+  lets a server describe its OAuth configuration — an `openid-configuration` URL
+  included — in the challenge it returns when it *rejects* a token, so a client could
+  discover the authorization server by sending a deliberately invalid one. This does not.
+  It would leave a failed authentication on the user's account before they had signed in
+  once, on the screen where they are most likely to give up, and the field is optional:
+  Stalwart answers a bad token with a bare `NO [AUTHENTICATIONFAILED]` and no challenge.
+  A host discovers the authorization server over HTTPS instead.
+- **On a STARTTLS dial, the reading is the post-upgrade one.** A server commonly withholds
+  its mechanism list, or advertises `LOGINDISABLED`, until the link is secured, so the
+  cleartext capability describes a session nobody will use. Same on SMTP: the `EHLO` that
+  negotiated the upgrade is not the one whose `AUTH` line counts.
+- **`LOGINDISABLED` and "no `AUTH=` mechanism" are different answers.** The capability
+  withdraws the `LOGIN` *command* (RFC 3501 §6.2.3), not the password: a server may
+  disable it and still take `AUTH=PLAIN`, and a server advertising no mechanism at all
+  still takes `LOGIN`. Reading either as "no password" hides the only route that works.
+  Microsoft 365 is the case where both are true at once, and where the honest answer is
+  that a password field would be a dead end.
+- **SMTP has no such fallback.** Submission authenticates over SASL or not at all
+  (RFC 4954), so an `AUTH` line naming no password mechanism means no password.
+- **Every failure means one thing to a caller: the question went unanswered.** A refused
+  dial, a bad server name, an unadvertised `STARTTLS` — a host offers what works
+  everywhere (a password) rather than a sign-in that may not exist.
+- **The `EHLO` domain is screened for CR/LF/NUL in `ehlo` itself**, not in each caller:
+  the probe is the first thing a setup screen runs, and it takes the domain straight from
+  a host, so the guard belongs where the command line is built (`converse` already
+  screened the envelope addresses it owns). One CR would append a second SMTP command
+  (RFC 5321 §2.3.8).
+
 ## SMTP submission
 
 - **`submit_email`** runs the conversation `EHLO → [AUTH] → MAIL FROM → RCPT TO* →
@@ -345,13 +507,22 @@ is authoritative for the `provider-caldav` calendar client.
   conventional `Sent`/`Drafts` name. This costs one `LIST` per submission (rare path).
 - **Three transports.** `ImapConfig::with_smtp(addr)` is **plaintext, no auth** — for
   an MX that accepts local mail (the fixture's port 25). `with_smtp_tls(addr,
-  server_name)` is **implicit TLS + `AUTH PLAIN`** (port 465) using the account
-  credentials and the injected connector. `with_smtp_starttls(addr, server_name)` is
-  **STARTTLS + `AUTH PLAIN`** (port 587): the client connects in the clear, `EHLO`s,
-  upgrades the socket with `STARTTLS`, re-`EHLO`s over TLS, then authenticates — it
-  **fails** if the server does not advertise `STARTTLS` (no cleartext auth). AUTH is
-  only ever attempted once the stream is secured (implicit TLS, or after the upgrade),
-  never in the clear. The upgrade is negotiated in `smtp::negotiate_starttls` (greeting
+  server_name)` is **implicit TLS + `AUTH`** (port 465) using the account credentials and
+  the injected connector. `with_smtp_starttls(addr, server_name)` is **STARTTLS + `AUTH`**
+  (port 587): the client connects in the clear, `EHLO`s, upgrades the socket with
+  `STARTTLS`, re-`EHLO`s over TLS, then authenticates — it **fails** if the server does
+  not advertise `STARTTLS` (no cleartext auth). Which `AUTH` runs follows from the
+  credential (**Authentication** above): `AUTH PLAIN` for a password, `AUTH XOAUTH2` /
+  `AUTH OAUTHBEARER` for an access token. AUTH is only ever attempted once the stream is
+  secured (implicit TLS, or after the upgrade), never in the clear — which matters more
+  for a token than for a password, since a token grants the whole mailbox and is
+  replayable until it expires.
+- **`EHLO`'s extensions are read line by line, never from the joined reply.** An
+  extension keyword only means anything at the start of its own line, so flattening the
+  reply first lets a server's greeting prose answer a question it was never asked — the
+  SMTP twin of the `Response::untagged` trap that had Dovecot's `List completed …` line
+  read as a mailbox. `read_reply_lines` is the form both the `STARTTLS` check and the
+  mechanism list use; `read_reply` (joined) stays for replies whose content is prose. The upgrade is negotiated in `smtp::negotiate_starttls` (greeting
   → `EHLO` → `STARTTLS`), then the caller TLS-wraps the socket and the conversation
   continues over `smtp::send_after_starttls` (which skips the greeting a server does
   not re-send post-upgrade). Data buffered past the `STARTTLS` `220` is rejected — a
@@ -627,6 +798,15 @@ folders into Trash is proven offline only: all three servers file a folder insid
 
 ## Known limitations (documented, not bugs)
 
+- **Yahoo itself is still unproven end to end.** Both *mechanisms* are proven live
+  against Gmail (below), and Yahoo advertises the same two, so there is no untested code
+  path left. What has not run is Yahoo's own server: its mail scope needs a
+  developer-access review, so `tools/yahoo-oauth` cannot yet mint a token. Two things a
+  Yahoo account will meet that Gmail does not, both read off its observed capability line:
+  it advertises **no `CONDSTORE`/`QRESYNC`** (it has a proprietary `XYMHIGHESTMODSEQ`
+  instead), so a Yahoo mailbox takes the honest new-arrivals delta plus periodic-snapshot
+  fallback rather than the incremental one; and it advertises `UIDONLY`, which this client
+  does not enable.
 - **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
   **implemented** for servers that advertise QRESYNC (RFC 7162) — the common case
   (Stalwart, Dovecot, Cyrus, Gmail). A server that advertises **neither** QRESYNC nor a
@@ -672,8 +852,8 @@ folders into Trash is proven offline only: all three servers file a folder insid
 - **STARTTLS is implemented** for both IMAP (`ImapConfig::with_starttls`, port 143)
   and SMTP submission (`with_smtp_starttls`, port 587), alongside implicit TLS. Both
   connect in the clear, verify the peer advertises `STARTTLS`, upgrade the socket, and
-  only then log in / authenticate — refusing to proceed (never sending credentials in
-  the clear) if it is not advertised. Because a STARTTLS dial is byte-for-byte an
+  only then authenticate — refusing to proceed (never sending a password *or* a bearer
+  token in the clear) if it is not advertised. Because a STARTTLS dial is byte-for-byte an
   implicit-TLS one *after* the upgrade, the provider stays generic over a single
   `TlsStream` type — the upgrade happens on the raw socket before it becomes the
   session stream (`Connection::start_tls` / `into_inner_stream` / `resume`).
@@ -796,7 +976,14 @@ behaviour broke; if the answer is none, the test is not proving what it claims.
   unit-tested, including a panic/hang/overflow-resistance pass over adversarial
   input. A **mock async stream** replays full IMAP and SMTP transcripts to exercise
   the real transport, command sequencing, literal handling, snapshot/delta paging,
-  UIDVALIDITY reset, per-recipient rejection, and post-`DATA` ambiguity. An
+  UIDVALIDITY reset, per-recipient rejection, and post-`DATA` ambiguity. The **SASL
+  OAuth** exchanges are covered the same way on both protocols: the two initial-response
+  vectors are the **published ones** (RFC 7628 §4.1's and Google's, decoded and
+  re-encoded byte for byte, so the code is pinned to the specifications rather than to
+  itself), plus the mechanism choice from an advertised set, the `SASL-IR` and prompted
+  forms, and — the branch that matters most — a rejected token's challenge being
+  acknowledged (`AQ==` / an empty line) so the failure arrives as an error instead of a
+  stall. An
   **engine-sync integration** drives `ImapProvider` over the mock through
   `sync_mail` into a real `SqliteStore` (container-before-member, per-chunk
   commit/progress, FTS search). The `needs_confirmation` → `NeedsConfirmation` bridge is
@@ -848,11 +1035,36 @@ behaviour broke; if the answer is none, the test is not proving what it claims.
   mutation from the count-asserted INBOX/Archive/Projects. The `stalwart` CI job runs
   both files; they are excluded from the offline coverage metric, like the harness
   probes and `provider-jmap/tests/`.
+- **Live OAuth, gated on a real provider (`tests/live_imap_oauth.rs`):** the one thing a
+  mock cannot show — that a real server accepts these bytes. Gated on
+  `IMAP_OAUTH_HOST`/`USER`/`TOKEN`, over a **verifying** connector (bundled Mozilla
+  roots), not the harness's trust-nothing one. Three assertions: the token authenticates
+  *and* the session is usable (a `LIST` proves the server really moved into the
+  authenticated state rather than answering `OK` in place); a **corrupted token fails as
+  `FailureClass::Authentication` within a timeout**, which is what proves the challenge
+  acknowledgement works against a real implementation — without it that test hangs rather
+  than fails; and, with `IMAP_OAUTH_SMTP_HOST` set, a submission authenticated the same
+  way. **Run and green against Gmail** (`tools/google-oauth`'s default scope is already
+  `https://mail.google.com/`, the Gmail IMAP/SMTP scope), which exercises `OAUTHBEARER`
+  — the preferred mechanism. `XOAUTH2` was proven on the same server by sending this
+  crate's exact blob for it by hand (`AUTHENTICATE XOAUTH2 <base64>` over `openssl
+  s_client`), which Gmail also answered `OK`; so both mechanisms are confirmed against a
+  real server even though only one runs through the adapter. Yahoo is the same three
+  environment variables via `tools/yahoo-oauth`, once Yahoo approves developer access to
+  the mail scope.
+- **Live auth probe (`tests/live_imap_probe.rs`, harness-gated):** the offline suite pins
+  the classification against captured capability lines; only a live server shows that a
+  **STARTTLS** probe reads the post-upgrade capability rather than the cleartext one, on
+  both protocols. It also probes ten times in a row against one server, because Stalwart
+  caps concurrent connections per account: a probe that leaked a session would surface
+  there as a refused dial rather than as a leak nobody notices until a user has retyped
+  their address a few times.
 - **Real-provider exploration:** `examples/imap_explore.rs` connects to a *real*
   IMAP server over a verifying TLS connector (Mozilla roots) and lists folders +
   recent mail (read-only; opt-in `IMAP_QRESYNC` verifies the CONDSTORE/QRESYNC delta,
-  `IMAP_DRAFT` saves a draft, and `IMAP_SEND` submits over SMTP `AUTH PLAIN` + implicit
-  TLS). Validated against a real Dovecot server — read, UTF-8 subjects, and draft
+  `IMAP_DRAFT` saves a draft, and `IMAP_SEND` submits over SMTP + implicit TLS). Setting
+  `IMAP_TOKEN` instead of `IMAP_PASS` runs the whole exploration on an OAuth credential,
+  so pointing it at a new provider is an env var rather than an edit. Validated against a real Dovecot server — read, UTF-8 subjects, and draft
   creation; authenticated SMTP send is implemented and offline-tested, exercisable via
   `IMAP_SEND`. The **CONDSTORE/QRESYNC delta** was validated read-only against
   **Soverin** (Dovecot): it advertises `CONDSTORE QRESYNC` post-auth, `SELECT (CONDSTORE)`

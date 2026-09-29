@@ -1,165 +1,284 @@
-//! Offline tests for SMTP `AUTH PLAIN`, over a mock stream: the exchange itself, and how a
-//! refusal is classified, since a refusal read as a bad password makes a host ask the user
-//! to sign in again.
+//! Offline tests for SMTP authentication, driven through the whole [`crate::smtp`]
+//! conversation over a mock stream.
+//!
+//! Driving `send` rather than the `AUTH` step alone is deliberate: it pins where the
+//! authentication sits in the sequence (after `EHLO`, before `MAIL FROM`), which is the
+//! part a real server rejects. What a mock still cannot check is whether the server
+//! accepts the bytes — that is `tests/live_imap_oauth.rs`.
 
-use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
+use engine_core::{error::FailureClass, ids::MessageIdHeader, mail::EmailAddress};
 use engine_provider::Draft;
 use engine_rfc5322::assemble_message;
-use time::{OffsetDateTime, macros::datetime};
+use time::macros::datetime;
 
 use super::*;
-use crate::mock::{MockStream, script, written};
+use crate::{
+    error::ImapError,
+    mock::{MockStream, script, written},
+    smtp::{Disposition, send},
+};
 
-fn draft(to: &[&str], body: &str) -> Draft {
-    Draft::new(
-        MessageIdHeader::new("smtp-auth@host").unwrap(),
-        EmailAddress::new("alice@test.local"),
-        to.iter().map(|t| EmailAddress::new(*t)).collect(),
+/// RFC 7628 §4.4's SMTP error challenge, verbatim.
+const CHALLENGE: &str = "334 eyJzdGF0dXMiOiJpbnZhbGlkX3Rva2VuIiwic2NoZW1lcyI6ImJlYXJlciIsInNjb3BlIjoiaHR0cHM6Ly9tYWlsLmV4YW1wbGUuY29tLyJ9\r\n";
+
+/// Runs a submission that authenticates with `credentials` over `server_script`,
+/// returning the outcome and the bytes the client wrote.
+async fn submit(
+    server_script: Vec<u8>,
+    credentials: &Credentials,
+) -> (ImapResult<crate::smtp::SmtpResult>, String) {
+    let draft = Draft::new(
+        MessageIdHeader::new("smtp-oauth@host").unwrap(),
+        EmailAddress::new("alice@example.com"),
+        vec![EmailAddress::new("bob@example.com")],
         "Subject line",
-        body,
+        "hi",
+    );
+    let message = assemble_message(&draft, datetime!(2026-06-20 12:00:00 UTC)).unwrap();
+    let (stream, recorded) = MockStream::new(server_script);
+    let outcome = send(
+        stream,
+        "example.com",
+        "alice@example.com",
+        &["bob@example.com".to_owned()],
+        &message,
+        Some(SmtpAuth {
+            credentials,
+            host: "smtp.example.com",
+            port: Some(465),
+        }),
     )
+    .await;
+    (outcome, written(&recorded))
 }
 
-fn fixed_date() -> OffsetDateTime {
-    datetime!(2026-06-20 12:00:00 UTC)
-}
-
-fn assembled(draft: &Draft) -> Vec<u8> {
-    assemble_message(draft, fixed_date()).unwrap()
-}
-
-fn recipients(to: &[&str]) -> Vec<String> {
-    to.iter().map(|t| (*t).to_owned()).collect()
-}
+/// The tail of a successful submission, after the `235`.
+const DELIVERY: &str =
+    "250 2.1.0 OK\r\n250 2.1.5 OK\r\n354 go ahead\r\n250 2.0.0 queued\r\n221 bye\r\n";
 
 #[tokio::test]
-async fn send_authenticates_with_auth_plain_over_the_stream() {
-    let server = script(&[
-        "220 mail ESMTP\r\n",
-        "250-mail\r\n250 AUTH PLAIN\r\n",
-        "235 2.7.0 authenticated\r\n",
-        "250 2.1.0 OK\r\n",
-        "250 2.1.5 OK\r\n",
-        "354 go ahead\r\n",
-        "250 2.0.0 queued\r\n",
-        "221 bye\r\n",
-    ]);
-    let (stream, recorded) = MockStream::new(server);
-    let message = assembled(&draft(&["bob@test.local"], "hi"));
-
-    let result = send(
-        stream,
-        "test.local",
-        "alice@test.local",
-        &recipients(&["bob@test.local"]),
-        &message,
-        Some(("alice@test.local", "s3cret")),
+async fn a_token_authenticates_with_the_mechanism_the_server_advertised() {
+    let credentials = Credentials::oauth2("alice@example.com", "ya29.token");
+    let (outcome, sent) = submit(
+        script(&[
+            "220 mail ESMTP\r\n",
+            "250-mail\r\n250-STARTTLS\r\n250 AUTH PLAIN LOGIN XOAUTH2 OAUTHBEARER\r\n",
+            "235 2.7.0 Accepted\r\n",
+            DELIVERY,
+        ]),
+        &credentials,
     )
-    .await
-    .unwrap();
+    .await;
+    assert_eq!(
+        outcome.expect("delivered").disposition,
+        Disposition::Delivered
+    );
 
-    assert_eq!(result.disposition, Disposition::Delivered);
-    let sent = written(&recorded);
-    assert!(sent.contains("AUTH PLAIN "), "{sent}");
-    // The password is base64 in the SASL token, never in the clear.
+    // The preferred mechanism, with the credential inline (RFC 4954's initial response).
+    let expected = crate::sasl::Mechanism::OAuthBearer
+        .initial_response(
+            "alice@example.com",
+            "ya29.token",
+            "smtp.example.com",
+            Some(465),
+        )
+        .expect("clean credential");
     assert!(
-        !sent.contains("s3cret"),
-        "credentials leaked in the clear: {sent}"
+        sent.contains(&format!("AUTH OAUTHBEARER {expected}\r\n")),
+        "{sent}"
     );
+    // The token is never in the clear, and never as a password.
+    assert!(!sent.contains("ya29.token"), "token leaked: {sent}");
+    assert!(!sent.contains("AUTH PLAIN"), "{sent}");
+    // Authentication precedes the envelope, or a strict server rejects `MAIL FROM`.
+    let auth_at = sent.find("AUTH OAUTHBEARER").expect("AUTH issued");
+    let mail_at = sent.find("MAIL FROM").expect("MAIL issued");
+    assert!(auth_at < mail_at, "AUTH must precede MAIL: {sent}");
 }
 
 #[tokio::test]
-async fn an_auth_rejection_is_an_authentication_error() {
-    let server = script(&[
-        "220 mail\r\n",
-        "250 AUTH PLAIN\r\n",
-        "535 5.7.8 bad credentials\r\n",
-    ]);
-    let (stream, _) = MockStream::new(server);
-    let message = assembled(&draft(&["bob@test.local"], "hi"));
-
-    let err = send(
-        stream,
-        "test.local",
-        "alice@test.local",
-        &recipients(&["bob@test.local"]),
-        &message,
-        Some(("alice@test.local", "wrong")),
+async fn a_microsoft_style_server_gets_the_vendor_mechanism() {
+    // The fallback half: Exchange Online documents only `XOAUTH2` — and has switched
+    // basic auth off — so a server without the preferred mechanism must not be left
+    // unauthenticated.
+    let credentials = Credentials::oauth2("alice@example.com", "tok");
+    let (outcome, sent) = submit(
+        script(&[
+            "220 mail ESMTP\r\n",
+            "250-mail\r\n250 AUTH PLAIN LOGIN XOAUTH2\r\n",
+            "235 2.7.0 Accepted\r\n",
+            DELIVERY,
+        ]),
+        &credentials,
     )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        err.failure_class(),
-        engine_core::error::FailureClass::Authentication
-    );
+    .await;
+    outcome.expect("delivered");
+    assert!(sent.contains("AUTH XOAUTH2 "), "{sent}");
 }
 
 #[tokio::test]
-async fn an_auth_deferral_is_rate_limited_not_a_bad_password() {
-    // A 4xx is "try again later" (RFC 5321 §4.2.1); RFC 4954 §6 names 454 for a temporary
-    // authentication failure. Read as `Authentication`, a host asks the user to sign in
-    // again, which cannot help.
-    for deferral in [
-        "454 4.7.0 Temporary authentication failure\r\n",
-        "421 4.7.0 Try again later, closing connection\r\n",
-    ] {
-        let err = auth_refused_with(deferral).await;
-        assert!(
-            matches!(err, ImapError::RateLimited(_)),
-            "{deferral}: {err:?}"
-        );
-        assert_eq!(
-            err.failure_class(),
-            engine_core::error::FailureClass::RateLimited,
-            "{deferral}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn an_auth_asking_for_a_password_transition_stays_an_authentication_error() {
-    // The one 4xx RFC 4954 §6 gives AUTH that no wait resolves: the user has to act.
-    let err = auth_refused_with("432 4.7.12 A password transition is needed\r\n").await;
-    assert_eq!(
-        err.failure_class(),
-        engine_core::error::FailureClass::Authentication
-    );
-}
-
-async fn auth_refused_with(reply: &str) -> ImapError {
-    let server = script(&["220 mail\r\n", "250 AUTH PLAIN\r\n", reply]);
-    let (stream, _) = MockStream::new(server);
-    let message = assembled(&draft(&["bob@test.local"], "hi"));
-    send(
-        stream,
-        "test.local",
-        "alice@test.local",
-        &recipients(&["bob@test.local"]),
-        &message,
-        Some(("alice@test.local", "pw")),
+async fn a_rejected_token_is_acknowledged_and_reported_with_the_servers_reason() {
+    let credentials = Credentials::oauth2("alice@example.com", "expired");
+    let (outcome, sent) = submit(
+        script(&[
+            "220 mail ESMTP\r\n",
+            "250-mail\r\n250 AUTH OAUTHBEARER\r\n",
+            CHALLENGE,
+            "535-5.7.1 Username and Password not accepted\r\n535 5.7.1 see the docs\r\n",
+        ]),
+        &credentials,
     )
-    .await
-    .unwrap_err()
+    .await;
+
+    let err = outcome.expect_err("a rejected token must fail");
+    assert_eq!(err.failure_class(), FailureClass::Authentication);
+    let detail = err.to_string();
+    assert!(detail.contains("invalid_token"), "{detail}");
+    assert!(detail.contains("535"), "{detail}");
+
+    // The `334` is the rejection, not a request for more credential: acknowledging it is
+    // what makes the server send the `535` at all (RFC 7628 §3.2.3).
+    assert!(sent.contains("\r\nAQ==\r\n"), "{sent}");
+    // Nothing was submitted afterwards.
+    assert!(!sent.contains("MAIL FROM"), "{sent}");
 }
 
 #[tokio::test]
-async fn auth_without_esmtp_is_a_protocol_error() {
-    // EHLO is refused (HELO-only), so AUTH cannot run.
-    let server = script(&["220 mail\r\n", "502 no EHLO\r\n", "250 OK\r\n"]);
-    let (stream, _) = MockStream::new(server);
-    let message = assembled(&draft(&["bob@test.local"], "hi"));
-    let err = send(
-        stream,
-        "test.local",
-        "alice@test.local",
-        &recipients(&["bob@test.local"]),
-        &message,
-        Some(("user", "pass")),
+async fn a_rejected_xoauth2_token_is_acknowledged_with_an_empty_line() {
+    let credentials = Credentials::oauth2("alice@example.com", "expired");
+    let (outcome, sent) = submit(
+        script(&[
+            "220 mail ESMTP\r\n",
+            "250-mail\r\n250 AUTH XOAUTH2\r\n",
+            CHALLENGE,
+            "535 5.7.1 Username and Password not accepted\r\n",
+        ]),
+        &credentials,
     )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        err.failure_class(),
-        engine_core::error::FailureClass::Permanent
+    .await;
+    assert!(matches!(outcome, Err(ImapError::Auth(_))), "{outcome:?}");
+    assert!(sent.ends_with("\r\n\r\n"), "{sent:?}");
+}
+
+#[tokio::test]
+async fn a_flat_refusal_with_no_challenge_is_still_an_authentication_error() {
+    // Not every server describes the rejection: some answer the `AUTH` line with a bare
+    // `535`. There is nothing to acknowledge then, and nothing to wait for.
+    let credentials = Credentials::oauth2("alice@example.com", "expired");
+    let (outcome, sent) = submit(
+        script(&[
+            "220 mail ESMTP\r\n",
+            "250-mail\r\n250 AUTH XOAUTH2\r\n",
+            "535 5.7.1 Username and Password not accepted\r\n",
+        ]),
+        &credentials,
+    )
+    .await;
+    let err = outcome.expect_err("a rejected token must fail");
+    assert_eq!(err.failure_class(), FailureClass::Authentication);
+    assert!(err.to_string().contains("535"), "{err}");
+    assert!(!sent.contains("MAIL FROM"), "{sent}");
+}
+
+/// A token refused for now is not a token refused: read as `Authentication`, a host would
+/// send the user through a sign-in that cannot help. The same rule as `AUTH PLAIN`.
+#[tokio::test]
+async fn a_deferred_token_is_rate_limited_not_a_bad_credential() {
+    let credentials = Credentials::oauth2("alice@example.com", "tok");
+    let (outcome, _) = submit(
+        script(&[
+            "220 mail ESMTP\r\n",
+            "250-mail\r\n250 AUTH XOAUTH2\r\n",
+            "454 4.7.0 Temporary authentication failure\r\n",
+        ]),
+        &credentials,
+    )
+    .await;
+    let err = outcome.expect_err("a deferral must fail the send");
+    assert_eq!(err.failure_class(), FailureClass::RateLimited, "{err:?}");
+}
+
+#[tokio::test]
+async fn a_server_offering_no_oauth_mechanism_says_what_it_does_offer() {
+    let credentials = Credentials::oauth2("alice@example.com", "tok");
+    let (outcome, sent) = submit(
+        script(&["220 mail ESMTP\r\n", "250-mail\r\n250 AUTH PLAIN LOGIN\r\n"]),
+        &credentials,
+    )
+    .await;
+
+    let err = outcome.expect_err("nothing to present");
+    assert_eq!(err.failure_class(), FailureClass::Authentication);
+    let detail = err.to_string();
+    assert!(
+        detail.contains("PLAIN") && detail.contains("LOGIN"),
+        "{detail}"
     );
+    // A token is never downgraded into a password attempt.
+    assert!(!sent.contains("AUTH "), "{sent}");
+    assert!(!sent.contains("tok"), "token must not be sent: {sent}");
+}
+
+#[tokio::test]
+async fn a_challenge_that_says_nothing_still_produces_the_servers_status_code() {
+    // Some servers send the `334` with no payload. There is then nothing to decode, and
+    // the error must not read as though a reason were attached.
+    let credentials = Credentials::oauth2("alice@example.com", "expired");
+    let (outcome, sent) = submit(
+        script(&[
+            "220 mail ESMTP\r\n",
+            "250-mail\r\n250 AUTH OAUTHBEARER\r\n",
+            "334 \r\n",
+            "535 5.7.1 Username and Password not accepted\r\n",
+        ]),
+        &credentials,
+    )
+    .await;
+    let err = outcome.expect_err("a rejected token must fail");
+    let detail = err.to_string();
+    assert!(detail.contains("535"), "{detail}");
+    assert!(
+        !detail.contains("()"),
+        "an absent reason must not render as empty: {detail}"
+    );
+    assert!(sent.contains("\r\nAQ==\r\n"), "{sent}");
+}
+
+#[tokio::test]
+async fn an_smtp_server_advertising_no_mechanisms_at_all_still_explains_itself() {
+    let credentials = Credentials::oauth2("alice@example.com", "tok");
+    let (outcome, _sent) = submit(
+        script(&["220 mail ESMTP\r\n", "250-mail\r\n250 PIPELINING\r\n"]),
+        &credentials,
+    )
+    .await;
+    let err = outcome.expect_err("nothing to present");
+    assert!(err.to_string().contains("none"), "{err}");
+}
+
+#[test]
+fn mechanisms_are_read_per_line_and_in_both_spellings() {
+    let line = |text: &str| vec![text.to_owned()];
+    assert_eq!(
+        advertised_mechanisms(&line("AUTH PLAIN LOGIN XOAUTH2")),
+        ["PLAIN", "LOGIN", "XOAUTH2"]
+    );
+    // The legacy spelling glues the first mechanism to the keyword.
+    assert_eq!(
+        advertised_mechanisms(&line("AUTH=PLAIN LOGIN")),
+        ["PLAIN", "LOGIN"]
+    );
+    // The keyword only counts at the start of its own line: a greeting that happens to
+    // name a mechanism in prose is not an offer of it. Reading a *joined* reply is what
+    // would get this wrong, which is why `ehlo` keeps the lines apart.
+    let reply = vec![
+        "mail.example.com says it will not do XOAUTH2".to_owned(),
+        "SIZE 35882577".to_owned(),
+        "AUTH OAUTHBEARER".to_owned(),
+    ];
+    assert_eq!(advertised_mechanisms(&reply), ["OAUTHBEARER"]);
+    // Nothing advertised is an empty list, not a panic.
+    assert!(advertised_mechanisms(&line("PIPELINING")).is_empty());
+    assert!(advertised_mechanisms(&line("")).is_empty());
+    assert!(advertised_mechanisms(&line("AUTH")).is_empty());
 }

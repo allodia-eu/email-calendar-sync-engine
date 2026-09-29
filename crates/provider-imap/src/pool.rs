@@ -67,8 +67,10 @@
 //! `NO`, which is how Dovecot and Gmail say it, `NO [LIMIT]`, or a `BYE` at the greeting), the
 //! ceiling also drops by that connection, so the pool stops asking for a session it was just
 //! refused: a `NO` to a credential other sessions are logged in with right now is no verdict on
-//! the credential. [`ImapPool::invalidate`] restores it, since a new network is a new address and
-//! Dovecot counts per address. A dial that failed without an answer lowers nothing.
+//! the credential. A refused token reaches the pool only after the dial renewed it once
+//! (`crate::dial`), so an expired token never lowers the ceiling. [`ImapPool::invalidate`] restores
+//! it, since a new network is a new address and Dovecot counts per address. A dial that failed
+//! without an answer lowers nothing.
 
 use std::{
     collections::VecDeque,

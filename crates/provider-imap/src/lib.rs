@@ -48,8 +48,16 @@
 //! - `mutate` — applying a [`MailEdit`](engine_provider::MailEdit) (`UID STORE`/`MOVE`/`EXPUNGE`)
 //!   to the bound mailbox.
 //! - `filing` — SMTP submission + `APPEND` filing of sent copies and drafts.
-//! - `config` — [`ImapConfig`]: the dial settings (address, TLS server name, credentials, SMTP
+//! - `config` — [`ImapConfig`]: the dial settings (address, TLS server name, [`Credentials`], SMTP
 //!   submission, sync depth, connect observer).
+//! - `credentials` / `sasl` — [`Credentials`] (a password, or an OAuth 2.0 access token) and the
+//!   two SASL mechanisms that carry a token: `OAUTHBEARER` (RFC 7628) and `XOAUTH2`. Which one is
+//!   negotiated from the server's advertised `AUTH=` set, so a host never has to know which
+//!   provider it is talking to.
+//! - `probe` — [`probe_imap_auth`] / [`probe_smtp_auth`]: what a server accepts, read off its
+//!   pre-authentication `CAPABILITY`/`EHLO` **before** a credential exists. The question account
+//!   setup asks first; no credential is sent, and nothing is attempted that a provider would record
+//!   as a failed sign-in.
 //! - `pool` / `account` — the account's bounded, reusable connections, and [`ImapAccount`], the one
 //!   handle per account that every folder's provider and watcher is made from.
 //! - `provider` — [`ImapProvider`], the [`Provider`](engine_provider::Provider) impl.
@@ -66,8 +74,9 @@ mod base64;
 mod bodystructure;
 mod capability;
 mod config;
-mod connect;
+mod credentials;
 mod cursor;
+mod dial;
 mod drafts;
 mod error;
 mod fetch;
@@ -84,10 +93,13 @@ mod parse_qresync;
 mod place;
 mod pool;
 mod pool_lease;
+mod probe;
 mod provider;
 mod qresync;
 mod report;
+mod sasl;
 mod smtp;
+mod smtp_auth;
 mod stream;
 mod sync;
 mod target;
@@ -95,6 +107,7 @@ mod tls_info;
 mod tokenize;
 mod transport;
 mod transport_append;
+mod transport_auth;
 mod transport_command;
 mod transport_read;
 mod transport_select;
@@ -110,7 +123,9 @@ mod integration;
 mod mock;
 
 pub use account::ImapAccount;
-pub use config::ImapConfig;
+pub use config::{ImapConfig, ImapSecurity};
+pub use credentials::{CredentialSource, Credentials};
 pub use error::ImapError;
+pub use probe::{AuthOffer, probe_imap_auth, probe_smtp_auth};
 pub use provider::ImapProvider;
 pub use watch::{DEFAULT_IDLE_KEEPALIVE, ImapWatcher};

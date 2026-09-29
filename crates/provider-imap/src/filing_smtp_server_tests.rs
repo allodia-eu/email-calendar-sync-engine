@@ -9,7 +9,10 @@
 //! degrades gracefully over the exhausted mock connection (best-effort placement), so it
 //! is isolated from what these assert.
 
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
 use engine_provider::Draft;
@@ -26,7 +29,9 @@ use super::{SmtpSender, resolve_smtp};
 use crate::{
     ImapProvider,
     config::ImapConfig,
+    credentials::{CredentialSource, Credentials},
     mock::{MockStream, script},
+    sasl::Mechanism,
     transport::Connection,
 };
 
@@ -65,17 +70,41 @@ async fn serve_delivery<S>(stream: S)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    serve_delivery_as(
+        stream,
+        b"250-mail\r\n250 AUTH PLAIN\r\n",
+        b"235 2.7.0 ok\r\n",
+        None,
+    )
+    .await;
+}
+
+/// [`serve_delivery`], advertising `ehlo`'s extensions, answering `AUTH` with `auth_reply`,
+/// and recording every `AUTH` line into `auth_log`.
+async fn serve_delivery_as<S>(
+    stream: S,
+    ehlo: &[u8],
+    auth_reply: &[u8],
+    auth_log: Option<&Mutex<Vec<String>>>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut buf = BufReader::new(stream);
     loop {
         let mut line = String::new();
-        if buf.read_line(&mut line).await.expect("read command") == 0 {
+        // A client that gives up on a refused sign-in drops the socket without a TLS
+        // `close_notify`, which reads as an error: the end of this session either way.
+        if !matches!(buf.read_line(&mut line).await, Ok(read) if read > 0) {
             return;
         }
         let upper = line.to_ascii_uppercase();
         let reply: &[u8] = if upper.starts_with("EHLO") {
-            b"250-mail\r\n250 AUTH PLAIN\r\n"
+            ehlo
         } else if upper.starts_with("AUTH") {
-            b"235 2.7.0 Authentication successful\r\n"
+            if let Some(log) = auth_log {
+                log.lock().unwrap().push(line.trim_end().to_owned());
+            }
+            auth_reply
         } else if upper.starts_with("MAIL") || upper.starts_with("RCPT") {
             b"250 2.1.0 OK\r\n"
         } else if upper.starts_with("DATA") {
@@ -178,8 +207,12 @@ fn provider_with_smtp(sender: SmtpSender) -> ImapProvider<MockStream> {
 #[tokio::test]
 async fn submit_over_implicit_tls_dials_wraps_and_delivers() {
     let (cert, port) = implicit_tls_server().await;
-    let config = ImapConfig::new("h:993", "127.0.0.1", "alice", "pw")
-        .with_smtp_tls(format!("127.0.0.1:{port}"), "127.0.0.1");
+    let config = ImapConfig::new(
+        "h:993",
+        "127.0.0.1",
+        crate::credentials::Credentials::password("alice", "pw"),
+    )
+    .with_smtp_tls(format!("127.0.0.1:{port}"), "127.0.0.1");
     let sender = resolve_smtp(
         config.smtp.as_ref().unwrap(),
         &trusting_connector(cert),
@@ -196,8 +229,12 @@ async fn submit_over_implicit_tls_dials_wraps_and_delivers() {
 #[tokio::test]
 async fn submit_over_starttls_negotiates_upgrades_and_delivers() {
     let (cert, port) = starttls_server().await;
-    let config = ImapConfig::new("h:993", "127.0.0.1", "alice", "pw")
-        .with_smtp_starttls(format!("127.0.0.1:{port}"), "127.0.0.1");
+    let config = ImapConfig::new(
+        "h:993",
+        "127.0.0.1",
+        crate::credentials::Credentials::password("alice", "pw"),
+    )
+    .with_smtp_starttls(format!("127.0.0.1:{port}"), "127.0.0.1");
     let sender = resolve_smtp(
         config.smtp.as_ref().unwrap(),
         &trusting_connector(cert),
@@ -209,4 +246,142 @@ async fn submit_over_starttls_negotiates_upgrades_and_delivers() {
         .await
         .expect("STARTTLS submit delivers");
     assert_eq!(receipt.message_id, draft().message_id);
+}
+
+/// An implicit-TLS server that takes one connection per entry of `auth_replies`, advertises
+/// `OAUTHBEARER`, answers that connection's `AUTH` with its entry, and records every `AUTH`
+/// line it is sent.
+async fn oauth_server(
+    auth_replies: Vec<&'static str>,
+) -> (
+    engine_tls::CertificateDer<'static>,
+    u16,
+    Arc<Mutex<Vec<String>>>,
+) {
+    let (cert, acceptor) = cert_and_acceptor();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("local addr").port();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let auths = Arc::clone(&log);
+    tokio::spawn(async move {
+        for reply in auth_replies {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            let mut tls = acceptor.accept(tcp).await.expect("handshake");
+            tls.write_all(b"220 mail ESMTP ready\r\n")
+                .await
+                .expect("greeting");
+            tls.flush().await.expect("flush greeting");
+            let ehlo = b"250-mail\r\n250 AUTH OAUTHBEARER\r\n";
+            serve_delivery_as(tls, ehlo, reply.as_bytes(), Some(&auths)).await;
+        }
+    });
+    (cert, port, log)
+}
+
+/// Hands out the scripted tokens in turn, one per `credentials` call, and the refreshed one
+/// on `renew`.
+#[derive(Debug)]
+struct Tokens {
+    issued: Mutex<VecDeque<&'static str>>,
+    refreshed: Option<&'static str>,
+}
+
+#[async_trait::async_trait]
+impl CredentialSource for Tokens {
+    async fn credentials(&self) -> Result<Credentials, engine_provider::ProviderError> {
+        let token = self
+            .issued
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("a scripted token");
+        Ok(Credentials::oauth2("alice@test.local", token))
+    }
+
+    async fn renew(
+        &self,
+        _refused: &Credentials,
+    ) -> Result<Option<Credentials>, engine_provider::ProviderError> {
+        Ok(self
+            .refreshed
+            .map(|token| Credentials::oauth2("alice@test.local", token)))
+    }
+}
+
+/// A provider submitting over implicit TLS to `port`, with its credential from `source`.
+fn token_provider(
+    cert: engine_tls::CertificateDer<'static>,
+    port: u16,
+    source: Tokens,
+) -> ImapProvider<MockStream> {
+    let config = ImapConfig::from_credential_source("h:993", "127.0.0.1", Arc::new(source))
+        .with_smtp_tls(format!("127.0.0.1:{port}"), "127.0.0.1");
+    let sender = resolve_smtp(
+        config.smtp.as_ref().unwrap(),
+        &trusting_connector(cert),
+        &config,
+    );
+    provider_with_smtp(sender)
+}
+
+/// The `AUTH` line that presents `token` to the server on `port`.
+fn auth_line(token: &str, port: u16) -> String {
+    let blob = Mechanism::OAuthBearer
+        .initial_response("alice@test.local", token, "127.0.0.1", Some(port))
+        .expect("clean credential");
+    format!("AUTH OAUTHBEARER {blob}")
+}
+
+#[tokio::test]
+async fn each_submission_asks_the_source_so_a_later_send_presents_the_new_token() {
+    let (cert, port, auths) = oauth_server(vec!["235 2.7.0 ok\r\n", "235 2.7.0 ok\r\n"]).await;
+    let provider = token_provider(
+        cert,
+        port,
+        Tokens {
+            issued: Mutex::new(VecDeque::from(["first-token", "second-token"])),
+            refreshed: None,
+        },
+    );
+
+    provider.submit(&draft()).await.expect("first send");
+    provider.submit(&draft()).await.expect("second send");
+
+    let auths = auths.lock().unwrap().clone();
+    assert_eq!(
+        auths,
+        vec![
+            auth_line("first-token", port),
+            auth_line("second-token", port)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_refused_token_is_renewed_once_before_anything_is_sent() {
+    let (cert, port, auths) =
+        oauth_server(vec!["535 5.7.8 token expired\r\n", "235 2.7.0 ok\r\n"]).await;
+    let provider = token_provider(
+        cert,
+        port,
+        Tokens {
+            issued: Mutex::new(VecDeque::from(["expired-token"])),
+            refreshed: Some("refreshed-token"),
+        },
+    );
+
+    let receipt = provider
+        .submit(&draft())
+        .await
+        .expect("the renewed token sends");
+
+    assert_eq!(receipt.message_id, draft().message_id);
+    let auths = auths.lock().unwrap().clone();
+    assert_eq!(
+        auths,
+        vec![
+            auth_line("expired-token", port),
+            auth_line("refreshed-token", port)
+        ]
+    );
 }

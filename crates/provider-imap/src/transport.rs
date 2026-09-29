@@ -218,8 +218,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     ///
     /// [`ImapError::Io`] or another non-refusal failure of `CAPABILITY`/`ENABLE`.
     pub(crate) async fn negotiate(&mut self) -> ImapResult<()> {
-        let response = self.command("CAPABILITY").await?;
-        let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
+        let capabilities = self.capabilities().await?;
         self.negotiated = Negotiated::from_capabilities(&capabilities);
 
         let arguments = self.negotiated.enable_arguments();
@@ -348,7 +347,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 /// Whether a completion's text opens with the argument-less response code `code`. A code
 /// is only a code at the start of the text (RFC 3501 `resp-text`), and it is an atom, so
 /// case does not matter.
-fn opens_with_code(detail: &str, code: &str) -> bool {
+pub(crate) fn opens_with_code(detail: &str, code: &str) -> bool {
     detail
         .strip_prefix('[')
         .and_then(|rest| rest.split_once(']'))

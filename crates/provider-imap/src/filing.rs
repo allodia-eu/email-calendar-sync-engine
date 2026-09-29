@@ -17,7 +17,7 @@
 //! outcome travelling up *is* the diagnostic. What it must never do is fail the send: the
 //! mail is already gone, and a caller that treated filing as delivery would re-send it.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use engine_core::ids::ProviderKey;
 use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
@@ -30,16 +30,19 @@ use tokio::{
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
 use crate::{
-    config::{ImapConfig, SmtpSecurity, SmtpSettings},
-    error::ImapError,
+    config::{ImapConfig, SmtpSecurity, SmtpSettings, port_of},
+    credentials::{CredentialSource, Credentials, with_renewal},
+    error::{ImapError, ImapResult},
     place::{Filing, Placed, append_to_role_folder, place_if_absent, placed_key},
     provider::ImapProvider,
     smtp::{self, Disposition, SmtpResult},
+    smtp_auth::SmtpAuth,
 };
 
 /// The resolved SMTP transport a provider holds after `connect`: plaintext, implicit
-/// TLS, or STARTTLS — the two TLS variants carrying the connector + credentials each
-/// fresh send re-dials with (submission opens a new connection per send).
+/// TLS, or STARTTLS, the two TLS variants carrying the connector each fresh send re-dials
+/// with and the source each send asks for its credential (submission opens a new
+/// connection per send, so it presents a token that is valid when it sends).
 pub(crate) enum SmtpSender {
     Plaintext {
         addr: String,
@@ -48,16 +51,36 @@ pub(crate) enum SmtpSender {
         addr: String,
         server_name: String,
         connector: TlsConnector,
-        username: String,
-        password: String,
+        credentials: Arc<dyn CredentialSource>,
     },
     StartTls {
         addr: String,
         server_name: String,
         connector: TlsConnector,
-        username: String,
-        password: String,
+        credentials: Arc<dyn CredentialSource>,
     },
+}
+
+impl SmtpSender {
+    /// The authentication this transport presents with `credentials`, or `None` for the
+    /// unauthenticated plaintext MX. `host`/`port` name the **SMTP** server, not the IMAP
+    /// one: a SASL `OAUTHBEARER` response describes the connection it rides on (RFC 7628
+    /// §3.1), and submission is a different host and port from the mailbox it files into.
+    fn auth<'a>(&'a self, credentials: &'a Credentials) -> Option<SmtpAuth<'a>> {
+        match self {
+            Self::Plaintext { .. } => None,
+            Self::ImplicitTls {
+                addr, server_name, ..
+            }
+            | Self::StartTls {
+                addr, server_name, ..
+            } => Some(SmtpAuth {
+                credentials,
+                host: server_name,
+                port: port_of(addr),
+            }),
+        }
+    }
 }
 
 /// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,
@@ -75,15 +98,13 @@ pub(crate) fn resolve_smtp(
             addr: settings.addr.clone(),
             server_name: server_name.clone(),
             connector: connector.clone(),
-            username: config.username.clone(),
-            password: config.password.clone(),
+            credentials: Arc::clone(&config.credentials),
         },
         SmtpSecurity::StartTls { server_name } => SmtpSender::StartTls {
             addr: settings.addr.clone(),
             server_name: server_name.clone(),
             connector: connector.clone(),
-            username: config.username.clone(),
-            password: config.password.clone(),
+            credentials: Arc::clone(&config.credentials),
         },
     }
 }
@@ -124,39 +145,44 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
                 self.submit_over(tcp, draft, None).await
             }
+            // An `AUTH` refusal comes before `MAIL FROM`, so nothing was sent when the
+            // renewal re-dials: a send is never repeated (`with_renewal`).
             SmtpSender::ImplicitTls {
                 addr,
                 server_name,
                 connector,
-                username,
-                password,
+                credentials,
             } => {
-                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
-                let tls = tls_connect(connector, server_name, tcp).await?;
-                self.submit_over(tls, draft, Some((username, password)))
-                    .await
+                let sub = Self::prepare(draft)?;
+                let prepared = &sub;
+                let result = with_renewal(credentials.as_ref(), |credentials| async move {
+                    let tcp = TcpStream::connect(addr).await?;
+                    let tls = tls_connect(connector, server_name, tcp).await?;
+                    let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
+                    let auth = sender.auth(&credentials);
+                    smtp::send(tls, ehlo, from, to, &prepared.message, auth).await
+                })
+                .await?;
+                self.file_result(result, &sub, draft).await
             }
             SmtpSender::StartTls {
                 addr,
                 server_name,
                 connector,
-                username,
-                password,
+                credentials,
             } => {
                 let sub = Self::prepare(draft)?;
-                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
-                // Cleartext STARTTLS handshake, then upgrade the socket and transmit
-                // (with `AUTH PLAIN`) over the now-established TLS.
-                let tcp = smtp::negotiate_starttls(tcp, &sub.ehlo).await?;
-                let tls = tls_connect(connector, server_name, tcp).await?;
-                let result = smtp::send_after_starttls(
-                    tls,
-                    &sub.ehlo,
-                    &sub.from,
-                    &sub.to,
-                    &sub.message,
-                    Some((username, password)),
-                )
+                let prepared = &sub;
+                let result = with_renewal(credentials.as_ref(), |credentials| async move {
+                    let tcp = TcpStream::connect(addr).await?;
+                    // Cleartext STARTTLS handshake, then upgrade the socket and transmit
+                    // (authenticating) over the now-established TLS.
+                    let tcp = smtp::negotiate_starttls(tcp, &prepared.ehlo).await?;
+                    let tls = tls_connect(connector, server_name, tcp).await?;
+                    let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
+                    let auth = sender.auth(&credentials);
+                    smtp::send_after_starttls(tls, ehlo, from, to, &prepared.message, auth).await
+                })
                 .await?;
                 self.file_result(result, &sub, draft).await
             }
@@ -175,7 +201,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         &self,
         smtp: W,
         draft: &Draft,
-        auth: Option<(&str, &str)>,
+        auth: Option<SmtpAuth<'_>>,
     ) -> ProviderResult<SubmissionReceipt>
     where
         W: AsyncRead + AsyncWrite + Unpin + Send,
@@ -410,14 +436,10 @@ async fn tls_connect(
     connector: &TlsConnector,
     server_name: &str,
     tcp: TcpStream,
-) -> ProviderResult<TlsStream<TcpStream>> {
+) -> ImapResult<TlsStream<TcpStream>> {
     let name = ServerName::try_from(server_name.to_owned())
         .map_err(|e| ImapError::bad(format!("invalid SMTP TLS server name: {e}")))?;
-    let tls = connector
-        .connect(name, tcp)
-        .await
-        .map_err(ImapError::from)?;
-    Ok(tls)
+    Ok(connector.connect(name, tcp).await?)
 }
 
 #[cfg(test)]

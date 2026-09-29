@@ -14,7 +14,7 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, MailEdit, Provider};
-use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use tokio_rustls::client::TlsStream;
 
@@ -32,8 +32,7 @@ async fn connect(harness: &Harness, mailbox: &str) -> Live {
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        harness.account.as_str(),
-        harness.password.as_str(),
+        Credentials::password(harness.account.as_str(), harness.password.as_str()),
     )
     .with_smtp(harness.smtp_addr.as_str());
     let connector = engine_tls::TlsClientConfig::dangerous_accept_any().connector();

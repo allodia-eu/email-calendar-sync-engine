@@ -1,0 +1,4 @@
+/target
+# Captured tokens — the refresh token is a long-lived credential for a real mailbox.
+/.local/
+Cargo.lock

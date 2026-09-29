@@ -27,7 +27,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream};
 
 use crate::{
     config::ImapConfig,
-    connect::connect_session,
+    dial::connect_session,
     error::ImapError,
     filing::{SmtpSender, resolve_smtp},
     pool::{DEFAULT_MAX_CONNECTIONS, Dial, ImapPool, VALIDATE_AFTER_REST},
@@ -63,9 +63,10 @@ impl<S> core::fmt::Debug for ImapAccount<S> {
 }
 
 impl ImapAccount<TlsStream<TcpStream>> {
-    /// Connects over TLS (implicit or STARTTLS, per the config) and logs in, proving the
-    /// credentials and reading the server's capabilities. The connection is kept for the first
-    /// folder that needs one.
+    /// Connects over TLS (implicit or STARTTLS, per the config) and authenticates with the
+    /// [`Credentials`](crate::Credentials) the config's source gives, a password or an OAuth
+    /// 2.0 access token, proving them and reading the server's capabilities. The connection is kept
+    /// for the first folder that needs one.
     ///
     /// The `connector` carries the host's trust policy — the library never bakes in a root
     /// store, so a mobile host (or the self-signed test fixture) injects its own
@@ -75,7 +76,7 @@ impl ImapAccount<TlsStream<TcpStream>> {
     ///
     /// # Errors
     ///
-    /// [`ImapError`] on a TCP/TLS/login failure or a bad server name.
+    /// [`ImapError`] on a TCP/TLS/authentication failure or a bad server name.
     pub async fn connect(config: &ImapConfig, connector: TlsConnector) -> Result<Self, ImapError> {
         let smtp = config
             .smtp
@@ -93,8 +94,10 @@ impl ImapAccount<TlsStream<TcpStream>> {
     }
 }
 
-/// The pool's dial for a live account: the same TCP + TLS + `LOGIN` sequence as the first
-/// connection, from the same config.
+/// The pool's dial for a live account: the same TCP, TLS and authentication sequence as the
+/// first connection, from the same config. Each dial asks the config's
+/// [`CredentialSource`](crate::CredentialSource) afresh, so a connection opened an hour after
+/// [`ImapAccount::connect`] presents a token that is valid then.
 fn dial_tls(config: ImapConfig, connector: TlsConnector) -> Dial<TlsStream<TcpStream>> {
     let config = Arc::new(config);
     Arc::new(move || {
