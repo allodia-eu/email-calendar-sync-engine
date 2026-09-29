@@ -41,6 +41,19 @@ fn scopes_bind_a_calendar_and_a_calendar_list_container() {
 }
 
 #[tokio::test]
+async fn the_calendars_schedule_as_the_primary_calendars_address() {
+    let provider = provider(vec![(
+        "/calendar/v3/calendars/primary",
+        serde_json::json!({ "kind": "calendar#calendar", "id": "alice@example.org",
+            "summary": "alice@example.org", "timeZone": "Europe/Amsterdam" }),
+    )]);
+    assert_eq!(
+        provider.calendar_user_addresses(&account()).await.unwrap(),
+        CalendarUserAddresses::Known(vec!["alice@example.org".to_owned()])
+    );
+}
+
+#[tokio::test]
 async fn sync_calendars_snapshots_the_list() {
     let sync = provider(vec![("/calendarList", json(CALENDARS))])
         .sync_calendars(&account(), None)

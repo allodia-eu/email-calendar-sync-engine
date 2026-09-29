@@ -344,9 +344,10 @@ facade"*).
   failure) — classification, not restringing. Add similar classifications there if
   another error class deserves a distinct host signal.
 - **Not every facade method needs the store.** `sender_identities`/`set_sender_name`
-  (`providers.md`) are the first pair that touches neither the store nor the outbox: a
-  sender name is a *host preference*, not synced PIM state, and the `From` a send carries
-  is assembled from the caller's `Draft`. What the engine owns there is the protocol.
+  (`providers.md`) touch neither the store nor the outbox: a sender name is a *host
+  preference*, not synced PIM state, and the `From` a send carries is assembled from the
+  caller's `Draft`. `calendar_user_addresses` sits beside them: it is the server's answer,
+  read when a host asks. What the engine owns there is the protocol.
   Passing a call straight to the provider is legitimate when the answer is not ours to
   keep; reach for the outbox when a side effect must survive a crash.
 - **Reject host input at the facade, before any request.** `set_sender_name` refuses a

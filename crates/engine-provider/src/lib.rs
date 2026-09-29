@@ -26,6 +26,7 @@
 //! the provider-neutral scopes.
 
 mod boxed;
+mod calendar_user;
 mod calendar_write;
 mod capability;
 mod capability_calendar;
@@ -52,6 +53,7 @@ mod submit;
 mod sync;
 mod watch;
 
+pub use calendar_user::CalendarUserAddresses;
 pub use calendar_write::{
     CalendarWrites, DeleteTarget, DraftRecurrence, EventDeletion, EventDraft, EventEdit,
     EventPatch, EventRsvp, EventWrite, EventWriteReceipt, Occurrence, PatchTarget, RecurrenceEdit,
