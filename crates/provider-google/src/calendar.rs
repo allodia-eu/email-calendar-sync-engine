@@ -217,7 +217,6 @@ impl Provider for GoogleCalendarProvider {
         Ok(ScopeSync::new(update, next_cursor))
     }
 }
-impl engine_provider::MailboxWrites for GoogleCalendarProvider {}
 
 #[async_trait]
 impl CalendarWrites for GoogleCalendarProvider {

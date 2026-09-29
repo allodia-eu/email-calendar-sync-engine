@@ -88,7 +88,6 @@ impl Provider for FolderProvider {
     }
 }
 
-impl engine_provider::MailboxWrites for FolderProvider {}
 impl CalendarWrites for FolderProvider {}
 
 /// Syncs `source` (the folder the message is leaving, stale) then `destination` (where the move

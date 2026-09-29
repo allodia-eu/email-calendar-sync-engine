@@ -208,7 +208,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `Email/set` create, into the mailbox carrying the Drafts **role**, with
   `keywords: { "$draft": true, "$seen": true }` — just no `EmailSubmission/set` after
   it. One `build_draft` serves both, so a saved draft and a sent one cannot drift apart
-  in shape, and a saved draft keeps its Cc, Bcc and threading headers for the resume.
+  in shape.
 - ⚠️ **There is no way to edit a stored draft, and this was measured rather than assumed.**
   RFC 8621 §4.6 makes `keywords` and `mailboxIds` the only mutable `Email` properties, and
   Stalwart agrees: an `Email/set` `update` naming `subject`, `bodyValues`, `bodyStructure`
@@ -250,26 +250,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `identityId`**, so a send first resolves the Drafts/Sent mailbox ids and the
   identity (`Mailbox/get` + `Identity/get`) before the batched create. The
   `onSuccessUpdateEmail` produces an implicit second `Email/set` response sharing
-  the submission's call id. The created `Email` is the sender's copy, so it carries
-  every recipient header **including `bcc`**, plus `inReplyTo` and `references`: RFC
-  8621 §7.5 has the server **remove the Bcc header during delivery**, which is the same
-  filed-copy shape `engine-rfc5322` gives the other transports. The envelope is sent
-  explicitly, `rcptTo` = To + Cc + Bcc deduplicated case-insensitively as SMTP's
-  `RCPT TO` is: a Bcc recipient is reached through the envelope alone. Both halves are
-  pinned live (`tests/live_submit_recipients.rs`), because the server accepts a create
-  naming only `to` without complaint and delivers to nobody else. A draft's
-  `sent_copy_keywords` are set by an `Email/set` **update of its own, in a second
-  request** addressed to the id the send created, and only when it asks for any: the
-  create also serves saved drafts, which must not carry them; a keyword refused inside
-  `onSuccessUpdateEmail` would fail the whole patch and leave the copy in Drafts; and
-  Stalwart answers an update keyed by the creation id `#draft` in the same request
-  `notFound` (observed live). The receipt keeps every keyword when the update comes back
-  `updated`, and none on `notUpdated`, a method error or a failed request, none of which
-  touches the send (`tests/live_sent_copy_keywords.rs`). `SetError`s classify
-  through the same `FailureClass` taxonomy. Sending is outbox-mediated by
-  `engine-sync::submit_mail`: a durable `PendingOp` (carrying the serialized draft,
-  idempotent by `Message-ID`) precedes the provider call; the result is recorded under
-  the op lease.
+  the submission's call id. `SetError`s classify through the same `FailureClass`
+  taxonomy. Sending is outbox-mediated by `engine-sync::submit_mail`: a durable
+  `PendingOp` (carrying the serialized draft, idempotent by `Message-ID`) precedes
+  the provider call; the result is recorded under the op lease.
 - **Sender identities.** `Identity/get` and `Identity/set` (RFC 8621 §6) back the
   neutral `sender_identities`/`set_sender_name` verbs (`providers.md`). They belong to
   the **submission** capability, not to mail, so every request names
@@ -347,21 +331,6 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   server silently drops is treated as a `notFound` conflict, never a false success.
   The `mail_writes` capability is advertised whenever the account exposes mail and is
   not `isReadOnly`. Outbox-mediated by `engine-sync::edit_mail` (`crate::mutate`).
-- **Folder writes (`edit_mailbox`).** One `Mailbox/set` per edit (`crate::mailbox_write`):
-  `Create` → `create` with `isSubscribed: true`; `Update` and `Trash` → an `update` of
-  `name` + `parentId` (trashing is a move under Trash, so the mail and subfolders go with
-  it); `Delete` → a `Mailbox/get` of every `parentId`, then one `destroy` of the subtree
-  **deepest first** with `onDestroyRemoveEmails: true`, because RFC 8621 refuses a mailbox
-  with children (`mailboxHasChild`). Mailbox ids survive rename and move, so every receipt
-  but a create's names the id it was given. Stalwart's answers, measured and pinned in
-  `mailbox_set_refusals_response.json`: a sibling of the same name is `alreadyExists` **with
-  an `existingId`** (a create resolves to it, since the op is retried; an update is a
-  `Conflict`); a missing parent and a parent inside the folder are both `invalidProperties`
-  (only the cycle names `parentId`), classified `Conflict` unless the error names `name`
-  alone; a missing target is `notFound`. Stalwart applies a `destroy` list in array order;
-  RFC 8620 does not promise that, so a server that reorders would refuse the parent until a
-  retry. `mailbox_writes` rides the `mail_writes` gate. Live: `tests/live_mailbox_writes.rs`,
-  as the scratch account `carol@`.
 - **Push (EventSource → `Watch`).** `JmapWatcher` holds a **dedicated** long-lived
   `text/event-stream` connection to the session `eventSourceUrl` (RFC 8620 §7.3;
   opened `types=Email,Mailbox&closeafter=no&ping=<secs>`), parses the Server-Sent

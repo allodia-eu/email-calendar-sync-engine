@@ -265,7 +265,6 @@ impl Provider for GraphContactProvider {
     }
 }
 
-impl engine_provider::MailboxWrites for GraphContactProvider {}
 impl CalendarWrites for GraphContactProvider {}
 
 #[async_trait]

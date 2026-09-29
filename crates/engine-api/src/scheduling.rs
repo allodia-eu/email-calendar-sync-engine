@@ -144,7 +144,6 @@ mod tests {
         }
     }
 
-    impl engine_provider::MailboxWrites for SourceProvider {}
     impl CalendarWrites for SourceProvider {}
 
     async fn scheduling_of(raw: &[u8]) -> Option<super::InboundScheduling> {

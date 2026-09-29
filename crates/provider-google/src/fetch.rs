@@ -30,7 +30,7 @@ use engine_core::{
     sync::SyncState,
     time::CalendarDate,
 };
-use engine_provider::{KeywordName, PageToken, SyncKind, SyncPage};
+use engine_provider::{PageToken, SyncKind, SyncPage};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use serde_json::Value;
 
@@ -38,7 +38,6 @@ use crate::{
     base64url,
     error::GoogleError,
     json::{opt_str, req_str},
-    named_labels::NamedLabels,
     normalize::{
         METADATA_HEADERS, all_mail_mailbox, keywords_from_labels, label_from_json, memberships_of,
         message_from_json, nest_labels,
@@ -76,33 +75,25 @@ const USERS_ME: &str = "/gmail/v1/users/me";
 pub(crate) const MAX_CONCURRENT_GETS: usize = 20;
 
 /// Fetches the account's labels as mailboxes, dropping the keyword-only labels
-/// (`UNREAD`/`STARRED`) and the labels standing for a keyword under one of `names`
-/// ([`NamedLabels`], returned beside them), and appending the synthetic All Mail home.
+/// (`UNREAD`/`STARRED`) and appending the synthetic All Mail home.
 ///
 /// Nesting is resolved over the whole list ([`nest_labels`]) rather than per label, because
 /// Gmail spells a nested label by its path and only the rest of the list says which prefixes of
 /// that path are labels. All Mail is appended afterwards: it is ours, not the account's, so no
 /// label of theirs may adopt it and it may adopt none of theirs.
-pub(crate) async fn labels(
-    client: &GoogleClient,
-    names: &[KeywordName],
-) -> Result<(Vec<Mailbox>, NamedLabels), GoogleError> {
+pub(crate) async fn labels(client: &GoogleClient) -> Result<Vec<Mailbox>, GoogleError> {
     let doc = client
         .get(&client.url(&format!("{USERS_ME}/labels")))
         .await?;
-    let list = array(&doc, "labels", "labels")?;
-    let keyword_labels = NamedLabels::from_list(list, names);
     let mut mailboxes = Vec::new();
-    for label in list {
-        if let Some(mailbox) = label_from_json(label)?
-            && !keyword_labels.contains(mailbox.id.as_str())
-        {
+    for label in array(&doc, "labels", "labels")? {
+        if let Some(mailbox) = label_from_json(label)? {
             mailboxes.push(mailbox);
         }
     }
     nest_labels(&mut mailboxes);
     mailboxes.push(all_mail_mailbox());
-    Ok((mailboxes, keyword_labels))
+    Ok(mailboxes)
 }
 
 /// Fetches the current account-global `historyId` (the snapshot's delta cursor).
@@ -194,7 +185,6 @@ pub(crate) async fn snapshot_page(
     page: Option<&PageToken>,
     floor: Option<CalendarDate>,
     history_id: &SyncState,
-    named: &NamedLabels,
 ) -> Result<SyncPage<Message>, GoogleError> {
     let doc = client.get(&list_url(client, page, floor)).await?;
 
@@ -204,10 +194,7 @@ pub(crate) async fn snapshot_page(
     for entry in entries.into_iter().flatten() {
         ids.push(req_str(entry, "id")?.to_owned());
     }
-    let mut changed = get_messages(client, ids).await?;
-    for message in &mut changed {
-        named.apply(message);
-    }
+    let changed = get_messages(client, ids).await?;
     let present = changed.iter().map(|m| m.id.key().clone()).collect();
 
     Ok(SyncPage {
@@ -230,7 +217,6 @@ pub(crate) async fn delta_page(
     client: &GoogleClient,
     cursor: &SyncState,
     page: Option<&PageToken>,
-    named: &NamedLabels,
 ) -> Result<SyncPage<Message>, GoogleError> {
     let doc = match client.get(&history_url(client, cursor, page)).await {
         Ok(doc) => doc,
@@ -245,14 +231,7 @@ pub(crate) async fn delta_page(
     let history = collect_history(&doc)?;
     // A message changed then deleted inside the same window 404s here and drops out; the
     // page's own tombstone covers it.
-    let mut changed = get_messages(client, history.refetch).await?;
-    for message in &mut changed {
-        named.apply(message);
-    }
-    let mut patched = history.patched;
-    for change in &mut patched {
-        named.apply_state(&mut change.state);
-    }
+    let changed = get_messages(client, history.refetch).await?;
 
     // Gmail returns the latest historyId even when nothing changed, so the cursor always
     // advances; fall back to the prior cursor only if the field is somehow absent.
@@ -260,7 +239,7 @@ pub(crate) async fn delta_page(
     Ok(SyncPage {
         kind: SyncKind::Delta,
         changed,
-        patched,
+        patched: history.patched,
         removed: history.removed,
         present: Vec::new(),
         next_page: opt_str(&doc, "nextPageToken").map(PageToken::new),

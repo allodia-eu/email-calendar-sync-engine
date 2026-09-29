@@ -211,7 +211,6 @@ mod tests {
         }
     }
 
-    impl engine_provider::MailboxWrites for CountingProvider {}
     impl CalendarWrites for CountingProvider {}
 
     fn account() -> AccountId {
@@ -322,7 +321,6 @@ mod tests {
             }
         }
 
-        impl engine_provider::MailboxWrites for Unsupported {}
         impl CalendarWrites for Unsupported {}
         let provider = Unsupported {
             caps: Capabilities::none().with_mail(),
@@ -468,7 +466,6 @@ mod tests {
             }
         }
 
-        impl engine_provider::MailboxWrites for Unsupported {}
         impl CalendarWrites for Unsupported {}
         let provider = Unsupported {
             caps: Capabilities::none().with_mail(),

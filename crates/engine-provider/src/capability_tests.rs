@@ -179,13 +179,3 @@ fn storing_a_draft_is_its_own_capability() {
     assert!(!caps.mail_drafts());
     assert!(Capabilities::none().with_mail_drafts().mail_drafts());
 }
-
-#[test]
-fn sent_copy_keywords_is_its_own_promise() {
-    assert!(!Capabilities::none().sent_copy_keywords());
-    let caps = Capabilities::none()
-        .with_submission()
-        .with_sent_copy_keywords();
-    assert!(caps.sent_copy_keywords());
-    assert!(!Capabilities::none().with_submission().sent_copy_keywords());
-}

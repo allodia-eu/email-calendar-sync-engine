@@ -72,7 +72,6 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 | mail read/write | yes | yes | — | yes | yes |
 | submission | yes | optional SMTP | — | yes | yes |
 | iMIP submission | — | with SMTP | — | yes | yes |
-| keywords on the Sent copy | yes | with SMTP, where the folder allows new keywords | — | named ones, as categories | named ones, as labels |
 | push | EventSource | IDLE | — | — | — |
 | calendar read/write | yes | — | yes | yes | yes |
 | calendar write guard | absent | — | enforced ETag | enforced ETag | enforced ETag |
@@ -89,19 +88,6 @@ Two rows deserve a note, because they are the ones a host is tempted to hard-cod
   object a scheduling message (RFC 6047 §2.4). The three that assemble RFC 5322 bytes themselves
   can; JMAP, which hands the server a body structure, cannot — see
   [`jmap.md`](agent-guidance/jmap.md).
-- **Keywords on the Sent copy** (`sent_copy_keywords`) is a request, answered per send. A draft
-  names keywords for the sender's filed copy (`Draft::sent_copy_keywords`), and the receipt says
-  which the copy carries (`SubmissionReceipt::sent_copy_keywords`, surfaced as
-  `SubmitOutcome::sent_copy_keywords`). IMAP puts them on the `APPEND`, but only where the Sent
-  folder's `PERMANENTFLAGS` carries `\*`: elsewhere the server would answer `OK` and keep nothing,
-  so the copy is filed without them. JMAP sets them with an `Email/set` after the send. Graph keeps
-  no free-form keyword, only named categories the person sees, so it keeps a keyword only when the
-  host registered a `KeywordName` for it (`GraphProvider::with_keyword_names`): the name to create
-  it under and every name it may already exist under, which sync also reads back as the keyword
-  ([`graph.md`](agent-guidance/graph.md)). Gmail keeps it the same way, as a label hidden from its
-  label list, which sync reads as the keyword rather than as a folder
-  (`GmailProvider::with_keyword_names`, [`google.md`](agent-guidance/google.md)). A keyword never
-  fails a send.
 - **Server-side scheduling** (`calendar_scheduling`) means the *server* emits the iTIP, so the
   caller must not also send one. CalDAV **discovers** it (RFC 6638 §2 gives a probeable answer, and
   SabreDAV without its scheduling plugin is a real `false`). JMAP advertises it because the adapter
@@ -378,7 +364,6 @@ The `engine_provider::Capabilities` bitset tells the engine what a connected acc
 | `message_source` | The account can fetch a message's raw RFC 5322 source on demand. |
 | `submission` | The account can submit/send new mail. |
 | `scheduling_submission` | Submission can carry an iTIP object as an iMIP scheduling part (RFC 6047), rather than as a plain calendar attachment. |
-| `sent_copy_keywords` | The adapter sets a draft's `sent_copy_keywords` on the filed Sent copy; the server may still decline, so the receipt says which were kept. |
 | `idle` | The provider can watch for push notifications and emit `WatchEvent`s. |
 | `calendars` | The account can read/sync calendars and events. |
 | `calendar_writes` | The account can create/update/delete calendar events; query its guard strength. |

@@ -51,7 +51,6 @@ impl Provider for BlockingSync {
     }
 }
 
-impl engine_provider::MailboxWrites for BlockingSync {}
 impl CalendarWrites for BlockingSync {}
 
 /// A provider whose writes land but whose event fetch is broken, so the post-write
@@ -80,7 +79,6 @@ impl Provider for UnreadableEvents {
         Err(ProviderError::retryable("the event fetch is down"))
     }
 }
-impl engine_provider::MailboxWrites for UnreadableEvents {}
 
 #[async_trait::async_trait]
 impl CalendarWrites for UnreadableEvents {

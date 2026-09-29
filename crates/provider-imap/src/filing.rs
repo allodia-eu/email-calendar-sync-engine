@@ -33,7 +33,7 @@ use crate::{
     config::{ImapConfig, SmtpSecurity, SmtpSettings, port_of},
     credentials::{CredentialSource, Credentials, with_renewal},
     error::{ImapError, ImapResult},
-    place::{Filing, Placed, append_to_role_folder, place_if_absent, placed_key},
+    place::{Filing, append_to_role_folder, place_if_absent, placed_key},
     provider::ImapProvider,
     smtp::{self, Disposition, SmtpResult},
     smtp_auth::SmtpAuth,
@@ -282,16 +282,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         // the conventional "Sent"), so the copy lands in the account's real Sent
         // folder — not a stray one on servers that name it differently.
         match self.file_sent_copy(&filed, draft).await {
-            Ok(placed) => Ok(SubmissionReceipt::filed(
+            Ok((folder, append_uid)) => Ok(SubmissionReceipt::filed(
                 placed_key(
-                    &placed.folder,
+                    &folder,
                     Filing::Sent.key_prefix(),
-                    placed.append_uid,
+                    append_uid,
                     &draft.message_id,
                 ),
                 draft.message_id.clone(),
-            )
-            .with_sent_copy_keywords(placed.keywords)),
+            )),
             // Delivered, but the copy is not in Sent and no later sync can find it — there
             // is nothing on the server to reconcile against. Never an `Err`: the message
             // has reached its recipients, and a caller that saw a failure here would
@@ -321,16 +320,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
     /// # Errors
     ///
     /// The detail to record on the receipt when neither attempt filed it.
-    async fn file_sent_copy(&self, filed: &[u8], draft: &Draft) -> Result<Placed, String> {
+    async fn file_sent_copy(
+        &self,
+        filed: &[u8],
+        draft: &Draft,
+    ) -> Result<(String, Option<(u32, u32)>), String> {
         let first = match self.session().await {
             Ok(mut connection) => {
-                let result = append_to_role_folder(
-                    &mut connection,
-                    Filing::Sent,
-                    filed,
-                    &draft.sent_copy_keywords,
-                )
-                .await;
+                let result = append_to_role_folder(&mut connection, Filing::Sent, filed).await;
                 connection.settle(result)
             }
             Err(err) => Err(err),
@@ -354,18 +351,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         &self,
         filed: &[u8],
         draft: &Draft,
-    ) -> ProviderResult<Placed> {
+    ) -> ProviderResult<(String, Option<(u32, u32)>)> {
         let mut connection = self.pool.acquire_checked().await?;
         // `APPEND` is not idempotent, so the probe inside asks before placing: a first
         // attempt that committed and lost its response must not become two copies.
-        let result = place_if_absent(
-            &mut connection,
-            Filing::Sent,
-            &draft.message_id,
-            filed,
-            &draft.sent_copy_keywords,
-        )
-        .await;
+        let result = place_if_absent(&mut connection, Filing::Sent, &draft.message_id, filed).await;
         connection.settle(result)
     }
 
@@ -388,26 +378,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         let filed = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
         let first = match self.session().await {
             Ok(mut connection) => {
-                let result = place_if_absent(
-                    &mut connection,
-                    Filing::Sent,
-                    &draft.message_id,
-                    &filed,
-                    &draft.sent_copy_keywords,
-                )
-                .await;
+                let result =
+                    place_if_absent(&mut connection, Filing::Sent, &draft.message_id, &filed).await;
                 connection.settle(result)
             }
             Err(err) => Err(err),
         };
-        let placed = match first {
+        let (folder, append_uid) = match first {
             Ok(placed) => placed,
             Err(_pooled) => self.refile_on_a_checked_session(&filed, draft).await?,
         };
         Ok(placed_key(
-            &placed.folder,
+            &folder,
             Filing::Sent.key_prefix(),
-            placed.append_uid,
+            append_uid,
             &draft.message_id,
         ))
     }

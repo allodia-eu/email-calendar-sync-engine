@@ -107,7 +107,6 @@ impl Provider for BackfillMail {
     }
 }
 
-impl engine_provider::MailboxWrites for BackfillMail {}
 impl CalendarWrites for BackfillMail {}
 
 #[tokio::test]

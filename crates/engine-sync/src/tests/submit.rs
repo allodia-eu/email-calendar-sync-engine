@@ -153,27 +153,3 @@ fn draft_round_trips_through_a_durable_payload() {
     let restored: Draft = serde_json::from_value(payload).unwrap();
     assert_eq!(restored, original);
 }
-
-#[tokio::test]
-async fn submit_mail_reports_the_keywords_the_filed_copy_carries() {
-    let provider = FakeMail::new(vec![], vec![]);
-    let store = SqliteStore::open_in_memory(clock()).unwrap();
-    let keyword = engine_core::mail::Keyword::new("project-x").unwrap();
-    let draft = draft("send-kw@test.local").with_sent_copy_keyword(keyword.clone());
-
-    let outcome = submit_mail(
-        &provider,
-        &store,
-        &account(),
-        worker(),
-        Duration::from_mins(1),
-        &draft,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(
-        outcome.sent_copy_keywords,
-        std::collections::BTreeSet::from([keyword])
-    );
-}

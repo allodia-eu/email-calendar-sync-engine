@@ -322,7 +322,6 @@ mod progress;
 mod recipients;
 mod stream;
 mod threading;
-mod vanished;
 mod warm;
 pub use attachment::{
     fetch_message_attachment, fetch_message_attachments, fetch_message_scheduling,
@@ -341,16 +340,14 @@ pub use mail_report::{FolderSync, MailSyncReport, SyncTiming};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
     CalendarWriteOutcome, ContactWriteOutcome, DraftPut, DrainOutcome, DrainReport, DrainedOp,
-    MailEditOutcome, MailboxChange, MailboxEditOutcome, MailboxNameError, MailboxPlace,
-    PutDraftOutcome, ReportOutcome, SubmitOutcome, create_calendar_event, create_contact,
-    delete_calendar_event, delete_contact, delete_draft_mail, drain_outbox, edit_mail,
-    edit_mailbox, patch_calendar_event, patch_contact, put_calendar_document, put_draft_mail,
-    report_message, rsvp_calendar_event, submit_mail, validate_mailbox_name,
+    MailEditOutcome, PutDraftOutcome, ReportOutcome, SubmitOutcome, create_calendar_event,
+    create_contact, delete_calendar_event, delete_contact, delete_draft_mail, drain_outbox,
+    edit_mail, patch_calendar_event, patch_contact, put_calendar_document, put_draft_mail,
+    report_message, rsvp_calendar_event, submit_mail,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::StreamTuning;
 pub use threading::{ThreadRebuildReport, rebuild_thread_index};
-pub use vanished::{forget_vanished_folders, reconcile_folders};
 pub use warm::warm_message_sources;
 
 #[cfg(test)]

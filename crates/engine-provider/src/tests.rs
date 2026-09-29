@@ -75,7 +75,6 @@ impl Provider for FakeJmap {
     }
 }
 
-impl crate::MailboxWrites for FakeJmap {}
 impl CalendarWrites for FakeJmap {}
 
 pub(crate) fn account() -> AccountId {
@@ -177,7 +176,6 @@ impl Provider for BareProvider {
     }
 }
 
-impl crate::MailboxWrites for BareProvider {}
 impl CalendarWrites for BareProvider {}
 
 #[tokio::test]

@@ -11,7 +11,6 @@ impl Provider for OtherDestination {
     }
 }
 
-impl engine_provider::MailboxWrites for OtherDestination {}
 impl CalendarWrites for OtherDestination {}
 
 #[async_trait]

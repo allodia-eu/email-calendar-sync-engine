@@ -33,7 +33,6 @@ impl Provider for Supported {
     }
 }
 
-impl crate::MailboxWrites for Supported {}
 impl CalendarWrites for Supported {}
 
 #[async_trait]

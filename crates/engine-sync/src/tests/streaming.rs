@@ -149,7 +149,6 @@ impl Provider for ChunkedMail {
     }
 }
 
-impl engine_provider::MailboxWrites for ChunkedMail {}
 impl CalendarWrites for ChunkedMail {}
 
 #[tokio::test]

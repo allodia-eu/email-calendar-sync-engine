@@ -488,18 +488,6 @@ credential.
   attachment bodies are base64 encoded, and non-ASCII attachment filenames use
   RFC 5987-style `filename*` / `name*` parameters. (Long encoded-words are not yet
   folded into 75-octet runs — a later refinement.)
-- **Keywords on the Sent copy.** A draft's `sent_copy_keywords` ride the Sent `APPEND` as
-  flags, and only where the folder's `PERMANENTFLAGS` carries `\*` (RFC 9051 §7.1):
-  without it the server answers `OK` and keeps no new keyword, the same silent success
-  `report.rs` refuses. Reading `PERMANENTFLAGS` needs a `SELECT`, which the first attempt
-  issues only when the draft asks for keywords, so an ordinary send costs nothing extra;
-  the retry reads it from the `SELECT` its probe already makes, and gives a copy it finds
-  already placed the keywords with an idempotent `+FLAGS`. A `SELECT` or `STORE` that
-  fails leaves them out rather than failing the placement. The receipt's
-  `sent_copy_keywords` names the ones the copy carries; a `PERMANENTFLAGS` that lists a
-  keyword by name without `\*` counts as not allowing it, since only `\*` is parsed. The
-  repair (`refile`) sets them the same way and returns only the key, so what it kept is
-  read from the next sync (`place.rs`, `tests/live_imap_sent_keywords.rs`).
 - **Folder resolution.** The sent copy / draft is filed into the account's **real
   folder for the role**, discovered via the `\Sent`/`\Drafts` SPECIAL-USE attribute
   in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
@@ -659,45 +647,6 @@ credential.
   was renumbered and every prior key is stale, so the edit is a **`Conflict`** (the
   caller re-syncs, then retries) rather than a blind write against the wrong message.
   An unparseable target key is `InvalidState` (rejected before any command).
-
-## Folder writes
-
-`edit_mailbox` applies a neutral `MailboxEdit` over the provider's one session
-(`mailbox_write.rs`; the `MailboxWrites` impl is a lock-and-call).
-`Capabilities::mailbox_writes` is unconditional: `CREATE`, `RENAME` and `DELETE` are base
-protocol on both dialects.
-
-- **The key is the path, so it moves.** A folder's path is built from the parent's path, the
-  hierarchy delimiter `LIST` reported for it, and the leaf name. `RENAME` changes that path and
-  the server renames every folder beneath it too (RFC 9051 §6.3.6), so every receipt names the
-  path the folder has **after** the edit. Each edit starts with one `LIST` and judges against
-  it.
-- **Names.** A leaf carrying the delimiter would make levels nobody asked for, and a
-  subfolder on a server whose delimiter is `NIL` has nowhere to go; both are `InvalidState`
-  before anything is sent, as is any edit of `INBOX` and a top-level folder called `INBOX`.
-  Names go through `quoted_name`, so rev1 sends modified UTF-7 (`Reçus` → `Re&AOc-us`).
-- **`Create`** → `CREATE "<path>"`, then `SUBSCRIBE`. A path the `LIST` already holds is not
-  created again, and `NO [ALREADYEXISTS]` is success: a retry meets what the first attempt
-  made.
-- **`Update`** → `RENAME "<from>" "<to>"`. `NO [NONEXISTENT]` or `[ALREADYEXISTS]` is a
-  `Conflict`, as is a destination the `LIST` already holds (refused without a request).
-- **`Trash`** → `RENAME` under the Trash folder. Where Trash is `\Noinferiors`, or the
-  `RENAME` is refused with `[CANNOT]`, the folder is emptied instead: each selectable folder of
-  the subtree is `SELECT`ed and `UID MOVE 1:* "<Trash>"`, then the subtree is deleted. The
-  receipt is then `removed()`, because no folder remains.
-- **`Delete`** → `DELETE` of the folder and everything beneath it, deepest first, after an
-  `EXAMINE "INBOX"` so no session holds a mailbox that is about to go. `NO [NONEXISTENT]`
-  and a target the `LIST` does not hold are success.
-- **Subscriptions do not follow a `RENAME`** (RFC 9051 keeps them apart from the mailbox), and
-  a client listing only subscribed folders would lose a folder we moved. So a rename
-  unsubscribes each old path of the subtree and subscribes each new one, and a delete
-  unsubscribes. A refusal of either is ignored: the folder change itself went through.
-
-Proven live on Stalwart (as the scratch account `carol@`) and both Dovecot dialects by
-`tests/live_mailbox_writes.rs`: create (including a non-ASCII name), create again, rename with
-a child following, a move to the top level and back, a missing target as `Conflict`, a trash
-that keeps the subfolder and its mail, and a permanent delete that is repeatable. Emptying the
-folders into Trash is proven offline only: all three servers file a folder inside Trash.
 
 ## Body fetch (Tier-3 source)
 

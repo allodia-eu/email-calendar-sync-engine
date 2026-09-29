@@ -225,7 +225,6 @@ impl Provider for GraphCalendarProvider {
         Ok(ScopeSync::new(update, next_cursor))
     }
 }
-impl engine_provider::MailboxWrites for GraphCalendarProvider {}
 
 #[async_trait]
 impl CalendarWrites for GraphCalendarProvider {

@@ -21,7 +21,6 @@ use engine_core::{
     mail::{EmailAddress, Mailbox, MailboxRole, Message, ThreadRef},
     membership::Memberships,
 };
-use engine_provider::KeywordName;
 use serde_json::Value;
 
 use crate::{
@@ -104,7 +103,6 @@ pub(crate) const MESSAGE_SELECT: &[&str] = &[
     "isDraft",
     "hasAttachments",
     "flag",
-    "categories",
     "bodyPreview",
     "changeKey",
 ];
@@ -185,10 +183,7 @@ pub(crate) fn apply_roles(mailboxes: &mut [Mailbox], resolved: &[(MailboxId, Mai
 ///
 /// Returns [`GraphError::Protocol`] if `id` or `parentFolderId` is missing (Graph
 /// mail always carries its single-folder membership) or a value is malformed.
-pub(crate) fn message_from_json(
-    value: &Value,
-    names: &[KeywordName],
-) -> Result<Message, GraphError> {
+pub(crate) fn message_from_json(value: &Value) -> Result<Message, GraphError> {
     let id = wrap_id(MessageId::try_from(req_str(value, "id")?), "message id")?;
     let folder = wrap_id(
         MailboxId::try_from(req_str(value, "parentFolderId")?),
@@ -202,7 +197,7 @@ pub(crate) fn message_from_json(
             "conversation id",
         )?));
     }
-    message.keywords = keywords_from_json(value, names);
+    message.keywords = keywords_from_json(value);
     message.has_attachment = bool_field(value, "hasAttachments");
     message.size = estimated_size(value);
     message.received_at = datetime(value, "receivedDateTime")?;

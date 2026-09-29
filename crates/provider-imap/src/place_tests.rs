@@ -52,15 +52,9 @@ async fn a_role_folder_resolves_to_its_decoded_name_and_appends_to_the_wire_name
     ])
     .await;
 
-    let placed = super::append_to_role_folder(
-        &mut conn,
-        Filing::Sent,
-        b"raw",
-        &std::collections::BTreeSet::new(),
-    )
-    .await
-    .unwrap();
-    let (folder, append_uid) = (placed.folder, placed.append_uid);
+    let (folder, append_uid) = super::append_to_role_folder(&mut conn, Filing::Sent, b"raw")
+        .await
+        .unwrap();
 
     assert_eq!(folder, "日本語");
     assert_eq!(append_uid, Some((7, 3)));

@@ -35,13 +35,10 @@ futures-util = { workspace = true }
 # The generated `Date` header for the assembled `sendMail` message reads the wall clock
 # at submission (engine time types deliberately cannot), mirroring provider-imap's SMTP path.
 time = { workspace = true }
-# `time` for the waits between lookups of a sent message's filed copy (`categories`).
-tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-# `macros`/`rt` for `#[tokio::test]` and `test-util` for the paused clock the offline
-# category tests run on; `time` for the gated live send test's delivery poll.
-tokio = { workspace = true, features = ["time", "macros", "rt", "test-util"] }
+# `time` for the gated live send test's delivery poll (`tokio::time::sleep`).
+tokio = { workspace = true, features = ["time"] }
 # `StreamExt` drains `stream_email` into its chunks in the offline tests.
 futures-util = { workspace = true }
 # The gated live test builds a (bundled) TlsClientConfig to pass into `connect`.

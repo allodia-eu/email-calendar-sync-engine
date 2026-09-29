@@ -18,11 +18,10 @@ use engine_core::ids::ProviderKey;
 use engine_provider::{Draft, ProviderResult, SubmissionReceipt};
 use time::OffsetDateTime;
 
-use crate::{base64url, error::GoogleError, named_labels::Labels, transport::GoogleClient};
+use crate::{base64url, error::GoogleError, transport::GoogleClient};
 
 /// Sends `draft`: assembles the RFC 5322 message, base64url-encodes it, and `POST`s it to
-/// `messages.send`. The sent copy is then labelled with each keyword the draft asks for that
-/// `labels` has a name for (`crate::named_labels`); that step never fails the send.
+/// `messages.send`.
 ///
 /// # Errors
 ///
@@ -32,7 +31,6 @@ use crate::{base64url, error::GoogleError, named_labels::Labels, transport::Goog
 pub(crate) async fn send(
     client: &GoogleClient,
     draft: &Draft,
-    labels: &Labels,
 ) -> ProviderResult<SubmissionReceipt> {
     // The filed variant keeps the Bcc header on the Sent copy (Gmail strips it from the
     // delivered envelope), mirroring the Graph submission path.
@@ -47,13 +45,7 @@ pub(crate) async fn send(
         )
         .await?;
     let key = sent_key(response.as_ref(), draft)?;
-    // A placeholder key addresses nothing Gmail knows, so there is no copy to label.
-    let kept = if key.as_str().starts_with("sent:") {
-        std::collections::BTreeSet::new()
-    } else {
-        labels.tag_sent_copy(client, &key, draft).await
-    };
-    Ok(SubmissionReceipt::filed(key, draft.message_id.clone()).with_sent_copy_keywords(kept))
+    Ok(SubmissionReceipt::filed(key, draft.message_id.clone()))
 }
 
 /// The sent copy's provider key: the `id` Gmail returns in the `send` response (Gmail,

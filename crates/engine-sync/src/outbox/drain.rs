@@ -11,9 +11,8 @@
 //! dispatch, and an op leased by a worker that will not resolve it is held for its whole
 //! lease: the failure #202 removed from the inline path, which must not come back here.
 //!
-//! **Mail only, so far.** [`Draft`], [`MailEdit`], [`MessageReport`] and a folder change
-//! are complete in the payload: the provider call takes the account and the request and
-//! nothing else (a folder change reads the folder list first, from the same provider). A
+//! **Mail only, so far.** [`Draft`], [`MailEdit`] and [`MessageReport`] are complete in
+//! the payload: the provider call takes the account and the request and nothing else. A
 //! calendar patch or delete takes the `base` event *beside* the request, so draining one
 //! means re-reading it from the store and re-applying the stored intent to it, which is
 //! also the conflict recovery and is its own piece of work. Until then those ops stay
@@ -32,7 +31,7 @@ use engine_store::{
     WorkerId,
 };
 
-use super::{drafts::DraftPut, mailbox_plan::MailboxChange, record_failure};
+use super::{drafts::DraftPut, record_failure};
 use crate::SyncError;
 
 /// What one drain pass did, one entry per op it attempted.
@@ -204,7 +203,6 @@ enum MailOp {
     Report,
     DraftPut,
     DraftDelete,
-    Mailbox,
 }
 
 impl MailOp {
@@ -216,7 +214,6 @@ impl MailOp {
             Self::Report => PendingOpKind::MailReport,
             Self::DraftPut => PendingOpKind::MailDraftPut,
             Self::DraftDelete => PendingOpKind::MailDraftDelete,
-            Self::Mailbox => PendingOpKind::MailboxEdit,
         }
     }
 }
@@ -237,7 +234,6 @@ fn dispatchable(row: &PendingOpRow) -> Option<MailOp> {
         PendingOpKind::MailReport => Some(MailOp::Report),
         PendingOpKind::MailDraftPut => Some(MailOp::DraftPut),
         PendingOpKind::MailDraftDelete => Some(MailOp::DraftDelete),
-        PendingOpKind::MailboxEdit => Some(MailOp::Mailbox),
         PendingOpKind::CalendarCreate
         | PendingOpKind::CalendarPatch
         | PendingOpKind::CalendarDocument
@@ -370,18 +366,6 @@ where
                 Err(err) => settle(store, leased, &err).await.map(Ran::bare),
             }
         }
-        MailOp::Mailbox => {
-            let Some(change) = decode::<MailboxChange>(store, leased).await? else {
-                return Ok(Ran::bare(undecodable("folder change")));
-            };
-            match super::mailbox::run(provider, store, account, leased, &change).await? {
-                Ok(mailbox) => Ok(Ran {
-                    outcome: DrainOutcome::Succeeded,
-                    key: mailbox.map(|id| id.key().clone()),
-                }),
-                Err(err) => Ok(Ran::bare(settled(store, leased, err.class()).await?)),
-            }
-        }
         MailOp::Edit => {
             let Some(edit) = decode::<MailEdit>(store, leased).await? else {
                 return Ok(Ran::bare(undecodable("mail edit")));
@@ -436,15 +420,7 @@ async fn settle<S: Store + StoreRead>(
     err: &engine_provider::ProviderError,
 ) -> Result<DrainOutcome, SyncError> {
     record_failure(store, leased, err).await?;
-    settled(store, leased, err.class()).await
-}
-
-/// Whether the store parked or settled a failure already recorded against `leased`.
-async fn settled<S: Store + StoreRead>(
-    store: &S,
-    leased: &LeasedPendingOp,
-    class: FailureClass,
-) -> Result<DrainOutcome, SyncError> {
+    let class = err.class();
     let row = store
         .list_pending_ops(leased.lease.account().clone())
         .await?

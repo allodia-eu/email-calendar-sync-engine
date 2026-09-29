@@ -43,7 +43,6 @@ impl Provider for Reports {
     }
 }
 
-impl crate::MailboxWrites for Reports {}
 impl CalendarWrites for Reports {}
 
 /// An adapter that reports nothing, taking the rejecting default.
@@ -56,7 +55,6 @@ impl Provider for Silent {
     }
 }
 
-impl crate::MailboxWrites for Silent {}
 impl CalendarWrites for Silent {}
 
 /// Mirrors `engine-api`'s `Engine::report_message`, the only shape that needs the

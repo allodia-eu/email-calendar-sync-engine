@@ -117,7 +117,6 @@ impl Provider for FolderProvider {
     }
 }
 
-impl engine_provider::MailboxWrites for FolderProvider {}
 impl CalendarWrites for FolderProvider {}
 
 impl FolderProvider {

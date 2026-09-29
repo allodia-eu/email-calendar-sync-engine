@@ -137,8 +137,7 @@ impl Provider for FakeMail {
             Ok(SubmissionReceipt::filed(
                 ProviderKey::new("sent-1").unwrap(),
                 draft.message_id.clone(),
-            )
-            .with_sent_copy_keywords(draft.sent_copy_keywords.clone()))
+            ))
         }
     }
 
@@ -193,7 +192,6 @@ impl Provider for FakeMail {
         Ok(ReportReceipt::new(report.target.clone()))
     }
 }
-impl engine_provider::MailboxWrites for FakeMail {}
 
 #[async_trait::async_trait]
 impl CalendarWrites for FakeMail {

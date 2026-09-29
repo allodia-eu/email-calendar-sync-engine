@@ -381,7 +381,6 @@ impl Provider for CalDavProvider {
         .await?)
     }
 }
-impl engine_provider::MailboxWrites for CalDavProvider {}
 
 #[async_trait]
 impl CalendarWrites for CalDavProvider {

@@ -232,21 +232,14 @@ fn capabilities<S>(connection: &Connection<S>, smtp: bool) -> Capabilities {
         .with_message_source()
         // Storing a draft is an `APPEND`, so it needs nothing submission needs: an account with
         // no SMTP transport configured can still keep drafts.
-        .with_mail_drafts()
-        // `CREATE`/`RENAME`/`DELETE` are base protocol on both dialects.
-        .with_mailbox_writes();
+        .with_mail_drafts();
     if smtp {
         // Both submission capabilities ride the same SMTP transport: the assembler
         // (`engine-rfc5322`) builds the whole message, so this adapter owns every
         // `Content-Type` parameter — including the `method=` that makes an iTIP object a
         // scheduling message rather than a calendar file (RFC 6047 §2.4). Contrast JMAP, which
         // hands the server a body structure and cannot.
-        capabilities = capabilities
-            .with_submission()
-            .with_scheduling_submission()
-            // Asked for on the `APPEND` that files the copy; a folder that allows no new
-            // keywords gets the copy without them, and the receipt says so (`place.rs`).
-            .with_sent_copy_keywords();
+        capabilities = capabilities.with_submission().with_scheduling_submission();
     }
     // Push (`IDLE`, RFC 2177) is gated on the server advertising it post-auth, so a host knows
     // whether to offer an "as it comes in" strategy or fall back to polling.

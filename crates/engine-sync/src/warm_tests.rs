@@ -55,7 +55,6 @@ impl Provider for BatchProvider {
 }
 
 impl CalendarWrites for BatchProvider {}
-impl engine_provider::MailboxWrites for BatchProvider {}
 
 /// Implements only the single fetch, so the batch runs through the trait's default.
 struct SingleProvider;
@@ -82,7 +81,6 @@ impl Provider for SingleProvider {
 }
 
 impl CalendarWrites for SingleProvider {}
-impl engine_provider::MailboxWrites for SingleProvider {}
 
 fn account() -> AccountId {
     AccountId::try_from("acct").unwrap()
