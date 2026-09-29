@@ -105,7 +105,8 @@ pub use engine_core::{
     // scheduling payload needs to be able to name it.
     raw::RawIcal,
     recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
-    sync::{SyncScope, SyncWindow},
+    // `SearchDomain` names what `Engine::forget_account_domain` forgets.
+    sync::{SearchDomain, SyncScope, SyncWindow},
     // `CalendarDateTime` is the type of `Event::start` and `Event::recurrence_id`, and `Duration`
     // the type of `Event::duration` — both public fields on a type this facade returns.
     time::{

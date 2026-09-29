@@ -121,11 +121,13 @@ is an enum, not a single id:
   (`imap-smtp.md`).
 - **CalDAV/CardDAV:** state is **per collection** (RFC 6578 sync-token, or
   CTag + per-resource ETags). Scope = `(account, CollectionKey)`
-  (`DavCollection`). The account's **collection list** (calendar/address-book
-  discovery) is a separate per-account container scope, `DavCollectionList{account}`
+  (`DavCollection`). The account's **collection list** (calendar discovery) is a
+  separate per-account container scope, `DavCollectionList{account}`
   — a `PROPFIND` of the home re-snapshots it each pass (no list cursor), applied
   before the per-collection members it parents (`caldav.md`), exactly as
-  `ImapMailboxList` parents `ImapMailbox`.
+  `ImapMailboxList` parents `ImapMailbox`. CardDAV has its own pair,
+  `CardDavAddressBookList{account}` and `CardDavAddressBook{account, address_book}`,
+  so a calendar scope and an address-book scope are never the same variant.
 - **SMTP** is not a sync scope. It is an outbox transport only; the outbox is
   leased per account (see below).
 - **Push (IMAP `IDLE`) is not a sync scope either.** A `Watch` session
@@ -595,6 +597,36 @@ so the next sync is a full refetch. It is the manual counterpart of the automati
 version-driven clear — a "reset / clean state" action a host exposes, and the escape hatch
 if a store is ever suspected stale.
 
+## Forgetting an account, or one domain of it
+
+`forget_account` (`SqliteStore`, wrapped as `Engine::forget_account`) purges everything the
+store holds for an account, for a host removing it. `forget_account_domain(account, domain)`
+(`Engine::forget_account_domain`) purges one `SearchDomain` of it (mail, calendar or
+contacts) and leaves the other two with their objects, scopes and cursors, for a host that
+stops syncing that domain. Either way the purged domain's next sync is a full snapshot rather
+than a delta off a cursor over rows that are gone.
+
+- **Scopes are placed by `SyncScope::domain()`**, one exhaustive match over every variant,
+  containers and discovery scopes included, and JMAP's `Thread` and `EmailSubmission` (which
+  `object_kind` leaves out) as mail. It answers `None` only for a JMAP data type the build does
+  not know; such a scope is kept.
+- **Queued writes are placed by `PendingOpKind::domain()`.** A row enqueued before the store
+  recorded kinds cannot be placed, is never attempted anyway (see the outbox), and is kept.
+  Forgetting the account removes both.
+- **Mail** also takes the cached bodies and raw sources and the recipient history, except a
+  **suppressed** observation: it records that the user asked to forget an address, and
+  dropping it would let the same Sent mail, synced again, bring the address back.
+- **Contacts** also takes the cached photos and moves the contact generation; the facade then
+  rebuilds the people index from the sources that remain, so person ids survive for everyone
+  else and nobody is listed from a card the account no longer holds. `forget_account` instead
+  clears the index outright and leaves the rebuild to the next contact sync.
+- **Calendar** has no account-keyed rows of its own; its scopes carry everything.
+- Neither is lease-gated: the host stops the account's (or the domain's) syncs and writes
+  first, and the store's single connection serialises the purge. Both are **SQLite-only**, like
+  the prune below, because the facade is bound to `SqliteStore`; the reference store has no
+  lifecycle purge to hold them to. The purge tests read the schema, so a new account-keyed
+  table that no domain names fails them rather than surviving a forget.
+
 ## Local depth narrowing without a provider
 
 The per-sync `window` (`SyncWindow { since }`, above) lets a host **widen or narrow** sync
@@ -679,7 +711,7 @@ delete it: another account's row may name the same hash. The file half is a mark
   **cache miss** — `read_source` verifies the hash — so the caller re-fetches; it can never serve
   wrong bytes.
 - A host runs it after anything that drops mail in quantity: a depth narrowing, a narrower-window
-  re-snapshot, or `forget_account`. Nothing calls it on a sync's own tombstones, so mail deleted
+  re-snapshot, `forget_account`, or `forget_account_domain`. Nothing calls it on a sync's own tombstones, so mail deleted
   on the server leaves its blob until the next sweep.
 
 ## The outbox
