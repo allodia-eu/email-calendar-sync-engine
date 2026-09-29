@@ -12,6 +12,8 @@ use rusqlite::Connection;
 
 use crate::{SqliteStore, convert::backend};
 
+mod domain;
+
 /// Tables keyed by `scope_key`: every row whose scope belongs to the account is
 /// removed via the `sync_scope` sub-select. `fts_doc`'s FTS5 shadow (`fts_index`)
 /// follows through its delete trigger, so it is not listed here.

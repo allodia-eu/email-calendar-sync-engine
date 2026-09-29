@@ -239,30 +239,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Purges every durable trace of `account` from the local store — its synced
-    /// objects, the derived search/occurrence rows, its sync scopes and cursors, the
-    /// queued outbox ops, and the cached message bodies. The host calls this when it
-    /// **removes** an account, so that a later re-add of the same login starts clean:
-    /// account ids derive from the address, so a re-add hits the same scopes, and
-    /// without this it would resume from stale cursors over orphaned rows (and, on a
-    /// server without QRESYNC, never expunge mail deleted while the account was gone).
-    ///
-    /// The destructive counterpart of [`reset`](Self::reset): reset only clears cursors
-    /// so the next sync reconciles the still-present objects; this drops the objects and
-    /// forgets the scopes outright. Run it after the account is detached from the
-    /// runtime, with no sync of it in flight. The content-addressed blobs on disk are
-    /// deduplicated and carry no refcount, so no row owns one; follow this with
-    /// [`sweep_unreferenced_blobs`](Self::sweep_unreferenced_blobs) to reclaim the ones
-    /// this account was the last to name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError::Store`] on a backend failure.
-    pub async fn forget_account(&self, account: &AccountId) -> Result<(), ApiError> {
-        self.store.forget_account(account).await?;
-        Ok(())
-    }
-
     /// Prunes `account`'s locally-stored mail dated **before** `window`'s floor, so a
     /// reduced sync depth holds even **offline** — with no provider round trip. When the
     /// account is reachable, a host narrows depth by clearing the mail cursors and

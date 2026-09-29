@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{error::FailureClass, ids::ProviderKey, time::Duration};
+use crate::{error::FailureClass, ids::ProviderKey, sync::SearchDomain, time::Duration};
 
 /// Defines a non-empty string newtype used by the write contract.
 macro_rules! nonempty_str {
@@ -174,6 +174,28 @@ impl PendingOpKind {
         Self::ContactPatch,
         Self::ContactDelete,
     ];
+
+    /// The domain this op writes to, so forgetting a domain withdraws its queued writes and
+    /// only those.
+    #[must_use]
+    pub fn domain(self) -> SearchDomain {
+        match self {
+            Self::MailSubmit
+            | Self::MailEdit
+            | Self::MailReport
+            | Self::MailDraftPut
+            | Self::MailDraftDelete
+            | Self::MailboxEdit => SearchDomain::Mail,
+            Self::CalendarCreate
+            | Self::CalendarPatch
+            | Self::CalendarDocument
+            | Self::CalendarRsvp
+            | Self::CalendarDelete => SearchDomain::Calendar,
+            Self::ContactCreate | Self::ContactPatch | Self::ContactDelete => {
+                SearchDomain::Contacts
+            }
+        }
+    }
 }
 
 /// A durable pending write operation.
@@ -290,6 +312,22 @@ mod tests {
         }
         // Two verbs that share a resource key are still told apart by the kind.
         assert_ne!(PendingOpKind::MailEdit, PendingOpKind::MailReport);
+    }
+
+    #[test]
+    fn every_kind_belongs_to_the_domain_it_writes() {
+        use crate::sync::SearchDomain::{Calendar, Contacts, Mail};
+        for kind in PendingOpKind::ALL {
+            let name = format!("{kind:?}");
+            let expected = if name.starts_with("Mail") {
+                Mail
+            } else if name.starts_with("Calendar") {
+                Calendar
+            } else {
+                Contacts
+            };
+            assert_eq!(kind.domain(), expected, "{kind:?}");
+        }
     }
 
     #[test]
