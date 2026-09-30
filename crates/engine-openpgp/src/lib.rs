@@ -6,12 +6,23 @@
 //! what rPGP leaves open, this crate decides, and `docs/agent-guidance/openpgp.md`
 //! records each decision.
 //!
-//! So far it holds [`PgpMime`], the recogniser that tells the walk which parts are
-//! PGP/MIME layers and which text carries OpenPGP inline.
+//! - [`PgpMime`] tells the walk which parts are PGP/MIME layers and which text carries OpenPGP
+//!   inline.
+//! - [`Certificate`] reads a certificate and says, at a given instant, whether it is usable, which
+//!   addresses it binds, and which of its keys may sign or be encrypted to. rPGP verifies one
+//!   signature at a time; which signatures *count* is decided here.
 //!
 //! Every normative statement in RFC 9580 and the RFC 3156 statements about OpenPGP
 //! are rows in `tests/conformance/`, each covered by named tests or openly planned.
 
+mod address;
+mod certificate;
+mod policy;
 mod recognise;
+mod time;
 
+pub use address::canonical_address;
+pub use certificate::{
+    Certificate, CertificateError, CertificateView, ComponentKey, EncryptionPurpose,
+};
 pub use recognise::PgpMime;

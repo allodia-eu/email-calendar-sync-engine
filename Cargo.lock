@@ -1019,9 +1019,13 @@ version = "0.1.0"
 dependencies = [
  "engine-core",
  "engine-e2e",
+ "idna",
  "pgp",
+ "rand",
+ "rand_chacha",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

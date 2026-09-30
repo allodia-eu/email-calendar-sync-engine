@@ -226,6 +226,26 @@ impl UtcDateTime {
             .ok_or(TimeError::OutOfRange)
     }
 
+    /// Creates the instant `seconds` after the Unix epoch.
+    ///
+    /// Protocol timestamps arrive in this form (OpenPGP's four-octet times,
+    /// RFC 9580 §3.5).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::OutOfRange`] beyond the representable years.
+    pub fn from_unix_seconds(seconds: i64) -> Result<Self, TimeError> {
+        let instant = time::OffsetDateTime::from_unix_timestamp(seconds)
+            .map_err(|_| TimeError::OutOfRange)?;
+        Ok(Self(PrimitiveDateTime::new(instant.date(), instant.time())))
+    }
+
+    /// Returns the whole seconds since the Unix epoch, negative before it.
+    #[must_use]
+    pub fn unix_seconds(self) -> i64 {
+        self.0.assume_utc().unix_timestamp()
+    }
+
     /// Returns this instant advanced by `span`, or `None` on overflow.
     ///
     /// Infrastructural spans — lease TTLs, retry backoff, confirmation timeouts —
@@ -293,6 +313,24 @@ mod tests {
         let dt: LocalDateTime = "2006-01-02T15:04:05.003".parse().unwrap();
         assert_eq!(dt.nanosecond(), 3_000_000);
         assert_eq!(dt.to_string(), "2006-01-02T15:04:05.003");
+    }
+
+    #[test]
+    fn utc_date_time_converts_unix_seconds_both_ways() {
+        let epoch = UtcDateTime::from_unix_seconds(0).unwrap();
+        assert_eq!(epoch.to_string(), "1970-01-01T00:00:00Z");
+        // RFC 9580 A.1: a key made on 2014-08-19 14:28:27.
+        let key = UtcDateTime::from_unix_seconds(0x53F3_5F0B).unwrap();
+        assert_eq!(key.to_string(), "2014-08-19T14:28:27Z");
+        assert_eq!(key.unix_seconds(), 0x53F3_5F0B);
+        assert_eq!(
+            UtcDateTime::from_unix_seconds(-1).unwrap().unix_seconds(),
+            -1
+        );
+        assert_eq!(
+            UtcDateTime::from_unix_seconds(i64::MAX),
+            Err(TimeError::OutOfRange)
+        );
     }
 
     #[test]
