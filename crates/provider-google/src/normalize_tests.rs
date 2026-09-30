@@ -319,6 +319,18 @@ fn the_nearest_existing_ancestor_is_the_parent() {
 }
 
 #[test]
+fn only_a_user_label_accepts_a_label_inside_it() {
+    // Gmail holds a nested label as a user label whose name carries its parent's, and a system
+    // label's name is not one a user label can start with: `INBOX/Receipts` is refused.
+    let mut all = labels();
+    all.push(all_mail_mailbox());
+    for label in &all {
+        let user = label.id.as_str().starts_with("Label_");
+        assert_eq!(label.accepts_children, user, "{}", label.id.as_str());
+    }
+}
+
+#[test]
 fn label_without_an_id_is_a_protocol_error() {
     assert!(label_from_json(&serde_json::json!({ "name": "x" })).is_err());
 }

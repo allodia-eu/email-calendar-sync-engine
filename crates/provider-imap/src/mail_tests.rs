@@ -261,6 +261,19 @@ fn a_flat_namespace_keeps_the_whole_name() {
 }
 
 #[test]
+fn a_folder_accepts_children_only_with_a_delimiter_and_without_noinferiors() {
+    let accepts = |line: &[u8]| {
+        let rows = crate::parse::parse_list(&[line.to_vec()]).unwrap();
+        mailbox_from_list(&rows[0], true).unwrap().accepts_children
+    };
+    assert!(accepts(br#"LIST (\HasNoChildren) "/" "Work""#));
+    // RFC 3501 §7.2.2: no child level exists or can be created.
+    assert!(!accepts(br#"LIST (\Noinferiors \Trash) "/" "Trash""#));
+    // A flat namespace has nowhere to put a level.
+    assert!(!accepts(br#"LIST () NIL "Work""#));
+}
+
+#[test]
 fn a_nested_folder_named_like_a_role_is_not_that_role() {
     // Role matching reads the whole path: `INBOX` is reserved at the top level only, so a
     // folder someone called `INBOX` inside another one is an ordinary folder.
