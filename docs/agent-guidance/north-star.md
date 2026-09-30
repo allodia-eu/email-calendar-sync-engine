@@ -50,6 +50,7 @@ pim-sync-engine/
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
 │   ├── engine-recurrence/       # Deterministic recurrence -> occurrence expansion (bundled tzdb).
 │   ├── engine-mime/             # MIME/RFC 5322 body extraction (mail-parser) -> MessageBody (implemented).
+│   ├── engine-e2e/              # RFC 9787 layer walk: envelope, payload, errant layers (implemented; e2e.md).
 │   ├── engine-index/            # Text extraction, chunks, embedding seam.
 │   ├── engine-cli/              # Headless ingestion/search/maintenance harness (CLI host).
 │   ├── crypto-keystore/         # Platform credential/key abstraction.
@@ -140,6 +141,9 @@ Mail and calendar data are hostile input and sensitive data:
 - Attachments are quota-managed and opened through host policy.
 - Logs, crash reports, snippets, and telemetry are redacted by default.
 - Provider credentials never enter the SQL store.
+- End-to-end secret keys stay with the host. The engine takes them per call and never stores
+  them; a sealed layer pauses the walk so the caller opens it with the keys it holds
+  (`e2e.md`). Verdicts are facts: accepting or trusting a certificate is the host's decision.
 - TLS trust is unified across every provider and host-selected: one `TlsPolicy` — bundled Mozilla roots by default, with OS/enterprise or explicitly pinned roots as opt-ins — realized by `engine-tls` into one `ring`-backed config (`tls.md`). The engine bakes in no per-provider trust store.
 - At-rest protection is host-selected: bulk data relies on OS file encryption by default, with SQLCipher as an opt-in whole-database layer whose key is wrapped by the host platform keystore. High-value secrets (tokens, passwords, key material) are always field-encrypted with a keystore-wrapped key and never stored in cleartext. FTS content and snippets are protected only by whichever at-rest layer is in force.
 - Remote embedding is disabled unless an explicit host policy allows content to leave the device/process.

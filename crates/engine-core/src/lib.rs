@@ -35,6 +35,7 @@ pub mod attachment;
 pub mod calendar;
 pub mod contact;
 pub mod coverage;
+pub mod e2e;
 pub mod error;
 pub mod extended;
 pub mod ids;
