@@ -1,7 +1,7 @@
 //! Contact/people/recipient derived-store cases shared by every backend.
 
 use engine_core::{
-    contact::{ContactCard, ContactEmail, ContactProperty, PropertyId},
+    contact::{ContactCard, ContactEmail, ContactPhone, ContactProperty, PropertyId},
     ids::{AccountId, AddressBookId, ContactId, MailboxId, MessageId, ProviderKey},
     mail::Message,
     membership::Memberships,
@@ -113,6 +113,50 @@ where
             .unwrap()
     );
     assert_eq!(store.people_snapshot().await.unwrap(), first);
+}
+
+/// A card carrying neither a name nor an address, which is how many address books hold a
+/// number saved from a phone. Its person has no display name, and storing it must not fail
+/// the people write, which would leave every other contact unresolved with it.
+pub(super) async fn a_person_with_no_name_is_stored<S>(store: &S)
+where
+    S: Store + ContactStore,
+{
+    let mut nameless = ContactCard::new(
+        ContactId::try_from("nameless").unwrap(),
+        Memberships::of_one(AddressBookId::try_from("book").unwrap()),
+    );
+    nameless.phones.insert(
+        PropertyId::new("phone").unwrap(),
+        ContactProperty::new(ContactPhone {
+            number: "+1 555 0100".to_owned(),
+            ..ContactPhone::default()
+        }),
+    );
+    apply_contacts(
+        store,
+        vec![nameless, card("named", "ada@example.test")],
+        "nameless-1",
+    )
+    .await;
+    let sources = store.contact_sources().await.unwrap();
+    let people =
+        engine_core::people::rebuild_people(&sources.sources, &PeopleSnapshot::empty()).unwrap();
+    assert!(
+        people
+            .people
+            .iter()
+            .any(|person| person.display_name.is_none()),
+        "the fixture must derive a person without a name"
+    );
+
+    assert!(
+        store
+            .replace_people(sources.generation, &people)
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.people_snapshot().await.unwrap(), people);
 }
 
 pub(super) async fn recipient_idempotency_and_suppression<S>(store: &S)

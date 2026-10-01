@@ -460,6 +460,27 @@ ALTER TABLE pending_op ADD COLUMN failure_class   TEXT;
 ALTER TABLE pending_op ADD COLUMN detail          TEXT;
 ";
 
+/// Migration v15: a person may have no display name.
+///
+/// `Person::display_name` is `None` for a card with neither a name nor an address, and the v7
+/// column refused it, failing the whole people write. SQLite cannot drop `NOT NULL` in place, so
+/// the table is rebuilt and its rows copied: the ids are what a host holds, and a rebuild that
+/// kept none would re-issue every one.
+pub(crate) const V15: &str = "CREATE TABLE person_v15 (
+    id           INTEGER NOT NULL PRIMARY KEY,
+    ordinal      INTEGER NOT NULL UNIQUE,
+    display_name TEXT,
+    payload      TEXT    NOT NULL
+) STRICT;
+
+INSERT INTO person_v15 (id, ordinal, display_name, payload)
+SELECT id, ordinal, display_name, payload FROM person;
+
+DROP TABLE person;
+ALTER TABLE person_v15 RENAME TO person;
+CREATE INDEX person_display_name ON person (display_name, id);
+";
+
 mod mail;
 
 pub(crate) use mail::{V8, V9, V10};
