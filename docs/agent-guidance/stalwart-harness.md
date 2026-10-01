@@ -85,7 +85,7 @@ These were confirmed before/with implementation; do not relitigate without cause
   **A bump is its own PR.** The pin decides what *every* live test in this repo is
   evidence about, so it must not ride along inside a change that is really about
   something else — a provider fix and a server change landing together leave neither
-  attributable. Currently pinned: **v0.16.21**. What a bump owes:
+  attributable. Currently pinned: **v0.16.24**. What a bump owes:
 
   1. Re-resolve the **index** digest (`docker buildx imagetools inspect
      stalwartlabs/stalwart:<tag>` → the top-level `Digest:`, not a per-platform one, or
@@ -103,6 +103,16 @@ These were confirmed before/with implementation; do not relitigate without cause
      Stalwart's — `provider-jmap` had simply never sent `sendSchedulingMessages`, and two
      version bumps were taken partly in the hope of fixing a defect that did not exist
      (#102).
+
+  **The v0.16.21 → v0.16.24 bump.** The whole gated suite passed unchanged from a wiped
+  volume. One fix lands on a request the engine sends: before v0.16.24, an `Email/set` whose
+  patch carries a full `mailboxIds` equal to the current membership together with a keyword
+  change left the message at IMAP UID 0. That is the JMAP report patch whenever the message
+  already sits in the destination; reproduced on v0.16.22 and written up under `jmap.md` →
+  reporting. No live test covers it, because the suite never reports a message already in its
+  destination. Nothing else in v0.16.22–v0.16.24 touches a request the engine sends: it uses
+  no `PushSubscription`, no `Email/import`, and reads neither `useDefaultAlerts` nor
+  `baseEventId`.
 
   **The v0.16.15 → v0.16.21 bump, recorded so it is not re-investigated.** All 754 gated
   tests passed unchanged on both pins, so nothing the engine sends today behaves
