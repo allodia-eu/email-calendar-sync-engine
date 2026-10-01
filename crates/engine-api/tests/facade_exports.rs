@@ -10,9 +10,10 @@
 //! would defeat the point.
 
 use engine_api::{
-    CalendarDateTime, Capabilities, DeleteTarget, DraftRecurrence, Frequency, LocalDateTime,
-    Occurrence, OverrideSurvival, PatchObject, PatchTarget, Recurrence, RecurrenceEdit,
-    RecurrenceOverride, RecurrenceRule, TimeZoneId, UtcDateTime, WriteGuard,
+    CalendarAddress, CalendarDateTime, Capabilities, DeleteTarget, DraftRecurrence, Frequency,
+    Invitee, InviteePatch, InviteeRole, LocalDateTime, MeetingDraft, Occurrence, OverrideSurvival,
+    PatchObject, PatchTarget, Recurrence, RecurrenceEdit, RecurrenceOverride, RecurrenceRule,
+    SchedulingIdentity, TimeZoneId, UtcDateTime, WriteGuard,
 };
 
 fn wall_clock() -> CalendarDateTime {
@@ -46,6 +47,19 @@ fn a_recurrence_can_be_set_and_cleared() {
     let rule = RecurrenceRule::new(Frequency::Weekly);
     let set = RecurrenceEdit::Set(Box::new(DraftRecurrence::ending_at(rule, instant())));
     assert_ne!(set, RecurrenceEdit::Clear);
+}
+
+#[test]
+fn meeting_intent_can_be_named_through_the_facade() {
+    let guest = CalendarAddress::parse("guest@example.test").unwrap();
+    let meeting = MeetingDraft::new(
+        SchedulingIdentity::new(CalendarAddress::parse("owner@example.test").unwrap()),
+        vec![Invitee::required(SchedulingIdentity::new(guest.clone()))],
+    );
+    meeting.validate(None).unwrap();
+
+    let patch = InviteePatch::new().upsert(Invitee::optional(SchedulingIdentity::new(guest)));
+    assert_eq!(patch.upserts()[0].role(), InviteeRole::Optional);
 }
 
 #[test]

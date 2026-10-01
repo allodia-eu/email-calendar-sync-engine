@@ -38,7 +38,7 @@ use engine_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{DraftRecurrence, Occurrence};
+use super::{DraftRecurrence, InviteePatch, Occurrence};
 
 /// Which occurrence of a recurring event an [`EventPatch`] lands on.
 ///
@@ -120,6 +120,8 @@ pub struct EventPatch {
     start: Option<CalendarDateTime>,
     end: Option<CalendarDateTime>,
     recurrence: Option<RecurrenceEdit>,
+    #[serde(default)]
+    invitees: Option<InviteePatch>,
 }
 
 impl EventPatch {
@@ -144,6 +146,7 @@ impl EventPatch {
             start: None,
             end: None,
             recurrence: None,
+            invitees: None,
         }
     }
 
@@ -229,6 +232,19 @@ impl EventPatch {
         self.recurrence.as_ref()
     }
 
+    /// Adds, changes or removes invitees on the meeting.
+    #[must_use]
+    pub fn invitees(mut self, invitees: InviteePatch) -> Self {
+        self.invitees = Some(invitees);
+        self
+    }
+
+    /// Returns the invitee changes, if this patch touches the roster.
+    #[must_use]
+    pub fn invitee_edit(&self) -> Option<&InviteePatch> {
+        self.invitees.as_ref()
+    }
+
     /// When the user made this edit. See [`new`](Self::new) for who honours it.
     #[must_use]
     pub fn stamp(&self) -> UtcDateTime {
@@ -265,8 +281,8 @@ impl EventPatch {
         self.end.as_ref()
     }
 
-    /// Whether this patch changes something the attendees must be told about — a move, a
-    /// resize, or a new location (RFC 5546 §3.2.8). Retitling an event does not.
+    /// Whether this patch changes something the attendees must be told about: time,
+    /// recurrence, location, or the roster (RFC 5546 §2.1.4). Retitling does not.
     ///
     /// An adapter that keeps an iTIP revision counter (CalDAV: `SEQUENCE`) bumps it exactly
     /// when this is `true`.
@@ -276,6 +292,7 @@ impl EventPatch {
             || self.end.is_some()
             || self.location.is_some()
             || self.recurrence.is_some()
+            || self.invitees.as_ref().is_some_and(|edit| !edit.is_empty())
     }
 
     /// Whether the patch changes nothing but its own stamp.
@@ -287,6 +304,7 @@ impl EventPatch {
             && self.start.is_none()
             && self.end.is_none()
             && self.recurrence.is_none()
+            && self.invitees.as_ref().is_none_or(InviteePatch::is_empty)
     }
 }
 
@@ -368,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_move_resize_or_relocation_is_significant() {
+    fn time_recurrence_location_and_roster_changes_are_significant() {
         // What bumps an iTIP SEQUENCE: the things an attendee must be re-told (RFC 5546
         // §3.2.8). A retitle is not one of them.
         assert!(!EventPatch::new(stamp()).summary("Renamed").is_significant());
@@ -389,6 +407,13 @@ mod tests {
         );
         assert!(EventPatch::new(stamp()).location("Room A").is_significant());
         assert!(EventPatch::new(stamp()).clear_location().is_significant());
+        assert!(
+            EventPatch::new(stamp())
+                .invitees(InviteePatch::new().remove(
+                    super::super::CalendarAddress::parse("guest@example.com").unwrap(),
+                ))
+                .is_significant()
+        );
     }
 
     #[test]

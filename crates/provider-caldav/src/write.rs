@@ -87,14 +87,9 @@ pub(crate) async fn patch_event(
         )
     })?;
     let ical = patch_event_ical(stored, &edit.target, &edit.patch)?;
-    put(
-        exec,
-        &edit.event,
-        &ical,
-        guard(base.revisions.etag.as_ref()),
-    )
-    .await
-    .map(|revisions| EventWriteReceipt::new(edit.event.clone(), edit.uid.clone(), revisions))
+    put(exec, &edit.event, &ical, guard(&base.revisions))
+        .await
+        .map(|revisions| EventWriteReceipt::new(edit.event.clone(), edit.uid.clone(), revisions))
 }
 
 /// Answers an invitation: rewrite *my* `PARTSTAT` in the stored iCalendar
@@ -156,9 +151,7 @@ pub(crate) async fn rsvp_event(
         exec,
         &rsvp.event,
         &ical,
-        rsvp.guard
-            .as_ref()
-            .map_or(Precondition::None, |tokens| guard(tokens.etag.as_ref())),
+        rsvp.guard.as_ref().map_or(Precondition::None, guard),
     )
     .await?;
     let receipt = EventWriteReceipt::new(rsvp.event.clone(), rsvp.uid.clone(), revisions);
@@ -229,7 +222,7 @@ pub(crate) async fn put_event(
 ) -> Result<EventWriteReceipt, CalDavError> {
     let precondition = match &write.guard {
         WritePrecondition::Unconditional => Precondition::None,
-        WritePrecondition::IfUnchanged(tokens) => guard(tokens.etag.as_ref()),
+        WritePrecondition::IfUnchanged(tokens) => guard(tokens),
         WritePrecondition::IfAbsent => Precondition::IfNoneMatch,
     };
     put(exec, &write.event, &write.ical, precondition)
@@ -271,10 +264,7 @@ pub(crate) async fn delete_event(
     if let DeleteTarget::Occurrence { occurrence, stamp } = &deletion.target {
         return exclude_occurrence(exec, base, deletion, &occurrence.start, *stamp).await;
     }
-    let precondition = deletion
-        .guard
-        .as_ref()
-        .map_or(Precondition::None, |tokens| guard(tokens.etag.as_ref()));
+    let precondition = deletion.guard.as_ref().map_or(Precondition::None, guard);
     let request = WriteRequest {
         method: DavMethod::Delete,
         href: deletion.event.as_str().to_owned(),
@@ -314,10 +304,7 @@ async fn exclude_occurrence(
             )
         })?;
     let ical = exclude_occurrence_ical(stored, occurrence, stamp)?;
-    let precondition = deletion
-        .guard
-        .as_ref()
-        .map_or(Precondition::None, |tokens| guard(tokens.etag.as_ref()));
+    let precondition = deletion.guard.as_ref().map_or(Precondition::None, guard);
     put(exec, &deletion.event, &ical, precondition).await?;
     Ok(())
 }
@@ -355,10 +342,15 @@ async fn put(
 /// actually carries, and
 /// [`Capabilities::calendar_write_guard`](engine_provider::Capabilities::calendar_write_guard)
 /// is what tells a host which it got.
-fn guard(etag: Option<&ETag>) -> Precondition {
-    etag.map_or(Precondition::None, |etag| {
-        Precondition::IfMatch(etag.as_str().to_owned())
-    })
+fn guard(revisions: &RevisionTokens) -> Precondition {
+    revisions.schedule_tag.as_ref().map_or_else(
+        || {
+            revisions.etag.as_ref().map_or(Precondition::None, |etag| {
+                Precondition::IfMatch(etag.as_str().to_owned())
+            })
+        },
+        |tag| Precondition::IfScheduleTagMatch(tag.as_str().to_owned()),
+    )
 }
 
 #[cfg(test)]

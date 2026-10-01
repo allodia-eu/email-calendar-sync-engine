@@ -28,6 +28,8 @@ use serde::de::DeserializeOwned;
 use store_sqlite::SqliteStore;
 
 mod common;
+#[path = "common/invitation.rs"]
+mod invitation;
 
 /// Reads the SabreDAV harness coordinates, or `None` to skip (offline gate).
 fn harness() -> Option<(String, String, String)> {
@@ -291,6 +293,18 @@ async fn sabredav_storing_an_invitation_is_a_guarded_create() {
     };
     let _serial = common::serial_guard().await;
     common::imip::storing_an_invitation_is_a_guarded_create(&provider, &account).await;
+}
+
+/// SabreDAV accepts meetings created and edited through the neutral API, but this
+/// calendar-access-only deployment does not deliver their iTIP messages.
+#[tokio::test]
+async fn sabredav_meeting_storage_round_trip() {
+    let Some((provider, account)) = write_provider("sabredav_meeting_storage_round_trip").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    invitation::storage_round_trip(&provider, &account).await;
 }
 
 /// The read-only half of the privilege pair (#61), which **only SabreDAV can prove**:
