@@ -11,7 +11,8 @@ use crate::{extended::ExtendedProperties, ids::MailboxId, version::RevisionToken
 /// are three separate things. Membership of messages in this collection is
 /// modeled on the message side, not here. Per-mailbox access rights remain
 /// provider-specific and, when needed, are carried in
-/// [`extended`](Mailbox::extended) rather than asserted as universal fields.
+/// [`extended`](Mailbox::extended) rather than asserted as universal fields; the one
+/// exception is [`accepts_children`](Mailbox::accepts_children).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mailbox {
     /// The collection's stable id.
@@ -41,6 +42,15 @@ pub struct Mailbox {
     /// conversation form (`unreadThreads`), so a portable field cannot mean that.
     #[serde(default)]
     pub unread_count: Option<u32>,
+    /// Whether a collection may be made inside this one, or moved into it. `false` only where
+    /// the provider says so: an IMAP `\Noinferiors` or delimiter-less folder, a JMAP mailbox
+    /// without `mayCreateChild`, a Gmail system label. `true` claims nothing, because the server
+    /// still refuses what it will not hold.
+    ///
+    /// A portable field rather than a right in [`extended`](Mailbox::extended) because a host
+    /// decides from it what to offer, and all four transports can answer it.
+    #[serde(default = "accepts_children_unless_told")]
+    pub accepts_children: bool,
     /// Per-object revision tokens, if the provider supplies any.
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
@@ -60,10 +70,15 @@ impl Mailbox {
             sort_order: 0,
             subscribed: true,
             unread_count: None,
+            accepts_children: true,
             revisions: RevisionTokens::none(),
             extended: ExtendedProperties::new(),
         }
     }
+}
+
+const fn accepts_children_unless_told() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -108,6 +123,21 @@ mod tests {
         .unwrap();
         let loaded: Mailbox = serde_json::from_str(&stored_earlier).unwrap();
         assert!(loaded.unread_count.is_none());
+        // Nothing was known against it, so nothing is withheld: the server still answers.
+        assert!(loaded.accepts_children);
+    }
+
+    #[test]
+    fn a_new_mailbox_accepts_children_and_a_refusal_roundtrips() {
+        let mut mailbox = Mailbox::new(id("inbox"), "Inbox");
+        assert!(mailbox.accepts_children);
+        mailbox.accepts_children = false;
+        let json = serde_json::to_string(&mailbox).unwrap();
+        assert!(
+            !serde_json::from_str::<Mailbox>(&json)
+                .unwrap()
+                .accepts_children
+        );
     }
 
     #[test]

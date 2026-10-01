@@ -119,6 +119,9 @@ pub(crate) fn mailbox_from_list(row: &ListRow, modified_utf7: bool) -> Option<Ma
     let mut mailbox = Mailbox::new(id, leaf_of(&name, delimiter));
     mailbox.role = role_for(&name, &row.attributes);
     mailbox.parent = parent_of(&name, delimiter);
+    // RFC 3501 §7.2.2 `\Noinferiors`; with no delimiter there is no level to make.
+    mailbox.accepts_children =
+        delimiter.is_some() && !has_attribute(&row.attributes, "Noinferiors");
     Some(mailbox)
 }
 

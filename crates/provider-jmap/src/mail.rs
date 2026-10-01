@@ -77,6 +77,13 @@ pub(crate) fn mailbox_from_json(value: &Value) -> Result<Mailbox, JmapError> {
     if let Some(subscribed) = value.get("isSubscribed").and_then(Value::as_bool) {
         mailbox.subscribed = subscribed;
     }
+    // RFC 8621 §2.1 `myRights`; a server that omits it has told us nothing to withhold.
+    if let Some(may) = value
+        .pointer("/myRights/mayCreateChild")
+        .and_then(Value::as_bool)
+    {
+        mailbox.accepts_children = may;
+    }
     // RFC 8621 §2: `unreadEmails`, deliberately not `unreadThreads` — the engine's
     // count is of messages, the only form every transport reports. A `Mailbox/get`
     // with no `properties` returns the whole object, so nothing is asked for here.
@@ -397,6 +404,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read.unread_count, Some(0));
+    }
+
+    #[test]
+    fn mailbox_accepts_children_as_its_rights_say() {
+        let accepts = |rights: Value| {
+            mailbox_from_json(&serde_json::json!({ "id": "a", "name": "A", "myRights": rights }))
+                .unwrap()
+                .accepts_children
+        };
+        assert!(accepts(serde_json::json!({ "mayCreateChild": true })));
+        // A shared mailbox the user may read but not build in.
+        assert!(!accepts(serde_json::json!({ "mayCreateChild": false })));
+        // Rights not reported: nothing is withheld, and the server still answers.
+        assert!(accepts(Value::Null));
     }
 
     #[test]
