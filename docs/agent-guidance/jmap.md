@@ -537,7 +537,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   decision. v0.16.11–v0.16.13 parsed it and never compared it (a stale-state `/set` was applied
   and returned a fresh `newState`, where RFC 8620 §5.3 requires a `stateMismatch`; a *malformed*
   state string still `400`s, so it was parsed, just never checked). v0.16.14 fixed it, and the
-  harness now pins **v0.16.21**, so enforcement is what our live runs meet: a stale-but-
+  harness now pins **v0.16.24**, so enforcement is what our live runs meet: a stale-but-
   well-formed token is refused with `stateMismatch` and the write does not land. That only
   sharpens reason 2 — the probe's state had moved because of an edit to a *different* property
   of a *different* event, which is precisely the spurious rejection a per-event guard must not
@@ -549,10 +549,9 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
 
   Be precise about what that test can and cannot catch. It drives the **adapter**, which sends
   no precondition, so server-side `ifInState` enforcement can never fail it — and did not: it
-  passes unchanged on v0.16.15 and on v0.16.21. It is a tripwire for *the writes we actually send*
-  losing their
-  ability to clobber, which is what `WriteGuard::Absent` claims; it is **not** a tripwire for
-  Stalwart gaining a precondition. A host that must not lose a concurrent edit has to detect it
+  passes unchanged on v0.16.15, v0.16.21 and v0.16.24. It is a tripwire for *the writes we
+  actually send* losing their ability to clobber, which is what `WriteGuard::Absent` claims;
+  it is **not** a tripwire for Stalwart gaining a precondition. A host that must not lose a concurrent edit has to detect it
   above the engine. The one thing that must not happen is a neutral write API that *looks* like
   it gives optimistic concurrency on every provider when here it gives none.
 
@@ -766,6 +765,13 @@ IANA-registered keyword (`$junk`, `$notjunk`, `$phishing`; RFC 8621 §4.1.1, RFC
 - **Both halves ride one `Email/set`.** The keyword patch and the `mailboxIds` replacement
   that files the message travel in the same PatchObject, so a report and its move cannot
   land half-applied and cost one round-trip. Verified against Stalwart, which applied both.
+  Stalwart before v0.16.24 mishandles exactly this shape when the `mailboxIds` it names is
+  the message's current membership: the update succeeds and the message's IMAP UID becomes
+  0, so IMAP clients on the same mailbox can no longer address it (reproduced on v0.16.22,
+  fixed in v0.16.24). That happens when a host reports a message already in the
+  destination, such as a junk report from a search result that sits in Junk. The adapter
+  does not work around it: it cannot see the current membership without a fetch, and the
+  defect is the server's.
 - **The contradicting keyword is cleared in the same patch**, and "not junk" clears **both**
   accusations (`$junk` *and* `$phishing`): the user is vouching for the message, and leaving
   the stronger claim standing against it would be wrong. Leaving a message asserting it is
