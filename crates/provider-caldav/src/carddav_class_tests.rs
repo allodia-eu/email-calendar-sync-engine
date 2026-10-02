@@ -12,9 +12,9 @@ use engine_provider::{
 };
 
 use crate::{
-    CardDavProvider,
-    test_support::{Replay, ok, options},
-    transport::{DavMethod, HttpResponse},
+    CardDavConfig, CardDavProvider,
+    test_support::{Replay, mock_server, multistatus, ok, options, options_response, redirect},
+    transport::{Credentials, DavMethod, HttpResponse},
 };
 
 const HOME: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/</D:href><D:propstat><D:prop><C:addressbook-home-set><D:href>/dav/addressbooks/alice/</D:href></C:addressbook-home-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
@@ -163,4 +163,58 @@ async fn a_connect_reports_each_redirect_the_home_and_what_the_server_advertised
             "negotiated CardDAV [1, 3, addressbook]",
         ]
     );
+}
+
+/// The same trace through what a host actually drives: the config carries the observer, and
+/// `connect` dials the real HTTP client.
+#[tokio::test]
+async fn a_connect_from_the_config_carries_its_observer_over_the_wire() {
+    let base = mock_server(vec![
+        redirect("/dav/"),
+        multistatus(HOME),
+        options_response("1, 3, addressbook"),
+        multistatus(BOOKS),
+    ]);
+    let steps = Arc::new(Steps::default());
+    let provider = CardDavProvider::connect(
+        CardDavConfig::new(base, alice("pw"))
+            .with_retry(engine_http::RetryConfig::default())
+            .with_connect_observer(Arc::clone(&steps) as Arc<dyn ConnectObserver>),
+    )
+    .await
+    .unwrap();
+
+    assert!(provider.connection_info().capabilities.contacts());
+    assert_eq!(
+        *steps.0.lock().unwrap(),
+        [
+            "redirected /.well-known/carddav -> /dav/",
+            "discovered /dav/addressbooks/alice/",
+            "negotiated CardDAV [1, 3, addressbook]",
+        ]
+    );
+}
+
+#[test]
+fn config_debug_shows_the_observer_without_leaking_the_password() {
+    // Hand-written because a `dyn` observer is not `Debug`, so the redaction the derive
+    // inherited from `Credentials` is asserted here.
+    let config = CardDavConfig::new("https://dav.example.com", alice("hunter2"));
+    let shown = format!("{config:?}");
+    assert!(shown.contains("alice") && shown.contains("dav.example.com"));
+    assert!(
+        !shown.contains("hunter2"),
+        "password must not leak: {shown}"
+    );
+    assert!(shown.contains("connect_observer: false"), "{shown}");
+
+    let observed = config.with_connect_observer(Arc::new(Steps::default()));
+    assert!(format!("{observed:?}").contains("connect_observer: true"));
+}
+
+fn alice(password: &str) -> Credentials {
+    Credentials::Basic {
+        username: "alice".to_owned(),
+        password: password.to_owned(),
+    }
 }

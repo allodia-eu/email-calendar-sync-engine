@@ -8,27 +8,9 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-
-/// A blocking mock HTTP server answering one canned response per connection — the
-/// same shape `provider-jmap`'s tests use.
-fn mock_server(responses: Vec<String>) -> String {
-    mock_server_bytes(responses.into_iter().map(String::into_bytes).collect())
-}
-
-fn mock_server_bytes(responses: Vec<Vec<u8>>) -> String {
-    use std::io::{Read, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().expect("local addr");
-    std::thread::spawn(move || {
-        for response in responses {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut buf = [0u8; 8192];
-            let _ = stream.read(&mut buf);
-            let _ = stream.write_all(&response);
-        }
-    });
-    format!("http://{addr}")
-}
+use crate::test_support::{
+    mock_server, mock_server_bytes, multistatus, options_response, redirect,
+};
 
 /// Serves canned responses and hands back every request's raw head, so a test can
 /// assert on the headers that actually went out (notably `Authorization`).
@@ -117,19 +99,6 @@ async fn binary_get_preserves_non_utf8_photo_bytes() {
             .expect("binary get"),
         photo
     );
-}
-
-fn multistatus(body: &str) -> String {
-    format!(
-        "HTTP/1.1 207 Multi-Status\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-}
-
-/// The `OPTIONS` answer `connect` consumes after discovery: a `DAV` compliance-class
-/// header and no body (RFC 4918 §10.1).
-fn options_response(dav: &str) -> String {
-    format!("HTTP/1.1 200 OK\r\nDAV: {dav}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 }
 
 #[tokio::test]
@@ -277,12 +246,6 @@ async fn a_replaying_fake_reports_no_http_version() {
 }
 
 /// A `307` pointing at `location`.
-fn redirect(location: &str) -> String {
-    format!(
-        "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    )
-}
-
 #[tokio::test]
 async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
     // The config carries the observer, so `connect` — not some observed variant of it
