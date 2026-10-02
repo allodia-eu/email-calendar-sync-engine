@@ -148,3 +148,45 @@ pub(crate) fn status(status: u16, body: &str) -> HttpResponse {
         retry_after: None,
     }
 }
+
+/// A blocking mock HTTP server answering one canned response per connection — the
+/// same shape `provider-jmap`'s tests use.
+pub(crate) fn mock_server(responses: Vec<String>) -> String {
+    mock_server_bytes(responses.into_iter().map(String::into_bytes).collect())
+}
+
+pub(crate) fn mock_server_bytes(responses: Vec<Vec<u8>>) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        for response in responses {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 8192];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(&response);
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// A `207 Multi-Status` answer carrying `body`.
+pub(crate) fn multistatus(body: &str) -> String {
+    format!(
+        "HTTP/1.1 207 Multi-Status\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// The `OPTIONS` answer `connect` consumes after discovery: a `DAV` compliance-class
+/// header and no body (RFC 4918 §10.1).
+pub(crate) fn options_response(dav: &str) -> String {
+    format!("HTTP/1.1 200 OK\r\nDAV: {dav}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+}
+
+/// A `307` sending the request on to `location`.
+pub(crate) fn redirect(location: &str) -> String {
+    format!(
+        "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+}

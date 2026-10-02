@@ -23,8 +23,15 @@ contact normalization share only the DAV transport/TLS layer.
 ## CardDAV contacts
 
 `CardDavProvider` starts at `/.well-known/carddav`, resolves the current
-principal and `addressbook-home-set`, snapshots address-book collections and
-rights, then binds one adapter to one address book. Cards sync with RFC 6578
+principal and `addressbook-home-set`, asks the home with `OPTIONS` whether it
+advertises the `addressbook` class (RFC 6352 §6.1), snapshots address-book
+collections and rights, then binds one adapter to one address book. A home that
+does not advertise the class connects with no contact capabilities, lists no
+address books, and every pass over it reads as `ContactSourceSync::Unavailable`:
+a server with nothing to offer is a capability the host reads, not an error, and
+a `405` answer to the `OPTIONS` is read the same way. The connect observer
+(`CardDavConfig::with_connect_observer`) sees each redirect, the home, and the
+classes the home advertised. Cards sync with RFC 6578
 `sync-collection`; expired tokens restart with a snapshot. Servers without that
 report use a CTag check followed by a full `addressbook-query`, retaining each
 resource ETag. Direct canonical refetch uses `addressbook-multiget`.

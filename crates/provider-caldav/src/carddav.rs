@@ -12,27 +12,32 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, ContactDestination, ContactPhoto,
-    ContactSourceSync, ContactWriteReceipt, ContactsProvider, Provider, ProviderResult, ScopeSync,
-    WriteGuard,
+    CalendarWrites, Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, ContactDestination,
+    ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt, ContactsProvider,
+    IgnoreConnectSteps, Provider, ProviderResult, ScopeSync, WriteGuard,
 };
-use engine_tls::TlsClientConfig;
 
 use crate::{
+    carddav_config::CardDavConfig,
     carddav_ops::{
-        bind_collection, contact_id, contact_report, contact_update, decode_data_uri,
-        discover_home, encode_segment, fallback_contact_sync, list_address_books, multiget_report,
-        normalize_response, require_writable, stable_suffix, supported_fields,
+        ADDRESSBOOK, advertised_classes, bind_collection, contact_id, contact_report,
+        contact_update, decode_data_uri, discover_home, encode_segment, fallback_contact_sync,
+        list_address_books, multiget_report, normalize_response, require_writable, stable_suffix,
+        supported_fields,
     },
     error::CalDavError,
-    transport::{Credentials, DavClient, DavExecutor, DavMethod, Precondition, WriteRequest},
+    transport::{DavClient, DavExecutor, DavMethod, Precondition, WriteRequest},
     vcard_write,
 };
 
 const LIST_CURSOR: &str = "carddav-address-book-list";
 
-/// What a CardDAV collection can do, gated on whether this principal may write to it.
-fn capabilities(writable: bool) -> Capabilities {
+/// What a CardDAV collection can do: nothing on a server that does not advertise address books,
+/// and otherwise gated on whether this principal may write to it.
+fn capabilities(advertised: bool, writable: bool) -> Capabilities {
+    if !advertised {
+        return Capabilities::none();
+    }
     let capabilities = Capabilities::none()
         .with_contacts()
         .with_contact_groups()
@@ -44,56 +49,10 @@ fn capabilities(writable: bool) -> Capabilities {
     }
 }
 
-/// CardDAV connection settings.
-#[derive(Debug, Clone)]
-pub struct CardDavConfig {
-    /// Server origin.
-    pub base_url: String,
-    /// HTTP authentication.
-    pub credentials: Credentials,
-    /// Discovery path, normally `/.well-known/carddav`.
-    pub discovery_path: String,
-    /// Home-relative name or absolute href of the bound address book.
-    pub address_book: String,
-    /// Shared TLS trust policy.
-    pub tls: TlsClientConfig,
-    /// Shared throttling policy (`docs/agent-guidance/http-throttling.md`).
-    pub retry: engine_http::RetryConfig,
-}
-
-impl CardDavConfig {
-    /// Creates settings bound to the `default` address book.
-    #[must_use]
-    pub fn new(base_url: impl Into<String>, credentials: Credentials) -> Self {
-        Self {
-            base_url: base_url.into(),
-            credentials,
-            discovery_path: "/.well-known/carddav".into(),
-            address_book: "default".into(),
-            tls: TlsClientConfig::default(),
-            retry: engine_http::RetryConfig::default(),
-        }
-    }
-
-    /// Binds a different address book.
-    #[must_use]
-    pub fn with_address_book(mut self, address_book: impl Into<String>) -> Self {
-        self.address_book = address_book.into();
-        self
-    }
-
-    /// Overrides TLS trust.
-    #[must_use]
-    pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
-        self.tls = tls;
-        self
-    }
-
-    /// Overrides the throttling policy.
-    #[must_use]
-    pub fn with_retry(mut self, retry: engine_http::RetryConfig) -> Self {
-        self.retry = retry;
-        self
+/// Why a pass over a server without address books reads as unavailable.
+fn no_address_books() -> ContactUnavailable {
+    ContactUnavailable {
+        reason: "This server does not offer address books for this account.".to_owned(),
     }
 }
 
@@ -108,6 +67,9 @@ pub struct CardDavProvider {
     /// silently turned a rebound provider read-only.
     writable_books: BTreeSet<AddressBookId>,
     writable: bool,
+    /// Whether the server advertised the `addressbook` class (RFC 6352 §6.1). Without it the
+    /// account has no contacts here, which is a capability the host reads, not an error.
+    advertised: bool,
     capabilities: Capabilities,
 }
 
@@ -123,12 +85,20 @@ impl core::fmt::Debug for CardDavProvider {
 }
 
 impl CardDavProvider {
-    /// Connects, discovers the address-book home, and binds one collection.
+    /// Connects, discovers the address-book home, asks it whether it supports CardDAV, and
+    /// binds one collection.
+    ///
+    /// A server that does not advertise the `addressbook` class connects with no contact
+    /// capabilities, and each pass over it reads as [`ContactSourceSync::Unavailable`].
     ///
     /// # Errors
     ///
     /// Returns [`CalDavError`] for transport, discovery, or malformed collection data.
     pub async fn connect(config: CardDavConfig) -> Result<Self, CalDavError> {
+        let observer: &dyn ConnectObserver = config
+            .connect_observer
+            .as_deref()
+            .unwrap_or(&IgnoreConnectSteps);
         let client = DavClient::new(
             &config.base_url,
             config.credentials,
@@ -139,6 +109,7 @@ impl CardDavProvider {
             Box::new(client),
             &config.discovery_path,
             &config.address_book,
+            observer,
         )
         .await
     }
@@ -147,24 +118,37 @@ impl CardDavProvider {
         executor: Box<dyn DavExecutor>,
         discovery_path: &str,
         address_book: &str,
+        observer: &dyn ConnectObserver,
     ) -> Result<Self, CalDavError> {
-        let home_href = discover_home(executor.as_ref(), discovery_path).await?;
+        let home_href = discover_home(executor.as_ref(), discovery_path, observer).await?;
+        observer.step(&ConnectStep::discovered(&home_href));
+        let classes = advertised_classes(executor.as_ref(), &home_href).await?;
+        let listed: Vec<&str> = classes.iter().map(String::as_str).collect();
+        observer.step(&ConnectStep::negotiated("CardDAV", &listed));
+        let advertised = classes
+            .iter()
+            .any(|class| class.eq_ignore_ascii_case(ADDRESSBOOK));
         let collection = bind_collection(&home_href, address_book)?;
-        let writable_books: BTreeSet<AddressBookId> =
+        // Nothing to list on a server without address books, so nothing is spent listing it.
+        let writable_books: BTreeSet<AddressBookId> = if advertised {
             list_address_books(executor.as_ref(), &home_href)
                 .await?
                 .into_iter()
                 .filter(|book| book.is_writable)
                 .map(|book| book.id)
-                .collect();
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         let writable = writable_books.contains(&collection);
         Ok(Self {
             executor,
             home_href,
-            capabilities: capabilities(writable),
+            capabilities: capabilities(advertised, writable),
             collection,
             writable_books,
             writable,
+            advertised,
         })
     }
 
@@ -183,7 +167,7 @@ impl CardDavProvider {
         Ok(Self {
             collection,
             writable,
-            capabilities: capabilities(writable),
+            capabilities: capabilities(self.advertised, writable),
             ..self
         })
     }
@@ -237,6 +221,9 @@ impl ContactsProvider for CardDavProvider {
         _account: &AccountId,
         _cursor: Option<&SyncState>,
     ) -> ProviderResult<ContactSourceSync<AddressBook>> {
+        if !self.advertised {
+            return Ok(ContactSourceSync::Unavailable(no_address_books()));
+        }
         let books = list_address_books(self.executor.as_ref(), &self.home_href).await?;
         let present = books.iter().map(|book| book.id.key().clone()).collect();
         Ok(ContactSourceSync::Available {
@@ -253,6 +240,9 @@ impl ContactsProvider for CardDavProvider {
         _account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ContactSourceSync<ContactCard>> {
+        if !self.advertised {
+            return Ok(ContactSourceSync::Unavailable(no_address_books()));
+        }
         if cursor.is_some_and(|cursor| cursor.as_str().starts_with("ctag:")) {
             let sync = fallback_contact_sync(
                 self.executor.as_ref(),

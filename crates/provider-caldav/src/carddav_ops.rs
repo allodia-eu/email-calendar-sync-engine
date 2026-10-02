@@ -8,7 +8,7 @@ use engine_core::{
     sync::SyncUpdate,
     version::{ETag, RevisionTokens},
 };
-use engine_provider::ProviderResult;
+use engine_provider::{ConnectObserver, ConnectStep, ProviderResult};
 
 use crate::{
     dav::{DavResponse, MultiStatus},
@@ -25,15 +25,16 @@ use crate::{
 pub(crate) async fn discover_home(
     executor: &dyn DavExecutor,
     start: &str,
+    observer: &dyn ConnectObserver,
 ) -> Result<String, CalDavError> {
-    let first = principal_props(executor, start).await?;
+    let first = principal_props(executor, start, observer).await?;
     if let Some(home) = property(&first, "addressbook-home-set") {
         return Ok(home);
     }
     let principal = property(&first, "current-user-principal")
         .ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
     property(
-        &principal_props(executor, &principal).await?,
+        &principal_props(executor, &principal, observer).await?,
         "addressbook-home-set",
     )
     .ok_or_else(|| CalDavError::protocol("CardDAV address-book home missing"))
@@ -42,6 +43,7 @@ pub(crate) async fn discover_home(
 async fn principal_props(
     executor: &dyn DavExecutor,
     href: &str,
+    observer: &dyn ConnectObserver,
 ) -> Result<MultiStatus, CalDavError> {
     let mut href = href.to_owned();
     for _ in 0..4 {
@@ -61,6 +63,7 @@ async fn principal_props(
             let next = redirect_href(&href, &location).ok_or_else(|| {
                 CalDavError::protocol(format!("unresolvable redirect to {location:?}"))
             })?;
+            observer.step(&ConnectStep::redirected(&href, &next));
             if !executor.adopt_origin(&next) {
                 return Err(CalDavError::protocol(
                     "a discovery redirect left TLS; refusing to send the credential in the clear",
@@ -74,6 +77,36 @@ async fn principal_props(
     Err(CalDavError::protocol(
         "too many CardDAV discovery redirects",
     ))
+}
+
+/// The RFC 6352 §6.1 compliance class a server advertises when it supports CardDAV.
+pub(crate) const ADDRESSBOOK: &str = "addressbook";
+
+/// The compliance classes the address-book home lists in the `DAV:` header of an `OPTIONS`
+/// response, sorted so two traces compare.
+///
+/// Asked of the home rather than the connection's root, because the header belongs to a DAV
+/// resource and a site root need not be one. A response without the header, whatever its
+/// status, lists nothing: a server may answer `OPTIONS` with a `405`, and failing the connect
+/// over it would turn "no address books here" into an error. A transport failure still
+/// propagates, like every other discovery step.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] on a transport failure.
+pub(crate) async fn advertised_classes(
+    executor: &dyn DavExecutor,
+    home: &str,
+) -> Result<Vec<String>, CalDavError> {
+    let response = executor.send_options(home).await?;
+    let mut classes: Vec<String> = response
+        .dav_classes()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    classes.sort();
+    classes.dedup();
+    Ok(classes)
 }
 
 fn property(status: &MultiStatus, name: &str) -> Option<String> {

@@ -244,8 +244,12 @@ token in the `DAV:` header of an `OPTIONS` response (RFC 6638 §2), which is a r
 `false` on a SabreDAV without its scheduling plugin, so it is discovered rather than
 assumed.
 
-CardDAV advertises `contacts`, contact groups/photos, and guarded writes when the
-bound address book grants write privileges. Mail methods are not supported.
+CardDAV advertises `contacts` and contact groups/photos **when the server advertises
+address books** (the `addressbook` token in the `DAV:` header of an `OPTIONS` on the
+address-book home, RFC 6352 §6.1), and guarded writes when the bound address book
+grants write privileges. A home without the token connects with no contact
+capabilities and each pass reads as `ContactSourceSync::Unavailable`. Mail methods are
+not supported.
 
 ### Connection example
 
