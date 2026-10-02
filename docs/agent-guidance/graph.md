@@ -519,6 +519,15 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   move is rejected if it would change the time *form* (`has_same_form`). The raw Graph
   event JSON is preserved beside the projection in `Event::extended`
   (`"microsoft.graph/event"`), since Graph is neither iCal nor JSCalendar.
+  - **The ETag a create echoes is current, so guarding the next write on it is sound.** Measured
+    on both mailbox kinds a host meets, an outlook.com account and an Exchange Online tenant
+    mailbox: create an event, read it straight back, and `@odata.etag` is byte-identical. Worth
+    knowing because a `412 ErrorIrresolvableConflict` on the patch in
+    `tests/live_calendar.rs` was once put down to the echo being stale on a work mailbox. It is
+    not: that suite passes five runs running against a tenant mailbox, and again beside the
+    recurrence and survival suites, and the read-back above says the echo was never the
+    explanation. If the `412` returns, read the event back at the point of the failure and compare
+    the two ETags before suspecting the guard.
 - **Both scheduling capabilities are constants here** (issue #105).
   `Capabilities::calendar_scheduling` is `true` — the service sends the iTIP
   `REQUEST`/`REPLY`/`CANCEL` a write implies, with no opt-out a client can reach (the
