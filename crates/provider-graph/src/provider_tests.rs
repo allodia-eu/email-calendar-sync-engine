@@ -59,12 +59,10 @@ async fn advertises_per_folder_scopes_and_mail_capability() {
     .unwrap();
     let with_names =
         GraphProvider::new(fake_client(vec![]), folder.clone()).with_keyword_names(vec![named]);
-    assert!(
-        with_names
-            .connection_info()
-            .capabilities
-            .sent_copy_keywords()
-    );
+    let caps = with_names.connection_info().capabilities;
+    assert!(caps.sent_copy_keywords());
+    // `sendMail` files the copy a moment after it answers, so they are kept after the send.
+    assert!(caps.sent_copy_keywords_deferred());
     // A fixture-fed fake transport speaks neither HTTP nor TLS, so it observes
     // neither version.
     assert_eq!(info.http_version, None);

@@ -728,6 +728,15 @@ event's **`UID`** (`event:{uid}`) — the cross-system identity, which exists *b
 create has a provider id and survives a transport that assigns its own (JMAP), so writes to
 one event never race on either provider.
 
+- **A send can leave one follow-up.** On an adapter that keeps a draft's `sent_copy_keywords`
+  after the send (`Capabilities::sent_copy_keywords_deferred`: Graph, whose `sendMail` files the
+  copy itself a moment later), a delivered send enqueues, without claiming, a `MailEdit::SetKeywords`
+  on the copy's key, idempotent by `sent-copy-keywords:<Message-ID>`. The inline `submit_mail` and a
+  send the drainer delivers both record it, so the send's answer never waits for the copy. The
+  adapter answers the edit **retryable** while the copy is not there yet, so it rides the store's
+  backoff like any other write. A store failure recording it is not the send's: the op is settled
+  and the message has gone, so it only leaves the keywords off the copy.
+
 - **The payload is the intent, not the rendered bytes.** A calendar patch stores the
   `EventEdit` — which occurrence, and what changed — never the document it produced. That is
   what makes a `Conflict` recoverable: the retry re-applies the edit to a **freshly fetched**

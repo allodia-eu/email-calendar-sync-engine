@@ -186,13 +186,18 @@ message that Outlook shows the person. So a keyword a draft asks for on its file
 (`GraphProvider::with_keyword_names`, taking `KeywordName`s), and only then does the adapter
 advertise `sent_copy_keywords` (`crate::categories`).
 
-- **After the send, never inside it.** `sendMail` answers `202` and files the copy a moment
-  later, with no id. The copy is looked up in Sent Items by the `internetMessageId` the MIME
-  carried (`$filter=internetMessageId eq '<…>'`), after each wait of a short schedule (five
-  tries over about five seconds; a live mailbox shows it within about three), and given the
-  category with a `PATCH {categories}` that keeps any the person set. The message is delivered
-  before any of it starts: a copy not found or a refused `PATCH` only leaves the keyword out of
-  `SubmissionReceipt::sent_copy_keywords`.
+- **After the send, never inside it, and not while the send waits.** `sendMail` answers `202`
+  and files the copy a moment later, with no id, so the adapter keeps nothing within the send:
+  the receipt's `sent_copy_keywords` is empty and the adapter advertises
+  `sent_copy_keywords_deferred`. The outbox then records a `MailEdit::SetKeywords` on the copy's
+  `sent:<Message-ID>` placeholder key (`engine-sync`'s `record_deferred_keywords`), and the drainer
+  applies it. The adapter resolves a placeholder by looking the copy up in Sent Items by the
+  `internetMessageId` the MIME carried (`$filter=internetMessageId eq '<…>'`; a live mailbox shows
+  it within about three seconds), answers **retryable** while it is not there, so the outbox tries
+  again on its own backoff, and gives it the category with a `PATCH {categories}` that keeps any
+  the person set. The edit resolves to the copy's own id. The same `SetKeywords` sets or clears a
+  named keyword on any synced message, beside `$seen`/`$flagged` in one `PATCH`; a keyword without
+  a registered name is still refused.
 - **One category per keyword, whatever the device's language.** Before its first tag an adapter
   asks Sent Items for a message already carrying any of the keyword's names
   (`categories/any(c:c eq '…') or …`) and settles on the name it finds, creating the category
@@ -204,8 +209,9 @@ advertise `sent_copy_keywords` (`crate::categories`).
   `MESSAGE_STATE_SELECT`), and a category matching a registered name, ignoring case, is reported
   as the keyword. Any other category is the person's own and reports nothing. A category change
   arrives in the folder's `messages/delta` (live-verified).
-- **Live-verified** (`tests/live_sent_copy_categories.rs`): the receipt keeps the keyword, the
-  Sent copy syncs back carrying it, and a second adapter registering the names the other way
+- **Live-verified** (`tests/live_sent_copy_categories.rs`): the receipt keeps nothing, the edit
+  on the placeholder answers retryable until the copy is filed and then resolves to its id, the
+  Sent copy syncs back carrying the keyword, and a second adapter registering the names the other way
   round tags its copy with the category the first created. The copy delivered to the Inbox
   carries none.
 

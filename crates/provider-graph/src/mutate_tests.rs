@@ -12,6 +12,7 @@ use engine_provider::MailEdit;
 use super::*;
 use crate::{
     GraphClient,
+    categories::Categories,
     test_support::{capturing_server, fake_client, fake_client_fallible, json, retry, tls},
 };
 
@@ -72,7 +73,9 @@ async fn set_keywords_with_both_sides_empty_is_a_no_op() {
         add: set(&[]),
         remove: set(&[]),
     };
-    let receipt = edit_mail(&client, &edit).await.unwrap();
+    let receipt = edit_mail(&client, &Categories::default(), &edit)
+        .await
+        .unwrap();
     assert_eq!(receipt.message_key, target());
 }
 
@@ -81,7 +84,9 @@ async fn set_keywords_patches_and_returns_the_target_key() {
     // Routed to the captured real PATCH response; the receipt carries the unchanged key.
     let client = fake_client(vec![("/messages/message-write", json(PATCHED))]);
     let edit = MailEdit::mark_seen(target(), true);
-    let receipt = edit_mail(&client, &edit).await.unwrap();
+    let receipt = edit_mail(&client, &Categories::default(), &edit)
+        .await
+        .unwrap();
     assert_eq!(receipt.message_key, target());
 }
 
@@ -91,7 +96,9 @@ async fn move_returns_the_unchanged_target_key() {
     // receipt key is the target; the destination reconciles on its next sync.
     let client = fake_client(vec![("/messages/message-write/move", json(MOVED))]);
     let edit = MailEdit::move_to(target(), MailboxId::try_from("folder-archive").unwrap());
-    let receipt = edit_mail(&client, &edit).await.unwrap();
+    let receipt = edit_mail(&client, &Categories::default(), &edit)
+        .await
+        .unwrap();
     assert_eq!(receipt.message_key, target());
 }
 
@@ -100,7 +107,7 @@ async fn delete_succeeds_and_is_idempotent_on_404() {
     // A 204 (no body) → success.
     let ok = fake_client(vec![("/permanentDelete", serde_json::Value::Null)]);
     assert_eq!(
-        edit_mail(&ok, &MailEdit::delete(target()))
+        edit_mail(&ok, &Categories::default(), &MailEdit::delete(target()))
             .await
             .unwrap()
             .message_key,
@@ -108,7 +115,11 @@ async fn delete_succeeds_and_is_idempotent_on_404() {
     );
     // Already gone (404) → idempotent success.
     let gone = fake_client_fallible(vec![("/permanentDelete", Err((404, json("{}"))))]);
-    assert!(edit_mail(&gone, &MailEdit::delete(target())).await.is_ok());
+    assert!(
+        edit_mail(&gone, &Categories::default(), &MailEdit::delete(target()))
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -118,7 +129,7 @@ async fn delete_propagates_an_ambiguous_re_delete() {
     let body =
         serde_json::json!({ "error": { "code": "ErrorCannotDeleteObject", "message": "no" } });
     let client = fake_client_fallible(vec![("/permanentDelete", Err((403, body)))]);
-    let err = edit_mail(&client, &MailEdit::delete(target()))
+    let err = edit_mail(&client, &Categories::default(), &MailEdit::delete(target()))
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);
@@ -137,7 +148,9 @@ async fn writes_send_the_expected_request_shapes_over_the_real_transport() {
         add: set(&[SystemKeyword::Seen, SystemKeyword::Flagged]),
         remove: set(&[]),
     };
-    edit_mail(&client, &edit).await.unwrap();
+    edit_mail(&client, &Categories::default(), &edit)
+        .await
+        .unwrap();
     let req = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
         req.starts_with("PATCH /me/messages/message-write "),
@@ -152,7 +165,9 @@ async fn writes_send_the_expected_request_shapes_over_the_real_transport() {
     let (base, rx) = capturing_server("201 Created", MOVED);
     let client = GraphClient::with_base("tok", base, tls(), &retry()).unwrap();
     let edit = MailEdit::move_to(target(), MailboxId::try_from("folder-archive").unwrap());
-    edit_mail(&client, &edit).await.unwrap();
+    edit_mail(&client, &Categories::default(), &edit)
+        .await
+        .unwrap();
     let req = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
         req.starts_with("POST /me/messages/message-write/move "),
@@ -165,7 +180,7 @@ async fn writes_send_the_expected_request_shapes_over_the_real_transport() {
     // 3. Delete → POST /me/messages/{id}/permanentDelete (empty body).
     let (base, rx) = capturing_server("204 No Content", "");
     let client = GraphClient::with_base("tok", base, tls(), &retry()).unwrap();
-    edit_mail(&client, &MailEdit::delete(target()))
+    edit_mail(&client, &Categories::default(), &MailEdit::delete(target()))
         .await
         .unwrap();
     let req = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
