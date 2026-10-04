@@ -202,6 +202,11 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   (`mutate_tests`) **and** a live round-trip (`live_archive_to_all_mail_…`).
   `Delete` is a **permanent** delete past Trash — enabled by the full `mail.google.com`
   scope. A `412` is a `Conflict` the outbox resolves by refetch-and-retry.
+- **A `messages.send` that loses its answer needs confirming.** It goes through
+  `GoogleClient::submit`, which waits the `submission` bound for the reply. Once the request
+  may have reached Gmail, a failure (a timeout or a dropped connection) is
+  `ProviderError::needs_confirmation`, never a retry; before it (connect, handshake, a body
+  Gmail stopped taking) it is `Retryable` (`deadlines.md`).
 - **`submit_email`** → `messages.send` with the whole RFC 5322 message as a base64url
   `raw` field, assembled through the shared `engine-rfc5322` (filed variant, keeping the
   `Bcc` header on the Sent copy). **Gmail rewrites the caller's `Message-ID` on send** (a

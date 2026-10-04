@@ -17,6 +17,7 @@ Read before relevant work:
 - `docs/agent-guidance/graph.md` before touching the Microsoft Graph mail client (`provider-graph`, the Graph mail sync path, or the OAuth/capture tool under `tools/graph-oauth/`).
 - `docs/agent-guidance/google.md` before touching the Google (Gmail + Google Calendar) client (`provider-google`, the Gmail/Calendar sync paths, or the OAuth/capture tool under `tools/google-oauth/`).
 - `docs/agent-guidance/http-throttling.md` before touching how an HTTP provider answers a `429` (`engine-http`, a provider's transport send path, or a host's throttle reporting).
+- `docs/agent-guidance/deadlines.md` before touching how long a provider waits on a server (`engine_provider::Deadlines`, a transport's connect, read or write, `engine-http`'s send funnel, or what a timed-out submission is classified as).
 - `docs/agent-guidance/tls.md` before touching TLS trust (`engine-tls`, a provider's transport/`connect` construction, or a host's certificate-trust wiring).
 - `docs/agent-guidance/store-and-sync.md` before touching the store trait, sync orchestration, or the outbox.
 - `docs/agent-guidance/search.md` before touching the query AST/DSL, the search executor, or projection→index rows.

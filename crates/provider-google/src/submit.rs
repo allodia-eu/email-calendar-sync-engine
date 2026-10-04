@@ -39,13 +39,16 @@ pub(crate) async fn send(
     let mime = engine_rfc5322::assemble_filed_message(draft, OffsetDateTime::now_utc())?;
     let raw = base64url::encode(&mime);
     let body = serde_json::to_vec(&serde_json::json!({ "raw": raw })).map_err(GoogleError::from)?;
+    // Once it may have reached Gmail the message may have been sent, so a failure from then
+    // on needs confirming rather than retrying.
     let response = client
-        .post(
+        .submit(
             &client.url("/gmail/v1/users/me/messages/send"),
             "application/json",
             body,
         )
-        .await?;
+        .await
+        .map_err(GoogleError::into_submission_error)?;
     let key = sent_key(response.as_ref(), draft)?;
     // A placeholder key addresses nothing Gmail knows, so there is no copy to label.
     let kept = if key.as_str().starts_with("sent:") {

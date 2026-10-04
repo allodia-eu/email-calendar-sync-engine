@@ -6,7 +6,7 @@
 //! so it can rebase a foreign advertised origin onto the connection (see
 //! [`SessionUrlPolicy`](crate::SessionUrlPolicy)).
 
-use engine_http::{ObservedConnection, RetryConfig, send_retrying};
+use engine_http::{Exchange, ObservedConnection, RetryConfig, send_retrying};
 use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{Client, RequestBuilder, StatusCode, header::WWW_AUTHENTICATE, redirect::Policy};
@@ -49,7 +49,7 @@ impl Transport {
         tls: &TlsClientConfig,
         retry: &RetryConfig,
     ) -> Result<Self, JmapError> {
-        let client = tls.reqwest_builder().redirect(Policy::none()).build()?;
+        let client = engine_http::client(tls).redirect(Policy::none()).build()?;
         Ok(Self {
             client,
             scheme: NegotiatedScheme::new(credentials.preferred_scheme()),
@@ -99,13 +99,19 @@ impl Transport {
     ///
     /// This is the one funnel every request in this transport passes, so no path can
     /// forget either the version observation or the negotiation.
-    async fn send(&self, builder: RequestBuilder) -> Result<engine_http::Sent, JmapError> {
+    async fn send(
+        &self,
+        builder: RequestBuilder,
+        exchange: Exchange,
+    ) -> Result<engine_http::Sent, JmapError> {
         let scheme = self.scheme.get();
         // Cloned before the body is consumed, so a scheme switch replays the identical
         // request. Only a streaming body would refuse to clone, and this transport sends
         // none — every body is a JSON value or an owned byte vector.
         let replay = builder.try_clone();
-        let response = self.dispatch(self.authed(builder, scheme)).await?;
+        let response = self
+            .dispatch(self.authed(builder, scheme), exchange)
+            .await?;
         if response.status() != StatusCode::UNAUTHORIZED {
             return Ok(response);
         }
@@ -122,15 +128,19 @@ impl Transport {
             return Ok(response);
         };
         self.scheme.set(next);
-        self.dispatch(self.authed(replay, next)).await
+        self.dispatch(self.authed(replay, next), exchange).await
     }
 
     /// Ships a fully authenticated `builder`, recording the negotiated HTTP and TLS
     /// versions on the way through. The engine's shared client offers ALPN `h2` then
     /// `http/1.1` (`docs/agent-guidance/tls.md`), so this is HTTP/2 wherever the server
     /// supports it.
-    async fn dispatch(&self, builder: RequestBuilder) -> Result<engine_http::Sent, JmapError> {
-        let response = send_retrying(builder, &self.retry).await?;
+    async fn dispatch(
+        &self,
+        builder: RequestBuilder,
+        exchange: Exchange,
+    ) -> Result<engine_http::Sent, JmapError> {
+        let response = send_retrying(builder, &self.retry, exchange).await?;
         self.connection.record(&response);
         Ok(response)
     }
@@ -138,7 +148,7 @@ impl Transport {
     /// Sends an authenticated GET, returning the raw response so the caller can
     /// inspect a redirect's status and `Location` before reading any body.
     pub(crate) async fn get(&self, url: &str) -> Result<engine_http::Sent, JmapError> {
-        self.send(self.client.get(url)).await
+        self.send(self.client.get(url), Exchange::Ordinary).await
     }
 
     /// Opens an authenticated GET declaring `Accept: text/event-stream` — the JMAP
@@ -151,13 +161,22 @@ impl Transport {
             self.client
                 .get(url)
                 .header(reqwest::header::ACCEPT, "text/event-stream"),
+            Exchange::Ordinary,
         )
         .await
     }
 
-    /// POSTs `body` as JSON and parses a success response as a JSON value.
-    pub(crate) async fn post_json(&self, url: &str, body: &Value) -> Result<Value, JmapError> {
-        let resp = self.send(self.client.post(url).json(body)).await?;
+    /// POSTs `body` as JSON and parses a success response as a JSON value. `exchange` says
+    /// whether the request submits a message, which decides how long its reply may take.
+    pub(crate) async fn post_json(
+        &self,
+        url: &str,
+        body: &Value,
+        exchange: Exchange,
+    ) -> Result<Value, JmapError> {
+        let resp = self
+            .send(self.client.post(url).json(body), exchange)
+            .await?;
         read_json(resp).await
     }
 
@@ -165,7 +184,7 @@ impl Transport {
     /// for a message's raw RFC 5322 source (RFC 8620 §6.2). Maps a non-success
     /// status to [`JmapError::Status`] via [`error_for_status`].
     pub(crate) async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, JmapError> {
-        let resp = self.send(self.client.get(url)).await?;
+        let resp = self.send(self.client.get(url), Exchange::Ordinary).await?;
         Ok(error_for_status(resp).await?.bytes().await?)
     }
 
@@ -184,6 +203,7 @@ impl Transport {
                     .post(url)
                     .header(reqwest::header::CONTENT_TYPE, content_type.to_owned())
                     .body(bytes),
+                Exchange::Ordinary,
             )
             .await?;
         read_json(resp).await
@@ -220,3 +240,7 @@ pub(crate) async fn error_for_status(
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod transport_tests;
+
+#[cfg(test)]
+#[path = "deadline_tests.rs"]
+mod deadline_tests;

@@ -368,6 +368,12 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   RFC 8620 does not promise that, so a server that reorders would refuse the parent until a
   retry. `mailbox_writes` rides the `mail_writes` gate. Live: `tests/live_mailbox_writes.rs`,
   as the scratch account `carol@`.
+- **A submission that loses its answer needs confirming.** The batched `Email/set` +
+  `EmailSubmission/set` goes through `Executor::submit`, which waits the `submission`
+  bound for its reply. Once that request may have reached the server, a failure there (a
+  timeout or a dropped connection) is `ProviderError::needs_confirmation`, never a retry;
+  before it (connect, handshake, a body the server stopped taking) it is `Retryable`. The
+  context read and the blob uploads before it fail as they always did (`deadlines.md`).
 - **Push (EventSource → `Watch`).** `JmapWatcher` holds a **dedicated** long-lived
   `text/event-stream` connection to the session `eventSourceUrl` (RFC 8620 §7.3;
   opened `types=Email,Mailbox&closeafter=no&ping=<secs>`), parses the Server-Sent
@@ -382,7 +388,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   calendars), so a host never opens a watcher whose `Changed` could not map to a
   synced scope (`crate::watch`). Stalwart also
   advertises a WebSocket push channel (`supportsPush`); EventSource is chosen as the
-  simpler RFC-8620-core transport over the existing HTTP client.
+  simpler RFC-8620-core transport over the existing HTTP client. A stream that says
+  nothing for its `ping` interval plus the `reply` bound is a lost connection, `Retryable`,
+  so a host reconnects rather than waiting on a dead socket (`watch::quiet_bound`,
+  `deadlines.md`).
 - **Calendar (read).** `Calendar/get` → `Calendar`; `CalendarEvent/get` →
   JSCalendar `Event`, mapping the time model (`start` + `timeZone` → zoned;
   `timeZone: null` + `showWithoutTime` → all-day date; else floating), recurrence

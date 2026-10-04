@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite};
 
 use crate::{
-    deadline,
+    deadline::{self, BOUNDS},
     error::{ImapError, ImapResult},
     transport::Connection,
 };
@@ -20,32 +20,22 @@ use crate::{
 /// Generous enough for any real metadata response (and future body fetches).
 const MAX_LITERAL: usize = 64 * 1024 * 1024;
 
-/// How long a body read may go without a single byte from the server before its connection is
-/// given up for dead.
-///
-/// A bound on silence rather than on the whole read, because a body is one literal that can run
-/// to tens of megabytes over a slow link, and it arrives steadily however long it takes. A
-/// socket whose path died mid-response (a phone changing radio, a NAT dropping the mapping)
-/// sends nothing and reports nothing, and holds the read until the OS gives up retransmitting,
-/// which is many minutes. A server answers a `UID FETCH` in milliseconds, so a minute of nothing
-/// is not a slow server.
-pub(crate) const BODY_READ_STALL: Duration = Duration::from_mins(1);
-
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// Reads one logical line: bytes through the next `\n`, with any `{n}` literal
     /// the line announces inlined (the n bytes, then the continuation). Literals
     /// can themselves announce further literals, so this loops.
     ///
-    /// `pub(crate)` so the IDLE read loop ([`crate::idle`]) can consume the
-    /// unsolicited untagged responses the server streams while idling, reusing the
-    /// same literal-aware framing as the command path.
+    /// Every wait is bounded by [`Deadlines::reply`](engine_provider::Deadlines::reply): a
+    /// line is something a server owes. The one read that may wait without a bound is a
+    /// connection in `IDLE`, which [`crate::idle`] makes with
+    /// [`read_line_within`](Self::read_line_within) and the watch bounds by its keep-alive.
     pub(crate) async fn read_line(&mut self) -> ImapResult<Vec<u8>> {
-        self.read_line_within(None).await
+        self.read_line_within(Some(BOUNDS.reply())).await
     }
 
     /// [`read_line`](Self::read_line), failing with [`std::io::ErrorKind::TimedOut`] once
-    /// `stall` passes without a byte arriving. A literal is read in pieces so that the bound
-    /// is on each wait, never on the whole literal.
+    /// `stall` passes without a byte arriving, or never when it is `None`. A literal is read
+    /// in pieces so that the bound is on each wait, never on the whole literal.
     pub(crate) async fn read_line_within(
         &mut self,
         stall: Option<Duration>,

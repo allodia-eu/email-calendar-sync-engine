@@ -68,8 +68,8 @@ is authoritative for the `provider-caldav` calendar client.
   the `ImapWatcher`), `smtp` (the submission *conversation*; the RFC 5322/MIME
   message assembly it feeds to `DATA` is the shared `engine-rfc5322` crate — see
   **SMTP submission**), `smtp_stream` (its framing: reading a reply, writing a command
-  or the message), `deadline` (how long a dial or a submission waits on a silent
-  server), `pool` + `account` (the per-account connection budget — see
+  or the message), `deadline` (how IMAP and SMTP apply the shared bounds on a silent
+  server, `deadlines.md`), `pool` + `account` (the per-account connection budget — see
   **Connections** below), `provider` (the `Provider` impl).
 
 ## How IMAP differs from JMAP (the shape)
@@ -533,22 +533,22 @@ credential.
 - **Per-recipient acceptance/rejection** is captured from each `RCPT TO` reply (a
   `250` accept, a `550` reject). The message still goes to the accepted recipients;
   if none accept, it is a permanent rejection with no `DATA`.
-- **A server that stops answering never holds a send** (`deadline.rs`). The TCP connect
-  and the TLS handshake are each bounded by `DIAL_STALL` (30 s); the greeting, every reply
-  before the end of the message, and each 8 KiB piece of a write by `REPLY_STALL` (1 min);
-  the reply to the final `.` by `DATA_ACK_STALL` (10 min, RFC 5321 §4.5.3.2.6). A bound that
-  fires is an `Io` `TimedOut`, so it is classified exactly as a connection lost at the same
-  point: **retryable** anywhere before the end of the message, because nothing has been
-  submitted and the outbox may send it again, and **ambiguous** after it (below), never
-  retried. Unbounded, a server that accepts the connection and never speaks (a paused
-  process behind a port forwarder, a captive portal, a dead NAT mapping) holds a send
-  forever, in no queue the host can retry or the user can edit. The probes
-  (`extensions`, `negotiate_starttls`) share the same reads and bounds, and the IMAP dial
-  (`dial::open_secured`) shares `DIAL_STALL` and gives its greeting `REPLY_STALL`.
+- **A server that stops answering never holds a send** (`deadline.rs`, by the shared
+  `Deadlines` of `deadlines.md`). The TCP connect and the TLS handshake are each bounded by
+  `dial` (30 s); the greeting and every reply before the end of the message by `reply`
+  (1 min); each 8 KiB piece of a write by `stall` (1 min); the reply to the final `.` by
+  `submission` (10 min, RFC 5321 §4.5.3.2.6). A bound that fires is an `Io` `TimedOut`, so it
+  is classified exactly as a connection lost at the same point: **retryable** anywhere before
+  the end of the message, because nothing has been submitted and the outbox may send it
+  again, and **ambiguous** after it (below), never retried. Unbounded, a server that accepts
+  the connection and never speaks (a paused process behind a port forwarder, a captive
+  portal, a dead NAT mapping) holds a send forever, in no queue the host can retry or the
+  user can edit. The probes (`extensions`, `negotiate_starttls`) share the same reads and
+  bounds, and the IMAP dial (`dial::open_secured`) shares `dial`.
 - **Post-`DATA` disposition.** `2xx` → delivered; `5xx` → permanent rejection;
   `4xx` → transient (retryable — the message was not queued); any **unreadable
   acknowledgement once the message bytes are on the wire** — a dropped connection,
-  a reply that did not come within `DATA_ACK_STALL`, *or* a malformed final reply —
+  a reply that did not come within the `submission` bound, *or* a malformed final reply —
   → **ambiguous** (never a plain transport error, so
   an already-sent message is never reported as a clean failure). The
   ambiguous case becomes `ProviderError::needs_confirmation`, which
@@ -752,10 +752,15 @@ folders into Trash is proven offline only: all three servers file a folder insid
   selection is forgotten *before* a `SELECT`/`EXAMINE` is sent, because a refused one
   deselects (§6.3.1). A write always `SELECT`s again. `ImapPool::acquire_for(mailbox)`
   hands a read a parked connection that already has its mailbox open.
-- **A read that goes silent is a lost connection.** Every read of a body response is
-  bounded by `transport_read::BODY_READ_STALL` (60 s) of *silence*, never of the whole
-  body, and fails `Retryable`; a single fetch that lost its connection is tried once more
-  on one proved alive (`fetch::fetch_from_pool`).
+- **A server that goes silent mid-session is a lost connection.** `Connection::read_line`
+  waits `reply` (1 min) for each line, so the greeting and every command's response are
+  bounded without a call site having to ask; each read of a body literal waits `stall`
+  (1 min) of *silence*, never the whole body; and every write, an `APPEND` literal included,
+  goes out 8 KiB a piece under `stall` (`deadline::write`). Each fails `Retryable`, and the
+  pool discards the connection (`PooledConnection::settle`); a single fetch that lost its
+  connection is tried once more on one proved alive (`fetch::fetch_from_pool`). The one
+  read without a bound of its own is a connection in `IDLE`, which the watch bounds by its
+  keep-alive (below).
 - **Batches: one `UID FETCH <set> (BODY.PEEK[])` per mailbox** (`fetch_batch.rs`,
   `Provider::fetch_message_sources`). A warm of thousands of bodies one request at a time
   spends its time on round trips, not bytes; a set costs one round trip plus its bytes,
@@ -804,7 +809,11 @@ folders into Trash is proven offline only: all three servers file a folder insid
   every reconnect**; and (3) the mandatory **~28-minute keep-alive re-`IDLE`** (under
   RFC 2177's 29-minute rule), which doubles as a liveness probe and a backstop sync
   trigger — and whose pre-re-`IDLE` `DONE` drain converts a boundary change into
-  `Changed` rather than swallowing it. The keep-alive interval is the one host-supplied
+  `Changed` rather than swallowing it. The wait in `IDLE` is the one read in the crate the
+  `reply` bound does not cover, because silence is what `IDLE` is; the `DONE` drain does
+  get it, so a server that never completes `DONE` is a lost connection
+  (`watch_tests::an_idle_is_bounded_by_its_keepalive_and_the_done_by_the_reply_bound`).
+  The keep-alive interval is the one host-supplied
   knob (a protocol timer, clamped to a sane range; default 28 min, shorter on mobile to
   detect a dead link sooner), not a product policy — **scheduling and reconnect/backoff
   live in the host**, not the engine.

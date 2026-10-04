@@ -345,3 +345,38 @@ async fn connect_without_event_source_url_is_not_watchable() {
     .unwrap_err();
     assert_eq!(err.class(), FailureClass::InvalidState);
 }
+
+#[tokio::test]
+async fn a_stream_that_pings_is_kept_and_one_that_stops_is_a_lost_connection() {
+    // A healthy stream is silent between events and pings on the interval it was asked for,
+    // so the stall bound a body read gets would cut it off. Its own bound is the interval
+    // and then a reply bound for the ping that is owed.
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n".to_owned();
+    let ping = "event: ping\ndata: {\"interval\":30}\n\n".to_owned();
+    let every = DEFAULT_EVENT_SOURCE_PING;
+    let url = engine_http::test_server::trickling(head, ping, 5, every).await;
+    let tls = engine_tls::TlsClientConfig::bundled();
+    let client = engine_http::client(&tls).build().expect("client");
+    let response = client.get(url).send().await.expect("stream");
+    let quiet = quiet_bound(every);
+    let source = Box::new(ResponseChunks { response, quiet });
+    let mut watcher = JmapWatcher::from_source(source, &[JmapDataType::Email]);
+    tokio::time::pause();
+
+    for _ in 0..5 {
+        assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::KeepAlive);
+    }
+    let started = tokio::time::Instant::now();
+    let err = tokio::time::timeout(Duration::from_hours(1), watcher.next_event())
+        .await
+        .expect("hung: nothing bounded a silent event stream")
+        .expect_err("a stream that stops pinging is lost");
+
+    let elapsed = started.elapsed();
+    let bound = every + engine_provider::Deadlines::STANDARD.reply();
+    assert!(
+        elapsed >= bound && elapsed < bound + Duration::from_secs(1),
+        "expected {bound:?}, took {elapsed:?}"
+    );
+    assert_eq!(err.class(), FailureClass::Retryable);
+}

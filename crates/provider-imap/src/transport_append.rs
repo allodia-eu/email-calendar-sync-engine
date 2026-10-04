@@ -5,7 +5,7 @@
 //! transport — everything else it speaks reads or reconciles — and they are what
 //! [`crate::place`] drives to file a sent copy or save a draft.
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     error::{ImapError, ImapResult},
@@ -40,8 +40,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             self.quoted_name(mailbox),
             message.len()
         );
-        self.inner.write_all(header.as_bytes()).await?;
-        self.inner.flush().await?;
+        self.send_raw(header.as_bytes()).await?;
         // The server may emit untagged responses (e.g. `* n EXISTS`) before the `+`
         // continuation request; skip them and wait for the continuation (RFC 9051
         // §7 allows unsolicited untagged responses at any point).
@@ -58,9 +57,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 String::from_utf8_lossy(&line).trim()
             )));
         }
-        self.inner.write_all(message).await?;
-        self.inner.write_all(b"\r\n").await?;
-        self.inner.flush().await?;
+        // The literal goes a piece at a time, each under the stall bound, so a large message
+        // moves however slowly it must and a server that stops reading cannot hold it.
+        self.send_raw(message).await?;
+        self.send_raw(b"\r\n").await?;
         let response = self.read_response(&tag).await?;
         Ok(parse_append_uid(&response.detail))
     }

@@ -123,7 +123,7 @@ Every write is a durable pending operation before any provider side effect:
 - Pending operations may depend on earlier operations. Offline create-then-edit flows use local ids and dependency ordering until provider ids are known.
 - SMTP sends generate a stable MIME message and Message-ID before submission.
 - SMTP recipient handling records pre-DATA partial acceptance/rejection before any DATA phase.
-- Ambiguous post-DATA SMTP failures enter `NeedsConfirmation`; the engine never blindly retries a possibly delivered message.
+- Ambiguous submissions (an SMTP failure after `DATA`, an HTTP submission that failed once it may have reached the server, a timeout at either) enter `NeedsConfirmation`; the engine never blindly retries a possibly delivered message (`deadlines.md`).
 - `NeedsConfirmation` resolves through sync reconciliation, generated Message-ID lookup, or explicit user/host confirmation.
 - Sent-folder placement reconciles by generated Message-ID where the provider does not submit and file atomically.
 - JMAP submission uses `EmailSubmission/set` and `onSuccessUpdateEmail` when available.

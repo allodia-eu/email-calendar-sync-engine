@@ -450,8 +450,11 @@ dependencies = [
 name = "engine-http"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "engine-provider",
  "engine-tls",
+ "http",
+ "http-body",
  "httpdate",
  "rcgen",
  "reqwest",

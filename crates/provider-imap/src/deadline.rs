@@ -1,50 +1,41 @@
-//! How long a dial or a submission waits on a server that has stopped answering.
+//! How long IMAP and SMTP wait on a server that has stopped answering.
 //!
-//! A server that accepted the connection and then says nothing (a paused process behind a
-//! port forwarder, a captive portal, a stalled middlebox, a NAT mapping that died) reports
-//! nothing either, and a read waits on it forever. Bounded here: every TCP connect and TLS
-//! handshake, the IMAP and SMTP greetings, and the whole SMTP conversation, probes included.
-//! A body read has its own bound
-//! ([`BODY_READ_STALL`](crate::transport_read::BODY_READ_STALL)).
+//! The bounds are the shared [`Deadlines`]; this module applies them to a socket:
+//!
+//! | Wait | Bound |
+//! |---|---|
+//! | TCP connect, TLS handshake | [`dial`](Deadlines::dial), each |
+//! | an IMAP or SMTP greeting, every line of an IMAP command's response, every SMTP reply before the message | [`reply`](Deadlines::reply), per line |
+//! | each read of a body (a `FETCH` literal) and each piece of a write (a command, an `APPEND` literal, an SMTP message) | [`stall`](Deadlines::stall), per piece |
+//! | SMTP's reply to the final `.` | [`submission`](Deadlines::submission) |
+//!
+//! The one wait left open is a connection in `IDLE`, which is silent on purpose and is bounded
+//! by the watch's own keep-alive (`crate::watch`).
 //!
 //! A bound that fires is an [`ImapError::Io`](crate::ImapError::Io) of kind
 //! [`io::ErrorKind::TimedOut`], the same error a connection lost at that point gives, so it is
-//! classified wherever that one is: a retryable failure before an SMTP message has been handed
-//! over, and an ambiguous send once it has (`smtp::converse`).
+//! classified wherever that one is: a retryable failure everywhere but after an SMTP message
+//! has been handed over, where the send is ambiguous (`smtp::converse`).
 
 use std::{io, time::Duration};
 
-use tokio::net::TcpStream;
+use engine_provider::Deadlines;
+use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
+};
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
 use crate::error::ImapResult;
 
-/// How long a TCP connect, and then the TLS handshake over it, may each take.
-///
-/// Both are a few round trips to a server that is up, so half a minute leaves room for a
-/// congested mobile link and none for a server that is not answering. Unbounded, a connect
-/// waits out the OS's own retries (over two minutes on Linux) and a handshake waits forever.
-pub(crate) const DIAL_STALL: Duration = Duration::from_secs(30);
+/// The bounds IMAP and SMTP wait by: the engine's one set.
+pub(crate) const BOUNDS: Deadlines = Deadlines::STANDARD;
 
-/// How long a server may stay silent when it owes the client an answer: an IMAP or SMTP
-/// greeting, and every SMTP reply before the message has been handed over. It also bounds
-/// each piece of an SMTP write, so a server that has stopped reading cannot hold one.
+/// How large a piece of a write is given its own bound.
 ///
-/// RFC 5321 §4.5.3.2 asks for five minutes per command, written for relays between busy
-/// transfer agents. A submission server answers an interactive client in well under a
-/// second, and a greeting delayed against spam is a matter of seconds, so a minute of
-/// nothing is not a slow server. Until this fires the send is in nobody's queue: the host
-/// cannot retry it and the user cannot edit it.
-pub(crate) const REPLY_STALL: Duration = Duration::from_mins(1);
-
-/// How long an SMTP server may take to acknowledge the end of a message (its reply to the
-/// final `.`).
-///
-/// Ten minutes, as RFC 5321 §4.5.3.2.6 asks, because the server may still be filtering the
-/// message and this is the one wait whose expiry cannot say what happened: the message may
-/// have been accepted, so the send becomes a question for the user rather than a retry.
-/// A shorter bound would ask that question of a server that was merely slow.
-pub(crate) const DATA_ACK_STALL: Duration = Duration::from_mins(10);
+/// Small enough that even a slow uplink moves one in seconds, so the bound is on a server that
+/// has stopped reading, never on the size of what is being written.
+const PIECE: usize = 8 * 1024;
 
 /// Awaits `io`, failing with [`io::ErrorKind::TimedOut`] once `limit` passes. `waiting` names
 /// what did not happen, for the error's text ("the server sent nothing").
@@ -61,17 +52,29 @@ pub(crate) async fn within<T>(
     })
 }
 
-/// Opens a TCP connection to `addr`, bounded by [`DIAL_STALL`].
+/// Writes `bytes` and flushes, giving the server [`stall`](Deadlines::stall) to take each
+/// piece, so a server that has stopped reading cannot hold a write once the socket buffers
+/// are full.
+pub(crate) async fn write(stream: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> io::Result<()> {
+    let waiting = "the server took nothing";
+    for piece in bytes.chunks(PIECE) {
+        within(BOUNDS.stall(), waiting, stream.write_all(piece)).await?;
+    }
+    within(BOUNDS.stall(), waiting, stream.flush()).await
+}
+
+/// Opens a TCP connection to `addr`, bounded by [`dial`](Deadlines::dial).
 ///
 /// # Errors
 ///
 /// [`ImapError::Io`](crate::ImapError::Io) when the connect fails or does not complete in time.
 pub(crate) async fn connect(addr: &str) -> ImapResult<TcpStream> {
     let waiting = "the server did not accept the connection";
-    Ok(within(DIAL_STALL, waiting, TcpStream::connect(addr)).await?)
+    Ok(within(BOUNDS.dial(), waiting, TcpStream::connect(addr)).await?)
 }
 
-/// Runs the TLS handshake over `tcp`, presenting `server_name`, bounded by [`DIAL_STALL`].
+/// Runs the TLS handshake over `tcp`, presenting `server_name`, bounded by
+/// [`dial`](Deadlines::dial).
 ///
 /// # Errors
 ///
@@ -82,7 +85,7 @@ pub(crate) async fn handshake(
     tcp: TcpStream,
 ) -> ImapResult<TlsStream<TcpStream>> {
     let waiting = "the server did not complete the TLS handshake";
-    Ok(within(DIAL_STALL, waiting, connector.connect(server_name, tcp)).await?)
+    Ok(within(BOUNDS.dial(), waiting, connector.connect(server_name, tcp)).await?)
 }
 
 #[cfg(test)]
@@ -92,3 +95,7 @@ mod tests;
 #[cfg(test)]
 #[path = "deadline_submit_tests.rs"]
 mod submit_tests;
+
+#[cfg(test)]
+#[path = "deadline_imap_tests.rs"]
+mod imap_tests;

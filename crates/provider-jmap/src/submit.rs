@@ -18,7 +18,7 @@ use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
     mail::{EmailAddress, Keyword, Mailbox, MailboxRole},
 };
-use engine_provider::{Draft, SubmissionReceipt};
+use engine_provider::{Draft, ProviderResult, SubmissionReceipt};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -40,12 +40,17 @@ struct SubmitContext {
 
 /// Sends `draft`: resolves context, uploads any attachment blobs, then creates +
 /// submits + files it.
+///
+/// The request that submits is the one whose failure can leave the send ambiguous: once it
+/// may have reached the server, the message may have been sent, so a failure there needs
+/// confirming rather than retrying ([`JmapError::into_submission_error`]). Everything before
+/// it sends nothing and fails as it always does.
 pub(crate) async fn send(
     executor: &dyn Executor,
     mail_account: &str,
     submission_account: &str,
     draft: &Draft,
-) -> Result<SubmissionReceipt, JmapError> {
+) -> ProviderResult<SubmissionReceipt> {
     let context = resolve_context(executor, mail_account, submission_account).await?;
     // Attachment bytes must be uploaded first: the draft references each by the
     // server-assigned `blobId` (RFC 8620 §6.1), which can only be known after upload.
@@ -73,7 +78,7 @@ pub(crate) async fn send(
         }),
     );
 
-    let resp = executor.execute(&req).await?;
+    let resp = (executor.submit(&req).await).map_err(JmapError::into_submission_error)?;
     let receipt = parse_receipt(
         resp.result(&email_set)?,
         resp.result(&submission_set)?,

@@ -33,7 +33,10 @@ fuzzing = []
 
 [dev-dependencies]
 # `time` (workspace default omits it) powers the live watch test's bounded wait.
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "test-util"] }
+# The silent servers the deadline tests meet (`engine_http::test_server`), and `test-util`
+# above for the paused clock they are measured on.
+engine-http = { workspace = true, features = ["test-server"] }
 # The scheduling fixture dates its invitation a fixed offset from today — a server only
 # auto-schedules a meeting that has not already finished — which needs calendar-aware date
 # arithmetic (month/year rollover), not a duration in seconds.

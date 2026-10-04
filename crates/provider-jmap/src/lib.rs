@@ -70,6 +70,7 @@ mod watch;
 use core::fmt;
 use std::sync::Arc;
 
+use engine_http::Exchange;
 use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 use engine_tls::TlsClientConfig;
 pub use error::JmapError;
@@ -307,17 +308,20 @@ impl JmapClient {
     }
 
     /// Ships a batched request to the API endpoint and parses the response
-    /// envelope. Method-level errors surface when a result is read
-    /// ([`Response::result`]).
+    /// envelope; `exchange` says whether it submits a message. Method-level errors
+    /// surface when a result is read ([`Response::result`]).
     ///
     /// # Errors
     ///
     /// Returns [`JmapError`] on a transport/HTTP failure or a malformed response.
-    pub(crate) async fn execute(&self, request: &Request) -> Result<Response, JmapError> {
+    pub(crate) async fn execute(
+        &self,
+        request: &Request,
+        exchange: Exchange,
+    ) -> Result<Response, JmapError> {
         let body = request.to_json();
-        let value = self
-            .transport
-            .post_json(self.session.api_url(), &body)
+        let value = (self.transport)
+            .post_json(self.session.api_url(), &body, exchange)
             .await?;
         Response::parse(&value)
     }
@@ -357,50 +361,6 @@ impl JmapClient {
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
             .ok_or_else(|| JmapError::protocol("upload response missing blobId"))
-    }
-
-    /// Opens the JMAP **EventSource** change-notification stream (RFC 8620 §7.3): a
-    /// long-lived `text/event-stream` GET over the session `eventSourceUrl`, watching
-    /// `types` (empty ⇒ all types, `*`), never closing early (`closeafter=no`), and
-    /// asking the server to `ping` every `ping` seconds so the stream stays alive and
-    /// surfaces keep-alives. Returns the streaming response for [`crate::watch`] to
-    /// read chunk by chunk.
-    ///
-    /// # Errors
-    ///
-    /// [`JmapError::Session`] if the server advertised no `eventSourceUrl`, or the
-    /// classified failure of opening the stream (a non-success status is
-    /// [`JmapError::Status`]).
-    pub(crate) async fn open_event_source(
-        &self,
-        types: &[&str],
-        ping: core::time::Duration,
-    ) -> Result<reqwest::Response, JmapError> {
-        let template = self
-            .session
-            .event_source_url()
-            .ok_or_else(|| JmapError::session("server advertised no eventSourceUrl"))?;
-        let types_param = if types.is_empty() {
-            "*".to_owned()
-        } else {
-            types.join(",")
-        };
-        // `ping=0` disables server pings (RFC 8620 §7.3); keep at least 1s so the
-        // stream still emits keep-alives.
-        let ping_secs = ping.as_secs().max(1);
-        let url = template
-            .replace("{types}", &types_param)
-            .replace("{closeafter}", "no")
-            .replace("{ping}", &ping_secs.to_string());
-        // `Accept: text/event-stream` so a content-negotiating server serves the SSE
-        // stream, not a buffered representation; the shared status check rejects a
-        // non-2xx before the caller treats the body as an event stream.
-        let resp = self.transport.get_event_stream(&url).await?;
-        // The status is checked on the reply, and only then is the body taken out unread:
-        // an SSE stream has no end, so it is the one body nothing here may read.
-        transport::error_for_status(resp)
-            .await
-            .map(engine_http::Sent::into_streaming)
     }
 }
 

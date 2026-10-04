@@ -63,6 +63,18 @@ pub(crate) trait GoogleTransport: Send + Sync {
         body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError>;
 
+    /// [`post`](Self::post) for the one request that submits a message (`messages.send`): its reply
+    /// waits the submission bound, and its failure after it may have reached the server
+    /// leaves the send ambiguous (`crate::submit`). A fake has no wait to make, so it posts.
+    async fn submit(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError> {
+        self.post(url, content_type, body).await
+    }
+
     /// `PUT`s `body` with `content_type` to `url`, returning the parsed JSON response.
     /// Gmail's `drafts.update` is the one caller: it **replaces** a draft's content while
     /// keeping the draft's own id, which is why it is a `PUT` and not the `PATCH` above.
@@ -256,6 +268,20 @@ impl GoogleClient {
         body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError> {
         self.transport.post(url, content_type, body).await
+    }
+
+    /// [`post`](Self::post) for the request that submits a message (`messages.send`).
+    ///
+    /// # Errors
+    ///
+    /// As [`post`](Self::post).
+    pub(crate) async fn submit(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GoogleError> {
+        self.transport.submit(url, content_type, body).await
     }
 
     /// Authenticated `PUT`. Returns the replaced object's JSON.

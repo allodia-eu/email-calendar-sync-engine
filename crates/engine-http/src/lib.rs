@@ -31,15 +31,30 @@
 //! experience as an unexplained stall is reported through [`ThrottleObserver`], which the host
 //! implements and logs. A [`ThrottleEvent`] carries the provider label, the status, the attempt
 //! and the delay, and deliberately carries no URL: a request path names the user's own mail.
+//!
+//! # A server that stops answering
+//!
+//! The funnel also bounds every wait on the server by the shared
+//! [`Deadlines`](engine_provider::Deadlines), phase by phase, so a silent server fails a
+//! request after the same time on every HTTP adapter as on IMAP and SMTP, and a large body
+//! that keeps moving is never cut off. An adapter builds its client with [`client`] and says
+//! which requests are submissions ([`Exchange`]); a failure tells it whether the request
+//! [may have been received](SendError::may_have_been_received). See `deadline.rs`.
 
 mod classify;
+mod deadline;
+mod error;
 mod gate;
 mod observed;
 mod observer;
 mod policy;
 mod send;
+#[cfg(any(test, feature = "test-server"))]
+pub mod test_server;
 
 pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
+pub use deadline::{Exchange, chunk_within, client};
+pub use error::SendError;
 pub use gate::{GatePermit, RequestGate};
 pub use observed::ObservedConnection;
 pub use observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver};

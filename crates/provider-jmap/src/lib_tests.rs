@@ -152,7 +152,7 @@ async fn connect_and_execute_against_a_mock_server() {
 
     let mut req = request::Request::new([request::capability::CORE]);
     req.invoke("Mailbox/get", serde_json::json!({ "accountId": "c" }));
-    let resp = client.execute(&req).await.unwrap();
+    let resp = client.execute(&req, Exchange::Ordinary).await.unwrap();
     assert!(resp.result("0").is_ok());
 }
 

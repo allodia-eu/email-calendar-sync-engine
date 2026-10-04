@@ -45,16 +45,77 @@ pub(crate) trait ChunkSource: Send {
     async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, JmapError>;
 }
 
+impl JmapClient {
+    /// Opens the JMAP **EventSource** change-notification stream (RFC 8620 §7.3): a
+    /// long-lived `text/event-stream` GET over the session `eventSourceUrl`, watching
+    /// `types` (empty ⇒ all types, `*`), never closing early (`closeafter=no`), and
+    /// asking the server to `ping` every `ping` seconds so the stream stays alive and
+    /// surfaces keep-alives. Returns the streaming response for [`crate::watch`] to
+    /// read chunk by chunk.
+    ///
+    /// # Errors
+    ///
+    /// [`JmapError::Session`] if the server advertised no `eventSourceUrl`, or the
+    /// classified failure of opening the stream (a non-success status is
+    /// [`JmapError::Status`]).
+    pub(crate) async fn open_event_source(
+        &self,
+        types: &[&str],
+        ping: core::time::Duration,
+    ) -> Result<reqwest::Response, JmapError> {
+        let template = self
+            .session
+            .event_source_url()
+            .ok_or_else(|| JmapError::session("server advertised no eventSourceUrl"))?;
+        let types_param = if types.is_empty() {
+            "*".to_owned()
+        } else {
+            types.join(",")
+        };
+        // `ping=0` disables server pings (RFC 8620 §7.3); keep at least 1s so the
+        // stream still emits keep-alives.
+        let ping_secs = ping.as_secs().max(1);
+        let url = template
+            .replace("{types}", &types_param)
+            .replace("{closeafter}", "no")
+            .replace("{ping}", &ping_secs.to_string());
+        // `Accept: text/event-stream` so a content-negotiating server serves the SSE
+        // stream, not a buffered representation; the shared status check rejects a
+        // non-2xx before the caller treats the body as an event stream.
+        let resp = self.transport.get_event_stream(&url).await?;
+        // The status is checked on the reply, and only then is the body taken out unread:
+        // an SSE stream has no end, so it is the one body nothing here may read.
+        crate::transport::error_for_status(resp)
+            .await
+            .map(engine_http::Sent::into_streaming)
+    }
+}
+
 /// A [`ChunkSource`] backed by a live streaming `reqwest::Response`.
 struct ResponseChunks {
     response: reqwest::Response,
+    /// How long the stream may say nothing at all ([`quiet_bound`]).
+    quiet: Duration,
 }
 
 #[async_trait]
 impl ChunkSource for ResponseChunks {
     async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, JmapError> {
-        Ok(self.response.chunk().await?.map(|bytes| bytes.to_vec()))
+        let chunk = engine_http::chunk_within(&mut self.response, self.quiet).await?;
+        Ok(chunk.map(|bytes| bytes.to_vec()))
     }
+}
+
+/// How long an event stream that asked for a `ping` every `ping` may stay silent before it is
+/// a lost connection: the interval itself, and then the
+/// [`reply`](engine_provider::Deadlines::reply) bound for the ping that is owed.
+///
+/// RFC 8620 §7.3 has the server send one whenever the interval passes without an event, so
+/// a stream quiet for longer is one whose connection died without saying so, the shape a
+/// phone changing network leaves. The stream is silent on purpose between events, so the
+/// stall bound every other body read gets would cut off a healthy one.
+fn quiet_bound(ping: Duration) -> Duration {
+    Duration::from_secs(ping.as_secs().max(1)) + engine_provider::Deadlines::STANDARD.reply()
 }
 
 /// A push / change-notification session over a JMAP EventSource stream. Implements
@@ -108,8 +169,9 @@ impl JmapWatcher {
             .open_event_source(&type_names, ping)
             .await
             .map_err(map_open_error)?;
+        let quiet = quiet_bound(ping);
         Ok(Self::from_source(
-            Box::new(ResponseChunks { response }),
+            Box::new(ResponseChunks { response, quiet }),
             types,
         ))
     }

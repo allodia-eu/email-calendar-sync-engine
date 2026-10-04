@@ -45,7 +45,10 @@ time = { workspace = true }
 [dev-dependencies]
 # `time` for the gated live send test's delivery poll (`tokio::time::sleep`); `macros`/`rt`
 # for `#[tokio::test]`.
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "test-util"] }
+# The silent servers the deadline tests meet (`engine_http::test_server`), and `test-util`
+# above for the paused clock they are measured on.
+engine-http = { workspace = true, features = ["test-server"] }
 # The gated live test builds a (bundled) TlsClientConfig to pass into `connect`.
 engine-tls = { workspace = true }
 

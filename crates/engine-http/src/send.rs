@@ -12,6 +12,8 @@ use reqwest::{RequestBuilder, Response, header::RETRY_AFTER};
 
 use crate::{
     classify::{StatusAlone, ThrottleClassifier},
+    deadline::{Exchange, drain, send_bounded},
+    error::SendError,
     gate::RequestGate,
     observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver},
     policy::{Attempt, RetryPolicy, retry_after, retryable},
@@ -147,7 +149,17 @@ impl RetryConfig {
 ///
 /// A transport failure (connection reset, timeout) is returned immediately rather than
 /// retried: whether the server acted on the request is unknowable from here, and the sync
-/// pass above already treats a failed pass as one to repeat.
+/// pass above already treats a failed pass as one to repeat. What the error does say is
+/// whether the request [may have been received](SendError::may_have_been_received), which is
+/// what an adapter needs to keep a submission from being sent twice.
+///
+/// # A server that stops answering
+///
+/// Every wait is bounded by the shared [`Deadlines`](engine_provider::Deadlines), and none
+/// by the size of what is moving: the connect and handshake by the dial bound the client from
+/// [`client`](crate::client) carries, each piece of the request body and of a body read
+/// through [`Sent`] by the stall bound, and the head of the reply by the bound `exchange`
+/// names. A bound that fires is a [`SendError`] that [`is_timeout`](SendError::is_timeout).
 ///
 /// # What counts as throttled
 ///
@@ -166,9 +178,13 @@ impl RetryConfig {
 ///
 /// # Errors
 ///
-/// Returns the `reqwest` error from building or sending the request, or from reading the
-/// body of a reply the classifier asked to see.
-pub async fn send_retrying(request: RequestBuilder, retry: &RetryConfig) -> reqwest::Result<Sent> {
+/// [`SendError`] from building or sending the request, from reading the body of a reply the
+/// classifier asked to see, or for a server that went quiet past its bound.
+pub async fn send_retrying(
+    request: RequestBuilder,
+    retry: &RetryConfig,
+    exchange: Exchange,
+) -> Result<Sent, SendError> {
     let (client, built) = request.build_split();
     let mut pending = built?;
     // Held until this returns, so the account's ceiling counts a retrying request once,
@@ -182,7 +198,7 @@ pub async fn send_retrying(request: RequestBuilder, retry: &RetryConfig) -> reqw
         // replay (a stream); no adapter here sends one, and the arm below is what happens
         // if one ever does.
         let replay = pending.try_clone();
-        let mut response = client.execute(pending).await?;
+        let mut response = send_bounded(&client, pending, exchange).await?;
         let status = response.status().as_u16();
         let (body, stated) = if retryable(status, idempotent) {
             // The status settles it, so the body is never touched — which matters beyond
@@ -311,28 +327,32 @@ impl Sent {
     ///
     /// # Errors
     ///
-    /// Returns the `reqwest` error from reading the body.
-    pub async fn bytes(self) -> reqwest::Result<Vec<u8>> {
-        match self.body {
-            Some(body) => Ok(body),
-            None => Ok(self.response.bytes().await?.to_vec()),
+    /// [`SendError`] when reading the body fails, or when the server sends nothing for
+    /// [`Deadlines::stall`](engine_provider::Deadlines::stall).
+    pub async fn bytes(self) -> Result<Vec<u8>, SendError> {
+        if let Some(body) = self.body {
+            return Ok(body);
         }
+        let mut response = self.response;
+        drain(&mut response).await
     }
 
     /// The whole body as text, lossily decoded like `Response::text`.
     ///
     /// # Errors
     ///
-    /// Returns the `reqwest` error from reading the body.
-    pub async fn text(self) -> reqwest::Result<String> {
-        match self.body {
+    /// As [`bytes`](Self::bytes).
+    pub async fn text(self) -> Result<String, SendError> {
+        if let Some(body) = self.body {
             // `Response::text` decodes by the charset the headers name; these bytes came
             // from a JSON or XML error document, and every provider here serves those as
             // UTF-8. Lossy rather than strict, for the same reason `text` is: a malformed
             // byte in a diagnostic body should not turn into a second failure.
-            Some(body) => Ok(String::from_utf8_lossy(&body).into_owned()),
-            None => self.response.text().await,
+            return Ok(String::from_utf8_lossy(&body).into_owned());
         }
+        let mut response = self.response;
+        let body = drain(&mut response).await?;
+        decode(&response, body).await
     }
 
     /// The reply itself, for a caller that wants to stream the body rather than hold it.
@@ -340,7 +360,8 @@ impl Sent {
     /// The JMAP EventSource push stream is the one caller: its body never ends, so it must
     /// not be read here. It is a `200`, which no classifier claims, so it always arrives
     /// undrained — and [`bytes`](Self::bytes) would work on it in the sense that it would
-    /// never return.
+    /// never return. Read it with [`chunk_within`](crate::chunk_within), naming the
+    /// stream's own keep-alive bound.
     #[must_use]
     pub fn into_streaming(self) -> Response {
         self.response
@@ -365,16 +386,16 @@ impl core::fmt::Debug for Sent {
     }
 }
 
-/// Reads a reply's body to the end without consuming the reply.
-///
-/// `Response::chunk` takes `&mut self` where `bytes` takes `self`, which is the whole reason
-/// this crate no longer reconstructs anything.
-async fn drain(response: &mut Response) -> reqwest::Result<Vec<u8>> {
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        body.extend_from_slice(&chunk);
+/// Decodes `body` as `Response::text` decodes `response`'s, without reading the network
+/// again: by the charset the reply's own `Content-Type` names, which is the only header
+/// carried into the in-memory reply that does the decoding.
+async fn decode(response: &Response, body: Vec<u8>) -> Result<String, SendError> {
+    let mut read = http::Response::new(body);
+    if let Some(content_type) = response.headers().get(reqwest::header::CONTENT_TYPE) {
+        read.headers_mut()
+            .insert(reqwest::header::CONTENT_TYPE, content_type.clone());
     }
-    Ok(body)
+    Ok(Response::from(read).text().await?)
 }
 
 /// Bits to place one backoff inside its jitter window.
