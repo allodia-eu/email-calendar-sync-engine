@@ -18,7 +18,7 @@ use crate::{
     credentials::Credentials,
     error::{ImapError, ImapResult},
     sasl::{self, Mechanism},
-    smtp::SmtpStream,
+    smtp_stream::SmtpStream,
 };
 
 /// What an authenticating submission needs: the credential, plus the server identity a

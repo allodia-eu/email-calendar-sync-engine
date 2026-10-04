@@ -25,11 +25,13 @@
 //! runs there follows from the credential: `AUTH PLAIN` for a password, `AUTH
 //! OAUTHBEARER`/`AUTH XOAUTH2` for an OAuth 2.0 access token.
 
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
+    deadline::DATA_ACK_STALL,
     error::{ImapError, ImapResult},
     smtp_auth::{self, SmtpAuth},
+    smtp_stream::SmtpStream,
 };
 
 /// One recipient's disposition from its `RCPT TO` reply (before `DATA`).
@@ -285,12 +287,13 @@ where
     smtp.write_data(message).await?;
 
     // The post-DATA reply decides delivery. The message bytes are already on the
-    // wire, so ANY failure to read the acknowledgement — a dropped connection OR a
-    // malformed reply — is the ambiguous case: it may have delivered, so it must be
-    // confirmed, never blind-retried (never a plain transport error here).
-    let disposition = match smtp.read_reply().await {
+    // wire, so ANY failure to read the acknowledgement — a dropped connection, a reply
+    // that never came, OR a malformed reply — is the ambiguous case: it may have
+    // delivered, so it must be confirmed, never blind-retried (never a plain transport
+    // error here).
+    let disposition = match smtp.read_reply_lines_within(DATA_ACK_STALL).await {
         Ok((code, _)) if is_success(code) => Disposition::Delivered,
-        Ok((code, text)) => classify(code, text),
+        Ok((code, lines)) => classify(code, lines.join(" ")),
         Err(_) => Disposition::Ambiguous("post-DATA acknowledgement unreadable".to_owned()),
     };
     let _ = smtp.write_line("QUIT").await;
@@ -358,110 +361,6 @@ fn classify(code: u16, text: String) -> Disposition {
     } else {
         Disposition::RejectedPermanent(text)
     }
-}
-
-/// A line-based SMTP stream with multiline-reply assembly. `pub(crate)` so
-/// [`crate::smtp_auth`] can drive the `AUTH` exchange over the same stream (it is split
-/// out only to keep this file under the size limit).
-pub(crate) struct SmtpStream<S> {
-    inner: BufReader<S>,
-}
-
-impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
-    fn new(stream: S) -> Self {
-        Self {
-            inner: BufReader::new(stream),
-        }
-    }
-
-    /// Unwraps the underlying stream after `STARTTLS`, for the TLS upgrade.
-    ///
-    /// Errors if the read buffer holds any bytes past the `STARTTLS` `220`: a
-    /// conformant server sends nothing before the client-initiated TLS handshake, so
-    /// buffered plaintext is a command-injection attempt (CVE-2011-0411 class) and
-    /// MUST NOT be carried across the TLS boundary.
-    fn into_inner_stream(self) -> ImapResult<S> {
-        if !self.inner.buffer().is_empty() {
-            return Err(ImapError::protocol(
-                "unexpected buffered data after STARTTLS (possible command injection)",
-            ));
-        }
-        Ok(self.inner.into_inner())
-    }
-
-    /// Reads a (possibly multiline) reply, returning its code and joined text — for
-    /// every reply whose content is prose (a greeting, an acceptance, a rejection).
-    /// [`read_reply_lines`](Self::read_reply_lines) is the form to use when the content
-    /// is a *list* (`EHLO`'s extensions).
-    pub(crate) async fn read_reply(&mut self) -> ImapResult<(u16, String)> {
-        let (code, lines) = self.read_reply_lines().await?;
-        Ok((code, lines.join(" ")))
-    }
-
-    /// Reads a (possibly multiline) reply, returning its code and one string per line
-    /// (each stripped of its `NNN`/`NNN-` prefix). The continuation-line count is capped
-    /// so a server emitting an endless stream of `NNN-...` lines cannot hang the
-    /// submission or grow the reply without bound.
-    pub(crate) async fn read_reply_lines(&mut self) -> ImapResult<(u16, Vec<String>)> {
-        const MAX_REPLY_LINES: usize = 256;
-        let mut lines = Vec::new();
-        for _ in 0..MAX_REPLY_LINES {
-            let mut line = String::new();
-            if self.inner.read_line(&mut line).await? == 0 {
-                return Err(ImapError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "SMTP connection closed",
-                )));
-            }
-            let trimmed = line.trim_end();
-            let code: u16 = trimmed
-                .get(0..3)
-                .and_then(|c| c.parse().ok())
-                .ok_or_else(|| ImapError::protocol(format!("malformed SMTP reply: {trimmed}")))?;
-            lines.push(trimmed.get(4..).unwrap_or("").to_owned());
-            if trimmed.as_bytes().get(3) != Some(&b'-') {
-                return Ok((code, lines));
-            }
-        }
-        Err(ImapError::protocol(
-            "SMTP multiline reply exceeded the line cap",
-        ))
-    }
-
-    pub(crate) async fn write_line(&mut self, line: &str) -> ImapResult<()> {
-        self.inner.write_all(line.as_bytes()).await?;
-        self.inner.write_all(b"\r\n").await?;
-        self.inner.flush().await?;
-        Ok(())
-    }
-
-    /// Writes the message body dot-stuffed, then the `<CRLF>.<CRLF>` terminator.
-    async fn write_data(&mut self, message: &[u8]) -> ImapResult<()> {
-        self.inner.write_all(&dot_stuff(message)).await?;
-        self.inner.write_all(b".\r\n").await?;
-        self.inner.flush().await?;
-        Ok(())
-    }
-}
-
-/// Dot-stuffs a CRLF-delimited message: any line beginning with `.` gets a second
-/// leading `.` so it is not mistaken for the terminator (RFC 5321 §4.5.2).
-fn dot_stuff(message: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(message.len());
-    let mut start = 0;
-    while start < message.len() {
-        let end = message[start..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .map_or(message.len(), |p| start + p + 1);
-        let line = &message[start..end];
-        if line.first() == Some(&b'.') {
-            out.push(b'.');
-        }
-        out.extend_from_slice(line);
-        start = end;
-    }
-    out
 }
 
 #[cfg(test)]

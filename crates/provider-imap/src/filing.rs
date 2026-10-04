@@ -32,6 +32,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 use crate::{
     config::{ImapConfig, SmtpSecurity, SmtpSettings, port_of},
     credentials::{CredentialSource, Credentials, with_renewal},
+    deadline,
     error::{ImapError, ImapResult},
     place::{Filing, Placed, append_to_role_folder, place_if_absent, placed_key},
     provider::ImapProvider,
@@ -142,7 +143,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
             .ok_or_else(|| ProviderError::invalid_state("no SMTP transport configured"))?;
         match sender {
             SmtpSender::Plaintext { addr } => {
-                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
+                let tcp = deadline::connect(addr).await?;
                 self.submit_over(tcp, draft, None).await
             }
             // An `AUTH` refusal comes before `MAIL FROM`, so nothing was sent when the
@@ -156,7 +157,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 let sub = Self::prepare(draft)?;
                 let prepared = &sub;
                 let result = with_renewal(credentials.as_ref(), |credentials| async move {
-                    let tcp = TcpStream::connect(addr).await?;
+                    let tcp = deadline::connect(addr).await?;
                     let tls = tls_connect(connector, server_name, tcp).await?;
                     let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
                     let auth = sender.auth(&credentials);
@@ -174,7 +175,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 let sub = Self::prepare(draft)?;
                 let prepared = &sub;
                 let result = with_renewal(credentials.as_ref(), |credentials| async move {
-                    let tcp = TcpStream::connect(addr).await?;
+                    let tcp = deadline::connect(addr).await?;
                     // Cleartext STARTTLS handshake, then upgrade the socket and transmit
                     // (authenticating) over the now-established TLS.
                     let tcp = smtp::negotiate_starttls(tcp, &prepared.ehlo).await?;
@@ -439,7 +440,7 @@ async fn tls_connect(
 ) -> ImapResult<TlsStream<TcpStream>> {
     let name = ServerName::try_from(server_name.to_owned())
         .map_err(|e| ImapError::bad(format!("invalid SMTP TLS server name: {e}")))?;
-    Ok(connector.connect(name, tcp).await?)
+    deadline::handshake(connector, name, tcp).await
 }
 
 #[cfg(test)]

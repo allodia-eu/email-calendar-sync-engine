@@ -20,6 +20,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 use crate::{
     config::{ImapConfig, ImapSecurity},
     credentials::{Credentials, with_renewal},
+    deadline,
     error::{ImapError, ImapResult},
     tls_info,
     transport::Connection,
@@ -105,20 +106,22 @@ pub(crate) async fn open_secured(
     security: ImapSecurity,
     connector: &TlsConnector,
 ) -> Result<(Connection<TlsStream<TcpStream>>, Option<TlsVersion>), ImapError> {
-    let tcp = TcpStream::connect(addr).await?;
+    let tcp = deadline::connect(addr).await?;
     let server_name = ServerName::try_from(server_name.to_owned())
         .map_err(|e| ImapError::bad(format!("invalid TLS server name: {e}")))?;
     // Implicit TLS wraps the socket now; STARTTLS runs the plaintext handshake command
     // first and upgrades the raw socket in place. Either way the result is one
     // `TlsStream`, so the rest of the dial — and every downstream type — is identical.
     let (tls, resumed) = match security {
-        ImapSecurity::ImplicitTls => (connector.connect(server_name, tcp).await?, false),
+        ImapSecurity::ImplicitTls => (
+            deadline::handshake(connector, server_name, tcp).await?,
+            false,
+        ),
         ImapSecurity::StartTls => {
             let mut plain = Connection::open(tcp).await?;
             plain.start_tls().await?;
-            let upgraded = connector
-                .connect(server_name, plain.into_inner_stream()?)
-                .await?;
+            let upgraded =
+                deadline::handshake(connector, server_name, plain.into_inner_stream()?).await?;
             (upgraded, true)
         }
     };
