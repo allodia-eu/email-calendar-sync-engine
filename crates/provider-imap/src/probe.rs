@@ -37,6 +37,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::ImapSecurity,
+    deadline,
     dial::open_secured,
     error::{ImapError, ImapResult},
     sasl, smtp,
@@ -116,7 +117,7 @@ pub async fn probe_smtp_auth(
     ehlo_domain: &str,
     connector: &TlsConnector,
 ) -> Result<AuthOffer, ImapError> {
-    let tcp = TcpStream::connect(addr).await?;
+    let tcp = deadline::connect(addr).await?;
     let extensions = match security {
         ImapSecurity::ImplicitTls => {
             let tls = wrap_tls(connector, server_name, tcp).await?;
@@ -141,7 +142,7 @@ async fn wrap_tls(
 ) -> ImapResult<TlsStream<TcpStream>> {
     let name = ServerName::try_from(server_name.to_owned())
         .map_err(|e| ImapError::bad(format!("invalid SMTP TLS server name: {e}")))?;
-    Ok(connector.connect(name, tcp).await?)
+    deadline::handshake(connector, name, tcp).await
 }
 
 /// Classifies an IMAP pre-authentication `CAPABILITY` list.

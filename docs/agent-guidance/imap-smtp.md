@@ -67,7 +67,9 @@ is authoritative for the `provider-caldav` calendar client.
   expunges via `CHANGEDSINCE`/`VANISHED`), `idle`/`watch` (the `IDLE` push primitives +
   the `ImapWatcher`), `smtp` (the submission *conversation*; the RFC 5322/MIME
   message assembly it feeds to `DATA` is the shared `engine-rfc5322` crate — see
-  **SMTP submission**), `pool` + `account` (the per-account connection budget — see
+  **SMTP submission**), `smtp_stream` (its framing: reading a reply, writing a command
+  or the message), `deadline` (how long a dial or a submission waits on a silent
+  server), `pool` + `account` (the per-account connection budget — see
   **Connections** below), `provider` (the `Provider` impl).
 
 ## How IMAP differs from JMAP (the shape)
@@ -531,10 +533,23 @@ credential.
 - **Per-recipient acceptance/rejection** is captured from each `RCPT TO` reply (a
   `250` accept, a `550` reject). The message still goes to the accepted recipients;
   if none accept, it is a permanent rejection with no `DATA`.
+- **A server that stops answering never holds a send** (`deadline.rs`). The TCP connect
+  and the TLS handshake are each bounded by `DIAL_STALL` (30 s); the greeting, every reply
+  before the end of the message, and each 8 KiB piece of a write by `REPLY_STALL` (1 min);
+  the reply to the final `.` by `DATA_ACK_STALL` (10 min, RFC 5321 §4.5.3.2.6). A bound that
+  fires is an `Io` `TimedOut`, so it is classified exactly as a connection lost at the same
+  point: **retryable** anywhere before the end of the message, because nothing has been
+  submitted and the outbox may send it again, and **ambiguous** after it (below), never
+  retried. Unbounded, a server that accepts the connection and never speaks (a paused
+  process behind a port forwarder, a captive portal, a dead NAT mapping) holds a send
+  forever, in no queue the host can retry or the user can edit. The probes
+  (`extensions`, `negotiate_starttls`) share the same reads and bounds, and the IMAP dial
+  (`dial::open_secured`) shares `DIAL_STALL` and gives its greeting `REPLY_STALL`.
 - **Post-`DATA` disposition.** `2xx` → delivered; `5xx` → permanent rejection;
   `4xx` → transient (retryable — the message was not queued); any **unreadable
-  acknowledgement once the message bytes are on the wire** — a dropped connection
-  *or* a malformed final reply — → **ambiguous** (never a plain transport error, so
+  acknowledgement once the message bytes are on the wire** — a dropped connection,
+  a reply that did not come within `DATA_ACK_STALL`, *or* a malformed final reply —
+  → **ambiguous** (never a plain transport error, so
   an already-sent message is never reported as a clean failure). The
   ambiguous case becomes `ProviderError::needs_confirmation`, which
   `engine_sync::submit_mail` routes to `PendingOutcome::NeedsConfirmation` rather

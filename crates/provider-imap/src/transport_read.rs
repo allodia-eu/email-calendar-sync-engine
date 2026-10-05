@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite};
 
 use crate::{
+    deadline,
     error::{ImapError, ImapResult},
     transport::Connection,
 };
@@ -84,15 +85,10 @@ async fn within<T>(
     stall: Option<Duration>,
     read: impl Future<Output = std::io::Result<T>>,
 ) -> std::io::Result<T> {
-    let Some(limit) = stall else {
-        return read.await;
-    };
-    tokio::time::timeout(limit, read).await.unwrap_or_else(|_| {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("the server sent nothing for {}s", limit.as_secs()),
-        ))
-    })
+    match stall {
+        Some(limit) => deadline::within(limit, "the server sent nothing", read).await,
+        None => read.await,
+    }
 }
 
 fn closed_mid_response() -> ImapError {

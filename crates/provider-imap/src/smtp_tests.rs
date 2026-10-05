@@ -139,6 +139,36 @@ async fn a_lost_post_data_acknowledgement_is_ambiguous() {
 }
 
 #[tokio::test]
+async fn a_refused_message_is_rejected_with_its_whole_reply() {
+    let server = script(&[
+        "220 mail\r\n",
+        "250 OK\r\n",
+        "250 2.1.0 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "354 go ahead\r\n",
+        "554-5.7.1 message refused\r\n554 5.7.1 see policy\r\n",
+    ]);
+    let (stream, _) = MockStream::new(server);
+    let message = assembled(&draft(&["bob@test.local"], "hi"));
+
+    let result = send(
+        stream,
+        "test.local",
+        "alice@test.local",
+        &recipients(&["bob@test.local"]),
+        &message,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.disposition,
+        Disposition::RejectedPermanent("5.7.1 message refused 5.7.1 see policy".to_owned())
+    );
+}
+
+#[tokio::test]
 async fn a_malformed_post_data_reply_is_ambiguous_not_a_hard_error() {
     // The message bytes are already sent; a garbled final reply (no 3-digit code)
     // means we cannot tell if it delivered, so it is ambiguous — never a plain
@@ -362,14 +392,4 @@ async fn an_endless_multiline_reply_is_capped() {
         err.failure_class(),
         engine_core::error::FailureClass::Permanent
     );
-}
-
-#[test]
-fn dot_stuffing_escapes_leading_dots() {
-    let stuffed = dot_stuff(b".hidden\r\nnormal\r\n..already\r\n");
-    let text = String::from_utf8(stuffed).unwrap();
-    // A line beginning with `.` gets a second `.`; others are untouched.
-    assert!(text.starts_with("..hidden\r\n"));
-    assert!(text.contains("\r\nnormal\r\n"));
-    assert!(text.contains("\r\n...already\r\n"));
 }
