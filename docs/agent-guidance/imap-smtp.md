@@ -535,8 +535,9 @@ credential.
   if none accept, it is a permanent rejection with no `DATA`.
 - **A server that stops answering never holds a send** (`deadline.rs`, by the shared
   `Deadlines` of `deadlines.md`). The TCP connect and the TLS handshake are each bounded by
-  `dial` (30 s); the greeting and every reply before the end of the message by `reply`
-  (1 min); each 8 KiB piece of a write by `stall` (1 min); the reply to the final `.` by
+  `dial` (15 s); the greeting by `greeting` (15 s); every later reply before the end of the
+  message by `setup` (30 s); each 8 KiB piece of a write by `stall` (1 min); the reply to the
+  final `.` by
   `submission` (10 min, RFC 5321 §4.5.3.2.6). A bound that fires is an `Io` `TimedOut`, so it
   is classified exactly as a connection lost at the same point: **retryable** anywhere before
   the end of the message, because nothing has been submitted and the outbox may send it
@@ -758,8 +759,8 @@ folders into Trash is proven offline only: all three servers file a folder insid
   deselects (§6.3.1). A write always `SELECT`s again. `ImapPool::acquire_for(mailbox)`
   hands a read a parked connection that already has its mailbox open.
 - **A server that goes silent mid-session is a lost connection.** `Connection::read_line`
-  waits `reply` (1 min) for each line, so the greeting and every command's response are
-  bounded without a call site having to ask; each read of a body literal waits `stall`
+  waits `reply` (1 min) for each line, so every command's response is bounded without a
+  call site having to ask, and the greeting is given `greeting` (15 s); each read of a body literal waits `stall`
   (1 min) of *silence*, never the whole body; and every write, an `APPEND` literal included,
   goes out 8 KiB a piece under `stall` (`deadline::write`). Each fails `Retryable`, and the
   pool discards the connection (`PooledConnection::settle`); a single fetch that lost its

@@ -12,7 +12,7 @@ use engine_core::{
     mail::EmailAddress,
 };
 use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, time::Instant};
 
 use crate::{
     ImapProvider,
@@ -45,29 +45,61 @@ fn provider() -> ImapProvider<MockStream> {
     )
 }
 
+/// Runs `submission` under [`GUARD`], returning its error and how long it took to arrive.
 async fn guarded(
     submission: impl Future<Output = ProviderResult<SubmissionReceipt>>,
-) -> ProviderError {
-    tokio::time::timeout(GUARD, submission)
+) -> (ProviderError, Duration) {
+    let started = Instant::now();
+    let err = tokio::time::timeout(GUARD, submission)
         .await
         .expect("hung: nothing bounded the wait on a silent server")
-        .expect_err("a silent server does not deliver")
+        .expect_err("a silent server does not deliver");
+    (err, started.elapsed())
+}
+
+/// Asserts `elapsed` is `bound`, to the timer's millisecond resolution.
+fn assert_took(elapsed: Duration, bound: Duration) {
+    assert!(
+        elapsed >= bound && elapsed < bound + Duration::from_secs(1),
+        "expected {bound:?}, took {elapsed:?}"
+    );
+}
+
+/// A send over `smtp`, a plaintext submission server.
+async fn submit_over(smtp: MockStream) -> (ProviderError, Duration) {
+    guarded(provider().submit_over(
+        smtp,
+        &draft(),
+        None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    ))
+    .await
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_send_to_a_server_that_never_greets_is_retried_by_the_outbox() {
     let (smtp, _) = MockStream::silent_after(script(&[]));
 
-    let err = guarded(provider().submit_over(
-        smtp,
-        &draft(),
-        None,
-        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
-    ))
-    .await;
+    let (err, elapsed) = submit_over(smtp).await;
 
     assert!(err.is_retryable(), "{err}");
     assert!(!err.requires_confirmation(), "{err}");
+    assert_took(elapsed, Duration::from_secs(15));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_send_whose_recipient_goes_unanswered_is_retried_by_the_outbox() {
+    let (smtp, _) = MockStream::silent_after(script(&[
+        "220 mail ESMTP\r\n",
+        "250 mail\r\n",
+        "250 2.1.0 OK\r\n",
+    ]));
+
+    let (err, elapsed) = submit_over(smtp).await;
+
+    assert!(err.is_retryable(), "{err}");
+    assert!(!err.requires_confirmation(), "{err}");
+    assert_took(elapsed, Duration::from_secs(30));
 }
 
 #[tokio::test(start_paused = true)]
@@ -80,16 +112,11 @@ async fn a_send_whose_end_of_data_goes_unanswered_needs_confirmation_and_is_neve
         "354 go ahead\r\n",
     ]));
 
-    let err = guarded(provider().submit_over(
-        smtp,
-        &draft(),
-        None,
-        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
-    ))
-    .await;
+    let (err, elapsed) = submit_over(smtp).await;
 
     assert!(err.requires_confirmation(), "{err}");
     assert!(!err.is_retryable(), "{err}");
+    assert_took(elapsed, Duration::from_mins(10));
 }
 
 #[tokio::test]
@@ -127,10 +154,12 @@ async fn a_tls_submission_to_a_server_that_accepts_and_never_speaks_is_retried()
         draft(),
         engine_provider::HandOver::new(&engine_provider::Unrecorded),
     );
-    let (err, _accepted) = tokio::join!(guarded(provider.submit(&message, &hand_over)), accepting);
+    let ((err, elapsed), _accepted) =
+        tokio::join!(guarded(provider.submit(&message, &hand_over)), accepting);
 
     assert!(err.to_string().contains("TLS handshake"), "{err}");
     assert!(err.is_retryable(), "{err}");
     assert!(!err.requires_confirmation(), "{err}");
+    assert_took(elapsed, Duration::from_secs(15));
     drop(listener);
 }

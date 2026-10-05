@@ -1,6 +1,6 @@
 # Waiting on a silent server
 
-**Every wait on a server is bounded by one of four categories in
+**Every wait on a server is bounded by one of six categories in
 `engine_provider::Deadlines`, and every transport uses the same values.** A server that
 accepted the connection and then says nothing (a paused process behind a port forwarder, a
 captive portal, a stalled middlebox, a NAT mapping that died) reports nothing either. Left
@@ -15,22 +15,45 @@ other value either, because they run on tokio's paused clock.
 
 | Category | Value | What it bounds | Why this value |
 |---|---|---|---|
-| `dial` | 30 s | each of the TCP connect (name lookup included on HTTP) and the TLS handshake | A few round trips to a server that is up. Unbounded, a connect waits out the OS's SYN retries (over two minutes on Linux) and a handshake waits forever. |
-| `reply` | 1 min | an answer the server owes to a request it has in full: a greeting, each line of an IMAP response, each SMTP reply before the message, the head of an HTTP response | Servers answer an interactive client in well under a second. RFC 5321 §4.5.3.2's five minutes are written for relays between busy MTAs. |
+| `dial` | 15 s | each of the TCP connect (name lookup included) and the TLS handshake | A few round trips to a server that is up, which a congested mobile link completes in seconds; fifteen seconds still covers the first three SYN retransmissions. Unbounded, a connect waits out the OS's SYN retries (over two minutes on Linux) and a handshake waits forever. |
+| `greeting` | 15 s | a server's first line on a connection it has just accepted: an IMAP or SMTP greeting | Owed before the client has asked anything, so the server has no work to do for it. A greeting delayed against spam is seconds, and belongs to the port that receives mail from other servers, not a submission port. |
+| `setup` | 30 s | each SMTP reply after the greeting and before the message: `EHLO`, `STARTTLS`, `AUTH`, `MAIL`, `RCPT`, `DATA`'s `354` | Answered in well under a second, some after a lookup on the server's side (a credential, a recipient). Shorter than `reply` because a sender is waiting, and safe because nothing has been handed over: a timeout here is retried. RFC 5321 §4.5.3.2's five minutes are written for relays between busy MTAs. |
+| `reply` | 1 min | an answer the server owes to a request it has in full: each line of an IMAP response, the head of an HTTP response | Most requests are answered in well under a second, but a server that is working can be silent for a while before a read's answer (a `SEARCH` over a large mailbox, a `REPORT` over years of events). |
 | `stall` | 1 min | each piece of a transfer under way: each read of a body, each 8 KiB (IMAP, SMTP) or 16 KiB (HTTP) piece of a body being sent | A bound on silence, never on size, so a large body that keeps moving is never cut off. |
 | `submission` | 10 min | the answer to a request that submits a message: SMTP's reply to the final `.`, a JMAP `EmailSubmission/set`, a Graph `sendMail`, a Gmail `messages.send` | RFC 5321 §4.5.3.2.6. The server may still be filtering, and this is the one wait whose expiry cannot say what happened, so a shorter bound asks the user "did it send?" about a server that was merely slow. |
 
 `dial` is shorter than `reply` on purpose: an HTTP request without a body counts its reply
 bound from the send, connect included, which is only sound while the connect gives up first.
-`Deadlines`' own tests pin that order.
+`Deadlines`' own tests pin that order, and that `greeting` and `setup` stay shorter than
+`reply`.
+
+### Why a send's waits are shorter than a read's
+
+A user who sends against a server that is not answering should learn it in seconds, so the
+send can wait in the outbox to be retried rather than read as under way for minutes. Every
+wait before the hand-over is therefore short: `dial`, `greeting`, then `setup` for each SMTP
+command. A send that meets nothing at all fails after 15 s at the connect, a server that
+accepts and never greets after 15 s, and one that stops answering mid-conversation within
+30 s of its last reply. None of these can have delivered anything, so each is `Retryable`.
+
+The two waits that stay long on a send are the ones a short bound would get wrong: `stall`,
+because a large message on a slow uplink keeps moving however long it takes, and
+`submission`, because its expiry cannot say whether the message went.
+
+Reads keep `reply`. An IMAP command's response and an HTTP response head are not shortened
+for a send's sake, because a working server can be silent before a read's answer for longer
+than a send's command needs, and cutting a sync off there turns a slow server into a failing
+one. An HTTP submission has no command exchange before its message: its request goes out
+under `stall` and its answer waits `submission`.
 
 ## Where each transport applies them
 
 - **IMAP and SMTP** (`provider-imap/src/deadline.rs`): `connect` and `handshake` take `dial`;
-  `Connection::read_line` takes `reply`, so the greeting and every command's response are
-  bounded without a call site having to remember; a `BODY[]` fetch reads under `stall`; every
-  write goes out through `deadline::write`, 8 KiB a piece under `stall`; `smtp::converse`
-  waits `submission` for the end of data.
+  each protocol's `read_greeting` takes `greeting`; `Connection::read_line` takes `reply`, so
+  every IMAP command's response is bounded without a call site having to remember, as
+  `SmtpStream::read_reply_lines` takes `setup` for every SMTP reply; a `BODY[]` fetch reads
+  under `stall`; every write goes out through `deadline::write`, 8 KiB a piece under `stall`;
+  `smtp::converse` waits `submission` for the end of data.
 - **HTTP** (`engine-http/src/deadline.rs`): the client every adapter builds with
   `engine_http::client(tls)` carries `dial` as reqwest's connect timeout, which covers the
   lookup, the connect and the handshake together. `send_retrying` hands reqwest the request
@@ -69,10 +92,11 @@ that never sends a message twice.
 | Provider | Operation | Bound | A timeout (or lost connection) there is |
 |---|---|---|---|
 | every one | connect, TLS handshake | `dial` | `Retryable`: nothing reached the server |
-| IMAP | greeting, `LOGIN`, `AUTHENTICATE`, `CAPABILITY`, `ENABLE`, `STARTTLS`, `SELECT`/`EXAMINE`, `LIST`, `SEARCH`, metadata `FETCH`, `STORE`, `MOVE`, `EXPUNGE`, `CREATE`, `APPEND`'s continuation and completion, `IDLE`'s start and `DONE` | `reply` per line | `Retryable` |
+| IMAP, SMTP | greeting | `greeting` | `Retryable` |
+| IMAP | `LOGIN`, `AUTHENTICATE`, `CAPABILITY`, `ENABLE`, `STARTTLS`, `SELECT`/`EXAMINE`, `LIST`, `SEARCH`, metadata `FETCH`, `STORE`, `MOVE`, `EXPUNGE`, `CREATE`, `APPEND`'s continuation and completion, `IDLE`'s start and `DONE` | `reply` per line | `Retryable` |
 | IMAP | a `BODY[]` literal, single or batched | `stall` per read | `Retryable` |
 | IMAP | every write, an `APPEND` literal included | `stall` per 8 KiB | `Retryable` |
-| SMTP | greeting, `EHLO`, `AUTH`, `MAIL`, `RCPT`, `DATA`'s `354` | `reply` | `Retryable` |
+| SMTP | `EHLO`, `STARTTLS`, `AUTH`, `MAIL`, `RCPT`, `DATA`'s `354` | `setup` per line | `Retryable` |
 | SMTP | the message | `stall` per 8 KiB | `Retryable`: its end never left |
 | SMTP | the final `.` itself (written after the hand-over) | `stall` | `NeedsConfirmation`: it may have reached the server |
 | SMTP | the reply to the final `.` | `submission` | `NeedsConfirmation` |
@@ -135,5 +159,11 @@ remove it, so no exchange a test expects to complete runs with the clock free:
   `CalendarEvent/set` carries no lost-update guard, so a replay after a lost reply can repeat
   a scheduling message the server sent. A timeout there behaves as a reset connection always
   has; the guard is the fix, not the timeout.
+- **A JMAP send's requests before its submission wait `reply`, not `setup`.** `submit::send`
+  reads the account's mailboxes and identity, and uploads any attachment, as ordinary
+  requests before the one that submits, so a JMAP server that completes the handshake and
+  then says nothing holds a send for a minute where an SMTP server would hold it for 30 s.
+  Graph and Gmail submit in one request and have no such step. Giving those requests
+  `setup` needs an `Exchange` of their own in `engine-http`.
 - `dav-cli` and the live suites build reqwest clients from `reqwest_builder` directly and are
   not bounded. They are tools, and a hang there is visible to whoever is running them.
