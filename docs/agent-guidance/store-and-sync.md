@@ -728,6 +728,10 @@ delete it: another account's row may name the same hash. The file half is a mark
 
 ## The outbox
 
+An illustrated overview of this section and the next, for a first read, is
+[`../outbox-and-sending.md`](../outbox-and-sending.md). Its pictures are generated from
+`docs/images/outbox-diagrams.py`: a change to a rule they show updates them in the same change.
+
 Pending ops are durable before any side effect and are claimed with the same
 fencing discipline as scopes. The thin inline drivers built on this are
 `engine_sync::{submit_mail, edit_mail, create_calendar_event, patch_calendar_event,

@@ -311,6 +311,9 @@ stateDiagram-v2
     end note
 ```
 
+For the same story drawn step by step (each stage of a send, and what happens if the process or
+the connection stops right there), see [`docs/outbox-and-sending.md`](docs/outbox-and-sending.md).
+
 ## Workspace layout
 
 ```text

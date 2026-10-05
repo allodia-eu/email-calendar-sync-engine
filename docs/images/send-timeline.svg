@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1472" viewBox="0 0 960 1472" role="img" aria-labelledby="t d">
+  <title id="t">Sending one message: what if it stops here?</title>
+  <desc id="d">A send&#x27;s seven steps. Before the hand-over is recorded and the final byte written, an interrupted send is simply sent again. After it, the send waits for confirmation: its copy in Sent, the host, or the original attempt settles it.</desc>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif; }
+    .bg { fill: #ffffff; stroke: #d0d7de; }
+    .ink { fill: #1f2328; }
+    .muted { fill: #59636e; }
+    .code { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace; font-size: 0.92em; }
+    .h1 { font-size: 24px; font-weight: 700; }
+    .h2 { font-size: 17px; font-weight: 700; }
+    .h3 { font-size: 16px; font-weight: 650; }
+    .body { font-size: 14px; }
+    .small { font-size: 13px; }
+    .badge { font-size: 13px; font-weight: 700; letter-spacing: 0.02em; }
+    .panel { fill: #f6f8fa; stroke: #d0d7de; }
+    .box { fill: #ffffff; stroke: #d0d7de; }
+    .rail { stroke: #d0d7de; }
+    .wire { stroke: #8c959f; fill: none; }
+    .wire-head { fill: #8c959f; }
+    .blue-f { fill: #ddf4ff; } .blue-s { stroke: #0969da; } .blue-t { fill: #0969da; } .blue-solid { fill: #0969da; }
+    .green-f { fill: #dafbe1; } .green-s { stroke: #1a7f37; } .green-t { fill: #116329; } .green-solid { fill: #1a7f37; }
+    .amber-f { fill: #fff8c5; } .amber-s { stroke: #9a6700; } .amber-t { fill: #7d4e00; } .amber-solid { fill: #9a6700; }
+    .red-f { fill: #ffebe9; } .red-s { stroke: #cf222e; } .red-t { fill: #a40e26; } .red-solid { fill: #cf222e; }
+    .gray-f { fill: #f6f8fa; } .gray-s { stroke: #8c959f; } .gray-t { fill: #59636e; } .gray-solid { fill: #6e7781; }
+    .zone-safe { fill: #1a7f37; fill-opacity: 0.05; }
+    .zone-risk { fill: #bf8700; fill-opacity: 0.07; }
+    .on-solid { fill: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; stroke: #30363d; }
+      .ink { fill: #e6edf3; }
+      .muted { fill: #9198a1; }
+      .panel { fill: #151b23; stroke: #30363d; }
+      .box { fill: #0d1117; stroke: #3d444d; }
+      .rail { stroke: #3d444d; }
+      .wire { stroke: #656c76; }
+      .wire-head { fill: #656c76; }
+      .blue-f { fill: #121d2f; } .blue-s { stroke: #4493f8; } .blue-t { fill: #79c0ff; } .blue-solid { fill: #1f6feb; }
+      .green-f { fill: #12261e; } .green-s { stroke: #2ea043; } .green-t { fill: #56d364; } .green-solid { fill: #238636; }
+      .amber-f { fill: #272115; } .amber-s { stroke: #bb8009; } .amber-t { fill: #e3b341; } .amber-solid { fill: #9e6a03; }
+      .red-f { fill: #25171c; } .red-s { stroke: #f85149; } .red-t { fill: #ff7b72; } .red-solid { fill: #da3633; }
+      .gray-f { fill: #151b23; } .gray-s { stroke: #656c76; } .gray-t { fill: #9198a1; } .gray-solid { fill: #656c76; }
+      .zone-safe { fill: #2ea043; fill-opacity: 0.07; }
+      .zone-risk { fill: #bb8009; fill-opacity: 0.09; }
+    }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="wire-head"/>
+    </marker>
+  </defs>
+<rect x="0.5" y="0.5" width="959" height="1471" rx="16" class="bg"/>
+<text x="32" y="50" class="h1 ink">Sending one message: what if it stops here?</text>
+<text x="32" y="78" class="body muted">Each step of a send, and what happens if the process dies, the device sleeps, or the</text>
+<text x="32" y="98" class="body muted">connection drops at that moment. Nothing is lost, and nothing is delivered twice.</text>
+<text x="100" y="132" class="badge muted">STEP</text>
+<text x="548" y="132" class="badge muted">IF IT STOPS HERE</text>
+<rect x="16" y="146" width="928" height="602" rx="12" class="zone-safe"/>
+<rect x="16" y="762" width="928" height="429" rx="12" class="zone-risk"/>
+<line x1="60" y1="178" x2="60" y2="1097" class="rail" stroke-width="3"/>
+<circle cx="60" cy="178" r="16" class="blue-solid"/>
+<text x="60" y="183" class="badge on-solid" text-anchor="middle">1</text>
+<text x="100" y="184" class="h3 ink">You press Send</text>
+<text x="100" y="210" class="body ink"><tspan class="code">submit_mail</tspan> saves the message to the outbox,</text>
+<text x="100" y="230" class="body ink">synced to disk, before any network I/O. It is</text>
+<text x="100" y="250" class="body ink">keyed by its <tspan class="code">Message-ID</tspan>, so it is queued once.</text>
+<rect x="536" y="162" width="392" height="84" rx="10" class="green-f green-s" stroke-width="1"/>
+<rect x="536" y="162" width="5" height="84" rx="2" class="green-solid"/>
+<text x="556" y="186" class="h3 green-t">Nothing lost</text>
+<text x="556" y="208" class="small ink">Not saved yet: nothing was sent, and the draft</text>
+<text x="556" y="227" class="small ink">is untouched. Saved: the next drain sends it.</text>
+<circle cx="60" cy="294" r="16" class="blue-solid"/>
+<text x="60" y="299" class="badge on-solid" text-anchor="middle">2</text>
+<text x="100" y="300" class="h3 ink">A worker claims it</text>
+<text x="100" y="326" class="body ink">It takes a 5-minute lease with a fresh fencing</text>
+<text x="100" y="346" class="body ink">token, renewed every 1⅔ minutes while the</text>
+<text x="100" y="366" class="body ink">attempt runs. One write per resource at a time.</text>
+<rect x="536" y="278" width="392" height="84" rx="10" class="green-f green-s" stroke-width="1"/>
+<rect x="536" y="278" width="5" height="84" rx="2" class="green-solid"/>
+<text x="556" y="302" class="h3 green-t">Sent again at once</text>
+<text x="556" y="324" class="small ink">The lease lapses. Recovery finds no hand-over</text>
+<text x="556" y="343" class="small ink">record, so the send is due again right away.</text>
+<circle cx="60" cy="410" r="16" class="blue-solid"/>
+<text x="60" y="415" class="badge on-solid" text-anchor="middle">3</text>
+<text x="100" y="416" class="h3 ink">Connect, log in, upload</text>
+<text x="100" y="442" class="body ink">Dial, TLS, log in. SMTP: <tspan class="code">EHLO</tspan>, <tspan class="code">MAIL</tspan>, <tspan class="code">RCPT</tspan> and</text>
+<text x="100" y="462" class="body ink">all of the message text. JMAP, Graph and Gmail:</text>
+<text x="100" y="482" class="body ink">the request, all but the last piece of its body.</text>
+<rect x="536" y="394" width="392" height="103" rx="10" class="blue-f blue-s" stroke-width="1"/>
+<rect x="536" y="394" width="5" height="103" rx="2" class="blue-solid"/>
+<text x="556" y="418" class="h3 blue-t">Retried</text>
+<text x="556" y="440" class="small ink">A dropped connection or a timeout: back in the</text>
+<text x="556" y="459" class="small ink">queue with a backoff (or at once, if the process</text>
+<text x="556" y="478" class="small ink">ended).</text>
+<rect x="536" y="507" width="392" height="84" rx="10" class="red-f red-s" stroke-width="1"/>
+<rect x="536" y="507" width="5" height="84" rx="2" class="red-solid"/>
+<text x="556" y="531" class="h3 red-t">Kept for the user</text>
+<text x="556" y="553" class="small ink">A bad login or a permanent refusal: Failed,</text>
+<text x="556" y="572" class="small ink">but still listed, to fix and send again.</text>
+<circle cx="60" cy="637" r="16" class="blue-solid"/>
+<text x="60" y="642" class="badge on-solid" text-anchor="middle">4</text>
+<text x="100" y="643" class="h3 ink">Record the hand-over</text>
+<text x="100" y="669" class="body ink">The store marks the op <tspan class="code">handed_over</tspan>, under its</text>
+<text x="100" y="689" class="body ink">lease, synced to disk. Only once that succeeds</text>
+<text x="100" y="709" class="body ink">may the final byte be written.</text>
+<rect x="536" y="621" width="392" height="103" rx="10" class="green-f green-s" stroke-width="1"/>
+<rect x="536" y="621" width="5" height="103" rx="2" class="green-solid"/>
+<text x="556" y="645" class="h3 green-t">Retried, nothing sent</text>
+<text x="556" y="667" class="small ink">If the record fails (a store error, a lease</text>
+<text x="556" y="686" class="small ink">another worker took), the attempt stops before</text>
+<text x="556" y="705" class="small ink">the server has the whole message.</text>
+<circle cx="60" cy="828" r="16" class="blue-solid"/>
+<text x="60" y="833" class="badge on-solid" text-anchor="middle">5</text>
+<text x="100" y="834" class="h3 ink">Send the final byte</text>
+<text x="100" y="860" class="body ink">SMTP: the <tspan class="code">&lt;CRLF&gt;.&lt;CRLF&gt;</tspan> that ends <tspan class="code">DATA</tspan>.</text>
+<text x="100" y="880" class="body ink">JMAP, Graph, Gmail: the last piece of the</text>
+<text x="100" y="900" class="body ink">submitting request's body.</text>
+<rect x="536" y="812" width="392" height="103" rx="10" class="amber-f amber-s" stroke-width="1"/>
+<rect x="536" y="812" width="5" height="103" rx="2" class="amber-solid"/>
+<text x="556" y="836" class="h3 amber-t">Needs confirmation</text>
+<text x="556" y="858" class="small ink">The connection drops or the process ends: the</text>
+<text x="556" y="877" class="small ink">message may have been delivered. It is never</text>
+<text x="556" y="896" class="small ink">retried blindly.</text>
+<circle cx="60" cy="961" r="16" class="blue-solid"/>
+<text x="60" y="966" class="badge on-solid" text-anchor="middle">6</text>
+<text x="100" y="967" class="h3 ink">The server answers</text>
+<text x="100" y="993" class="body ink">Accepted: Succeeded, with the provider's key.</text>
+<text x="100" y="1013" class="body ink">A clear refusal (SMTP <tspan class="code">4xx</tspan>/<tspan class="code">5xx</tspan>, an HTTP error,</text>
+<text x="100" y="1033" class="body ink">a JMAP <tspan class="code">SetError</tspan>) clears the hand-over record</text>
+<text x="100" y="1053" class="body ink">and is retried or failed like any other error.</text>
+<rect x="536" y="945" width="392" height="84" rx="10" class="amber-f amber-s" stroke-width="1"/>
+<rect x="536" y="945" width="5" height="84" rx="2" class="amber-solid"/>
+<text x="556" y="969" class="h3 amber-t">Needs confirmation</text>
+<text x="556" y="991" class="small ink">No answer, one nobody can read, or a gateway's</text>
+<text x="556" y="1010" class="small ink"><tspan class="code">502</tspan>/<tspan class="code">504</tspan>: nobody knows whether it went.</text>
+<circle cx="60" cy="1097" r="16" class="blue-solid"/>
+<text x="60" y="1102" class="badge on-solid" text-anchor="middle">7</text>
+<text x="100" y="1103" class="h3 ink">Record the outcome</text>
+<text x="100" y="1129" class="body ink"><tspan class="code">mark_pending_op</tspan>, under the same lease. If the</text>
+<text x="100" y="1149" class="body ink">lease was recovered meanwhile, only the attempt</text>
+<text x="100" y="1169" class="body ink">that handed over may still report.</text>
+<rect x="536" y="1081" width="392" height="84" rx="10" class="amber-f amber-s" stroke-width="1"/>
+<rect x="536" y="1081" width="5" height="84" rx="2" class="amber-solid"/>
+<text x="556" y="1105" class="h3 amber-t">Needs confirmation</text>
+<text x="556" y="1127" class="small ink">Recovery finds the hand-over record. The next</text>
+<text x="556" y="1146" class="small ink">sync usually settles it (below).</text>
+<line x1="16" y1="762" x2="944" y2="762" class="red-s" stroke-width="2.5" stroke-dasharray="8 6"/>
+<rect x="100" y="750" width="158" height="24" rx="12" class="red-solid"/><text x="179.0" y="766.5" class="badge on-solid" text-anchor="middle">POINT OF NO RETURN</text>
+<text x="272" y="753" class="small muted">Above: safe to repeat, so it is simply sent again.</text>
+<text x="272" y="783" class="small muted">Below: it may already be in front of its recipients.</text>
+<text x="32" y="1225" class="h2 ink">Settling a send that needs confirmation</text>
+<text x="32" y="1249" class="body muted">It is parked, not retried: no claim takes it. One of three things settles it.</text>
+<rect x="32" y="1271" width="285" height="116" rx="12" class="box" stroke-width="1.5"/>
+<rect x="32" y="1271" width="285" height="5" rx="2" class="amber-solid"/>
+<text x="50" y="1305" class="h3 ink">Its copy shows up in Sent</text>
+<text x="50" y="1331" class="small ink">A sync finds a copy in Sent with</text>
+<text x="50" y="1350" class="small ink">the same <tspan class="code">Message-ID</tspan>: Succeeded.</text>
+<text x="50" y="1369" class="small ink">A copy in Drafts proves nothing.</text>
+<rect x="337" y="1271" width="285" height="116" rx="12" class="box" stroke-width="1.5"/>
+<rect x="337" y="1271" width="285" height="5" rx="2" class="amber-solid"/>
+<text x="355" y="1305" class="h3 ink">The host asks the user</text>
+<text x="355" y="1331" class="small ink"><tspan class="code">confirm_pending_op</tspan>: Delivered</text>
+<text x="355" y="1350" class="small ink">settles it; Not delivered sends it</text>
+<text x="355" y="1369" class="small ink">again, under a new token.</text>
+<rect x="642" y="1271" width="285" height="116" rx="12" class="box" stroke-width="1.5"/>
+<rect x="642" y="1271" width="285" height="5" rx="2" class="amber-solid"/>
+<text x="660" y="1305" class="h3 ink">The attempt wakes up</text>
+<text x="660" y="1331" class="small ink">A process suspended mid-send</text>
+<text x="660" y="1350" class="small ink">that resumes can still report</text>
+<text x="660" y="1369" class="small ink">what the server said.</text>
+<text x="32" y="1423" class="small muted">A send never gives up on a count: it stays queued until it goes, or the user withdraws it. Recovery runs</text>
+<text x="32" y="1442" class="small muted">wherever a dead attempt is met: both claims, cancel, retry now, confirm, and <tspan class="code">recover_interrupted_ops</tspan>.</text>
+</svg>
