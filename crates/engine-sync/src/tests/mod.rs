@@ -50,6 +50,7 @@ mod calendar_write;
 mod contact_sync;
 mod drafts;
 pub(super) mod drain;
+mod durable_send;
 mod fake_provider;
 mod mail_account;
 mod mail_edit;

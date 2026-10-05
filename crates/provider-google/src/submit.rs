@@ -15,14 +15,15 @@
 //! The filed-assembly variant keeps the `Bcc` header on the stored Sent copy.
 
 use engine_core::ids::ProviderKey;
-use engine_provider::{Draft, ProviderResult, SubmissionReceipt};
+use engine_provider::{Draft, HandOver, ProviderResult, SubmissionReceipt};
 use time::OffsetDateTime;
 
 use crate::{base64url, error::GoogleError, named_labels::Labels, transport::GoogleClient};
 
 /// Sends `draft`: assembles the RFC 5322 message, base64url-encodes it, and `POST`s it to
-/// `messages.send`. The sent copy is then labelled with each keyword the draft asks for that
-/// `labels` has a name for (`crate::named_labels`); that step never fails the send.
+/// `messages.send`, committing `hand_over` before the end of that request's body (the one
+/// request that can deliver). The sent copy is then labelled with each keyword the draft asks for
+/// that `labels` has a name for (`crate::named_labels`); that step never fails the send.
 ///
 /// # Errors
 ///
@@ -33,6 +34,7 @@ pub(crate) async fn send(
     client: &GoogleClient,
     draft: &Draft,
     labels: &Labels,
+    hand_over: &HandOver<'_>,
 ) -> ProviderResult<SubmissionReceipt> {
     // The filed variant keeps the Bcc header on the Sent copy (Gmail strips it from the
     // delivered envelope), mirroring the Graph submission path.
@@ -46,35 +48,40 @@ pub(crate) async fn send(
             &client.url("/gmail/v1/users/me/messages/send"),
             "application/json",
             body,
+            hand_over,
         )
         .await
         .map_err(GoogleError::into_submission_error)?;
-    let key = sent_key(response.as_ref(), draft)?;
+    // Recorded by the request that just went out; this only fetches the proof.
+    let handed_over = hand_over.commit().await?;
+    let key = sent_key(response.as_ref(), draft);
     // A placeholder key addresses nothing Gmail knows, so there is no copy to label.
     let kept = if key.as_str().starts_with("sent:") {
         std::collections::BTreeSet::new()
     } else {
         labels.tag_sent_copy(client, &key, draft).await
     };
-    Ok(SubmissionReceipt::filed(key, draft.message_id.clone()).with_sent_copy_keywords(kept))
+    Ok(
+        SubmissionReceipt::filed(key, draft.message_id.clone(), &handed_over)
+            .with_sent_copy_keywords(kept),
+    )
 }
 
 /// The sent copy's provider key: the `id` Gmail returns in the `send` response (Gmail,
 /// unlike SMTP, assigns and reveals it immediately). Falls back to a `Message-ID`-derived
-/// placeholder if the response somehow carried none.
-fn sent_key(
-    response: Option<&serde_json::Value>,
-    draft: &Draft,
-) -> Result<ProviderKey, GoogleError> {
-    if let Some(id) = response
+/// placeholder if the response carried no usable one.
+///
+/// Never fails: Gmail has accepted the message by the time this runs, and a send reported
+/// as failed after it was delivered is one the user sends again.
+fn sent_key(response: Option<&serde_json::Value>, draft: &Draft) -> ProviderKey {
+    response
         .and_then(|r| r.get("id"))
         .and_then(serde_json::Value::as_str)
-    {
-        return ProviderKey::new(id)
-            .map_err(|e| GoogleError::protocol(format!("bad sent id: {e}")));
-    }
-    ProviderKey::new(format!("sent:{}", draft.message_id.as_str()))
-        .map_err(|e| GoogleError::protocol(format!("bad placement key: {e}")))
+        .and_then(|id| ProviderKey::new(id).ok())
+        .unwrap_or_else(|| {
+            ProviderKey::new(format!("sent:{}", draft.message_id.as_str()))
+                .expect("a Message-ID-derived placement key is never empty")
+        })
 }
 
 #[cfg(test)]

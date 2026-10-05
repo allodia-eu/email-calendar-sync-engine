@@ -118,25 +118,31 @@ impl Provider for FakeMail {
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
+        if self.fails(Fault::Submit) || self.send_is_out() {
+            // Refused before anything could deliver it.
+            return Err(ProviderError::rate_limited("slow down", None));
+        }
+        let handed_over = hand_over.commit().await?;
         if self.fails(Fault::AmbiguousSubmit) {
             Err(ProviderError::needs_confirmation(
                 "post-DATA acknowledgement lost",
             ))
         } else if self.fails(Fault::PermanentSubmit) {
             Err(ProviderError::permanent("recipient rejected"))
-        } else if self.fails(Fault::Submit) || self.send_is_out() {
-            Err(ProviderError::rate_limited("slow down", None))
         } else if self.fails(Fault::UnfiledCopy) {
             Ok(SubmissionReceipt::unfiled(
                 ProviderKey::new("sent-1").unwrap(),
                 draft.message_id.clone(),
                 "APPEND refused: over quota",
+                &handed_over,
             ))
         } else {
             Ok(SubmissionReceipt::filed(
                 ProviderKey::new("sent-1").unwrap(),
                 draft.message_id.clone(),
+                &handed_over,
             )
             .with_sent_copy_keywords(draft.sent_copy_keywords.clone()))
         }

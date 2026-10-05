@@ -95,7 +95,7 @@ impl HttpTransport {
         content_type: Option<&str>,
         if_match: Option<&str>,
         body: Vec<u8>,
-        exchange: Exchange,
+        exchange: Exchange<'_>,
     ) -> Result<engine_http::Sent, GraphError> {
         let mut request = self
             .client
@@ -215,6 +215,7 @@ impl GraphTransport for HttpTransport {
         url: &str,
         content_type: &str,
         body: Vec<u8>,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> Result<Option<Value>, GraphError> {
         let post = reqwest::Method::POST;
         let resp = self
@@ -224,7 +225,7 @@ impl GraphTransport for HttpTransport {
                 Some(content_type),
                 None,
                 body,
-                Exchange::Submission,
+                Exchange::Submission(hand_over),
             )
             .await?;
         write_body(resp).await

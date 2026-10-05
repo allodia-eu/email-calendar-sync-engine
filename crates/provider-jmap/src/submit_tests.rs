@@ -15,46 +15,58 @@ fn results(doc: &Value) -> (Value, Value) {
     (responses[0][1].clone(), responses[1][1].clone())
 }
 
+/// The proof a submission recorded its hand-over, as the request that sent it leaves one.
+async fn proof() -> engine_provider::HandedOver {
+    engine_provider::HandOver::new(&engine_provider::Unrecorded)
+        .commit()
+        .await
+        .unwrap()
+}
+
 fn message_id() -> MessageIdHeader {
     MessageIdHeader::new("step4-send-probe-0002@test.local").unwrap()
 }
 
-#[test]
-fn parses_the_sent_email_key_and_echoes_message_id() {
+#[tokio::test]
+async fn parses_the_sent_email_key_and_echoes_message_id() {
+    let proof = proof().await;
     let doc = send_response();
     let (email, submission) = results(&doc);
-    let receipt = parse_receipt(&email, &submission, &message_id()).unwrap();
+    let receipt = parse_receipt(&email, &submission, &message_id(), &proof).unwrap();
     // The created email id (kept across the Drafts→Sent move) is the resolved key.
     assert_eq!(receipt.email_key.as_str(), "bmaaaaal");
     assert_eq!(receipt.message_id, message_id());
 }
 
-#[test]
-fn email_set_error_classifies_and_aborts() {
+#[tokio::test]
+async fn email_set_error_classifies_and_aborts() {
+    let proof = proof().await;
     let email = json!({
         "notCreated": { "draft": { "type": "invalidProperties", "properties": ["from"] } }
     });
     let submission = json!({ "created": { "sub": { "id": "x" } } });
-    let err = parse_receipt(&email, &submission, &message_id()).unwrap_err();
+    let err = parse_receipt(&email, &submission, &message_id(), &proof).unwrap_err();
     assert_eq!(err.failure_class(), FailureClass::Permanent);
 }
 
-#[test]
-fn submission_error_classifies_after_email_created() {
+#[tokio::test]
+async fn submission_error_classifies_after_email_created() {
+    let proof = proof().await;
     // The observed Stalwart failure when identityId is missing.
     let email = json!({ "created": { "draft": { "id": "e1" } } });
     let submission = json!({
         "notCreated": { "sub": { "type": "invalidProperties", "properties": ["identityId"] } }
     });
-    let err = parse_receipt(&email, &submission, &message_id()).unwrap_err();
+    let err = parse_receipt(&email, &submission, &message_id(), &proof).unwrap_err();
     assert_eq!(err.failure_class(), FailureClass::Permanent);
 }
 
-#[test]
-fn rate_limited_submission_is_retryable() {
+#[tokio::test]
+async fn rate_limited_submission_is_retryable() {
+    let proof = proof().await;
     let email = json!({ "created": { "draft": { "id": "e1" } } });
     let submission = json!({ "notCreated": { "sub": { "type": "rateLimit" } } });
-    let err = parse_receipt(&email, &submission, &message_id()).unwrap_err();
+    let err = parse_receipt(&email, &submission, &message_id(), &proof).unwrap_err();
     assert!(err.failure_class().is_retryable());
 }
 

@@ -223,6 +223,27 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
   `.`; a JMAP, Graph or Gmail submission once its request may have been received) must
   enter `NeedsConfirmation`; never blind-retry. A timeout there is the same case
   (`deadlines.md`).
+- **A submission records its hand-over immediately before its point of no return**, through
+  the `HandOver` that `submit_email` receives, and writes the irreversible byte only once the
+  record succeeded (`store-and-sync.md` → "A send survives its process"). A
+  `SubmissionReceipt` cannot be built without the proof `HandOver::commit` returns. The point
+  is the latest byte without which the server cannot deliver, chosen per transport, and every
+  earlier step is safe to repeat:
+
+  | Transport | Point of no return | Safe to repeat before it |
+  |---|---|---|
+  | SMTP (IMAP accounts) | the `.` line that ends `DATA` (`SmtpStream::write_terminator`, which takes the proof) | dial, TLS, `EHLO`, `AUTH`, `MAIL`/`RCPT`, all of the message text |
+  | JMAP | the last piece of the body of the request carrying `EmailSubmission/set` | the context read, every blob upload, the connect and that request's head |
+  | Graph | the last piece of the `sendMail` body | the connect, the head, all but the end of the base64 message |
+  | Gmail | the last piece of the `messages.send` body | the connect, the head, all but the end of the `raw` message |
+
+  The HTTP transports cross it inside `engine_http`: an `Exchange::Submission` carries the
+  `HandOver`, and the funnel holds the body's last piece until it is committed. reqwest asks
+  for a body only on a connection that is up, so a process that ends while connecting, or
+  while a large message is still going up, is on the side where the send is simply retried.
+  A server acts on a request only once it has all of it, which is what makes the last piece,
+  not the first, the line. A request with no body (none submits today) commits before it is
+  sent.
 - SMTP per-recipient acceptance/rejection before DATA must be represented.
 - Sent folder placement must reconcile by generated Message-ID.
 - Mail mutations (mark-read/flag, move, delete) are one provider-neutral method, `edit_mail(account, &MailEdit) -> MailEditReceipt`, gated by the `mail_writes` capability (distinct from read `mail`, like `calendar_writes` vs `calendars`). `MailEdit` mirrors the three independent mail axes (`modeling.md`): `SetKeywords{add,remove}` (the `$seen`/`$flagged` state), `MoveTo{destination}` (membership — and the mechanism behind a Trash "delete"), and `Delete` (permanent). It is outbox-driven by `engine_sync::edit_mail`, exactly like the calendar writes. JMAP maps all three to one `Email/set` (keywords/mailboxIds patch or `destroy`); IMAP maps them to `UID STORE`, `UID MOVE`, and `UID STORE \Deleted` + `UID EXPUNGE`. A stale target (an IMAP UID under a changed `UIDVALIDITY`) is a `Conflict` → re-sync then retry. (Shape + capability + trait method **implemented** in `engine-provider`; the IMAP adapter implements it — `imap-smtp.md` — as does the JMAP adapter, folding all three edits onto one `Email/set` — `jmap.md`.)

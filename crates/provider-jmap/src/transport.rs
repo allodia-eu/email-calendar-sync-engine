@@ -102,7 +102,7 @@ impl Transport {
     async fn send(
         &self,
         builder: RequestBuilder,
-        exchange: Exchange,
+        exchange: Exchange<'_>,
     ) -> Result<engine_http::Sent, JmapError> {
         let scheme = self.scheme.get();
         // Cloned before the body is consumed, so a scheme switch replays the identical
@@ -138,7 +138,7 @@ impl Transport {
     async fn dispatch(
         &self,
         builder: RequestBuilder,
-        exchange: Exchange,
+        exchange: Exchange<'_>,
     ) -> Result<engine_http::Sent, JmapError> {
         let response = send_retrying(builder, &self.retry, exchange).await?;
         self.connection.record(&response);
@@ -172,7 +172,7 @@ impl Transport {
         &self,
         url: &str,
         body: &Value,
-        exchange: Exchange,
+        exchange: Exchange<'_>,
     ) -> Result<Value, JmapError> {
         let resp = self
             .send(self.client.post(url).json(body), exchange)

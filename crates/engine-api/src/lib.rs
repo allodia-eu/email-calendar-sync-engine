@@ -151,8 +151,9 @@ pub use engine_recurrence::{
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
 pub use engine_store::{
-    ContactPhotoFile, MailListRow, OccurrenceRow, OpRejection, PendingOpRow, PendingOpState,
-    PruneReport, SchemaStatus, SourcesDropped, SweepReport, SyncApplied, TzdataVersion,
+    Confirmation, ContactPhotoFile, MailListRow, OccurrenceRow, OpRejection, PendingOpRow,
+    PendingOpState, PruneReport, SchemaStatus, SourcesDropped, SweepReport, SyncApplied,
+    TzdataVersion,
 };
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,

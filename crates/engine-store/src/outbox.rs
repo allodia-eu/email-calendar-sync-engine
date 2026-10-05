@@ -9,7 +9,7 @@ use core::time::Duration;
 use engine_core::{
     error::FailureClass,
     time::UtcDateTime,
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, ResourceKey},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -114,10 +114,11 @@ pub enum ClaimRejection {
     Backoff,
 }
 
-/// How many attempts a retryable op gets before the outbox stops trying.
+/// How many attempts a retryable op gets before the outbox stops trying. A send is the one
+/// kind it does not bound ([`settles_on_attempts`](crate::settles_on_attempts)).
 ///
-/// A bound has to exist: without one, a server that keeps answering `503` turns a queued
-/// write into a permanent background round trip the user never asked for and cannot see
+/// A bound has to exist for the rest: without one, a server that keeps answering `503` turns a
+/// queued write into a permanent background round trip the user never asked for and cannot see
 /// the end of. Eight attempts on [`retry_delay`]'s schedule spans a little over an hour,
 /// which covers a restart, a flaky link and a short provider outage without pretending an
 /// hours-old failure is still transient.
@@ -129,40 +130,6 @@ const RETRY_BASE: Duration = Duration::from_secs(30);
 /// The ceiling on a *derived* delay. A provider's own `retry_after` is obeyed past it:
 /// a server saying "come back in an hour" is an instruction, not a hint to average down.
 const RETRY_CAP: Duration = Duration::from_mins(30);
-
-/// What an op the previous process left `InFlight` is recorded as, at start-up.
-///
-/// Whatever its own failure would be. A send cut off in flight may already be in front of its
-/// recipients, which is the ambiguous send a lost post-`DATA` acknowledgement produces, so it
-/// awaits confirmation and no claim will run it again. Every other write is the retryable
-/// failure a timeout is: it parks, comes back after the backoff, and settles once its attempts
-/// run out, so an op that takes the process down every time it runs stops eventually.
-#[must_use]
-pub fn interrupted_outcome(kind: PendingOpKind) -> PendingOutcome {
-    match kind {
-        PendingOpKind::MailSubmit => PendingOutcome::NeedsConfirmation {
-            detail: "the process ended while this was being sent, so whether it was delivered \
-                     is unknown"
-                .to_owned(),
-        },
-        PendingOpKind::MailEdit
-        | PendingOpKind::MailReport
-        | PendingOpKind::MailDraftPut
-        | PendingOpKind::MailDraftDelete
-        | PendingOpKind::MailboxEdit
-        | PendingOpKind::CalendarCreate
-        | PendingOpKind::CalendarPatch
-        | PendingOpKind::CalendarDocument
-        | PendingOpKind::CalendarRsvp
-        | PendingOpKind::CalendarDelete
-        | PendingOpKind::ContactCreate
-        | PendingOpKind::ContactPatch
-        | PendingOpKind::ContactDelete => PendingOutcome::Failed {
-            class: FailureClass::Retryable,
-            retry_after: None,
-        },
-    }
-}
 
 /// When a retryable failure may be attempted again.
 ///
@@ -239,6 +206,27 @@ pub enum OpRejection {
     /// it may already have been delivered, so it is resolved by confirmation, never by
     /// withdrawal and never by another attempt.
     AwaitingConfirmation,
+    /// A confirmation names an op that is not awaiting one: it has not been attempted in a
+    /// way that left its outcome unknown, so there is nothing to confirm.
+    NotAwaitingConfirmation,
+}
+
+/// What the host learned about a send parked in
+/// [`NeedsConfirmation`](PendingOpState::NeedsConfirmation), for
+/// `Store::confirm_pending_op`.
+///
+/// Usually the user's answer, after looking at their Sent folder or asking a recipient. A send
+/// whose copy syncs back into a Sent mailbox is confirmed without asking
+/// (`store-and-sync.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Confirmation {
+    /// It reached the server: the op settles as
+    /// [`Succeeded`](PendingOpState::Succeeded) and is never sent again.
+    Delivered,
+    /// It did not: the op goes back to [`Pending`](PendingOpState::Pending), due at once, and
+    /// the next drain sends it. The attempt that handed it over can no longer record anything,
+    /// so a late answer from it cannot settle the new attempt.
+    NotDelivered,
 }
 
 #[cfg(test)]

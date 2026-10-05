@@ -279,7 +279,13 @@ async fn a_dead_standing_session_does_not_lose_the_sent_copy() {
     let (provider, appends) =
         provider_over(vec![SessionScript::DieOnFiling, SessionScript::ServeFiling]).await;
 
-    let receipt = provider.submit(&draft()).await.expect("the send delivers");
+    let receipt = provider
+        .submit(
+            &draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .expect("the send delivers");
 
     assert!(
         receipt.sent_copy.is_filed(),
@@ -300,7 +306,13 @@ async fn a_retry_never_files_a_second_copy() {
     ])
     .await;
 
-    let receipt = provider.submit(&draft()).await.expect("the send delivers");
+    let receipt = provider
+        .submit(
+            &draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .expect("the send delivers");
 
     assert!(receipt.sent_copy.is_filed());
     assert_eq!(
@@ -360,7 +372,10 @@ async fn a_send_survives_a_failed_retry_and_reports_why() {
     let (provider, _) = provider_over(vec![SessionScript::DieOnFiling]).await;
 
     let receipt = provider
-        .submit(&draft())
+        .submit(
+            &draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("a delivered send is never failed for a filing error");
 

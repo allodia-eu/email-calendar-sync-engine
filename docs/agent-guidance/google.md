@@ -212,7 +212,10 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   `Bcc` header on the Sent copy). **Gmail rewrites the caller's `Message-ID` on send** (a
   captured finding), so reconcile-by-`Message-ID` would not match — but `send` **returns
   the sent message's id** in its response, so the receipt uses that directly (no reconcile
-  round-trip, unlike SMTP/Graph `sendMail`, which return nothing).
+  round-trip, unlike SMTP/Graph `sendMail`, which return nothing). Its hand-over is
+  recorded before the last piece of the request body, the point of no return
+  (`providers.md`), and a `2xx` whose `id` cannot be read falls back to the placeholder key
+  rather than failing a send Gmail has accepted.
   With that id in hand, a keyword the draft asks for on its filed copy
   (`Draft::sent_copy_keywords`) is kept as the label standing for it: an existing label under
   any of the keyword's names, else one created under `KeywordName::create_as` with

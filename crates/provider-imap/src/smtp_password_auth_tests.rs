@@ -67,6 +67,7 @@ async fn send_authenticates_with_auth_plain_over_the_stream() {
         &recipients(&["bob@test.local"]),
         &message,
         Some(auth(&Credentials::password("alice@test.local", "s3cret"))),
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -98,6 +99,7 @@ async fn an_auth_rejection_is_an_authentication_error() {
         &recipients(&["bob@test.local"]),
         &message,
         Some(auth(&Credentials::password("alice@test.local", "wrong"))),
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap_err();
@@ -150,6 +152,7 @@ async fn auth_refused_with(reply: &str) -> ImapError {
         &recipients(&["bob@test.local"]),
         &message,
         Some(auth(&Credentials::password("alice@test.local", "pw"))),
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap_err()
@@ -168,6 +171,7 @@ async fn auth_without_esmtp_is_a_protocol_error() {
         &recipients(&["bob@test.local"]),
         &message,
         Some(auth(&Credentials::password("user", "pass"))),
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap_err();

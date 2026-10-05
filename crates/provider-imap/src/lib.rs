@@ -83,7 +83,7 @@ mod error;
 mod fetch;
 mod fetch_batch;
 mod fetch_stream;
-mod filing;
+pub(crate) mod filing;
 mod idle;
 mod mail;
 mod mailbox_write;
@@ -123,6 +123,8 @@ mod watch;
 mod integration;
 #[cfg(test)]
 mod mock;
+#[cfg(test)]
+mod process_kill_tests;
 
 pub use account::ImapAccount;
 pub use config::{ImapConfig, ImapSecurity};

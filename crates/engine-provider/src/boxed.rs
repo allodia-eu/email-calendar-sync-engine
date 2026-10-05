@@ -17,9 +17,10 @@ use engine_core::{
 use crate::{
     CalendarUserAddresses, CalendarWrites, ConnectionInfo, ContactDestination, ContactPhoto,
     ContactSourceSync, ContactWriteReceipt, ContactsProvider, Draft, EmailStream, EventDeletion,
-    EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
-    MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport, Provider, ProviderResult,
-    ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
+    EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, HandOver, MailEdit,
+    MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport, Provider,
+    ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SourceStream,
+    SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -84,8 +85,9 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         &self,
         account: &AccountId,
         draft: &Draft,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        (**self).submit_email(account, draft).await
+        (**self).submit_email(account, draft, hand_over).await
     }
 
     async fn file_sent_copy(

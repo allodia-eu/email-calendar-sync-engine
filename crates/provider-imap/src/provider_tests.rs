@@ -338,7 +338,11 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
     assert!(provider.connection_info().capabilities.sent_copy_keywords());
 
     let receipt = provider
-        .submit_email(&account(), &submit_draft())
+        .submit_email(
+            &account(),
+            &submit_draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap();
     assert_eq!(receipt.email_key.as_str(), "imap:v12:u3@Sent");
@@ -366,7 +370,14 @@ async fn submit_email_reports_the_keywords_the_filed_copy_carries() {
     let keyword = engine_core::mail::Keyword::new("project-x").unwrap();
     let draft = submit_draft().with_sent_copy_keyword(keyword.clone());
 
-    let receipt = provider.submit_email(&account(), &draft).await.unwrap();
+    let receipt = provider
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
     assert_eq!(receipt.sent_copy_keywords, [keyword].into());
 }
 
@@ -374,7 +385,11 @@ async fn submit_email_reports_the_keywords_the_filed_copy_carries() {
 async fn submit_email_without_a_transport_is_rejected() {
     let provider = connected_provider(script(&[GREETING, LOGIN_OK])).await;
     let err = provider
-        .submit_email(&account(), &submit_draft())
+        .submit_email(
+            &account(),
+            &submit_draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap_err();
     assert!(!provider.connection_info().capabilities.submission());

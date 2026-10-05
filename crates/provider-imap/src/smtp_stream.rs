@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use engine_provider::HandedOver;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 
 use crate::{
@@ -95,11 +96,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
         self.write(format!("{line}\r\n").as_bytes()).await
     }
 
-    /// Writes the message body dot-stuffed, then the `<CRLF>.<CRLF>` terminator.
-    pub(crate) async fn write_data(&mut self, message: &[u8]) -> ImapResult<()> {
-        let mut data = dot_stuff(message);
-        data.extend_from_slice(b".\r\n");
-        self.write(&data).await
+    /// Writes the message dot-stuffed, all of it but the terminator. A server delivers
+    /// nothing before the terminator arrives, so this is safe to repeat on another connection.
+    pub(crate) async fn write_body(&mut self, message: &[u8]) -> ImapResult<()> {
+        self.write(&dot_stuff(message)).await
+    }
+
+    /// Writes the `.` line that ends the message: the point of no return of an SMTP
+    /// submission. It takes the proof that the hand-over was recorded, so nothing can write
+    /// it before the record exists.
+    pub(crate) async fn write_terminator(&mut self, _recorded: &HandedOver) -> ImapResult<()> {
+        self.write(b".\r\n").await
     }
 
     /// Writes `bytes` and flushes, a piece at a time ([`deadline::write`]).

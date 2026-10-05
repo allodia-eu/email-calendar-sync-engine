@@ -84,7 +84,7 @@ impl HttpTransport {
         content_type: Option<&str>,
         if_match: Option<&str>,
         body: Vec<u8>,
-        exchange: Exchange,
+        exchange: Exchange<'_>,
     ) -> Result<engine_http::Sent, GoogleError> {
         let mut request = self.client.request(method, url).bearer_auth(&self.token);
         if let Some(content_type) = content_type {
@@ -180,6 +180,7 @@ impl GoogleTransport for HttpTransport {
         url: &str,
         content_type: &str,
         body: Vec<u8>,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> Result<Option<Value>, GoogleError> {
         let post = reqwest::Method::POST;
         let resp = self
@@ -189,7 +190,7 @@ impl GoogleTransport for HttpTransport {
                 Some(content_type),
                 None,
                 body,
-                Exchange::Submission,
+                Exchange::Submission(hand_over),
             )
             .await?;
         write_body(resp).await

@@ -255,6 +255,8 @@ struct OpCell {
     next_attempt_at: Option<UtcDateTime>,
     failure_class: Option<FailureClass>,
     detail: Option<String>,
+    /// The token of the attempt that recorded handing the message over, while it matters.
+    handed_over: Option<FenceToken>,
 }
 
 /// The whole store state, behind one mutex (a reference impl, not a throughput

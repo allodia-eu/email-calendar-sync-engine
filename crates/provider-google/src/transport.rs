@@ -18,7 +18,7 @@
 
 use async_trait::async_trait;
 use engine_http::RetryConfig;
-use engine_provider::{HttpVersion, TlsVersion};
+use engine_provider::{HandOver, HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -71,7 +71,12 @@ pub(crate) trait GoogleTransport: Send + Sync {
         url: &str,
         content_type: &str,
         body: Vec<u8>,
+        hand_over: &HandOver<'_>,
     ) -> Result<Option<Value>, GoogleError> {
+        hand_over
+            .commit()
+            .await
+            .map_err(|err| engine_http::SendError::withheld(err.detail().to_owned()))?;
         self.post(url, content_type, body).await
     }
 
@@ -280,8 +285,11 @@ impl GoogleClient {
         url: &str,
         content_type: &str,
         body: Vec<u8>,
+        hand_over: &HandOver<'_>,
     ) -> Result<Option<Value>, GoogleError> {
-        self.transport.submit(url, content_type, body).await
+        self.transport
+            .submit(url, content_type, body, hand_over)
+            .await
     }
 
     /// Authenticated `PUT`. Returns the replaced object's JSON.

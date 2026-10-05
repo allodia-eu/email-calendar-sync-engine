@@ -73,6 +73,7 @@ async fn submit(stream: MockStream, auth: Option<SmtpAuth<'_>>) -> ImapResult<Sm
         &to,
         b"hi\r\n",
         auth,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
 }
@@ -163,6 +164,7 @@ async fn a_server_that_stops_reading_the_message_fails_retryable() {
         &to,
         message.as_bytes(),
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     ))
     .await;
 

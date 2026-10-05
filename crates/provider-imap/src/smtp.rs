@@ -25,6 +25,7 @@
 //! runs there follows from the credential: `AUTH PLAIN` for a password, `AUTH
 //! OAUTHBEARER`/`AUTH XOAUTH2` for an OAuth 2.0 access token.
 
+use engine_provider::HandOver;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
@@ -57,6 +58,9 @@ pub(crate) enum Disposition {
     /// The post-`DATA` acknowledgement was lost: it may or may not have delivered,
     /// so it must be confirmed, never blind-retried.
     Ambiguous(String),
+    /// The hand-over could not be recorded, so the message was never ended: the server
+    /// delivers nothing, and the send is retried.
+    Withheld(String),
 }
 
 /// The outcome of an SMTP submission: per-recipient results plus the final
@@ -80,13 +84,14 @@ pub(crate) async fn send<S>(
     to: &[String],
     message: &[u8],
     auth: Option<SmtpAuth<'_>>,
+    hand_over: &HandOver<'_>,
 ) -> ImapResult<SmtpResult>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let mut smtp = SmtpStream::new(stream);
     read_greeting(&mut smtp).await?;
-    converse(&mut smtp, ehlo_domain, from, to, message, auth).await
+    converse(&mut smtp, ehlo_domain, from, to, message, auth, hand_over).await
 }
 
 /// Runs the conversation over a stream already **past** its greeting and a `STARTTLS`
@@ -101,12 +106,13 @@ pub(crate) async fn send_after_starttls<S>(
     to: &[String],
     message: &[u8],
     auth: Option<SmtpAuth<'_>>,
+    hand_over: &HandOver<'_>,
 ) -> ImapResult<SmtpResult>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let mut smtp = SmtpStream::new(stream);
-    converse(&mut smtp, ehlo_domain, from, to, message, auth).await
+    converse(&mut smtp, ehlo_domain, from, to, message, auth, hand_over).await
 }
 
 /// Reads what a submission server advertises and nothing else: the greeting, `EHLO`,
@@ -222,6 +228,11 @@ fn reject_control<'a>(field: &str, value: &'a str) -> ImapResult<&'a str> {
 /// `EHLO`s, optionally authenticates, then `MAIL → RCPT* → DATA` and classifies the
 /// outcome. Assumes the greeting has already been read (both entries do so, or — for
 /// STARTTLS — the upgrade consumed it).
+///
+/// The point of no return is the `.` that ends the message, and `hand_over` is committed
+/// immediately before it, after the whole message has been written: the dial, TLS, `EHLO`,
+/// `AUTH`, the envelope and the message's text are all safe to repeat, because a server
+/// delivers nothing it has not seen the end of.
 async fn converse<S>(
     smtp: &mut SmtpStream<S>,
     ehlo_domain: &str,
@@ -229,6 +240,7 @@ async fn converse<S>(
     to: &[String],
     message: &[u8],
     auth: Option<SmtpAuth<'_>>,
+    hand_over: &HandOver<'_>,
 ) -> ImapResult<SmtpResult>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -284,13 +296,34 @@ where
             disposition: classify(code, text),
         });
     }
-    smtp.write_data(message).await?;
+    smtp.write_body(message).await?;
+    let recorded = match hand_over.commit().await {
+        Ok(recorded) => recorded,
+        // Dropped without the terminator, and without `QUIT`, which in DATA would be text:
+        // a server discards a message whose connection closes before its end (RFC 5321
+        // §4.1.1.4).
+        Err(err) => {
+            return Ok(SmtpResult {
+                recipients,
+                disposition: Disposition::Withheld(err.detail().to_owned()),
+            });
+        }
+    };
+    // From here the message may be delivered. A terminator that could not be written may
+    // still have reached the server in part or whole, so it is as ambiguous as a lost reply.
+    if smtp.write_terminator(&recorded).await.is_err() {
+        return Ok(SmtpResult {
+            recipients,
+            disposition: Disposition::Ambiguous(
+                "the end of the message may not have been sent".to_owned(),
+            ),
+        });
+    }
 
-    // The post-DATA reply decides delivery. The message bytes are already on the
-    // wire, so ANY failure to read the acknowledgement — a dropped connection, a reply
-    // that never came, OR a malformed reply — is the ambiguous case: it may have
-    // delivered, so it must be confirmed, never blind-retried (never a plain transport
-    // error here).
+    // The post-DATA reply decides delivery. ANY failure to read the acknowledgement — a
+    // dropped connection, a reply that never came, OR a malformed reply — is the ambiguous
+    // case: it may have delivered, so it must be confirmed, never blind-retried (never a
+    // plain transport error here). A reply that came is the server's answer either way.
     let disposition = match smtp.read_reply_lines_within(BOUNDS.submission()).await {
         Ok((code, _)) if is_success(code) => Disposition::Delivered,
         Ok((code, lines)) => classify(code, lines.join(" ")),

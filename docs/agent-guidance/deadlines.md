@@ -74,6 +74,7 @@ that never sends a message twice.
 | IMAP | every write, an `APPEND` literal included | `stall` per 8 KiB | `Retryable` |
 | SMTP | greeting, `EHLO`, `AUTH`, `MAIL`, `RCPT`, `DATA`'s `354` | `reply` | `Retryable` |
 | SMTP | the message | `stall` per 8 KiB | `Retryable`: its end never left |
+| SMTP | the final `.` itself (written after the hand-over) | `stall` | `NeedsConfirmation`: it may have reached the server |
 | SMTP | the reply to the final `.` | `submission` | `NeedsConfirmation` |
 | JMAP | session, method calls (sync and every `/set`), blob upload and download | `stall`, then `reply` | `Retryable` |
 | JMAP | the `Email/set` + `EmailSubmission/set` request | `stall`, then `submission` | `NeedsConfirmation` once it may have been received, `Retryable` before |
@@ -84,6 +85,14 @@ that never sends a message twice.
 | Google | `messages.send` | `stall`, then `submission` | `NeedsConfirmation` once it may have been received, `Retryable` before |
 | CalDAV, CardDAV | `PROPFIND`, `REPORT`, `OPTIONS`, `GET` | `stall`, then `reply` | `Retryable` |
 | CalDAV, CardDAV | `PUT`, `DELETE`, a `PUT` the server schedules from included | `stall`, then `reply` | `Retryable`: the precondition the write carries makes the replay safe (`caldav.md`) |
+
+**An answer is the server's own unless it says otherwise.** After a submission may have been
+received, a status the server sends is a refusal and keeps its class, with two exceptions
+that are lost answers in disguise: a gateway's `502` or `504` says the server behind it gave
+none, and a success whose body cannot be read (or a JMAP response missing the call) is an
+answer nobody can read. Both are `NeedsConfirmation`. A submission whose hand-over could not
+be recorded never sends its end (`SendError::withheld`), so it was not received and is
+`Retryable` (`store-and-sync.md` → "A send survives its process").
 
 ## Testing
 
@@ -122,9 +131,6 @@ remove it, so no exchange a test expects to complete runs with the clock free:
 
 ## Known gaps
 
-- **A `5xx` to a submission is still `Retryable`.** A gateway may answer `502` after the
-  server accepted the message, and a retry would send it twice. That is a status, not a
-  timeout, and changing it belongs with the outbox's handling of submissions rather than here.
 - **Writes other than submissions keep their lost-connection class.** A JMAP
   `CalendarEvent/set` carries no lost-update guard, so a replay after a lost reply can repeat
   a scheduling message the server sent. A timeout there behaves as a reset connection always

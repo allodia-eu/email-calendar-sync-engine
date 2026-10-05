@@ -20,7 +20,9 @@
 use std::{collections::HashSet, sync::Arc};
 
 use engine_core::ids::ProviderKey;
-use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
+use engine_provider::{
+    Draft, HandOver, HandedOver, ProviderError, ProviderResult, SubmissionReceipt,
+};
 use engine_rfc5322::{assemble_filed_message, assemble_message};
 use time::OffsetDateTime;
 use tokio::{
@@ -136,7 +138,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
     ///
     /// [`ProviderError::invalid_state`] when no SMTP transport is configured, or a
     /// classified failure on a rejected/ambiguous send or a transport error.
-    pub(crate) async fn submit(&self, draft: &Draft) -> ProviderResult<SubmissionReceipt> {
+    pub(crate) async fn submit(
+        &self,
+        draft: &Draft,
+        hand_over: &HandOver<'_>,
+    ) -> ProviderResult<SubmissionReceipt> {
         let sender = self
             .smtp
             .as_deref()
@@ -144,7 +150,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         match sender {
             SmtpSender::Plaintext { addr } => {
                 let tcp = deadline::connect(addr).await?;
-                self.submit_over(tcp, draft, None).await
+                self.submit_over(tcp, draft, None, hand_over).await
             }
             // An `AUTH` refusal comes before `MAIL FROM`, so nothing was sent when the
             // renewal re-dials: a send is never repeated (`with_renewal`).
@@ -161,10 +167,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                     let tls = tls_connect(connector, server_name, tcp).await?;
                     let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
                     let auth = sender.auth(&credentials);
-                    smtp::send(tls, ehlo, from, to, &prepared.message, auth).await
+                    smtp::send(tls, ehlo, from, to, &prepared.message, auth, hand_over).await
                 })
                 .await?;
-                self.file_result(result, &sub, draft).await
+                self.file_result(result, &sub, draft, hand_over).await
             }
             SmtpSender::StartTls {
                 addr,
@@ -182,10 +188,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                     let tls = tls_connect(connector, server_name, tcp).await?;
                     let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
                     let auth = sender.auth(&credentials);
-                    smtp::send_after_starttls(tls, ehlo, from, to, &prepared.message, auth).await
+                    let message = &prepared.message;
+                    smtp::send_after_starttls(tls, ehlo, from, to, message, auth, hand_over).await
                 })
                 .await?;
-                self.file_result(result, &sub, draft).await
+                self.file_result(result, &sub, draft, hand_over).await
             }
         }
     }
@@ -203,13 +210,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         smtp: W,
         draft: &Draft,
         auth: Option<SmtpAuth<'_>>,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt>
     where
         W: AsyncRead + AsyncWrite + Unpin + Send,
     {
         let sub = Self::prepare(draft)?;
-        let result = smtp::send(smtp, &sub.ehlo, &sub.from, &sub.to, &sub.message, auth).await?;
-        self.file_result(result, &sub, draft).await
+        let (ehlo, from, to) = (&sub.ehlo, &sub.from, &sub.to);
+        let result = smtp::send(smtp, ehlo, from, to, &sub.message, auth, hand_over).await?;
+        self.file_result(result, &sub, draft, hand_over).await
     }
 
     /// Derives the [`Submission`] (wire message, envelope, EHLO identity) from `draft`.
@@ -254,9 +263,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         result: SmtpResult,
         sub: &Submission,
         draft: &Draft,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
         match result.disposition {
             Disposition::Delivered => {}
+            Disposition::Withheld(detail) => return Err(ProviderError::retryable(detail)),
             Disposition::RejectedPermanent(text) => {
                 return Err(ProviderError::permanent(format!("SMTP rejected: {text}")));
             }
@@ -269,6 +280,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 )));
             }
         }
+
+        // Delivered, so the hand-over was recorded before the terminator; this only fetches
+        // the proof.
+        let handed_over: HandedOver = hand_over.commit().await?;
 
         // The filed Sent copy INCLUDES the Bcc header (it is APPENDed locally, never
         // transmitted), so the sender's Sent folder records whom they Bcc'd — Outlook/
@@ -291,6 +306,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                     &draft.message_id,
                 ),
                 draft.message_id.clone(),
+                &handed_over,
             )
             .with_sent_copy_keywords(placed.keywords)),
             // Delivered, but the copy is not in Sent and no later sync can find it — there
@@ -306,6 +322,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 ),
                 draft.message_id.clone(),
                 detail,
+                &handed_over,
             )),
         }
     }
@@ -451,10 +468,16 @@ mod tests;
 // TLS harness), so they live in a sibling file to keep `filing_tests.rs` small.
 #[cfg(test)]
 #[path = "filing_smtp_server_tests.rs"]
-mod smtp_server_tests;
+pub(crate) mod smtp_server_tests;
 
 // The Sent-copy retry needs a real dial (a mock stream cannot express "this session is dead,
 // open another"), so its in-process IMAP + SMTP servers live in their own file.
 #[cfg(test)]
 #[path = "filing_retry_tests.rs"]
 mod retry_tests;
+
+// A send interrupted at each point of the SMTP conversation, through the outbox: the
+// recipient gets it exactly once, or it awaits confirmation.
+#[cfg(test)]
+#[path = "durable_submit_tests.rs"]
+mod durable_tests;

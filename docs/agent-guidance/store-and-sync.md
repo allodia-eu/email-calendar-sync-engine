@@ -195,13 +195,11 @@ are one mechanism here, not alternatives.
   affected fencing token so an abandoned worker cannot later commit under its old
   lease. It is not an in-process contention workaround: a live `ScopeHeld` still
   means "retry after the current worker finishes."
-- `recover_interrupted_ops` is the same primitive for the outbox, under the same contract.
-  An op the dead process left `InFlight` is recorded as `interrupted_outcome` says, the
-  outcome its own failure would have had: a send may already be in front of its recipients,
-  so it awaits confirmation, and every other write is a retryable failure that parks, backs
-  off and eventually settles. Each one's token is bumped. Without it the op is claimable
-  again once its lease lapses (a claim's own predicate), which for a send is a second
-  delivery.
+- `recover_interrupted_ops` is the same primitive for the outbox, under the same contract:
+  every op left `InFlight` is recovered as `interrupted_outcome` says, live lease or not,
+  and its token is bumped. Every other outbox path recovers an attempt too, but only once its
+  lease has lapsed, so this call saves the next process waiting out a dead process's lease.
+  What a recovery records is "The outbox" → "A send survives its process".
 
 ## The atomic apply
 
@@ -787,20 +785,28 @@ one event never race on either provider.
   cap** — a server saying "come back in forty-five minutes" is an instruction, not a hint to
   average down — and every HTTP adapter now supplies one where its server named one
   (`http-throttling.md`); before that it was a path nothing ever exercised. It settles as `Failed` only once `attempts` reaches
-  `MAX_ATTEMPTS`. Every other class settles at once: a conflict or an auth failure needs
-  recomputation or a human, and backing off changes neither. `Failed` therefore means *the
-  outbox gave up*, not *one attempt failed*, and a claim refused for a backoff answers
-  `ClaimRejection::Backoff` rather than `Settled`, because the caller must not conclude the
-  op is finished.
+  `MAX_ATTEMPTS`, **and a send never does** (`engine_store::settles_on_attempts`): the
+  message is the user's own work, settling it on a count turns a server that was down for an
+  afternoon into a message quietly not sent, and waiting costs nothing because an attempt
+  happens only when the host drains. Every other class settles at once: a conflict or an auth
+  failure needs recomputation or a human, and backing off changes neither. `Failed` therefore
+  means *the outbox gave up*, not *one attempt failed*, and a claim refused for a backoff
+  answers `ClaimRejection::Backoff` rather than `Settled`, because the caller must not
+  conclude the op is finished. The rule is one function, `engine_store::record_outcome`,
+  which both stores and their queue reads call.
 
 - **The queue is readable, and withdrawable.** `StoreRead::list_pending_ops(account)` returns
-  every row that has not settled, in enqueue order, with its kind, payload, attempts, backoff
+  every row that has not settled, and every send that settled `Failed`
+  (`engine_store::stays_listed`), in enqueue order, with its kind, payload, attempts, backoff
   and last failure class. This is what makes the outbox a queue rather than a set of ids a
   caller had to remember: `pending_op_state` answers about one op the caller already holds
-  the id of, which a host that has restarted does not. `Store::cancel_pending_op` settles a
-  queued op as `Cancelled` (a state of its own: a user deleting a queued message is not a
-  failure) and bumps its fence, refusing rather than erroring when the op is under a live
-  lease or awaiting confirmation, neither of which can be called back.
+  the id of, which a host that has restarted does not. A failed send stays because it is a
+  message that has not gone: it leaves the queue only when the host sends it again
+  (`retry_pending_op_now`, back to `Pending`) or withdraws it (`cancel_pending_op`).
+  `Store::cancel_pending_op` settles a queued op as `Cancelled` (a state of its own: a user
+  deleting a queued message is not a failure) and bumps its fence, refusing rather than
+  erroring when the op is under a live lease or awaiting confirmation, neither of which can be
+  called back.
 
 - **The drainer is what comes back for a queued op.** `engine_sync::drain_outbox` reads the
   account's queue, keeps the ops it dispatches, and takes each under a **targeted** claim,
@@ -897,8 +903,9 @@ one event never race on either provider.
   `PendingOpClaim::Refused(ClaimRejection::{Unknown, Settled, DependencyUnmet, Busy})`
   rather than an empty result, because the caller acts on the difference: `Busy` is a
   wait and nothing else is. Both stores answer with the batch claim's own predicate —
-  runnable means `Pending` **and due**, or `InFlight` whose lease died under it, and in
-  both stores a row with no kind is runnable in neither.
+  runnable means `Pending` **and due**, and in both stores a row with no kind is runnable in
+  neither. An `InFlight` op is never runnable as it stands: one whose lease died is recovered
+  first ("A send survives its process").
 - **Serializing on a resource means waiting, not refusing.** The store defers an op
   whose `resource_key` a live lease holds; the inline drivers wait that out
   (`engine_sync::outbox::RESOURCE_WAIT`, an upper bound on one provider round trip)
@@ -911,6 +918,60 @@ one event never race on either provider.
   like the sync path: a sync-only fence would let a suspended-then-resumed mobile
   worker clobber an op that was already re-claimed.
 - The outbox lease is **account-scoped**, independent of sync scopes.
+
+### A send survives its process
+
+A message the user pressed Send on is never lost and never delivered twice, whatever ends,
+stalls or suspends the process at any point of the attempt. Four rules make it so.
+
+- **The hand-over is recorded before the point of no return.** Immediately before the first
+  byte that could deliver the message, the attempt records through the outbox, under its
+  lease, that it is handing the message over (`Store::record_hand_over`, reached only
+  through `engine_provider::HandOver`; where that byte is on each transport is
+  `providers.md`). A provider writes the byte only once the record succeeded; a record that
+  fails (a store error, a lease another worker took) ends the attempt as `Retryable` with
+  nothing sent. The record is the token of the attempt that made it, and it is synced to disk
+  before the provider goes on, as is every enqueue and every withdrawal: SQLite runs WAL with
+  `synchronous = NORMAL`, which a power cut can roll back, and losing the record would make
+  a delivered send look like one that never left.
+- **A dead attempt is recovered by what the record says, on every path.** An attempt whose
+  lease has lapsed is gone (or suspended, which is the same thing to everyone else). The store
+  recovers it before any decision about the op, inside the same transaction: both claims, the
+  host's verbs (`cancel_pending_op`, `retry_pending_op_now`, `confirm_pending_op`) and
+  `recover_interrupted_ops`; the queue read and `pending_op_state` show it as the recovery
+  will leave it. Recovery records `engine_store::interrupted_outcome` and bumps the token:
+  - a send **with no record** never reached the point of no return, so it is a retryable
+    failure due at once: "Send now" sends it, and so does the next drain;
+  - a send **with the record** may be in front of its recipients, so it awaits confirmation
+    (`NeedsConfirmation`), which no claim takes;
+  - any other write never records one, and is the retryable failure a timeout is, with its
+    backoff.
+- **A live attempt keeps its lease for as long as it runs.** A large upload on a slow line or
+  a server that takes ten minutes to accept a message (`deadlines.md`) outlasts any fixed
+  lease, so the worker renews it every third of its TTL (`engine_sync::outbox::holding`,
+  `Store::renew_pending_op_lease`) and stops when the attempt ends. A renewal refused as
+  stale means another worker recovered the op (a suspended process past its lease); the
+  record decides what is left: an attempt that had not handed over cannot any more, and one
+  that had can still report its outcome.
+- **Only the attempt that handed over, or the host, settles a send it may have delivered.**
+  `mark_pending_op` hears one stale lease: that of the attempt whose record a recovery
+  parked the send under, because it alone can know what happened (a process suspended mid-send
+  that resumes). Otherwise a `NeedsConfirmation` send resolves by its copy syncing into a Sent
+  mailbox (`engine_sync`'s `sent_copies`), or by `Store::confirm_pending_op`:
+  `Confirmation::Delivered` settles it, `NotDelivered` makes it due at once under a new
+  token, so a late answer from the old attempt cannot settle the new one.
+
+What the server says after the hand-over decides the rest: a refusal it states (an SMTP
+`4xx`/`5xx` to the end of the message, an HTTP status other than a gateway's `502`/`504`, a
+JMAP `SetError`) is classified as such and clears the record, so the next attempt starts
+clean; an answer that never comes or cannot be read is `NeedsConfirmation` (`deadlines.md`).
+
+`recover_interrupted_ops` assumes the previous process has ended, as `abandon_sync_leases`
+does. A store shared with a process that has not (an app and its background task) loses
+nothing by it: the record is fenced, so a recovered attempt that had not handed over cannot
+any more. The outbox's write transactions take SQLite's write lock up front
+(`BEGIN IMMEDIATE`), so two processes claiming one op queue on `busy_timeout` and one wins,
+rather than one failing with `SQLITE_BUSY`.
 
 ## Revised trait
 
@@ -963,7 +1024,7 @@ pub trait Store: Send + Sync {
         &self,
         account: AccountId,
         op: PendingOpId,
-    ) -> Result<Option<CancelRejection>>;
+    ) -> Result<Option<OpRejection>>;
     async fn claim_pending_ops(
         &self,
         account: AccountId,
@@ -977,11 +1038,21 @@ pub trait Store: Send + Sync {
         req: LeaseRequest,
     ) -> Result<PendingOpClaim>; // Leased(..) | Refused(ClaimRejection)
 
+    async fn record_hand_over(&self, lease: &OpLease) -> Result<()>; // before the point of no return
+    async fn renew_pending_op_lease(&self, lease: &OpLease, ttl: Duration) -> Result<()>;
     async fn mark_pending_op(
         &self,
         lease: &OpLease,
         outcome: PendingOutcome,
     ) -> Result<()>;
+    async fn retry_pending_op_now(&self, account: AccountId, op: PendingOpId)
+    -> Result<Option<OpRejection>>;
+    async fn confirm_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+        confirmation: Confirmation, // Delivered | NotDelivered
+    ) -> Result<Option<OpRejection>>;
 }
 ```
 
@@ -1059,10 +1130,19 @@ Lock these as failing tests before implementing the store:
   every other scope alone; under a superseded lease it is rejected as `StaleLease`.
 - `abandon_sync_leases` frees held leases without clearing cursors, and fences out
   the abandoned worker by bumping the token.
-- `recover_interrupted_ops` takes an interrupted send to `NeedsConfirmation`, where no
-  claim reaches it however long ago its lease lapsed, and an interrupted edit back to
-  `Pending` with the attempt counted; it fences the dead worker, leaves an op nobody held
-  untouched, and changes nothing on a second call.
+- `recover_interrupted_ops` takes an interrupted send that recorded its hand-over to
+  `NeedsConfirmation`, where no claim reaches it however long ago its lease lapsed, one that
+  did not back to `Pending`, due at once, and an interrupted edit back to `Pending` with the
+  attempt counted; it fences the dead workers (all but the right of the attempt that handed
+  over to report), leaves an op nobody held untouched, and changes nothing on a second call.
+- The hand-over record is written under the current lease only; a dead send with no record
+  is retried and one with a record awaits confirmation on every path (both claims, the
+  host's verbs, the queue read); a definitive refusal clears the record; a confirmation ends
+  the old attempt's right to report; a renewed lease keeps a slow attempt its own and lapses
+  once renewal stops; a send that settled `Failed` stays listed with its payload until it is
+  sent again or withdrawn, and a transient failure never settles one
+  (`contract/outbox_cases/hand_over.rs`). SQLite adds the restart, the upgrade of a store
+  with a send in flight, and two stores on one file (`outbox_ops/restart_tests.rs`).
 - Container-before-member apply ordering holds, including under snapshot
   tombstoning. (The store enforces per-scope snapshot tombstoning and keeps
   scopes independent; the cross-scope *apply order* itself is an orchestrator

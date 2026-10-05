@@ -183,7 +183,7 @@ impl RetryConfig {
 pub async fn send_retrying(
     request: RequestBuilder,
     retry: &RetryConfig,
-    exchange: Exchange,
+    exchange: Exchange<'_>,
 ) -> Result<Sent, SendError> {
     let (client, built) = request.build_split();
     let mut pending = built?;

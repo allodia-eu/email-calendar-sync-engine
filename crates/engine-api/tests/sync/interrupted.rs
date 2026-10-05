@@ -57,12 +57,19 @@ impl Provider for CutOffProvider {
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
+        // The message goes out before the process hears back.
+        let handed_over = hand_over.commit().await?;
         if self.submits.fetch_add(1, Ordering::SeqCst) == 0 {
             std::future::pending::<()>().await;
         }
         let key = ProviderKey::new("sent-1").unwrap();
-        Ok(SubmissionReceipt::filed(key, draft.message_id.clone()))
+        Ok(SubmissionReceipt::filed(
+            key,
+            draft.message_id.clone(),
+            &handed_over,
+        ))
     }
 }
 

@@ -58,7 +58,13 @@ async fn guarded(
 async fn a_send_to_a_server_that_never_greets_is_retried_by_the_outbox() {
     let (smtp, _) = MockStream::silent_after(script(&[]));
 
-    let err = guarded(provider().submit_over(smtp, &draft(), None)).await;
+    let err = guarded(provider().submit_over(
+        smtp,
+        &draft(),
+        None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    ))
+    .await;
 
     assert!(err.is_retryable(), "{err}");
     assert!(!err.requires_confirmation(), "{err}");
@@ -74,7 +80,13 @@ async fn a_send_whose_end_of_data_goes_unanswered_needs_confirmation_and_is_neve
         "354 go ahead\r\n",
     ]));
 
-    let err = guarded(provider().submit_over(smtp, &draft(), None)).await;
+    let err = guarded(provider().submit_over(
+        smtp,
+        &draft(),
+        None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    ))
+    .await;
 
     assert!(err.requires_confirmation(), "{err}");
     assert!(!err.is_retryable(), "{err}");
@@ -111,8 +123,11 @@ async fn a_tls_submission_to_a_server_that_accepts_and_never_speaks_is_retried()
         accepted
     };
 
-    let message = draft();
-    let (err, _accepted) = tokio::join!(guarded(provider.submit(&message)), accepting);
+    let (message, hand_over) = (
+        draft(),
+        engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    );
+    let (err, _accepted) = tokio::join!(guarded(provider.submit(&message, &hand_over)), accepting);
 
     assert!(err.to_string().contains("TLS handshake"), "{err}");
     assert!(err.is_retryable(), "{err}");

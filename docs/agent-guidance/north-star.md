@@ -124,7 +124,8 @@ Every write is a durable pending operation before any provider side effect:
 - SMTP sends generate a stable MIME message and Message-ID before submission.
 - SMTP recipient handling records pre-DATA partial acceptance/rejection before any DATA phase.
 - Ambiguous submissions (an SMTP failure after `DATA`, an HTTP submission that failed once it may have reached the server, a timeout at either) enter `NeedsConfirmation`; the engine never blindly retries a possibly delivered message (`deadlines.md`).
-- `NeedsConfirmation` resolves through sync reconciliation, generated Message-ID lookup, or explicit user/host confirmation.
+- `NeedsConfirmation` resolves through sync reconciliation (its copy in a Sent mailbox), or explicit user/host confirmation (`Store::confirm_pending_op`).
+- A send is never lost and never delivered twice whatever ends the process mid-attempt: it records its hand-over before the point of no return, and recovery turns on that record (`store-and-sync.md` → "A send survives its process").
 - Sent-folder placement reconciles by generated Message-ID where the provider does not submit and file atomically.
 - JMAP submission uses `EmailSubmission/set` and `onSuccessUpdateEmail` when available.
 - CalDAV writes use ETags and `If-Match`; conflicts refetch before merge.

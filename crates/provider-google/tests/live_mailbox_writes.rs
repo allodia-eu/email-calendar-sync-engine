@@ -203,7 +203,11 @@ async fn labels_behave_as_folders_across_create_rename_move_trash_and_delete() {
         "Folder probe body.",
     );
     let key = provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send the probe")
         .email_key;

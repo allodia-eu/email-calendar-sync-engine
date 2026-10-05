@@ -14,7 +14,7 @@
 use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use engine_provider::Deadlines;
+use engine_provider::{Deadlines, HandOver, Unrecorded};
 use http_body::Body as _;
 use tokio::{net::TcpListener, time::Instant};
 
@@ -84,18 +84,20 @@ async fn a_silent_server_fails_an_ordinary_request_after_the_reply_bound() {
 async fn a_submission_waits_the_longer_bound_and_may_have_been_received() {
     let server = SilentServer::start(Vec::new()).await;
     let request = client().post(server.url()).body("a message");
+    let hand_over = HandOver::new(&Unrecorded);
 
     let (outcome, elapsed) = held_until(
         server.has_received(1),
         timed(send_retrying(
             request,
             &RetryConfig::default(),
-            Exchange::Submission,
+            Exchange::Submission(&hand_over),
         )),
     )
     .await;
 
     let err = timed_out(outcome);
+    assert!(hand_over.is_committed(), "the whole request went out");
     // Counted from the body's last piece, which goes out once the connection is up, and the
     // paused clock may already have jumped towards the dial bound by then.
     assert!(
@@ -112,6 +114,7 @@ async fn a_server_that_stops_taking_the_body_never_received_it() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("http://{}/", listener.local_addr().expect("address"));
     let request = client().post(url).body(vec![b'x'; 32 * 1024 * 1024]);
+    let hand_over = HandOver::new(&Unrecorded);
     let mut accepted = None;
 
     let (outcome, elapsed) = held_until(
@@ -119,12 +122,16 @@ async fn a_server_that_stops_taking_the_body_never_received_it() {
         timed(send_retrying(
             request,
             &RetryConfig::default(),
-            Exchange::Submission,
+            Exchange::Submission(&hand_over),
         )),
     )
     .await;
 
     let err = timed_out(outcome);
+    assert!(
+        !hand_over.is_committed(),
+        "the end never left, so nothing was handed over"
+    );
     // At least the stall bound, from the last piece the buffers took.
     assert!(elapsed >= BOUNDS.stall(), "{elapsed:?}");
     assert!(err.to_string().contains("took nothing"), "{err}");
@@ -140,8 +147,9 @@ async fn an_upload_that_keeps_moving_is_never_cut_off() {
     let mut body = Pieces {
         rest: Bytes::from(vec![b'x'; 20 * PIECE]),
         progress: Arc::clone(&progress),
+        gate: None,
     };
-    let silence = quiet(&progress, Exchange::Submission.reply());
+    let silence = quiet(&progress, BOUNDS.submission());
     tokio::pin!(silence);
     let started = Instant::now();
 
@@ -270,16 +278,21 @@ async fn a_connection_whose_handshake_never_completes_fails_after_the_dial_bound
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("https://{}/", listener.local_addr().expect("address"));
     let request = client().post(url).body("a message");
+    let hand_over = HandOver::new(&Unrecorded);
 
     let (outcome, elapsed) = timed(send_retrying(
         request,
         &RetryConfig::default(),
-        Exchange::Submission,
+        Exchange::Submission(&hand_over),
     ))
     .await;
 
     let err = timed_out(outcome);
     assert_took(elapsed, BOUNDS.dial());
+    assert!(
+        !hand_over.is_committed(),
+        "a connection that never came up hands nothing over, even a one-piece body"
+    );
     assert!(!err.may_have_been_received(), "{err}");
     drop(listener);
 }

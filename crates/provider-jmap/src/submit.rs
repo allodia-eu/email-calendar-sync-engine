@@ -18,7 +18,7 @@ use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
     mail::{EmailAddress, Keyword, Mailbox, MailboxRole},
 };
-use engine_provider::{Draft, ProviderResult, SubmissionReceipt};
+use engine_provider::{Draft, HandOver, HandedOver, ProviderResult, SubmissionReceipt};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -41,15 +41,17 @@ struct SubmitContext {
 /// Sends `draft`: resolves context, uploads any attachment blobs, then creates +
 /// submits + files it.
 ///
-/// The request that submits is the one whose failure can leave the send ambiguous: once it
-/// may have reached the server, the message may have been sent, so a failure there needs
-/// confirming rather than retrying ([`JmapError::into_submission_error`]). Everything before
-/// it sends nothing and fails as it always does.
+/// The request that submits is the point of no return, and the only one: the context read
+/// and the attachment uploads before it send nothing, so `hand_over` is committed before the
+/// end of its body and nowhere earlier. Once it may have reached the server, the message may
+/// have been sent, so a failure there needs confirming rather than retrying
+/// ([`JmapError::into_submission_error`]), and so does an answer that cannot be read.
 pub(crate) async fn send(
     executor: &dyn Executor,
     mail_account: &str,
     submission_account: &str,
     draft: &Draft,
+    hand_over: &HandOver<'_>,
 ) -> ProviderResult<SubmissionReceipt> {
     let context = resolve_context(executor, mail_account, submission_account).await?;
     // Attachment bytes must be uploaded first: the draft references each by the
@@ -78,12 +80,18 @@ pub(crate) async fn send(
         }),
     );
 
-    let resp = (executor.submit(&req).await).map_err(JmapError::into_submission_error)?;
-    let receipt = parse_receipt(
-        resp.result(&email_set)?,
-        resp.result(&submission_set)?,
+    let resp =
+        (executor.submit(&req, hand_over).await).map_err(JmapError::into_submission_error)?;
+    // Recorded by the request that just went out; this only fetches the proof.
+    let handed_over = hand_over.commit().await?;
+    let receipt = answer(
+        &resp,
+        &email_set,
+        &submission_set,
         &draft.message_id,
-    )?;
+        &handed_over,
+    )
+    .map_err(JmapError::into_answer_error)?;
     let kept = tag_sent_copy(executor, mail_account, receipt.email_key.as_str(), draft).await;
     Ok(receipt.with_sent_copy_keywords(kept))
 }
@@ -301,12 +309,29 @@ fn address(addr: &EmailAddress) -> Value {
     }
 }
 
+/// Reads the submission's answer into a receipt.
+fn answer(
+    resp: &crate::request::Response,
+    email_set: &str,
+    submission_set: &str,
+    message_id: &MessageIdHeader,
+    handed_over: &HandedOver,
+) -> Result<SubmissionReceipt, JmapError> {
+    parse_receipt(
+        resp.result(email_set)?,
+        resp.result(submission_set)?,
+        message_id,
+        handed_over,
+    )
+}
+
 /// Extracts the sent email's key, mapping a `SetError` on either create into a
 /// classified [`JmapError`].
 fn parse_receipt(
     email_result: &Value,
     submission_result: &Value,
     message_id: &MessageIdHeader,
+    handed_over: &HandedOver,
 ) -> Result<SubmissionReceipt, JmapError> {
     let email_id = created_id(email_result, "draft")
         .ok_or_else(|| set_error(email_result, "draft", "Email/set"))?;
@@ -322,7 +347,11 @@ fn parse_receipt(
     // and is not read here, so it would pass as `Filed`. Unlike a lost IMAP `APPEND` the
     // message is still in the account and still syncs, which is why it has not forced the
     // extra plumbing.
-    Ok(SubmissionReceipt::filed(key, message_id.clone()))
+    Ok(SubmissionReceipt::filed(
+        key,
+        message_id.clone(),
+        handed_over,
+    ))
 }
 
 /// The id of an object created under `creation_id`, if the create succeeded.

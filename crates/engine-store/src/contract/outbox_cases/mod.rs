@@ -3,7 +3,9 @@
 //! the queue read.
 
 mod claim;
+mod hand_over;
 mod interrupted;
+mod keeping;
 mod lifecycle;
 mod queue;
 
@@ -12,7 +14,17 @@ pub(super) use self::{
         a_dead_lease_holds_no_resource, a_targeted_claim_names_why_it_refused,
         a_targeted_claim_reaches_an_op_behind_a_backlog,
     },
+    hand_over::{
+        a_confirmation_ends_the_old_attempts_say,
+        a_dead_send_that_handed_over_awaits_confirmation_on_every_path,
+        a_dead_send_that_never_handed_over_is_retried_on_every_path,
+        the_hand_over_is_recorded_under_the_current_lease_only,
+    },
     interrupted::an_op_the_previous_process_left_in_flight_is_recovered,
+    keeping::{
+        a_renewed_lease_keeps_a_slow_attempt_its_own,
+        a_send_that_failed_stays_listed_until_the_host_acts,
+    },
     lifecycle::{
         claim_filters_dependencies_and_resources, claim_respects_limit, enqueue_is_idempotent,
         expired_op_lease_is_rejected, outcomes_record_failure_and_ambiguity,

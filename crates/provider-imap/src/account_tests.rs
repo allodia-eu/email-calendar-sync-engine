@@ -206,7 +206,12 @@ async fn a_send_with_no_connection_to_file_on_still_delivers_and_says_so() {
 
     let receipt = account
         .provider(mailbox("INBOX"))
-        .submit_over(smtp, &sent_draft(), None)
+        .submit_over(
+            smtp,
+            &sent_draft(),
+            None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("a delivered send is never failed for a filing error");
 

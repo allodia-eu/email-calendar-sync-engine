@@ -144,7 +144,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Test send from provider-imap",
             "Sent by the imap_explore example over SMTP AUTH + implicit TLS.",
         );
-        let receipt = provider.submit_email(&account, &mail).await?;
+        let receipt = provider
+            .submit_email(
+                &account,
+                &mail,
+                &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+            )
+            .await?;
         println!(
             "\nSent a test mail to yourself (key: {}). Check your inbox + Sent.",
             receipt.email_key

@@ -14,7 +14,7 @@ use engine_core::{
 };
 
 use crate::{
-    CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, MailEdit,
+    CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, HandOver, MailEdit,
     MailEditReceipt, MailboxWrites, MessageReport, ProviderError, ProviderResult, ReportReceipt,
     ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
     error::unsupported,
@@ -174,6 +174,14 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     /// on it. Submission is outbox-mediated by the caller (a durable pending op
     /// precedes this side effect); this method performs only the provider call.
     ///
+    /// **`hand_over` is committed immediately before the first byte that could deliver the
+    /// message, and that byte is written only if the commit succeeded** ([`HandOver`]). Whether
+    /// an interrupted send is retried or must be confirmed turns on that record, so marking
+    /// late can send a message twice, and marking early only asks the user about one that had
+    /// not gone. After the commit, an error is a definitive refusal only when the server
+    /// answered one; a reply that never came, or a connection lost before it, is
+    /// [`ProviderError::needs_confirmation`].
+    ///
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. The default returns
@@ -182,8 +190,9 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         &self,
         account: &AccountId,
         draft: &Draft,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        let _ = (account, draft);
+        let _ = (account, draft, hand_over);
         Err(unsupported("mail submission"))
     }
 

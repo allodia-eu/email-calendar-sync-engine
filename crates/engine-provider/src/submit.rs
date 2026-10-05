@@ -443,8 +443,19 @@ pub struct SubmissionReceipt {
 
 impl SubmissionReceipt {
     /// Records a submission whose sent copy **was** filed in the account's Sent folder.
+    ///
+    /// `handed_over` is the proof the attempt recorded its hand-over ([`HandOver`]): a
+    /// receipt says a message was delivered, and none can be made by an attempt that never
+    /// recorded it might be.
+    ///
+    /// [`HandOver`]: crate::HandOver
     #[must_use]
-    pub fn filed(email_key: ProviderKey, message_id: MessageIdHeader) -> Self {
+    pub fn filed(
+        email_key: ProviderKey,
+        message_id: MessageIdHeader,
+        handed_over: &crate::HandedOver,
+    ) -> Self {
+        let _ = handed_over;
         Self {
             email_key,
             message_id,
@@ -455,13 +466,15 @@ impl SubmissionReceipt {
 
     /// Records a submission that was **delivered but whose sent copy was not filed**, with
     /// `detail` explaining why. The message is still sent: a caller surfaces this, and never
-    /// retries the submission.
+    /// retries the submission. `handed_over` as for [`filed`](Self::filed).
     #[must_use]
     pub fn unfiled(
         email_key: ProviderKey,
         message_id: MessageIdHeader,
         detail: impl Into<String>,
+        handed_over: &crate::HandedOver,
     ) -> Self {
+        let _ = handed_over;
         Self {
             email_key,
             message_id,

@@ -33,7 +33,7 @@ fuzzing = []
 
 [dev-dependencies]
 # `time` (workspace default omits it) powers the live watch test's bounded wait.
-tokio = { workspace = true, features = ["time", "test-util"] }
+tokio = { workspace = true, features = ["time", "test-util", "net", "io-util", "sync"] }
 # The silent servers the deadline tests meet (`engine_http::test_server`), and `test-util`
 # above for the paused clock they are measured on.
 engine-http = { workspace = true, features = ["test-server"] }
@@ -58,6 +58,8 @@ engine-search = { workspace = true }
 engine-recurrence = { workspace = true }
 engine-sync = { workspace = true }
 store-sqlite = { workspace = true }
+# The process-kill suite's store files, one directory per case.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

@@ -16,7 +16,7 @@
 
 use async_trait::async_trait;
 use engine_http::RetryConfig;
-use engine_provider::{HttpVersion, TlsVersion};
+use engine_provider::{HandOver, HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -72,7 +72,12 @@ pub(crate) trait GraphTransport: Send + Sync {
         url: &str,
         content_type: &str,
         body: Vec<u8>,
+        hand_over: &HandOver<'_>,
     ) -> Result<Option<Value>, GraphError> {
+        hand_over
+            .commit()
+            .await
+            .map_err(|err| engine_http::SendError::withheld(err.detail().to_owned()))?;
         self.post(url, content_type, body).await
     }
 
@@ -315,9 +320,10 @@ impl GraphClient {
         url: &str,
         content_type: &str,
         body: Vec<u8>,
+        hand_over: &HandOver<'_>,
     ) -> Result<Option<Value>, GraphError> {
         self.transport
-            .submit(&self.rebase(url), content_type, body)
+            .submit(&self.rebase(url), content_type, body, hand_over)
             .await
     }
 

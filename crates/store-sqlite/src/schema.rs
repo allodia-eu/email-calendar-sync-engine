@@ -481,6 +481,20 @@ ALTER TABLE person_v15 RENAME TO person;
 CREATE INDEX person_display_name ON person (display_name, id);
 ";
 
+/// Migration v16: an outbox op records whether its attempt handed the message over.
+///
+/// `handed_over` holds the token of the attempt that recorded, just before the first byte that
+/// could deliver a send, that it was about to write it (`Store::record_hand_over`). Recovering a
+/// dead attempt turns on it: none, and the send is retried; one, and it awaits confirmation.
+///
+/// **A send already in flight when the store upgrades is taken as handed over.** Its build
+/// recorded nothing, so nothing proves it stopped short of the server, and asking is the only
+/// answer that cannot deliver a message twice.
+pub(crate) const V16: &str = "\
+ALTER TABLE pending_op ADD COLUMN handed_over INTEGER;
+UPDATE pending_op SET handed_over = token WHERE state = 'InFlight' AND kind = 'MailSubmit';
+";
+
 mod mail;
 
 pub(crate) use mail::{V8, V9, V10};

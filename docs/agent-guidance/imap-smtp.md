@@ -545,6 +545,11 @@ credential.
   portal, a dead NAT mapping) holds a send forever, in no queue the host can retry or the
   user can edit. The probes (`extensions`, `negotiate_starttls`) share the same reads and
   bounds, and the IMAP dial (`dial::open_secured`) shares `dial`.
+- **The `.` that ends `DATA` is the point of no return.** The message text goes first, then
+  the hand-over is recorded (`providers.md`), then the `.` line, written by
+  `SmtpStream::write_terminator`, which takes the proof of the record. A record that fails
+  drops the connection mid-`DATA` with nothing queued (RFC 5321 §4.1.1.4), and the send is
+  retried; a `.` that could not be written is as ambiguous as a lost reply.
 - **Post-`DATA` disposition.** `2xx` → delivered; `5xx` → permanent rejection;
   `4xx` → transient (retryable — the message was not queued); any **unreadable
   acknowledgement once the message bytes are on the wire** — a dropped connection,

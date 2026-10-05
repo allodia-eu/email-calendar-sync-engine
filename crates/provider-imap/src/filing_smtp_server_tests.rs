@@ -37,7 +37,7 @@ use crate::{
 
 /// A self-signed cert and the TLS acceptor presenting it — the server half of the trust
 /// pair (the client trusts `cert` via [`trusting_connector`]).
-fn cert_and_acceptor() -> (engine_tls::CertificateDer<'static>, TlsAcceptor) {
+pub(super) fn cert_and_acceptor() -> (engine_tls::CertificateDer<'static>, TlsAcceptor) {
     let generated =
         rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("self-signed cert");
     let cert = generated.cert.der().clone();
@@ -55,7 +55,7 @@ fn cert_and_acceptor() -> (engine_tls::CertificateDer<'static>, TlsAcceptor) {
 
 /// A connector trusting only `cert` — the host-injected trust the library never bakes in
 /// (`docs/agent-guidance/tls.md`).
-fn trusting_connector(cert: engine_tls::CertificateDer<'static>) -> TlsConnector {
+pub(super) fn trusting_connector(cert: engine_tls::CertificateDer<'static>) -> TlsConnector {
     engine_tls::client_config(&engine_tls::TlsPolicy::pinned(vec![cert]))
         .expect("client config")
         .connector()
@@ -195,7 +195,7 @@ fn draft() -> Draft {
 
 /// A provider whose IMAP side is an empty mock (so the post-send Sent filing fails
 /// gracefully, isolating the SMTP transport) and whose SMTP sender is `sender`.
-fn provider_with_smtp(sender: SmtpSender) -> ImapProvider<MockStream> {
+pub(crate) fn provider_with_smtp(sender: SmtpSender) -> ImapProvider<MockStream> {
     let (stream, _) = MockStream::new(script(&[]));
     ImapProvider::with_connection_and_smtp(
         Connection::resume(stream),
@@ -220,7 +220,10 @@ async fn submit_over_implicit_tls_dials_wraps_and_delivers() {
     );
 
     let receipt = provider_with_smtp(sender)
-        .submit(&draft())
+        .submit(
+            &draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("implicit-TLS submit delivers");
     assert_eq!(receipt.message_id, draft().message_id);
@@ -242,7 +245,10 @@ async fn submit_over_starttls_negotiates_upgrades_and_delivers() {
     );
 
     let receipt = provider_with_smtp(sender)
-        .submit(&draft())
+        .submit(
+            &draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("STARTTLS submit delivers");
     assert_eq!(receipt.message_id, draft().message_id);
@@ -344,8 +350,20 @@ async fn each_submission_asks_the_source_so_a_later_send_presents_the_new_token(
         },
     );
 
-    provider.submit(&draft()).await.expect("first send");
-    provider.submit(&draft()).await.expect("second send");
+    provider
+        .submit(
+            &draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .expect("first send");
+    provider
+        .submit(
+            &draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .expect("second send");
 
     let auths = auths.lock().unwrap().clone();
     assert_eq!(
@@ -371,7 +389,10 @@ async fn a_refused_token_is_renewed_once_before_anything_is_sent() {
     );
 
     let receipt = provider
-        .submit(&draft())
+        .submit(
+            &draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("the renewed token sends");
 
