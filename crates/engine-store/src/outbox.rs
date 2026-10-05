@@ -114,10 +114,11 @@ pub enum ClaimRejection {
     Backoff,
 }
 
-/// How many attempts a retryable op gets before the outbox stops trying.
+/// How many attempts a retryable op gets before the outbox stops trying. A send is the one
+/// kind it does not bound ([`settles_on_attempts`](crate::settles_on_attempts)).
 ///
-/// A bound has to exist: without one, a server that keeps answering `503` turns a queued
-/// write into a permanent background round trip the user never asked for and cannot see
+/// A bound has to exist for the rest: without one, a server that keeps answering `503` turns a
+/// queued write into a permanent background round trip the user never asked for and cannot see
 /// the end of. Eight attempts on [`retry_delay`]'s schedule spans a little over an hour,
 /// which covers a restart, a flaky link and a short provider outage without pretending an
 /// hours-old failure is still transient.
@@ -205,6 +206,27 @@ pub enum OpRejection {
     /// it may already have been delivered, so it is resolved by confirmation, never by
     /// withdrawal and never by another attempt.
     AwaitingConfirmation,
+    /// A confirmation names an op that is not awaiting one: it has not been attempted in a
+    /// way that left its outcome unknown, so there is nothing to confirm.
+    NotAwaitingConfirmation,
+}
+
+/// What the host learned about a send parked in
+/// [`NeedsConfirmation`](PendingOpState::NeedsConfirmation), for
+/// `Store::confirm_pending_op`.
+///
+/// Usually the user's answer, after looking at their Sent folder or asking a recipient. A send
+/// whose copy syncs back into a Sent mailbox is confirmed without asking
+/// (`store-and-sync.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Confirmation {
+    /// It reached the server: the op settles as
+    /// [`Succeeded`](PendingOpState::Succeeded) and is never sent again.
+    Delivered,
+    /// It did not: the op goes back to [`Pending`](PendingOpState::Pending), due at once, and
+    /// the next drain sends it. The attempt that handed it over can no longer record anything,
+    /// so a late answer from it cannot settle the new attempt.
+    NotDelivered,
 }
 
 #[cfg(test)]

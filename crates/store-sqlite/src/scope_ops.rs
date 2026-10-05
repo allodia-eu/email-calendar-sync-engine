@@ -189,6 +189,7 @@ pub(crate) fn apply(
     observations: &[RecipientObservation],
     contact_scope: bool,
     next_state: Option<&str>,
+    now: UtcDateTime,
 ) -> Result<SyncApplied> {
     let tx = conn.transaction().map_err(convert::backend)?;
     check_token(&tx, scope_key, token)?;
@@ -224,7 +225,7 @@ pub(crate) fn apply(
     derived_ops::apply_derived(&tx, scope_key, derived)?;
 
     for rec in reconcile {
-        if reconcile_op(&tx, rec)? {
+        if reconcile_op(&tx, rec, now)? {
             applied.reconciled += 1;
         }
     }
@@ -451,8 +452,24 @@ fn existing_keys(tx: &Transaction<'_>, scope_key: &str) -> Result<Vec<String>> {
 /// Re-validates a planned reconciliation inside the transaction: if the op is
 /// still in its expected state, resolve it to `Succeeded`; otherwise skip it (the
 /// incoming object is stored normally regardless). Returns whether it applied.
-fn reconcile_op(tx: &Transaction<'_>, rec: &PendingReconciliation) -> Result<bool> {
+///
+/// A dead attempt is recovered first: the planner read the op as a read shows it, as its
+/// recovery will leave it, so comparing against the stored `InFlight` would skip it.
+fn reconcile_op(
+    tx: &Transaction<'_>,
+    rec: &PendingReconciliation,
+    now: UtcDateTime,
+) -> Result<bool> {
     let id = convert::op_id_to_i64(rec.op)?;
+    let account: Option<String> = sql::query_opt(
+        tx,
+        "SELECT account FROM pending_op WHERE id = ?1 AND state = 'InFlight'",
+        [id],
+        |r| r.get(0),
+    )?;
+    if let Some(account) = account {
+        crate::outbox_ops::recover_dead(tx, &account, now)?;
+    }
     let current: Option<String> = sql::query_opt(
         tx,
         "SELECT state FROM pending_op WHERE id = ?1",

@@ -112,7 +112,11 @@ async fn live_the_sent_copy_carries_the_keyword_as_a_category_and_a_second_name_
 
     let first = MessageIdHeader::new(format!("graph-cat-a-{unique}@allodia-e2e.test")).unwrap();
     let receipt = first_device
-        .submit_email(&account(), &draft(&first))
+        .submit_email(
+            &account(),
+            &draft(&first),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     assert!(
@@ -128,7 +132,11 @@ async fn live_the_sent_copy_carries_the_keyword_as_a_category_and_a_second_name_
 
     let second = MessageIdHeader::new(format!("graph-cat-b-{unique}@allodia-e2e.test")).unwrap();
     let receipt = second_device
-        .submit_email(&account(), &draft(&second))
+        .submit_email(
+            &account(),
+            &draft(&second),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     assert!(receipt.sent_copy_keywords.contains(&keyword()));

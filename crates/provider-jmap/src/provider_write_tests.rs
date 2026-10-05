@@ -23,7 +23,14 @@ async fn submit_email_resolves_context_then_sends() {
         "Step 4 submission probe",
         "Hello",
     );
-    let receipt = p.submit_email(&account(), &draft).await.unwrap();
+    let receipt = p
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
     assert_eq!(receipt.email_key.as_str(), "bmaaaaal");
     assert_eq!(
         receipt.message_id.as_str(),
@@ -56,7 +63,15 @@ async fn submit_email_uploads_attachment_bytes_before_sending() {
         "application/pdf",
         vec![9, 8, 7],
     ));
-    crate::submit::send(&exec, "c", "c", &draft).await.unwrap();
+    crate::submit::send(
+        &exec,
+        "c",
+        "c",
+        &draft,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    )
+    .await
+    .unwrap();
 
     // The attachment bytes were POSTed to the resolved (account-substituted) upload URL
     // with the right media type — before the Email/set that references the blob.
@@ -100,7 +115,14 @@ async fn submit_with_attachment_but_no_upload_url_is_a_session_error() {
         "application/pdf",
         vec![1],
     ));
-    let err = p.submit_email(&account(), &draft).await.unwrap_err();
+    let err = p
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);
 }
 
@@ -185,7 +207,15 @@ async fn submit_email_sets_the_sent_copy_keywords_on_the_filed_copy() {
     )
     .with_sent_copy_keyword(keyword.clone());
 
-    let receipt = crate::submit::send(&exec, "c", "c", &draft).await.unwrap();
+    let receipt = crate::submit::send(
+        &exec,
+        "c",
+        "c",
+        &draft,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(receipt.sent_copy_keywords, [keyword].into());
     // A third request, after the send, addressed to the email the send created.
@@ -216,7 +246,15 @@ async fn a_send_without_sent_copy_keywords_makes_no_third_request() {
         "Hello",
     );
 
-    let receipt = crate::submit::send(&exec, "c", "c", &draft).await.unwrap();
+    let receipt = crate::submit::send(
+        &exec,
+        "c",
+        "c",
+        &draft,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    )
+    .await
+    .unwrap();
 
     assert!(receipt.sent_copy_keywords.is_empty());
     assert_eq!(exec.requests.lock().unwrap().len(), 2);

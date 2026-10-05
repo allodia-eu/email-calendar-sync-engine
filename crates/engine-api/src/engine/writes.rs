@@ -8,7 +8,7 @@ use engine_core::{
     write::{PendingOpId, PendingOpKind},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider};
-use engine_store::{OpRejection, PendingOpRow, PendingOpState, Store, StoreRead};
+use engine_store::{Confirmation, OpRejection, PendingOpRow, PendingOpState, Store, StoreRead};
 use engine_sync::{
     DrainReport, MailEditOutcome, PutDraftOutcome, ReportOutcome, SubmitOutcome, SyncError,
     delete_draft_mail, drain_outbox, edit_mail, put_draft_mail, report_message, submit_mail,
@@ -24,12 +24,20 @@ impl Engine {
     /// it (`north-star.md` Write Contract). Returns the sent message's key, its
     /// `Message-ID`, and the op id — pollable via [`Engine::pending_op_state`].
     ///
+    /// Whatever ends the process during the call, the send is not lost and not delivered
+    /// twice: the attempt records its hand-over to the server before the first byte that
+    /// could deliver it, so the next process ([`recover_interrupted_ops`], or any drain once
+    /// the lease has lapsed) retries a send that never left and asks about one that may have.
+    ///
+    /// [`recover_interrupted_ops`]: Self::recover_interrupted_ops
+    ///
     /// # Errors
     ///
     /// Returns [`ApiError::Sync`] if the send fails: the op is first recorded
-    /// `Failed` (with the failure class), or `NeedsConfirmation` for an ambiguous
-    /// post-`DATA` SMTP loss — the outbox never blind-retries — and the error then
-    /// returns. A store failure also surfaces as [`ApiError::Sync`].
+    /// `Failed` (with the failure class), or `NeedsConfirmation` when the message may have
+    /// been delivered — the outbox never blind-retries — and the error then returns. A failed
+    /// send stays in [`outbox`](Self::outbox). A store failure also surfaces as
+    /// [`ApiError::Sync`].
     pub async fn submit_mail<P: Provider>(
         &self,
         provider: &P,
@@ -256,7 +264,14 @@ impl Engine {
     /// A lease-free read, and the only way a host learns what it left behind: after a
     /// restart it holds none of the op ids
     /// [`pending_op_state`](Self::pending_op_state) answers about. Settled ops are
-    /// excluded; they are kept as the idempotency record, not as outstanding work.
+    /// excluded; they are kept as the idempotency record, not as outstanding work. **A send
+    /// that settled `Failed` is the exception**: it is a message that has not gone, so it is
+    /// listed, payload and all ([`queued_draft`]), until the host sends it again
+    /// ([`retry_pending_op_now`](Self::retry_pending_op_now)) or withdraws it
+    /// ([`cancel_pending_op`](Self::cancel_pending_op)).
+    ///
+    /// An op whose attempt died with its process is shown as its recovery will leave it, so
+    /// nothing is listed as in flight under a worker that is gone.
     ///
     /// # Errors
     ///
@@ -265,12 +280,34 @@ impl Engine {
         Ok(self.store.list_pending_ops(account.clone()).await?)
     }
 
+    /// Recovers the outbox ops the previous process left in flight, returning how many.
+    ///
+    /// Call it at start-up beside [`abandon_sync_leases`](Self::abandon_sync_leases), before
+    /// any write or drain runs, when the previous process has ended. A send cut off before it
+    /// handed its message over is retried at once; one cut off after may already have been
+    /// delivered, so it awaits confirmation, where [`outbox`](Self::outbox) lists it, nothing
+    /// runs it again, and [`confirm_pending_op`](Self::confirm_pending_op) or its copy
+    /// appearing in a Sent mailbox resolves it. Every other write retries as a retryable
+    /// failure does.
+    ///
+    /// Without it nothing is lost: every write path recovers an attempt once its lease has
+    /// lapsed. It only saves waiting out that lease. Wrong about a worker that is still alive
+    /// (a background task of the same app), it still delivers nothing twice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn recover_interrupted_ops(&self) -> Result<usize, ApiError> {
+        Ok(self.store.recover_interrupted_ops().await?)
+    }
+
     /// Withdraws a queued op so it is never attempted, returning `None` when it was
     /// withdrawn and the reason when it could not be.
     ///
     /// Refusal is not failure: an op under a live lease may be mid-round-trip, and one
-    /// awaiting confirmation may already have been delivered. Neither can be called
-    /// back, so neither is withdrawn.
+    /// awaiting confirmation may already have been delivered. Neither can be called back,
+    /// so neither is withdrawn. A send that settled `Failed` is withdrawn here, which is how
+    /// a host dismisses it.
     ///
     /// # Errors
     ///
@@ -288,7 +325,9 @@ impl Engine {
     ///
     /// What a host wires to "Send now". The attempt count is not reset: one more attempt
     /// now is not a fresh bound. An op with no backoff to clear is already due, which is
-    /// what the caller wanted, so that is `None` too.
+    /// what the caller wanted, so that is `None` too. A send that settled `Failed` goes back
+    /// in the queue ("Send again"). A send whose process died before it handed the message
+    /// over is due at once; one that died after is refused as awaiting confirmation.
     ///
     /// # Errors
     ///
@@ -299,6 +338,30 @@ impl Engine {
         op: PendingOpId,
     ) -> Result<Option<OpRejection>, ApiError> {
         Ok(self.store.retry_pending_op_now(account.clone(), op).await?)
+    }
+
+    /// Resolves a send awaiting confirmation with what the user knows, returning `None` when
+    /// it took effect.
+    ///
+    /// The answer to the question a [`NeedsConfirmation`](PendingOpState::NeedsConfirmation)
+    /// row asks: [`Delivered`](Confirmation::Delivered) settles it, and
+    /// [`NotDelivered`](Confirmation::NotDelivered) puts it back in the queue, due at once, for
+    /// the next [`drain_outbox`](Self::drain_outbox) to send. A send whose copy syncs into a
+    /// Sent mailbox is confirmed without asking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn confirm_pending_op(
+        &self,
+        account: &AccountId,
+        op: PendingOpId,
+        confirmation: Confirmation,
+    ) -> Result<Option<OpRejection>, ApiError> {
+        Ok(self
+            .store
+            .confirm_pending_op(account.clone(), op, confirmation)
+            .await?)
     }
 }
 

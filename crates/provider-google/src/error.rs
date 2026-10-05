@@ -122,9 +122,20 @@ impl GoogleError {
     /// for an exchange that failed after the request may have reached the server. That one
     /// may have sent the message, so it needs confirming and is never retried
     /// (`ProviderError::needs_confirmation`).
+    ///
+    /// Two more are the same case. A gateway's `502` or `504` says the server behind it gave
+    /// no answer, not that it refused; every other status is the server's own answer. And a
+    /// success whose body cannot be read is an answer nobody can read.
     pub(crate) fn into_submission_error(self) -> ProviderError {
         match &self {
             Self::Transport(err) if err.may_have_been_received() => {
+                let detail = format!("{self}; the message may have been sent");
+                ProviderError::needs_confirmation(detail).with_source(self)
+            }
+            Self::Status {
+                status: 502 | 504, ..
+            }
+            | Self::Json(_) => {
                 let detail = format!("{self}; the message may have been sent");
                 ProviderError::needs_confirmation(detail).with_source(self)
             }

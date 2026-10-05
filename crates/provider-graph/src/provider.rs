@@ -333,8 +333,9 @@ impl Provider for GraphProvider {
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        crate::submit::send(&self.client, draft, &self.categories).await
+        crate::submit::send(&self.client, draft, &self.categories, hand_over).await
     }
 
     /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (a `PATCH` of

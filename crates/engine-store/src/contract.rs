@@ -238,6 +238,34 @@ where
 
     let (store, clock) = make();
     outbox_cases::the_host_verbs_refuse_what_they_cannot_act_on(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::an_op_the_previous_process_left_in_flight_is_recovered(&store, &clock).await;
+
+    Box::pin(run_hand_over_cases(make)).await;
+}
+
+/// The hand-over record and what the recovery of a dead send turns on.
+async fn run_hand_over_cases<S, F>(make: &F)
+where
+    S: Store + StoreRead,
+    F: Fn() -> (S, ManualClock),
+{
+    let (store, clock) = make();
+    outbox_cases::the_hand_over_is_recorded_under_the_current_lease_only(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_dead_send_that_never_handed_over_is_retried_on_every_path(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_dead_send_that_handed_over_awaits_confirmation_on_every_path(&store, &clock)
+        .await;
+    let (store, clock) = make();
+    outbox_cases::a_confirmation_ends_the_old_attempts_say(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_renewed_lease_keeps_a_slow_attempt_its_own(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_send_that_failed_stays_listed_until_the_host_acts(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_sent_copy_resolves_a_dead_send_nothing_recovered_yet(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.

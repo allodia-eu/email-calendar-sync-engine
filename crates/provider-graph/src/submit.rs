@@ -17,7 +17,7 @@
 //! durability and idempotency are the caller's outbox (`engine-sync`).
 
 use engine_core::ids::ProviderKey;
-use engine_provider::{Draft, ProviderResult, SubmissionReceipt};
+use engine_provider::{Draft, HandOver, ProviderResult, SubmissionReceipt};
 use time::OffsetDateTime;
 
 use crate::{
@@ -26,7 +26,8 @@ use crate::{
 };
 
 /// Sends `draft`: assembles the RFC 5322 message, base64-encodes it, and `POST`s it to
-/// `sendMail` in MIME format. Once it is accepted, the filed copy is given the category of
+/// `sendMail` in MIME format, committing `hand_over` before the end of that request's body
+/// (the one request that can deliver). Once it is accepted, the filed copy is given the category of
 /// each keyword the draft asks for that `categories` has a name for (`crate::categories`);
 /// that step never fails the send.
 ///
@@ -39,6 +40,7 @@ pub(crate) async fn send(
     client: &GraphClient,
     draft: &Draft,
     categories: &Categories,
+    hand_over: &HandOver<'_>,
 ) -> ProviderResult<SubmissionReceipt> {
     // The filed variant keeps the `Bcc` header: Graph reads every recipient (To/Cc/Bcc)
     // from the MIME to build the delivery envelope and strips `Bcc` before delivering,
@@ -49,12 +51,15 @@ pub(crate) async fn send(
     // Once it may have reached Graph the message may have been sent, so a failure from then
     // on needs confirming rather than retrying.
     client
-        .submit(&client.url("/sendMail"), "text/plain", body)
+        .submit(&client.url("/sendMail"), "text/plain", body, hand_over)
         .await
         .map_err(crate::error::GraphError::into_submission_error)?;
+    // Recorded by the request that just went out; this only fetches the proof.
+    let handed_over = hand_over.commit().await?;
     let kept = categories.tag_sent_copy(client, draft, FIND_SCHEDULE).await;
+    let key = sent_placeholder_key(draft);
     Ok(
-        SubmissionReceipt::filed(sent_placeholder_key(draft), draft.message_id.clone())
+        SubmissionReceipt::filed(key, draft.message_id.clone(), &handed_over)
             .with_sent_copy_keywords(kept),
     )
 }
@@ -88,9 +93,14 @@ mod tests {
     async fn send_posts_to_sendmail_and_echoes_message_id() {
         // A 202-no-body route (`Value::Null`) models a successful sendMail.
         let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
-        let receipt = send(&client, &draft(), &Categories::default())
-            .await
-            .unwrap();
+        let receipt = send(
+            &client,
+            &draft(),
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
         // The sent copy has no server id, so the key is Message-ID-derived and the
         // Message-ID is echoed for sync-time reconciliation.
         assert_eq!(
@@ -107,7 +117,14 @@ mod tests {
         let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
         let draft =
             draft().with_sent_copy_keyword(engine_core::mail::Keyword::new("project-x").unwrap());
-        let receipt = send(&client, &draft, &Categories::default()).await.unwrap();
+        let receipt = send(
+            &client,
+            &draft,
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
         assert!(receipt.sent_copy.is_filed());
         assert!(receipt.sent_copy_keywords.is_empty());
     }
@@ -120,9 +137,14 @@ mod tests {
             "error": { "code": "ErrorMimeContentInvalidBase64String", "message": "bad" }
         });
         let client = fake_client_fallible(vec![("/sendMail", Err((400, body)))]);
-        let err = send(&client, &draft(), &Categories::default())
-            .await
-            .unwrap_err();
+        let err = send(
+            &client,
+            &draft(),
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.class(), FailureClass::Permanent);
     }
 
@@ -134,9 +156,14 @@ mod tests {
         let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
         let mut poisoned = draft();
         poisoned.subject = "Hi\r\nBcc: victim@evil.example".to_owned();
-        let err = send(&client, &poisoned, &Categories::default())
-            .await
-            .unwrap_err();
+        let err = send(
+            &client,
+            &poisoned,
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.class(), FailureClass::Permanent);
     }
 
@@ -164,7 +191,14 @@ mod tests {
                 ContentIdHeader::new("c1@test.local").unwrap(),
                 vec![1, 2, 3],
             ));
-        let receipt = send(&client, &draft, &Categories::default()).await.unwrap();
+        let receipt = send(
+            &client,
+            &draft,
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
         assert_eq!(receipt.message_id.as_str(), "graph-send-0001@test.local");
 
         let request = rx

@@ -58,7 +58,13 @@ async fn guarded(
 async fn a_send_to_a_server_that_never_greets_is_retried_by_the_outbox() {
     let (smtp, _) = MockStream::silent_after(script(&[]));
 
-    let err = guarded(provider().submit_over(smtp, &draft(), None)).await;
+    let err = guarded(provider().submit_over(
+        smtp,
+        &draft(),
+        None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    ))
+    .await;
 
     assert!(err.is_retryable(), "{err}");
     assert!(!err.requires_confirmation(), "{err}");
@@ -74,7 +80,13 @@ async fn a_send_whose_end_of_data_goes_unanswered_needs_confirmation_and_is_neve
         "354 go ahead\r\n",
     ]));
 
-    let err = guarded(provider().submit_over(smtp, &draft(), None)).await;
+    let err = guarded(provider().submit_over(
+        smtp,
+        &draft(),
+        None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    ))
+    .await;
 
     assert!(err.requires_confirmation(), "{err}");
     assert!(!err.is_retryable(), "{err}");
@@ -98,8 +110,24 @@ async fn a_tls_submission_to_a_server_that_accepts_and_never_speaks_is_retried()
         sender,
     );
     tokio::time::pause();
+    // The paused clock moves to the next timer while the kernel is still completing the
+    // connect, which some systems report late; held still until the connection is up, the
+    // bound that fires is the handshake's.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    drop(tokio::task::spawn_blocking(move || {
+        let _ = held.recv_timeout(Duration::from_secs(30));
+    }));
+    let accepting = async {
+        let accepted = listener.accept().await.expect("accept");
+        drop(release);
+        accepted
+    };
 
-    let err = guarded(provider.submit(&draft())).await;
+    let (message, hand_over) = (
+        draft(),
+        engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    );
+    let (err, _accepted) = tokio::join!(guarded(provider.submit(&message, &hand_over)), accepting);
 
     assert!(err.to_string().contains("TLS handshake"), "{err}");
     assert!(err.is_retryable(), "{err}");

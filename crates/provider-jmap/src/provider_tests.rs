@@ -315,7 +315,15 @@ async fn permanent_fetch_errors_propagate() {
         "s",
         "b",
     );
-    assert!(p.submit_email(&account(), &draft).await.is_err());
+    assert!(
+        p.submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded)
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]

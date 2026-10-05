@@ -320,8 +320,9 @@ impl Provider for GmailProvider {
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        submit::send(&self.client, draft, &self.labels).await
+        submit::send(&self.client, draft, &self.labels, hand_over).await
     }
 
     async fn sender_identities(&self, _account: &AccountId) -> ProviderResult<Vec<SenderIdentity>> {

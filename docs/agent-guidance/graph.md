@@ -157,6 +157,8 @@ when the sent copy syncs back and cannot carry `In-Reply-To`/`References` (Graph
 `internetMessageHeaders` only accepts custom `x-*` headers). The MIME form ships the
 whole message the caller assembled — pre-generated `Message-ID`, threading, `Cc`/
 `Bcc`, an HTML alternative, attachments — verbatim, exactly like IMAP's SMTP `DATA`.
+Its hand-over is recorded before the last piece of that body, the point of no return
+(`providers.md`).
 
 - **One shared assembler.** The RFC 5322 / MIME bytes come from **`engine-rfc5322`**
   (`assemble_filed_message`) — the same crate `provider-imap` feeds to SMTP `DATA`,

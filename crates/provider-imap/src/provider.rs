@@ -280,8 +280,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        self.submit(draft).await
+        self.submit(draft, hand_over).await
     }
 
     /// Files the Sent copy of an already-delivered message, for a host repairing a

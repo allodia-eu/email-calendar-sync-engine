@@ -1,14 +1,12 @@
 //! The [`Store`](crate::Store) write path for `MemStore`: claim, apply
 //! (delta/snapshot), maintenance, release, and the outbox op state machine.
 
-use std::collections::HashSet;
-
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
     sync::{ObjectKind, SyncObject, SyncScope, SyncState, SyncUpdate},
-    time::{ExpansionWindow, UtcDateTime},
-    write::{PendingOp, PendingOpId, PendingOutcome, ResourceKey},
+    time::ExpansionWindow,
+    write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use serde::Serialize;
 
@@ -19,32 +17,9 @@ use crate::{
     apply::{ApplyBatch, DerivedWrite, SyncApplied},
     error::{Result, StoreError},
     lease::{Clock, FenceToken, LeaseRequest, OpLease, SyncClaim, SyncLease},
-    outbox::{
-        ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, OpRejection, PendingOpClaim, PendingOpState,
-        retry_delay,
-    },
+    outbox::{Confirmation, LeasedPendingOp, OpRejection, PendingOpClaim, PendingOpState},
     store::Store,
 };
-
-/// Whether a parked retry's backoff has elapsed. An op with no `next_attempt_at`
-/// has never failed and is due immediately.
-fn is_due(next_attempt_at: Option<UtcDateTime>, now: UtcDateTime) -> bool {
-    next_attempt_at.is_none_or(|due| due <= now)
-}
-
-/// Whether an op may be leased now: fresh and due, or one whose lease died under it.
-/// A kind-less row (enqueued before the store recorded one) is never runnable, since
-/// nothing says which request type its payload is.
-fn is_runnable(cell: &OpCell, now: UtcDateTime) -> bool {
-    match cell.state {
-        PendingOpState::Pending => is_due(cell.next_attempt_at, now),
-        PendingOpState::InFlight => !is_live(cell.lease_expiry, now),
-        PendingOpState::Succeeded
-        | PendingOpState::Failed
-        | PendingOpState::Cancelled
-        | PendingOpState::NeedsConfirmation => false,
-    }
-}
 
 #[async_trait]
 impl<C: Clock> Store for MemStore<C> {
@@ -86,6 +61,7 @@ impl<C: Clock> Store for MemStore<C> {
     where
         T: SyncObject + Serialize + Send + Sync,
     {
+        let now = self.clock.now();
         let mut inner = self.lock();
         let is_contact = lease.scope().object_kind() == Some(ObjectKind::ContactCard);
         let Inner {
@@ -141,9 +117,15 @@ impl<C: Clock> Store for MemStore<C> {
         cell.apply_derived(batch.derived);
 
         for rec in batch.reconcile {
-            if let Some(op) = ops.get_mut(&rec.op)
-                && op.state == rec.expected
-            {
+            let Some(op) = ops.get_mut(&rec.op) else {
+                continue;
+            };
+            // A read shows a dead attempt as its recovery will leave it, and the planner
+            // decided on that view, so recover it before comparing.
+            if op.is_dead(now) {
+                op.recover(now)?;
+            }
+            if op.state == rec.expected {
                 op.state = PendingOpState::Succeeded;
                 op.lease_expiry = None;
                 applied.reconciled += 1;
@@ -239,6 +221,10 @@ impl<C: Clock> Store for MemStore<C> {
         Ok(abandoned)
     }
 
+    async fn recover_interrupted_ops(&self) -> Result<usize> {
+        self.recover_interrupted()
+    }
+
     async fn enqueue_pending_op(&self, account: AccountId, op: PendingOp) -> Result<PendingOpId> {
         let mut inner = self.lock();
         let idem = (account.clone(), op.idempotency_key.clone());
@@ -259,6 +245,7 @@ impl<C: Clock> Store for MemStore<C> {
                 next_attempt_at: None,
                 failure_class: None,
                 detail: None,
+                handed_over: None,
             },
         );
         inner.idempotency.insert(idem, id);
@@ -271,59 +258,7 @@ impl<C: Clock> Store for MemStore<C> {
         req: LeaseRequest,
         limit: usize,
     ) -> Result<Vec<LeasedPendingOp>> {
-        let now = self.clock.now();
-        let expiry = expiry_after(now, &req)?;
-        let LeaseRequest { owner, ttl: _ } = req;
-        let mut inner = self.lock();
-        let ops = &mut inner.ops;
-
-        // Resources held by a live in-flight op cannot be re-leased this round.
-        let busy: HashSet<ResourceKey> = ops
-            .values()
-            .filter(|o| {
-                o.account == account
-                    && o.state == PendingOpState::InFlight
-                    && is_live(o.lease_expiry, now)
-            })
-            .map(|o| o.op.resource_key.clone())
-            .collect();
-
-        let mut result = Vec::new();
-        let mut newly_leased: HashSet<ResourceKey> = HashSet::new();
-        let ids: Vec<PendingOpId> = ops.keys().copied().collect();
-        for id in ids {
-            if result.len() >= limit {
-                break;
-            }
-            // Decide with an immutable borrow, then mutate.
-            let resource = {
-                let Some(o) = ops.get(&id) else { continue };
-                if o.account != account {
-                    continue;
-                }
-                if !is_runnable(o, now) {
-                    continue;
-                }
-                let deps_ok =
-                    o.op.depends_on
-                        .iter()
-                        .all(|d| ops.get(d).is_some_and(|dep| dep.state.is_success()));
-                if !deps_ok {
-                    continue;
-                }
-                o.op.resource_key.clone()
-            };
-            if busy.contains(&resource) || !newly_leased.insert(resource) {
-                continue;
-            }
-            let o = ops.get_mut(&id).expect("op present");
-            o.token = o.token.bump();
-            o.state = PendingOpState::InFlight;
-            o.lease_expiry = Some(expiry);
-            let lease = OpLease::new(o.account.clone(), id, o.token, owner.clone(), expiry);
-            result.push(LeasedPendingOp::new(id, o.op.clone(), lease));
-        }
-        Ok(result)
+        self.claim_ops(&account, &req, limit)
     }
 
     async fn claim_pending_op(
@@ -332,105 +267,23 @@ impl<C: Clock> Store for MemStore<C> {
         op: PendingOpId,
         req: LeaseRequest,
     ) -> Result<PendingOpClaim> {
-        let now = self.clock.now();
-        let expiry = expiry_after(now, &req)?;
-        let LeaseRequest { owner, ttl: _ } = req;
-        let mut inner = self.lock();
-        let ops = &mut inner.ops;
+        self.claim_one(&account, op, &req)
+    }
 
-        let Some(cell) = ops.get(&op).filter(|o| o.account == account) else {
-            return Ok(PendingOpClaim::Refused(ClaimRejection::Unknown));
-        };
-        // The batch claim's own predicate: a fresh op, or one whose lease died under it.
-        match cell.state {
-            PendingOpState::Pending if is_due(cell.next_attempt_at, now) => {}
-            // Parked on a backoff after a retryable failure: it will run, just not yet.
-            PendingOpState::Pending => {
-                return Ok(PendingOpClaim::Refused(ClaimRejection::Backoff));
-            }
-            PendingOpState::InFlight if !is_live(cell.lease_expiry, now) => {}
-            PendingOpState::InFlight => {
-                return Ok(PendingOpClaim::Refused(ClaimRejection::Busy));
-            }
-            PendingOpState::Succeeded
-            | PendingOpState::Failed
-            | PendingOpState::Cancelled
-            | PendingOpState::NeedsConfirmation => {
-                return Ok(PendingOpClaim::Refused(ClaimRejection::Settled));
-            }
-        }
-        let resource = cell.op.resource_key.clone();
-        let depends_on = cell.op.depends_on.clone();
-        if !depends_on.iter().all(|d| {
-            ops.get(d)
-                .is_some_and(|dep| dep.account == account && dep.state.is_success())
-        }) {
-            return Ok(PendingOpClaim::Refused(ClaimRejection::DependencyUnmet));
-        }
-        // Another op holding this one's resource under a live lease serializes against
-        // it, exactly as in the batch claim.
-        let held = ops.iter().any(|(id, o)| {
-            *id != op
-                && o.account == account
-                && o.op.resource_key == resource
-                && o.state == PendingOpState::InFlight
-                && is_live(o.lease_expiry, now)
-        });
-        if held {
-            return Ok(PendingOpClaim::Refused(ClaimRejection::Busy));
-        }
+    async fn record_hand_over(&self, lease: &OpLease) -> Result<()> {
+        self.hand_over(lease)
+    }
 
-        let cell = ops.get_mut(&op).expect("op present");
-        cell.token = cell.token.bump();
-        cell.state = PendingOpState::InFlight;
-        cell.lease_expiry = Some(expiry);
-        let lease = OpLease::new(account, op, cell.token, owner, expiry);
-        Ok(PendingOpClaim::Leased(Box::new(LeasedPendingOp::new(
-            op,
-            cell.op.clone(),
-            lease,
-        ))))
+    async fn renew_pending_op_lease(
+        &self,
+        lease: &OpLease,
+        ttl: core::time::Duration,
+    ) -> Result<()> {
+        self.renew(lease, ttl)
     }
 
     async fn mark_pending_op(&self, lease: &OpLease, outcome: PendingOutcome) -> Result<()> {
-        let now = self.clock.now();
-        let mut inner = self.lock();
-        let op = inner
-            .ops
-            .get_mut(&lease.op())
-            .ok_or(StoreError::StaleLease)?;
-        if lease.token() != op.token {
-            return Err(StoreError::StaleLease);
-        }
-        op.lease_expiry = None;
-        op.attempts = op.attempts.saturating_add(1);
-        match outcome {
-            PendingOutcome::Succeeded { .. } => {
-                op.state = PendingOpState::Succeeded;
-                op.next_attempt_at = None;
-                op.failure_class = None;
-                op.detail = None;
-            }
-            PendingOutcome::Failed { class, retry_after } => {
-                op.failure_class = Some(class);
-                op.detail = None;
-                // A class that a plain retry cannot fix settles now; so does one that
-                // has used up its attempts. Everything else parks and comes back.
-                if class.is_retryable() && op.attempts < MAX_ATTEMPTS {
-                    op.state = PendingOpState::Pending;
-                    op.next_attempt_at = now.checked_add(retry_delay(op.attempts, retry_after));
-                } else {
-                    op.state = PendingOpState::Failed;
-                    op.next_attempt_at = None;
-                }
-            }
-            PendingOutcome::NeedsConfirmation { detail } => {
-                op.state = PendingOpState::NeedsConfirmation;
-                op.next_attempt_at = None;
-                op.detail = Some(detail);
-            }
-        }
-        Ok(())
+        self.mark(lease, &outcome)
     }
 
     async fn cancel_pending_op(
@@ -438,29 +291,7 @@ impl<C: Clock> Store for MemStore<C> {
         account: AccountId,
         op: PendingOpId,
     ) -> Result<Option<OpRejection>> {
-        let now = self.clock.now();
-        let mut inner = self.lock();
-        let Some(cell) = inner.ops.get_mut(&op).filter(|o| o.account == account) else {
-            return Ok(Some(OpRejection::Unknown));
-        };
-        match cell.state {
-            // A dead lease is nobody's side effect: the worker that held it is gone.
-            PendingOpState::Pending => {}
-            PendingOpState::InFlight if !is_live(cell.lease_expiry, now) => {}
-            PendingOpState::InFlight => return Ok(Some(OpRejection::InFlight)),
-            PendingOpState::NeedsConfirmation => {
-                return Ok(Some(OpRejection::AwaitingConfirmation));
-            }
-            PendingOpState::Succeeded | PendingOpState::Failed | PendingOpState::Cancelled => {
-                return Ok(Some(OpRejection::Settled));
-            }
-        }
-        // Bump the token so a worker still holding the old lease cannot resolve it.
-        cell.token = cell.token.bump();
-        cell.state = PendingOpState::Cancelled;
-        cell.lease_expiry = None;
-        cell.next_attempt_at = None;
-        Ok(None)
+        self.cancel(&account, op)
     }
 
     async fn retry_pending_op_now(
@@ -468,25 +299,15 @@ impl<C: Clock> Store for MemStore<C> {
         account: AccountId,
         op: PendingOpId,
     ) -> Result<Option<OpRejection>> {
-        let now = self.clock.now();
-        let mut inner = self.lock();
-        let Some(cell) = inner.ops.get_mut(&op).filter(|o| o.account == account) else {
-            return Ok(Some(OpRejection::Unknown));
-        };
-        match cell.state {
-            // A dead lease is nobody's attempt: the worker that held it is gone.
-            PendingOpState::Pending => {}
-            PendingOpState::InFlight if !is_live(cell.lease_expiry, now) => {}
-            PendingOpState::InFlight => return Ok(Some(OpRejection::InFlight)),
-            PendingOpState::NeedsConfirmation => {
-                return Ok(Some(OpRejection::AwaitingConfirmation));
-            }
-            PendingOpState::Succeeded | PendingOpState::Failed | PendingOpState::Cancelled => {
-                return Ok(Some(OpRejection::Settled));
-            }
-        }
-        // The attempt count stays: one more attempt now, not a fresh bound.
-        cell.next_attempt_at = None;
-        Ok(None)
+        self.retry_now(&account, op)
+    }
+
+    async fn confirm_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+        confirmation: Confirmation,
+    ) -> Result<Option<OpRejection>> {
+        self.confirm(&account, op, confirmation)
     }
 }

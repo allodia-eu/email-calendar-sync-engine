@@ -6,22 +6,22 @@
 //! with no bound of its own reaches that timer instead, and fails as a hang rather than
 //! hanging the suite.
 //!
-//! ⚠️ The paused clock also jumps while a task waits for a socket that already has bytes for
-//! it: tokio advances to the next timer on every wait, whatever the socket held. So where a
-//! server *answers*, the time it took is not measured exactly, and a test whose server must
-//! keep a large transfer moving drives the body directly rather than through a socket.
+//! ⚠️ The paused clock also jumps while bytes are on their way through a socket, so every
+//! exchange a test expects to complete runs with the clock held (`test_server`): until the
+//! server has the request (`held_until` and `SilentServer::has_received`), or until the client
+//! has read what a trickling server wrote. Only the silence under test moves the clock.
 
 use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use engine_provider::Deadlines;
+use engine_provider::{Deadlines, HandOver, Unrecorded};
 use http_body::Body as _;
 use tokio::{net::TcpListener, time::Instant};
 
 use super::{PIECE, Pieces, Progress, quiet};
 use crate::{
     Exchange, RetryConfig, SendError, Sent, chunk_within, send_retrying,
-    test_server::{SilentServer, reply, trickling},
+    test_server::{SilentServer, held_until, reply, trickling, trickling_late},
 };
 
 /// Longer than any bound under test, so only a missing bound reaches it.
@@ -63,11 +63,14 @@ async fn a_silent_server_fails_an_ordinary_request_after_the_reply_bound() {
     let server = SilentServer::start(Vec::new()).await;
     let request = client().get(server.url());
 
-    let (outcome, elapsed) = timed(send_retrying(
-        request,
-        &RetryConfig::default(),
-        Exchange::Ordinary,
-    ))
+    let (outcome, elapsed) = held_until(
+        server.has_received(1),
+        timed(send_retrying(
+            request,
+            &RetryConfig::default(),
+            Exchange::Ordinary,
+        )),
+    )
     .await;
 
     let err = timed_out(outcome);
@@ -81,15 +84,20 @@ async fn a_silent_server_fails_an_ordinary_request_after_the_reply_bound() {
 async fn a_submission_waits_the_longer_bound_and_may_have_been_received() {
     let server = SilentServer::start(Vec::new()).await;
     let request = client().post(server.url()).body("a message");
+    let hand_over = HandOver::new(&Unrecorded);
 
-    let (outcome, elapsed) = timed(send_retrying(
-        request,
-        &RetryConfig::default(),
-        Exchange::Submission,
-    ))
+    let (outcome, elapsed) = held_until(
+        server.has_received(1),
+        timed(send_retrying(
+            request,
+            &RetryConfig::default(),
+            Exchange::Submission(&hand_over),
+        )),
+    )
     .await;
 
     let err = timed_out(outcome);
+    assert!(hand_over.is_committed(), "the whole request went out");
     // Counted from the body's last piece, which goes out once the connection is up, and the
     // paused clock may already have jumped towards the dial bound by then.
     assert!(
@@ -106,15 +114,24 @@ async fn a_server_that_stops_taking_the_body_never_received_it() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("http://{}/", listener.local_addr().expect("address"));
     let request = client().post(url).body(vec![b'x'; 32 * 1024 * 1024]);
+    let hand_over = HandOver::new(&Unrecorded);
+    let mut accepted = None;
 
-    let (outcome, elapsed) = timed(send_retrying(
-        request,
-        &RetryConfig::default(),
-        Exchange::Submission,
-    ))
+    let (outcome, elapsed) = held_until(
+        async { accepted = Some(listener.accept().await.expect("accept")) },
+        timed(send_retrying(
+            request,
+            &RetryConfig::default(),
+            Exchange::Submission(&hand_over),
+        )),
+    )
     .await;
 
     let err = timed_out(outcome);
+    assert!(
+        !hand_over.is_committed(),
+        "the end never left, so nothing was handed over"
+    );
     // At least the stall bound, from the last piece the buffers took.
     assert!(elapsed >= BOUNDS.stall(), "{elapsed:?}");
     assert!(err.to_string().contains("took nothing"), "{err}");
@@ -130,8 +147,9 @@ async fn an_upload_that_keeps_moving_is_never_cut_off() {
     let mut body = Pieces {
         rest: Bytes::from(vec![b'x'; 20 * PIECE]),
         progress: Arc::clone(&progress),
+        gate: None,
     };
-    let silence = quiet(&progress, Exchange::Submission.reply());
+    let silence = quiet(&progress, BOUNDS.submission());
     tokio::pin!(silence);
     let started = Instant::now();
 
@@ -165,6 +183,30 @@ async fn a_body_that_keeps_moving_is_never_cut_off() {
 
     assert_eq!(outcome.expect("a steady body arrives").len(), 5000);
     assert!(elapsed > BOUNDS.reply() + BOUNDS.stall(), "{elapsed:?}");
+}
+
+/// The same body over a loopback that reports every write late, as some systems do: the
+/// clock is held while bytes are on their way, so what the test measures does not depend on
+/// how fast the operating system delivers them.
+#[tokio::test(start_paused = true)]
+async fn a_body_slow_to_arrive_meets_no_bound_it_did_not_spend() {
+    let head = "HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n".to_owned();
+    let latency = Duration::from_millis(20);
+    let url = trickling_late(head, "x".repeat(1000), 5, Duration::from_secs(50), latency).await;
+    let request = client().get(url);
+
+    let (outcome, elapsed) = timed(async {
+        let sent = send_retrying(request, &RetryConfig::default(), Exchange::Ordinary).await?;
+        sent.bytes().await
+    })
+    .await;
+
+    assert_eq!(outcome.expect("a steady body arrives").len(), 5000);
+    assert_eq!(
+        elapsed,
+        Duration::from_secs(250),
+        "exactly the server's own pauses"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -236,16 +278,21 @@ async fn a_connection_whose_handshake_never_completes_fails_after_the_dial_bound
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("https://{}/", listener.local_addr().expect("address"));
     let request = client().post(url).body("a message");
+    let hand_over = HandOver::new(&Unrecorded);
 
     let (outcome, elapsed) = timed(send_retrying(
         request,
         &RetryConfig::default(),
-        Exchange::Submission,
+        Exchange::Submission(&hand_over),
     ))
     .await;
 
     let err = timed_out(outcome);
     assert_took(elapsed, BOUNDS.dial());
+    assert!(
+        !hand_over.is_committed(),
+        "a connection that never came up hands nothing over, even a one-piece body"
+    );
     assert!(!err.may_have_been_received(), "{err}");
     drop(listener);
 }

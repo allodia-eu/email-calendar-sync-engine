@@ -21,9 +21,11 @@ mod calendar;
 mod contact;
 mod drafts;
 mod drain;
+mod drain_report;
 mod mail;
 mod mailbox;
 mod mailbox_plan;
+mod submit;
 
 use core::time::Duration;
 
@@ -39,13 +41,13 @@ use engine_core::{
     write::{PendingOp, PendingOutcome},
 };
 use engine_store::{
-    ClaimRejection, LeaseRequest, LeasedPendingOp, PendingOpClaim, Store, WorkerId,
+    ClaimRejection, LeaseRequest, LeasedPendingOp, OpLease, PendingOpClaim, Store, StoreError,
+    WorkerId,
 };
-pub use mail::{
-    MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
-};
+pub use mail::{MailEditOutcome, ReportOutcome, edit_mail, report_message};
 pub use mailbox::{MailboxEditOutcome, edit_mailbox};
 pub use mailbox_plan::{MailboxChange, MailboxNameError, MailboxPlace, validate_mailbox_name};
+pub use submit::{SubmitOutcome, submit_mail};
 // Tokio's own `Instant`, so the wait's bound holds under a paused test clock too.
 use tokio::time::Instant;
 
@@ -100,6 +102,38 @@ async fn enqueue_and_claim<S: Store>(
                 )));
             }
         }
+    }
+}
+
+/// Runs `work` while renewing `lease` every third of `ttl`, and stops renewing when it
+/// returns.
+///
+/// An attempt can outlast any fixed lease: a large upload on a slow line, a server that takes
+/// minutes to accept a message. Without renewal its lease lapses mid-attempt and another
+/// worker (a second drain, another process on the same store) recovers the op under it. A
+/// renewal refused as stale means that happened anyway (the process was suspended past its
+/// lease, say), and the attempt carries on: the hand-over record decides what it may still do,
+/// and the store refuses what it may not. A renewal that fails for any other reason is tried
+/// again at the next tick, which is still well inside the lease.
+pub(crate) async fn holding<S: Store, F: Future>(
+    store: &S,
+    lease: &OpLease,
+    ttl: Duration,
+    work: F,
+) -> F::Output {
+    let renew = async {
+        let every = ttl / 3;
+        loop {
+            tokio::time::sleep(every).await;
+            if let Err(StoreError::StaleLease) = store.renew_pending_op_lease(lease, ttl).await {
+                return core::future::pending::<core::convert::Infallible>().await;
+            }
+        }
+    };
+    tokio::select! {
+        biased;
+        done = work => done,
+        never = renew => match never {},
     }
 }
 

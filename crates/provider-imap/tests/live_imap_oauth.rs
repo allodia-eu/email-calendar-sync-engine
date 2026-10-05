@@ -190,7 +190,11 @@ async fn a_token_also_authenticates_smtp_submission() {
     );
     let account = AccountId::try_from("oauth-live").expect("account");
     let receipt = provider
-        .submit_email(&account, &draft)
+        .submit_email(
+            &account,
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("SMTP AUTH with the access token, then delivery");
     println!("submitted over an OAuth-authenticated SMTP session: {receipt:?}");

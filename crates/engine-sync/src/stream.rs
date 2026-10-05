@@ -32,7 +32,7 @@ use futures_util::StreamExt;
 
 use crate::{
     MAX_STALE_RECLAIMS, SyncCommit, SyncError, SyncObserver, derive_messages,
-    mail_report::SyncTiming, recipients,
+    mail_report::SyncTiming, recipients, sent_copies,
 };
 
 /// How a streaming sync runs: the depth window, plus how it separates network
@@ -201,7 +201,15 @@ where
                         return Err(err);
                     }
                 };
-            let batch = ApplyBatch::with_cursor(&update, &derived, &[], advance_to.as_ref())
+            let confirmed =
+                match sent_copies::reconciliations(store, account, &scope, &update, sent).await {
+                    Ok(confirmed) => confirmed,
+                    Err(err) => {
+                        let _ = store.release_sync_scope(lease).await;
+                        return Err(err);
+                    }
+                };
+            let batch = ApplyBatch::with_cursor(&update, &derived, &confirmed, advance_to.as_ref())
                 .with_recipient_observations(&observations);
             let applied_result = store.apply_sync_update(&lease, batch).await;
             timing.add_storing(stored);

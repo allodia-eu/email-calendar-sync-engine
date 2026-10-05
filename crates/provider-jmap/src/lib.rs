@@ -317,7 +317,7 @@ impl JmapClient {
     pub(crate) async fn execute(
         &self,
         request: &Request,
-        exchange: Exchange,
+        exchange: Exchange<'_>,
     ) -> Result<Response, JmapError> {
         let body = request.to_json();
         let value = (self.transport)
@@ -449,6 +449,9 @@ pub fn fuzz_parse(data: &[u8]) {
     let _ = request::Response::parse(&value);
     let _ = sync_ops::Changes::parse(&value);
 }
+
+#[cfg(test)]
+mod process_kill_tests;
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]

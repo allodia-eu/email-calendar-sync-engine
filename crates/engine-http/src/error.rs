@@ -29,6 +29,9 @@ enum Cause {
         what: &'static str,
         waited: Duration,
     },
+    /// A submission's hand-over could not be recorded, so the end of the request was never
+    /// sent. The detail says why.
+    Withheld(String),
 }
 
 /// How far the request got before the exchange failed.
@@ -65,6 +68,17 @@ impl SendError {
         }
     }
 
+    /// A submission whose hand-over could not be recorded, abandoned before its end: never
+    /// received, so a retry is safe. The funnel makes these; a test transport that commits
+    /// the hand-over itself makes one when that fails, so its failure reads as the real one.
+    #[must_use]
+    pub fn withheld(detail: String) -> Self {
+        Self {
+            cause: Cause::Withheld(detail),
+            reached: Reached::NotWhole,
+        }
+    }
+
     /// Whether the exchange ran out of time: a bound on a silent server, the shared client's
     /// dial bound, or any other timeout the HTTP client reports.
     #[must_use]
@@ -72,6 +86,7 @@ impl SendError {
         match &self.cause {
             Cause::Http(err) => err.is_timeout(),
             Cause::Silent { .. } => true,
+            Cause::Withheld(_) => false,
         }
     }
 
@@ -98,6 +113,7 @@ impl core::fmt::Display for SendError {
         match &self.cause {
             Cause::Http(err) => core::fmt::Display::fmt(err, f),
             Cause::Silent { what, waited } => write!(f, "{what} for {}s", waited.as_secs()),
+            Cause::Withheld(detail) => f.write_str(detail),
         }
     }
 }
@@ -106,7 +122,7 @@ impl std::error::Error for SendError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.cause {
             Cause::Http(err) => Some(err),
-            Cause::Silent { .. } => None,
+            Cause::Silent { .. } | Cause::Withheld(_) => None,
         }
     }
 }

@@ -18,9 +18,9 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MessageReport, PageToken,
-    PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
-    SourceStream, SubmissionReceipt, SyncKind, split_page,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver, MessageReport,
+    PageToken, PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity,
+    SenderIdentityId, SourceStream, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
@@ -397,6 +397,7 @@ impl Provider for JmapProvider {
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
         crate::submit_body::reject_unsendable_calendar(draft)?;
         let mail_account = self.executor.session().mail_account_id()?.to_owned();
@@ -406,6 +407,7 @@ impl Provider for JmapProvider {
             &mail_account,
             &submission_account,
             draft,
+            hand_over,
         )
         .await?)
     }

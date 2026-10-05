@@ -39,6 +39,7 @@ mod connection;
 mod contact;
 mod deadline;
 mod error;
+mod hand_over;
 mod identity;
 mod keyword_name;
 mod mail_edit;
@@ -73,6 +74,7 @@ pub use contact::{
 };
 pub use deadline::Deadlines;
 pub use error::{ProviderError, ProviderResult};
+pub use hand_over::{HandOver, HandOverLog, HandedOver, Unrecorded};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use keyword_name::{KeywordName, keyword_named};
 pub use mail_edit::{MailEdit, MailEditReceipt};

@@ -54,6 +54,7 @@ async fn send_delivers_on_a_clean_250() {
         &recipients(&["bob@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -99,6 +100,7 @@ async fn send_records_per_recipient_acceptance_and_rejection() {
         &recipients(&["bob@test.local", "nope@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -131,6 +133,7 @@ async fn a_lost_post_data_acknowledgement_is_ambiguous() {
         &recipients(&["bob@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -158,6 +161,7 @@ async fn a_refused_message_is_rejected_with_its_whole_reply() {
         &recipients(&["bob@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -191,6 +195,7 @@ async fn a_malformed_post_data_reply_is_ambiguous_not_a_hard_error() {
         &recipients(&["bob@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -210,6 +215,7 @@ async fn send_rejects_a_recipient_address_carrying_crlf() {
         &recipients(&["bob@test.local>\r\nRCPT TO:<attacker@evil.example"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap_err();
@@ -239,6 +245,7 @@ async fn all_recipients_rejected_skips_data_and_is_permanent() {
         &recipients(&["nope@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -265,6 +272,7 @@ async fn a_mail_from_rejection_is_classified_without_recipients() {
         &recipients(&["bob@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -299,6 +307,7 @@ async fn send_falls_back_to_helo_when_ehlo_is_refused() {
         &recipients(&["bob@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -326,6 +335,7 @@ async fn data_refused_is_a_rejection() {
         &recipients(&["bob@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();
@@ -347,6 +357,7 @@ async fn a_bad_greeting_or_malformed_reply_errors() {
         &recipients(&["bob@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap_err();
@@ -365,6 +376,7 @@ async fn a_bad_greeting_or_malformed_reply_errors() {
             &recipients(&["bob@test.local"]),
             &message,
             None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
         )
         .await
         .is_err()
@@ -385,6 +397,7 @@ async fn an_endless_multiline_reply_is_capped() {
         &recipients(&["bob@test.local"]),
         &message,
         None,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap_err();

@@ -24,8 +24,8 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit,
-    MailEditReceipt, MessageReport, Provider, ProviderError, ProviderResult, ReportControls,
-    ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, ScopeSync, SubmissionReceipt,
+    MessageReport, Provider, ProviderError, ProviderResult, ReportControls, ReportEvidence,
+    ReportVerdict, ReportVerdicts, ScopeSync, SubmissionReceipt,
 };
 use tokio::sync::oneshot;
 
@@ -39,10 +39,15 @@ mod drafts;
 mod expansion;
 #[path = "sync/folder_scopes.rs"]
 mod folder_scopes;
+#[path = "sync/interrupted.rs"]
+mod interrupted;
 #[path = "sync/reads.rs"]
 mod reads;
 #[path = "sync/store_lifecycle.rs"]
 mod store_lifecycle;
+#[path = "sync/submitting.rs"]
+mod submitting;
+use submitting::SubmittingProvider;
 #[path = "sync/sync_lifecycle.rs"]
 mod sync_lifecycle;
 #[path = "sync/threading.rs"]
@@ -299,125 +304,6 @@ impl Provider for GateProvider {
 
 impl engine_provider::MailboxWrites for GateProvider {}
 impl CalendarWrites for GateProvider {}
-
-/// Wraps a [`FakeProvider`] and overrides `submit_email` to succeed (filing the
-/// sent copy under a fixed key, echoing the draft's `Message-ID`) or fail, so the
-/// outbox-mediated submission facade can be exercised. Other methods delegate.
-struct SubmittingProvider {
-    inner: FakeProvider,
-    fail: bool,
-    /// Deliver, but report the sender's copy as unfiled (the two-step-transport case).
-    unfiled: bool,
-}
-
-#[async_trait::async_trait]
-impl Provider for SubmittingProvider {
-    fn connection_info(&self) -> ConnectionInfo {
-        self.inner.connection_info()
-    }
-
-    fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
-        self.inner.mailbox_scope(account)
-    }
-
-    fn email_scope(&self, account: &AccountId) -> SyncScope {
-        self.inner.email_scope(account)
-    }
-
-    async fn sync_mailboxes(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Mailbox>> {
-        self.inner.sync_mailboxes(account, cursor).await
-    }
-
-    fn stream_email<'a>(
-        &'a self,
-        account: &'a AccountId,
-        cursor: Option<&'a SyncState>,
-        window: SyncWindow,
-        fetch_batch: usize,
-        chunk_size: usize,
-    ) -> EmailStream<'a> {
-        self.inner
-            .stream_email(account, cursor, window, fetch_batch, chunk_size)
-    }
-
-    async fn submit_email(
-        &self,
-        _account: &AccountId,
-        draft: &Draft,
-    ) -> ProviderResult<SubmissionReceipt> {
-        if self.fail {
-            return Err(ProviderError::retryable("smtp is offline"));
-        }
-        let key = ProviderKey::new("sent-1").unwrap();
-        let id = draft.message_id.clone();
-        if self.unfiled {
-            let detail = "APPEND failed: connection reset";
-            return Ok(SubmissionReceipt::unfiled(key, id, detail));
-        }
-        Ok(SubmissionReceipt::filed(key, id))
-    }
-
-    /// Stores a draft, answering with a key that **moves on a re-save**, which is what
-    /// three of the four real adapters do. A fake that echoed the key back would let a
-    /// facade test pass while the caller kept a stale key and stored a second copy.
-    async fn put_draft(
-        &self,
-        _account: &AccountId,
-        _draft: &Draft,
-        replacing: Option<&ProviderKey>,
-    ) -> ProviderResult<ProviderKey> {
-        if self.fail {
-            return Err(ProviderError::retryable("no route to host"));
-        }
-        let key = if replacing.is_some() {
-            "draft-2"
-        } else {
-            "draft-1"
-        };
-        Ok(ProviderKey::new(key).unwrap())
-    }
-
-    async fn delete_draft(&self, _account: &AccountId, _draft: &ProviderKey) -> ProviderResult<()> {
-        if self.fail {
-            return Err(ProviderError::retryable("no route to host"));
-        }
-        Ok(())
-    }
-
-    async fn edit_mail(
-        &self,
-        _account: &AccountId,
-        edit: &MailEdit,
-    ) -> ProviderResult<MailEditReceipt> {
-        if self.fail {
-            return Err(ProviderError::conflict("UIDVALIDITY changed"));
-        }
-        Ok(MailEditReceipt::new(edit.target().clone()))
-    }
-
-    /// The reporting half, so the outbox path for a report is exercised through the same
-    /// fake as an edit. `accept` is what the real adapters do with the capability *before*
-    /// they touch the network, so a verdict the controls exclude must be refused here too —
-    /// otherwise the test would prove the outbox records an op no provider would accept.
-    async fn report_message(
-        &self,
-        _account: &AccountId,
-        report: &MessageReport,
-    ) -> ProviderResult<ReportReceipt> {
-        report_controls().accept(report)?;
-        if self.fail {
-            return Err(ProviderError::conflict("the message moved"));
-        }
-        Ok(ReportReceipt::new(report.target.clone()))
-    }
-}
-
-impl engine_provider::MailboxWrites for SubmittingProvider {}
-impl CalendarWrites for SubmittingProvider {}
 
 /// A provider that reports every verdict but acknowledges none — the JMAP/IMAP shape.
 fn report_controls() -> ReportControls {

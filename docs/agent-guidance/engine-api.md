@@ -157,6 +157,24 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   preserving cursors, so a cold backfill resumes from its last committed checkpoint
   immediately instead of waiting for the fixed `LEASE_TTL` or clearing state. This
   is not a normal `Busy` recovery path for live in-process contention.
+  `Engine::recover_interrupted_ops` is its outbox half and is called beside it. A send the
+  dead process left in flight is retried at once when it had not yet handed its message to
+  the server, and awaits confirmation when it had; every other write retries as a retryable
+  failure (`engine_store::interrupted_outcome`, `store-and-sync.md` → "A send survives its
+  process"). Without it nothing is lost: every write path recovers an attempt once its lease
+  has lapsed, and this only saves waiting the lease out.
+- **The outbox answers for every send until the host does.** `Engine::outbox` lists what has
+  not settled and every send that settled `Failed`, payload included (`queued_draft`), so a
+  message that could not be sent stays in front of the user. A host offers three verbs on a
+  row: `retry_pending_op_now` ("Send now", and "Send again" on a failed send),
+  `cancel_pending_op` (withdraw, which is also how a failed send is dismissed) and, on a send
+  awaiting confirmation, `confirm_pending_op` with `Confirmation::Delivered` ("it was sent")
+  or `NotDelivered` ("send it again"). A send whose copy syncs into a Sent mailbox is
+  confirmed without asking.
+- **A call the runtime cancelled is not a failure.** When a host drops the engine's runtime
+  with work queued, each store call that never ran fails with `StoreError::ShuttingDown`,
+  and `ApiError::is_shutting_down()` says so, so a host reports the process ending rather
+  than a failed sync. Nothing ran and nothing was written; the next launch does the work.
 - **Re-export signature types.** Types that appear in the facade's own signatures
   (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,

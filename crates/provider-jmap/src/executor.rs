@@ -7,7 +7,7 @@
 //! network. The provider is one of its callers, not its owner.
 
 use async_trait::async_trait;
-use engine_provider::{HttpVersion, TlsVersion};
+use engine_provider::{HandOver, HttpVersion, TlsVersion};
 
 use crate::{
     JmapClient,
@@ -24,10 +24,19 @@ use crate::{
 pub(crate) trait Executor: Send + Sync {
     async fn execute(&self, request: &Request) -> Result<Response, JmapError>;
     /// [`execute`](Self::execute) for the one request that submits a message, whose reply
-    /// waits the submission bound and whose failure after it may have reached the server
-    /// leaves the send ambiguous (`crate::submit`). A fake fed canned documents has no wait
-    /// to make, so it executes.
-    async fn submit(&self, request: &Request) -> Result<Response, JmapError> {
+    /// waits the submission bound, whose body's end goes only once `hand_over` is committed,
+    /// and whose failure after it may have reached the server leaves the send ambiguous
+    /// (`crate::submit`). A fake fed canned documents has no wait to make and no body to hold
+    /// back, so it commits the hand-over and executes.
+    async fn submit(
+        &self,
+        request: &Request,
+        hand_over: &HandOver<'_>,
+    ) -> Result<Response, JmapError> {
+        hand_over
+            .commit()
+            .await
+            .map_err(|err| engine_http::SendError::withheld(err.detail().to_owned()))?;
         self.execute(request).await
     }
     /// GETs raw bytes from a resolved blob-download URL (the raw message source).
@@ -55,8 +64,13 @@ impl Executor for JmapClient {
         JmapClient::execute(self, request, engine_http::Exchange::Ordinary).await
     }
 
-    async fn submit(&self, request: &Request) -> Result<Response, JmapError> {
-        JmapClient::execute(self, request, engine_http::Exchange::Submission).await
+    async fn submit(
+        &self,
+        request: &Request,
+        hand_over: &HandOver<'_>,
+    ) -> Result<Response, JmapError> {
+        let exchange = engine_http::Exchange::Submission(hand_over);
+        JmapClient::execute(self, request, exchange).await
     }
 
     async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError> {

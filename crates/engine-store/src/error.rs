@@ -33,6 +33,11 @@ pub enum StoreError {
     /// the backend; this carries a redacted message.
     #[error("store backend error: {0}")]
     Backend(String),
+    /// The call never ran: the runtime it was queued on is shutting down. Nothing was
+    /// written and nothing failed, so a host reads this as the process ending, not as an
+    /// account or store fault.
+    #[error("the store call did not run: the runtime is shutting down")]
+    ShuttingDown,
 }
 
 impl StoreError {
@@ -42,7 +47,7 @@ impl StoreError {
     pub fn failure_class(&self) -> FailureClass {
         match self {
             Self::StaleLease | Self::Conflict => FailureClass::Conflict,
-            Self::ScopeHeld | Self::Backend(_) => FailureClass::Retryable,
+            Self::ScopeHeld | Self::Backend(_) | Self::ShuttingDown => FailureClass::Retryable,
             Self::NotRunnable => FailureClass::InvalidState,
         }
     }
@@ -69,6 +74,11 @@ mod tests {
         );
         assert_eq!(
             StoreError::Backend("disk full".into()).failure_class(),
+            FailureClass::Retryable
+        );
+        // Nothing failed: the call never ran, and the next launch does the work.
+        assert_eq!(
+            StoreError::ShuttingDown.failure_class(),
             FailureClass::Retryable
         );
     }

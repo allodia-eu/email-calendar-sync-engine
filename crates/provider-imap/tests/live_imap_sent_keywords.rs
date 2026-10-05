@@ -87,7 +87,14 @@ async fn the_filed_copy_carries_the_keywords_the_send_asked_for() {
     )
     .with_sent_copy_keyword(keyword.clone());
 
-    let receipt = sent.submit_email(&account(), &draft).await.expect("submit");
+    let receipt = sent
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .expect("submit");
     assert!(receipt.sent_copy.is_filed());
     assert!(
         receipt.sent_copy_keywords.contains(&keyword),

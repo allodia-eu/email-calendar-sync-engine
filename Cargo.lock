@@ -450,6 +450,7 @@ dependencies = [
 name = "engine-http"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "engine-provider",
  "engine-tls",
@@ -1437,6 +1438,7 @@ dependencies = [
  "serde_json",
  "stalwart-harness",
  "store-sqlite",
+ "tempfile",
  "thiserror",
  "time",
  "tokio",
@@ -1465,6 +1467,7 @@ dependencies = [
  "serde_json",
  "stalwart-harness",
  "store-sqlite",
+ "tempfile",
  "thiserror",
  "time",
  "tokio",

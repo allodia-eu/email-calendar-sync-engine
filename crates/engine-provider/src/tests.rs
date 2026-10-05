@@ -160,7 +160,12 @@ async fn submit_email_defaults_to_unsupported() {
         "Hi",
         "body",
     );
-    let err = provider.submit_email(&account(), &draft).await.unwrap_err();
+    let hand_over = crate::HandOver::new(&crate::Unrecorded);
+    let err = provider
+        .submit_email(&account(), &draft, &hand_over)
+        .await
+        .unwrap_err();
+    assert!(!hand_over.is_committed(), "the default sends nothing");
     assert_eq!(err.class(), FailureClass::InvalidState);
 }
 
@@ -267,10 +272,14 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
         "body",
     );
     assert_eq!(
-        bare.submit_email(&account(), &draft)
-            .await
-            .unwrap_err()
-            .class(),
+        bare.submit_email(
+            &account(),
+            &draft,
+            &crate::HandOver::new(&crate::Unrecorded)
+        )
+        .await
+        .unwrap_err()
+        .class(),
         FailureClass::InvalidState
     );
     for class in calendar_write_rejections(&bare).await {

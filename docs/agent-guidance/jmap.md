@@ -374,6 +374,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   timeout or a dropped connection) is `ProviderError::needs_confirmation`, never a retry;
   before it (connect, handshake, a body the server stopped taking) it is `Retryable`. The
   context read and the blob uploads before it fail as they always did (`deadlines.md`).
+  That request is the point of no return, and its hand-over is recorded before the last
+  piece of its body (`providers.md`). A `502`/`504`, an unreadable body and a response
+  missing the call are lost answers and need confirming; a `SetError` is the server's
+  refusal and keeps its class.
 - **Push (EventSource → `Watch`).** `JmapWatcher` holds a **dedicated** long-lived
   `text/event-stream` connection to the session `eventSourceUrl` (RFC 8620 §7.3;
   opened `types=Email,Mailbox&closeafter=no&ping=<secs>`), parses the Server-Sent

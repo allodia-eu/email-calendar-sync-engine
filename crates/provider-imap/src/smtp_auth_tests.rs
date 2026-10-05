@@ -47,6 +47,7 @@ async fn submit(
             host: "smtp.example.com",
             port: Some(465),
         }),
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await;
     (outcome, written(&recorded))

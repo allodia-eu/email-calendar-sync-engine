@@ -74,6 +74,7 @@ that never sends a message twice.
 | IMAP | every write, an `APPEND` literal included | `stall` per 8 KiB | `Retryable` |
 | SMTP | greeting, `EHLO`, `AUTH`, `MAIL`, `RCPT`, `DATA`'s `354` | `reply` | `Retryable` |
 | SMTP | the message | `stall` per 8 KiB | `Retryable`: its end never left |
+| SMTP | the final `.` itself (written after the hand-over) | `stall` | `NeedsConfirmation`: it may have reached the server |
 | SMTP | the reply to the final `.` | `submission` | `NeedsConfirmation` |
 | JMAP | session, method calls (sync and every `/set`), blob upload and download | `stall`, then `reply` | `Retryable` |
 | JMAP | the `Email/set` + `EmailSubmission/set` request | `stall`, then `submission` | `NeedsConfirmation` once it may have been received, `Retryable` before |
@@ -85,6 +86,14 @@ that never sends a message twice.
 | CalDAV, CardDAV | `PROPFIND`, `REPORT`, `OPTIONS`, `GET` | `stall`, then `reply` | `Retryable` |
 | CalDAV, CardDAV | `PUT`, `DELETE`, a `PUT` the server schedules from included | `stall`, then `reply` | `Retryable`: the precondition the write carries makes the replay safe (`caldav.md`) |
 
+**An answer is the server's own unless it says otherwise.** After a submission may have been
+received, a status the server sends is a refusal and keeps its class, with two exceptions
+that are lost answers in disguise: a gateway's `502` or `504` says the server behind it gave
+none, and a success whose body cannot be read (or a JMAP response missing the call) is an
+answer nobody can read. Both are `NeedsConfirmation`. A submission whose hand-over could not
+be recorded never sends its end (`SendError::withheld`), so it was not received and is
+`Retryable` (`store-and-sync.md` → "A send survives its process").
+
 ## Testing
 
 Every suite runs on tokio's paused clock under a one-hour guard, so a bound costs no wall
@@ -94,28 +103,34 @@ in `engine-http`, each HTTP adapter and `provider-imap`, plus `deadline_imap_tes
 `test-server` feature, which only dev-dependencies turn on) is the silent and the trickling
 server the HTTP adapters share.
 
-⚠️ **On the paused clock, a wait for a real socket moves the clock to the next timer, even
-when the socket already holds bytes.** tokio advances on every park unless the time driver
-itself was woken. So against a server that *answers*, each wait for the socket spends paused
-time it never spent, and three such waits can reach a one-minute bound. The consequences:
+⚠️ **On the paused clock, bytes in flight lose to every timer.** tokio moves the paused clock
+to the next timer whenever every task is waiting, and a task waiting for a socket counts as
+waiting while the kernel is still delivering bytes to it. How soon loopback reports them is the
+operating system's business: Linux usually reports them before the runtime next looks, macOS
+often does not, and a reply then meets a one-minute bound it never spent ("the server sent
+nothing for 60s", with the head on its way). Waiting longer or retrying would hide that, not
+remove it, so no exchange a test expects to complete runs with the clock free:
 
-- Fetch what a test needs answered in real time, then call `tokio::time::pause()` for the
-  silence (the JMAP suite does this for the session).
-- Measure a silence exactly only where the bound is counted from the send. A bound counted
-  from the last piece of a request body starts wherever the clock had jumped to, so those
-  tests accept up to a `dial` bound more.
-- A transfer that must keep moving for minutes is driven without a socket where it can be
-  (the upload test polls the request body directly) or kept to small pieces at a cadence well
-  inside the bound (the download tests).
+- **The clock is held while the exchange happens.** A blocking task inhibits tokio's advance
+  for as long as it runs; `engine_http::test_server::hold_clock` runs one until it is dropped,
+  and `held_until(event, work)` holds it until an event the test names has happened. A test
+  about a silent server holds it until the server has the request
+  (`SilentServer::has_received`), so the silence is the only thing the clock passes; one whose
+  connection is never answered holds it until the connection is accepted.
+- **The trickling server holds it while its bytes are on their way**: from the start until the
+  client has the head, and from each piece until the client has read it, so only the pauses
+  between pieces pass on the clock. The client's side of that is the funnel counting each step
+  a reply takes on its thread (`deadline::PROGRESS`, compiled only into test builds).
+  `trickling_late` writes every piece late from another thread, which is what macOS does to
+  loopback, and its test measures exactly the server's own pauses.
+- A transfer the client sends is driven without a socket where it can be (the upload test polls
+  the request body directly).
 - `engine-http`'s throttle suites run with the bounds off on their thread
   (`send_test_support::client`), because they answer every request and test something else.
   IMAP's suites run over in-memory streams, which the paused clock measures exactly.
 
 ## Known gaps
 
-- **A `5xx` to a submission is still `Retryable`.** A gateway may answer `502` after the
-  server accepted the message, and a retry would send it twice. That is a status, not a
-  timeout, and changing it belongs with the outbox's handling of submissions rather than here.
 - **Writes other than submissions keep their lost-connection class.** A JMAP
   `CalendarEvent/set` carries no lost-update guard, so a replay after a lost reply can repeat
   a scheduling message the server sent. A timeout there behaves as a reset connection always

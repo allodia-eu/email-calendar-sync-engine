@@ -114,7 +114,11 @@ async fn live_send_preserves_message_id_end_to_end() {
     // `submit_email` returns a receipt with a Message-ID-derived placeholder key (Graph
     // answers 202 with no id) echoing the Message-ID for reconciliation.
     let receipt = provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit_email");
     assert_eq!(receipt.message_id, message_id);
@@ -173,7 +177,11 @@ async fn send_and_await_inbox(provider: &GraphProvider, message_id: &MessageIdHe
     {
         let _one_at_a_time = SENDING.lock().await;
         provider
-            .submit_email(&account(), &draft)
+            .submit_email(
+                &account(),
+                &draft,
+                &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+            )
             .await
             .expect("submit_email");
     }

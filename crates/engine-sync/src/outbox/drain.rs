@@ -24,119 +24,17 @@ use core::time::Duration;
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, ProviderKey},
-    write::{PendingOpId, PendingOpKind, PendingOutcome},
+    write::{PendingOpKind, PendingOutcome},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider, SentCopy};
 use engine_store::{
-    LeaseRequest, LeasedPendingOp, PendingOpClaim, PendingOpRow, PendingOpState, Store, StoreRead,
-    WorkerId,
+    LeaseRequest, LeasedPendingOp, PendingOpClaim, PendingOpRow, PendingOpState, Store, StoreError,
+    StoreRead, WorkerId,
 };
 
-use super::{drafts::DraftPut, mailbox_plan::MailboxChange, record_failure};
+pub use super::drain_report::{DrainOutcome, DrainReport, DrainedOp};
+use super::{drafts::DraftPut, mailbox_plan::MailboxChange, record_failure, submit::Attempt};
 use crate::SyncError;
-
-/// What one drain pass did, one entry per op it attempted.
-///
-/// A pass that attempted nothing is not an error: an empty outbox, ops still waiting out a
-/// backoff, and a queue of kinds this pass cannot dispatch all reach it.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct DrainReport {
-    /// The ops this pass attempted, in the order it took them.
-    pub attempted: Vec<DrainedOp>,
-    /// Ops left for a later pass: not yet due, serialized behind another op, or of a kind
-    /// this pass does not dispatch. None of them was leased.
-    pub deferred: usize,
-}
-
-impl DrainReport {
-    /// How many provider calls succeeded, a delivered-but-unfiled send included: the
-    /// message went out either way, which is the fact a caller acts on.
-    #[must_use]
-    pub fn delivered(&self) -> usize {
-        self.attempted
-            .iter()
-            .filter(|op| {
-                matches!(
-                    op.outcome,
-                    DrainOutcome::Succeeded | DrainOutcome::SentNotFiled { .. }
-                )
-            })
-            .count()
-    }
-
-    /// Whether this pass changed nothing, so a caller can skip a refresh.
-    #[must_use]
-    pub fn is_idle(&self) -> bool {
-        self.attempted.is_empty()
-    }
-}
-
-/// One op a drain pass attempted, and what became of it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DrainedOp {
-    /// The durable op.
-    pub id: PendingOpId,
-    /// Which write it was.
-    pub kind: PendingOpKind,
-    /// What the provider call did.
-    pub outcome: DrainOutcome,
-    /// The key the provider resolved the write to, when it succeeded and there is one.
-    ///
-    /// **This is the only place a caller learns what a queued write became.** An op that
-    /// parked while offline succeeds with nobody watching, and the account then holds an
-    /// object the caller has never seen a key for. A draft is what makes it matter: the
-    /// next save has to name the copy it supersedes, or it stores a second one beside it,
-    /// and on three of the four adapters the key is not the one that went in
-    /// (`providers.md`).
-    pub provider_key: Option<ProviderKey>,
-}
-
-/// The outcome of one drained op.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DrainOutcome {
-    /// The provider call succeeded and the op settled.
-    Succeeded,
-    /// A submission was **delivered** and the sender's copy was not filed.
-    ///
-    /// Its own variant because the two facts have to travel together: folding it into
-    /// [`Succeeded`](DrainOutcome::Succeeded) loses the copy in silence, and folding it
-    /// into a failure invites re-sending mail the recipients already have. The op is
-    /// settled either way — the mail has gone.
-    SentNotFiled {
-        /// Why filing failed: a class and protocol detail, never draft content.
-        detail: String,
-    },
-    /// The call failed retryably, so the op is queued again for a later pass.
-    Parked {
-        /// How it failed.
-        class: FailureClass,
-        /// How many attempts it has now had.
-        attempts: u32,
-    },
-    /// The call failed in a way no retry fixes, or the op ran out of attempts. It will
-    /// not be attempted again.
-    Failed {
-        /// How it failed.
-        class: FailureClass,
-    },
-    /// A send whose outcome is genuinely ambiguous: parked for confirmation and **never**
-    /// retried, so the outbox cannot double-send.
-    AwaitingConfirmation {
-        /// The provider's description of the ambiguity.
-        detail: String,
-    },
-    /// The stored payload could not be read as the request its kind names, so the op
-    /// never reached the provider and is settled.
-    ///
-    /// Distinct from [`Failed`](DrainOutcome::Failed), which is the provider refusing:
-    /// nothing was asked of it. A payload written by a build this one cannot read reaches
-    /// here, and no number of retries changes that, so the op settles rather than
-    /// blocking the pass behind it for ever.
-    Undecodable {
-        /// What could not be decoded.
-        detail: String,
-    },
-}
 
 /// Attempts every op in `account`'s outbox that is due and that this pass can dispatch.
 ///
@@ -179,7 +77,18 @@ where
             report.deferred += 1;
             continue;
         };
-        let ran = run_one(provider, store, account, &leased, op).await?;
+        let ran = super::holding(
+            store,
+            &leased.lease,
+            ttl,
+            run_one(provider, store, account, &leased, op, ttl),
+        )
+        .await?;
+        let Some(ran) = ran else {
+            // Another worker took the op over while this pass was cut off from it.
+            report.deferred += 1;
+            continue;
+        };
         report.attempted.push(DrainedOp {
             id: row.id,
             kind: op.kind(),
@@ -193,13 +102,19 @@ where
 /// The writes this pass runs: exactly the kinds whose provider call is complete in the
 /// stored payload.
 ///
-/// A type rather than a subset of [`PendingOpKind`] checked by hand, so [`run_one`]
-/// matches exhaustively. The alternative leaves a fallback arm for kinds
+/// A type rather than a subset of [`PendingOpKind`] checked by hand, so [`run_one`] and
+/// [`run_write`] match exhaustively. The alternative leaves a fallback arm for kinds
 /// [`dispatchable`] already excluded: unreachable, untestable, and one edit away from
-/// being neither.
+/// being neither. A send is its own variant because it runs under a hand-over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MailOp {
     Submit,
+    Write(Write),
+}
+
+/// The writes that send nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Write {
     Edit,
     Report,
     DraftPut,
@@ -212,11 +127,11 @@ impl MailOp {
     fn kind(self) -> PendingOpKind {
         match self {
             Self::Submit => PendingOpKind::MailSubmit,
-            Self::Edit => PendingOpKind::MailEdit,
-            Self::Report => PendingOpKind::MailReport,
-            Self::DraftPut => PendingOpKind::MailDraftPut,
-            Self::DraftDelete => PendingOpKind::MailDraftDelete,
-            Self::Mailbox => PendingOpKind::MailboxEdit,
+            Self::Write(Write::Edit) => PendingOpKind::MailEdit,
+            Self::Write(Write::Report) => PendingOpKind::MailReport,
+            Self::Write(Write::DraftPut) => PendingOpKind::MailDraftPut,
+            Self::Write(Write::DraftDelete) => PendingOpKind::MailDraftDelete,
+            Self::Write(Write::Mailbox) => PendingOpKind::MailboxEdit,
         }
     }
 }
@@ -233,11 +148,11 @@ fn dispatchable(row: &PendingOpRow) -> Option<MailOp> {
     }
     match row.kind? {
         PendingOpKind::MailSubmit => Some(MailOp::Submit),
-        PendingOpKind::MailEdit => Some(MailOp::Edit),
-        PendingOpKind::MailReport => Some(MailOp::Report),
-        PendingOpKind::MailDraftPut => Some(MailOp::DraftPut),
-        PendingOpKind::MailDraftDelete => Some(MailOp::DraftDelete),
-        PendingOpKind::MailboxEdit => Some(MailOp::Mailbox),
+        PendingOpKind::MailEdit => Some(MailOp::Write(Write::Edit)),
+        PendingOpKind::MailReport => Some(MailOp::Write(Write::Report)),
+        PendingOpKind::MailDraftPut => Some(MailOp::Write(Write::DraftPut)),
+        PendingOpKind::MailDraftDelete => Some(MailOp::Write(Write::DraftDelete)),
+        PendingOpKind::MailboxEdit => Some(MailOp::Write(Write::Mailbox)),
         PendingOpKind::CalendarCreate
         | PendingOpKind::CalendarPatch
         | PendingOpKind::CalendarDocument
@@ -270,62 +185,79 @@ impl Ran {
     }
 }
 
-/// Runs one claimed op and records its outcome under the lease it was claimed with.
+/// Runs one claimed op and records its outcome under the lease it was claimed with. `None`
+/// when the outcome could not be recorded because the op is no longer this pass's.
 async fn run_one<P, S>(
     provider: &P,
     store: &S,
     account: &AccountId,
     leased: &LeasedPendingOp,
     op: MailOp,
-) -> Result<Ran, SyncError>
+    ttl: Duration,
+) -> Result<Option<Ran>, SyncError>
 where
     P: Provider,
     S: Store + StoreRead,
 {
     match op {
-        MailOp::Submit => {
-            let Some(draft) = decode::<Draft>(store, leased).await? else {
-                return Ok(Ran::bare(undecodable("draft")));
-            };
-            match provider.submit_email(account, &draft).await {
-                Ok(receipt) => {
-                    let sent_key = receipt.email_key.clone();
-                    store
-                        .mark_pending_op(
-                            &leased.lease,
-                            PendingOutcome::Succeeded {
-                                provider_key: receipt.email_key,
-                            },
-                        )
-                        .await?;
-                    Ok(Ran::keyed(
-                        match receipt.sent_copy {
-                            SentCopy::Filed => DrainOutcome::Succeeded,
-                            SentCopy::Unfiled { detail } => DrainOutcome::SentNotFiled { detail },
-                        },
-                        sent_key,
-                    ))
-                }
-                Err(err) => {
-                    // An ambiguous send is parked, never recorded as a retryable failure:
-                    // the outbox must not risk putting it in front of its recipients twice.
-                    if err.requires_confirmation() {
-                        let detail = err.detail().to_owned();
-                        store
-                            .mark_pending_op(
-                                &leased.lease,
-                                PendingOutcome::NeedsConfirmation {
-                                    detail: detail.clone(),
-                                },
-                            )
-                            .await?;
-                        return Ok(Ran::bare(DrainOutcome::AwaitingConfirmation { detail }));
-                    }
-                    settle(store, leased, &err).await.map(Ran::bare)
-                }
+        MailOp::Submit => send(provider, store, account, leased, ttl).await,
+        // A write whose lease was recovered under it (a lapsed lease, or another process's
+        // start-up recovery) is no longer this pass's: it must not stop the rest of the queue.
+        MailOp::Write(write) => match run_write(provider, store, account, leased, write).await {
+            Ok(ran) => Ok(Some(ran)),
+            Err(SyncError::Store(StoreError::StaleLease)) => Ok(None),
+            Err(err) => Err(err),
+        },
+    }
+}
+
+/// Runs one claimed send (`submit::attempt`).
+async fn send<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    leased: &LeasedPendingOp,
+    ttl: Duration,
+) -> Result<Option<Ran>, SyncError>
+where
+    P: Provider,
+    S: Store + StoreRead,
+{
+    let Some(draft) = decode::<Draft>(store, leased).await? else {
+        return Ok(Some(Ran::bare(undecodable("draft"))));
+    };
+    Ok(Some(
+        match super::submit::attempt(provider, store, account, leased, &draft, ttl).await? {
+            Attempt::Delivered(receipt) => {
+                let outcome = match receipt.sent_copy {
+                    SentCopy::Filed => DrainOutcome::Succeeded,
+                    SentCopy::Unfiled { detail } => DrainOutcome::SentNotFiled { detail },
+                };
+                Ran::keyed(outcome, receipt.email_key)
             }
-        }
-        MailOp::DraftPut => {
+            Attempt::Unknown(err) => Ran::bare(DrainOutcome::AwaitingConfirmation {
+                detail: err.detail().to_owned(),
+            }),
+            Attempt::Refused(err) => Ran::bare(settled(store, leased, err.class()).await?),
+            Attempt::Superseded(_) => return Ok(None),
+        },
+    ))
+}
+
+/// Runs one claimed write that is not a send.
+async fn run_write<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    leased: &LeasedPendingOp,
+    write: Write,
+) -> Result<Ran, SyncError>
+where
+    P: Provider,
+    S: Store + StoreRead,
+{
+    match write {
+        Write::DraftPut => {
             let Some(request) = decode::<DraftPut>(store, leased).await? else {
                 return Ok(Ran::bare(undecodable("draft put")));
             };
@@ -351,7 +283,7 @@ where
                 Err(err) => settle(store, leased, &err).await.map(Ran::bare),
             }
         }
-        MailOp::DraftDelete => {
+        Write::DraftDelete => {
             let Some(key) = decode::<ProviderKey>(store, leased).await? else {
                 return Ok(Ran::bare(undecodable("draft delete")));
             };
@@ -370,7 +302,7 @@ where
                 Err(err) => settle(store, leased, &err).await.map(Ran::bare),
             }
         }
-        MailOp::Mailbox => {
+        Write::Mailbox => {
             let Some(change) = decode::<MailboxChange>(store, leased).await? else {
                 return Ok(Ran::bare(undecodable("folder change")));
             };
@@ -382,7 +314,7 @@ where
                 Err(err) => Ok(Ran::bare(settled(store, leased, err.class()).await?)),
             }
         }
-        MailOp::Edit => {
+        Write::Edit => {
             let Some(edit) = decode::<MailEdit>(store, leased).await? else {
                 return Ok(Ran::bare(undecodable("mail edit")));
             };
@@ -402,7 +334,7 @@ where
                 Err(err) => settle(store, leased, &err).await.map(Ran::bare),
             }
         }
-        MailOp::Report => {
+        Write::Report => {
             let Some(report) = decode::<MessageReport>(store, leased).await? else {
                 return Ok(Ran::bare(undecodable("message report")));
             };
@@ -451,13 +383,13 @@ async fn settled<S: Store + StoreRead>(
         .into_iter()
         .find(|row| row.id == leased.id);
     Ok(match row {
-        Some(row) => DrainOutcome::Parked {
+        Some(row) if row.state == PendingOpState::Pending => DrainOutcome::Parked {
             class,
             attempts: row.attempts,
         },
-        // Gone from the queue means it settled: the class was not retryable, or the
-        // attempts ran out.
-        None => DrainOutcome::Failed { class },
+        // Settled: the class was not retryable, or the attempts ran out. A send that settles
+        // stays listed, as `Failed`; anything else leaves the queue.
+        _ => DrainOutcome::Failed { class },
     })
 }
 

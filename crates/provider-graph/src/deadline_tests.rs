@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
-use engine_http::test_server::{SilentServer, trickling};
+use engine_http::test_server::{SilentServer, held_until, reply, trickling};
 use engine_provider::{Deadlines, Draft, ProviderError};
 use tokio::{net::TcpListener, time::Instant};
 
@@ -51,7 +51,11 @@ async fn a_silent_server_fails_a_read_retryable_after_the_reply_bound() {
     let server = SilentServer::start(Vec::new()).await;
     let client = client(server.url());
 
-    let (outcome, elapsed) = timed(client.get(&client.url("/mailFolders"))).await;
+    let (outcome, elapsed) = held_until(
+        server.has_received(1),
+        timed(client.get(&client.url("/mailFolders"))),
+    )
+    .await;
 
     let err = ProviderError::from(outcome.expect_err("a silent server is a failure"));
     assert!(err.is_retryable(), "{err}");
@@ -64,11 +68,16 @@ async fn a_send_the_server_never_answers_needs_confirmation_and_is_never_retried
     let server = SilentServer::start(Vec::new()).await;
     let client = client(server.url());
 
-    let (outcome, elapsed) = timed(crate::submit::send(
-        &client,
-        &draft(),
-        &Categories::default(),
-    ))
+    let hand_over = engine_provider::HandOver::new(&engine_provider::Unrecorded);
+    let (outcome, elapsed) = held_until(
+        server.has_received(1),
+        timed(crate::submit::send(
+            &client,
+            &draft(),
+            &Categories::default(),
+            &hand_over,
+        )),
+    )
     .await;
 
     let err = outcome.expect_err("an unanswered send is not a success");
@@ -91,6 +100,7 @@ async fn a_send_whose_connection_never_completes_is_retried() {
         &client,
         &draft(),
         &Categories::default(),
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     ))
     .await;
 
@@ -111,4 +121,109 @@ async fn a_body_that_keeps_arriving_is_never_cut_off() {
 
     assert_eq!(outcome.expect("a steady body arrives").len(), 5000);
     assert!(elapsed > BOUNDS.reply() + BOUNDS.stall(), "{elapsed:?}");
+}
+
+/// A hand-over log that notes how many requests the server had read in full when the
+/// hand-over was recorded, after giving anything already sent time to land.
+struct Watch<'a> {
+    server: &'a SilentServer,
+    seen: std::sync::Mutex<Option<usize>>,
+    refuse: bool,
+}
+
+impl<'a> Watch<'a> {
+    fn on(server: &'a SilentServer, refuse: bool) -> Self {
+        Self {
+            server,
+            seen: std::sync::Mutex::new(None),
+            refuse,
+        }
+    }
+
+    fn seen(&self) -> Option<usize> {
+        *self.seen.lock().unwrap()
+    }
+}
+
+#[async_trait::async_trait]
+impl engine_provider::HandOverLog for Watch<'_> {
+    async fn record_hand_over(&self) -> Result<(), String> {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        *self.seen.lock().unwrap() = Some(self.server.received());
+        if self.refuse {
+            return Err("disk full".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// `sendMail` is the one request that can deliver, and the hand-over is recorded inside it:
+/// after the connection is up, before the server has the whole request.
+#[tokio::test]
+async fn the_hand_over_is_recorded_inside_the_send_request() {
+    let server = SilentServer::start(vec![reply("202 Accepted", "text/plain", "")]).await;
+    let client = client(server.url());
+    let log = Watch::on(&server, false);
+    let hand_over = engine_provider::HandOver::new(&log);
+
+    crate::submit::send(&client, &draft(), &Categories::default(), &hand_over)
+        .await
+        .expect("sent");
+
+    assert_eq!(
+        log.seen(),
+        Some(0),
+        "the request was not whole at the record"
+    );
+    assert_eq!(server.received(), 1);
+}
+
+#[tokio::test]
+async fn a_hand_over_that_cannot_be_recorded_never_completes_the_send_request() {
+    let server = SilentServer::start(vec![reply("202 Accepted", "text/plain", "")]).await;
+    let client = client(server.url());
+    let log = Watch::on(&server, true);
+
+    let err = crate::submit::send(
+        &client,
+        &draft(),
+        &Categories::default(),
+        &engine_provider::HandOver::new(&log),
+    )
+    .await
+    .expect_err("withheld");
+
+    assert!(err.is_retryable(), "{err}");
+    assert!(!err.requires_confirmation(), "{err}");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        server.received(),
+        0,
+        "the server never had the whole request"
+    );
+}
+
+/// After the hand-over, a gateway saying the server behind it gave no answer is the lost
+/// answer it describes; the server's own refusal is definitive.
+#[tokio::test]
+async fn a_gateway_with_no_answer_asks_and_the_servers_own_refusal_does_not() {
+    for (status, ambiguous) in [
+        ("502 Bad Gateway", true),
+        ("504 Gateway Timeout", true),
+        ("500 Internal Server Error", false),
+        ("503 Service Unavailable", false),
+    ] {
+        let server = SilentServer::start(vec![reply(status, "application/json", "{}")]).await;
+        let client = client(server.url());
+        let err = crate::submit::send(
+            &client,
+            &draft(),
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .expect_err(status);
+        assert_eq!(err.requires_confirmation(), ambiguous, "{status}: {err}");
+        assert_eq!(err.is_retryable(), !ambiguous, "{status}: {err}");
+    }
 }

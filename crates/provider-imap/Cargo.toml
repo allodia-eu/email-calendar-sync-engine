@@ -59,6 +59,8 @@ engine-store = { workspace = true }
 engine-search = { workspace = true }
 engine-sync = { workspace = true }
 store-sqlite = { workspace = true }
+# The process-kill suite's store files, one directory per case.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

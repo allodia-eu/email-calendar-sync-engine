@@ -18,7 +18,6 @@
 //! server that stopped taking the body before its end cannot have acted on it.
 
 use std::{
-    convert::Infallible,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -26,30 +25,34 @@ use std::{
 };
 
 use bytes::Bytes;
-use engine_provider::Deadlines;
+use engine_provider::{Deadlines, HandOver};
 use http_body::{Frame, SizeHint};
 use tokio::time::Instant;
 
-use crate::error::{Reached, SendError};
+use crate::{
+    error::{Reached, SendError},
+    hand_over::{Gate, Withheld},
+};
 
 /// What a request is, which decides how long its reply may take once it has been sent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub enum Exchange {
+pub enum Exchange<'a> {
     /// Any request that does not submit a message: its reply gets
     /// [`Deadlines::reply`].
     Ordinary,
     /// A request that submits a message for delivery (a JMAP `EmailSubmission/set`, a Graph
     /// `sendMail`, a Gmail `messages.send`): its reply gets [`Deadlines::submission`],
-    /// because a reply that never comes leaves the send ambiguous.
-    Submission,
+    /// because a reply that never comes leaves the send ambiguous, and the last piece of its
+    /// body goes only once the [`HandOver`] is committed (`hand_over.rs`).
+    Submission(&'a HandOver<'a>),
 }
 
-impl Exchange {
+impl Exchange<'_> {
     fn reply(self) -> Duration {
         match self {
             Self::Ordinary => Deadlines::STANDARD.reply(),
-            Self::Submission => Deadlines::STANDARD.submission(),
+            Self::Submission(_) => Deadlines::STANDARD.submission(),
         }
     }
 }
@@ -70,7 +73,22 @@ pub fn client(tls: &engine_tls::TlsClientConfig) -> reqwest::ClientBuilder {
 ///
 /// Small enough that a slow uplink moves one in seconds, so the stall bound is on a server
 /// that has stopped taking the body, never on the size of the body.
-const PIECE: usize = 16 * 1024;
+pub(crate) const PIECE: usize = 16 * 1024;
+
+#[cfg(any(test, feature = "test-server"))]
+thread_local! {
+    /// TEST BUILDS ONLY: how many steps replies have taken on this thread, a head arriving or a
+    /// read of a body. `test_server` holds tokio's paused clock until the client has taken the
+    /// step its bytes allow, because on the paused clock bytes still in the kernel lose to every
+    /// timer.
+    pub(crate) static PROGRESS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// Counts a step a reply took, in a test build ([`PROGRESS`]).
+fn stepped() {
+    #[cfg(any(test, feature = "test-server"))]
+    PROGRESS.with(|steps| steps.set(steps.get() + 1));
+}
 
 /// What a request has shown of its progress: when it last moved, and whether all of it has
 /// been handed over.
@@ -117,23 +135,34 @@ impl Progress {
 
 /// A request body handed over [`PIECE`] by piece, recording each piece reqwest takes.
 ///
-/// Its size is exact, so reqwest sends the same `Content-Length` it would for the bytes.
+/// Its size is exact, so reqwest sends the same `Content-Length` it would for the bytes. A
+/// submission's body holds its last piece back until the [`Gate`] opens.
 struct Pieces {
     rest: Bytes,
     progress: Arc<Progress>,
+    gate: Option<Arc<Gate>>,
 }
 
 impl http_body::Body for Pieces {
     type Data = Bytes;
-    type Error = Infallible;
+    type Error = Withheld;
 
     fn poll_frame(
         self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Withheld>>> {
         let me = self.get_mut();
         if me.rest.is_empty() {
             return Poll::Ready(None);
+        }
+        if me.rest.len() <= PIECE
+            && let Some(gate) = &me.gate
+        {
+            match gate.poll_open(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(withheld)) => return Poll::Ready(Some(Err(withheld))),
+                Poll::Ready(Ok(())) => {}
+            }
         }
         let piece = me.rest.split_to(me.rest.len().min(PIECE));
         me.progress.moved(me.rest.is_empty());
@@ -149,50 +178,86 @@ impl http_body::Body for Pieces {
     }
 }
 
-/// Puts `request`'s body in [`Pieces`], returning what will record its progress.
+/// Puts `request`'s body in [`Pieces`], returning what will record its progress and, for a
+/// body that holds its last piece behind `gate`, the gate.
 ///
 /// A request with no body is whole from the start: its head goes out the moment the
 /// connection is up, so its reply bound runs from the send, the connect included. That is
 /// sound because the dial bound is the shorter of the two. A body reqwest cannot read as
 /// bytes (a stream; no adapter sends one) is left as it is and counted whole, which can only
 /// make a failure look received.
-fn track(request: &mut reqwest::Request) -> Arc<Progress> {
+fn track(request: &mut reqwest::Request, gated: bool) -> (Arc<Progress>, Option<Arc<Gate>>) {
     let body = request
         .body()
         .and_then(reqwest::Body::as_bytes)
         .filter(|bytes| !bytes.is_empty())
         .map(Bytes::copy_from_slice);
     let Some(rest) = body else {
-        return Arc::new(Progress::new(true));
+        return (Arc::new(Progress::new(true)), None);
     };
     let progress = Arc::new(Progress::new(false));
+    let gate = gated.then(|| Arc::new(Gate::default()));
     *request.body_mut() = Some(reqwest::Body::wrap(Pieces {
         rest,
         progress: Arc::clone(&progress),
+        gate: gate.clone(),
     }));
-    progress
+    (progress, gate)
 }
 
 /// Sends `request` and waits for the head of its response, giving up on a server that goes
 /// quiet: [`stall`](Deadlines::stall) between pieces of the body, then the bound `exchange`
-/// names for the reply.
+/// names for the reply. A submission's hand-over is committed before the last piece of its
+/// body, or before the request at all when it has no body to hold back.
 pub(crate) async fn send_bounded(
     client: &reqwest::Client,
     mut request: reqwest::Request,
-    exchange: Exchange,
+    exchange: Exchange<'_>,
 ) -> Result<reqwest::Response, SendError> {
-    let progress = track(&mut request);
-    if !armed() {
-        let sent = client.execute(request).await;
-        return sent.map_err(|err| SendError::http(err, progress.reached()));
-    }
-    tokio::select! {
-        biased;
-        sent = client.execute(request) => {
-            sent.map_err(|err| SendError::http(err, progress.reached()))
+    let hand_over = match exchange {
+        Exchange::Submission(hand_over) => Some(hand_over),
+        Exchange::Ordinary => None,
+    };
+    let (progress, gate) = track(&mut request, hand_over.is_some());
+    let gate = match (hand_over, gate) {
+        (Some(hand_over), Some(gate)) => Some((hand_over, gate)),
+        (Some(hand_over), None) => {
+            hand_over
+                .commit()
+                .await
+                .map_err(|err| SendError::withheld(err.detail().to_owned()))?;
+            None
         }
-        silent = quiet(&progress, exchange.reply()) => Err(silent),
+        (None, _) => None,
+    };
+    let drive = async {
+        match &gate {
+            Some((hand_over, gate)) => gate.drive(hand_over).await,
+            None => core::future::pending().await,
+        }
+    };
+    let failed = |err: reqwest::Error| match gate.as_ref().and_then(|(_, gate)| gate.refusal()) {
+        Some(detail) => SendError::withheld(detail),
+        None => SendError::http(err, progress.reached()),
+    };
+    let head = if armed() {
+        tokio::select! {
+            biased;
+            sent = client.execute(request) => sent.map_err(failed),
+            silent = quiet(&progress, exchange.reply()) => Err(silent),
+            never = drive => match never {},
+        }
+    } else {
+        tokio::select! {
+            biased;
+            sent = client.execute(request) => sent.map_err(failed),
+            never = drive => match never {},
+        }
+    };
+    if head.is_ok() {
+        stepped();
     }
+    head
 }
 
 /// Resolves once `progress` has stood still for longer than its phase allows.
@@ -227,7 +292,10 @@ pub async fn chunk_within(
     quiet: Duration,
 ) -> Result<Option<Bytes>, SendError> {
     match tokio::time::timeout(quiet, response.chunk()).await {
-        Ok(read) => read.map_err(|err| SendError::http(err, Reached::Possibly)),
+        Ok(read) => {
+            stepped();
+            read.map_err(|err| SendError::http(err, Reached::Possibly))
+        }
         Err(_) => Err(SendError::silent(
             "the server sent nothing",
             quiet,

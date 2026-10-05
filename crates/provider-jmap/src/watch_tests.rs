@@ -357,7 +357,14 @@ async fn a_stream_that_pings_is_kept_and_one_that_stops_is_a_lost_connection() {
     let url = engine_http::test_server::trickling(head, ping, 5, every).await;
     let tls = engine_tls::TlsClientConfig::bundled();
     let client = engine_http::client(&tls).build().expect("client");
-    let response = client.get(url).send().await.expect("stream");
+    let response = engine_http::send_retrying(
+        client.get(url),
+        &engine_http::RetryConfig::default(),
+        engine_http::Exchange::Ordinary,
+    )
+    .await
+    .expect("stream")
+    .into_streaming();
     let quiet = quiet_bound(every);
     let source = Box::new(ResponseChunks { response, quiet });
     let mut watcher = JmapWatcher::from_source(source, &[JmapDataType::Email]);

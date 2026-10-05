@@ -47,6 +47,8 @@ tokio = { workspace = true, features = ["time", "macros", "rt", "test-util", "ne
 rcgen = "0.13"
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
+# A test log for a submission's hand-over, which is an `async_trait` trait.
+async-trait = { workspace = true }
 
 [lints]
 workspace = true

@@ -73,6 +73,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(schema::V13),
     Migration::sql(schema::V14),
     Migration::sql(schema::V15),
+    Migration::sql(schema::V16),
 ];
 
 /// Brings `conn` up to the latest schema version.
@@ -83,6 +84,12 @@ const MIGRATIONS: &[Migration] = &[
 /// this build understands.
 pub(crate) fn migrate(conn: &mut Connection) -> Result<SchemaStatus> {
     run(conn, MIGRATIONS)
+}
+
+/// Brings `conn` to schema `version` and no further: the shape an older build left a store in.
+#[cfg(test)]
+pub(crate) fn migrate_to(conn: &mut Connection, version: usize) -> Result<SchemaStatus> {
+    run(conn, &MIGRATIONS[..version])
 }
 
 /// The version-driven runner, parameterized over the step list for testing.

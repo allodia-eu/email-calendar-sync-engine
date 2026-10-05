@@ -159,6 +159,7 @@ async fn send_after_starttls_skips_greeting_and_authenticates() {
             host: "smtp.test.local",
             port: Some(587),
         }),
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
     .unwrap();

@@ -210,7 +210,14 @@ async fn edit_mail_and_submit_email_route_through_the_provider() {
         "Body",
     )
     .with_sent_copy_keyword(engine_core::mail::Keyword::new("project-x").unwrap());
-    let sent = provider.submit_email(&account(), &draft).await.unwrap();
+    let sent = provider
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
     assert_eq!(sent.email_key.as_str(), "19f7sent0000abcd");
     // Gmail keeps no custom keyword, so the send goes out and says none were kept.
     assert!(sent.sent_copy_keywords.is_empty());
