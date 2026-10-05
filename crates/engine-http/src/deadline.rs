@@ -72,6 +72,21 @@ pub fn client(tls: &engine_tls::TlsClientConfig) -> reqwest::ClientBuilder {
 /// that has stopped taking the body, never on the size of the body.
 const PIECE: usize = 16 * 1024;
 
+#[cfg(any(test, feature = "test-server"))]
+thread_local! {
+    /// TEST BUILDS ONLY: how many steps replies have taken on this thread, a head arriving or a
+    /// read of a body. `test_server` holds tokio's paused clock until the client has taken the
+    /// step its bytes allow, because on the paused clock bytes still in the kernel lose to every
+    /// timer.
+    pub(crate) static PROGRESS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// Counts a step a reply took, in a test build ([`PROGRESS`]).
+fn stepped() {
+    #[cfg(any(test, feature = "test-server"))]
+    PROGRESS.with(|steps| steps.set(steps.get() + 1));
+}
+
 /// What a request has shown of its progress: when it last moved, and whether all of it has
 /// been handed over.
 #[derive(Debug)]
@@ -182,17 +197,22 @@ pub(crate) async fn send_bounded(
     exchange: Exchange,
 ) -> Result<reqwest::Response, SendError> {
     let progress = track(&mut request);
-    if !armed() {
-        let sent = client.execute(request).await;
-        return sent.map_err(|err| SendError::http(err, progress.reached()));
-    }
-    tokio::select! {
-        biased;
-        sent = client.execute(request) => {
-            sent.map_err(|err| SendError::http(err, progress.reached()))
+    let head = if armed() {
+        tokio::select! {
+            biased;
+            sent = client.execute(request) => {
+                sent.map_err(|err| SendError::http(err, progress.reached()))
+            }
+            silent = quiet(&progress, exchange.reply()) => Err(silent),
         }
-        silent = quiet(&progress, exchange.reply()) => Err(silent),
+    } else {
+        let sent = client.execute(request).await;
+        sent.map_err(|err| SendError::http(err, progress.reached()))
+    };
+    if head.is_ok() {
+        stepped();
     }
+    head
 }
 
 /// Resolves once `progress` has stood still for longer than its phase allows.
@@ -227,7 +247,10 @@ pub async fn chunk_within(
     quiet: Duration,
 ) -> Result<Option<Bytes>, SendError> {
     match tokio::time::timeout(quiet, response.chunk()).await {
-        Ok(read) => read.map_err(|err| SendError::http(err, Reached::Possibly)),
+        Ok(read) => {
+            stepped();
+            read.map_err(|err| SendError::http(err, Reached::Possibly))
+        }
         Err(_) => Err(SendError::silent(
             "the server sent nothing",
             quiet,

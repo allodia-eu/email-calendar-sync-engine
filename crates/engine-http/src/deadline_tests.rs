@@ -6,10 +6,10 @@
 //! with no bound of its own reaches that timer instead, and fails as a hang rather than
 //! hanging the suite.
 //!
-//! ⚠️ The paused clock also jumps while a task waits for a socket that already has bytes for
-//! it: tokio advances to the next timer on every wait, whatever the socket held. So where a
-//! server *answers*, the time it took is not measured exactly, and a test whose server must
-//! keep a large transfer moving drives the body directly rather than through a socket.
+//! ⚠️ The paused clock also jumps while bytes are on their way through a socket, so every
+//! exchange a test expects to complete runs with the clock held (`test_server`): until the
+//! server has the request (`held_until` and `SilentServer::has_received`), or until the client
+//! has read what a trickling server wrote. Only the silence under test moves the clock.
 
 use std::{sync::Arc, time::Duration};
 
@@ -21,7 +21,7 @@ use tokio::{net::TcpListener, time::Instant};
 use super::{PIECE, Pieces, Progress, quiet};
 use crate::{
     Exchange, RetryConfig, SendError, Sent, chunk_within, send_retrying,
-    test_server::{SilentServer, reply, trickling},
+    test_server::{SilentServer, held_until, reply, trickling, trickling_late},
 };
 
 /// Longer than any bound under test, so only a missing bound reaches it.
@@ -63,11 +63,14 @@ async fn a_silent_server_fails_an_ordinary_request_after_the_reply_bound() {
     let server = SilentServer::start(Vec::new()).await;
     let request = client().get(server.url());
 
-    let (outcome, elapsed) = timed(send_retrying(
-        request,
-        &RetryConfig::default(),
-        Exchange::Ordinary,
-    ))
+    let (outcome, elapsed) = held_until(
+        server.has_received(1),
+        timed(send_retrying(
+            request,
+            &RetryConfig::default(),
+            Exchange::Ordinary,
+        )),
+    )
     .await;
 
     let err = timed_out(outcome);
@@ -82,11 +85,14 @@ async fn a_submission_waits_the_longer_bound_and_may_have_been_received() {
     let server = SilentServer::start(Vec::new()).await;
     let request = client().post(server.url()).body("a message");
 
-    let (outcome, elapsed) = timed(send_retrying(
-        request,
-        &RetryConfig::default(),
-        Exchange::Submission,
-    ))
+    let (outcome, elapsed) = held_until(
+        server.has_received(1),
+        timed(send_retrying(
+            request,
+            &RetryConfig::default(),
+            Exchange::Submission,
+        )),
+    )
     .await;
 
     let err = timed_out(outcome);
@@ -106,12 +112,16 @@ async fn a_server_that_stops_taking_the_body_never_received_it() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("http://{}/", listener.local_addr().expect("address"));
     let request = client().post(url).body(vec![b'x'; 32 * 1024 * 1024]);
+    let mut accepted = None;
 
-    let (outcome, elapsed) = timed(send_retrying(
-        request,
-        &RetryConfig::default(),
-        Exchange::Submission,
-    ))
+    let (outcome, elapsed) = held_until(
+        async { accepted = Some(listener.accept().await.expect("accept")) },
+        timed(send_retrying(
+            request,
+            &RetryConfig::default(),
+            Exchange::Submission,
+        )),
+    )
     .await;
 
     let err = timed_out(outcome);
@@ -165,6 +175,30 @@ async fn a_body_that_keeps_moving_is_never_cut_off() {
 
     assert_eq!(outcome.expect("a steady body arrives").len(), 5000);
     assert!(elapsed > BOUNDS.reply() + BOUNDS.stall(), "{elapsed:?}");
+}
+
+/// The same body over a loopback that reports every write late, as some systems do: the
+/// clock is held while bytes are on their way, so what the test measures does not depend on
+/// how fast the operating system delivers them.
+#[tokio::test(start_paused = true)]
+async fn a_body_slow_to_arrive_meets_no_bound_it_did_not_spend() {
+    let head = "HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n".to_owned();
+    let latency = Duration::from_millis(20);
+    let url = trickling_late(head, "x".repeat(1000), 5, Duration::from_secs(50), latency).await;
+    let request = client().get(url);
+
+    let (outcome, elapsed) = timed(async {
+        let sent = send_retrying(request, &RetryConfig::default(), Exchange::Ordinary).await?;
+        sent.bytes().await
+    })
+    .await;
+
+    assert_eq!(outcome.expect("a steady body arrives").len(), 5000);
+    assert_eq!(
+        elapsed,
+        Duration::from_secs(250),
+        "exactly the server's own pauses"
+    );
 }
 
 #[tokio::test(start_paused = true)]

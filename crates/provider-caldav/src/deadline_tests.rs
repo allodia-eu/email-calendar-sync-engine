@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use engine_http::test_server::{SilentServer, trickling};
+use engine_http::test_server::{SilentServer, held_until, trickling};
 use engine_provider::{Deadlines, ProviderError};
 use tokio::time::Instant;
 
@@ -59,8 +59,11 @@ async fn a_silent_server_fails_a_report_retryable_after_the_reply_bound() {
     let client = client(server.url());
     let body = "<sync-collection xmlns=\"DAV:\"/>".to_owned();
 
-    let (outcome, elapsed) =
-        timed(client.send(DavMethod::Report, "/calendars/alice/", "1", body)).await;
+    let (outcome, elapsed) = held_until(
+        server.has_received(1),
+        timed(client.send(DavMethod::Report, "/calendars/alice/", "1", body)),
+    )
+    .await;
 
     let err = ProviderError::from(outcome.expect_err("a silent server is a failure"));
     assert_retryable_after_the_reply_bound(&err, elapsed);
@@ -78,7 +81,8 @@ async fn a_write_whose_reply_never_comes_is_retried_under_its_precondition() {
         body: "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".to_owned(),
     };
 
-    let (outcome, elapsed) = timed(client.send_write(write)).await;
+    let (outcome, elapsed) =
+        held_until(server.has_received(1), timed(client.send_write(write))).await;
 
     let err = ProviderError::from(outcome.expect_err("a silent server is a failure"));
     assert_retryable_after_the_reply_bound(&err, elapsed);

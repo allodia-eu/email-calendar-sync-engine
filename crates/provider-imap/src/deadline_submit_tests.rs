@@ -98,8 +98,21 @@ async fn a_tls_submission_to_a_server_that_accepts_and_never_speaks_is_retried()
         sender,
     );
     tokio::time::pause();
+    // The paused clock moves to the next timer while the kernel is still completing the
+    // connect, which some systems report late; held still until the connection is up, the
+    // bound that fires is the handshake's.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    drop(tokio::task::spawn_blocking(move || {
+        let _ = held.recv_timeout(Duration::from_secs(30));
+    }));
+    let accepting = async {
+        let accepted = listener.accept().await.expect("accept");
+        drop(release);
+        accepted
+    };
 
-    let err = guarded(provider.submit(&draft())).await;
+    let message = draft();
+    let (err, _accepted) = tokio::join!(guarded(provider.submit(&message)), accepting);
 
     assert!(err.to_string().contains("TLS handshake"), "{err}");
     assert!(err.is_retryable(), "{err}");

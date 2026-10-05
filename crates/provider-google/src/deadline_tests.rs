@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
-use engine_http::test_server::{SilentServer, trickling};
+use engine_http::test_server::{SilentServer, held_until, trickling};
 use engine_provider::{Deadlines, Draft, ProviderError};
 use tokio::{net::TcpListener, time::Instant};
 
@@ -51,7 +51,11 @@ async fn a_silent_server_fails_a_read_retryable_after_the_reply_bound() {
     let server = SilentServer::start(Vec::new()).await;
     let client = client(server.url());
 
-    let (outcome, elapsed) = timed(client.get(&client.url("/gmail/v1/users/me/labels"))).await;
+    let (outcome, elapsed) = held_until(
+        server.has_received(1),
+        timed(client.get(&client.url("/gmail/v1/users/me/labels"))),
+    )
+    .await;
 
     let err = ProviderError::from(outcome.expect_err("a silent server is a failure"));
     assert!(err.is_retryable(), "{err}");
@@ -64,8 +68,11 @@ async fn a_send_the_server_never_answers_needs_confirmation_and_is_never_retried
     let server = SilentServer::start(Vec::new()).await;
     let client = client(server.url());
 
-    let (outcome, elapsed) =
-        timed(crate::submit::send(&client, &draft(), &Labels::default())).await;
+    let (outcome, elapsed) = held_until(
+        server.has_received(1),
+        timed(crate::submit::send(&client, &draft(), &Labels::default())),
+    )
+    .await;
 
     let err = outcome.expect_err("an unanswered send is not a success");
     assert!(err.requires_confirmation(), "{err}");

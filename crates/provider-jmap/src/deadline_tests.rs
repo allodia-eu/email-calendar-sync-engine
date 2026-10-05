@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
 use engine_http::{
     Exchange,
-    test_server::{SilentServer, reply, trickling},
+    test_server::{SilentServer, held_until, reply, trickling},
 };
 use engine_provider::{Deadlines, Draft, ProviderError};
 use tokio::time::Instant;
@@ -92,7 +92,11 @@ async fn a_silent_server_fails_a_method_call_retryable_after_the_reply_bound() {
     request.invoke("Mailbox/get", serde_json::json!({ "accountId": "c" }));
     tokio::time::pause();
 
-    let (outcome, elapsed) = timed(client.execute(&request, Exchange::Ordinary)).await;
+    let (outcome, elapsed) = held_until(
+        server.has_received(2),
+        timed(client.execute(&request, Exchange::Ordinary)),
+    )
+    .await;
 
     let err = ProviderError::from(outcome.expect_err("a silent server is a failure"));
     assert!(err.is_retryable(), "{err}");
@@ -116,7 +120,11 @@ async fn a_submission_the_server_never_answers_needs_confirmation_and_is_never_r
     );
     tokio::time::pause();
 
-    let (outcome, elapsed) = timed(crate::submit::send(&executor, "c", "c", &draft)).await;
+    let (outcome, elapsed) = held_until(
+        server.has_received(2),
+        timed(crate::submit::send(&executor, "c", "c", &draft)),
+    )
+    .await;
 
     let err = outcome.expect_err("an unanswered send is not a success");
     assert!(err.requires_confirmation(), "{err}");
