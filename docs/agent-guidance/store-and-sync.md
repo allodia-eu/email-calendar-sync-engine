@@ -273,7 +273,9 @@ pub struct ApplyBatch<'a, T> {                  // T is the scope's SyncObject
   object to an outstanding send (by generated `Message-ID`) is planned off the
   transaction by reading pending ops, so there is a TOCTOU window. Inside the
   apply transaction the store re-checks that each `PendingReconciliation`
-  references an op still in its expected pre-resolution state. On mismatch it
+  references an op still in its expected pre-resolution state, recovering a dead attempt
+  first: the planner read the op as the queue read shows it, as its recovery will leave it,
+  so a stored `InFlight` under a lapsed lease would otherwise never match. On mismatch it
   **skips** that reconciliation and stores the incoming object normally;
   duplicate suppression then falls back to presentation-layer dedup
   (consistent with "UI/search dedup is presentation policy, not storage
@@ -767,7 +769,9 @@ one event never race on either provider.
   ⚠️ **A row enqueued before v14 has no kind, and is never attempted.** The information was
   never written, and guessing would replay a months-old archive or send against a mailbox
   that has moved on. Such a row is listed by the queue read so a host can show it and cancel
-  it, and refused by both claims as `Unknown`.
+  it, and refused by both claims as `Unknown`. One an older build left `InFlight` is
+  released by recovery as a retryable failure, parked in `Pending`, so its dead lease holds no
+  resource and the host can still withdraw it.
 
 - **A throttled *read* does not park at all — it reports when to come back.** A scope
   refused by a rate limit fails with `FailureClass::RateLimited` and, where the server named

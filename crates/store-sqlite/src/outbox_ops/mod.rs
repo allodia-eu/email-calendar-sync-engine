@@ -22,7 +22,7 @@ use engine_store::{
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use self::{
-    recover::{record, recover_dead},
+    recover::record,
     row::{
         dependencies_met, is_due, is_runnable, load_account_ops, load_one_op,
         resource_held_elsewhere,
@@ -37,7 +37,7 @@ mod row;
 
 pub(crate) use host::{cancel, confirm, retry_now};
 pub(crate) use read::{list_pending_ops, pending_op_state};
-pub(crate) use recover::recover_interrupted;
+pub(crate) use recover::{recover_dead, recover_interrupted};
 
 /// Opens an outbox write transaction holding the write lock from its first statement.
 ///

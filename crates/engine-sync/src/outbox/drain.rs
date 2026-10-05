@@ -28,8 +28,8 @@ use engine_core::{
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider, SentCopy};
 use engine_store::{
-    LeaseRequest, LeasedPendingOp, PendingOpClaim, PendingOpRow, PendingOpState, Store, StoreRead,
-    WorkerId,
+    LeaseRequest, LeasedPendingOp, PendingOpClaim, PendingOpRow, PendingOpState, Store, StoreError,
+    StoreRead, WorkerId,
 };
 
 pub use super::drain_report::{DrainOutcome, DrainReport, DrainedOp};
@@ -201,9 +201,13 @@ where
 {
     match op {
         MailOp::Submit => send(provider, store, account, leased, ttl).await,
-        MailOp::Write(write) => run_write(provider, store, account, leased, write)
-            .await
-            .map(Some),
+        // A write whose lease was recovered under it (a lapsed lease, or another process's
+        // start-up recovery) is no longer this pass's: it must not stop the rest of the queue.
+        MailOp::Write(write) => match run_write(provider, store, account, leased, write).await {
+            Ok(ran) => Ok(Some(ran)),
+            Err(SyncError::Store(StoreError::StaleLease)) => Ok(None),
+            Err(err) => Err(err),
+        },
     }
 }
 

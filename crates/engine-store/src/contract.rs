@@ -264,6 +264,8 @@ where
     outbox_cases::a_renewed_lease_keeps_a_slow_attempt_its_own(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::a_send_that_failed_stays_listed_until_the_host_acts(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_sent_copy_resolves_a_dead_send_nothing_recovered_yet(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.

@@ -20,7 +20,10 @@ pub(super) use self::{
         a_dead_send_that_never_handed_over_is_retried_on_every_path,
         the_hand_over_is_recorded_under_the_current_lease_only,
     },
-    interrupted::an_op_the_previous_process_left_in_flight_is_recovered,
+    interrupted::{
+        a_sent_copy_resolves_a_dead_send_nothing_recovered_yet,
+        an_op_the_previous_process_left_in_flight_is_recovered,
+    },
     keeping::{
         a_renewed_lease_keeps_a_slow_attempt_its_own,
         a_send_that_failed_stays_listed_until_the_host_acts,

@@ -16,20 +16,25 @@ impl LoadedOp {
         record_outcome(self.kind, self.attempts, outcome, now)
     }
 
-    /// What recovering this op's attempt records, or `None` for a row with no kind, which no
-    /// claim leases and so no attempt can have left in flight.
-    pub(super) fn interrupted(&self) -> Option<PendingOutcome> {
-        Some(interrupted_outcome(self.kind?, self.handed_over.is_some()))
+    /// What recovering this op's attempt records. A row with no kind is never leased now, but
+    /// one an older build left in flight is released as a retryable failure, which parks it
+    /// in `Pending` where it holds no resource and the host can withdraw it.
+    pub(super) fn interrupted(&self) -> PendingOutcome {
+        match self.kind {
+            Some(kind) => interrupted_outcome(kind, self.handed_over.is_some()),
+            None => PendingOutcome::Failed {
+                class: engine_core::error::FailureClass::Retryable,
+                retry_after: None,
+            },
+        }
     }
 
     /// This op as a read shows it: a dead attempt as its recovery will leave it, so a host
     /// never sees a send stuck "in flight" under a worker that is gone. The recovery itself is
     /// durable only on a write path; a read runs on a reader connection.
     pub(super) fn view(&self, now: UtcDateTime) -> Result<Recorded> {
-        if self.is_dead(now)
-            && let Some(outcome) = self.interrupted()
-        {
-            return self.recorded(&outcome, now);
+        if self.is_dead(now) {
+            return self.recorded(&self.interrupted(), now);
         }
         Ok(Recorded {
             state: self.state,
@@ -72,25 +77,21 @@ pub(super) fn record(
     Ok(())
 }
 
-/// Recovers `op`'s attempt and fences its worker out by bumping the token. Returns whether it
-/// did: a row with no kind is left as it is.
-pub(super) fn recover(tx: &Transaction<'_>, op: &LoadedOp, now: UtcDateTime) -> Result<bool> {
-    let Some(outcome) = op.interrupted() else {
-        return Ok(false);
-    };
+/// Recovers `op`'s attempt and fences its worker out by bumping the token.
+pub(super) fn recover(tx: &Transaction<'_>, op: &LoadedOp, now: UtcDateTime) -> Result<()> {
+    let outcome = op.interrupted();
     tx.execute(
         "UPDATE pending_op SET token = token + 1 WHERE id = ?1",
         [op.id],
     )
     .map_err(convert::backend)?;
-    record(tx, op, now, &outcome)?;
-    Ok(true)
+    record(tx, op, now, &outcome)
 }
 
 /// Recovers every attempt of `account` whose lease has lapsed. Every path that decides what
 /// to do with an op runs this first, inside its own transaction, so none of them can meet a
 /// dead attempt and treat it as live or as runnable.
-pub(super) fn recover_dead(tx: &Transaction<'_>, account: &str, now: UtcDateTime) -> Result<()> {
+pub(crate) fn recover_dead(tx: &Transaction<'_>, account: &str, now: UtcDateTime) -> Result<()> {
     for op in load_in_flight_ops(tx, Some(account))? {
         if op.is_dead(now) {
             recover(tx, &op, now)?;
@@ -109,9 +110,8 @@ pub(crate) fn recover_interrupted(conn: &mut Connection, now: UtcDateTime) -> Re
     let tx = super::begin(conn)?;
     let mut recovered = 0;
     for op in load_in_flight_ops(&tx, None)? {
-        if recover(&tx, &op, now)? {
-            recovered += 1;
-        }
+        recover(&tx, &op, now)?;
+        recovered += 1;
     }
     tx.commit().map_err(convert::backend)?;
     Ok(recovered)

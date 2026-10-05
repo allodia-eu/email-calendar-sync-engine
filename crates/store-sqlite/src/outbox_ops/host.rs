@@ -27,7 +27,8 @@ fn host_verb(
     let Some(mut op) = load_one_op(&tx, account.as_str(), id)? else {
         return Ok(Some(OpRejection::Unknown));
     };
-    if op.is_dead(now) && recover(&tx, &op, now)? {
+    if op.is_dead(now) {
+        recover(&tx, &op, now)?;
         op = load_one_op(&tx, account.as_str(), id)?.expect("the op was just loaded");
     }
     let refusal = act(&tx, &op)?;

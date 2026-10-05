@@ -66,12 +66,12 @@ impl OpCell {
     }
 
     /// Whether this op's attempt is gone: `InFlight` under a lease that has lapsed.
-    fn is_dead(&self, now: UtcDateTime) -> bool {
+    pub(super) fn is_dead(&self, now: UtcDateTime) -> bool {
         self.state == PendingOpState::InFlight && !is_live(self.lease_expiry, now)
     }
 
     /// Recovers this op's attempt and fences its worker out.
-    fn recover(&mut self, now: UtcDateTime) -> Result<()> {
+    pub(super) fn recover(&mut self, now: UtcDateTime) -> Result<()> {
         let outcome = self.interrupted();
         self.record(&outcome, now)?;
         self.token = self.token.bump();

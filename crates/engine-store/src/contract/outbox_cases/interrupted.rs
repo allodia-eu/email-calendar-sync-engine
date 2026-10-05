@@ -149,3 +149,61 @@ pub(in crate::contract) async fn an_op_the_previous_process_left_in_flight_is_re
         Some(PendingOpState::Succeeded)
     );
 }
+
+/// A send whose worker died after handing it over reads as awaiting confirmation, and a sync
+/// that finds its copy in Sent plans the reconciliation against that read. The apply must
+/// resolve it even though nothing has yet recovered the attempt: compared against the stored
+/// `InFlight`, it would be skipped, and the copy, now stored, never arrives as a change again.
+pub(in crate::contract) async fn a_sent_copy_resolves_a_dead_send_nothing_recovered_yet<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    clock: &ManualClock,
+) {
+    use engine_core::sync::{SyncState, SyncUpdate};
+
+    use super::super::{TestObject, email_scope};
+    use crate::apply::{ApplyBatch, DerivedWrite, PendingReconciliation};
+
+    let account = acct("acct-dead-send-copy");
+    let send = store
+        .enqueue_pending_op(
+            account.clone(),
+            pending_op_of(PendingOpKind::MailSubmit, "send-dead", "send-dead"),
+        )
+        .await
+        .unwrap();
+    let lease = claim(store, &account, send, "dead-worker").await;
+    store.record_hand_over(&lease).await.unwrap();
+    clock.advance(Duration::from_secs(301));
+    assert_eq!(
+        store.pending_op_state(send).await.unwrap(),
+        Some(PendingOpState::NeedsConfirmation),
+        "a read shows the dead send as its recovery will leave it"
+    );
+
+    let scope = email_scope(&account);
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("syncer", 300))
+        .await
+        .unwrap();
+    let incoming = SyncUpdate::delta(vec![TestObject::new("sent-copy", "synced")], vec![]);
+    let derived = DerivedWrite::empty();
+    let reconcile = vec![PendingReconciliation::new(
+        send,
+        PendingOpState::NeedsConfirmation,
+        pk("sent-copy"),
+    )];
+    let applied = store
+        .apply_sync_update(
+            &claim.lease,
+            ApplyBatch::new(&incoming, &derived, &reconcile, &SyncState::new("c1")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(applied.reconciled, 1);
+    assert_eq!(
+        store.pending_op_state(send).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+}

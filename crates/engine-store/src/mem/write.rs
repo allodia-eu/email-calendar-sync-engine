@@ -61,6 +61,7 @@ impl<C: Clock> Store for MemStore<C> {
     where
         T: SyncObject + Serialize + Send + Sync,
     {
+        let now = self.clock.now();
         let mut inner = self.lock();
         let is_contact = lease.scope().object_kind() == Some(ObjectKind::ContactCard);
         let Inner {
@@ -116,9 +117,15 @@ impl<C: Clock> Store for MemStore<C> {
         cell.apply_derived(batch.derived);
 
         for rec in batch.reconcile {
-            if let Some(op) = ops.get_mut(&rec.op)
-                && op.state == rec.expected
-            {
+            let Some(op) = ops.get_mut(&rec.op) else {
+                continue;
+            };
+            // A read shows a dead attempt as its recovery will leave it, and the planner
+            // decided on that view, so recover it before comparing.
+            if op.is_dead(now) {
+                op.recover(now)?;
+            }
+            if op.state == rec.expected {
                 op.state = PendingOpState::Succeeded;
                 op.lease_expiry = None;
                 applied.reconciled += 1;
