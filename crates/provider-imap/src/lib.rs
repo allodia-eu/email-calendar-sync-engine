@@ -98,6 +98,7 @@ mod probe;
 mod provider;
 mod qresync;
 mod report;
+mod resync;
 mod sasl;
 mod smtp;
 mod smtp_auth;

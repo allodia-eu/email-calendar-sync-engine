@@ -665,7 +665,8 @@ returning a `PruneReport { messages_removed }` (`engine-store`).
   accounts are untouched.
 - Like `forget_account` it is **not lease-gated** — the store's single connection serializes it
   atomically against any in-flight sync — and it **advances no cursor**, so a later delta sync
-  resumes unaffected (a delta brings new arrivals only and never re-adds the pruned tail).
+  resumes unaffected: no delta re-adds the pruned tail (a QRESYNC delta's state changes match
+  no row there, and the IMAP reconcile without QRESYNC reads only the window).
 - The **caches follow the mail**: the scope tombstone drops the message's `message_body` and
   `message_source` rows with it, so depth bounds the caches too. Afterwards run
   `sweep_unreferenced_blobs` (the files) and `vacuum` (the database pages) — the two halves of

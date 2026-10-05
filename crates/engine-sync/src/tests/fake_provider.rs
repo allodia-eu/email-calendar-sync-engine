@@ -74,6 +74,20 @@ impl Provider for FakeMail {
                     .lock()
                     .expect("keyword delta mutex poisoned"),
             );
+            // A reconcile sends what an IMAP session without QRESYNC sends: the present set
+            // and the state changes on an intermediate chunk, then the marker that tombstones.
+            if let Some(present) = self.present.lock().expect("present mutex poisoned").take() {
+                let chunks = vec![
+                    Ok(EmailChunk::reconcile_page(changed, present, None).with_patched(keywords)),
+                    Ok(EmailChunk::reconcile_last(
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                        self.cursor.clone(),
+                    )),
+                ];
+                return Box::pin(futures_util::stream::iter(chunks));
+            }
             EmailChunk::additive(changed, Vec::new(), None, self.cursor.clone())
                 .with_patched(keywords)
         };
