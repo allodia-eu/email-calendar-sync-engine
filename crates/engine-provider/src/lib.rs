@@ -10,6 +10,7 @@
 //! - expose what it can do, and what its transport negotiated, via one [`ConnectionInfo`];
 //! - classify failures through [`ProviderError`] (the engine-neutral
 //!   [`FailureClass`](engine_core::error::FailureClass) taxonomy);
+//! - bound every wait on a server by the one shared [`Deadlines`];
 //! - signal delta-vs-snapshot (carried inside the [`SyncUpdate`](engine_core::sync::SyncUpdate)
 //!   itself).
 //!
@@ -36,6 +37,7 @@ mod capability_submission;
 mod connect_observer;
 mod connection;
 mod contact;
+mod deadline;
 mod error;
 mod identity;
 mod keyword_name;
@@ -69,6 +71,7 @@ pub use contact::{
     ContactDestination, ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt,
     ContactsProvider,
 };
+pub use deadline::Deadlines;
 pub use error::{ProviderError, ProviderResult};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use keyword_name::{KeywordName, keyword_named};

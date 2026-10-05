@@ -16,7 +16,7 @@ use tokio::{
 };
 use tokio_rustls::rustls::pki_types::ServerName;
 
-use super::{DATA_ACK_STALL, DIAL_STALL, REPLY_STALL, handshake};
+use super::{BOUNDS, handshake};
 use crate::{
     credentials::Credentials,
     error::{ImapError, ImapResult},
@@ -84,7 +84,7 @@ async fn a_server_silent_before_its_greeting_fails_retryable_after_the_reply_sta
     let (outcome, elapsed) = timed(submit(stream, None)).await;
 
     assert_timed_out(outcome);
-    assert_took(elapsed, REPLY_STALL);
+    assert_took(elapsed, BOUNDS.reply());
 }
 
 #[tokio::test(start_paused = true)]
@@ -104,7 +104,7 @@ async fn a_server_silent_before_the_message_is_handed_over_fails_retryable() {
         let (outcome, elapsed) = timed(submit(stream, None)).await;
 
         assert_timed_out(outcome);
-        assert_took(elapsed, REPLY_STALL);
+        assert_took(elapsed, BOUNDS.reply());
         assert!(!written(&recorded).contains("hi\r\n"), "{replies:?}");
     }
 }
@@ -122,7 +122,7 @@ async fn a_server_silent_after_auth_fails_retryable() {
     let (outcome, elapsed) = timed(submit(stream, Some(auth))).await;
 
     assert_timed_out(outcome);
-    assert_took(elapsed, REPLY_STALL);
+    assert_took(elapsed, BOUNDS.reply());
     assert!(written(&recorded).contains("AUTH PLAIN"));
 }
 
@@ -141,7 +141,7 @@ async fn a_server_silent_after_the_end_of_data_leaves_the_send_ambiguous() {
         "{:?}",
         result.disposition
     );
-    assert_took(elapsed, DATA_ACK_STALL);
+    assert_took(elapsed, BOUNDS.submission());
     assert!(written(&recorded).contains("hi\r\n.\r\n"));
 }
 
@@ -168,7 +168,7 @@ async fn a_server_that_stops_reading_the_message_fails_retryable() {
 
     let err = assert_timed_out(outcome);
     assert!(err.to_string().contains("took nothing"), "{err}");
-    assert_took(elapsed, REPLY_STALL);
+    assert_took(elapsed, BOUNDS.stall());
     drop(server);
 }
 
@@ -178,20 +178,20 @@ async fn a_silent_submission_server_bounds_every_probe() {
     let (stream, _) = MockStream::silent_after(script(&[]));
     let (outcome, elapsed) = timed(smtp::extensions(stream, "test.local")).await;
     assert_timed_out(outcome);
-    assert_took(elapsed, REPLY_STALL);
+    assert_took(elapsed, BOUNDS.reply());
 
     // Before the `220` that lets the upgrade start.
     let ehlo = "250-mail\r\n250 STARTTLS\r\n";
     let (stream, _) = MockStream::silent_after(script(&[GREETING, ehlo]));
     let (outcome, elapsed) = timed(smtp::negotiate_starttls(stream, "test.local")).await;
     assert_timed_out(outcome);
-    assert_took(elapsed, REPLY_STALL);
+    assert_took(elapsed, BOUNDS.reply());
 
     // Over the upgraded link, before `EHLO`'s reply.
     let (stream, _) = MockStream::silent_after(script(&[]));
     let (outcome, elapsed) = timed(smtp::extensions_after_starttls(stream, "test.local")).await;
     assert_timed_out(outcome);
-    assert_took(elapsed, REPLY_STALL);
+    assert_took(elapsed, BOUNDS.reply());
 }
 
 #[tokio::test(start_paused = true)]
@@ -201,7 +201,7 @@ async fn an_imap_server_silent_before_its_greeting_fails_retryable() {
     let (outcome, elapsed) = timed(Connection::open(stream)).await;
 
     assert_timed_out(outcome);
-    assert_took(elapsed, REPLY_STALL);
+    assert_took(elapsed, BOUNDS.reply());
 }
 
 #[tokio::test]
@@ -219,5 +219,5 @@ async fn a_server_silent_through_the_tls_handshake_fails_retryable_after_the_dia
     let (outcome, elapsed) = timed(handshake(&connector, name, tcp)).await;
 
     assert_timed_out(outcome);
-    assert_took(elapsed, DIAL_STALL);
+    assert_took(elapsed, BOUNDS.dial());
 }

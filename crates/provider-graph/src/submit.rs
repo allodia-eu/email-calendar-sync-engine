@@ -46,9 +46,12 @@ pub(crate) async fn send(
     let mime = engine_rfc5322::assemble_filed_message(draft, OffsetDateTime::now_utc())?;
     // sendMail MIME format: the whole message as a base64 `text/plain` body.
     let body = engine_rfc5322::base64_encode(&mime).into_bytes();
+    // Once it may have reached Graph the message may have been sent, so a failure from then
+    // on needs confirming rather than retrying.
     client
-        .post(&client.url("/sendMail"), "text/plain", body)
-        .await?;
+        .submit(&client.url("/sendMail"), "text/plain", body)
+        .await
+        .map_err(crate::error::GraphError::into_submission_error)?;
     let kept = categories.tag_sent_copy(client, draft, FIND_SCHEDULE).await;
     Ok(
         SubmissionReceipt::filed(sent_placeholder_key(draft), draft.message_id.clone())

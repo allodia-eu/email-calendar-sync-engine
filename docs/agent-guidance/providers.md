@@ -219,7 +219,10 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
   `Watch` stream — `imap-smtp.md`. A non-`IDLE` server simply isn't watchable, and the
   host polls.)
 - IMAP SEARCH is a provider-search fallback when local body coverage is incomplete.
-- SMTP post-DATA ambiguity must enter `NeedsConfirmation`; never blind-retry.
+- A send that may have reached the server and then lost its answer (SMTP after the final
+  `.`; a JMAP, Graph or Gmail submission once its request may have been received) must
+  enter `NeedsConfirmation`; never blind-retry. A timeout there is the same case
+  (`deadlines.md`).
 - SMTP per-recipient acceptance/rejection before DATA must be represented.
 - Sent folder placement must reconcile by generated Message-ID.
 - Mail mutations (mark-read/flag, move, delete) are one provider-neutral method, `edit_mail(account, &MailEdit) -> MailEditReceipt`, gated by the `mail_writes` capability (distinct from read `mail`, like `calendar_writes` vs `calendars`). `MailEdit` mirrors the three independent mail axes (`modeling.md`): `SetKeywords{add,remove}` (the `$seen`/`$flagged` state), `MoveTo{destination}` (membership — and the mechanism behind a Trash "delete"), and `Delete` (permanent). It is outbox-driven by `engine_sync::edit_mail`, exactly like the calendar writes. JMAP maps all three to one `Email/set` (keywords/mailboxIds patch or `destroy`); IMAP maps them to `UID STORE`, `UID MOVE`, and `UID STORE \Deleted` + `UID EXPUNGE`. A stale target (an IMAP UID under a changed `UIDVALIDITY`) is a `Conflict` → re-sync then retry. (Shape + capability + trait method **implemented** in `engine-provider`; the IMAP adapter implements it — `imap-smtp.md` — as does the JMAP adapter, folding all three edits onto one `Email/set` — `jmap.md`.)

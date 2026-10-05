@@ -6,7 +6,7 @@
 //! The offline tests drive it over a blocking single-shot mock server (no network).
 
 use async_trait::async_trait;
-use engine_http::{ObservedConnection, RetryConfig, send_retrying};
+use engine_http::{Exchange, ObservedConnection, RetryConfig, send_retrying};
 use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
@@ -50,7 +50,7 @@ impl HttpTransport {
         // be 56 ceilings of four.
         retry.gate().narrow_to(MAX_CONCURRENT_SOURCE_FETCHES);
         Ok(Self {
-            client: tls.reqwest_builder().build()?,
+            client: engine_http::client(tls).build()?,
             token,
             connection: ObservedConnection::default(),
             retry,
@@ -76,6 +76,7 @@ impl HttpTransport {
                 .bearer_auth(&self.token)
                 .header("Prefer", prefer),
             &self.retry,
+            Exchange::Ordinary,
         )
         .await?;
         self.connection.record(&response);
@@ -94,6 +95,7 @@ impl HttpTransport {
         content_type: Option<&str>,
         if_match: Option<&str>,
         body: Vec<u8>,
+        exchange: Exchange,
     ) -> Result<engine_http::Sent, GraphError> {
         let mut request = self
             .client
@@ -113,7 +115,7 @@ impl HttpTransport {
         if body.is_empty() {
             request = request.header(reqwest::header::CONTENT_LENGTH, 0);
         }
-        let response = send_retrying(request.body(body), &self.retry).await?;
+        let response = send_retrying(request.body(body), &self.retry, exchange).await?;
         self.connection.record(&response);
         Ok(response)
     }
@@ -183,7 +185,7 @@ impl GraphTransport for HttpTransport {
     async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GraphError> {
         // No `Authorization` and no `Prefer`: this URL came from payload content, not
         // from the Graph API, so it gets a bare GET.
-        let resp = send_retrying(self.client.get(url), &self.retry).await?;
+        let resp = send_retrying(self.client.get(url), &self.retry, Exchange::Ordinary).await?;
         self.connection.record(&resp);
         Self::collect_bytes(resp).await
     }
@@ -194,8 +196,36 @@ impl GraphTransport for HttpTransport {
         content_type: &str,
         body: Vec<u8>,
     ) -> Result<Option<Value>, GraphError> {
+        let post = reqwest::Method::POST;
         let resp = self
-            .send_write(reqwest::Method::POST, url, Some(content_type), None, body)
+            .send_write(
+                post,
+                url,
+                Some(content_type),
+                None,
+                body,
+                Exchange::Ordinary,
+            )
+            .await?;
+        write_body(resp).await
+    }
+
+    async fn submit(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Option<Value>, GraphError> {
+        let post = reqwest::Method::POST;
+        let resp = self
+            .send_write(
+                post,
+                url,
+                Some(content_type),
+                None,
+                body,
+                Exchange::Submission,
+            )
             .await?;
         write_body(resp).await
     }
@@ -214,6 +244,7 @@ impl GraphTransport for HttpTransport {
                 Some(content_type),
                 if_match,
                 body,
+                Exchange::Ordinary,
             )
             .await?;
         write_body(resp).await
@@ -221,7 +252,14 @@ impl GraphTransport for HttpTransport {
 
     async fn delete(&self, url: &str, if_match: Option<&str>) -> Result<(), GraphError> {
         let resp = self
-            .send_write(reqwest::Method::DELETE, url, None, if_match, Vec::new())
+            .send_write(
+                reqwest::Method::DELETE,
+                url,
+                None,
+                if_match,
+                Vec::new(),
+                Exchange::Ordinary,
+            )
             .await?;
         let status = resp.status();
         if status.is_success() {
@@ -245,3 +283,7 @@ impl GraphTransport for HttpTransport {
 #[cfg(test)]
 #[path = "http_transport_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "deadline_tests.rs"]
+mod deadline_tests;

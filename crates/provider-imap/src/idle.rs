@@ -109,9 +109,10 @@ where
 }
 
 /// Reads untagged responses until one signals a change, returning then while the
-/// connection **stays in IDLE** (informational lines are consumed and ignored). The
-/// caller bounds the wait with a keep-alive timeout (`crate::watch`); because
-/// [`Connection::read_line`](crate::transport) is cancel-safe, a timeout that drops
+/// connection **stays in IDLE** (informational lines are consumed and ignored). The one
+/// read in the crate with no bound of its own: a connection in `IDLE` is silent on
+/// purpose, and the caller bounds the wait with its keep-alive (`crate::watch`) instead.
+/// Because [`Connection::read_line`](crate::transport) is cancel-safe, a timeout that drops
 /// this future loses no buffered bytes.
 ///
 /// # Errors
@@ -123,7 +124,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     loop {
-        let line = conn.read_line().await?;
+        let line = conn.read_line_within(None).await?;
         match classify(&line) {
             IdleLine::Changed => return Ok(()),
             IdleLine::Informational => {} // consume and keep reading the IDLE stream

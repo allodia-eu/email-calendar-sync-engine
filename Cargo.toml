@@ -114,6 +114,11 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json", "r
 # `HttpVersion` in one place (`engine-provider`'s `http` feature). Must stay on the same
 # major as the copy reqwest resolves, or the versions would be distinct types.
 http = "1.4.1"
+# The request body `engine-http` hands reqwest in pieces, so the send funnel can see how much
+# of a request a server has taken (`docs/agent-guidance/deadlines.md`). Both are leaf crates
+# reqwest already resolves, on the same majors, so they compile nothing new.
+bytes = "1.11.1"
+http-body = "1.0.1"
 # URL parsing for `engine-provider`'s `same_origin` credential guard: an adapter must
 # not send the account's `Authorization` header to a host named by remote content.
 # Same major as the copy reqwest resolves, for one `Url` type across the tree.

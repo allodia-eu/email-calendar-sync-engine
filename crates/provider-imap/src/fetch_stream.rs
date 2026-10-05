@@ -5,9 +5,10 @@
 //! Split out of `transport.rs` to keep each file within the size limit; the methods
 //! live in their own `impl` block on the same [`Connection`].
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
+    deadline::BOUNDS,
     error::{ImapError, ImapResult},
     parse::{self, FetchRow},
     transport::{Connection, strip_ascii_prefix},
@@ -51,8 +52,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         // The item list must be parenthesized (RFC 9051 `fetch`); an unparenthesized
         // multi-item list makes a lenient server (Stalwart) parse only the first att.
         let request = format!("{tag} UID FETCH {set} ({items})\r\n");
-        self.inner.write_all(request.as_bytes()).await?;
-        self.inner.flush().await?;
+        self.send_raw(request.as_bytes()).await?;
         self.pending_tag = Some(tag);
         Ok(())
     }
@@ -90,7 +90,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// [`Self::uid_fetch_stream_start`], as `(uid, bytes)`, or `None` at its tagged
     /// completion. Lines carrying no body (a piggybacked flag update, `* n EXISTS`) are
     /// skipped, and every read is bounded by
-    /// [`BODY_READ_STALL`](crate::transport_read::BODY_READ_STALL), as a single body's is.
+    /// [`Deadlines::stall`](engine_provider::Deadlines::stall), as a single body's is.
     ///
     /// # Errors
     ///
@@ -102,9 +102,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         };
         let prefix = format!("{tag} ");
         loop {
-            let line = self
-                .read_line_within(Some(crate::transport_read::BODY_READ_STALL))
-                .await?;
+            let line = self.read_line_within(Some(BOUNDS.stall())).await?;
             if let Some(body) = strip_ascii_prefix(&line, b"* ") {
                 if let Some(row) = crate::parse_body::parse_any_fetch_body(body) {
                     return Ok(Some(row));

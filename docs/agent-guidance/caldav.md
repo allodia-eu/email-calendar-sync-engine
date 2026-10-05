@@ -304,6 +304,9 @@ are split escape-aware so the writer and the parser agree.
   self-correcting: a retried create `412`s if the first landed, a retried patch `412`s once
   the ETag moved, and a retried delete sees the resource already gone. So a lost-response
   retry is **safe** — there is no ambiguous `NeedsConfirmation` case as there is for SMTP.
+  A reply that never comes within the `reply` bound is the same case and is retried under
+  the same precondition, a write whose server schedules iTIP from it included
+  (`deadlines.md`).
 - **`DELETE` is idempotent: already-gone is success.** A `DELETE` whose resource is
   **already absent** (`404`/`410`) resolves as `Ok` (RFC 7231 §4.3.5), not a `Permanent`
   error — so re-running a delete whose response was lost (the first one landed) succeeds

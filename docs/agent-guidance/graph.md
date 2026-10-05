@@ -173,6 +173,11 @@ whole message the caller assembled — pre-generated `Message-ID`, threading, `C
   reconciles by `Message-ID` when Sent Items next syncs. A malformed MIME body is the
   documented `400 ErrorMimeContentInvalidBase64String` (permanent); `401`/`429`/`5xx`
   classify as auth/rate-limit/retryable through the shared status mapping.
+- **A `sendMail` that loses its answer needs confirming.** It goes through
+  `GraphClient::submit`, which waits the `submission` bound for the `202`. Once the request
+  may have reached Graph, a failure (a timeout or a dropped connection) is
+  `ProviderError::needs_confirmation`, never a retry; before it (connect, handshake, a body
+  Graph stopped taking) it is `Retryable` (`deadlines.md`).
 - **Live-verified.** A self-addressed send against the real account is confirmed to
   come back into the Inbox carrying the *exact* pre-generated `Message-ID` — proving
   Graph preserves it in the MIME form (`tests/live_provider.rs`, gated on

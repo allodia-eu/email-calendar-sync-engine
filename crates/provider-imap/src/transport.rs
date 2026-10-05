@@ -9,15 +9,14 @@
 
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 
 use crate::{
     capability::Negotiated,
-    deadline::REPLY_STALL,
+    deadline::{self, BOUNDS},
     error::{ImapError, ImapResult},
     parse::{self, FetchRow, ListRow},
     transport_command::{list_command, quote},
-    transport_read::BODY_READ_STALL,
 };
 
 /// A connected IMAP session over a generic async byte stream.
@@ -81,9 +80,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
     /// Reads the untagged greeting: `* OK`/`* PREAUTH` is success, `* BYE` is a
     /// refusal. A server that accepts the connection and never greets is given
-    /// [`REPLY_STALL`].
+    /// [`Deadlines::reply`](engine_provider::Deadlines::reply), as every response is.
     async fn read_greeting(&mut self) -> ImapResult<()> {
-        let line = self.read_line_within(Some(REPLY_STALL)).await?;
+        let line = self.read_line().await?;
         let text = String::from_utf8_lossy(&line);
         if text.starts_with("* OK") || text.starts_with("* PREAUTH") {
             Ok(())
@@ -108,11 +107,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// Writes raw bytes and flushes — the unframed send the IDLE primitives need to
     /// issue `<tag> IDLE\r\n` and the bare `DONE\r\n` continuation
     /// ([`crate::idle`]), which fall outside [`command`](Self::command)'s tagged
-    /// request/response shape.
+    /// request/response shape. Every write here goes through it, a piece at a time
+    /// ([`deadline::write`]), so a server that stops reading cannot hold one.
     pub(crate) async fn send_raw(&mut self, bytes: &[u8]) -> ImapResult<()> {
-        self.inner.write_all(bytes).await?;
-        self.inner.flush().await?;
-        Ok(())
+        Ok(deadline::write(&mut self.inner, bytes).await?)
     }
 
     /// Sends a tagged command and collects its untagged responses and completion
@@ -120,40 +118,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// preamble (`crate::transport_starttls`) can issue `CAPABILITY`/`STARTTLS` over
     /// the plaintext connection reusing the tagged round trip.
     pub(crate) async fn command(&mut self, command: &str) -> ImapResult<Response> {
-        self.command_within(command, None).await
+        self.command_within(command, BOUNDS.reply()).await
     }
 
-    /// [`command`](Self::command), with its response bounded by `stall` as
+    /// [`command`](Self::command), with each read of its response bounded by `stall` as
     /// [`read_line_within`](Self::read_line_within) bounds a line.
-    async fn command_within(
-        &mut self,
-        command: &str,
-        stall: Option<Duration>,
-    ) -> ImapResult<Response> {
+    async fn command_within(&mut self, command: &str, stall: Duration) -> ImapResult<Response> {
         // If a streamed `UID FETCH` was abandoned mid-response, finish reading it to
         // its tag first so this command's reply is not corrupted by leftover lines.
         self.drain_pending().await?;
         let tag = self.next_tag();
-        let request = format!("{tag} {command}\r\n");
-        self.inner.write_all(request.as_bytes()).await?;
-        self.inner.flush().await?;
+        self.send_raw(format!("{tag} {command}\r\n").as_bytes())
+            .await?;
         self.read_response_within(&tag, stall).await
     }
 
-    /// Reads untagged responses until this command's tagged completion.
+    /// Reads untagged responses until this command's tagged completion, each line bounded by
+    /// [`Deadlines::reply`](engine_provider::Deadlines::reply).
     pub(crate) async fn read_response(&mut self, tag: &str) -> ImapResult<Response> {
-        self.read_response_within(tag, None).await
+        self.read_response_within(tag, BOUNDS.reply()).await
     }
 
-    async fn read_response_within(
-        &mut self,
-        tag: &str,
-        stall: Option<Duration>,
-    ) -> ImapResult<Response> {
+    async fn read_response_within(&mut self, tag: &str, stall: Duration) -> ImapResult<Response> {
         let mut untagged = Vec::new();
         let prefix = format!("{tag} ");
         loop {
-            let line = self.read_line_within(stall).await?;
+            let line = self.read_line_within(Some(stall)).await?;
             if let Some(body) = strip_ascii_prefix(&line, b"* ") {
                 untagged.push(body.to_vec());
                 continue;
@@ -297,10 +287,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// concurrent flag update) cannot return the wrong message's bytes.
     pub(crate) async fn uid_fetch_body(&mut self, uid: u32) -> ImapResult<Option<Vec<u8>>> {
         let response = self
-            .command_within(
-                &format!("UID FETCH {uid} (BODY.PEEK[])"),
-                Some(BODY_READ_STALL),
-            )
+            .command_within(&format!("UID FETCH {uid} (BODY.PEEK[])"), BOUNDS.stall())
             .await?;
         Ok(crate::parse_body::parse_fetch_body(&response.untagged, uid))
     }

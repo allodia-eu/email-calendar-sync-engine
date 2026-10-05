@@ -1,6 +1,6 @@
 [package]
 name = "engine-http"
-description = "One throttling policy for every HTTP provider in the PIM sync engine (docs/agent-guidance/http-throttling.md). A 429 is answered the same way whichever adapter received it: the server's own Retry-After when it supplies one, jittered exponential backoff when it does not, bounded by a total-wait budget — and reported to a host-supplied ThrottleObserver, because the engine does no logging of its own."
+description = "One send funnel for every HTTP provider in the PIM sync engine. A 429 is answered the same way whichever adapter received it (docs/agent-guidance/http-throttling.md): the server's own Retry-After when it supplies one, jittered exponential backoff when it does not, bounded by a total-wait budget, and reported to a host-supplied ThrottleObserver, because the engine does no logging of its own. A server that stops answering is given up on at the same points and after the same time as on every other transport (docs/agent-guidance/deadlines.md)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,20 +15,32 @@ reqwest = { workspace = true }
 # observation cells it is built from. The `http` feature is the one every reqwest-backed
 # adapter already enables. This crate is the only place allowed to translate a reqwest
 # response into those neutral types: `engine-provider` is the provider-neutral contract
-# and must not name a concrete HTTP client (`docs/agent-guidance/tls.md`).
+# and must not name a concrete HTTP client (`docs/agent-guidance/tls.md`). It also holds
+# the `Deadlines` every transport waits by.
 engine-provider = { workspace = true, features = ["http"] }
-# `time` for the backoff sleep. No runtime is started here — the caller's is used.
+# The shared client builder (`engine_http::client`) starts from the host's trust policy and
+# adds the dial bound, so every HTTP adapter's client is built in one place.
+engine-tls = { workspace = true, features = ["reqwest"] }
+# `time` for the backoff sleep and for every bound on a silent server. No runtime is started
+# here: the caller's is used.
 tokio = { workspace = true, features = ["time", "sync"] }
 # Parses `Retry-After`'s HTTP-date form, all three syntaxes RFC 9110 §5.6.7 requires.
 httpdate = { workspace = true }
+# A request body handed to reqwest in pieces (`deadline.rs`), and the reply a charset-aware
+# `Sent::text` decodes once its body has been read under the stall bound.
+bytes = { workspace = true }
+http-body = { workspace = true }
+http = { workspace = true }
+
+[features]
+# TEST BUILDS ONLY: `engine_http::test_server`, a server that answers a script and then goes
+# silent, so an adapter's own suite meets a silent server through its real transport.
+test-server = ["tokio/net", "tokio/io-util", "tokio/rt"]
 
 [dev-dependencies]
-# The client the providers actually build, so the tests send through the same stack (and
-# through the crypto provider `rustls-no-provider` requires one of).
-engine-tls = { workspace = true, features = ["reqwest"] }
 # `macros`/`rt` for `#[tokio::test]`; `test-util` for `pause()`, so the backoff tests
 # assert the waits without spending them. `net`/`io-util` back the in-process TLS
-# server the `ObservedConnection` round-trip needs.
+# server the `ObservedConnection` round-trip needs, and the silent servers.
 tokio = { workspace = true, features = ["time", "macros", "rt", "test-util", "net", "io-util"] }
 # The in-process TLS server for the `ObservedConnection` round-trip: reqwest's `TlsInfo`
 # extension has private fields, so only a real handshake can produce one to read.

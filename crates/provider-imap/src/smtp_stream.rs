@@ -6,10 +6,10 @@
 
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 
 use crate::{
-    deadline::{self, REPLY_STALL},
+    deadline::{self, BOUNDS},
     error::{ImapError, ImapResult},
 };
 
@@ -54,9 +54,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
     /// (each stripped of its `NNN`/`NNN-` prefix). The continuation-line count is capped
     /// so a server emitting an endless stream of `NNN-...` lines cannot hang the
     /// submission or grow the reply without bound, and each line is awaited for at most
-    /// [`REPLY_STALL`], so neither can a server that stops answering.
+    /// [`Deadlines::reply`](engine_provider::Deadlines::reply), so neither can a server that
+    /// stops answering.
     pub(crate) async fn read_reply_lines(&mut self) -> ImapResult<(u16, Vec<String>)> {
-        self.read_reply_lines_within(REPLY_STALL).await
+        self.read_reply_lines_within(BOUNDS.reply()).await
     }
 
     /// [`read_reply_lines`](Self::read_reply_lines), awaiting each line for `stall`.
@@ -101,17 +102,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
         self.write(&data).await
     }
 
-    /// Writes `bytes` and flushes, giving the server [`REPLY_STALL`] to take each piece.
-    ///
-    /// A piece is small enough that even a slow uplink moves it in seconds, so the bound
-    /// is on a server that has stopped reading, never on the size of a message.
+    /// Writes `bytes` and flushes, a piece at a time ([`deadline::write`]).
     async fn write(&mut self, bytes: &[u8]) -> ImapResult<()> {
-        const PIECE: usize = 8 * 1024;
-        let waiting = "the server took nothing";
-        for piece in bytes.chunks(PIECE) {
-            deadline::within(REPLY_STALL, waiting, self.inner.write_all(piece)).await?;
-        }
-        Ok(deadline::within(REPLY_STALL, waiting, self.inner.flush()).await?)
+        Ok(deadline::write(&mut self.inner, bytes).await?)
     }
 }
 

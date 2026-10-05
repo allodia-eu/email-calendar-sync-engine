@@ -28,7 +28,7 @@
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    deadline::DATA_ACK_STALL,
+    deadline::BOUNDS,
     error::{ImapError, ImapResult},
     smtp_auth::{self, SmtpAuth},
     smtp_stream::SmtpStream,
@@ -291,7 +291,7 @@ where
     // that never came, OR a malformed reply — is the ambiguous case: it may have
     // delivered, so it must be confirmed, never blind-retried (never a plain transport
     // error here).
-    let disposition = match smtp.read_reply_lines_within(DATA_ACK_STALL).await {
+    let disposition = match smtp.read_reply_lines_within(BOUNDS.submission()).await {
         Ok((code, _)) if is_success(code) => Disposition::Delivered,
         Ok((code, lines)) => classify(code, lines.join(" ")),
         Err(_) => Disposition::Ambiguous("post-DATA acknowledgement unreadable".to_owned()),

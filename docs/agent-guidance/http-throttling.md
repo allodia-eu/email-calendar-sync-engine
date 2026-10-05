@@ -390,6 +390,8 @@ account, which is what that sentence looks like in practice.
   meets.
 - A transport failure (connection reset, timeout) is not retried here. Whether the server
   acted is unknowable from this layer, and the sync pass above already repeats a failed pass.
+  What the funnel does report is whether the request may have been received, which keeps a
+  submission from being sent twice (`deadlines.md`).
 - `Method::is_idempotent` answers `false` for the WebDAV extension methods, so a `503` on
   `PROPFIND`/`REPORT` is not retried even though their own RFCs say a replay is safe.
   Conservative in the safe direction.

@@ -22,9 +22,10 @@ use serde_json::Value;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum GraphError {
-    /// The HTTP request itself failed (connect, timeout, TLS, or body decode).
+    /// The HTTP exchange itself failed (connect, TLS, a body, or a server that went quiet
+    /// for longer than the shared deadlines allow).
     #[error("Graph transport error: {0}")]
-    Transport(#[from] reqwest::Error),
+    Transport(#[from] engine_http::SendError),
 
     /// The server returned a non-success HTTP status. The Graph error `code` is
     /// captured when the body carried the standard envelope, and the raw body is
@@ -93,6 +94,20 @@ impl GraphError {
         Self::Protocol(detail.into())
     }
 
+    /// What this error is as the failure of a submission: the class it always has, except
+    /// for an exchange that failed after the request may have reached the server. That one
+    /// may have sent the message, so it needs confirming and is never retried
+    /// (`ProviderError::needs_confirmation`).
+    pub(crate) fn into_submission_error(self) -> ProviderError {
+        match &self {
+            Self::Transport(err) if err.may_have_been_received() => {
+                let detail = format!("{self}; the message may have been sent");
+                ProviderError::needs_confirmation(detail).with_source(self)
+            }
+            _ => self.into(),
+        }
+    }
+
     /// The engine-neutral class this protocol error maps to.
     #[must_use]
     pub fn failure_class(&self) -> FailureClass {
@@ -106,13 +121,20 @@ impl GraphError {
     }
 }
 
-/// Maps a reqwest transport error to a [`FailureClass`]: a body that did not decode
-/// is a permanent protocol mismatch; connect/timeout/request failures are transient.
-fn transport_class(err: &reqwest::Error) -> FailureClass {
+/// Maps a failed exchange to a [`FailureClass`]: a body that did not decode is a permanent
+/// protocol mismatch; every other failure, a server gone quiet included, is transient.
+fn transport_class(err: &engine_http::SendError) -> FailureClass {
     if err.is_decode() {
         FailureClass::Permanent
     } else {
         FailureClass::Retryable
+    }
+}
+
+/// A client error outside any exchange, such as a client that could not be built.
+impl From<reqwest::Error> for GraphError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Transport(err.into())
     }
 }
 

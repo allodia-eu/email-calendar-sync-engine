@@ -9,7 +9,7 @@
 //! so discovery can resolve the RFC 6764 well-known `307` itself.
 
 use async_trait::async_trait;
-use engine_http::{ObservedConnection, RetryConfig, send_retrying};
+use engine_http::{Exchange, ObservedConnection, RetryConfig, send_retrying};
 use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{Client, Method, redirect::Policy};
@@ -247,11 +247,7 @@ impl DavClient {
     ) -> Result<Self, CalDavError> {
         let base = reqwest::Url::parse(base_url)
             .map_err(|e| CalDavError::protocol(format!("bad base URL {base_url:?}: {e}")))?;
-        let client = tls
-            .reqwest_builder()
-            .redirect(Policy::none())
-            .build()
-            .map_err(CalDavError::Transport)?;
+        let client = engine_http::client(tls).redirect(Policy::none()).build()?;
         Ok(Self {
             client,
             base: std::sync::RwLock::new(base),
@@ -388,17 +384,19 @@ impl DavExecutor for DavClient {
                 "application/xml; charset=utf-8",
             )
             .body(body);
-        let response = send_retrying(request, &self.retry).await?;
+        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
         self.collect(response).await
     }
 
     async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
-        let response = send_retrying(self.request(DavMethod::Options, href)?, &self.retry).await?;
+        let request = self.request(DavMethod::Options, href)?;
+        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
         self.collect(response).await
     }
 
     async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
-        let response = send_retrying(self.request(DavMethod::Get, href)?, &self.retry).await?;
+        let request = self.request(DavMethod::Get, href)?;
+        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
         self.connection.record(&response);
         let status = response.status().as_u16();
         let wait = response.stated_wait();
@@ -425,7 +423,11 @@ impl DavExecutor for DavClient {
             Precondition::IfMatch(etag) => builder.header(reqwest::header::IF_MATCH, etag),
             Precondition::None => builder,
         };
-        let response = send_retrying(builder.body(request.body), &self.retry).await?;
+        // A write is ordinary, a scheduling one included: an iTIP message a `PUT` sends is the
+        // server's to send, and the precondition the write carries is what keeps a replay
+        // from sending it twice (`docs/agent-guidance/deadlines.md`).
+        let request = builder.body(request.body);
+        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
         self.collect(response).await
     }
 }
@@ -435,6 +437,10 @@ impl DavExecutor for DavClient {
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod http_transport_tests;
+
+#[cfg(test)]
+#[path = "deadline_tests.rs"]
+mod deadline_tests;
 
 #[cfg(test)]
 mod method_tests {
