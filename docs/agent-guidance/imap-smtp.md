@@ -597,7 +597,11 @@ credential.
   one folder. The **id** is that name decoded (`utf7::decode`), whole path included: it is
   what `SELECT`/`APPEND`/`CREATE` are given, with `crate::transport` putting the wire form
   back, and what every `imap:v…:u…@folder` key embeds, so a message does not re-key the day a
-  server starts offering rev2. The **display name** is the folder's own, the last segment of
+  server starts offering rev2. **The inbox's id is always `INBOX`**, as is the parent id of a
+  folder inside it: the reserved name is case-insensitive (RFC 9051 §5.1) and a host binds the
+  inbox by it, so Yahoo's `Inbox` as an id would sync the same mailbox twice under two scopes.
+  The folder writes resolve `INBOX` back to the listed spelling for the paths they send. The
+  **display name** is the folder's own, the last segment of
   that path, with the nesting carried by `Mailbox::parent` instead. There is deliberately no
   general encoder: no name this crate sends originates from a decoded one.
 - **The folder list is a tree, and IMAP is the only transport that spells it in the name.**

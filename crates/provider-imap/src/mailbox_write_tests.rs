@@ -64,6 +64,28 @@ async fn a_new_folder_is_created_under_its_parent_in_the_wire_encoding_and_subsc
 }
 
 #[tokio::test]
+async fn a_folder_made_inside_the_inbox_takes_the_path_the_server_lists_it_under() {
+    // The folder list names the inbox `INBOX` whatever the server calls it; the path sent is
+    // the server's own spelling, under the inbox's own delimiter.
+    let list = concat!(
+        "* LIST (\\HasChildren) \".\" \"Inbox\"\r\n",
+        "* LIST (\\HasNoChildren) \"/\" \"Work\"\r\n",
+        "a2 OK LIST done\r\n",
+    );
+    let create = MailboxEdit::Create {
+        name: "Receipts".into(),
+        parent: Some(id("INBOX")),
+    };
+    let (result, sent) = run(list, &["a3 OK CREATE\r\n", "a4 OK SUBSCRIBE\r\n"], &create).await;
+
+    assert_eq!(
+        result.unwrap(),
+        MailboxEditReceipt::resolved(id("Inbox.Receipts"))
+    );
+    assert!(sent.contains("a3 CREATE \"Inbox.Receipts\""), "{sent}");
+}
+
+#[tokio::test]
 async fn a_create_the_server_says_already_exists_is_a_success() {
     let create = MailboxEdit::Create {
         name: "Receipts".into(),

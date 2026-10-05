@@ -181,8 +181,13 @@ async fn a_mailbox_id_addresses_the_mailbox_it_names() {
         // decoded id was sent unencoded would not.
         //
         // The name is the folder's own, the last segment of that path, so the two are equal
-        // exactly at the top level and the id carries the rest of the way down.
+        // exactly at the top level and the id carries the rest of the way down. The inbox is
+        // the exception: its id is `INBOX` however the server spells its name.
         for mailbox in &all {
+            if mailbox.role == Some(MailboxRole::Inbox) {
+                assert_eq!(mailbox.id.as_str(), "INBOX", "{}", server.label);
+                continue;
+            }
             assert!(
                 mailbox.id.as_str().ends_with(&mailbox.name),
                 "{}: the id {} should address the folder it names, {}",

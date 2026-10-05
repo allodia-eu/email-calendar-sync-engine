@@ -67,8 +67,13 @@ impl Tree {
         Ok(Self { folders })
     }
 
+    /// The folder at `path`. `INBOX` finds the inbox however the server spells it, since that
+    /// is the id the folder list gives it.
     fn get(&self, path: &str) -> Option<&Listed> {
-        self.folders.iter().find(|f| f.path == path)
+        let inbox = path == "INBOX";
+        self.folders
+            .iter()
+            .find(|f| f.path == path || (inbox && f.path.eq_ignore_ascii_case("INBOX")))
     }
 
     /// The hierarchy delimiter: the named folder's own, else the one the account uses.
@@ -190,7 +195,10 @@ fn child_path(tree: &Tree, parent: Option<&MailboxId>, name: &str) -> ProviderRe
             "this server keeps no folders inside folders",
         ));
     };
-    Ok(format!("{}{d}{name}", parent.as_str()))
+    let parent = tree
+        .get(parent.as_str())
+        .map_or(parent.as_str(), |f| f.path.as_str());
+    Ok(format!("{parent}{d}{name}"))
 }
 
 /// Why a `RENAME` did not go through.
