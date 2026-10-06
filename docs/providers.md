@@ -60,7 +60,7 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 | Provider | Crate | Data domains | Push | Standards |
 | --- | --- | --- | --- | --- |
 | **JMAP** | `provider-jmap` | mail/calendar/contact read/write, mail submit, RSVP | EventSource (RFC 8620 §7.3) | RFC 8620, RFC 8621, RFC 8984, RFC 9610 |
-| **IMAP + SMTP** | `provider-imap` | mail read/write (SMTP submit optional, incl. iMIP) | IMAP `IDLE` (RFC 2177) | RFC 9051 / RFC 3501 (negotiated), RFC 5161, RFC 7162, RFC 2177, RFC 6154, RFC 5258/5819, RFC 6851, RFC 4315, RFC 5321/5322, RFC 2047 |
+| **IMAP + SMTP** | `provider-imap` | mail read/write (SMTP submit optional, incl. iMIP) | IMAP `IDLE` (RFC 2177) | RFC 9051 / RFC 3501 (negotiated), RFC 5161, RFC 7162, RFC 4549, RFC 9586, RFC 9394, RFC 9738, RFC 2177, RFC 6154, RFC 5258/5819, RFC 6851, RFC 4315, RFC 5321/5322, RFC 2047 |
 | **CalDAV/CardDAV** | `provider-caldav` | calendar/contact read/write, RSVP, iMIP inbound | — | RFC 4791, RFC 6350, RFC 6352, RFC 6578, RFC 6638 |
 | **Microsoft Graph** | `provider-graph` | mail read/write/submit (incl. iMIP), calendar read/write + RSVP, personal/directory contacts | — | Microsoft Graph v1.0 |
 | **Google** | `provider-google` | Gmail read/write/submit (incl. iMIP), Calendar read/write + RSVP, People read; owned writes | — | Gmail, Calendar, People APIs |
@@ -169,9 +169,13 @@ It speaks **IMAP4rev2** (RFC 9051) where a server offers it and **IMAP4rev1** (R
 
 - **RFC 9051** — IMAP4rev2, negotiated where the server offers it.
 - **RFC 3501** — IMAP4rev1, the baseline everywhere else, including its modified-UTF-7 mailbox names.
-- **RFC 5161** — `ENABLE`, which is how the dialect and `QRESYNC` are turned on and confirmed.
+- **RFC 5161** — `ENABLE`, which is how the dialect, `QRESYNC` and `UIDONLY` are turned on and confirmed.
 - **RFC 5258** / **RFC 5819** — `LIST-EXTENDED` and `LIST-STATUS`: the folder list and its unread counts in one round trip.
 - **RFC 7162** — `CONDSTORE`/`QRESYNC` for incremental flag/expunge deltas.
+- **RFC 4549** — the resynchronisation a server without `QRESYNC` gets instead: each delta reads every held message's flags and the set still present, so flag changes and removals reconcile.
+- **RFC 9586** — `UIDONLY`, enabled where advertised: messages are addressed by UID alone, and fetch responses arrive as `UIDFETCH`.
+- **RFC 9394** — `PARTIAL` on `FETCH`, which pages a mailbox by message count rather than by UID.
+- **RFC 9738** — `MESSAGELIMIT`: no command names more messages than the server allows, and a search the limit cut short is completed from each message's date.
 - **RFC 2177** — IMAP `IDLE` push notifications via `ImapWatcher`.
 - **RFC 6154** — `SPECIAL-USE` mailbox roles (`\Inbox`, `\Sent`, `\Drafts`, etc.).
 - **RFC 6851** — `MOVE` for atomic server-side moves.
