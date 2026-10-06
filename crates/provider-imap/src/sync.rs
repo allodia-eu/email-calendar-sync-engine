@@ -141,6 +141,11 @@ where
         )
         .await;
     }
+    if let (SyncKind::Delta, false, Some(p)) = (kind, qresync, prior)
+        && crate::resync::unchanged(&conn.negotiated, &p, uid_next, select.highest_modseq)
+    {
+        return Ok(empty_page(SyncKind::Delta, next_cursor, None));
+    }
     if kind == SyncKind::Delta && !qresync {
         return crate::resync::resync_page(
             conn,

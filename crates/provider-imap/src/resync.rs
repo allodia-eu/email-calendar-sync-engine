@@ -13,6 +13,12 @@
 //! neither fetched nor counted present. Each `UID FETCH` names at most `limit` UIDs, because a
 //! server may cap how many messages one command touches (RFC 9738 `MESSAGELIMIT`). Like the
 //! QRESYNC delta, the pass is one page.
+//!
+//! A server that keeps a per-folder `HIGHESTMODSEQ` current without QRESYNC
+//! ([`Extension::XymHighestModseq`]) says whether anything changed, though not what. A folder
+//! whose `UIDNEXT` and `HIGHESTMODSEQ` both match the cursor's is skipped ([`unchanged`]): the
+//! pass costs its `SELECT`. Mail that has aged out of a sync-depth window is then dropped on the
+//! next pass that finds a change, as on the QRESYNC path.
 
 use std::cmp::Reverse;
 
@@ -25,6 +31,8 @@ use engine_provider::{SyncKind, SyncPage};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
+    capability::{Extension, Negotiated},
+    cursor::MailboxCursor,
     error::ImapResult,
     mail::{message_from_fetch, message_key},
     parse::FetchRow,
@@ -35,6 +43,20 @@ use crate::{
 
 /// The `FETCH` items for a message already stored: its identity and its whole flag set.
 const STATE_ITEMS: &str = "UID FLAGS";
+
+/// Whether the folder is as `prior` left it, so the delta has nothing to read. Only on a server
+/// that states its `HIGHESTMODSEQ` moves on every change; elsewhere a reported value may not.
+pub(crate) fn unchanged(
+    negotiated: &Negotiated,
+    prior: &MailboxCursor,
+    uid_next: u32,
+    highest_modseq: Option<u64>,
+) -> bool {
+    negotiated.has(Extension::XymHighestModseq)
+        && highest_modseq.is_some()
+        && prior.highest_modseq == highest_modseq
+        && prior.uid_next == uid_next
+}
 
 /// Builds the reconciling delta page for the bound mailbox. `synced_below` is the prior
 /// cursor's `UIDNEXT`, `uid_next` the one this `SELECT` reported, `since` the window floor if

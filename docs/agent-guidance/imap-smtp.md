@@ -230,7 +230,15 @@ is authoritative for the `provider-caldav` calendar client.
   names at most `fetch_batch` UIDs (see **Message limits** below). CONDSTORE/QRESYNC stay
   optional capabilities, not
   assumptions (`providers.md`); the cost of not having them is one flags line per message
-  per pass.
+  per pass. Except where the folder has not changed: a server advertising
+  `XYMHIGHESTMODSEQ` (Yahoo) reports a per-folder `HIGHESTMODSEQ` on `SELECT` without
+  CONDSTORE, and it moves on every arrival, flag change and removal (observed: each of
+  those moved it by one, and a change in one folder moved no other). A delta whose
+  `UIDNEXT` and `HIGHESTMODSEQ` both match the cursor's returns no changes and reads
+  nothing (`resync::unchanged`): 0.4 s for a 2584-message Yahoo inbox where reading every
+  flag took about 6 s. A `HIGHESTMODSEQ` a server reports without that capability is not
+  trusted for this. Mail that aged out of a sync-depth window is dropped on the next pass
+  that finds a change, as on the QRESYNC path.
 - **Message limits and UID mode** (RFC 9738, RFC 9586, RFC 9394). A server advertising
   `MESSAGELIMIT=<n>` may refuse or cut short a command over `n` messages. Every sync `FETCH`
   is capped at `n` (`Negotiated::within_message_limit`), including a page whose caller set no
@@ -878,7 +886,11 @@ folders into Trash is proven offline only: all three servers file a folder insid
   `NO [CANNOT]`, so no form of incremental flag sync is open to it. It states
   `MESSAGELIMIT=1000` and confirms `ENABLE UIDONLY`; its search and `PARTIAL` behaviour is
   under **Message limits and UID mode** above. Its `IDLE` reports no expunges (documented),
-  which only the reconciling delta catches.
+  which only the reconciling delta catches. `ENABLE UIDONLY QRESYNC`, the form Yahoo's
+  "IMAP Pagination and Mail Sync" document uses, enables `UIDONLY` alone, and its staging
+  server (`staging.imap.mail.yahoo.com`) answers the same. ⚠️ That document states that QRESYNC
+  on any folder but its virtual "All Mail" does not report deletions for `CHANGEDSINCE`,
+  so if Yahoo ever grants QRESYNC, its delta here would miss expunges and moves.
 - **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
   **implemented** for servers that advertise QRESYNC (RFC 7162) — the common case
   (Stalwart, Dovecot, Cyrus, Gmail). A server without QRESYNC takes the reconciling delta

@@ -280,6 +280,32 @@ async fn a_delta_without_qresync_reconciles_through_the_page_path() {
 }
 
 #[tokio::test]
+async fn an_unchanged_folder_streams_one_empty_chunk_that_keeps_the_cursor() {
+    let select = "* 10 EXISTS\r\n* OK [UIDVALIDITY 1000] v\r\n* OK [UIDNEXT 11] n\r\n\
+                  * OK [HIGHESTMODSEQ 7]\r\na2 OK [READ-WRITE] done\r\n";
+    let (mut conn, recorded) = logged_in(script(&[GREETING, LOGIN_OK, select])).await;
+    conn.negotiated =
+        crate::capability::Negotiated::from_capabilities(&["XYMHIGHESTMODSEQ".to_owned()]);
+
+    let chunks = drain(&mut conn, Some("v1000;n11;m7"), 50, 0).await;
+
+    assert!(
+        chunks
+            .iter()
+            .all(|c| c.changed.is_empty() && c.patched.is_empty())
+    );
+    assert!(
+        !chunks.iter().any(EmailChunk::is_reconcile_final),
+        "nothing is tombstoned"
+    );
+    assert_eq!(
+        chunks.last().unwrap().advance_to.as_ref().unwrap().as_str(),
+        "v1000;n11;m7"
+    );
+    assert!(!crate::mock::written(&recorded).contains("FETCH"));
+}
+
+#[tokio::test]
 async fn a_uidvalidity_reset_reconciles_via_the_page_path() {
     // The prior cursor's validity (999) no longer matches (1000) → a reset: every UID
     // is rediscovered as a reconciling snapshot that tombstones the renumbered rows.

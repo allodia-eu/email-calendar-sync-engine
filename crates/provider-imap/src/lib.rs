@@ -129,6 +129,8 @@ mod mock;
 mod process_kill_tests;
 #[cfg(test)]
 mod uidonly_tests;
+#[cfg(test)]
+mod unchanged_tests;
 
 pub use account::ImapAccount;
 pub use config::{ImapConfig, ImapSecurity};
