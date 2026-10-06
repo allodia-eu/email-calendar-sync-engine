@@ -12,9 +12,8 @@
 //!   (expunged or renumbered);
 //! - a **delta** otherwise. On a QRESYNC session ([`crate::qresync`]) with a prior `HIGHESTMODSEQ`
 //!   baseline, the delta reconciles flag changes **and** expunges of already-synced messages too
-//!   (`CHANGEDSINCE`/`VANISHED`, RFC 7162). Without QRESYNC the delta carries only UIDs at or above
-//!   the cursor's `UIDNEXT` (new arrivals) and no removals, so a periodic snapshot reconciles
-//!   flag/expunge changes — the honest non-QRESYNC baseline.
+//!   (`CHANGEDSINCE`/`VANISHED`, RFC 7162). Without QRESYNC the delta reads the flags of every held
+//!   message and the set still present, and reconciles against it ([`crate::resync`]).
 
 use std::cmp::Reverse;
 
@@ -112,7 +111,7 @@ where
     // mail that predate this session, so a future `CHANGEDSINCE` (past those changes)
     // would never reconcile them. Re-snapshotting once both reconciles them and
     // establishes the baseline; thereafter deltas are incremental. Without QRESYNC the
-    // matching cursor stays a new-arrivals delta exactly as before.
+    // matching cursor stays a delta, which `crate::resync` reconciles.
     let prior = cursor.and_then(MailboxCursor::decode);
     let needs_baseline = qresync && prior.is_some_and(|p| p.highest_modseq.is_none());
     let (kind, low_bound) = match prior {
@@ -124,11 +123,9 @@ where
 
     // QRESYNC incremental delta (RFC 7162): an enabled session with a prior
     // HIGHESTMODSEQ baseline reconciles flag changes AND expunges of already-synced
-    // mail — not just new arrivals. Without QRESYNC, or on the first delta after an
-    // upgrade (a prior cursor with no modseq), this falls through to the new-arrivals
-    // window below, which still records the fresh modseq so the *next* delta is
-    // incremental. `low_bound` is the prior UIDNEXT, which splits the already-synced
-    // mail from the arrivals.
+    // mail — not just new arrivals. A session without QRESYNC reads the same two facts
+    // the long way (`crate::resync`). `low_bound` is the prior UIDNEXT, which splits the
+    // already-synced mail from the arrivals.
     if let (SyncKind::Delta, true, Some(modseq)) =
         (kind, qresync, prior.and_then(|p| p.highest_modseq))
     {
@@ -140,6 +137,19 @@ where
             modseq,
             low_bound,
             uid_next,
+        )
+        .await;
+    }
+    if kind == SyncKind::Delta && !qresync {
+        return crate::resync::resync_page(
+            conn,
+            mailbox,
+            uid_validity,
+            next_cursor,
+            low_bound,
+            uid_next,
+            since,
+            limit,
         )
         .await;
     }
@@ -405,3 +415,7 @@ where
 #[cfg(test)]
 #[path = "sync_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "resync_tests.rs"]
+mod resync_tests;

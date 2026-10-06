@@ -143,8 +143,9 @@ impl Engine {
     /// message key and the op id (pollable via [`Engine::pending_op_state`]).
     ///
     /// The next [`Engine::sync_mail`] reconciles the local rows to the new server
-    /// state (a periodic snapshot, since IMAP deltas do not carry flag/expunge
-    /// changes — `imap-smtp.md`).
+    /// state: an edit's response is a receipt, not the message (on IMAP, the delta reads
+    /// the change back through `CHANGEDSINCE`, or through the reconciling delta on a server
+    /// without QRESYNC — `imap-smtp.md`).
     ///
     /// # Errors
     ///

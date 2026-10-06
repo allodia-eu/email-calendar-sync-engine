@@ -41,7 +41,7 @@ pub struct MailEditOutcome {
 /// provider failure is recorded `Failed` (with its class) and returned — never blindly
 /// retried here. Unlike an SMTP send there is no `NeedsConfirmation` case:
 /// `UID STORE`/`MOVE`/`EXPUNGE` are not post-`DATA`-ambiguous
-/// (a periodic snapshot reconciles the true state), and a stale-target `Conflict` is
+/// (the next sync reconciles the true state), and a stale-target `Conflict` is
 /// self-correcting after a re-sync (`imap-smtp.md`).
 ///
 /// # Errors

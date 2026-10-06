@@ -219,12 +219,18 @@ is authoritative for the `provider-caldav` calendar client.
   **snapshot** (rediscover from UID 1, carry `present`). A matching cursor → **delta**.
   On a QRESYNC session with a prior `HIGHESTMODSEQ` baseline the delta is **incremental
   and complete** — flag changes *and* expunges of already-synced messages, plus new
-  arrivals, in one round trip (see **CONDSTORE/QRESYNC** below). Without QRESYNC (or on
-  the first delta after an upgrade, before a modseq baseline exists) the delta is
-  **new arrivals only** (UIDs at or above the cursor's `UIDNEXT`) and carries **no
-  removals**, so flag/expunge changes reconcile via a periodic snapshot — the honest
-  baseline `providers.md` prescribes ("CONDSTORE/QRESYNC paths are optional
-  capabilities, not assumptions").
+  arrivals, in one round trip (see **CONDSTORE/QRESYNC** below). Without QRESYNC the delta
+  **reconciles** the long way (RFC 4549 §4.3; `resync` module): `UID FETCH … (UID FLAGS)`
+  over everything below the cursor's `UIDNEXT`, one short line per message, becomes a
+  `MailStateChange` each; the arrivals at or above it come whole; and the keys of both are
+  the pass's `present` set, so the final chunk tombstones whatever the server no longer
+  holds (expunged, or moved by any client). The state changes ride an intermediate chunk,
+  because the final one commits as a snapshot and a snapshot carries no partials. A
+  sync-depth window bounds both halves through one `UID SEARCH SINCE`, and every `FETCH`
+  names at most `fetch_batch` UIDs, which keeps it under a server's RFC 9738
+  `MESSAGELIMIT` (Yahoo's is 1000). CONDSTORE/QRESYNC stay optional capabilities, not
+  assumptions (`providers.md`); the cost of not having them is one flags line per message
+  per pass.
 - **CONDSTORE/QRESYNC incremental delta** (RFC 7162; `qresync` module). After login the
   client issues `CAPABILITY` (capabilities are advertised only post-auth) and, when the
   server lists `QRESYNC`, `ENABLE QRESYNC` — best-effort, so a server that lists it but
@@ -841,26 +847,25 @@ folders into Trash is proven offline only: all three servers file a folder insid
 
 ## Known limitations (documented, not bugs)
 
-- **Yahoo itself is still unproven end to end.** Both *mechanisms* are proven live
-  against Gmail (below), and Yahoo advertises the same two, so there is no untested code
-  path left. What has not run is Yahoo's own server: its mail scope needs a
-  developer-access review, so `tools/yahoo-oauth` cannot yet mint a token. Two things a
-  Yahoo account will meet that Gmail does not, both read off its observed capability line:
-  it advertises **no `CONDSTORE`/`QRESYNC`** (it has a proprietary `XYMHIGHESTMODSEQ`
-  instead), so a Yahoo mailbox takes the honest new-arrivals delta plus periodic-snapshot
-  fallback rather than the incremental one; and it advertises `UIDONLY`, which this client
-  does not enable.
+- **Yahoo's OAuth is still unproven end to end.** Both *mechanisms* are proven live
+  against Gmail (below), and Yahoo advertises the same two. What has not run is Yahoo's
+  OAuth: its mail scope needs a developer-access review, so `tools/yahoo-oauth` cannot yet
+  mint a token. Yahoo with an **app password** is live-tested (`live_imap_password.rs`).
+  What a Yahoo account meets that the harnesses do not, all observed: it lists its inbox as
+  `Inbox`; it advertises **no `CONDSTORE`/`QRESYNC`** (a proprietary `XYMHIGHESTMODSEQ`
+  instead, which is why its `SELECT` still reports `HIGHESTMODSEQ`), answers
+  `ENABLE QRESYNC` with an empty `ENABLED` and `ENABLE CONDSTORE` with `ENABLED CONDSTORE`,
+  so it takes the reconciling delta above; it caps a command at `MESSAGELIMIT=1000`; and it
+  advertises `UIDONLY`, which this client does not enable.
 - **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
   **implemented** for servers that advertise QRESYNC (RFC 7162) — the common case
-  (Stalwart, Dovecot, Cyrus, Gmail). A server that advertises **neither** QRESYNC nor a
-  usable baseline falls back to the new-arrivals-only delta, where flag/expunge/move
-  changes to already-synced messages still reconcile via a periodic **snapshot** forced
-  with `Engine::clear_mail_cursors` (the targeted, mail-only counterpart of
-  `Engine::reset`). A **CONDSTORE-only** server (CONDSTORE without QRESYNC) is treated as
-  the non-incremental baseline too: we gate the delta on QRESYNC because the `VANISHED`
-  expunge half needs it, and a half-incremental path that detects flag changes but
-  silently misses expunges would be a worse, more confusing state than the honest
-  snapshot fallback. Wiring CONDSTORE-only flag deltas is a possible later refinement.
+  (Stalwart, Dovecot, Cyrus, Gmail). A server without QRESYNC takes the reconciling delta
+  above, which reads every held message's flags each pass. A **CONDSTORE-only** server
+  (CONDSTORE without QRESYNC, Yahoo once enabled) takes it too: we gate the incremental
+  delta on QRESYNC because the `VANISHED` expunge half needs it. Using `CHANGEDSINCE` for
+  the flag half on such a server, beside the present set, is a possible later refinement.
+  Its present set is not paged: one `UID FETCH … (UID FLAGS)` group per `fetch_batch`
+  UIDs, all in one pass.
 - **QRESYNC delta is a single page.** The QRESYNC delta issues one
   `UID FETCH 1:* (CHANGEDSINCE … VANISHED)` and does **not** honor the `limit`/paging the
   snapshot path uses: a bulk server-side change — "mark all read" — returns every changed

@@ -13,8 +13,7 @@ impl Engine {
     /// queued outbox ops, and the cached message bodies. The host calls this when it
     /// **removes** an account, so that a later re-add of the same login starts clean:
     /// account ids derive from the address, so a re-add hits the same scopes, and
-    /// without this it would resume from stale cursors over orphaned rows (and, on a
-    /// server without QRESYNC, never expunge mail deleted while the account was gone).
+    /// without this it would resume from stale cursors over orphaned rows.
     ///
     /// The destructive counterpart of [`reset`](Self::reset): reset only clears cursors
     /// so the next sync reconciles the still-present objects; this drops the objects and

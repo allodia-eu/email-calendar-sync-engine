@@ -240,18 +240,38 @@ async fn a_windowed_backfill_fetches_only_the_in_window_uids() {
 }
 
 #[tokio::test]
-async fn a_delta_delegates_to_the_page_path_and_is_additive() {
-    // A prior complete cursor (no watermark) matching validity → a new-arrivals delta:
-    // UIDNEXT advanced 9 → 11, so UIDs 9,10 are fetched as an additive pass.
+async fn a_delta_without_qresync_reconciles_through_the_page_path() {
+    // A prior complete cursor (no watermark) matching validity, on a session without
+    // QRESYNC: the eight held messages come back as their flags, UIDs 9 and 10 whole, and
+    // the pass reconciles against all ten.
+    use core::fmt::Write as _;
     let select = select_resp("a2", 1000, 11, 10);
-    let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[9, 10])]);
+    let mut flags = String::new();
+    for uid in 1..=8 {
+        write!(flags, "* {uid} FETCH (FLAGS (\\Seen) UID {uid})\r\n").unwrap();
+    }
+    flags.push_str("a3 OK FETCH completed\r\n");
+    let server = script(&[
+        GREETING,
+        LOGIN_OK,
+        &select,
+        &flags,
+        &fetch_resp("a4", &[9, 10]),
+    ]);
     let (mut conn, _) = logged_in(server).await;
 
     let chunks = drain(&mut conn, Some("v1000;n9"), 50, 0).await;
     let upserted: usize = chunks.iter().map(|c| c.changed.len()).sum();
     assert_eq!(upserted, 2, "the two new arrivals");
-    assert!(chunks.iter().all(|c| c.mode == PassMode::Additive));
-    assert!(!chunks.last().unwrap().is_reconcile_final());
+    let patched: usize = chunks.iter().map(|c| c.patched.len()).sum();
+    assert_eq!(patched, 8, "the flags of the eight held");
+    let present: usize = chunks.iter().map(|c| c.present.len()).sum();
+    assert_eq!(present, 10);
+    assert!(chunks.iter().all(|c| c.mode == PassMode::Reconcile));
+    assert!(chunks.last().unwrap().is_reconcile_final());
+    // The final chunk commits as a snapshot, which carries no partials, so the flags must
+    // ride an earlier one.
+    assert!(chunks.last().unwrap().patched.is_empty());
     // Advances to the fresh complete cursor.
     assert_eq!(
         chunks.last().unwrap().advance_to.as_ref().unwrap().as_str(),

@@ -134,46 +134,6 @@ async fn a_continuation_page_fetches_the_next_window_down() {
 }
 
 #[tokio::test]
-async fn a_delta_with_no_new_arrivals_is_a_single_empty_page() {
-    // Same UIDVALIDITY, UIDNEXT unchanged at 10 → nothing at or above the watermark.
-    let select = select_resp("a2", 1000, 10, 8);
-    let server = script(&[GREETING, LOGIN_OK, &select]);
-    let mut conn = logged_in(server).await;
-
-    let cursor = SyncState::new("v1000;n10");
-    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
-        .await
-        .unwrap();
-    assert_eq!(page.kind, SyncKind::Delta);
-    assert!(page.changed.is_empty());
-    assert!(page.next_page.is_none());
-    assert_eq!(page.next_cursor.as_str(), "v1000;n10");
-}
-
-#[tokio::test]
-async fn a_delta_fetches_only_new_arrivals() {
-    // UIDNEXT advanced 5 → 8: new UIDs 5,6,7.
-    let select = select_resp("a2", 1000, 8, 7);
-    let fetch = fetch_resp("a3", &[5, 6, 7]);
-    let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
-    let (stream, recorded) = MockStream::new(server);
-    let mut conn = Connection::open(stream).await.unwrap();
-    conn.login("alice", "pw").await.unwrap();
-
-    let cursor = SyncState::new("v1000;n5");
-    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
-        .await
-        .unwrap();
-    assert_eq!(page.kind, SyncKind::Delta);
-    assert_eq!(page.changed.len(), 3);
-    assert!(page.present.is_empty(), "a delta carries no present set");
-    assert!(page.removed.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "v1000;n8");
-    // Fetched the new-arrival window, not from UID 1.
-    assert!(written(&recorded).contains("UID FETCH 5:7"));
-}
-
-#[tokio::test]
 async fn a_uidvalidity_reset_forces_a_snapshot() {
     // The cursor's validity (111) no longer matches the server's (222): the UID
     // space was renumbered, so the whole mailbox is rediscovered as a snapshot.
@@ -281,38 +241,6 @@ async fn a_windowed_snapshot_with_no_matches_fetches_nothing() {
     assert_eq!(page.total, Some(0));
     assert_eq!(page.next_cursor.as_str(), "v1000;n9");
     assert!(!written(&recorded).contains("UID FETCH"));
-}
-
-#[tokio::test]
-async fn a_delta_ignores_the_sync_depth_window() {
-    // A delta is already bounded to new arrivals, so the window triggers no `SEARCH` —
-    // new mail is recent by definition.
-    let select = select_resp("a2", 1000, 8, 7);
-    let fetch = fetch_resp("a3", &[5, 6, 7]);
-    let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
-    let (stream, recorded) = MockStream::new(server);
-    let mut conn = Connection::open(stream).await.unwrap();
-    conn.login("alice", "pw").await.unwrap();
-
-    let cursor = SyncState::new("v1000;n5");
-    let page = sync_page(
-        &mut conn,
-        &inbox(),
-        Some(&cursor),
-        None,
-        50,
-        Some("1-Mar-2026"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(page.kind, SyncKind::Delta);
-    assert_eq!(page.changed.len(), 3);
-    let sent = written(&recorded);
-    assert!(
-        !sent.contains("UID SEARCH"),
-        "a delta must not SEARCH: {sent}"
-    );
-    assert!(sent.contains("UID FETCH 5:7"));
 }
 
 #[tokio::test]

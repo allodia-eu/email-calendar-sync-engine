@@ -223,11 +223,11 @@ impl Engine {
     /// Clears just the **mail** scopes' sync cursors, so the next [`Engine::sync_mail`]
     /// re-snapshots them. The targeted counterpart of [`Engine::reset`]: it reconciles
     /// mail with the server without clearing the calendar or re-fetching the whole
-    /// account. Against a **QRESYNC** IMAP server a plain `sync_mail` delta already
-    /// reconciles flag, move, and expunge changes incrementally (`imap-smtp.md`), so
-    /// this is the **fallback** for a server without QRESYNC (where a delta brings new
-    /// arrivals only) or a host that wants to force a full mail re-snapshot; a plain
-    /// `sync_mail` after it reconciles, since the cleared scopes snapshot.
+    /// account. A plain `sync_mail` delta already reconciles flag, move and expunge changes
+    /// on every IMAP server: incrementally with QRESYNC, and without it by reading every
+    /// held message's flags and the set still present (`imap-smtp.md`). This is for a host
+    /// that wants to force a full mail re-snapshot; a plain `sync_mail` after it
+    /// reconciles, since the cleared scopes snapshot.
     ///
     /// # Errors
     ///

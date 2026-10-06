@@ -211,8 +211,8 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
 - UIDVALIDITY reset invalidates the scope and triggers rediscovery.
 - CONDSTORE/QRESYNC paths are optional capabilities, not assumptions. (**Implemented**
   in `provider-imap`: when the server advertises QRESYNC the delta reconciles flag
-  changes + expunges via `CHANGEDSINCE`/`VANISHED`; a server without it falls back to a
-  new-arrivals delta + periodic snapshot — `imap-smtp.md`.)
+  changes + expunges via `CHANGEDSINCE`/`VANISHED`; a server without it reconciles by
+  reading every held message's flags and the set still present — `imap-smtp.md`.)
 - IMAP `IDLE` (RFC 2177) push is an optional capability too, advertised by the `idle`
   flag. (**Implemented** in `provider-imap`: an `ImapWatcher` holds a *dedicated*
   standing connection that turns the `IDLE`/`DONE` keep-alive loop into the neutral
