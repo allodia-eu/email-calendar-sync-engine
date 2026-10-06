@@ -40,7 +40,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     cursor::MailboxCursor,
     mail::message_from_fetch,
-    metadata_fetch::{FETCH_ITEMS, STRUCTURE_ITEMS, needs_structure, structure_set, take_settled},
+    metadata_fetch::{
+        FETCH_ITEMS, STRUCTURE_BATCH, STRUCTURE_ITEMS, needs_structure, structure_sets,
+        take_settled,
+    },
     parse::FetchRow,
     sync::{effective_uid_next, sync_page_selected, uid_set_spec},
     transport::Connection,
@@ -225,10 +228,11 @@ where
         for (index, (spec, group_low)) in groups.into_iter().enumerate() {
             conn.uid_fetch_stream_start(&spec, FETCH_ITEMS).await?;
             let mut buf: Vec<Message> = Vec::new();
-            // The rows whose headers left the attachment flag open wait for a second
-            // streamed command, over just them (`crate::metadata_fetch`); a row the server
-            // returns no structure for goes out as it is once that command ends.
+            // The rows whose headers left the attachment flag open wait for further
+            // streamed commands, over just them (`crate::metadata_fetch`); a row the server
+            // returns no structure for goes out as it is once those commands end.
             let mut open: Vec<FetchRow> = Vec::new();
+            let mut sets: Vec<String> = Vec::new();
             let mut settling = false;
             loop {
                 let row = match conn.next_fetch_row().await? {
@@ -241,16 +245,24 @@ where
                         continue;
                     }
                     Some(row) => row,
-                    None if !settling && !open.is_empty() => {
-                        conn.uid_fetch_stream_start(&structure_set(&open), STRUCTURE_ITEMS)
-                            .await?;
+                    None if !settling => {
+                        let per_set = conn.negotiated.within_message_limit(STRUCTURE_BATCH);
+                        let uids = open.iter().map(|row| row.uid).collect();
+                        sets = structure_sets(uids, per_set);
+                        sets.reverse();
                         settling = true;
                         continue;
                     }
-                    None => match open.pop() {
-                        Some(row) => row,
-                        None => break,
-                    },
+                    None => {
+                        if let Some(set) = sets.pop() {
+                            conn.uid_fetch_stream_start(&set, STRUCTURE_ITEMS).await?;
+                            continue;
+                        }
+                        match open.pop() {
+                            Some(row) => row,
+                            None => break,
+                        }
+                    }
                 };
                 let message = message_from_fetch(&row, mailbox, uid_validity);
                 if is_fresh {

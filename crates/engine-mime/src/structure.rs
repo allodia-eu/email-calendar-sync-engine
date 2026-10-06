@@ -12,14 +12,26 @@ use mail_parser::{ContentType, HeaderName, MessageParser, MimeHeaders};
 /// body, so it carries no download.
 ///
 /// A missing `Content-Type` is `text/plain` (RFC 2045 §5.2). One that is present but
-/// does not parse answers `false`, as does an unparseable block: the caller then
-/// reads the structure rather than trusting a guess.
+/// does not parse answers `false`, as does an unparseable block or one that repeats
+/// either field (parsers disagree on which copy counts): the caller then reads the
+/// structure rather than trusting a guess.
 #[must_use]
 pub fn is_single_text_body(headers: &[u8]) -> bool {
     let Some(message) = MessageParser::default().parse_headers(headers) else {
         // No header at all: the default type and no disposition.
         return headers.iter().all(u8::is_ascii_whitespace);
     };
+    if message
+        .header_values(HeaderName::ContentType)
+        .nth(1)
+        .is_some()
+        || message
+            .header_values(HeaderName::ContentDisposition)
+            .nth(1)
+            .is_some()
+    {
+        return false;
+    }
     if message
         .content_disposition()
         .is_some_and(ContentType::is_attachment)
@@ -67,6 +79,8 @@ mod tests {
             "Content-Disposition: ATTACHMENT\r\n\r\n",
             "Content-Type: text\r\n\r\n",
             "Content-Type: \r\n\r\n",
+            "Content-Type: multipart/mixed; boundary=b\r\nContent-Type: text/plain\r\n\r\n",
+            "Content-Disposition: attachment\r\nContent-Disposition: inline\r\n\r\n",
         ] {
             assert!(!is_single_text_body(headers.as_bytes()), "{headers:?}");
         }

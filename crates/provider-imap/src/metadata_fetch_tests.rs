@@ -9,6 +9,7 @@ use futures_util::StreamExt;
 
 use super::*;
 use crate::{
+    capability::Negotiated,
     mock::{MockStream, script, written},
     parse::parse_fetch,
     stream::stream_email,
@@ -116,6 +117,40 @@ async fn rows_the_headers_all_settle_cost_one_command() {
 
     assert!(rows.iter().all(|row| row.has_attachment == Some(false)));
     assert!(!written(&recorded).contains("BODYSTRUCTURE"));
+}
+
+#[tokio::test]
+async fn no_structure_command_names_more_messages_than_the_server_allows() {
+    let metadata = response(
+        "a2",
+        &[
+            metadata_row(1, MIXED),
+            metadata_row(2, TEXT),
+            metadata_row(3, MIXED),
+            metadata_row(4, ALTERNATIVE),
+        ],
+    );
+    let first = format!(
+        "* 1 FETCH (UID 1 BODYSTRUCTURE {WITH_PDF})\r\n* 3 FETCH (UID 3 BODYSTRUCTURE {TEXT_ONLY})\r\n\
+         a3 OK FETCH done\r\n"
+    );
+    let second = format!("* 4 FETCH (UID 4 BODYSTRUCTURE {WITH_PDF})\r\na4 OK FETCH done\r\n");
+    let (mut conn, recorded) = logged_in(&[GREETING, LOGIN_OK, &metadata, &first, &second]).await;
+    conn.negotiated = Negotiated::from_capabilities(&["MESSAGELIMIT=2".to_owned()]);
+
+    let rows = conn.uid_fetch_metadata("1:4").await.unwrap();
+
+    let flags: Vec<_> = rows.iter().map(|row| row.has_attachment).collect();
+    assert_eq!(flags, [Some(true), Some(false), Some(false), Some(true)]);
+    let sent = written(&recorded);
+    assert!(
+        sent.contains("a3 UID FETCH 1,3 (UID BODYSTRUCTURE)"),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("a4 UID FETCH 4 (UID BODYSTRUCTURE)"),
+        "{sent}"
+    );
 }
 
 #[tokio::test]
