@@ -336,12 +336,13 @@ where
     })
 }
 
-/// Reads and checks the `220` greeting.
+/// Reads and checks the `220` greeting, each line awaited for
+/// [`Deadlines::greeting`](engine_provider::Deadlines::greeting).
 async fn read_greeting<S>(smtp: &mut SmtpStream<S>) -> ImapResult<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let (code, _) = smtp.read_reply().await?;
+    let (code, _) = smtp.read_reply_lines_within(BOUNDS.greeting()).await?;
     if code != 220 {
         return Err(ImapError::protocol(format!(
             "unexpected SMTP greeting code {code}"

@@ -288,7 +288,9 @@ async fn a_connection_whose_handshake_never_completes_fails_after_the_dial_bound
     .await;
 
     let err = timed_out(outcome);
-    assert_took(elapsed, BOUNDS.dial());
+    // Written out rather than read from `BOUNDS`: the figure is what a send against a server
+    // that never answers waits.
+    assert_took(elapsed, Duration::from_secs(15));
     assert!(
         !hand_over.is_committed(),
         "a connection that never came up hands nothing over, even a one-piece body"

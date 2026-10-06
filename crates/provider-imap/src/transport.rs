@@ -80,9 +80,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
     /// Reads the untagged greeting: `* OK`/`* PREAUTH` is success, `* BYE` is a
     /// refusal. A server that accepts the connection and never greets is given
-    /// [`Deadlines::reply`](engine_provider::Deadlines::reply), as every response is.
+    /// [`Deadlines::greeting`](engine_provider::Deadlines::greeting).
     async fn read_greeting(&mut self) -> ImapResult<()> {
-        let line = self.read_line().await?;
+        let line = self.read_line_within(Some(BOUNDS.greeting())).await?;
         let text = String::from_utf8_lossy(&line);
         if text.starts_with("* OK") || text.starts_with("* PREAUTH") {
             Ok(())

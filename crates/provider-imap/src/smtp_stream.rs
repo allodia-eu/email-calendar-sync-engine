@@ -42,8 +42,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
         Ok(self.inner.into_inner())
     }
 
-    /// Reads a (possibly multiline) reply, returning its code and joined text — for
-    /// every reply whose content is prose (a greeting, an acceptance, a rejection).
+    /// Reads a (possibly multiline) reply, returning its code and joined text: the form for
+    /// every reply whose content is prose (an acceptance, a rejection).
     /// [`read_reply_lines`](Self::read_reply_lines) is the form to use when the content
     /// is a *list* (`EHLO`'s extensions).
     pub(crate) async fn read_reply(&mut self) -> ImapResult<(u16, String)> {
@@ -55,10 +55,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
     /// (each stripped of its `NNN`/`NNN-` prefix). The continuation-line count is capped
     /// so a server emitting an endless stream of `NNN-...` lines cannot hang the
     /// submission or grow the reply without bound, and each line is awaited for at most
-    /// [`Deadlines::reply`](engine_provider::Deadlines::reply), so neither can a server that
+    /// [`Deadlines::setup`](engine_provider::Deadlines::setup), so neither can a server that
     /// stops answering.
     pub(crate) async fn read_reply_lines(&mut self) -> ImapResult<(u16, Vec<String>)> {
-        self.read_reply_lines_within(BOUNDS.reply()).await
+        self.read_reply_lines_within(BOUNDS.setup()).await
     }
 
     /// [`read_reply_lines`](Self::read_reply_lines), awaiting each line for `stall`.
