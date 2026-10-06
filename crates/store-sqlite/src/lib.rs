@@ -37,6 +37,7 @@ mod contact_store;
 mod convert;
 mod derived_ops;
 mod join;
+mod keyword_edits;
 mod mail_ops;
 mod migrations;
 mod outbox_ops;

@@ -189,6 +189,7 @@ pub(crate) fn apply(
     observations: &[RecipientObservation],
     contact_scope: bool,
     next_state: Option<&str>,
+    observed_from: Option<UtcDateTime>,
     now: UtcDateTime,
 ) -> Result<SyncApplied> {
     let tx = conn.transaction().map_err(convert::backend)?;
@@ -223,6 +224,14 @@ pub(crate) fn apply(
     }
 
     derived_ops::apply_derived(&tx, scope_key, derived)?;
+    // The server's word on these messages' keywords is in; a change still queued goes back on
+    // top of it.
+    let written = derived
+        .messages
+        .iter()
+        .map(|row| row.key.as_str())
+        .chain(derived.state_changes.iter().map(|row| row.key.as_str()));
+    crate::keyword_edits::synced(&tx, scope_key, written, observed_from)?;
 
     for rec in reconcile {
         if reconcile_op(&tx, rec, now)? {

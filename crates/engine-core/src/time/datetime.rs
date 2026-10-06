@@ -240,6 +240,17 @@ impl UtcDateTime {
             .checked_add(time::Duration::new(secs, nanos))
             .map(Self)
     }
+
+    /// Returns this instant moved back by `span`, or `None` on overflow. The inverse of
+    /// [`checked_add`](Self::checked_add): a lease's claim time is its expiry less its TTL.
+    #[must_use]
+    pub fn checked_sub(self, span: core::time::Duration) -> Option<Self> {
+        let secs = i64::try_from(span.as_secs()).ok()?;
+        let nanos = i32::try_from(span.subsec_nanos()).ok()?;
+        self.0
+            .checked_sub(time::Duration::new(secs, nanos))
+            .map(Self)
+    }
 }
 
 impl fmt::Display for UtcDateTime {

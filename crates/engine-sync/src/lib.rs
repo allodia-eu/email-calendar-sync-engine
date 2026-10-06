@@ -38,7 +38,7 @@ use engine_core::{
 };
 use engine_provider::{Provider, ProviderError, ScopeSync};
 use engine_store::{
-    ApplyBatch, DerivedWrite, LeaseRequest, Store, StoreError, StoreRead, SyncApplied,
+    ApplyBatch, DerivedWrite, LeaseRequest, Store, StoreError, StoreRead, SyncApplied, SyncLease,
 };
 
 /// How many times a scope is re-claimed after a `StaleLease` before giving up.
@@ -239,6 +239,7 @@ where
         };
         let batch = ApplyBatch::new(&sync.update, &derived, &[], &sync.next_cursor)
             .with_recipient_observations(&observations);
+        let batch = read_since(batch, &claim.lease, req);
         match store.apply_sync_update(&claim.lease, batch).await {
             Ok(applied) => {
                 store.release_sync_scope(claim.lease).await?;
@@ -299,6 +300,23 @@ pub(crate) fn derive_messages(messages: &[Message]) -> DerivedWrite {
     derived
 }
 
+/// Marks `batch` as read by the pass holding `lease`, claimed under `req`, so the store keeps
+/// showing a queued keyword change the server accepted after the pass began reading.
+///
+/// The pass start is read off the lease rather than a clock of this crate's: a lease's expiry is
+/// the store's clock at the claim plus the TTL asked for, and a scope lease is never renewed, so
+/// the claim instant is on the clock the store settles ops by. Every pass claims before it reads.
+pub(crate) fn read_since<'a, T: SyncObject>(
+    batch: ApplyBatch<'a, T>,
+    lease: &SyncLease,
+    req: &LeaseRequest,
+) -> ApplyBatch<'a, T> {
+    match lease.expiry().checked_sub(req.ttl) {
+        Some(started) => batch.observed_from(started),
+        None => batch,
+    }
+}
+
 /// The created-or-updated objects an update carries (a delta's `changed` or a
 /// snapshot's `objects`) — what gets projected. Tombstoned/removed keys are the
 /// store's job, not the projection's.
@@ -342,11 +360,12 @@ pub use mail_report::{FolderSync, MailSyncReport, SyncTiming};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
     CalendarWriteOutcome, ContactWriteOutcome, DraftPut, DrainOutcome, DrainReport, DrainedOp,
-    MailEditOutcome, MailboxChange, MailboxEditOutcome, MailboxNameError, MailboxPlace,
-    PutDraftOutcome, ReportOutcome, SubmitOutcome, create_calendar_event, create_contact,
-    delete_calendar_event, delete_contact, delete_draft_mail, drain_outbox, edit_mail,
-    edit_mailbox, patch_calendar_event, patch_contact, put_calendar_document, put_draft_mail,
-    report_message, rsvp_calendar_event, submit_mail, validate_mailbox_name,
+    MailEditOutcome, MailEditSent, MailboxChange, MailboxEditOutcome, MailboxNameError,
+    MailboxPlace, PutDraftOutcome, ReportOutcome, SubmitOutcome, create_calendar_event,
+    create_contact, delete_calendar_event, delete_contact, delete_draft_mail, drain_outbox,
+    edit_mail, edit_mailbox, mail_edit_op, patch_calendar_event, patch_contact,
+    put_calendar_document, put_draft_mail, queue_mail_edit, report_message, rsvp_calendar_event,
+    send_mail_edit, submit_mail, validate_mailbox_name,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::StreamTuning;

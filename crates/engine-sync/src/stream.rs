@@ -211,6 +211,7 @@ where
                 };
             let batch = ApplyBatch::with_cursor(&update, &derived, &confirmed, advance_to.as_ref())
                 .with_recipient_observations(&observations);
+            let batch = crate::read_since(batch, &lease, req);
             let applied_result = store.apply_sync_update(&lease, batch).await;
             timing.add_storing(stored);
             match applied_result {

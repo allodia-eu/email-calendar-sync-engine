@@ -214,9 +214,13 @@ Step 6 lands in small, tested slices. Order and status:
    `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an
    ambiguous send). `Engine::edit_mail` rides the same outbox for mail mutations —
    it takes a caller-minted idempotency key and a `MailEdit` (mark-read/flag, move,
-   or permanent delete) and returns a `MailEditOutcome` (resolved key + op id); a
-   failure (e.g. a stale-target `Conflict`) is recorded `Failed` before surfacing as
-   `ApiError::Sync`. `Engine::create_calendar_event` / `patch_calendar_event` /
+   or permanent delete) and returns a `MailEditSent`: `Applied(MailEditOutcome)`
+   (resolved key + op id), or `Queued` when the server refused for now and the outbox
+   will retry. Only a refusal that settles the op (e.g. a stale-target `Conflict`, or the
+   last attempt) surfaces as `ApiError::Sync`. It is `Engine::queue_mail_edit` then
+   `Engine::send_mail_edit`, which a host calls separately to show the edit first: a
+   keyword change is in every read of the message from the moment it is queued, and is
+   taken back only when refused for good (`store-and-sync.md`). `Engine::create_calendar_event` / `patch_calendar_event` /
    `delete_calendar_event` ride the same outbox for calendar mutations — a caller-minted
    idempotency key plus an `EventDraft` (the event you want), or the event **as you read
    it** plus a `PatchTarget` + `EventPatch` (what changed, and on which occurrence), or an

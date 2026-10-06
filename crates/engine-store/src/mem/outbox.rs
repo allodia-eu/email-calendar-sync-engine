@@ -170,6 +170,7 @@ impl<C: Clock> MemStore<C> {
                 recovered += 1;
             }
         }
+        inner.settle_keyword_edits(now);
         Ok(recovered)
     }
 
@@ -183,8 +184,9 @@ impl<C: Clock> MemStore<C> {
         let now = self.clock.now();
         let expiry = expiry_after(now, req)?;
         let mut inner = self.lock();
+        recover_dead(&mut inner.ops, account, now)?;
+        inner.settle_keyword_edits(now);
         let ops = &mut inner.ops;
-        recover_dead(ops, account, now)?;
 
         // Resources held by an op in flight cannot be leased this round.
         let mut taken: HashSet<ResourceKey> = ops
@@ -222,8 +224,9 @@ impl<C: Clock> MemStore<C> {
         let now = self.clock.now();
         let expiry = expiry_after(now, req)?;
         let mut inner = self.lock();
+        recover_dead(&mut inner.ops, account, now)?;
+        inner.settle_keyword_edits(now);
         let ops = &mut inner.ops;
-        recover_dead(ops, account, now)?;
         let Some(cell) = ops.get(&id).filter(|o| o.account == *account) else {
             return Ok(PendingOpClaim::Refused(ClaimRejection::Unknown));
         };
@@ -267,7 +270,9 @@ impl<C: Clock> MemStore<C> {
         if !current && !handed_over {
             return Err(StoreError::StaleLease);
         }
-        cell.record(outcome, now)
+        cell.record(outcome, now)?;
+        inner.settle_keyword_edits(now);
+        Ok(())
     }
 
     /// [`Store::record_hand_over`](crate::Store::record_hand_over).
@@ -314,7 +319,9 @@ impl<C: Clock> MemStore<C> {
         if cell.is_dead(now) {
             cell.recover(now)?;
         }
-        Ok(act(cell))
+        let refused = act(cell);
+        inner.settle_keyword_edits(now);
+        Ok(refused)
     }
 
     /// [`Store::cancel_pending_op`](crate::Store::cancel_pending_op).

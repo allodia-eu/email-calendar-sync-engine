@@ -43,6 +43,7 @@ const ACCOUNT_TABLES: &[&str] = &[
     "recipient_observation",
     "recipient_coverage",
     "recipient_index_state",
+    "server_keywords",
 ];
 
 impl<C: Clock> SqliteStore<C> {

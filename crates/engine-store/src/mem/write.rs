@@ -166,6 +166,25 @@ impl<C: Clock> Store for MemStore<C> {
                 &batch.derived.msgid_refs,
             );
         }
+
+        // The server's word on these messages' keywords is in; a change still queued goes back
+        // on top of it.
+        let written: Vec<ProviderKey> = batch
+            .derived
+            .messages
+            .iter()
+            .map(|row| row.key.clone())
+            .chain(
+                batch
+                    .derived
+                    .state_changes
+                    .iter()
+                    .map(|row| row.key.clone()),
+            )
+            .collect();
+        let scope = lease.scope().clone();
+        inner.keyword_edits_synced(scope.account(), &scope, &written, batch.observed_from);
+        inner.settle_keyword_edits(now);
         Ok(applied)
     }
 
@@ -246,9 +265,18 @@ impl<C: Clock> Store for MemStore<C> {
                 failure_class: None,
                 detail: None,
                 handed_over: None,
+                settled_at: None,
             },
         );
         inner.idempotency.insert(idem, id);
+        if let Some(edit) = inner
+            .ops
+            .get(&id)
+            .and_then(|cell| cell.op.keyword_edit.clone())
+        {
+            let account = inner.ops[&id].account.clone();
+            inner.keyword_edit_queued(&account, &edit);
+        }
         Ok(id)
     }
 

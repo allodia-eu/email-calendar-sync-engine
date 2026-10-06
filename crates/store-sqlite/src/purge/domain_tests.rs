@@ -128,6 +128,9 @@ fn seed_account_row(conn: &Connection, table: &str, account: &str) {
         "recipient_index_state" => {
             "INSERT INTO recipient_index_state (account, version) VALUES (?1, 1)"
         }
+        "server_keywords" => {
+            "INSERT INTO server_keywords (account, provider_key, keywords) VALUES (?1, 'k', '[]')"
+        }
         "contact_photo" => {
             "INSERT INTO contact_photo
                  (account, contact, resource, fingerprint, content_hash, fetched_at)
@@ -175,6 +178,11 @@ fn ops(conn: &Connection, account: &str, domain: SearchDomain) -> i64 {
         .sum()
 }
 
+/// How many rows `seed` gives each account across `tables`: one per table.
+fn seeded(tables: &[&str]) -> i64 {
+    i64::try_from(tables.len()).unwrap()
+}
+
 fn account_rows(conn: &Connection, tables: &[&str], account: &str) -> i64 {
     tables
         .iter()
@@ -197,7 +205,7 @@ fn assert_b_untouched(conn: &Connection) {
     for tag in ["mail", "calendar", "contacts", "unknown"] {
         assert_eq!(scope_rows(conn, "b", tag), 3, "b lost its {tag} scope");
     }
-    assert_eq!(account_rows(conn, MAIL_TABLES, "b"), 4);
+    assert_eq!(account_rows(conn, MAIL_TABLES, "b"), seeded(MAIL_TABLES));
     assert_eq!(account_rows(conn, CONTACT_TABLES, "b"), 1);
     assert_eq!(
         count(
@@ -221,7 +229,7 @@ fn forgetting_the_calendar_leaves_mail_and_contacts_as_they_were() {
     assert_eq!(scope_rows(&conn, "a", "contacts"), 3);
     assert_eq!(ops(&conn, "a", SearchDomain::Mail), 6);
     assert_eq!(ops(&conn, "a", SearchDomain::Contacts), 3);
-    assert_eq!(account_rows(&conn, MAIL_TABLES, "a"), 4);
+    assert_eq!(account_rows(&conn, MAIL_TABLES, "a"), seeded(MAIL_TABLES));
     assert_eq!(account_rows(&conn, CONTACT_TABLES, "a"), 1);
     assert_eq!(generation(&conn), before, "no contact changed");
     assert_b_untouched(&conn);
@@ -274,7 +282,7 @@ fn forgetting_contacts_drops_photos_and_moves_the_contact_generation() {
 
     assert_eq!(scope_rows(&conn, "a", "mail"), 3);
     assert_eq!(scope_rows(&conn, "a", "calendar"), 3);
-    assert_eq!(account_rows(&conn, MAIL_TABLES, "a"), 4);
+    assert_eq!(account_rows(&conn, MAIL_TABLES, "a"), seeded(MAIL_TABLES));
     assert_b_untouched(&conn);
 }
 

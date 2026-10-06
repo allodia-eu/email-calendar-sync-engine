@@ -106,11 +106,17 @@ fn enqueue_in(conn: &mut Connection, account: &AccountId, op: &PendingOp) -> Res
 
     let depends_on = serde_json::to_string(&op.depends_on).map_err(convert::backend)?;
     let payload = serde_json::to_string(&op.payload).map_err(convert::backend)?;
+    let keyword_edit = op
+        .keyword_edit
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(convert::backend)?;
     tx.execute(
         "INSERT INTO pending_op
              (account, kind, idempotency_key, resource_key, depends_on, payload, state, token,
-              lease_expiry, attempts, next_attempt_at, failure_class, detail)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'Pending', 0, NULL, 0, NULL, NULL, NULL)",
+              lease_expiry, attempts, next_attempt_at, failure_class, detail, keyword_edit)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'Pending', 0, NULL, 0, NULL, NULL, NULL, ?7)",
         (
             account.as_str(),
             convert::kind_to_text(op.kind),
@@ -118,10 +124,16 @@ fn enqueue_in(conn: &mut Connection, account: &AccountId, op: &PendingOp) -> Res
             op.resource_key.as_str(),
             depends_on,
             payload,
+            keyword_edit,
         ),
     )
     .map_err(convert::backend)?;
     let id = tx.last_insert_rowid();
+    // In the same transaction as the op, so a change is never shown without the op that makes
+    // it, nor queued without being shown.
+    if let Some(edit) = &op.keyword_edit {
+        crate::keyword_edits::queued(&tx, account.as_str(), edit)?;
+    }
     tx.commit().map_err(convert::backend)?;
     convert::op_id_from_i64(id)
 }

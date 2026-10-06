@@ -74,6 +74,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(schema::V14),
     Migration::sql(schema::V15),
     Migration::sql(schema::V16),
+    Migration::sql(schema::V17),
 ];
 
 /// Brings `conn` up to the latest schema version.

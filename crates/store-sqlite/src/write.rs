@@ -66,6 +66,7 @@ impl<C: Clock> Store for SqliteStore<C> {
         let contact_scope = lease.scope().object_kind() == Some(ObjectKind::ContactCard);
         // `None` (a streaming page) leaves the cursor unchanged.
         let next_state = batch.next_state.map(|s| s.as_str().to_owned());
+        let observed_from = batch.observed_from;
         let now = self.clock.now();
         self.call(move |conn| {
             scope_ops::apply(
@@ -78,6 +79,7 @@ impl<C: Clock> Store for SqliteStore<C> {
                 &observations,
                 contact_scope,
                 next_state.as_deref(),
+                observed_from,
                 now,
             )
         })

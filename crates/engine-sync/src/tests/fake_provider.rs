@@ -199,6 +199,9 @@ impl Provider for FakeMail {
             // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
             return Err(ProviderError::conflict("UIDVALIDITY changed"));
         }
+        if self.fails(Fault::ThrottledEdit) {
+            return Err(ProviderError::rate_limited("slow down", None));
+        }
         Ok(MailEditReceipt::new(edit.target().clone()))
     }
 
