@@ -93,6 +93,7 @@ pub(crate) async fn sync_page_selected<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    let limit = conn.negotiated.within_message_limit(limit);
     let qresync = conn.qresync_enabled();
     let uid_validity = select.uid_validity;
     let next_cursor = MailboxCursor {
@@ -248,7 +249,7 @@ where
     })
 }
 
-/// Runs the sync-depth-windowed snapshot for `date`: a single `UID SEARCH SINCE` finds
+/// Runs the sync-depth-windowed snapshot for `date`: `UID SEARCH SINCE` finds
 /// the in-window UIDs, then [`windowed_snapshot_page`] pages them. Fetching **only** the
 /// reported UIDs — never the whole UID range above the oldest of them — keeps the
 /// download bounded when moved/imported mail scrambles the UID-vs-date order (the cause

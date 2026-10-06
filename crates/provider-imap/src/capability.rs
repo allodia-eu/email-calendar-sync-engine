@@ -43,6 +43,13 @@ pub(crate) enum Extension {
     SpecialUse,
     /// `QRESYNC` (RFC 7162) — a mailbox delta can reconcile flags and expunges.
     Qresync,
+    /// `UIDONLY` (RFC 9586) — messages are addressed by UID alone. Yahoo documents its
+    /// default mode as showing a folder above `MESSAGELIMIT` only in part, and UID mode as the
+    /// whole of it.
+    UidOnly,
+    /// `PARTIAL` (RFC 9394) — a `FETCH` can ask for the first `n` messages of a set, which
+    /// pages a mailbox by message count rather than by UID.
+    Partial,
 }
 
 impl Extension {
@@ -53,6 +60,8 @@ impl Extension {
             Self::ListStatus => "LIST-STATUS",
             Self::SpecialUse => "SPECIAL-USE",
             Self::Qresync => "QRESYNC",
+            Self::UidOnly => "UIDONLY",
+            Self::Partial => "PARTIAL",
         }
     }
 
@@ -64,7 +73,7 @@ impl Extension {
     pub(crate) const fn folded_into_rev2(self) -> bool {
         match self {
             Self::Idle | Self::ListStatus | Self::SpecialUse => true,
-            Self::Qresync => false,
+            Self::Qresync | Self::UidOnly | Self::Partial => false,
         }
     }
 
@@ -73,8 +82,8 @@ impl Extension {
     /// announcement; one changes what the server sends unbidden, and so does the dialect.
     pub(crate) const fn needs_enable(self) -> bool {
         match self {
-            Self::Qresync => true,
-            Self::Idle | Self::ListStatus | Self::SpecialUse => false,
+            Self::Qresync | Self::UidOnly => true,
+            Self::Idle | Self::ListStatus | Self::SpecialUse | Self::Partial => false,
         }
     }
 }
@@ -119,6 +128,7 @@ impl Negotiated {
                 Extension::ListStatus,
                 Extension::SpecialUse,
                 Extension::Qresync,
+                Extension::UidOnly,
             ]
             .into_iter()
             .filter(|ext| ext.needs_enable() && self.advertises(ext.atom()))
@@ -148,6 +158,23 @@ impl Negotiated {
             return self.enabled.contains(&ext.atom().to_lowercase());
         }
         self.advertises(ext.atom()) || (self.rev2() && ext.folded_into_rev2())
+    }
+
+    /// The most messages one command may touch (RFC 9738 `MESSAGELIMIT=<n>`), if the server
+    /// stated a limit.
+    pub(crate) fn message_limit(&self) -> Option<usize> {
+        self.advertised
+            .iter()
+            .find_map(|atom| atom.strip_prefix("messagelimit=")?.parse().ok())
+    }
+
+    /// `requested` UIDs per `FETCH` (`0` for no cap), lowered to the server's message limit
+    /// where it states one, since a server may refuse a set naming more.
+    pub(crate) fn within_message_limit(&self, requested: usize) -> usize {
+        match self.message_limit() {
+            Some(limit) if limit > 0 && (requested == 0 || requested > limit) => limit,
+            _ => requested,
+        }
     }
 
     /// Whether a `LIST` has to ask for the SPECIAL-USE attributes with a return option.
@@ -191,6 +218,8 @@ impl Negotiated {
             Extension::ListStatus,
             Extension::SpecialUse,
             Extension::Qresync,
+            Extension::UidOnly,
+            Extension::Partial,
         ]
         .into_iter()
         .filter(|ext| self.has(*ext))

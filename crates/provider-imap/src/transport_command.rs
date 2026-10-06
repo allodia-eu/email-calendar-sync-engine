@@ -36,12 +36,29 @@ pub(crate) fn list_command(special_use: bool, status_unseen: bool) -> String {
 /// (RFC 9051 §6.4.4), e.g. 2026-03-18 → `18-Mar-2026`. The month is a fixed English
 /// abbreviation and the rest is digits, so the result is a safe, unquoted search atom.
 pub(crate) fn format_imap_date(date: time::Date) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
     let month = MONTHS[usize::from(u8::from(date.month())) - 1];
     format!("{}-{month}-{}", date.day(), date.year())
 }
+
+/// The calendar day an IMAP date names: the leading `d-Mon-yyyy` of a search date or an
+/// `INTERNALDATE` (whose day may be space-padded), ignoring any time and zone after it, which
+/// is how `SINCE` compares (RFC 9051 §6.4.4).
+pub(crate) fn imap_day(text: &str) -> Option<time::Date> {
+    let date = text.trim_start().split(' ').next()?;
+    let mut parts = date.split('-');
+    let day = parts.next()?.parse().ok()?;
+    let month = parts.next()?;
+    let month = MONTHS
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case(month))?;
+    let year = parts.next()?.parse().ok()?;
+    let month = time::Month::try_from(u8::try_from(month + 1).ok()?).ok()?;
+    time::Date::from_calendar_date(year, month, day).ok()
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 #[cfg(test)]
 mod tests {

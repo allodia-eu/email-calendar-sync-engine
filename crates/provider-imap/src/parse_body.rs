@@ -27,7 +27,9 @@ pub(crate) fn parse_fetch_body(untagged: &[Vec<u8>], expected_uid: u32) -> Optio
 /// literal (a flag update the server piggybacked) or its framing names no UID.
 pub(crate) fn parse_any_fetch_body(line: &[u8]) -> Option<(u32, Vec<u8>)> {
     let (before, payload, tail) = split_body_literal(line)?;
-    let uid = first_uid(before).or_else(|| first_uid(tail))?;
+    let uid = uidfetch_number(before)
+        .or_else(|| first_uid(before))
+        .or_else(|| first_uid(tail))?;
     Some((uid, payload.to_vec()))
 }
 
@@ -36,7 +38,10 @@ pub(crate) fn parse_any_fetch_body(line: &[u8]) -> Option<(u32, Vec<u8>)> {
 /// is for another UID, or the framing is absent or truncated.
 fn extract_body_literal(line: &[u8], expected_uid: u32) -> Option<Vec<u8>> {
     let (before, payload, tail) = split_body_literal(line)?;
-    if !names_uid(before, expected_uid) && !names_uid(tail, expected_uid) {
+    if uidfetch_number(before) != Some(expected_uid)
+        && !names_uid(before, expected_uid)
+        && !names_uid(tail, expected_uid)
+    {
         return None;
     }
     Some(payload.to_vec())
@@ -75,6 +80,17 @@ fn split_body_literal(line: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
     }
     let (payload, tail) = body.split_at(len);
     Some((&line[..marker_at], payload, tail))
+}
+
+/// The UID that numbers a `<uid> UIDFETCH (…)` line (RFC 9586), which need not repeat it as
+/// a `UID` item.
+fn uidfetch_number(framing: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(framing).ok()?;
+    let mut words = text.split_ascii_whitespace();
+    let number = words.next()?.parse().ok()?;
+    let keyword = words.next()?;
+    let keyword = keyword.strip_suffix('(').unwrap_or(keyword);
+    keyword.eq_ignore_ascii_case("UIDFETCH").then_some(number)
 }
 
 /// The first `UID <n>` a stretch of framing names.

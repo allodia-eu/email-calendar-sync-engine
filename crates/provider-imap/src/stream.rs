@@ -58,6 +58,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     async_stream::try_stream! {
+        let fetch_batch = conn.negotiated.within_message_limit(fetch_batch);
         let qresync = conn.qresync_enabled();
         let select = if qresync {
             conn.select_condstore(mailbox.as_str()).await?

@@ -292,24 +292,29 @@ fn esearch_all_uids<'a>(mut tokens: impl Iterator<Item = &'a str>) -> Vec<u32> {
 
 /// Reads `UID FETCH` untagged responses into [`FetchRow`]s. Rows without a `UID`
 /// (e.g. an unsolicited flag-only `FETCH`) are skipped, never errored.
+///
+/// Once UIDONLY is enabled the server answers `<uid> UIDFETCH (…)` instead (RFC 9586), and
+/// the number in front is the UID whether or not the body repeats it.
 pub(crate) fn parse_fetch(lines: &[Vec<u8>]) -> ImapResult<Vec<FetchRow>> {
     let mut rows = Vec::new();
     for line in lines {
         let items = items_of(line)?;
-        // `<seq> FETCH (k v k v ...)`
-        let [_seq, keyword, body, ..] = items.as_slice() else {
+        // `<seq> FETCH (k v k v ...)` or `<uid> UIDFETCH (k v k v ...)`
+        let [number, keyword, body, ..] = items.as_slice() else {
             continue;
         };
-        if !keyword
-            .as_atom()
-            .is_some_and(|a| a.eq_ignore_ascii_case("FETCH"))
-        {
-            continue;
-        }
+        let numbered_by_uid = match keyword.as_atom() {
+            Some(atom) if atom.eq_ignore_ascii_case("FETCH") => false,
+            Some(atom) if atom.eq_ignore_ascii_case("UIDFETCH") => true,
+            _ => continue,
+        };
         let Some(pairs) = body.as_list() else {
             continue;
         };
-        if let Some(row) = fetch_row(pairs) {
+        let leading_uid = numbered_by_uid
+            .then(|| number.as_atom().and_then(|a| a.parse().ok()))
+            .flatten();
+        if let Some(row) = fetch_row(pairs, leading_uid) {
             rows.push(row);
         }
     }
@@ -317,9 +322,9 @@ pub(crate) fn parse_fetch(lines: &[Vec<u8>]) -> ImapResult<Vec<FetchRow>> {
 }
 
 /// Interprets a `FETCH` body's `key value` pairs into a [`FetchRow`]; `None` if no
-/// `UID` is present.
-fn fetch_row(pairs: &[Item]) -> Option<FetchRow> {
-    let mut uid = None;
+/// `UID` is present there or in `leading_uid`.
+fn fetch_row(pairs: &[Item], leading_uid: Option<u32>) -> Option<FetchRow> {
+    let mut uid = leading_uid;
     let mut flags = Vec::new();
     let mut internal_date = None;
     let mut size = None;
