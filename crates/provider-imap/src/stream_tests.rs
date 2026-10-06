@@ -74,6 +74,7 @@ async fn drain(
     let mailbox = inbox();
     let mut stream = Box::pin(stream_email(
         conn,
+        None,
         &mailbox,
         state.as_ref(),
         SyncWindow::full(),
@@ -233,7 +234,7 @@ async fn a_windowed_backfill_fetches_only_the_in_window_uids() {
 
     let window = SyncWindow::since(engine_core::time::CalendarDate::new(2026, 1, 1).unwrap());
     let mailbox = inbox();
-    let mut stream = Box::pin(stream_email(&mut conn, &mailbox, None, window, 2, 0));
+    let mut stream = Box::pin(stream_email(&mut conn, None, &mailbox, None, window, 2, 0));
     let mut chunks = Vec::new();
     while let Some(item) = stream.next().await {
         chunks.push(item.unwrap());

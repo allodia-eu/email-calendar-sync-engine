@@ -27,6 +27,8 @@
 //! account's pool for the pass (`crate::provider`), so concurrent passes run on separate
 //! connections.
 
+use std::sync::Arc;
+
 use engine_core::{
     ids::{MailboxId, ProviderKey},
     mail::Message,
@@ -40,11 +42,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     cursor::MailboxCursor,
     mail::message_from_fetch,
-    metadata_fetch::{
-        FETCH_ITEMS, STRUCTURE_BATCH, STRUCTURE_ITEMS, needs_structure, structure_sets,
-        take_settled,
-    },
+    metadata_fetch::{FETCH_ITEMS, needs_structure, settle_across, spare_helpers},
     parse::FetchRow,
+    pool::ImapPool,
     sync::{effective_uid_next, sync_page_selected, uid_set_spec},
     transport::Connection,
     transport_command::format_imap_date,
@@ -53,6 +53,7 @@ use crate::{
 /// Streams the bound mailbox's email for one pass. See the module docs.
 pub(crate) fn stream_email<'a, S>(
     conn: &'a mut Connection<S>,
+    pool: Option<&'a Arc<ImapPool<S>>>,
     mailbox: &'a MailboxId,
     cursor: Option<&'a SyncState>,
     window: SyncWindow,
@@ -60,7 +61,7 @@ pub(crate) fn stream_email<'a, S>(
     chunk_size: usize,
 ) -> impl Stream<Item = ProviderResult<EmailChunk>> + Send + 'a
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
     async_stream::try_stream! {
         let fetch_batch = conn.negotiated.within_message_limit(fetch_batch);
@@ -116,6 +117,7 @@ where
             let empty = groups.is_empty();
             let scan = backfill_scan(
                 conn,
+                pool,
                 mailbox,
                 uid_validity,
                 groups,
@@ -209,6 +211,7 @@ where
 #[allow(clippy::too_many_arguments)] // the fetch inputs plus the reconcile flag are all distinct
 fn backfill_scan<'c, S>(
     conn: &'c mut Connection<S>,
+    pool: Option<&'c Arc<ImapPool<S>>>,
     mailbox: &'c MailboxId,
     uid_validity: u32,
     groups: Vec<(String, u32)>,
@@ -218,7 +221,7 @@ fn backfill_scan<'c, S>(
     is_fresh: bool,
 ) -> impl Stream<Item = ProviderResult<EmailChunk>> + 'c
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
     async_stream::try_stream! {
         let last_index = groups.len().saturating_sub(1);
@@ -228,41 +231,31 @@ where
         for (index, (spec, group_low)) in groups.into_iter().enumerate() {
             conn.uid_fetch_stream_start(&spec, FETCH_ITEMS).await?;
             let mut buf: Vec<Message> = Vec::new();
-            // The rows whose headers left the attachment flag open wait for further
-            // streamed commands, over just them (`crate::metadata_fetch`); a row the server
-            // returns no structure for goes out as it is once those commands end.
+            // The rows whose headers left the attachment flag open wait for the group's
+            // metadata to end, then are settled at once over this connection and any spare
+            // ones (`crate::metadata_fetch`); a row the server returns no structure for goes
+            // out as it is.
             let mut open: Vec<FetchRow> = Vec::new();
-            let mut sets: Vec<String> = Vec::new();
-            let mut settling = false;
+            let mut ready: Vec<FetchRow> = Vec::new();
+            let mut settled = false;
             loop {
                 let row = match conn.next_fetch_row().await? {
-                    Some(answer) if settling => match take_settled(&mut open, &answer) {
-                        Some(row) => row,
-                        None => continue,
-                    },
                     Some(row) if needs_structure(&row) => {
                         open.push(row);
                         continue;
                     }
                     Some(row) => row,
-                    None if !settling => {
-                        let per_set = conn.negotiated.within_message_limit(STRUCTURE_BATCH);
-                        let uids = open.iter().map(|row| row.uid).collect();
-                        sets = structure_sets(uids, per_set);
-                        sets.reverse();
-                        settling = true;
+                    None if !settled && !open.is_empty() => {
+                        let helpers =
+                            spare_helpers(pool, mailbox.as_str(), uid_validity, open.len()).await;
+                        ready = settle_across(conn, helpers, &mut open).await?;
+                        settled = true;
                         continue;
                     }
-                    None => {
-                        if let Some(set) = sets.pop() {
-                            conn.uid_fetch_stream_start(&set, STRUCTURE_ITEMS).await?;
-                            continue;
-                        }
-                        match open.pop() {
-                            Some(row) => row,
-                            None => break,
-                        }
-                    }
+                    None => match ready.pop().or_else(|| open.pop()) {
+                        Some(row) => row,
+                        None => break,
+                    },
                 };
                 let message = message_from_fetch(&row, mailbox, uid_validity);
                 if is_fresh {

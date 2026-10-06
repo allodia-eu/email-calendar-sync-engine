@@ -173,6 +173,7 @@ async fn the_streamed_backfill_settles_open_rows_with_a_second_command() {
 
     let mut stream = Box::pin(stream_email(
         &mut conn,
+        None,
         &mailbox,
         None,
         SyncWindow::full(),
