@@ -55,8 +55,7 @@ pub(crate) fn synced(
     keys: impl IntoIterator<Item = impl AsRef<str>>,
     observed_from: Option<UtcDateTime>,
 ) -> Result<()> {
-    let since = observed_from.map(convert::instant_to_text);
-    if !any_to_show(tx, since.as_deref())? {
+    if !any_to_show(tx, observed_from)? {
         return Ok(());
     }
     for key in keys {
@@ -65,7 +64,7 @@ pub(crate) fn synced(
             continue;
         };
         let server = row_keywords(tx, scope_key, key)?;
-        let accepted = since.as_deref().map_or(Ok(Vec::new()), |since| {
+        let accepted = observed_from.map_or(Ok(Vec::new()), |since| {
             accepted_since(tx, &account, key, since)
         })?;
         let unsettled = unsettled_edits(tx, &account, key)?;
@@ -128,17 +127,45 @@ fn accepted_since(
     tx: &Transaction<'_>,
     account: &str,
     key: &str,
-    since: &str,
+    since: UtcDateTime,
 ) -> Result<Vec<KeywordEdit>> {
-    edits_where(
-        tx,
-        "SELECT keyword_edit FROM pending_op
-          WHERE account = ?1 AND keyword_edit IS NOT NULL
-            AND state = 'Succeeded' AND settled_at > ?2
-          ORDER BY id",
-        (account, since),
-        key,
-    )
+    Ok(accepted_after(tx, Some(account), since)?
+        .into_iter()
+        .filter(|edit| edit.key.as_str() == key)
+        .collect())
+}
+
+/// The changes accepted after `since`, `account`'s alone when given, in the order queued.
+///
+/// The text of an instant drops the trailing zeros of its fraction, so two instants within one
+/// second do not sort as text. SQL narrows by the whole-second prefix, which is fixed-width and
+/// does sort, and the exact comparison is made on the parsed instant.
+fn accepted_after(
+    tx: &Transaction<'_>,
+    account: Option<&str>,
+    since: UtcDateTime,
+) -> Result<Vec<KeywordEdit>> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT keyword_edit, settled_at FROM pending_op
+              WHERE (?1 IS NULL OR account = ?1) AND keyword_edit IS NOT NULL
+                AND state = 'Succeeded' AND substr(settled_at, 1, 19) >= substr(?2, 1, 19)
+              ORDER BY id",
+        )
+        .map_err(convert::backend)?;
+    let rows = stmt
+        .query_map((account, convert::instant_to_text(since)), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(convert::backend)?;
+    let mut edits = Vec::new();
+    for row in rows {
+        let (edit, settled_at) = row.map_err(convert::backend)?;
+        if convert::parse_instant(&settled_at)? > since {
+            edits.push(serde_json::from_str(&edit).map_err(convert::backend)?);
+        }
+    }
+    Ok(edits)
 }
 
 fn edits_where(
@@ -164,20 +191,25 @@ fn edits_where(
 
 /// Whether any op could change what a just-synced message shows: one carrying a change that is
 /// unsettled, or accepted after `since`. Spares a pass with nothing queued a lookup per message.
-fn any_to_show(tx: &Transaction<'_>, since: Option<&str>) -> Result<bool> {
-    let found: Option<i64> = tx
+fn any_to_show(tx: &Transaction<'_>, since: Option<UtcDateTime>) -> Result<bool> {
+    let unsettled: Option<i64> = tx
         .query_row(
             "SELECT 1 FROM pending_op
               WHERE keyword_edit IS NOT NULL
-                AND (state IN ('Pending', 'InFlight', 'NeedsConfirmation')
-                     OR (?1 IS NOT NULL AND state = 'Succeeded' AND settled_at > ?1))
+                AND state IN ('Pending', 'InFlight', 'NeedsConfirmation')
               LIMIT 1",
-            (since,),
+            [],
             |row| row.get(0),
         )
         .optional()
         .map_err(convert::backend)?;
-    Ok(found.is_some())
+    if unsettled.is_some() {
+        return Ok(true);
+    }
+    let Some(since) = since else {
+        return Ok(false);
+    };
+    Ok(!accepted_after(tx, None, since)?.is_empty())
 }
 
 fn server_set(tx: &Transaction<'_>, account: &str, key: &str) -> Result<Option<BTreeSet<Keyword>>> {

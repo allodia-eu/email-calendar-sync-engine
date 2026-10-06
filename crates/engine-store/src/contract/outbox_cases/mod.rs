@@ -30,6 +30,7 @@ pub(super) use self::{
         a_send_that_failed_stays_listed_until_the_host_acts,
     },
     keyword_edits::{
+        a_change_accepted_within_the_second_a_pass_began_outlasts_it,
         a_change_to_a_message_not_yet_held_shows_when_it_arrives,
         a_queued_keyword_change_shows_at_once_and_survives_a_sync,
         an_accepted_change_outlasts_a_pass_that_read_before_it,

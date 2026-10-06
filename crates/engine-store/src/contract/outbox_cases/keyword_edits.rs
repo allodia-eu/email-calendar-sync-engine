@@ -285,6 +285,39 @@ pub(in crate::contract) async fn an_accepted_change_outlasts_a_pass_that_read_be
     );
 }
 
+/// "After the pass began" holds within one second too, whatever the fractions of the two instants.
+pub(in crate::contract) async fn a_change_accepted_within_the_second_a_pass_began_outlasts_it<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    clock: &ManualClock,
+) {
+    let account = acct("acct-kw-subsecond");
+    let key = pk("m1");
+    stored(store, &account, &key, &[]).await;
+
+    // Each pair is (pass began, change accepted) as offsets into one second, chosen so the
+    // later instant's text sorts first: a whole second against a fraction, and a short fraction
+    // against a longer one.
+    for (n, (began, accepted_at)) in [(0, 120), (100, 120)].into_iter().enumerate() {
+        let op = queue(store, &account, &format!("flag-sub-{n}"), flag(&key, true)).await;
+        let second = clock.now();
+        clock.advance(Duration::from_millis(began));
+        let before = clock.now();
+        clock.advance(Duration::from_millis(accepted_at - began));
+        settle(store, &account, op, accepted(&key)).await;
+
+        server_reports(store, &account, &key, &[], Some(before)).await;
+        assert_eq!(
+            shown(store, &account).await,
+            (false, true),
+            "a pass that began {began} ms into {second} read before a flag accepted at {accepted_at} ms"
+        );
+        clock.advance(Duration::from_millis(1000 - accepted_at));
+        server_reports(store, &account, &key, &[], Some(clock.now())).await;
+    }
+}
+
 /// Changes to one message compose in the order they were queued, and dropping an earlier one
 /// leaves the later ones shown.
 pub(in crate::contract) async fn queued_changes_compose_and_one_can_drop_out<
