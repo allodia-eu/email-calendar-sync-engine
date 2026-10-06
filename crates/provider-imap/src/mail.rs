@@ -117,7 +117,7 @@ pub(crate) fn mailbox_from_list(row: &ListRow, modified_utf7: bool) -> Option<Ma
     } else {
         row.name.clone()
     };
-    let id = MailboxId::try_from(name.as_str()).ok()?;
+    let id = mailbox_id_of(&name)?;
     let delimiter = row.delimiter.as_deref();
     let mut mailbox = Mailbox::new(id, leaf_of(&name, delimiter));
     mailbox.role = role_for(&name, &row.attributes);
@@ -398,7 +398,20 @@ fn role_for(name: &str, attributes: &[String]) -> Option<MailboxRole> {
 
 /// Derives a parent mailbox id from a hierarchical name and its delimiter.
 fn parent_of(name: &str, delimiter: Option<&str>) -> Option<MailboxId> {
-    MailboxId::try_from(&name[..split_at(name, delimiter)?.start]).ok()
+    mailbox_id_of(&name[..split_at(name, delimiter)?.start])
+}
+
+/// The id of the mailbox a full path names: the path itself, except that the inbox is `INBOX`
+/// however the server spells it. RFC 9051 §5.1 makes the reserved name case-insensitive, and a
+/// host binds the inbox by it, so an id in the server's spelling (Yahoo lists `Inbox`) would be
+/// a second scope for the same mailbox.
+fn mailbox_id_of(path: &str) -> Option<MailboxId> {
+    let path = if path.eq_ignore_ascii_case("INBOX") {
+        "INBOX"
+    } else {
+        path
+    };
+    MailboxId::try_from(path).ok()
 }
 
 /// The folder's own name: whatever follows the last delimiter in a hierarchical name, and the

@@ -205,6 +205,33 @@ fn mailbox_from_list_maps_inbox_special_use_and_roleless() {
 }
 
 #[test]
+fn the_inbox_is_listed_as_inbox_however_the_server_spells_it() {
+    // RFC 9051 §5.1: `INBOX` is case-insensitive, so `Inbox` is the same mailbox. A host binds
+    // the inbox by its reserved name; an id in the server's spelling would sync it a second
+    // time under another scope.
+    let rows =
+        crate::parse::parse_list(&[br#"LIST (\HasNoChildren) "/" "Inbox""#.to_vec()]).unwrap();
+    let inbox = mailbox_from_list(&rows[0], true).unwrap();
+    assert_eq!(inbox.id.as_str(), "INBOX");
+    assert_eq!(inbox.role, Some(MailboxRole::Inbox));
+    assert_eq!(inbox.name, "Inbox");
+}
+
+#[test]
+fn a_folder_inside_the_inbox_names_inbox_as_its_parent() {
+    // Courier nests every folder under the inbox. The child's own id is the server's path, which
+    // is what `SELECT` takes; only the reserved top-level name is folded.
+    let rows = crate::parse::parse_list(&[
+        br#"LIST (\HasChildren) "." "Inbox""#.to_vec(),
+        br#"LIST (\HasNoChildren) "." "Inbox.Receipts""#.to_vec(),
+    ])
+    .unwrap();
+    let child = mailbox_from_list(&rows[1], true).unwrap();
+    assert_eq!(child.id.as_str(), "Inbox.Receipts");
+    assert_eq!(child.parent.as_ref().unwrap().as_str(), "INBOX");
+}
+
+#[test]
 fn a_noselect_container_is_listed_but_not_selectable() {
     // Gmail's `[Gmail]` and any server's parent of a nested folder it holds no mail in: the row
     // is a level of the tree, so it stays in the list to keep its children under it, and
