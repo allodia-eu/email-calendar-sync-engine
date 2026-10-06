@@ -1,4 +1,5 @@
-//! The mail row and the message-id graph: schema steps v8 through v10, and v17.
+//! The mail row and the message-id graph: schema steps v8 through v10, and v17; and v18, the
+//! instants every table stores.
 //!
 //! Split from [`super`], which holds the base store, the search layer and the calendar steps.
 //! These are one story — a message's mutable half becoming a table, the graph its conversation
@@ -147,3 +148,11 @@ CREATE TABLE server_keywords (
     PRIMARY KEY (account, provider_key)
 ) STRICT, WITHOUT ROWID;
 ";
+
+/// Migration v18: every stored instant in its fixed-width form,
+/// [`UtcDateTime::to_sortable_string`](engine_core::time::UtcDateTime::to_sortable_string).
+///
+/// No DDL: the step is the rewrite in [`crate::backfill::fixed_width_instants`], which commits with
+/// it. The form a store wrote before dropped a zero fraction and trailing zeros, and so did not
+/// sort as text within one second.
+pub(crate) const V18: &str = "";

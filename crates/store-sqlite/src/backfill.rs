@@ -73,3 +73,60 @@ pub(crate) fn msgid_refs(tx: &Transaction<'_>) -> Result<()> {
     }
     Ok(())
 }
+
+/// Every column that holds an instant, as `(table, column)`. Each is written through
+/// [`convert::instant_to_text`](crate::convert::instant_to_text) and nowhere else, and the guard
+/// test in `migrations` fails when a column holding an instant is missing here.
+pub(crate) const INSTANT_COLUMNS: &[(&str, &str)] = &[
+    ("sync_scope", "lease_expiry"),
+    ("sync_scope", "horizon_start"),
+    ("sync_scope", "horizon_end"),
+    ("event_occurrence", "start_utc"),
+    ("event_occurrence", "end_utc"),
+    ("event_occurrence", "recurrence_id"),
+    ("pending_op", "lease_expiry"),
+    ("pending_op", "next_attempt_at"),
+    ("pending_op", "settled_at"),
+    ("message", "date_utc"),
+    ("message", "last_modified"),
+    ("message_source", "fetched_at"),
+    ("message_body", "fetched_at"),
+    ("contact_photo", "fetched_at"),
+    ("recipient_observation", "sent_at"),
+];
+
+/// Rewrites every stored instant in its fixed-width form (schema v18).
+///
+/// The text an instant was stored as dropped a zero fraction and trailing zeros, which does not
+/// sort as text within one second; SQL orders and filters these columns as text. Rewritten per
+/// distinct value, so a table keyed on one of them (`event_occurrence` is unique on `start_utc`)
+/// never holds two spellings of one instant, which a re-derived row in the new form would
+/// otherwise add beside the old. A value that does not parse is left as it is: it was unreadable
+/// before, and failing the migration over it would leave a store that cannot open.
+pub(crate) fn fixed_width_instants(tx: &Transaction<'_>) -> Result<()> {
+    for (table, column) in INSTANT_COLUMNS {
+        let values: Vec<String> = {
+            let mut stmt = tx
+                .prepare(&format!(
+                    "SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''"
+                ))
+                .map_err(backend)?;
+            let rows = stmt.query_map([], |row| row.get(0)).map_err(backend)?;
+            rows.collect::<rusqlite::Result<_>>().map_err(backend)?
+        };
+        for value in values {
+            let Ok(instant) = crate::convert::parse_instant(&value) else {
+                continue;
+            };
+            let fixed = crate::convert::instant_to_text(instant);
+            if fixed != value {
+                sql::execute(
+                    tx,
+                    &format!("UPDATE {table} SET {column} = ?2 WHERE {column} = ?1"),
+                    (value.as_str(), fixed.as_str()),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
