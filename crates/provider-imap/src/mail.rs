@@ -76,14 +76,15 @@ pub(crate) fn message_from_fetch(
         // string form is, but normalizing it is a later refinement. INTERNALDATE
         // (delivery time) is the reliable instant here.
     }
-    message.has_attachment = row.has_attachment;
-    // `References` is not an ENVELOPE field; it rides a separate
-    // `BODY[HEADER.FIELDS (REFERENCES)]` fetch item (the threading chain). The
-    // value is the raw header line (`References: <a@x> <b@y>\r\n\r\n`); strip the
-    // field name so `extract_message_ids`' bare-value fallback can never mistake
-    // `References:` for an id when the header is empty.
-    if let Some(raw) = &row.references {
-        message.envelope.references = extract_message_ids(strip_header_name(raw));
+    message.has_attachment = row.has_attachment.unwrap_or(false);
+    // `References` is not an ENVELOPE field; it rides the fetched header section (the
+    // threading chain), beside other fields whose values may hold `<…>` too.
+    if let Some(references) = row
+        .header_fields
+        .as_deref()
+        .and_then(|fields| header_field(fields, "References"))
+    {
+        message.envelope.references = extract_message_ids(&references);
     }
     message
 }
@@ -350,15 +351,30 @@ fn extract_message_ids(raw: &str) -> Vec<MessageIdHeader> {
     ids
 }
 
-/// Strips a leading `Header-Name:` field-name prefix from a raw header line, so a
-/// fetched `BODY[HEADER.FIELDS (...)]` value yields only the field body. Returns the
-/// input unchanged when there is no `name:` prefix before the first `<`.
-fn strip_header_name(raw: &str) -> &str {
-    match (raw.find(':'), raw.find('<')) {
-        // A colon that precedes any angle bracket is the field-name separator.
-        (Some(colon), open) if open.is_none_or(|o| colon < o) => raw[colon + 1..].trim(),
-        _ => raw.trim(),
+/// The unfolded value of the field `name` in a raw header section, or `None` when the
+/// section has no such field. A line that starts with whitespace continues the field
+/// before it (RFC 5322 §2.2.3).
+fn header_field(section: &str, name: &str) -> Option<String> {
+    let mut value: Option<String> = None;
+    for line in section.lines() {
+        if line.starts_with([' ', '\t']) {
+            if let Some(value) = value.as_mut() {
+                value.push(' ');
+                value.push_str(line.trim());
+            }
+            continue;
+        }
+        if value.is_some() {
+            break;
+        }
+        let Some((field, rest)) = line.split_once(':') else {
+            continue;
+        };
+        if field.trim().eq_ignore_ascii_case(name) {
+            value = Some(rest.trim().to_owned());
+        }
     }
+    value
 }
 
 /// Whether the attribute list carries `\<attr>` (case-insensitively).

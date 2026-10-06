@@ -49,8 +49,7 @@ fn full_resp(tag: &str, uids: &[u32]) -> String {
             out,
             "* {uid} FETCH (UID {uid} FLAGS () INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" \
              RFC822.SIZE 10 ENVELOPE (NIL \"s{uid}\" NIL NIL NIL NIL NIL NIL NIL \"<m{uid}@h>\") \
-             BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 2 1) \
-             BODY[HEADER.FIELDS (REFERENCES)] \"\")\r\n"
+             BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n"
         )
         .unwrap();
     }

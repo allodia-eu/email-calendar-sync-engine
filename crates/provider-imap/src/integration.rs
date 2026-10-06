@@ -43,7 +43,8 @@ fn fetch_frag(tag: &str, uids: &[u32]) -> String {
             "* {seq} FETCH (UID {uid} FLAGS (\\Seen) \
              INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
              ENVELOPE (NIL \"report {uid}\" ((\"A\" NIL \"alice\" \"test.local\")) NIL NIL \
-             ((\"B\" NIL \"bob\" \"test.local\")) NIL NIL NIL \"<m{uid}@test.local>\"))\r\n"
+             ((\"B\" NIL \"bob\" \"test.local\")) NIL NIL NIL \"<m{uid}@test.local>\") \
+             BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n"
         )
         .unwrap();
     }

@@ -40,7 +40,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     cursor::MailboxCursor,
     mail::message_from_fetch,
-    sync::{FETCH_ITEMS, effective_uid_next, sync_page_selected, uid_set_spec},
+    metadata_fetch::{FETCH_ITEMS, STRUCTURE_ITEMS, needs_structure, structure_set, take_settled},
+    parse::FetchRow,
+    sync::{effective_uid_next, sync_page_selected, uid_set_spec},
     transport::Connection,
     transport_command::format_imap_date,
 };
@@ -223,7 +225,33 @@ where
         for (index, (spec, group_low)) in groups.into_iter().enumerate() {
             conn.uid_fetch_stream_start(&spec, FETCH_ITEMS).await?;
             let mut buf: Vec<Message> = Vec::new();
-            while let Some(row) = conn.next_fetch_row().await? {
+            // The rows whose headers left the attachment flag open wait for a second
+            // streamed command, over just them (`crate::metadata_fetch`); a row the server
+            // returns no structure for goes out as it is once that command ends.
+            let mut open: Vec<FetchRow> = Vec::new();
+            let mut settling = false;
+            loop {
+                let row = match conn.next_fetch_row().await? {
+                    Some(answer) if settling => match take_settled(&mut open, &answer) {
+                        Some(row) => row,
+                        None => continue,
+                    },
+                    Some(row) if needs_structure(&row) => {
+                        open.push(row);
+                        continue;
+                    }
+                    Some(row) => row,
+                    None if !settling && !open.is_empty() => {
+                        conn.uid_fetch_stream_start(&structure_set(&open), STRUCTURE_ITEMS)
+                            .await?;
+                        settling = true;
+                        continue;
+                    }
+                    None => match open.pop() {
+                        Some(row) => row,
+                        None => break,
+                    },
+                };
                 let message = message_from_fetch(&row, mailbox, uid_validity);
                 if is_fresh {
                     present.push(message.id.key().clone());

@@ -300,9 +300,17 @@ is authoritative for the `provider-caldav` calendar client.
   changes no longer needs `Engine::clear_mail_cursors` against a QRESYNC server — a plain
   delta sync reconciles them.
 - **Normalization.** `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
-  BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES)])` (safe metadata — none sets
-  `\Seen`). The `References` header is not an `ENVELOPE` field, so it rides a
+  BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)])` (safe metadata — none
+  sets `\Seen`). The `References` header is not an `ENVELOPE` field, so it rides a
   separate peek-safe body-header item to feed threading (`threading.md`).
+  `BODYSTRUCTURE` is a **second** command, `UID FETCH <set> (UID BODYSTRUCTURE)`, over only the
+  rows whose top-level headers do not show one text body (`engine-mime::is_single_text_body`:
+  `text/plain` or `text/html`, or no `Content-Type`, and no `attachment` disposition); such a
+  message has no other part, so its flag is `false` without asking. Yahoo builds
+  `BODYSTRUCTURE` at about 25 ms a message, single-part ones included, against under 3 ms for
+  the rest of the metadata together, and about half of a typical inbox is one text body. The
+  streamed backfill keeps its row-by-row commits: a settled row goes out as it arrives, and the
+  open ones as their structure does.
   `BODYSTRUCTURE` feeds `Message.has_attachment` without downloading parts: explicit
   attachments or named non-CID parts count; CID inline resources do not, a `text/plain`/
   `text/html` body part is never counted on a bare `name=` alone, RFC 2231 split/encoded
@@ -956,7 +964,7 @@ folders into Trash is proven offline only: all three servers file a folder insid
 - **Charset coverage.** RFC 2047 decoding covers UTF-8, ISO-8859-1, and Windows-1252
   (ISO-8859-1 read as its CP1252 superset); other charsets fall back to a UTF-8-lossy
   read (a full charset table is a later refinement). `References` *is* fetched (a
-  separate `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` item — see Normalization above).
+  field of the `BODY.PEEK[HEADER.FIELDS (…)]` item; see Normalization above).
   Outbound non-ASCII subjects/display names are RFC 2047 `B`-encoded but **not folded**
   into 75-octet words (a later refinement).
 - **Server literals are capped at 64 MiB.** A `{n}` larger than the cap is rejected

@@ -223,7 +223,7 @@ fn fetch_bodystructure_marks_regular_attachments() {
         r#" "MIXED" ("BOUNDARY" "b")))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(true));
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn fetch_bodystructure_keeps_cid_inline_images_out_of_the_attachment_flag() {
         r#""<logo@cid>" NIL "BASE64" 12 NIL ("INLINE" ("FILENAME" "logo.png")) NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(!rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(false));
 }
 
 #[test]
@@ -243,7 +243,7 @@ fn fetch_bodystructure_keeps_undisposed_cid_images_out_of_the_attachment_flag() 
         r#""<logo@cid>" NIL "BASE64" 12 NIL NIL NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(!rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(false));
 }
 
 #[test]
@@ -253,7 +253,7 @@ fn fetch_bodystructure_marks_inline_named_files_without_content_id() {
         r#"NIL NIL "BASE64" 12 NIL ("INLINE" ("FILENAME" "preview.pdf")) NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(true));
 }
 
 #[test]
@@ -268,7 +268,7 @@ fn fetch_bodystructure_ignores_a_name_param_on_a_text_body_part() {
         r#" "ALTERNATIVE" ("BOUNDARY" "a")))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(!rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(false));
 }
 
 #[test]
@@ -280,7 +280,7 @@ fn fetch_bodystructure_marks_inline_files_named_via_rfc2231() {
         r#"NIL ("INLINE" ("FILENAME*0*" "utf-8''%E2%82%AC" "FILENAME*1*" "rate.bin")) NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(true));
 }
 
 #[test]
@@ -294,7 +294,7 @@ fn fetch_bodystructure_reads_message_global_disposition_like_rfc822() {
         r#"("ATTACHMENT" ("FILENAME" "forward.eml")) NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(true));
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn fetch_reads_a_references_header_as_a_quoted_string() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].uid, 1);
     assert_eq!(
-        rows[0].references.as_deref(),
+        rows[0].header_fields.as_deref(),
         Some("References: <a@x> <b@y>")
     );
     // The envelope alongside it is still parsed (the spec drain stops at `]`).
@@ -329,7 +329,7 @@ fn fetch_reads_a_references_header_as_a_literal() {
     let rows = parse_fetch(&[line]).unwrap();
     assert_eq!(rows[0].uid, 7);
     assert_eq!(
-        rows[0].references.as_deref(),
+        rows[0].header_fields.as_deref(),
         Some("References: <a@x> <b@y>\r\n\r\n")
     );
 }
@@ -343,11 +343,11 @@ fn fetch_handles_a_missing_or_empty_references_header() {
         r#"BODY[HEADER.FIELDS (REFERENCES)] "")"#,
     );
     let rows = parse_fetch(&lines(&[with_empty])).unwrap();
-    assert_eq!(rows[0].references.as_deref(), Some(""));
+    assert_eq!(rows[0].header_fields.as_deref(), Some(""));
 
     let without = "2 FETCH (UID 2 RFC822.SIZE 10)";
     let rows = parse_fetch(&lines(&[without])).unwrap();
-    assert_eq!(rows[0].references, None);
+    assert_eq!(rows[0].header_fields, None);
 }
 
 #[test]

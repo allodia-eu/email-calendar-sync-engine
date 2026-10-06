@@ -106,7 +106,7 @@ async fn an_arrival_still_comes_back_whole() {
     let state = "a2 OK UID FETCH completed\r\n";
     let arrivals = "* 5 FETCH (UID 11 FLAGS (\\Seen) \
          INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
-         ENVELOPE (NIL \"real subject\" ((\"A\" NIL \"a\" \"h\")) NIL NIL NIL NIL NIL NIL \"<m11@h>\"))\r\n\
+         ENVELOPE (NIL \"real subject\" ((\"A\" NIL \"a\" \"h\")) NIL NIL NIL NIL NIL NIL \"<m11@h>\") BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
          a3 OK UID FETCH completed\r\n";
     let (stream, recorded) = MockStream::new(script(&[GREETING, LOGIN_OK, state, arrivals]));
     let mut conn = Connection::open(stream).await.unwrap();
@@ -183,7 +183,7 @@ async fn a_mailbox_with_nothing_synced_yet_asks_only_for_arrivals() {
     // the state command (and its `1:0` range) is never issued.
     let arrivals = "* 1 FETCH (UID 1 FLAGS () \
          INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
-         ENVELOPE (NIL \"first\" ((\"A\" NIL \"a\" \"h\")) NIL NIL NIL NIL NIL NIL \"<m1@h>\"))\r\n\
+         ENVELOPE (NIL \"first\" ((\"A\" NIL \"a\" \"h\")) NIL NIL NIL NIL NIL NIL \"<m1@h>\") BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
          a2 OK UID FETCH completed\r\n";
     let (stream, recorded) = MockStream::new(script(&[GREETING, LOGIN_OK, arrivals]));
     let mut conn = Connection::open(stream).await.unwrap();
@@ -217,7 +217,7 @@ async fn an_unsolicited_flag_row_becomes_a_state_change() {
     let state = "a2 OK UID FETCH completed\r\n";
     let arrivals = "* 2 FETCH (UID 11 FLAGS (\\Flagged \\Seen) \
          INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
-         ENVELOPE (NIL \"real subject\" ((\"A\" NIL \"a\" \"h\")) NIL NIL NIL NIL NIL NIL \"<m2@h>\"))\r\n\
+         ENVELOPE (NIL \"real subject\" ((\"A\" NIL \"a\" \"h\")) NIL NIL NIL NIL NIL NIL \"<m2@h>\") BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
          * 9 FETCH (UID 9 FLAGS (\\Seen) MODSEQ (40))\r\n\
          a3 OK UID FETCH completed\r\n";
     let mut conn = logged_in(script(&[GREETING, LOGIN_OK, state, arrivals])).await;
@@ -262,7 +262,7 @@ async fn an_arrival_that_was_also_expunged_does_not_re_upsert_the_newest_stored_
     let state = "a2 OK UID FETCH completed\r\n";
     let arrivals = "* 9 FETCH (UID 9 FLAGS (\\Seen) \
          INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 20 \
-         ENVELOPE (NIL \"already stored\" ((\"A\" NIL \"a\" \"h\")) NIL NIL NIL NIL NIL NIL \"<m9@h>\"))\r\n\
+         ENVELOPE (NIL \"already stored\" ((\"A\" NIL \"a\" \"h\")) NIL NIL NIL NIL NIL NIL \"<m9@h>\") BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
          a3 OK UID FETCH completed\r\n";
     let mut conn = logged_in(script(&[GREETING, LOGIN_OK, state, arrivals])).await;
 
