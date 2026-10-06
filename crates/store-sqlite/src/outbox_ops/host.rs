@@ -84,11 +84,14 @@ pub(crate) fn cancel(
         tx.execute(
             "UPDATE pending_op
                 SET state = 'Cancelled', token = token + 1, lease_expiry = NULL,
-                    next_attempt_at = NULL
+                    next_attempt_at = NULL, settled_at = ?2
               WHERE id = ?1",
-            [op.id],
+            (op.id, convert::instant_to_text(now)),
         )
         .map_err(convert::backend)?;
+        if let Some(edit) = &op.keyword_edit {
+            crate::keyword_edits::settled(tx, &op.account, edit, PendingOpState::Cancelled)?;
+        }
         Ok(None)
     };
     super::durably(conn, |conn| host_verb(conn, account, op_id, now, withdraw))

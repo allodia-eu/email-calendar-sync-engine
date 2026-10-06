@@ -742,9 +742,13 @@ fencing discipline as scopes. The thin inline drivers built on this are
 `engine_sync::{submit_mail, edit_mail, create_calendar_event, patch_calendar_event,
 delete_calendar_event, put_calendar_document}`. `edit_mail` applies a `MailEdit`
 (mark-read/flag, move, or permanent delete) and serializes on the target message key
-(`mail:{key}`), recording a plain classified `Failed` on error (no `NeedsConfirmation`: a
-mail edit is not post-`DATA`-ambiguous like an SMTP send, and a stale-target `Conflict`
-self-corrects after a re-sync). The calendar drivers do the same, and serialize on the
+(`mail:{key}`). It is `queue_mail_edit` (record the op, no connection needed) then
+`send_mail_edit` (claim, call the provider, record), and a host that shows the edit before
+the server answers calls the two separately. A failure the outbox will retry is not an error:
+the op parks and the answer is `MailEditSent::Queued`. Only one that settles the op is
+returned, as a plain classified `Failed` (no `NeedsConfirmation`: a mail edit is not
+post-`DATA`-ambiguous like an SMTP send, and a stale-target `Conflict` self-corrects after a
+re-sync). The calendar drivers do the same, and serialize on the
 event's **`UID`** (`event:{uid}`) — the cross-system identity, which exists *before* a
 create has a provider id and survives a transport that assigns its own (JMAP), so writes to
 one event never race on either provider.
@@ -768,6 +772,27 @@ one event never race on either provider.
   and cannot expand occurrences, which is exactly why the reconcile is not folded into them.
   It can never fail the write: a write that landed but did not reconcile is still a write,
   reported as `Reconciled::{Busy, Failed}` rather than as an error.
+
+- **One exception: a queued keyword change is shown before the server has it.** A mark-read
+  or a flag is a change the user watches for, and an outbox may hold it for minutes (offline,
+  rate limited, backing off). So a `MailEdit::SetKeywords` op carries a
+  `write::KeywordEdit`, and the store applies it to the message **in the transaction that
+  queues the op**. The server stays the authority, kept beside the message:
+  - the store records the keyword set the server last reported for a message with a change
+    still unsettled (`server_keywords`), and shows it with every unsettled change applied, in
+    the order queued;
+  - a sync's write is the server's word, so it replaces that set and the changes go back on
+    top: a sync never undoes a change still waiting;
+  - an accepted change joins the server's set, and one refused for good or withdrawn simply
+    stops being applied, so a refusal takes back only its own change and keeps whatever the
+    server reported meanwhile;
+  - a change accepted after a pass began reading (`ApplyBatch::observed_from`, the pass's
+    claim instant) is applied over that pass too, because it may have read the message
+    before the change landed.
+
+  A move or a delete is not shown early: hiding a row is the host's to do and undo, and the
+  next sync brings the server's word. The rule is the same in both stores, held by the
+  contract suite (`outbox_cases/keyword_edits.rs`).
 
 - **An op says which write it is.** `PendingOp::kind` is a `PendingOpKind`, one variant per
   driver, stored in its own column. The payload is an *untagged* serialization of the

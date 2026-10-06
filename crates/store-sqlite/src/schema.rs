@@ -497,4 +497,4 @@ UPDATE pending_op SET handed_over = token WHERE state = 'InFlight' AND kind = 'M
 
 mod mail;
 
-pub(crate) use mail::{V8, V9, V10};
+pub(crate) use mail::{V8, V9, V10, V17};

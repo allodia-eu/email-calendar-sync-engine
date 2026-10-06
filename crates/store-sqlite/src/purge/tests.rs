@@ -123,6 +123,11 @@ fn seed_two_accounts() -> Connection {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO server_keywords (account, provider_key, keywords) VALUES (?1, ?2, '[]')",
+            (account, key),
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO recipient_coverage
                  (account, window_json, sent_collection_present)
              VALUES (?1, '{\"kind\":\"full\"}', 1)",

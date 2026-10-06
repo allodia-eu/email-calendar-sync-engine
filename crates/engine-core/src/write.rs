@@ -20,6 +20,11 @@ use serde_json::Value;
 
 use crate::{error::FailureClass, ids::ProviderKey, sync::SearchDomain, time::Duration};
 
+#[path = "write_keyword_edit.rs"]
+mod keyword_edit;
+
+pub use keyword_edit::KeywordEdit;
+
 /// Defines a non-empty string newtype used by the write contract.
 macro_rules! nonempty_str {
     ($(#[$meta:meta])* $name:ident) => {
@@ -215,6 +220,11 @@ pub struct PendingOp {
     pub resource_key: ResourceKey,
     /// The operation description, interpreted by the outbox/provider layer.
     pub payload: Value,
+    /// The keyword change this op makes, which the store shows from the moment it is queued
+    /// until the server confirms it or refuses it for good ([`KeywordEdit`]). `None` for every
+    /// op whose effect the store learns only from the server.
+    #[serde(default)]
+    pub keyword_edit: Option<KeywordEdit>,
 }
 
 impl PendingOp {
@@ -232,7 +242,15 @@ impl PendingOp {
             depends_on: Vec::new(),
             resource_key,
             payload,
+            keyword_edit: None,
         }
+    }
+
+    /// The same op, showing `edit` in the store while it is queued.
+    #[must_use]
+    pub fn with_keyword_edit(mut self, edit: KeywordEdit) -> Self {
+        self.keyword_edit = Some(edit);
+        self
     }
 }
 

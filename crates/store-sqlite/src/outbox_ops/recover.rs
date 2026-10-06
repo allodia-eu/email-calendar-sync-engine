@@ -57,12 +57,17 @@ pub(super) fn record(
     outcome: &PendingOutcome,
 ) -> Result<()> {
     let recorded = op.recorded(outcome, now)?;
+    let settled_at = recorded
+        .state
+        .is_terminal()
+        .then(|| convert::instant_to_text(now));
     tx.execute(
         "UPDATE pending_op
             SET state = ?1, lease_expiry = NULL, attempts = ?2, next_attempt_at = ?3,
                 failure_class = ?4, detail = ?5,
-                handed_over = CASE WHEN ?6 THEN handed_over ELSE NULL END
-          WHERE id = ?7",
+                handed_over = CASE WHEN ?6 THEN handed_over ELSE NULL END,
+                settled_at = ?7
+          WHERE id = ?8",
         (
             convert::state_to_text(recorded.state),
             i64::from(recorded.attempts),
@@ -70,10 +75,16 @@ pub(super) fn record(
             recorded.failure_class.map(convert::class_to_text),
             recorded.detail,
             recorded.keeps_hand_over,
+            settled_at,
             op.id,
         ),
     )
     .map_err(convert::backend)?;
+    if recorded.state.is_terminal()
+        && let Some(edit) = &op.keyword_edit
+    {
+        crate::keyword_edits::settled(tx, &op.account, edit, recorded.state)?;
+    }
     Ok(())
 }
 

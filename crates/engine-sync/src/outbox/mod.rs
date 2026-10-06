@@ -38,13 +38,16 @@ pub use drafts::{DraftPut, PutDraftOutcome, delete_draft_mail, put_draft_mail};
 pub use drain::{DrainOutcome, DrainReport, DrainedOp, drain_outbox};
 use engine_core::{
     ids::AccountId,
-    write::{PendingOp, PendingOutcome},
+    write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_store::{
     ClaimRejection, LeaseRequest, LeasedPendingOp, OpLease, PendingOpClaim, Store, StoreError,
     WorkerId,
 };
-pub use mail::{MailEditOutcome, ReportOutcome, edit_mail, report_message};
+pub use mail::{
+    MailEditOutcome, MailEditSent, ReportOutcome, edit_mail, mail_edit_op, queue_mail_edit,
+    report_message, send_mail_edit,
+};
 pub use mailbox::{MailboxEditOutcome, edit_mailbox};
 pub use mailbox_plan::{MailboxChange, MailboxNameError, MailboxPlace, validate_mailbox_name};
 pub use submit::{SubmitOutcome, submit_mail};
@@ -88,19 +91,34 @@ async fn enqueue_and_claim<S: Store>(
     op: PendingOp,
 ) -> Result<LeasedPendingOp, SyncError> {
     let op_id = store.enqueue_pending_op(account.clone(), op).await?;
+    claim_waiting(store, account, worker, ttl, op_id)
+        .await?
+        .map_err(|reason| {
+            SyncError::Outbox(format!(
+                "enqueued op {op_id:?} was not claimable: {reason:?}"
+            ))
+        })
+}
+
+/// Claims op `op_id` by id, waiting out a resource another op holds for up to
+/// [`RESOURCE_WAIT`]; any other refusal, or a resource still held past it, is returned for the
+/// caller to act on.
+async fn claim_waiting<S: Store>(
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+    op_id: PendingOpId,
+) -> Result<Result<LeasedPendingOp, ClaimRejection>, SyncError> {
     let deadline = Instant::now() + RESOURCE_WAIT;
     loop {
         let req = LeaseRequest::new(worker.clone(), ttl);
         match store.claim_pending_op(account.clone(), op_id, req).await? {
-            PendingOpClaim::Leased(leased) => return Ok(*leased),
+            PendingOpClaim::Leased(leased) => return Ok(Ok(*leased)),
             PendingOpClaim::Refused(ClaimRejection::Busy) if Instant::now() < deadline => {
                 tokio::time::sleep(RESOURCE_POLL).await;
             }
-            PendingOpClaim::Refused(reason) => {
-                return Err(SyncError::Outbox(format!(
-                    "enqueued op {op_id:?} was not claimable: {reason:?}"
-                )));
-            }
+            PendingOpClaim::Refused(reason) => return Ok(Err(reason)),
         }
     }
 }

@@ -10,8 +10,9 @@ use engine_core::{
 use engine_provider::{Draft, MailEdit, MessageReport, Provider};
 use engine_store::{Confirmation, OpRejection, PendingOpRow, PendingOpState, Store, StoreRead};
 use engine_sync::{
-    DrainReport, MailEditOutcome, PutDraftOutcome, ReportOutcome, SubmitOutcome, SyncError,
-    delete_draft_mail, drain_outbox, edit_mail, put_draft_mail, report_message, submit_mail,
+    DrainReport, MailEditSent, PutDraftOutcome, ReportOutcome, SubmitOutcome, SyncError,
+    delete_draft_mail, drain_outbox, edit_mail, put_draft_mail, queue_mail_edit, report_message,
+    send_mail_edit, submit_mail,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -132,34 +133,24 @@ impl Engine {
             .map_err(|err| map_sync_error(SyncError::Provider(err)))
     }
 
-    /// Applies a [`MailEdit`] to one of the account's messages through the durable
-    /// outbox — mark-read/flag (`SetKeywords`), move to another folder
-    /// (`MoveTo` — also the mechanism behind a Trash "delete", the host resolving the
-    /// Trash mailbox), or permanent delete (`Delete`). The edit is recorded as a
-    /// pending op (idempotent by `idempotency`) **before** the provider side effect,
-    /// so a crash never loses it (`north-star.md` Write Contract). `idempotency` must
-    /// be **unique per edit intent** — deriving it only from the target message would
-    /// wrongly collapse mark-read then mark-unread into one op. Returns the resolved
-    /// message key and the op id (pollable via [`Engine::pending_op_state`]).
+    /// Applies a [`MailEdit`] to one of the account's messages through the durable outbox, in
+    /// one call: [`Engine::queue_mail_edit`], then [`Engine::send_mail_edit`].
     ///
-    /// The next [`Engine::sync_mail`] reconciles the local rows to the new server
-    /// state: an edit's response is a receipt, not the message (on IMAP, the delta reads
-    /// the change back through `CHANGEDSINCE`, or through the reconciling delta on a server
-    /// without QRESYNC — `imap-smtp.md`).
+    /// A mark-read/flag (`SetKeywords`), a move to another folder (`MoveTo`, also the mechanism
+    /// behind a Trash "delete", the host resolving the Trash mailbox), or a permanent delete
+    /// (`Delete`). A host that shows the edit before the server answers queues and sends in two
+    /// calls instead, and redraws between them.
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Sync`] if the edit fails: the op is first recorded
-    /// `Failed` (a stale-target `Conflict` — e.g. an IMAP UID under a changed
-    /// `UIDVALIDITY` — means re-sync then retry), and the error then returns. A store
-    /// failure also surfaces as [`ApiError::Sync`].
+    /// As [`Engine::queue_mail_edit`] and [`Engine::send_mail_edit`].
     pub async fn edit_mail<P: Provider>(
         &self,
         provider: &P,
         account: &AccountId,
         idempotency: &str,
         edit: &MailEdit,
-    ) -> Result<MailEditOutcome, ApiError> {
+    ) -> Result<MailEditSent, ApiError> {
         edit_mail(
             provider,
             &self.store,
@@ -167,6 +158,67 @@ impl Engine {
             worker(),
             LEASE_TTL,
             idempotency,
+            edit,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
+
+    /// Queues `edit` durably and returns its op, without reaching the server.
+    ///
+    /// The op is recorded **before** any provider side effect, so a crash never loses it
+    /// (`north-star.md` Write Contract), and needs no connection: an edit made offline queues the
+    /// same way and goes out with the next [`Engine::drain_outbox`]. `idempotency` must be
+    /// **unique per edit intent**: deriving it only from the target message would collapse
+    /// mark-read then mark-unread into one op.
+    ///
+    /// **A keyword change is shown from now on.** Every read of the message carries it until the
+    /// server accepts it, when the next sync confirms it, or refuses it for good, when it is
+    /// taken back. A sync in between does not undo it (`store-and-sync.md`). A move or a delete
+    /// is not shown: the store learns of it from the next sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the edit cannot be encoded or the store fails.
+    pub async fn queue_mail_edit(
+        &self,
+        account: &AccountId,
+        idempotency: &str,
+        edit: &MailEdit,
+    ) -> Result<PendingOpId, ApiError> {
+        queue_mail_edit(&self.store, account, idempotency, edit)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Sends the queued edit `op` now. `edit` is the edit it was queued with.
+    ///
+    /// [`MailEditSent::Applied`] carries the resolved message key; the next
+    /// [`Engine::sync_mail`] reconciles the rest of the stored message. A refusal the outbox will
+    /// retry (offline, rate limited, a timeout, another write to the message still in flight) is
+    /// not an error but [`MailEditSent::Queued`]: the op waits for [`Engine::drain_outbox`], and a
+    /// keyword change stays shown meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] when the server refused the edit for good, after the store has
+    /// taken back a keyword change it showed (a stale-target `Conflict`, such as an IMAP UID
+    /// under a changed `UIDVALIDITY`, means re-sync then retry); when the op is unknown or already
+    /// settled; or when the store fails.
+    pub async fn send_mail_edit<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        op: PendingOpId,
+        edit: &MailEdit,
+    ) -> Result<MailEditSent, ApiError> {
+        send_mail_edit(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            op,
             edit,
         )
         .await

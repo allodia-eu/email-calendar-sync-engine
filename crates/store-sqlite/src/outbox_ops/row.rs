@@ -6,7 +6,7 @@
 
 use engine_core::{
     time::UtcDateTime,
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, ResourceKey},
+    write::{IdempotencyKey, KeywordEdit, PendingOp, PendingOpId, PendingOpKind, ResourceKey},
 };
 use engine_store::{PendingOpState, Result};
 use rusqlite::{OptionalExtension, Transaction};
@@ -31,6 +31,10 @@ pub(super) struct LoadedOp {
     pub(super) detail: Option<String>,
     /// The token of the attempt that recorded handing the message over, while it matters.
     pub(super) handed_over: Option<u64>,
+    /// The account the op belongs to.
+    pub(super) account: String,
+    /// The keyword change the store shows while the op is unsettled.
+    pub(super) keyword_edit: Option<KeywordEdit>,
 }
 
 impl LoadedOp {
@@ -47,6 +51,7 @@ impl LoadedOp {
             depends_on: self.depends_on.clone(),
             resource_key: ResourceKey::new(self.resource_key.clone()).map_err(convert::backend)?,
             payload: self.payload.clone(),
+            keyword_edit: self.keyword_edit.clone(),
         })
     }
 }
@@ -77,7 +82,7 @@ impl LoadedOp {
 /// The `SELECT` list every op load shares, in [`LoadedOp`]'s field order.
 pub(super) const OP_COLUMNS: &str = "id, kind, idempotency_key, resource_key, depends_on, \
      payload, state, token, lease_expiry, attempts, next_attempt_at, failure_class, detail, \
-     handed_over";
+     handed_over, account, keyword_edit";
 
 /// Loads one op by id, scoped to `account` so an id from another account reads as
 /// absent rather than as someone else's work.
@@ -143,6 +148,8 @@ type OpRow = (
     Option<String>,
     Option<String>,
     Option<i64>,
+    String,
+    Option<String>,
 );
 
 /// Reads an op row's columns without interpreting them.
@@ -162,6 +169,8 @@ pub(super) fn read_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<OpRow> {
         r.get(11)?,
         r.get(12)?,
         r.get(13)?,
+        r.get(14)?,
+        r.get(15)?,
     ))
 }
 
@@ -182,6 +191,8 @@ pub(super) fn parse_op_row(raw: OpRow) -> Result<LoadedOp> {
         failure_class,
         detail,
         handed_over,
+        account,
+        keyword_edit,
     ) = raw;
     Ok(LoadedOp {
         id,
@@ -198,6 +209,10 @@ pub(super) fn parse_op_row(raw: OpRow) -> Result<LoadedOp> {
         failure_class: convert::parse_class(failure_class.as_deref())?,
         detail,
         handed_over: handed_over.map(convert::generation_from_i64).transpose()?,
+        account,
+        keyword_edit: keyword_edit
+            .map(|json| serde_json::from_str(&json).map_err(convert::backend))
+            .transpose()?,
     })
 }
 

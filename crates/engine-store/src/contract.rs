@@ -266,6 +266,20 @@ where
     outbox_cases::a_send_that_failed_stays_listed_until_the_host_acts(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::a_sent_copy_resolves_a_dead_send_nothing_recovered_yet(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::a_queued_keyword_change_shows_at_once_and_survives_a_sync(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::only_a_change_that_will_not_happen_goes_back(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::an_accepted_change_outlasts_a_pass_that_read_before_it(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_change_accepted_within_the_second_a_pass_began_outlasts_it(&store, &clock)
+        .await;
+    let (store, clock) = make();
+    outbox_cases::queued_changes_compose_and_one_can_drop_out(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_change_to_a_message_not_yet_held_shows_when_it_arrives(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.

@@ -56,6 +56,7 @@ mod mail_account;
 mod mail_edit;
 mod mail_sync;
 mod mailbox_edit;
+mod queued_edits;
 mod reconcile_state;
 mod sent_copy;
 mod state_change;
@@ -76,6 +77,8 @@ enum Fault {
     UnfiledCopy,
     /// Reporting a message is throttled.
     Report,
+    /// Editing a message is throttled: retryable, so the edit stays queued.
+    ThrottledEdit,
     /// The send is lost *after* `DATA` — the ambiguous, unretryable case.
     AmbiguousSubmit,
     /// Every write's revision guard is refused (a CalDAV `412`, a JMAP `stateMismatch`).

@@ -29,6 +29,7 @@ pub(super) const MAIL_TABLES: &[&str] = &[
     "message_body",
     "recipient_coverage",
     "recipient_index_state",
+    "server_keywords",
 ];
 
 /// Account-keyed tables whose every row is contacts.
