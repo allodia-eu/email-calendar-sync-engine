@@ -538,6 +538,31 @@ error, not a silent drop — a `$junk` write that reported success and did nothi
 the shape this mapping invites — and for the three junk keywords the error names
 `report_message` as the way to say it.
 
+## Personal or Workspace (`GoogleClient::affiliation`)
+
+The Google side of the neutral `engine_core::affiliation::Affiliation` (Graph's is in
+[`graph.md`](graph.md)): a Workspace domain has a directory and Gmail does not, and a host decides
+what to offer before it reaches either. `GET /oauth2/v3/userinfo`:
+
+- **A Workspace account's reply carries `hd`**, the hosted domain, answered as
+  `Affiliation::Organization`, named by that domain: the only name the reply gives the
+  organization.
+- **A personal account's reply has no `hd`**, the answer `Affiliation::Personal`.
+- **`userinfo.email` alone is enough**, observed live on both kinds of account with a token
+  narrowed to that scope. `hd` is the field Google documents on the ID token; `userinfo` carries
+  it too, and needs no `openid`.
+- **A token without `userinfo.email` gets `401`** ("Invalid Credentials"), which says nothing about
+  the account and stays an error, so a host never stores "personal" for a grant that could not ask.
+
+Rejected: the ID token's `hd` (only issued when `openid` was granted at sign-in), and the People
+API's own-profile `DOMAIN_PROFILE` source (it names no organization, and needs a People scope a
+calendar-only account does not hold).
+
+✅ **Live-verified** (`tests/live_affiliation.rs`) against a personal Gmail account and a
+Workspace account in one run, both with tokens narrowed to `userinfo.email`; shown red with the
+two tokens swapped. Fixtures: `identity/userinfo_workspace.json`,
+`identity/userinfo_personal.json`, `error/userinfo_without_scope.json`.
+
 ## Sender identities (send-as settings)
 
 `users.settings.sendAs` backs the neutral `sender_identities`/`set_sender_name` verbs

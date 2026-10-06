@@ -50,6 +50,9 @@ on the account.
 | `error/quota_exceeded.json` | the `403` a sustained width-8 drain draws | Gmail's **per-minute quota** refusal, verbatim: `PERMISSION_DENIED` with `errors[0].reason: rateLimitExceeded`, and a `google.rpc.ErrorInfo` naming `totalQueryCostPerMinutePerUser`, `6000`, `1/min/{project}/{user}` and `window_start_time`. The window figure is what `src/throttle.rs` turns into a wait, so this file is where "the server named an instant" is pinned — but see the next row, because this is the **minority** shape. |
 | `error/quota_exceeded_untimed.json` | the same call, a different refusal minutes later | The same `403` with the **same** `ErrorInfo` and **no** `window_start_time`. Two refusals in three look like this (14,710 measured; 32% carry the field), so the instant is a bonus and never a guarantee. Kept beside its twin so nobody reads one fixture as a contract. |
 | `error/concurrency_exceeded.json` | the `429` a salvo of 200 draws | Gmail's **other** limit: `RESOURCE_EXHAUSTED`, "Too many concurrent requests for user." Captured to keep the two apart — a count of refusals cannot say which one it counted. |
+| `identity/userinfo_workspace.json` | `GET /oauth2/v3/userinfo` with a token holding `userinfo.email` alone, on a Workspace account | the `hd` field that makes the account an organization's (`affiliation`); the domain, address, `sub` and picture are fakes |
+| `identity/userinfo_personal.json` | the same call on a personal account | the same reply without `hd`: the answer "personal" |
+| `error/userinfo_without_scope.json` | the same call with a token holding only `calendar` | the `401` a grant without `userinfo.email` gets, which says nothing about the account |
 
 ## Real-behavior findings (captured, not assumed)
 
