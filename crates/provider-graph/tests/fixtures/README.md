@@ -49,6 +49,8 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `error/photo_image_not_found.json` | `GET /me/photos/240x240/$value` with no photo set | the 404 that means "there is no image" |
 | `error/photo_invalid_size.json` | `GET /me/photos/999x999/$value` | the 404 that means "that size is not offered" (see Finding 16) |
 | `me.json` | `GET /me` | account identity probe |
+| `organization/organization.json` | `GET /organization?$select=id`, on an Exchange Online tenant | an organization's account named by its tenant (`affiliation`); the tenant id is replaced with a fake GUID |
+| `error/organization_msa_unsupported.json` | the same call on a personal account | the `400 BadRequest` that is the answer "personal" |
 
 ## Real-behavior findings (captured, not assumed)
 

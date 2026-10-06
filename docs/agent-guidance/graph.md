@@ -776,6 +776,38 @@ coverable against a contact someone set up by hand. `live_a_saved_contact_with_a
 walks whatever the account has rather than naming them, so renaming is fine; removing the
 one with a picture is what would silently uncover the path.
 
+## Personal or organization (`GraphClient::affiliation`)
+
+One credential is either a personal Microsoft account or one an Entra tenant administers, and
+the difference decides surfaces a host offers before it reaches them: a colleague directory
+(`/users`), a shared mailbox. `GraphClient::affiliation` answers with the neutral
+`engine_core::affiliation::Affiliation`, from `GET /organization?$select=id`:
+
+- **An organization's account gets its tenant back** (`value[0].id`), as
+  `Affiliation::Organization(OrganizationId)`.
+- **A personal account is refused with `400 BadRequest`**, "This API is not supported for MSA
+  accounts". That refusal is the answer `Affiliation::Personal`, matched on the status *and* the
+  envelope's `BadRequest` code. Anything else (`401`, `403`, `429`, a `5xx`, another `400` code)
+  is an error, never a guess, so a host retries rather than storing a wrong answer.
+- **Asked at the root, never under a principal**: a shared mailbox belongs to the organization of
+  whoever opens it.
+- **`User.Read` is enough**, which every Graph account here grants.
+
+Rejected alternatives, each of which also tells the two apart on today's accounts: the access
+token's `tid` claim (Microsoft documents access tokens as opaque to clients, and a personal
+account's is not a JWT at all), the id token's `tid` (needs `openid` on every sign-in), and the
+shape of `/me`'s `id` (16 hex digits on a personal account, a GUID in a tenant; observed, not
+documented).
+
+✅ **Live-verified** (`tests/live_affiliation.rs`) against an outlook.com account and an Exchange
+Online tenant in one run, so an adapter stuck on either answer fails it; shown red with the two
+tokens swapped. Fixtures: `organization/organization.json`,
+`error/organization_msa_unsupported.json`.
+
+Google has the same split (Gmail against a Workspace domain) and no `affiliation` yet: its
+directory source tolerates the consumer account's `400 FAILED_PRECONDITION` instead
+([`google.md`](google.md)).
+
 ## The mailbox's sender identity (read-only)
 
 `GET {principal}?$select=displayName,mail,userPrincipalName` backs the neutral

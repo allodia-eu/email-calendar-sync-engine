@@ -74,6 +74,8 @@ pub use engine_core::scheduling::{
     find_calendar_part, normalize_address, reconcile,
 };
 pub use engine_core::{
+    // What an adapter's `affiliation` answers, which a host stores with the account.
+    affiliation::Affiliation,
     contact::{
         AddressBook, ContactCard, ContactDraft, ContactField, ContactFieldSet, ContactKind,
         ContactPatch, ContactResource, ContactSourceClass, FieldPatch,
@@ -85,7 +87,7 @@ pub use engine_core::{
     // reach-around this re-export block exists to prevent.
     ids::{
         AccountId, AddressBookId, CalendarId, ContactId, EventId, MailboxId, MessageIdHeader,
-        PersonId, ProviderKey, ThreadId, Uid,
+        OrganizationId, PersonId, ProviderKey, ThreadId, Uid,
     },
     mail::{
         AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxRole, Message,
