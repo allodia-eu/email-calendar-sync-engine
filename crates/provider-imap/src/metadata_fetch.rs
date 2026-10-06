@@ -26,6 +26,10 @@ pub(crate) const FETCH_ITEMS: &str = concat!(
 /// The second command's items, for the rows [`FETCH_ITEMS`] left open.
 pub(crate) const STRUCTURE_ITEMS: &str = "UID BODYSTRUCTURE";
 
+/// The most UIDs one [`STRUCTURE_ITEMS`] command names: about 5.5 KB of set at worst, under the
+/// 8192-octet command line RFC 7162 §4 asks a client to stay within.
+pub(crate) const STRUCTURE_BATCH: usize = 500;
+
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// `UID FETCH <set>` of [`FETCH_ITEMS`], with every row's attachment flag settled.
     pub(crate) async fn uid_fetch_metadata(&mut self, set: &str) -> ImapResult<Vec<FetchRow>> {
@@ -34,31 +38,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Ok(rows)
     }
 
-    /// Settles the attachment flag of each row that [`needs_structure`], with one
-    /// `UID FETCH` of [`STRUCTURE_ITEMS`] over those rows. A row the server returns no
-    /// structure for (expunged meanwhile) keeps `None`.
+    /// Settles the attachment flag of each row that [`needs_structure`], with a
+    /// `UID FETCH` of [`STRUCTURE_ITEMS`] per [`structure_sets`] group of those rows. A row
+    /// the server returns no structure for (expunged meanwhile) keeps `None`.
     pub(crate) async fn settle_attachments(&mut self, rows: &mut [FetchRow]) -> ImapResult<()> {
-        let mut open: Vec<u32> = rows
+        let open: Vec<u32> = rows
             .iter()
             .filter(|row| needs_structure(row))
             .map(|row| row.uid)
             .collect();
-        if open.is_empty() {
-            return Ok(());
-        }
-        open.sort_unstable();
-        for answer in self
-            .uid_fetch(&uid_set_spec(&open), STRUCTURE_ITEMS)
-            .await?
-        {
-            let Some(found) = answer.has_attachment else {
-                continue;
-            };
-            if let Some(row) = rows
-                .iter_mut()
-                .find(|row| row.uid == answer.uid && needs_structure(row))
-            {
-                row.has_attachment = Some(found);
+        for set in structure_sets(open, self.negotiated.within_message_limit(STRUCTURE_BATCH)) {
+            for answer in self.uid_fetch(&set, STRUCTURE_ITEMS).await? {
+                let Some(found) = answer.has_attachment else {
+                    continue;
+                };
+                if let Some(row) = rows
+                    .iter_mut()
+                    .find(|row| row.uid == answer.uid && needs_structure(row))
+                {
+                    row.has_attachment = Some(found);
+                }
             }
         }
         Ok(())
@@ -71,12 +70,13 @@ pub(crate) fn needs_structure(row: &FetchRow) -> bool {
     row.has_attachment.is_none() && row.envelope.is_some()
 }
 
-/// The UID set naming every row in `open`.
-pub(crate) fn structure_set(open: &[FetchRow]) -> String {
-    let mut uids: Vec<u32> = open.iter().map(|row| row.uid).collect();
+/// The UID sets naming `uids`, at most `per_set` UIDs each, so neither the server's message
+/// limit nor its command-line length is exceeded: the open rows are scattered, so a set names
+/// most of them one by one.
+pub(crate) fn structure_sets(mut uids: Vec<u32>, per_set: usize) -> Vec<String> {
     uids.sort_unstable();
     uids.dedup();
-    uid_set_spec(&uids)
+    uids.chunks(per_set.max(1)).map(uid_set_spec).collect()
 }
 
 /// Takes the row in `open` that `answer`, a [`STRUCTURE_ITEMS`] row, settles, with its flag

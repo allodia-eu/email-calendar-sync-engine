@@ -306,7 +306,10 @@ is authoritative for the `provider-caldav` calendar client.
   `BODYSTRUCTURE` is a **second** command, `UID FETCH <set> (UID BODYSTRUCTURE)`, over only the
   rows whose top-level headers do not show one text body (`engine-mime::is_single_text_body`:
   `text/plain` or `text/html`, or no `Content-Type`, and no `attachment` disposition); such a
-  message has no other part, so its flag is `false` without asking. Yahoo builds
+  message has no other part, so its flag is `false` without asking. A section that repeats
+  either field is read from the structure too. The open rows go out in sets of at most 500 UIDs
+  (fewer under a `MESSAGELIMIT`), since they are scattered and a set names most of them one by
+  one. Yahoo builds
   `BODYSTRUCTURE` at about 25 ms a message, single-part ones included, against under 3 ms for
   the rest of the metadata together, and about half of a typical inbox is one text body. The
   streamed backfill keeps its row-by-row commits: a settled row goes out as it arrives, and the
