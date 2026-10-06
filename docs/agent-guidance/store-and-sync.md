@@ -604,6 +604,10 @@ or in `engine-core` (e.g. the Windows-1252 subject fix); a purely additive chang
 not. The cursor clear leaves scope rows and objects in place — the re-snapshot overwrites
 and tombstones them — so nothing is orphaned, and the durable outbox is untouched.
 
+A fix to one adapter's **sync**, rather than to decoding, does not need this: the adapter
+versions its own cursor and reads an older one as no cursor, so only its scopes re-sync
+(IMAP: `CURSOR_VERSION`, `imap-smtp.md`).
+
 The **host-triggered reset** (`Engine::reset`) uses the same primitive: clear the cursors
 so the next sync is a full refetch. It is the manual counterpart of the automatic
 version-driven clear — a "reset / clean state" action a host exposes, and the escape hatch

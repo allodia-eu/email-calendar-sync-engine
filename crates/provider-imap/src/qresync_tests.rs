@@ -45,7 +45,7 @@ async fn a_flag_change_to_synced_mail_costs_flags_alone() {
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
 
-    let next_cursor = SyncState::new("v2021165119;n69;m227");
+    let next_cursor = SyncState::new("v2021165119;n69;g1;m227");
     // Prior UIDNEXT 69 == this SELECT's, so nothing arrived: the state half is the
     // whole pass.
     let page = delta_page(
@@ -116,7 +116,7 @@ async fn an_arrival_still_comes_back_whole() {
         &mut conn,
         &inbox(),
         1000,
-        SyncState::new("v1000;n12;m40"),
+        SyncState::new("v1000;n12;g1;m40"),
         9,
         10,
         12,
@@ -160,7 +160,7 @@ async fn an_idle_mailbox_does_not_refetch_its_newest_message() {
         &mut conn,
         &inbox(),
         1000,
-        SyncState::new("v1000;n10;m40"),
+        SyncState::new("v1000;n10;g1;m40"),
         9,
         10,
         10,
@@ -193,7 +193,7 @@ async fn a_mailbox_with_nothing_synced_yet_asks_only_for_arrivals() {
         &mut conn,
         &inbox(),
         1000,
-        SyncState::new("v1000;n2;m4"),
+        SyncState::new("v1000;n2;g1;m4"),
         1,
         1,
         2,
@@ -226,7 +226,7 @@ async fn an_unsolicited_flag_row_becomes_a_state_change() {
         &mut conn,
         &inbox(),
         1000,
-        SyncState::new("v1000;n12;m40"),
+        SyncState::new("v1000;n12;g1;m40"),
         9,
         10,
         12,
@@ -270,7 +270,7 @@ async fn an_arrival_that_was_also_expunged_does_not_re_upsert_the_newest_stored_
         &mut conn,
         &inbox(),
         1000,
-        SyncState::new("v1000;n12;m40"),
+        SyncState::new("v1000;n12;g1;m40"),
         9,
         10,
         12,
@@ -298,7 +298,7 @@ async fn a_qresync_delta_with_no_changes_is_empty() {
         &mut conn,
         &inbox(),
         1000,
-        SyncState::new("v1000;n5;m9"),
+        SyncState::new("v1000;n5;g1;m9"),
         9,
         5,
         5,
@@ -322,7 +322,7 @@ async fn a_qresync_delta_surfaces_a_fetch_error() {
         &mut conn,
         &inbox(),
         1000,
-        SyncState::new("v1000;n5;m9"),
+        SyncState::new("v1000;n5;g1;m9"),
         9,
         5,
         5,
@@ -346,7 +346,7 @@ async fn a_vanished_range_expands_to_every_removed_key() {
         &mut conn,
         &inbox(),
         1000,
-        SyncState::new("v1000;n10;m20"),
+        SyncState::new("v1000;n10;g1;m20"),
         7,
         10,
         10,

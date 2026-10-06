@@ -50,6 +50,10 @@ pub(crate) enum Extension {
     /// `PARTIAL` (RFC 9394) — a `FETCH` can ask for the first `n` messages of a set, which
     /// pages a mailbox by message count rather than by UID.
     Partial,
+    /// `XYMHIGHESTMODSEQ` — Yahoo's: `SELECT` and `STATUS` report a per-folder
+    /// `HIGHESTMODSEQ` without CONDSTORE, and it moves on every change to the folder (an
+    /// arrival, a flag, a removal). So an unchanged value means an unchanged folder.
+    XymHighestModseq,
 }
 
 impl Extension {
@@ -62,6 +66,7 @@ impl Extension {
             Self::Qresync => "QRESYNC",
             Self::UidOnly => "UIDONLY",
             Self::Partial => "PARTIAL",
+            Self::XymHighestModseq => "XYMHIGHESTMODSEQ",
         }
     }
 
@@ -73,7 +78,7 @@ impl Extension {
     pub(crate) const fn folded_into_rev2(self) -> bool {
         match self {
             Self::Idle | Self::ListStatus | Self::SpecialUse => true,
-            Self::Qresync | Self::UidOnly | Self::Partial => false,
+            Self::Qresync | Self::UidOnly | Self::Partial | Self::XymHighestModseq => false,
         }
     }
 
@@ -83,7 +88,11 @@ impl Extension {
     pub(crate) const fn needs_enable(self) -> bool {
         match self {
             Self::Qresync | Self::UidOnly => true,
-            Self::Idle | Self::ListStatus | Self::SpecialUse | Self::Partial => false,
+            Self::Idle
+            | Self::ListStatus
+            | Self::SpecialUse
+            | Self::Partial
+            | Self::XymHighestModseq => false,
         }
     }
 }
@@ -220,6 +229,7 @@ impl Negotiated {
             Extension::Qresync,
             Extension::UidOnly,
             Extension::Partial,
+            Extension::XymHighestModseq,
         ]
         .into_iter()
         .filter(|ext| self.has(*ext))

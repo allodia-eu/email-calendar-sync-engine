@@ -74,7 +74,7 @@ async fn first_sync_snapshots_a_uid_window_newest_first() {
     assert_eq!(page.changed[2].id.as_str(), "imap:v1000:u6@INBOX");
     assert_eq!(page.present.len(), 3);
     assert!(page.removed.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "v1000;n9");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n9;g1;r");
     // The next window ends just below this one.
     assert_eq!(page_high(page.next_page.as_ref().unwrap()), Some(5));
     // The client fetched exactly the newest window, including the References header.
@@ -142,7 +142,7 @@ async fn a_uidvalidity_reset_forces_a_snapshot() {
     let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
     let mut conn = logged_in(server).await;
 
-    let stale = SyncState::new("v111;n9");
+    let stale = SyncState::new("v111;n9;g1");
     let page = sync_page(&mut conn, &inbox(), Some(&stale), None, 50, None)
         .await
         .unwrap();
@@ -151,7 +151,7 @@ async fn a_uidvalidity_reset_forces_a_snapshot() {
     // Keys embed the NEW validity, so every old-validity row tombstones.
     assert_eq!(page.changed[0].id.as_str(), "imap:v222:u3@INBOX");
     assert_eq!(page.present.len(), 3);
-    assert_eq!(page.next_cursor.as_str(), "v222;n4");
+    assert_eq!(page.next_cursor.as_str(), "v222;n4;g1;r");
 }
 
 #[tokio::test]
@@ -172,7 +172,7 @@ async fn uid_next_is_derived_when_the_server_omits_it() {
     assert_eq!(page.kind, SyncKind::Snapshot);
     assert_eq!(page.changed.len(), 3);
     // Derived UIDNEXT = highest UID (3) + 1.
-    assert_eq!(page.next_cursor.as_str(), "v100;n4");
+    assert_eq!(page.next_cursor.as_str(), "v100;n4;g1;r");
     assert!(written(&recorded).contains("UID FETCH * (UID)"));
 }
 
@@ -190,7 +190,7 @@ async fn an_empty_mailbox_snapshots_to_nothing() {
     // An empty present set tombstones every local row — the mailbox was emptied.
     assert!(page.present.is_empty());
     assert_eq!(page.total, Some(0));
-    assert_eq!(page.next_cursor.as_str(), "v1000;n1");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n1;g1;r");
 }
 
 #[tokio::test]
@@ -239,7 +239,7 @@ async fn a_windowed_snapshot_with_no_matches_fetches_nothing() {
     assert!(page.changed.is_empty());
     assert!(page.present.is_empty());
     assert_eq!(page.total, Some(0));
-    assert_eq!(page.next_cursor.as_str(), "v1000;n9");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n9;g1;r");
     assert!(!written(&recorded).contains("UID FETCH"));
 }
 
@@ -331,7 +331,7 @@ async fn a_qresync_delta_reconciles_flag_changes_and_expunges() {
     conn.login("alice", "pw").await.unwrap();
     conn.force_enabled("QRESYNC");
 
-    let cursor = SyncState::new("v1000;n5;m9");
+    let cursor = SyncState::new("v1000;n5;g1;m9");
     let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
         .await
         .unwrap();
@@ -343,7 +343,7 @@ async fn a_qresync_delta_reconciles_flag_changes_and_expunges() {
     assert_eq!(page.removed.len(), 1);
     assert_eq!(page.removed[0].as_str(), "imap:v1000:u3@INBOX");
     // The new modseq baseline rides the cursor forward.
-    assert_eq!(page.next_cursor.as_str(), "v1000;n8;m20");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n8;g1;m20;r");
 
     let sent = written(&recorded);
     assert!(sent.contains("SELECT \"INBOX\" (CONDSTORE)"), "{sent}");
@@ -374,7 +374,7 @@ async fn a_qresync_snapshot_records_the_modseq_baseline() {
         .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
     assert_eq!(page.changed.len(), 3);
-    assert_eq!(page.next_cursor.as_str(), "v1000;n4;m12");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n4;g1;m12;r");
     assert!(written(&recorded).contains("SELECT \"INBOX\" (CONDSTORE)"));
 }
 
@@ -393,7 +393,7 @@ async fn the_first_sync_after_upgrade_re_snapshots_to_establish_the_baseline() {
     conn.login("alice", "pw").await.unwrap();
     conn.force_enabled("QRESYNC");
 
-    let cursor = SyncState::new("v1000;n5"); // pre-QRESYNC: no modseq
+    let cursor = SyncState::new("v1000;n5;g1"); // pre-QRESYNC: no modseq
     let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
         .await
         .unwrap();
@@ -412,7 +412,7 @@ async fn the_first_sync_after_upgrade_re_snapshots_to_establish_the_baseline() {
         7,
         "a snapshot tombstones against the full set"
     );
-    assert_eq!(page.next_cursor.as_str(), "v1000;n8;m20");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n8;g1;m20;r");
     let sent = written(&recorded);
     assert!(!sent.contains("CHANGEDSINCE"), "no baseline yet: {sent}");
     assert!(

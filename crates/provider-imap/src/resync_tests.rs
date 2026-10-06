@@ -77,7 +77,7 @@ async fn without_new_mail_the_delta_reconciles_the_flags_of_what_is_stored() {
     );
     let (mut conn, recorded) = logged_in(script(&[GREETING, LOGIN_OK, &select, &flags])).await;
 
-    let cursor = SyncState::new("v1000;n10");
+    let cursor = SyncState::new("v1000;n10;g1");
     let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 0, None)
         .await
         .unwrap();
@@ -97,7 +97,7 @@ async fn without_new_mail_the_delta_reconciles_the_flags_of_what_is_stored() {
             .contains(&Keyword::system(SystemKeyword::Flagged))
     );
     assert_eq!(page.patched.len(), 3);
-    assert_eq!(page.next_cursor.as_str(), "v1000;n10");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n10;g1;r");
     assert!(page.next_page.is_none());
     assert!(written(&recorded).contains("UID FETCH 1:9 (UID FLAGS)"));
 }
@@ -111,7 +111,7 @@ async fn new_mail_comes_whole_and_the_mail_already_held_comes_as_its_flags() {
     let (mut conn, recorded) =
         logged_in(script(&[GREETING, LOGIN_OK, &select, &flags, &full])).await;
 
-    let cursor = SyncState::new("v1000;n5");
+    let cursor = SyncState::new("v1000;n5;g1");
     let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 0, None)
         .await
         .unwrap();
@@ -122,7 +122,7 @@ async fn new_mail_comes_whole_and_the_mail_already_held_comes_as_its_flags() {
     assert_eq!(page.patched.len(), 2);
     assert_eq!(page.present.len(), 5);
     assert_eq!(page.total, Some(3));
-    assert_eq!(page.next_cursor.as_str(), "v1000;n8");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n8;g1;r");
     let sent = written(&recorded);
     assert!(sent.contains("UID FETCH 1:4 (UID FLAGS)"), "{sent}");
     assert!(
@@ -143,7 +143,7 @@ async fn the_sync_depth_window_bounds_both_halves() {
     ]))
     .await;
 
-    let cursor = SyncState::new("v1000;n5");
+    let cursor = SyncState::new("v1000;n5;g1");
     let page = sync_page(
         &mut conn,
         &inbox(),
@@ -182,7 +182,7 @@ async fn each_fetch_names_no_more_messages_than_one_batch() {
     ]))
     .await;
 
-    let cursor = SyncState::new("v1000;n10");
+    let cursor = SyncState::new("v1000;n10;g1");
     let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 4, None)
         .await
         .unwrap();
