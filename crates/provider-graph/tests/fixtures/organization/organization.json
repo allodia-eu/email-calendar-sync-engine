@@ -1,0 +1,8 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#organization(id)",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-00000000feed"
+    }
+  ]
+}

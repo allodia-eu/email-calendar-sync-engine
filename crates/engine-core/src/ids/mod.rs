@@ -210,7 +210,7 @@ mod contact;
 mod dav;
 mod mail;
 
-pub use account::AccountId;
+pub use account::{AccountId, OrganizationId};
 pub use calendar::{CalendarId, EventId, Uid};
 pub use contact::{AddressBookId, ContactId, PersonId};
 pub use dav::DavCollectionId;
