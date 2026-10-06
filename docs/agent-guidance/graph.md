@@ -804,8 +804,7 @@ Online tenant in one run, so an adapter stuck on either answer fails it; shown r
 tokens swapped. Fixtures: `organization/organization.json`,
 `error/organization_msa_unsupported.json`.
 
-Google has the same split (Gmail against a Workspace domain) and no `affiliation` yet: its
-directory source tolerates the consumer account's `400 FAILED_PRECONDITION` instead
+Google has the same split (Gmail against a Workspace domain), answered from `userinfo`'s `hd`
 ([`google.md`](google.md)).
 
 ## The mailbox's sender identity (read-only)
