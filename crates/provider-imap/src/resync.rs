@@ -9,7 +9,7 @@
 //! message the server no longer returned (expunged, or moved by this or another client) is
 //! tombstoned at the end of the pass.
 //!
-//! A sync-depth window bounds both halves through one `UID SEARCH SINCE`, so mail outside it is
+//! A sync-depth window bounds both halves through `UID SEARCH SINCE`, so mail outside it is
 //! neither fetched nor counted present. Each `UID FETCH` names at most `limit` UIDs, because a
 //! server may cap how many messages one command touches (RFC 9738 `MESSAGELIMIT`). Like the
 //! QRESYNC delta, the pass is one page.

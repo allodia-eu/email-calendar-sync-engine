@@ -203,12 +203,12 @@ is authoritative for the `provider-caldav` calendar client.
   changes depth without reconnecting the provider; `ImapConfig::with_since(date)`
   survives only as the `default_sync_window` the whole-scope `sync_email` drain fetches
   under. Either way it bounds a **snapshot/backfill** to mail delivered on or after
-  `date`: a single `UID SEARCH SINCE <dd-Mon-yyyy>` (`transport::uid_search_since`,
-  parsed by `parse_search`, tolerating both classic `* SEARCH` and extended
-  `* ESEARCH … ALL`) yields the in-window UIDs, and the sync starts at the **lowest** of
+  `date`: `UID SEARCH SINCE <dd-Mon-yyyy>` (`transport_search`, split by UID span above a
+  `MESSAGELIMIT`, parsed by `parse_search`, tolerating both classic `* SEARCH` and
+  extended `* ESEARCH … ALL`) yields the in-window UIDs, and the sync starts at the **lowest** of
   them (older mail is never fetched), reporting their count as the `total` progress
   denominator. No matches yields an empty snapshot that still tombstones stale rows
-  below the window. A **delta** issues no `SEARCH`, so the fetch is unbounded; the
+  below the window. A **QRESYNC delta** issues no `SEARCH`, so the fetch is unbounded; the
   orchestrator drops any arrival the window does not admit, which is what stops an old
   message *filed* into the folder (a fresh UID, since IMAP has no in-place edit) from
   re-entering. With no cutoff (the default) the whole mailbox
@@ -226,11 +226,29 @@ is authoritative for the `provider-caldav` calendar client.
   the pass's `present` set, so the final chunk tombstones whatever the server no longer
   holds (expunged, or moved by any client). The state changes ride an intermediate chunk,
   because the final one commits as a snapshot and a snapshot carries no partials. A
-  sync-depth window bounds both halves through one `UID SEARCH SINCE`, and every `FETCH`
-  names at most `fetch_batch` UIDs, which keeps it under a server's RFC 9738
-  `MESSAGELIMIT` (Yahoo's is 1000). CONDSTORE/QRESYNC stay optional capabilities, not
+  sync-depth window bounds both halves through `UID SEARCH SINCE`, and every `FETCH`
+  names at most `fetch_batch` UIDs (see **Message limits** below). CONDSTORE/QRESYNC stay
+  optional capabilities, not
   assumptions (`providers.md`); the cost of not having them is one flags line per message
   per pass.
+- **Message limits and UID mode** (RFC 9738, RFC 9586, RFC 9394). A server advertising
+  `MESSAGELIMIT=<n>` may refuse or cut short a command over `n` messages. Every sync `FETCH`
+  is capped at `n` (`Negotiated::within_message_limit`), including a page whose caller set no
+  limit. A window search (`transport_search`) that returns `n` matches, or is refused with
+  `NO [LIMIT]`, is read as cut off: the window is then decided from each message's own
+  `INTERNALDATE`, compared by day as `SINCE` compares, fetched `PARTIAL 1:<n>` at a time
+  where `PARTIAL` is advertised and in UID spans of width `n` otherwise. Yahoo is why: it
+  answers `UID SEARCH SINCE` with the newest `n` matches by date and a plain `OK`, in either
+  mode, and cuts before any other criterion, so narrowing by UID finds nothing more; its
+  search `PARTIAL` is ignored, and any range not starting at 1 is `BAD`. Its `FETCH`
+  `PARTIAL` works as specified, which is what pages by message count rather than by UID.
+  Where `UIDONLY` is advertised the client enables it, because Yahoo documents its default
+  mode as showing a folder above `n` only in part. On the account tested it did not: the
+  default mode showed all 2584 messages, and UID mode only turned an over-limit `FETCH` into
+  `NO [LIMIT]` with partial results. Stalwart offers `UIDONLY` as well, so the harness
+  suites run in UID mode. Every command already addresses messages by UID, so the
+  only change on the wire is that fetch responses arrive as `* <uid> UIDFETCH (…)`, which
+  the fetch, body and `IDLE` parsers read as rows numbered by UID.
 - **CONDSTORE/QRESYNC incremental delta** (RFC 7162; `qresync` module). After login the
   client issues `CAPABILITY` (capabilities are advertised only post-auth) and, when the
   server lists `QRESYNC`, `ENABLE QRESYNC` — best-effort, so a server that lists it but
@@ -855,15 +873,19 @@ folders into Trash is proven offline only: all three servers file a folder insid
   `Inbox`; it advertises **no `CONDSTORE`/`QRESYNC`** (a proprietary `XYMHIGHESTMODSEQ`
   instead, which is why its `SELECT` still reports `HIGHESTMODSEQ`), answers
   `ENABLE QRESYNC` with an empty `ENABLED` and `ENABLE CONDSTORE` with `ENABLED CONDSTORE`,
-  so it takes the reconciling delta above; it caps a command at `MESSAGELIMIT=1000`; and it
-  advertises `UIDONLY`, which this client does not enable.
+  so it takes the reconciling delta above. Its documentation lists `CONDSTORE` and
+  `QRESYNC`, but once `ENABLE CONDSTORE` is confirmed a `CHANGEDSINCE` fetch is
+  `NO [CANNOT]`, so no form of incremental flag sync is open to it. It states
+  `MESSAGELIMIT=1000` and confirms `ENABLE UIDONLY`; its search and `PARTIAL` behaviour is
+  under **Message limits and UID mode** above. Its `IDLE` reports no expunges (documented),
+  which only the reconciling delta catches.
 - **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
   **implemented** for servers that advertise QRESYNC (RFC 7162) — the common case
   (Stalwart, Dovecot, Cyrus, Gmail). A server without QRESYNC takes the reconciling delta
   above, which reads every held message's flags each pass. A **CONDSTORE-only** server
-  (CONDSTORE without QRESYNC, Yahoo once enabled) takes it too: we gate the incremental
-  delta on QRESYNC because the `VANISHED` expunge half needs it. Using `CHANGEDSINCE` for
-  the flag half on such a server, beside the present set, is a possible later refinement.
+  takes it too: we gate the incremental delta on QRESYNC because the `VANISHED` expunge half
+  needs it. Using `CHANGEDSINCE` for the flag half on such a server, beside the present set,
+  is a possible later refinement, though not for Yahoo, whose `CHANGEDSINCE` is refused.
   Its present set is not paged: one `UID FETCH … (UID FLAGS)` group per `fetch_batch`
   UIDs, all in one pass.
 - **QRESYNC delta is a single page.** The QRESYNC delta issues one
@@ -961,6 +983,7 @@ whole rule:
   need announcing, in a single command.
 - **QRESYNC is not folded in.** rev2 took only its `CLOSED` response code (item 9), so
   CONDSTORE/QRESYNC keeps its own capability and its own `ENABLE`.
+- **Neither is UIDONLY** (RFC 9586), which needs its own `ENABLE` on either dialect.
 - **Folded in ≠ will arrive.** rev2 folds in SPECIAL-USE's *attributes* and makes them base
   `LIST` data (§7.3.1) — it defines **no** `RETURN (SPECIAL-USE)` option of its own, which
   reads like a rev2 session never has to ask. **Dovecot's rev2 disproves that**: it

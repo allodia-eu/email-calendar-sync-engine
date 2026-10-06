@@ -59,7 +59,7 @@ fn classify(line: &[u8]) -> IdleLine {
     if first.eq_ignore_ascii_case("VANISHED") {
         return IdleLine::Changed;
     }
-    // The numeric forms: `* <n> EXISTS|EXPUNGE|FETCH` are changes; `* <n> RECENT`
+    // The numeric forms: `* <n> EXISTS|EXPUNGE|FETCH|UIDFETCH` are changes; `* <n> RECENT`
     // (and anything else) is informational. A non-numeric, non-VANISHED/BYE head
     // (`OK`, `FLAGS`, `CAPABILITY`, …) is informational.
     if first.parse::<u64>().is_ok() {
@@ -67,7 +67,8 @@ fn classify(line: &[u8]) -> IdleLine {
             Some(kind)
                 if kind.eq_ignore_ascii_case("EXISTS")
                     || kind.eq_ignore_ascii_case("EXPUNGE")
-                    || kind.eq_ignore_ascii_case("FETCH") =>
+                    || kind.eq_ignore_ascii_case("FETCH")
+                    || kind.eq_ignore_ascii_case("UIDFETCH") =>
             {
                 IdleLine::Changed
             }

@@ -77,8 +77,16 @@ fn account() -> AccountId {
 
 /// One whole email pass over the inbox.
 async fn pass(provider: &impl Provider, cursor: Option<&SyncState>) -> Vec<EmailChunk> {
+    pass_within(provider, cursor, SyncWindow::full()).await
+}
+
+async fn pass_within(
+    provider: &impl Provider,
+    cursor: Option<&SyncState>,
+    window: SyncWindow,
+) -> Vec<EmailChunk> {
     let account = account();
-    let mut stream = provider.stream_email(&account, cursor, SyncWindow::full(), 200, 0);
+    let mut stream = provider.stream_email(&account, cursor, window, 200, 0);
     let mut chunks = Vec::new();
     while let Some(chunk) = stream.next().await {
         chunks.push(chunk.expect("the pass must complete"));
@@ -172,4 +180,33 @@ async fn a_flag_set_after_the_first_pass_comes_back_on_the_next() {
         assert_eq!(present(&second), held);
         assert!(second.last().unwrap().patched.is_empty());
     }
+}
+
+/// The keys of every message a pass fetched.
+fn fetched(chunks: &[EmailChunk]) -> BTreeSet<ProviderKey> {
+    chunks
+        .iter()
+        .flat_map(|c| c.changed.iter().map(|m| m.id.key().clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_window_holding_more_messages_than_the_limit_is_found_whole() {
+    // Yahoo states `MESSAGELIMIT=1000` and answers a `UID SEARCH SINCE` matching more with the
+    // first 1000 and a plain `OK`. A window reaching back past every message must find what a
+    // full pass finds. Meaningful only on an inbox above the limit, so it says when it is not.
+    let target = target!();
+    let provider = inbox(&target).await;
+    let full = fetched(&pass(&provider, None).await);
+    if full.len() <= 1000 {
+        eprintln!(
+            "inconclusive: the inbox holds {} messages, not more than 1000",
+            full.len()
+        );
+    }
+    let since = engine_core::time::CalendarDate::new(1990, 1, 1).unwrap();
+    let windowed = pass_within(&provider, None, SyncWindow::since(since)).await;
+
+    assert_eq!(fetched(&windowed).len(), full.len());
+    assert_eq!(present(&windowed), full);
 }

@@ -113,6 +113,7 @@ mod transport_append;
 mod transport_auth;
 mod transport_command;
 mod transport_read;
+mod transport_search;
 mod transport_select;
 mod transport_session;
 mod transport_starttls;
@@ -126,6 +127,8 @@ mod integration;
 mod mock;
 #[cfg(test)]
 mod process_kill_tests;
+#[cfg(test)]
+mod uidonly_tests;
 
 pub use account::ImapAccount;
 pub use config::{ImapConfig, ImapSecurity};
