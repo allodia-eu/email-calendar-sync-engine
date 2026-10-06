@@ -92,7 +92,7 @@ async-stream = "0.3.6"
 tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread"] }
 # SQLite backend: `bundled` compiles a pinned SQLite amalgamation (FTS5 enabled),
 # so the build needs no system libsqlite3 and every platform agrees on one engine.
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.40.1", features = ["bundled", "functions"] }
 tempfile = "3.27.0"
 # Recurrence expansion resolves wall-clock times through IANA zones. We force the
 # bundled, version-pinned tzdb and disable jiff's defaults so it never reads the

@@ -460,3 +460,38 @@ fn v18_rewrites_stored_instants_into_the_form_that_sorts() {
     .unwrap();
     assert_eq!(table_count(&conn, "event_occurrence"), 1);
 }
+
+/// A stored value v18 cannot read as an instant is left exactly as it was, and so is a NULL: the
+/// step rewrites what it understands and fails on nothing else.
+#[test]
+fn v18_leaves_a_value_it_cannot_read_as_it_was() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run(&mut conn, &MIGRATIONS[..17]).unwrap();
+    conn.execute_batch(
+        "INSERT INTO pending_op
+             (account, idempotency_key, resource_key, depends_on, payload, state, token,
+              settled_at)
+         VALUES ('a', 'k1', 'r', '[]', '{}', 'Succeeded', 0, 'not an instant'),
+                ('a', 'k2', 'r', '[]', '{}', 'Pending', 0, NULL),
+                ('a', 'k3', 'r', '[]', '{}', 'Succeeded', 0, '2026-10-06T10:00:00Z');",
+    )
+    .unwrap();
+
+    migrate(&mut conn).unwrap();
+
+    let settled: Vec<Option<String>> = conn
+        .prepare("SELECT settled_at FROM pending_op ORDER BY idempotency_key")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        settled,
+        [
+            Some("not an instant".to_owned()),
+            None,
+            Some("2026-10-06T10:00:00.000000000Z".to_owned()),
+        ]
+    );
+}
