@@ -26,7 +26,7 @@
 //!
 //! `STRICT` enforces column types; the composite-key tables are `WITHOUT ROWID`
 //! (clustered by their key), while `pending_op` keeps a rowid so it maps onto
-//! `PendingOpId`. Time is ISO-8601 `TEXT` (sortable and exact to nanoseconds);
+//! `PendingOpId`. Time is fixed-width ISO-8601 `TEXT` (`convert::instant_to_text`);
 //! generations and ids are `INTEGER`; opaque normalized payloads are `TEXT` JSON
 //! (never queried in SQL — structured filters use derived columns, not payload
 //! introspection — so JSONB would only cost debuggability and portability here).
@@ -497,4 +497,4 @@ UPDATE pending_op SET handed_over = token WHERE state = 'InFlight' AND kind = 'M
 
 mod mail;
 
-pub(crate) use mail::{V8, V9, V10, V17};
+pub(crate) use mail::{V8, V9, V10, V17, V18};

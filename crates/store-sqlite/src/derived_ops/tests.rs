@@ -289,8 +289,9 @@ fn re_expansion_updates_version_and_keeps_instants_byte_stable() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(start, "2026-03-01T09:00:00Z");
-    assert_eq!(end, "2026-03-01T09:15:00Z");
+    // The fixed-width form: the same instant written again is the same bytes.
+    assert_eq!(start, "2026-03-01T09:00:00.000000000Z");
+    assert_eq!(end, "2026-03-01T09:15:00.000000000Z");
     assert_eq!(version, "2025b");
 }
 

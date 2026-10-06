@@ -224,7 +224,11 @@ fn date_bounds(
 }
 
 fn day_start(date: CalendarDate) -> String {
-    format!("{date}T00:00:00Z")
+    // Through the store's own format: a hand-built `T00:00:00Z` sorts after a stored midnight.
+    let midnight: engine_core::time::UtcDateTime = format!("{date}T00:00:00Z")
+        .parse()
+        .expect("a calendar date's midnight is an instant");
+    crate::convert::instant_to_text(midnight)
 }
 
 /// `EXISTS` on the address junction: the message has a `field` address among

@@ -135,11 +135,8 @@ fn accepted_since(
         .collect())
 }
 
-/// The changes accepted after `since`, `account`'s alone when given, in the order queued.
-///
-/// The text of an instant drops the trailing zeros of its fraction, so two instants within one
-/// second do not sort as text. SQL narrows by the whole-second prefix, which is fixed-width and
-/// does sort, and the exact comparison is made on the parsed instant.
+/// The changes accepted after `since`, `account`'s alone when given, in the order queued. Stored
+/// instants sort as text in time order ([`convert::instant_to_text`]), so SQL compares them.
 fn accepted_after(
     tx: &Transaction<'_>,
     account: Option<&str>,
@@ -147,23 +144,21 @@ fn accepted_after(
 ) -> Result<Vec<KeywordEdit>> {
     let mut stmt = tx
         .prepare(
-            "SELECT keyword_edit, settled_at FROM pending_op
+            "SELECT keyword_edit FROM pending_op
               WHERE (?1 IS NULL OR account = ?1) AND keyword_edit IS NOT NULL
-                AND state = 'Succeeded' AND substr(settled_at, 1, 19) >= substr(?2, 1, 19)
+                AND state = 'Succeeded' AND settled_at > ?2
               ORDER BY id",
         )
         .map_err(convert::backend)?;
     let rows = stmt
         .query_map((account, convert::instant_to_text(since)), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            row.get::<_, String>(0)
         })
         .map_err(convert::backend)?;
     let mut edits = Vec::new();
     for row in rows {
-        let (edit, settled_at) = row.map_err(convert::backend)?;
-        if convert::parse_instant(&settled_at)? > since {
-            edits.push(serde_json::from_str(&edit).map_err(convert::backend)?);
-        }
+        edits
+            .push(serde_json::from_str(&row.map_err(convert::backend)?).map_err(convert::backend)?);
     }
     Ok(edits)
 }

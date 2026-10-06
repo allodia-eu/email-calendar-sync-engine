@@ -409,3 +409,54 @@ fn a_fresh_or_current_store_reports_no_migration() {
     assert_eq!(reopened.migrated_from, None, "already current");
     assert_eq!(reopened.version, expected_version());
 }
+
+/// v18 rewrites every instant a store already holds into the form that sorts as text, including
+/// in a table keyed on one: an occurrence re-derived afterwards meets its own row, not a second
+/// spelling of its start beside it.
+#[test]
+fn v18_rewrites_stored_instants_into_the_form_that_sorts() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run(&mut conn, &MIGRATIONS[..17]).unwrap();
+    conn.execute_batch(
+        "INSERT INTO event_occurrence
+             (scope_key, event, start_utc, end_utc, recurrence_id, tzdata_version)
+         VALUES ('s', 'e', '2026-10-06T10:00:00Z', '2026-10-06T10:30:00.5Z', '', '2026a');
+         INSERT INTO pending_op
+             (account, idempotency_key, resource_key, depends_on, payload, state, token,
+              settled_at)
+         VALUES ('a', 'k', 'r', '[]', '{}', 'Succeeded', 0, '2026-10-06T10:00:00.12Z');",
+    )
+    .unwrap();
+
+    migrate(&mut conn).unwrap();
+
+    let (start, end, recurrence): (String, String, String) = conn
+        .query_row(
+            "SELECT start_utc, end_utc, recurrence_id FROM event_occurrence",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(start, "2026-10-06T10:00:00.000000000Z");
+    assert_eq!(end, "2026-10-06T10:30:00.500000000Z");
+    assert_eq!(
+        recurrence, "",
+        "an unoverridden instance keeps its empty marker"
+    );
+    let settled: String = conn
+        .query_row("SELECT settled_at FROM pending_op", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(settled, "2026-10-06T10:00:00.120000000Z");
+
+    // Re-deriving the occurrence writes the same start, so it meets its own row.
+    conn.execute(
+        "INSERT INTO event_occurrence
+             (scope_key, event, start_utc, end_utc, recurrence_id, tzdata_version)
+         VALUES ('s', 'e', ?1, ?2, '', '2026a')
+         ON CONFLICT(scope_key, event, start_utc, recurrence_id)
+         DO UPDATE SET end_utc = excluded.end_utc",
+        (start.as_str(), end.as_str()),
+    )
+    .unwrap();
+    assert_eq!(table_count(&conn, "event_occurrence"), 1);
+}
