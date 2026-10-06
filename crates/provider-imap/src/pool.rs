@@ -30,7 +30,9 @@
 //!   is one: a body read there skips its `EXAMINE` (`crate::transport_select`), which is half the
 //!   round trips of a warm that reads a folder's bodies one after another. Every other caller
 //!   `SELECT`s anyway, because the `SELECT` response *is* the data it needs (`UIDVALIDITY`,
-//!   `UIDNEXT`, `HIGHESTMODSEQ`), so a preference would save it nothing.
+//!   `UIDNEXT`, `HIGHESTMODSEQ`), so a preference would save it nothing. A pass that can share its
+//!   work borrows extra workers with `try_acquire_for`, which lends only a free permit and never
+//!   waits, so that sharing cannot keep another caller waiting.
 //! * **Watches** are not. A connection in `IDLE` is blocked mid-command: to reuse it you must send
 //!   `DONE`, await the tagged completion, work, and re-`IDLE`, which means a window where the
 //!   mailbox is not being watched at all. So a watch takes a connection *out* of the pool for its
@@ -195,13 +197,6 @@ impl<S> ImapPool<S> {
             validate_after,
             generation: AtomicU64::new(0),
         })
-    }
-
-    /// The pool's configured ceiling — every connection this account may hold, workers and
-    /// watches, before any server refusal lowered it.
-    #[cfg(test)]
-    pub(crate) fn max_connections(&self) -> usize {
-        self.max_connections
     }
 
     /// The ceiling in force now.
@@ -498,3 +493,6 @@ mod tests;
 #[cfg(test)]
 #[path = "pool_refusal_tests.rs"]
 mod refusal_tests;
+
+#[path = "pool_spare.rs"]
+mod spare;

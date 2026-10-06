@@ -247,6 +247,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
             {
                 let pass = crate::stream::stream_email(
                     &mut connection,
+                    Some(&self.pool),
                     &self.mailbox,
                     cursor,
                     window,
