@@ -12,7 +12,7 @@
 
 use engine_core::{ids::ProviderKey, mail::StoredContent, search_index::project_refs};
 use engine_store::Result;
-use rusqlite::Transaction;
+use rusqlite::{Transaction, functions::FunctionFlags};
 
 use crate::{convert::backend, sql};
 
@@ -95,38 +95,45 @@ pub(crate) const INSTANT_COLUMNS: &[(&str, &str)] = &[
     ("recipient_observation", "sent_at"),
 ];
 
+/// The SQL name the store's instant converter goes by while [`fixed_width_instants`] runs.
+const FIXED_INSTANT: &str = "fixed_width_instant";
+
 /// Rewrites every stored instant in its fixed-width form (schema v18).
 ///
 /// The text an instant was stored as dropped a zero fraction and trailing zeros, which does not
-/// sort as text within one second; SQL orders and filters these columns as text. Rewritten per
-/// distinct value, so a table keyed on one of them (`event_occurrence` is unique on `start_utc`)
-/// never holds two spellings of one instant, which a re-derived row in the new form would
-/// otherwise add beside the old. A value that does not parse is left as it is: it was unreadable
-/// before, and failing the migration over it would leave a store that cannot open.
+/// sort as text within one second; SQL orders and filters these columns as text. Each column is
+/// rewritten in one `UPDATE`, through the store's own converter registered as an SQL function,
+/// and only the rows whose text changes are written. A rewrite per distinct value instead scans
+/// the table once per value, and on the unindexed columns of the body and source tables that is
+/// minutes for a 20,000-message mailbox. A table keyed on one of these columns (`event_occurrence`
+/// is unique on `start_utc`) never holds two spellings of one instant, which a re-derived row in
+/// the new form would otherwise add beside the old. A value that does not parse is left as it
+/// is: it was unreadable before, and failing the migration over it would leave a store that
+/// cannot open.
 pub(crate) fn fixed_width_instants(tx: &Transaction<'_>) -> Result<()> {
+    tx.create_scalar_function(
+        FIXED_INSTANT,
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let value: String = ctx.get(0)?;
+            Ok(
+                crate::convert::parse_instant(&value)
+                    .map_or(value, crate::convert::instant_to_text),
+            )
+        },
+    )
+    .map_err(backend)?;
     for (table, column) in INSTANT_COLUMNS {
-        let values: Vec<String> = {
-            let mut stmt = tx
-                .prepare(&format!(
-                    "SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''"
-                ))
-                .map_err(backend)?;
-            let rows = stmt.query_map([], |row| row.get(0)).map_err(backend)?;
-            rows.collect::<rusqlite::Result<_>>().map_err(backend)?
-        };
-        for value in values {
-            let Ok(instant) = crate::convert::parse_instant(&value) else {
-                continue;
-            };
-            let fixed = crate::convert::instant_to_text(instant);
-            if fixed != value {
-                sql::execute(
-                    tx,
-                    &format!("UPDATE {table} SET {column} = ?2 WHERE {column} = ?1"),
-                    (value.as_str(), fixed.as_str()),
-                )?;
-            }
-        }
+        sql::execute(
+            tx,
+            &format!(
+                "UPDATE {table} SET {column} = {FIXED_INSTANT}({column}) \
+                 WHERE {column} IS NOT NULL AND {column} != '' \
+                 AND {column} != {FIXED_INSTANT}({column})"
+            ),
+            (),
+        )?;
     }
-    Ok(())
+    tx.remove_function(FIXED_INSTANT, 1).map_err(backend)
 }
