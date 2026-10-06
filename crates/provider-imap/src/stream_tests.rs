@@ -120,11 +120,11 @@ async fn cold_backfill_streams_newest_group_first_and_checkpoints_each_group() {
     // Each intermediate group checkpoints its lowest UID, so a kill resumes below it.
     assert_eq!(
         chunks[0].advance_to.as_ref().unwrap().as_str(),
-        "v1000;n9;b6"
+        "v1000;n9;g1;b6"
     );
     assert_eq!(
         chunks[1].advance_to.as_ref().unwrap().as_str(),
-        "v1000;n9;b3"
+        "v1000;n9;g1;b3"
     );
     // The last group reconciles against the full present set and clears the watermark.
     assert!(chunks[2].is_reconcile_final());
@@ -133,7 +133,10 @@ async fn cold_backfill_streams_newest_group_first_and_checkpoints_each_group() {
         8,
         "all eight UIDs drive tombstoning"
     );
-    assert_eq!(chunks[2].advance_to.as_ref().unwrap().as_str(), "v1000;n9");
+    assert_eq!(
+        chunks[2].advance_to.as_ref().unwrap().as_str(),
+        "v1000;n9;g1;r"
+    );
     // The newest window was fetched first, with the item list parenthesized (an
     // unparenthesized list makes a lenient server return only the first att).
     let sent = written(&recorded);
@@ -168,7 +171,10 @@ async fn a_small_chunk_size_commits_within_a_group() {
         3,
         "the whole group's UIDs drive tombstoning"
     );
-    assert_eq!(chunks[1].advance_to.as_ref().unwrap().as_str(), "v1000;n9");
+    assert_eq!(
+        chunks[1].advance_to.as_ref().unwrap().as_str(),
+        "v1000;n9;g1;r"
+    );
 }
 
 #[tokio::test]
@@ -185,15 +191,19 @@ async fn a_backfill_resumes_below_its_watermark() {
     ]);
     let (mut conn, recorded) = logged_in(server).await;
 
-    let chunks = drain(&mut conn, Some("v1000;n9;b6"), 3, 0).await;
+    let chunks = drain(&mut conn, Some("v1000;n9;g1;b6"), 3, 0).await;
     // Two group chunks (last completes); the already-synced group (6:8) is NOT refetched.
     assert_eq!(chunks.len(), 2);
     assert_eq!(key_of(&chunks[0], 0), "imap:v1000:u3@INBOX");
     assert_eq!(
         chunks[0].advance_to.as_ref().unwrap().as_str(),
-        "v1000;n9;b3"
+        "v1000;n9;g1;b3"
     );
-    assert_eq!(chunks[1].advance_to.as_ref().unwrap().as_str(), "v1000;n9");
+    // No `;r`: a resumed backfill did not reconcile, so the next pass may not skip the folder.
+    assert_eq!(
+        chunks[1].advance_to.as_ref().unwrap().as_str(),
+        "v1000;n9;g1"
+    );
     // A resume saw only part of the set this session, so it completes additively (no
     // tombstone) rather than reconciling against a partial present set.
     assert!(chunks.iter().all(|c| !c.is_reconcile_final()));
@@ -260,7 +270,7 @@ async fn a_delta_without_qresync_reconciles_through_the_page_path() {
     ]);
     let (mut conn, _) = logged_in(server).await;
 
-    let chunks = drain(&mut conn, Some("v1000;n9"), 50, 0).await;
+    let chunks = drain(&mut conn, Some("v1000;n9;g1"), 50, 0).await;
     let upserted: usize = chunks.iter().map(|c| c.changed.len()).sum();
     assert_eq!(upserted, 2, "the two new arrivals");
     let patched: usize = chunks.iter().map(|c| c.patched.len()).sum();
@@ -275,7 +285,7 @@ async fn a_delta_without_qresync_reconciles_through_the_page_path() {
     // Advances to the fresh complete cursor.
     assert_eq!(
         chunks.last().unwrap().advance_to.as_ref().unwrap().as_str(),
-        "v1000;n11"
+        "v1000;n11;g1;r"
     );
 }
 
@@ -287,7 +297,7 @@ async fn an_unchanged_folder_streams_one_empty_chunk_that_keeps_the_cursor() {
     conn.negotiated =
         crate::capability::Negotiated::from_capabilities(&["XYMHIGHESTMODSEQ".to_owned()]);
 
-    let chunks = drain(&mut conn, Some("v1000;n11;m7"), 50, 0).await;
+    let chunks = drain(&mut conn, Some("v1000;n11;g1;m7;r"), 50, 0).await;
 
     assert!(
         chunks
@@ -300,9 +310,29 @@ async fn an_unchanged_folder_streams_one_empty_chunk_that_keeps_the_cursor() {
     );
     assert_eq!(
         chunks.last().unwrap().advance_to.as_ref().unwrap().as_str(),
-        "v1000;n11;m7"
+        "v1000;n11;g1;m7;r"
     );
     assert!(!crate::mock::written(&recorded).contains("FETCH"));
+}
+
+#[tokio::test]
+async fn a_cursor_from_an_older_sync_syncs_the_folder_afresh() {
+    // Written before the cursor version, as an engine that read new arrivals only and cut a
+    // window at the message limit left it: a delta from it would leave missing mail missing,
+    // so the folder is fetched whole and the pass reconciles.
+    let select = select_resp("a2", 1000, 4, 3);
+    let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[1, 2, 3])]);
+    let (mut conn, _) = logged_in(server).await;
+
+    let chunks = drain(&mut conn, Some("v1000;n4;m7;r"), 50, 0).await;
+
+    let fetched: usize = chunks.iter().map(|c| c.changed.len()).sum();
+    assert_eq!(fetched, 3, "every message whole, not their flags");
+    assert!(chunks.last().unwrap().is_reconcile_final());
+    assert_eq!(
+        chunks.last().unwrap().advance_to.as_ref().unwrap().as_str(),
+        "v1000;n4;g1;r"
+    );
 }
 
 #[tokio::test]
@@ -313,7 +343,7 @@ async fn a_uidvalidity_reset_reconciles_via_the_page_path() {
     let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[1, 2, 3])]);
     let (mut conn, _) = logged_in(server).await;
 
-    let chunks = drain(&mut conn, Some("v999;n50"), 50, 0).await;
+    let chunks = drain(&mut conn, Some("v999;n50;g1"), 50, 0).await;
     assert!(chunks.iter().any(|c| c.mode == PassMode::Reconcile));
     assert!(chunks.last().unwrap().is_reconcile_final());
     let present: usize = chunks.iter().map(|c| c.present.len()).sum();
@@ -323,7 +353,8 @@ async fn a_uidvalidity_reset_reconciles_via_the_page_path() {
 #[test]
 fn resume_cursor_roundtrip_is_stable() {
     // The watermark a chunk emits decodes back to the same resume point.
-    let cursor = MailboxCursor::decode(&engine_core::sync::SyncState::new("v1000;n9;b6")).unwrap();
+    let cursor =
+        MailboxCursor::decode(&engine_core::sync::SyncState::new("v1000;n9;g1;b6")).unwrap();
     assert_eq!(cursor.backfill_low, Some(6));
     assert_eq!(cursor.uid_next, 9);
 }
@@ -342,7 +373,10 @@ async fn an_empty_mailbox_backfill_yields_only_a_completing_marker() {
     // A fresh pass reconciles even when empty, so an emptied mailbox tombstones every
     // stale local row against the empty present set.
     assert!(chunks[0].is_reconcile_final());
-    assert_eq!(chunks[0].advance_to.as_ref().unwrap().as_str(), "v1000;n1");
+    assert_eq!(
+        chunks[0].advance_to.as_ref().unwrap().as_str(),
+        "v1000;n1;g1;r"
+    );
     assert!(
         !written(&recorded).contains("UID FETCH"),
         "nothing to fetch"

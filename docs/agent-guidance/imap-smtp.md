@@ -158,13 +158,18 @@ is authoritative for the `provider-caldav` calendar client.
 ## IMAP specifics implemented
 
 - **Cursor + paging.** The cursor is `(UIDVALIDITY, UIDNEXT)` encoded
-  `v{validity};n{next}`, with an optional QRESYNC `HIGHESTMODSEQ` appended as
-  `;m{modseq}` when the session negotiated QRESYNC, and an optional `;b{low}`
+  `v{validity};n{next};g{version}`, with an optional `HIGHESTMODSEQ` appended as
+  `;m{modseq}` whenever `SELECT` reported one, `;r` when the pass that wrote it left the
+  folder reconciled (see the reconciling delta below), and an optional `;b{low}`
   **backfill watermark** (the lowest UID a still-descending cold backfill has
-  committed — see the next bullet) while one is in flight (a completed non-QRESYNC
-  cursor is byte-identical to the old format, and cursors lacking `;m`/`;b` decode
-  with those fields `None`); a foreign/garbage cursor decodes to "no cursor" →
-  snapshot. The **page path** below (used by a delta or a `UIDVALIDITY`-reset
+  committed — see the next bullet) while one is in flight; a foreign/garbage cursor
+  decodes to "no cursor" → snapshot. **`;g` is the sync's version**
+  (`cursor::CURSOR_VERSION`): a cursor of an older version, or one without `;g`, is read as
+  no cursor, so its folder is synced afresh once. Bump it when a sync fix leaves stored
+  mail that only a fresh sync corrects (mail an older sync never fetched, or state it
+  never read), and say in its doc comment what the bump repairs. It is per folder and IMAP
+  only; `NORMALIZER_VERSION` (`store-and-sync.md`) re-syncs every scope of every provider,
+  and is for a change in how stored data is decoded. The **page path** below (used by a delta or a `UIDVALIDITY`-reset
   re-snapshot) pages **newest UIDs first, up to `limit` *messages* per page**: a page
   fetches
   a UID window and, if a gap (expunged UID) leaves it under-filled, **widens the
@@ -235,10 +240,13 @@ is authoritative for the `provider-caldav` calendar client.
   CONDSTORE, and it moves on every arrival, flag change and removal (observed: each of
   those moved it by one, and a change in one folder moved no other). A delta whose
   `UIDNEXT` and `HIGHESTMODSEQ` both match the cursor's returns no changes and reads
-  nothing (`resync::unchanged`): 0.4 s for a 2584-message Yahoo inbox where reading every
-  flag took about 6 s. A `HIGHESTMODSEQ` a server reports without that capability is not
-  trusted for this. Mail that aged out of a sync-depth window is dropped on the next pass
-  that finds a change, as on the QRESYNC path.
+  nothing (`resync::unchanged`), provided the cursor carries `;r`: written by a pass that
+  left the folder reconciled. A resumed backfill completes without reconciling, so its
+  cursor carries none and the folder is read once more first. An unchanged pass then
+  takes 0.4 s for a 2584-message Yahoo inbox where reading every flag took about 6 s. A
+  `HIGHESTMODSEQ` a server reports without that capability is not trusted for this. Mail
+  that aged out of a sync-depth window is dropped on the next pass that finds a change, as
+  on the QRESYNC path.
 - **Message limits and UID mode** (RFC 9738, RFC 9586, RFC 9394). A server advertising
   `MESSAGELIMIT=<n>` may refuse or cut short a command over `n` messages. Every sync `FETCH`
   is capped at `n` (`Negotiated::within_message_limit`), including a page whose caller set no

@@ -226,6 +226,11 @@ async fn a_pass_over_an_unchanged_inbox_reads_nothing() {
         eprintln!("inconclusive: the inbox changed between the two passes");
         return;
     }
+    if !final_cursor(&first).as_str().contains(";m") {
+        // No HIGHESTMODSEQ, so neither form applies: this server reconciles every pass.
+        eprintln!("inconclusive: the server reports no HIGHESTMODSEQ");
+        return;
+    }
     eprintln!("an unchanged pass took {took:?}");
     assert!(!second.iter().any(EmailChunk::is_reconcile_final));
     assert!(
@@ -233,4 +238,31 @@ async fn a_pass_over_an_unchanged_inbox_reads_nothing() {
             .iter()
             .all(|c| c.changed.is_empty() && c.patched.is_empty())
     );
+}
+
+#[tokio::test]
+async fn a_cursor_from_an_older_sync_fetches_the_inbox_afresh() {
+    // What an installed app holds after updating: a cursor without the sync's version. The
+    // next pass fetches every message whole and reconciles, as a first sync does.
+    let target = target!();
+    let provider = inbox(&target).await;
+    let first = pass(&provider, None).await;
+    let current = final_cursor(&first);
+    let older = SyncState::new(
+        current
+            .as_str()
+            .split(';')
+            .filter(|part| !part.starts_with('g'))
+            .collect::<Vec<_>>()
+            .join(";"),
+    );
+    assert_ne!(older, current, "the cursor carries a version to remove");
+    let again = pass(&provider, Some(&older)).await;
+
+    let fetched: BTreeSet<_> = again
+        .iter()
+        .flat_map(|c| c.changed.iter().map(|m| m.id.key().clone()))
+        .collect();
+    assert_eq!(fetched, present(&first), "every message, fetched whole");
+    assert!(again.last().unwrap().is_reconcile_final());
 }

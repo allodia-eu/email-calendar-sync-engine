@@ -67,7 +67,7 @@ where
         };
         let uid_validity = select.uid_validity;
         let uid_next = effective_uid_next(conn, &select).await?;
-        let prior = cursor.and_then(MailboxCursor::decode);
+        let prior = cursor.and_then(MailboxCursor::current);
         let since = imap_since(window)?;
 
         // A cold backfill: a first sync (no cursor), or one resuming below a prior
@@ -87,19 +87,21 @@ where
             // expunge changes that happen, *during* the backfill are caught by the first
             // delta afterwards), preserved across resumes — the resumed SELECT's fresher
             // values would otherwise skip everything that changed since the kill.
-            let frontier = MailboxCursor {
-                uid_validity,
-                uid_next: prior.map_or(uid_next, |p| p.uid_next),
-                highest_modseq: prior.and_then(|p| p.highest_modseq).or(select.highest_modseq),
-                backfill_low: None,
-            };
             // A backfill that STARTS fresh this session (no prior watermark) sees the
             // whole in-window set in one run, so its completing chunk reconciles: it
             // tombstones local rows the server no longer has (the `reset`/`clear`/
             // normalizer contract). A *resumed* backfill only saw part of the set this
             // session, so it completes additively (no tombstone) — the reconcile lands
-            // on the next uninterrupted pass.
+            // on the next uninterrupted pass, which its cursor therefore may not skip.
             let is_fresh = prior.is_none();
+            let frontier = MailboxCursor {
+                uid_validity,
+                uid_next: prior.map_or(uid_next, |p| p.uid_next),
+                highest_modseq: prior.and_then(|p| p.highest_modseq).or(select.highest_modseq),
+                backfill_low: None,
+                reconciled: is_fresh,
+                version: crate::cursor::CURSOR_VERSION,
+            };
             let (groups, windowed_total) =
                 backfill_groups(conn, high, since.as_deref(), fetch_batch).await?;
             // The progress denominator: the in-window count when bounded, else the
@@ -248,7 +250,11 @@ where
                 };
             } else {
                 // An intermediate group checkpoints its lowest UID (the resume point).
-                let checkpoint = MailboxCursor { backfill_low: Some(group_low), ..*frontier };
+                let checkpoint = MailboxCursor {
+                    backfill_low: Some(group_low),
+                    reconciled: false,
+                    ..*frontier
+                };
                 yield EmailChunk::additive(changed, Vec::new(), total, checkpoint.encode());
             }
         }

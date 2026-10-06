@@ -45,7 +45,9 @@ use crate::{
 const STATE_ITEMS: &str = "UID FLAGS";
 
 /// Whether the folder is as `prior` left it, so the delta has nothing to read. Only on a server
-/// that states its `HIGHESTMODSEQ` moves on every change; elsewhere a reported value may not.
+/// that states its `HIGHESTMODSEQ` moves on every change (elsewhere a reported value may not),
+/// and only after a pass that left the folder reconciled
+/// ([`MailboxCursor::reconciled`](crate::cursor::MailboxCursor::reconciled)).
 pub(crate) fn unchanged(
     negotiated: &Negotiated,
     prior: &MailboxCursor,
@@ -53,6 +55,7 @@ pub(crate) fn unchanged(
     highest_modseq: Option<u64>,
 ) -> bool {
     negotiated.has(Extension::XymHighestModseq)
+        && prior.reconciled
         && highest_modseq.is_some()
         && prior.highest_modseq == highest_modseq
         && prior.uid_next == uid_next

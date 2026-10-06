@@ -101,6 +101,10 @@ where
         uid_next,
         highest_modseq: select.highest_modseq,
         backfill_low: None,
+        version: crate::cursor::CURSOR_VERSION,
+        // Every page-path pass ends in a reconcile, or in a QRESYNC delta that misses nothing,
+        // or skips a folder whose prior cursor already was.
+        reconciled: true,
     }
     .encode();
 
@@ -113,7 +117,7 @@ where
     // would never reconcile them. Re-snapshotting once both reconciles them and
     // establishes the baseline; thereafter deltas are incremental. Without QRESYNC the
     // matching cursor stays a delta, which `crate::resync` reconciles.
-    let prior = cursor.and_then(MailboxCursor::decode);
+    let prior = cursor.and_then(MailboxCursor::current);
     let needs_baseline = qresync && prior.is_some_and(|p| p.highest_modseq.is_none());
     let (kind, low_bound) = match prior {
         Some(p) if p.uid_validity == uid_validity && !needs_baseline => {

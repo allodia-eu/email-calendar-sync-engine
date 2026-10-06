@@ -189,7 +189,7 @@ async fn a_first_sync_streams_a_resumable_backfill() {
     );
     let upserted: usize = chunks.iter().map(|c| c.changed.len()).sum();
     assert_eq!(upserted, 3);
-    assert_eq!(last.advance_to.as_ref().unwrap().as_str(), "v1000;n4");
+    assert_eq!(last.advance_to.as_ref().unwrap().as_str(), "v1000;n4;g1;r");
 }
 
 #[tokio::test]
@@ -210,7 +210,7 @@ async fn the_drain_default_merges_a_first_sync_into_a_reconciling_snapshot() {
         sync.is_snapshot(),
         "a fresh backfill reconciles on completion"
     );
-    assert_eq!(sync.next_cursor.as_str(), "v1000;n4");
+    assert_eq!(sync.next_cursor.as_str(), "v1000;n4;g1;r");
 }
 
 #[tokio::test]

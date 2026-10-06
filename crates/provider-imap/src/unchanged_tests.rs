@@ -25,6 +25,7 @@ fn select(uid_next: u32, modseq: u64) -> String {
 
 async fn delta(
     capabilities: &[&str],
+    cursor: &str,
     replies: &[&str],
 ) -> (
     engine_provider::SyncPage<engine_core::mail::Message>,
@@ -36,7 +37,7 @@ async fn delta(
     let mut conn = Connection::open(stream).await.unwrap();
     let capabilities: Vec<String> = capabilities.iter().map(|&c| c.to_owned()).collect();
     conn.negotiated = Negotiated::from_capabilities(&capabilities);
-    let cursor = SyncState::new("v1000;n10;m7");
+    let cursor = SyncState::new(cursor);
     let inbox = MailboxId::try_from("INBOX").unwrap();
     let page = sync_page(&mut conn, &inbox, Some(&cursor), None, 0, None)
         .await
@@ -46,11 +47,11 @@ async fn delta(
 
 #[tokio::test]
 async fn an_unchanged_folder_costs_its_select() {
-    let (page, recorded) = delta(YAHOO, &[&select(10, 7)]).await;
+    let (page, recorded) = delta(YAHOO, "v1000;n10;g1;m7;r", &[&select(10, 7)]).await;
 
     assert_eq!(page.kind, SyncKind::Delta);
     assert!(page.changed.is_empty() && page.patched.is_empty() && page.present.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "v1000;n10;m7");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n10;g1;m7;r");
     assert!(
         !written(&recorded).contains("FETCH"),
         "{}",
@@ -61,11 +62,11 @@ async fn an_unchanged_folder_costs_its_select() {
 #[tokio::test]
 async fn a_moved_modseq_reads_the_folder() {
     let flags = "* 1 FETCH (FLAGS (\\Flagged) UID 2)\r\na2 OK done\r\n";
-    let (page, recorded) = delta(YAHOO, &[&select(10, 8), flags]).await;
+    let (page, recorded) = delta(YAHOO, "v1000;n10;g1;m7;r", &[&select(10, 8), flags]).await;
 
     assert_eq!(page.kind, SyncKind::Snapshot, "the reconciling delta ran");
     assert_eq!(page.patched.len(), 1);
-    assert_eq!(page.next_cursor.as_str(), "v1000;n10;m8");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n10;g1;m8;r");
     assert!(written(&recorded).contains("a2 UID FETCH 1:9 (UID FLAGS)"));
 }
 
@@ -73,18 +74,38 @@ async fn a_moved_modseq_reads_the_folder() {
 async fn a_server_that_does_not_say_its_modseq_tracks_every_change_is_read() {
     // Same SELECT, but nothing says the value moves on every change, so it is not trusted.
     let flags = "* 1 FETCH (FLAGS () UID 2)\r\na2 OK done\r\n";
-    let (page, _) = delta(&["IMAP4rev1"], &[&select(10, 7), flags]).await;
+    let (page, _) = delta(
+        &["IMAP4rev1"],
+        "v1000;n10;g1;m7;r",
+        &[&select(10, 7), flags],
+    )
+    .await;
     assert_eq!(page.kind, SyncKind::Snapshot);
+}
+
+#[tokio::test]
+async fn a_cursor_from_a_pass_that_did_not_reconcile_reads_the_folder_once() {
+    // A resumed backfill completes without reconciling, so its cursor carries no `;r`: the
+    // folder is read once more even though unchanged.
+    let flags = "* 1 FETCH (FLAGS (\\Seen) UID 2)\r\na2 OK done\r\n";
+    let (page, _) = delta(YAHOO, "v1000;n10;g1;m7", &[&select(10, 7), flags]).await;
+
+    assert_eq!(page.kind, SyncKind::Snapshot, "the reconciling delta ran");
+    assert_eq!(
+        page.next_cursor.as_str(),
+        "v1000;n10;g1;m7;r",
+        "and the next may skip"
+    );
 }
 
 #[test]
 fn new_mail_or_a_missing_modseq_is_a_change() {
     let yahoo =
         Negotiated::from_capabilities(&YAHOO.iter().map(|&c| c.to_owned()).collect::<Vec<_>>());
-    let prior = MailboxCursor::decode(&SyncState::new("v1000;n10;m7")).unwrap();
+    let prior = MailboxCursor::decode(&SyncState::new("v1000;n10;g1;m7;r")).unwrap();
     assert!(unchanged(&yahoo, &prior, 10, Some(7)));
     assert!(!unchanged(&yahoo, &prior, 11, Some(7)));
     assert!(!unchanged(&yahoo, &prior, 10, None));
-    let without = MailboxCursor::decode(&SyncState::new("v1000;n10")).unwrap();
+    let without = MailboxCursor::decode(&SyncState::new("v1000;n10;g1;r")).unwrap();
     assert!(!unchanged(&yahoo, &without, 10, Some(7)));
 }
