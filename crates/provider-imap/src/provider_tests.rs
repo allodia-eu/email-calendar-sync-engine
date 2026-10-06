@@ -162,9 +162,9 @@ async fn sync_mailboxes_lists_folders_as_a_snapshot() {
 async fn a_first_sync_streams_a_resumable_backfill() {
     let select = "* 3 EXISTS\r\n* OK [UIDVALIDITY 1000] v\r\n\
                   * OK [UIDNEXT 4] n\r\na2 OK [READ-WRITE] done\r\n";
-    let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
-                 * 2 FETCH (UID 2 FLAGS () ENVELOPE (NIL \"b\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
-                 * 3 FETCH (UID 3 FLAGS () ENVELOPE (NIL \"c\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
+    let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
+                 * 2 FETCH (UID 2 FLAGS () ENVELOPE (NIL \"b\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
+                 * 3 FETCH (UID 3 FLAGS () ENVELOPE (NIL \"c\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
                  a3 OK FETCH done\r\n";
     let provider = connected_provider(script(&[GREETING, LOGIN_OK, select, fetch])).await;
 
@@ -199,9 +199,9 @@ async fn the_drain_default_merges_a_first_sync_into_a_reconciling_snapshot() {
     // a reset over an existing store tombstones — matching JMAP/Graph first-sync.
     let select = "* 3 EXISTS\r\n* OK [UIDVALIDITY 1000] v\r\n\
                   * OK [UIDNEXT 4] n\r\na2 OK [READ-WRITE] done\r\n";
-    let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
-                 * 2 FETCH (UID 2 FLAGS () ENVELOPE (NIL \"b\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
-                 * 3 FETCH (UID 3 FLAGS () ENVELOPE (NIL \"c\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
+    let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
+                 * 2 FETCH (UID 2 FLAGS () ENVELOPE (NIL \"b\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
+                 * 3 FETCH (UID 3 FLAGS () ENVELOPE (NIL \"c\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
                  a3 OK FETCH done\r\n";
     let provider = connected_provider(script(&[GREETING, LOGIN_OK, select, fetch])).await;
 

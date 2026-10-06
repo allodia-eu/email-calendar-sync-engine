@@ -20,6 +20,7 @@
 mod attachment;
 pub mod encoded_word;
 mod scheduling;
+mod structure;
 
 use std::borrow::Cow;
 
@@ -33,6 +34,7 @@ use mail_parser::{ContentType, GetHeader, HeaderName, HeaderValue, MessageParser
 // addresses the message was delivered to (which is how an invitation to an alias is
 // recognized with no configuration).
 pub use scheduling::{CalendarPart, extract_calendar_part, extract_delivery_recipients};
+pub use structure::is_single_text_body;
 
 /// Extracts the displayable [`MessageBody`] from a raw RFC 5322 message.
 ///

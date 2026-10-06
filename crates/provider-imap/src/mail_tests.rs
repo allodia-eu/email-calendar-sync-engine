@@ -135,6 +135,33 @@ fn references_header_threads_through_to_the_envelope() {
 }
 
 #[test]
+fn references_are_read_from_their_own_field_of_the_header_section() {
+    // The section holds other fields, whose values may carry `<…>` too, and a long
+    // References header arrives folded over several lines.
+    let section = "Content-Type: text/html; x=\"<c@x>\"\r\nReferences: <a@x>\r\n\t<b@y>\r\n\
+                   Content-Disposition: inline; filename=\"<d@x>\"\r\n\r\n";
+    let mut bytes =
+        br#"1 FETCH (UID 1 ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL "<m@h>") "#.to_vec();
+    bytes.extend_from_slice(
+        format!(
+            "BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] {{{}}}\r\n{section})",
+            section.len()
+        )
+        .as_bytes(),
+    );
+
+    let rows = parse_fetch(&[bytes]).unwrap();
+    let message = message_from_fetch(&rows[0], &MailboxId::try_from("INBOX").unwrap(), 1);
+    let refs: Vec<_> = message
+        .envelope
+        .references
+        .iter()
+        .map(MessageIdHeader::as_str)
+        .collect();
+    assert_eq!(refs, ["a@x", "b@y"]);
+}
+
+#[test]
 fn an_empty_references_header_yields_no_ids() {
     // A message with no References: the echoed value is empty, so the field name
     // must not be mistaken for an id (the bare-value fallback's trap).

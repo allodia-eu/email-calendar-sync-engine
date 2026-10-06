@@ -37,7 +37,7 @@ use crate::{
     mail::{message_from_fetch, message_key},
     parse::FetchRow,
     qresync::state_change,
-    sync::{FETCH_ITEMS, uid_set_spec},
+    sync::uid_set_spec,
     transport::Connection,
 };
 
@@ -115,7 +115,7 @@ where
 
     let mut arrivals: Vec<FetchRow> = Vec::new();
     for set in &arriving {
-        arrivals.extend(conn.uid_fetch(set, FETCH_ITEMS).await?);
+        arrivals.extend(conn.uid_fetch_metadata(set).await?);
     }
     // We asked for `ENVELOPE`, so a solicited row has one; anything else is an unsolicited
     // flag-only row, not a message.

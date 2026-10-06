@@ -78,8 +78,7 @@ pub(crate) struct Envelope {
     pub message_id: Option<String>,
 }
 
-/// One row of a `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
-/// BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES)])`.
+/// One row of a metadata `UID FETCH` (`crate::metadata_fetch`), or of any narrower one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FetchRow {
     /// The mailbox-unique UID (RFC 9051 §2.3.1.1) — the identity component.
@@ -92,12 +91,13 @@ pub(crate) struct FetchRow {
     pub size: Option<u64>,
     /// The parsed `ENVELOPE`, if requested and present.
     pub envelope: Option<Envelope>,
-    /// Whether the BODYSTRUCTURE carries a downloadable/non-inline attachment.
-    pub has_attachment: bool,
-    /// The raw `References` header line from `BODY[HEADER.FIELDS (REFERENCES)]`
-    /// (e.g. `"References: <a@x> <b@y>\r\n\r\n"`), if requested and present.
-    /// `None` (or empty) when the message carries no `References`.
-    pub references: Option<String>,
+    /// Whether the message carries a downloadable, non-inline attachment: read from
+    /// `BODYSTRUCTURE`, or `false` when the header section shows one text body
+    /// ([`engine_mime::is_single_text_body`]). `None` when neither settled it.
+    pub has_attachment: Option<bool>,
+    /// The raw header section from `BODY[HEADER.FIELDS (…)]` (e.g.
+    /// `"References: <a@x>\r\nContent-Type: text/plain\r\n\r\n"`), if requested.
+    pub header_fields: Option<String>,
 }
 
 /// One `LIST` row: a mailbox's attributes, hierarchy delimiter, and name
@@ -329,8 +329,8 @@ fn fetch_row(pairs: &[Item], leading_uid: Option<u32>) -> Option<FetchRow> {
     let mut internal_date = None;
     let mut size = None;
     let mut envelope = None;
-    let mut has_attachment = false;
-    let mut references = None;
+    let mut structure = None;
+    let mut header_fields = None;
     let mut iter = pairs.iter();
     while let Some(key) = iter.next() {
         let Some(key) = key.as_atom() else { continue };
@@ -341,7 +341,7 @@ fn fetch_row(pairs: &[Item], leading_uid: Option<u32>) -> Option<FetchRow> {
         // the section spec up to its closing `]` atom, then read the value.
         if key.to_ascii_uppercase().starts_with("BODY[") {
             let value = drain_body_section(key, &mut iter);
-            references = value.and_then(Item::as_nstring);
+            header_fields = value.and_then(Item::as_nstring);
             continue;
         }
         let Some(value) = iter.next() else { break };
@@ -358,10 +358,16 @@ fn fetch_row(pairs: &[Item], leading_uid: Option<u32>) -> Option<FetchRow> {
             "INTERNALDATE" => internal_date = value.as_nstring(),
             "RFC822.SIZE" => size = value.as_atom().and_then(|a| a.parse().ok()),
             "ENVELOPE" => envelope = value.as_list().map(envelope_of),
-            "BODYSTRUCTURE" => has_attachment = has_downloadable_part(value),
+            "BODYSTRUCTURE" => structure = Some(has_downloadable_part(value)),
             _ => {}
         }
     }
+    let has_attachment = structure.or_else(|| {
+        header_fields
+            .as_deref()
+            .is_some_and(|headers| engine_mime::is_single_text_body(headers.as_bytes()))
+            .then_some(false)
+    });
     uid.map(|uid| FetchRow {
         uid,
         flags,
@@ -369,7 +375,7 @@ fn fetch_row(pairs: &[Item], leading_uid: Option<u32>) -> Option<FetchRow> {
         size,
         envelope,
         has_attachment,
-        references,
+        header_fields,
     })
 }
 

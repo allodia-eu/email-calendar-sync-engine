@@ -33,8 +33,7 @@ fn fetch_resp(tag: &str, uids: &[u32]) -> String {
             "* {seq} FETCH (UID {uid} FLAGS (\\Seen) \
              INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 10 \
              ENVELOPE (NIL \"s{uid}\" NIL NIL NIL NIL NIL NIL NIL \"<m{uid}@h>\") \
-             BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 2 1) \
-             BODY[HEADER.FIELDS (REFERENCES)] \"\")\r\n"
+             BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n"
         )
         .unwrap();
     }
@@ -419,8 +418,7 @@ async fn a_streamed_fetch_surfaces_a_no_completion_as_an_error() {
     // The command completes `NO`: the second pull returns a classified error.
     let fetch = "* 1 FETCH (UID 5 FLAGS (\\Seen) INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" \
                  RFC822.SIZE 10 ENVELOPE (NIL \"s\" NIL NIL NIL NIL NIL NIL NIL \"<m@h>\") \
-                 BODYSTRUCTURE (\"TEXT\" \"PLAIN\" NIL NIL NIL \"7BIT\" 2 1) \
-                 BODY[HEADER.FIELDS (REFERENCES)] \"\")\r\na2 NO fetch failed\r\n";
+                 BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\na2 NO fetch failed\r\n";
     let server = script(&[GREETING, LOGIN_OK, fetch]);
     let mut conn = open_conn(server).await;
 
@@ -441,8 +439,7 @@ async fn a_streamed_fetch_skips_non_fetch_untagged_responses() {
     let fetch = "* 9 EXISTS\r\n\
                  * 1 FETCH (UID 5 FLAGS (\\Seen) INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" \
                  RFC822.SIZE 10 ENVELOPE (NIL \"s\" NIL NIL NIL NIL NIL NIL NIL \"<m@h>\") \
-                 BODYSTRUCTURE (\"TEXT\" \"PLAIN\" NIL NIL NIL \"7BIT\" 2 1) \
-                 BODY[HEADER.FIELDS (REFERENCES)] \"\")\r\na2 OK done\r\n";
+                 BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\na2 OK done\r\n";
     let server = script(&[GREETING, LOGIN_OK, fetch]);
     let mut conn = open_conn(server).await;
 

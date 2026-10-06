@@ -87,6 +87,7 @@ pub(crate) mod filing;
 mod idle;
 mod mail;
 mod mailbox_write;
+mod metadata_fetch;
 mod mutate;
 mod parse;
 mod parse_body;

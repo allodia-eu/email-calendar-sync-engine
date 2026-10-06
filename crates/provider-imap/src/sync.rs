@@ -25,20 +25,10 @@ use crate::{
     cursor::{self, MailboxCursor},
     error::ImapResult,
     mail::message_from_fetch,
+    metadata_fetch::FETCH_ITEMS,
     parse::{FetchRow, SelectData},
     transport::Connection,
 };
-
-/// The metadata `FETCH` items — Tier-1, all peek-safe (none sets `\Seen`).
-///
-/// `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` carries the `References` header, which
-/// `ENVELOPE` omits (RFC 9051 §7.5.2) — it is what local threading needs. The peek
-/// form is required so the read does not set `\Seen`; the server echoes it back as
-/// `BODY[HEADER.FIELDS (REFERENCES)]`.
-pub(crate) const FETCH_ITEMS: &str = concat!(
-    "UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODYSTRUCTURE ",
-    "BODY.PEEK[HEADER.FIELDS (REFERENCES)]"
-);
 
 /// Fetches one page of the bound mailbox's mail since `cursor`, continuing from
 /// `page` (a UID boundary) and bounded by `limit` (`0` means the whole window in
@@ -221,6 +211,7 @@ where
     rows.sort_unstable_by_key(|row| row.uid);
     let overshoot = rows.len() > target;
     let start = rows.len().saturating_sub(target);
+    conn.settle_attachments(&mut rows[start..]).await?;
     let kept = &rows[start..];
 
     // `FETCH` returns ascending UID; reverse so the page renders newest-first.
@@ -335,7 +326,7 @@ where
     // download — is bounded to the window, not a range spanning the whole mailbox.
     let mut set = chunk.to_vec();
     set.sort_unstable();
-    let mut rows = conn.uid_fetch(&uid_set_spec(&set), FETCH_ITEMS).await?;
+    let mut rows = conn.uid_fetch_metadata(&uid_set_spec(&set)).await?;
     rows.sort_unstable_by_key(|row| Reverse(row.uid)); // newest first for display
     let messages: Vec<Message> = rows
         .iter()

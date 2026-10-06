@@ -46,7 +46,6 @@ use crate::{
     error::ImapResult,
     mail::{flags_to_keywords, message_from_fetch, message_key},
     parse::FetchRow,
-    sync::FETCH_ITEMS,
     transport::Connection,
 };
 
@@ -94,7 +93,7 @@ where
     // (RFC 9051 §6.4.8) — unguarded, an idle mailbox would re-fetch its newest message
     // as an arrival on every sync.
     let mut arrivals = if uid_next > synced_below {
-        conn.uid_fetch(&format!("{synced_below}:*"), FETCH_ITEMS)
+        conn.uid_fetch_metadata(&format!("{synced_below}:*"))
             .await?
     } else {
         Vec::new()
