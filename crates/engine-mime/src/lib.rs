@@ -19,10 +19,9 @@
 
 mod attachment;
 pub mod encoded_word;
+mod html_text;
 mod scheduling;
 mod structure;
-
-use std::borrow::Cow;
 
 pub use attachment::{extract_attachment, extract_attachments};
 use engine_core::{
@@ -54,7 +53,15 @@ pub fn extract_body(raw: &RawMime) -> MessageBody {
         return MessageBody::empty();
     };
 
-    let plain = message.body_text(0).map(Cow::into_owned);
+    // `body_text(0)`, with the HTML rendered by [`html_text`] rather than by mail-parser alone.
+    let plain = message
+        .text_bodies()
+        .next()
+        .and_then(|part| match &part.body {
+            PartType::Text(text) => Some(text.as_ref().to_owned()),
+            PartType::Html(html) => Some(html_text::html_to_text(html)),
+            _ => None,
+        });
     // Take the decoded contents of the first body part that is *actually* a
     // `text/html` part, rather than `body_html(0)`. mail-parser lists a text-only
     // message's text part in its `html_body` index too (so `body_html` can
@@ -203,6 +210,16 @@ mod tests {
         assert!(plain.contains("Bold") && plain.contains("text"), "{plain}");
         // The real HTML part is captured for the later sanitized-render slice.
         assert!(body.html().unwrap().contains("<b>Bold</b>"));
+    }
+
+    #[test]
+    fn an_html_only_message_leaves_its_stylesheet_out_of_the_text() {
+        let body = extract_body(&raw(b"Content-Type: text/html; charset=utf-8\r\n\r\n\
+              <style type=\"text/css\">body, p, div {font:12px Verdana;}</style>\
+              <p>Dear reader,</p>\r\n"));
+        let plain = body.plain().unwrap();
+        assert!(!plain.contains("Verdana"), "{plain}");
+        assert_eq!(plain.trim(), "Dear reader,");
     }
 
     #[test]
