@@ -12,6 +12,10 @@ const NON_TEXT_TAGS: [&str; 4] = ["head", "style", "script", "template"];
 /// and every rule inside it comes out as text: in the list snippet, in the plain-text reading view
 /// and in the search index. Each such tag is rewritten to its bare form first, so the converter's
 /// own handling applies.
+///
+/// mail-parser's `main` recognises these tags with attributes (its 1.0 line); 0.11.9, the newest
+/// release, does not. Once the workspace takes a release that does, this module is redundant and
+/// `extract_body` can go back to `body_text(0)`.
 pub(crate) fn html_to_text(html: &str) -> String {
     mail_parser::decoders::html::html_to_text(&bare_non_text_tags(html))
 }
