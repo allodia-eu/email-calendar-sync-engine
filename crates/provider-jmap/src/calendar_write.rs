@@ -282,6 +282,10 @@ pub(crate) async fn delete_event(
 fn draft_to_json(draft: &EventDraft) -> Result<Value, JmapError> {
     let mut object = Map::new();
     object.insert("@type".to_owned(), json!("Event"));
+    // JSCalendar 2.0 (draft-ietf-calext-jscalendarbis) makes `version` required, and Fastmail
+    // refuses a create without it as `invalidProperties`; Stalwart accepts it and stores the same
+    // object. Everything else this sends is already 2.0-shaped (the singular `recurrenceRule`).
+    object.insert("version".to_owned(), json!("2.0"));
     object.insert("uid".to_owned(), json!(draft.uid.as_str()));
     object.insert(
         "calendarIds".to_owned(),

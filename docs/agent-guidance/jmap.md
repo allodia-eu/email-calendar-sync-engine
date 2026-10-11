@@ -478,11 +478,14 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     same applies to the event's organizer (`organizerCalendarAddress` in 2.0, `replyTo` in
     1.0), which the projection does not read today — the organizer is a participant with the
     owner role.
-  - **Writes stay on the intersection.** Everything `calendar_write` sends (`@type`, `uid`,
-    `title`, `start`/`timeZone`/`showWithoutTime`, `duration`, `locations`) is spelled the
-    same in both versions, so there is nothing to choose. That stops being true the moment a
-    write carries participants, and *that* is when a version decision has to be made — from
-    the shape read back, not from a capability.
+  - **A create declares `"version": "2.0"`, and otherwise stays on the intersection.**
+    jscalendarbis makes `version` required; Fastmail refuses a create without it
+    (`invalidProperties`, `properties: version`) and Stalwart accepts it (it stores the event and
+    does not echo the property). Everything else `calendar_write` sends (`@type`, `uid`,
+    `title`, `start`/`timeZone`/`showWithoutTime`, `duration`, `locations`, the singular
+    `recurrenceRule`) is what both servers read back. A write that carries participants is
+    where the two versions' spellings part, and *that* is when a version decision has to be
+    made, from the shape read back rather than from a capability.
   - **Stalwart is the only JMAP calendar server we can test any of this against in CI.** It
     serves 2.0 shapes (`calendarAddress`, `organizerCalendarAddress`) and its docs cite
     draft-ietf-jmap-calendars + jscalendarbis without pinning a number. **Fastmail serves JMAP
@@ -496,12 +499,12 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     limits), `Calendar/get` returns the draft's rights (`mayReadItems`, `mayWriteAll`,
     `mayWriteOwn`, `mayUpdatePrivate`, `mayRSVP`, `mayReadFreeBusy`, `mayShare`,
     `mayDelete`), and an unfiltered `CalendarEvent/query` returned all 9,808 ids at once
-    while the `/get` of them was refused `requestTooLarge` (the paging above). A
-    `CalendarEvent/set` create the adapter sends was refused `invalidProperties`; which
-    properties is not yet known, which is why a `SetError`'s `properties` now reach the
-    error. So the 1.0 fallback above is still **spec-derived (RFC 8984 §4.4.6), not
-    observed**, and Fastmail is a second server to observe shapes on by hand, through an
-    OAuth grant, never in CI.
+    while the `/get` of them was refused `requestTooLarge` (the paging above). Every event it
+    serves carries `"version": "2.0"` and the 2.0 spellings (`organizerCalendarAddress`, the
+    singular `recurrenceRule`), and a create without `version` is refused (above); an update
+    PatchObject is accepted as it is. So the 1.0 fallback above is still **spec-derived
+    (RFC 8984 §4.4.6), not observed**, and Fastmail is a second server to observe shapes on by
+    hand, through an OAuth grant, never in CI.
 - **Calendar writes (`CalendarEvent/set`).** The three neutral write verbs
   (`providers.md`) fold onto one `CalendarEvent/set` (`crate::calendar_write`):
   `create_event` → a `create` of a JSCalendar object under a fixed creation id, whose
