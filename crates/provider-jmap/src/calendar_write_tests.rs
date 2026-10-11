@@ -55,6 +55,7 @@ async fn create_posts_a_jscalendar_object_and_learns_the_server_assigned_id() {
             "accountId": "c",
             "create": { "new": {
                 "@type": "Event",
+                "version": "2.0",
                 "uid": "evt-1@test.local",
                 "calendarIds": { "b": true },
                 "title": "Sprint planning",
@@ -65,7 +66,7 @@ async fn create_posts_a_jscalendar_object_and_learns_the_server_assigned_id() {
             }},
             "sendSchedulingMessages": true,
         }),
-        "the create must post a JSCalendar object with the wall clock and the zone stated \
+        "the create must post a JSCalendar 2.0 object with the wall clock and the zone stated \
          separately — never the UTC instant"
     );
     // And no `ifInState`: it guards the account's whole event state, not this object.
