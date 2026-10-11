@@ -21,7 +21,10 @@ use engine_provider::{
 use serde_json::{Value, json};
 
 use crate::{
-    JmapProvider, contact_fields, contact_write, error::JmapError, fetch, request::capability,
+    JmapProvider, contact_fields, contact_write,
+    error::{JmapError, set_error_type, set_refusal},
+    fetch, fetch_scope,
+    request::capability,
 };
 
 const CREATION_ID: &str = "new";
@@ -223,7 +226,7 @@ impl ContactsProvider for JmapProvider {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ContactSourceSync<AddressBook>> {
         let account = self.contact_account()?;
-        let (sync, cursor_recovered) = fetch::container_sync_with_status(
+        let (sync, cursor_recovered) = fetch_scope::container_sync_with_status(
             self.executor(),
             &account,
             &[capability::CORE, capability::CONTACTS],
@@ -245,16 +248,15 @@ impl ContactsProvider for JmapProvider {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ContactSourceSync<ContactCard>> {
         let account = self.contact_account()?;
-        let (sync, cursor_recovered) = fetch::container_sync_with_status(
-            self.executor(),
-            &account,
-            &[capability::CORE, capability::CONTACTS],
-            "ContactCard",
-            cursor,
-            card,
-            |card| card.id.key().clone(),
-        )
-        .await?;
+        let fetch = fetch::MemberFetch {
+            executor: self.executor(),
+            account: &account,
+            using: &[capability::CORE, capability::CONTACTS],
+            type_name: "ContactCard",
+            properties: None,
+        };
+        let (sync, cursor_recovered) =
+            fetch_scope::member_sync_with_status(&fetch, cursor, card).await?;
         Ok(ContactSourceSync::Available {
             sync,
             cursor_recovered,
@@ -345,10 +347,10 @@ impl ContactsProvider for JmapProvider {
                 }),
             )
             .await?;
-        if let Some(kind) = set_error(&result, "notDestroyed", base.id.as_str())
-            && kind != "notFound"
+        if let Some(refusal) = set_refusal(&result, "notDestroyed", base.id.as_str())
+            && set_error_type(refusal) != "notFound"
         {
-            return Err(JmapError::set(base.id.as_str(), kind).into());
+            return Err(JmapError::refused(base.id.as_str(), refusal).into());
         }
         Ok(())
     }
@@ -417,19 +419,8 @@ fn supported_fields() -> ContactFieldSet {
 }
 
 fn check_set_error(result: &Value, map: &str, target: &str) -> Result<(), JmapError> {
-    if let Some(kind) = set_error(result, map, target) {
-        Err(JmapError::set(target, kind))
-    } else {
-        Ok(())
-    }
-}
-
-fn set_error<'a>(result: &'a Value, map: &str, target: &str) -> Option<&'a str> {
-    result
-        .get(map)
-        .and_then(|errors| errors.get(target))
-        .and_then(|error| error.get("type"))
-        .and_then(Value::as_str)
+    set_refusal(result, map, target)
+        .map_or(Ok(()), |refusal| Err(JmapError::refused(target, refusal)))
 }
 
 fn required_text<'a>(value: &'a Value, field: &str) -> Result<&'a str, JmapError> {

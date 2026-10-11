@@ -39,8 +39,9 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   per-account `TlsClientConfig` in `JmapConfig` (`tls.md`). Layers: `transport`
   (auth + HTTP), `request` (the `{using, methodCalls}` envelope, `#id`
   back-references, typed responses), `session` (discovery + URL policy),
-  `fetch` (the generic container/member sync **and** the paged `member_page`
-  primitive `stream_email` re-chunks), `mail`/`calendar`/`json` (normalizers),
+  `fetch` (the paged query page and the `member_page` primitive `stream_email`
+  re-chunks), `fetch_scope` (whole-scope container/member sync, bounded by
+  `maxObjectsInGet`), `mail`/`calendar`/`json` (normalizers),
   `submit` (sending), `provider` (the trait impl) behind an `Executor` seam.
 - **`engine-sync`** — the per-scope loop: `claim → fetch → project/derive →
   apply → release`, with `StaleLease` re-claim-and-recompute and container-
@@ -143,12 +144,29 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   only aim the request at a path the connection host does not route. It did exactly
   that: every Fastmail message-source download hit a catch-all `302` to a marketing
   page, so no JMAP body ever cached.
-- **Generic container/member fetch.** Containers (`Mailbox`, `Calendar`) sync via
-  `Foo/get` (snapshot) or `Foo/changes`→`Foo/get` (delta). Members (`Email`,
-  `CalendarEvent`) sync via `Foo/query`→`Foo/get` (snapshot) or `Foo/changes`→
-  `Foo/get` (delta). Changed objects are fetched in one round trip via an `#ids`
-  result back-reference. The only per-type difference is the method-name prefix,
-  the capability set, and the normalizer.
+- **Generic container/member fetch.** Containers (`Mailbox`, `Calendar`,
+  `AddressBook`) snapshot with one `Foo/get`. Members (`Email`, `CalendarEvent`,
+  `ContactCard`) snapshot by `Foo/query`→`Foo/get`. Both delta by `Foo/changes`→
+  `Foo/get`. Each page's ids are fetched in the same request via an `#ids` result
+  back-reference. The only per-type difference is the method-name prefix, the
+  capability set, and the normalizer.
+- **No request asks for more than `maxObjectsInGet` ids.** A server refuses a larger
+  `/get` outright with `requestTooLarge` (RFC 8620 §5.1, including `ids: null` once the
+  type holds more than the limit); it does not truncate. So every whole-scope pass
+  (`fetch_scope`) pages: a member snapshot pages `Foo/query` by `position`/`limit` with
+  `limit` = `maxObjectsInGet`, and every delta pages `Foo/changes` by `maxChanges` =
+  `maxObjectsInGet`, so each page's `/get` fits. The cursor a paged snapshot records is
+  the `state` read in the **first** page's request, so a change landing mid-pass is
+  replayed by the next delta; a `queryState` that differs between pages means an id may
+  have crossed a page boundary unseen, and the pass then applies as an additive delta
+  rather than tombstoning; paged changes apply in order, the last page to mention an
+  object deciding whether it exists. Containers keep one `Foo/get`: an account holds few
+  of them, and `Calendar` and `AddressBook` have no `/query` to page by. Before this,
+  `CalendarEvent` and `ContactCard` were fetched whole and **every** sync of an account
+  past the limit failed: Fastmail (9,808 events against a limit it enforces) and the
+  Stalwart harness (500) both answer `requestTooLarge`. Pinned offline against a server
+  fake that refuses an oversized `/get` (`bounded_server.rs`, `fetch_scope_tests.rs`) and
+  live against Stalwart (`tests/live_scope_limits.rs`, which fails on the unpaged code).
 - **Streaming member fetch (`stream_email` re-chunks `member_page`).** Email streams
   as `EmailChunk`s so a host stays responsive. The JMAP round trip is atomic (a page
   arrives whole), so `stream_email` loops `member_page` and re-chunks each page with
@@ -465,15 +483,25 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     same in both versions, so there is nothing to choose. That stops being true the moment a
     write carries participants, and *that* is when a version decision has to be made — from
     the shape read back, not from a capability.
-  - **Stalwart is the only JMAP calendar server we can test any of this against.** It serves
-    2.0 shapes (`calendarAddress`, `organizerCalendarAddress`) and its docs cite
-    draft-ietf-jmap-calendars + jscalendarbis without pinning a number. Fastmail — the draft's
-    own authors — serve **no** JMAP calendars to third parties at all: their developer page
-    says calendars are CalDAV-only and JMAP access is coming "as soon as the specification is
-    finalized", and their API tokens have no Calendars scope to grant (a request for the
-    capability is refused `403 unknownCapability`). So the 1.0 fallback above is
-    **spec-derived (RFC 8984 §4.4.6), not observed** — there is currently no server to
-    observe it on, and that is a disclosure, not an omission.
+  - **Stalwart is the only JMAP calendar server we can test any of this against in CI.** It
+    serves 2.0 shapes (`calendarAddress`, `organizerCalendarAddress`) and its docs cite
+    draft-ietf-jmap-calendars + jscalendarbis without pinning a number. **Fastmail serves JMAP
+    calendars to an OAuth grant and to nothing else.** Its developer page says calendars are
+    CalDAV-only until the specification is finalised, and an **API token** indeed has no
+    Calendars scope to grant: its session lists no `urn:ietf:params:jmap:calendars` at all.
+    But an OAuth client that asks for `urn:ietf:params:oauth:scope:calendars` (which its
+    authorization-server metadata advertises) is granted `urn:ietf:params:jmap:calendars`,
+    and the session then carries it, observed 2026-10-11 against a real account: the
+    capability object is `{}` at session and account level (none of the draft's optional
+    limits), `Calendar/get` returns the draft's rights (`mayReadItems`, `mayWriteAll`,
+    `mayWriteOwn`, `mayUpdatePrivate`, `mayRSVP`, `mayReadFreeBusy`, `mayShare`,
+    `mayDelete`), and an unfiltered `CalendarEvent/query` returned all 9,808 ids at once
+    while the `/get` of them was refused `requestTooLarge` (the paging above). A
+    `CalendarEvent/set` create the adapter sends was refused `invalidProperties`; which
+    properties is not yet known, which is why a `SetError`'s `properties` now reach the
+    error. So the 1.0 fallback above is still **spec-derived (RFC 8984 §4.4.6), not
+    observed**, and Fastmail is a second server to observe shapes on by hand, through an
+    OAuth grant, never in CI.
 - **Calendar writes (`CalendarEvent/set`).** The three neutral write verbs
   (`providers.md`) fold onto one `CalendarEvent/set` (`crate::calendar_write`):
   `create_event` → a `create` of a JSCalendar object under a fixed creation id, whose
@@ -749,8 +777,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
 ## JMAP Contacts
 
 RFC 9610's `urn:ietf:params:jmap:contacts` capability supplies a separate primary
-account. `AddressBook/get|changes` and `ContactCard/get|changes` map onto normal
-container/card scopes while preserving non-empty multi-address-book membership,
+account. `AddressBook/get|changes` maps onto a container scope and
+`ContactCard/query|get|changes` onto a member scope (paged like `CalendarEvent`, since
+an address book can hold more cards than one `/get` may carry), preserving non-empty
+multi-address-book membership,
 JSContact property-map ids, group cards, rights, extensions, and raw JSContact.
 
 `ContactCard/set` implements create/update/destroy. Update is the server's

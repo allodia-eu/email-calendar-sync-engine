@@ -306,7 +306,7 @@ fn refused(object: &str, error: &Value) -> ProviderError {
         "invalidProperties" => {
             ProviderError::conflict(format!("{object}: the destination is not a valid parent"))
         }
-        _ => JmapError::set(object, kind).into(),
+        _ => JmapError::refused(object, error).into(),
     }
 }
 

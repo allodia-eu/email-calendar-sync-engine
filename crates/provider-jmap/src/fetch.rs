@@ -1,229 +1,23 @@
-//! Generic JMAP read/sync orchestration shared by mail and calendar.
+//! The paged JMAP fetch primitives: one `Foo/query` page with its `Foo/get`, the paged
+//! `member_page` behind `stream_email`, and the `#ids` back-reference both use.
 //!
-//! Two shapes cover every type: **containers** (`Mailbox`, `Calendar`) sync via
-//! `Foo/get` (snapshot) or `Foo/changes` → `Foo/get` (delta); **members**
-//! (`Email`, `CalendarEvent`) via `Foo/query` → `Foo/get` (snapshot) or
-//! `Foo/changes` → `Foo/get` (delta). Both recover from `cannotCalculateChanges`
-//! by falling back to a snapshot, and use `#ids` result back-references so a
-//! change set is fetched in one round trip. The per-type difference is just the
-//! method-name prefix, the capability set, and the normalizer.
-
-use std::collections::BTreeSet;
+//! Whole-scope sync, which loops these pages for a [`engine_provider::ScopeSync`], is
+//! [`crate::fetch_scope`].
 
 use engine_core::{
     error::FailureClass,
     ids::ProviderKey,
-    sync::{SyncObject, SyncState, SyncUpdate},
+    sync::{SyncObject, SyncState},
 };
-use engine_provider::{PageToken, ScopeSync, SyncKind, SyncPage};
+use engine_provider::{PageToken, SyncKind, SyncPage};
 use serde_json::{Map, Value, json};
 
 use crate::{
     error::JmapError,
     executor::Executor,
     request::{Request, result_ref, with_back_reference},
-    sync_ops::{
-        Changes, clamp_limit, is_complete, key_set, keys, next_position, objects,
-        snapshot_or_delta, state, total,
-    },
+    sync_ops::{Changes, clamp_limit, keys, next_position, objects, state, total},
 };
-
-pub(crate) async fn container_sync<T: SyncObject>(
-    executor: &dyn Executor,
-    account: &str,
-    using: &[&'static str],
-    type_name: &str,
-    cursor: Option<&SyncState>,
-    normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
-    key_of: impl Fn(&T) -> ProviderKey + Copy,
-) -> Result<ScopeSync<T>, JmapError> {
-    container_sync_with_status(
-        executor, account, using, type_name, cursor, normalize, key_of,
-    )
-    .await
-    .map(|(sync, _)| sync)
-}
-
-/// Container sync plus whether an expired changes state forced a snapshot.
-pub(crate) async fn container_sync_with_status<T: SyncObject>(
-    executor: &dyn Executor,
-    account: &str,
-    using: &[&'static str],
-    type_name: &str,
-    cursor: Option<&SyncState>,
-    normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
-    key_of: impl Fn(&T) -> ProviderKey + Copy,
-) -> Result<(ScopeSync<T>, bool), JmapError> {
-    let Some(cursor) = cursor else {
-        return container_snapshot(executor, account, using, type_name, normalize, key_of)
-            .await
-            .map(|sync| (sync, false));
-    };
-    match container_delta(executor, account, using, type_name, cursor, normalize).await {
-        Err(e) if e.failure_class() == FailureClass::NeedsResync => {
-            container_snapshot(executor, account, using, type_name, normalize, key_of)
-                .await
-                .map(|sync| (sync, true))
-        }
-        Ok(sync) => Ok((sync, false)),
-        Err(error) => Err(error),
-    }
-}
-
-async fn container_snapshot<T: SyncObject>(
-    executor: &dyn Executor,
-    account: &str,
-    using: &[&'static str],
-    type_name: &str,
-    normalize: impl Fn(&Value) -> Result<T, JmapError>,
-    key_of: impl Fn(&T) -> ProviderKey,
-) -> Result<ScopeSync<T>, JmapError> {
-    let mut req = Request::new(using.iter().copied());
-    let get = req.invoke(format!("{type_name}/get"), json!({ "accountId": account }));
-    let resp = executor.execute(&req).await?;
-    let result = resp.result(&get)?;
-    let items = objects(result, normalize)?;
-    let present: BTreeSet<ProviderKey> = items.iter().map(key_of).collect();
-    Ok(ScopeSync::new(
-        SyncUpdate::snapshot(items, present),
-        state(result, "state")?,
-    ))
-}
-
-async fn container_delta<T: SyncObject>(
-    executor: &dyn Executor,
-    account: &str,
-    using: &[&'static str],
-    type_name: &str,
-    cursor: &SyncState,
-    normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
-) -> Result<ScopeSync<T>, JmapError> {
-    let mut req = Request::new(using.iter().copied());
-    let changes_method = format!("{type_name}/changes");
-    let changes_id = req.invoke(
-        changes_method.clone(),
-        json!({ "accountId": account, "sinceState": cursor.as_str() }),
-    );
-    let created = req.invoke(
-        format!("{type_name}/get"),
-        back_ref_get(account, &changes_id, &changes_method, "/created", None),
-    );
-    let updated = req.invoke(
-        format!("{type_name}/get"),
-        back_ref_get(account, &changes_id, &changes_method, "/updated", None),
-    );
-    let resp = executor.execute(&req).await?;
-    let diff = Changes::parse(resp.result(&changes_id)?)?;
-    let mut changed = objects(resp.result(&created)?, normalize)?;
-    changed.extend(objects(resp.result(&updated)?, normalize)?);
-    Ok(ScopeSync::new(
-        SyncUpdate::delta(changed, diff.destroyed),
-        diff.new_state,
-    ))
-}
-
-/// Syncs a member type (`Foo/query`+`Foo/get` snapshot; `Foo/changes`+`Foo/get`
-/// delta), recovering to a snapshot on `cannotCalculateChanges`.
-pub(crate) async fn member_sync<T: SyncObject>(
-    executor: &dyn Executor,
-    account: &str,
-    using: &[&'static str],
-    type_name: &str,
-    properties: Option<&'static [&'static str]>,
-    cursor: Option<&SyncState>,
-    normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
-) -> Result<ScopeSync<T>, JmapError> {
-    let Some(cursor) = cursor else {
-        return member_snapshot(executor, account, using, type_name, properties, normalize).await;
-    };
-    match member_delta(
-        executor, account, using, type_name, properties, cursor, normalize,
-    )
-    .await
-    {
-        Err(e) if e.failure_class() == FailureClass::NeedsResync => {
-            member_snapshot(executor, account, using, type_name, properties, normalize).await
-        }
-        other => other,
-    }
-}
-
-async fn member_snapshot<T: SyncObject>(
-    executor: &dyn Executor,
-    account: &str,
-    using: &[&'static str],
-    type_name: &str,
-    properties: Option<&'static [&'static str]>,
-    normalize: impl Fn(&Value) -> Result<T, JmapError>,
-) -> Result<ScopeSync<T>, JmapError> {
-    let mut req = Request::new(using.iter().copied());
-    let query_method = format!("{type_name}/query");
-    let query = req.invoke(
-        query_method.clone(),
-        json!({ "accountId": account, "calculateTotal": true }),
-    );
-    let get = req.invoke(
-        format!("{type_name}/get"),
-        back_ref_get(account, &query, &query_method, "/ids", properties),
-    );
-    let resp = executor.execute(&req).await?;
-    let query_result = resp.result(&query)?;
-    let present = key_set(query_result, "ids")?;
-    let total = total(query_result);
-    let get_result = resp.result(&get)?;
-    let cursor = state(get_result, "state")?;
-    let items = objects(get_result, normalize)?;
-    let complete = is_complete(total, present.len());
-    Ok(ScopeSync::new(
-        snapshot_or_delta(items, present, complete),
-        cursor,
-    ))
-}
-
-async fn member_delta<T: SyncObject>(
-    executor: &dyn Executor,
-    account: &str,
-    using: &[&'static str],
-    type_name: &str,
-    properties: Option<&'static [&'static str]>,
-    cursor: &SyncState,
-    normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
-) -> Result<ScopeSync<T>, JmapError> {
-    let mut req = Request::new(using.iter().copied());
-    let changes_method = format!("{type_name}/changes");
-    let changes_id = req.invoke(
-        changes_method.clone(),
-        json!({ "accountId": account, "sinceState": cursor.as_str() }),
-    );
-    let created = req.invoke(
-        format!("{type_name}/get"),
-        back_ref_get(
-            account,
-            &changes_id,
-            &changes_method,
-            "/created",
-            properties,
-        ),
-    );
-    let updated = req.invoke(
-        format!("{type_name}/get"),
-        back_ref_get(
-            account,
-            &changes_id,
-            &changes_method,
-            "/updated",
-            properties,
-        ),
-    );
-    let resp = executor.execute(&req).await?;
-    let diff = Changes::parse(resp.result(&changes_id)?)?;
-    let mut changed = objects(resp.result(&created)?, normalize)?;
-    changed.extend(objects(resp.result(&updated)?, normalize)?);
-    Ok(ScopeSync::new(
-        SyncUpdate::delta(changed, diff.destroyed),
-        diff.new_state,
-    ))
-}
 
 /// The fixed configuration for one member type's paged fetch — everything that is
 /// constant across the pages of a pass. Bundled so each page builder takes a sane
@@ -305,33 +99,51 @@ pub(crate) async fn member_page<T: SyncObject>(
     }
 }
 
-/// One snapshot page: `Foo/query` (sorted, at `position`, bounded by `limit`) plus
-/// a `Foo/get` over the resulting ids. The query ids are the page's `present` set;
-/// [`next_position`] decides whether another page follows.
-async fn snapshot_page<T: SyncObject>(
+/// One `Foo/query` page and the objects it named, before it becomes a [`SyncPage`] or part of
+/// a whole-scope snapshot.
+pub(crate) struct QueryPage<T> {
+    /// The objects the page's `Foo/get` returned.
+    pub(crate) changed: Vec<T>,
+    /// The ids the query returned, in order: the page's share of the scope's `present` set.
+    pub(crate) present: Vec<ProviderKey>,
+    /// The scope's size, when the server calculated it.
+    pub(crate) total: Option<usize>,
+    /// Where the next page starts, or `None` once the scope is exhausted.
+    pub(crate) next_position: Option<usize>,
+    /// The type's state, read in the same request as the query.
+    pub(crate) state: SyncState,
+    /// The query's own state (RFC 8620 §5.5): a different one on a later page means the
+    /// results moved between the two.
+    pub(crate) query_state: Option<String>,
+}
+
+/// One page: `Foo/query` (optionally sorted and filtered, at `position`, bounded by `limit`)
+/// plus a `Foo/get` over the page's `#ids`, in one request.
+pub(crate) async fn query_page<T: SyncObject>(
     fetch: &MemberFetch<'_>,
-    sort: Value,
+    sort: Option<&Value>,
     position: usize,
     limit: usize,
     filter: Option<&Value>,
     normalize: impl Fn(&Value) -> Result<T, JmapError>,
-) -> Result<SyncPage<T>, JmapError> {
+) -> Result<QueryPage<T>, JmapError> {
     let mut req = Request::new(fetch.using.iter().copied());
     let query_method = format!("{}/query", fetch.type_name);
-    let mut query_args = json!({
-        "accountId": fetch.account,
-        "sort": sort,
-        "position": position,
-        "limit": limit,
-        "calculateTotal": true,
-    });
+    let mut query_args = Map::new();
+    query_args.insert("accountId".to_owned(), json!(fetch.account));
+    if let Some(sort) = sort {
+        query_args.insert("sort".to_owned(), sort.clone());
+    }
     // A sync-depth window bounds the snapshot to recent mail via a `receivedAt`
     // filter (RFC 8621 §4.4.1). `Email/changes` takes no filter, so a delta applies none
     // and the orchestrator drops an out-of-window arrival on apply instead.
-    if let (Some(filter), Some(args)) = (filter, query_args.as_object_mut()) {
-        args.insert("filter".to_owned(), filter.clone());
+    if let Some(filter) = filter {
+        query_args.insert("filter".to_owned(), filter.clone());
     }
-    let query = req.invoke(query_method.clone(), query_args);
+    query_args.insert("position".to_owned(), json!(position));
+    query_args.insert("limit".to_owned(), json!(limit));
+    query_args.insert("calculateTotal".to_owned(), json!(true));
+    let query = req.invoke(query_method.clone(), Value::Object(query_args));
     let get = req.invoke(
         format!("{}/get", fetch.type_name),
         back_ref_get(
@@ -347,19 +159,40 @@ async fn snapshot_page<T: SyncObject>(
     let present = keys(query_result, "ids")?;
     let total = total(query_result);
     let get_result = resp.result(&get)?;
-    let next_cursor = state(get_result, "state")?;
-    let changed = objects(get_result, normalize)?;
-    let next_page = next_position(position, limit, present.len(), total)
-        .map(|p| PageCursor::Snapshot(p).to_token());
+    Ok(QueryPage {
+        changed: objects(get_result, normalize)?,
+        next_position: next_position(position, limit, present.len(), total),
+        present,
+        total,
+        state: state(get_result, "state")?,
+        query_state: query_result
+            .get("queryState")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+/// One snapshot page of a paged pass; [`next_position`] decides whether another follows.
+async fn snapshot_page<T: SyncObject>(
+    fetch: &MemberFetch<'_>,
+    sort: Value,
+    position: usize,
+    limit: usize,
+    filter: Option<&Value>,
+    normalize: impl Fn(&Value) -> Result<T, JmapError>,
+) -> Result<SyncPage<T>, JmapError> {
+    let page = query_page(fetch, Some(&sort), position, limit, filter, normalize).await?;
     Ok(SyncPage {
         kind: SyncKind::Snapshot,
-        changed,
+        changed: page.changed,
         patched: Vec::new(),
         removed: Vec::new(),
-        present,
-        next_page,
-        next_cursor,
-        total,
+        present: page.present,
+        next_page: page
+            .next_position
+            .map(|p| PageCursor::Snapshot(p).to_token()),
+        next_cursor: page.state,
+        total: page.total,
     })
 }
 
@@ -456,7 +289,7 @@ impl PageCursor {
 
 /// Builds a `Foo/get` argument object that fetches the ids a prior call produced,
 /// via a `#ids` result back-reference (RFC 8620 §3.7).
-fn back_ref_get(
+pub(crate) fn back_ref_get(
     account: &str,
     result_of: &str,
     name: &str,

@@ -142,6 +142,34 @@ async fn a_create_the_server_neither_confirmed_nor_rejected_is_a_conflict() {
     assert_eq!(err.class(), FailureClass::Conflict);
 }
 
+/// `invalidProperties` names the properties at fault (RFC 8620 §5.3), and that list is the
+/// difference between a refusal anyone can act on and one nobody can.
+#[tokio::test]
+async fn a_refused_create_names_the_properties_the_server_rejected() {
+    let p = provider(vec![set_response(&json!({ "notCreated": { "new": {
+        "type": "invalidProperties",
+        "properties": ["recurrenceRule", "locations/l1/name"],
+        "description": "server text"
+    } } }))]);
+    let draft = EventDraft::new(
+        calendar(),
+        uid(),
+        "Sprint planning",
+        zoned("2026-08-01T09:00:00"),
+        zoned("2026-08-01T09:30:00"),
+        stamp(),
+    );
+    let err = p.create_event(&account(), &draft).await.unwrap_err();
+    assert_eq!(err.class(), FailureClass::Permanent);
+    let text = err.to_string();
+    assert!(text.contains("invalidProperties"), "{text}");
+    assert!(text.contains("recurrenceRule, locations/l1/name"), "{text}");
+    assert!(
+        !text.contains("server text"),
+        "a server's own words stay out: {text}"
+    );
+}
+
 #[tokio::test]
 async fn destroy_removes_the_event() {
     let (p, exec) = recording(vec![set_response(&json!({ "destroyed": [EVENT] }))]);

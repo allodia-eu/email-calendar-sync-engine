@@ -52,7 +52,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     calendar_patch::{exclusion, patch_to_json},
     calendar_rule::render_rule,
-    error::JmapError,
+    error::{JmapError, set_error_type, set_refusal},
     executor::Executor,
     request::{Request, capability},
 };
@@ -111,8 +111,8 @@ pub(crate) async fn create_event(
     let resp = executor.execute(&req).await?;
     let result = resp.result(&call)?;
 
-    if let Some(error_type) = set_error(result, "notCreated", CREATION_ID) {
-        return Err(JmapError::set(CREATION_ID, error_type));
+    if let Some(refusal) = set_refusal(result, "notCreated", CREATION_ID) {
+        return Err(JmapError::refused(CREATION_ID, refusal));
     }
     // The server-assigned id is the whole point of the `created` map; a create the server
     // neither confirmed nor rejected is a conflict, never a silent success.
@@ -197,8 +197,8 @@ async fn apply_update(
     let resp = executor.execute(&req).await?;
     let result = resp.result(&call)?;
 
-    if let Some(error_type) = set_error(result, "notUpdated", target) {
-        return Err(JmapError::set(target, error_type));
+    if let Some(refusal) = set_refusal(result, "notUpdated", target) {
+        return Err(JmapError::refused(target, refusal));
     }
     // `updated` is an object keyed by id; its value may be `null` (the server made no extra
     // server-set changes) — still an acknowledgement. A target mentioned in neither map was
@@ -259,12 +259,12 @@ pub(crate) async fn delete_event(
     let resp = executor.execute(&req).await?;
     let result = resp.result(&call)?;
 
-    if let Some(error_type) = set_error(result, "notDestroyed", target) {
+    if let Some(refusal) = set_refusal(result, "notDestroyed", target) {
         // Already gone is the end state we asked for.
-        if error_type == "notFound" {
+        if set_error_type(refusal) == "notFound" {
             return Ok(());
         }
-        return Err(JmapError::set(target, error_type));
+        return Err(JmapError::refused(target, refusal));
     }
     // `destroyed` is an array of ids.
     let destroyed = result
@@ -276,15 +276,6 @@ pub(crate) async fn delete_event(
     } else {
         Err(JmapError::set(target, "notFound"))
     }
-}
-
-/// The `SetError` type the server reported for `target` under `map`, if any (RFC 8620 §5.3).
-pub(crate) fn set_error<'a>(result: &'a Value, map: &str, target: &str) -> Option<&'a str> {
-    result
-        .get(map)
-        .and_then(|f| f.get(target))
-        .and_then(|e| e.get("type"))
-        .and_then(Value::as_str)
 }
 
 /// Renders an [`EventDraft`] as a JSCalendar `Event` object (RFC 8984 §5).

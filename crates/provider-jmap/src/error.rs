@@ -9,6 +9,7 @@
 
 use engine_core::error::FailureClass;
 use engine_provider::ProviderError;
+use serde_json::Value;
 
 /// A JMAP protocol or transport failure.
 #[derive(Debug, thiserror::Error)]
@@ -55,12 +56,19 @@ pub enum JmapError {
     /// A `/set` method rejected an individual object with a `SetError` (RFC 8620
     /// §5.3) — the method call itself succeeded, but the create/update/destroy of one
     /// object failed. Classified per the set-error `type`.
-    #[error("JMAP set error '{error_type}' for object '{object_id}'")]
+    #[error(
+        "JMAP set error '{error_type}' for object '{object_id}'{}",
+        named_properties(properties)
+    )]
     Set {
         /// The id (or creation id) of the object that failed.
         object_id: String,
         /// The JMAP `SetError` `type` string.
         error_type: String,
+        /// The properties the server named as at fault (`invalidProperties` carries them),
+        /// empty when it named none. Property names only: a `SetError`'s `description` is
+        /// the server's own prose and may quote the values it refused.
+        properties: Vec<String>,
     },
 
     /// The batched response carried no entry for a call id that was sent.
@@ -120,6 +128,24 @@ impl JmapError {
         Self::Set {
             object_id: object_id.into(),
             error_type: error_type.into(),
+            properties: Vec::new(),
+        }
+    }
+
+    /// Builds a [`JmapError::Set`] from the `SetError` object a server answered for
+    /// `object_id` (RFC 8620 §5.3), keeping its `type` and the properties it names.
+    pub(crate) fn refused(object_id: impl Into<String>, set_error: &Value) -> Self {
+        Self::Set {
+            object_id: object_id.into(),
+            error_type: set_error_type(set_error).to_owned(),
+            properties: set_error
+                .get("properties")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
         }
     }
 
@@ -313,3 +339,26 @@ impl From<JmapError> for ProviderError {
 #[cfg(test)]
 #[path = "error_tests.rs"]
 mod tests;
+
+/// The `SetError` a `/set` result reports for `target` under `map` (`notCreated`,
+/// `notUpdated` or `notDestroyed`), if any (RFC 8620 §5.3).
+pub(crate) fn set_refusal<'a>(result: &'a Value, map: &str, target: &str) -> Option<&'a Value> {
+    result.get(map).and_then(|refused| refused.get(target))
+}
+
+/// A `SetError`'s `type`, or `unknown` when it carries none.
+pub(crate) fn set_error_type(set_error: &Value) -> &str {
+    set_error
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+}
+
+/// The ` (properties: a, b)` suffix a [`JmapError::Set`] message carries when it names any.
+fn named_properties(properties: &[String]) -> String {
+    if properties.is_empty() {
+        String::new()
+    } else {
+        format!(" (properties: {})", properties.join(", "))
+    }
+}

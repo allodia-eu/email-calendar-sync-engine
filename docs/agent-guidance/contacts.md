@@ -145,7 +145,8 @@ mail/calendar/identity scopes.
 ### JMAP Contacts
 
 - Advertise and use `urn:ietf:params:jmap:contacts`.
-- Sync `AddressBook/get|changes` before `ContactCard/get|changes`.
+- Sync `AddressBook/get|changes` before `ContactCard/query|get|changes`, paging the cards
+  within `maxObjectsInGet` (`jmap.md`).
 - Preserve the server-assigned card `id`, `uid`, non-empty multi-address-book
   membership, rights, JSContact property ids, groups, and extensions.
 - Use `ContactCard/set` for CRUD. JMAP state protects the set operation at a
