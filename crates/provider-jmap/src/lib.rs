@@ -49,6 +49,7 @@ mod drafts_blobs;
 mod error;
 mod executor;
 mod fetch;
+mod fetch_scope;
 mod identity;
 mod json;
 mod mail;

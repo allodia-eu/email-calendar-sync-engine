@@ -76,12 +76,6 @@ pub(crate) fn keys(result: &Value, field: &str) -> Result<Vec<ProviderKey>, Jmap
         .collect()
 }
 
-/// Reads a string-array field as a [`ProviderKey`] set (e.g. the complete id set
-/// a snapshot tombstones against).
-pub(crate) fn key_set(result: &Value, field: &str) -> Result<BTreeSet<ProviderKey>, JmapError> {
-    Ok(keys(result, field)?.into_iter().collect())
-}
-
 /// Reads a required state-cursor field (`state` for `/get`, `newState` for
 /// `/changes`, `queryState` for `/query`).
 pub(crate) fn state(result: &Value, field: &str) -> Result<SyncState, JmapError> {
@@ -215,11 +209,8 @@ mod tests {
     }
 
     #[test]
-    fn key_set_reads_the_present_id_set_from_a_query() {
-        let query = json!({ "ids": ["a", "b", "a"], "queryState": "q1" });
-        let present = key_set(&query, "ids").unwrap();
-        // Deduplicated into a set.
-        assert_eq!(present.len(), 2);
+    fn a_query_state_reads_as_a_cursor() {
+        let query = json!({ "ids": ["a", "b"], "queryState": "q1" });
         assert_eq!(state(&query, "queryState").unwrap().as_str(), "q1");
     }
 

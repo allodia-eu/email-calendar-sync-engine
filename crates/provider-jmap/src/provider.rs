@@ -31,6 +31,7 @@ use crate::{
     executor::Executor,
     fetch,
     fetch::{MemberFetch, UpdatedAsState},
+    fetch_scope,
     mail::{
         EMAIL_PROPERTIES, EMAIL_STATE_PROPERTIES, mailbox_from_json, message_from_json,
         state_from_json,
@@ -187,7 +188,7 @@ impl Provider for JmapProvider {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
         let account = self.mail_account()?;
-        Ok(fetch::container_sync(
+        Ok(fetch_scope::container_sync(
             self.executor.as_ref(),
             &account,
             &[capability::CORE, capability::MAIL],
@@ -293,7 +294,7 @@ impl Provider for JmapProvider {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Calendar>> {
         let account = self.calendar_account()?;
-        Ok(fetch::container_sync(
+        Ok(fetch_scope::container_sync(
             self.executor.as_ref(),
             &account,
             &[capability::CORE, capability::CALENDARS],
@@ -311,16 +312,14 @@ impl Provider for JmapProvider {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         let account = self.calendar_account()?;
-        Ok(fetch::member_sync(
-            self.executor.as_ref(),
-            &account,
-            &[capability::CORE, capability::CALENDARS],
-            "CalendarEvent",
-            None,
-            cursor,
-            event_from_json,
-        )
-        .await?)
+        let fetch = MemberFetch {
+            executor: self.executor.as_ref(),
+            account: &account,
+            using: &[capability::CORE, capability::CALENDARS],
+            type_name: "CalendarEvent",
+            properties: None,
+        };
+        Ok(fetch_scope::member_sync(&fetch, cursor, event_from_json).await?)
     }
 
     // `put_event` is deliberately **not** implemented: replacing a whole stored document is
@@ -446,6 +445,14 @@ impl Provider for JmapProvider {
 #[cfg(test)]
 #[path = "provider_test_support.rs"]
 pub(crate) mod provider_test_support;
+
+#[cfg(test)]
+#[path = "bounded_server.rs"]
+pub(crate) mod bounded_server;
+
+#[cfg(test)]
+#[path = "fetch_scope_tests.rs"]
+mod fetch_scope_tests;
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]
