@@ -1,23 +1,15 @@
 //! Whole-scope JMAP sync: every type a provider hands over as one [`ScopeSync`], however large.
 //!
 //! Two shapes cover every type. **Queried** types (`Mailbox`, `CalendarEvent`, `ContactCard`)
-//! snapshot by paging `Foo/query`, each page's ids fetched by a `#ids` back-reference in the same
-//! request. **Containers** (`Calendar`, `AddressBook`) snapshot with one `Foo/get`: neither has a
-//! `/query` to page (JMAP Calendars, RFC 9610), so a server holding more of them than one `/get`
-//! may carry refuses the snapshot. Both delta by paging `Foo/changes`. Every page asks for at
-//! most `maxObjectsInGet` ids (RFC 8620 §5.1), because a server refuses a larger `/get` outright
-//! with `requestTooLarge` rather than truncating it; a scope larger than one `/get` therefore
-//! takes several requests, and the rules below keep the result correct across them.
-//!
-//! - **The cursor is the state read with the first page.** A change landing mid-pass is then
-//!   replayed by the next delta rather than lost behind a later state.
-//! - **A snapshot is stored only once its query held still.** A `queryState` that differs between
-//!   pages, or a count short of the `total`, means an id may have shifted past a page boundary
-//!   unseen, and no later delta names an object that did not change. Such a pass is taken again, up
-//!   to [`SNAPSHOT_ATTEMPTS`] times, and a scope that never holds still fails the pass as one to
-//!   retry ([`JmapError::Unsettled`]) rather than storing part of itself.
-//! - **Paged changes are applied in order,** so the last page to mention an object decides whether
-//!   it exists.
+//! snapshot by walking `Foo/query` ([`crate::walk`]) in the server's own order, each page's ids
+//! fetched by a `#ids` back-reference in the same request. **Containers** (`Calendar`,
+//! `AddressBook`) snapshot with one `Foo/get`: neither has a `/query` to page (JMAP Calendars,
+//! RFC 9610), so a server holding more of them than one `/get` may carry refuses the snapshot.
+//! Both delta by paging `Foo/changes`. Every page asks for at most `maxObjectsInGet` ids (RFC 8620
+//! §5.1), because a server refuses a larger `/get` outright with `requestTooLarge` rather than
+//! truncating it, so a scope larger than one `/get` takes several requests. The walk's rules keep
+//! a snapshot correct across them; a delta's pages are applied in order, so the last page to
+//! mention an object decides whether it exists.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,9 +24,10 @@ use serde_json::{Value, json};
 use crate::{
     error::JmapError,
     executor::Executor,
-    fetch::{MemberFetch, changes_request, query_page},
+    fetch::{MemberFetch, cannot_calculate_changes, changes_request},
     request::Request,
-    sync_ops::{Changes, is_complete, objects, state},
+    sync_ops::{Changes, objects, state},
+    walk::{Order, Walk},
 };
 
 /// The most ids one page of a pass asks for: the server's `maxObjectsInGet`.
@@ -143,51 +136,25 @@ pub(crate) async fn member_sync<T: SyncObject>(
         .map(|(sync, _)| sync)
 }
 
-/// How many times a snapshot is taken before a scope that keeps moving fails the pass.
-const SNAPSHOT_ATTEMPTS: usize = 3;
-
 async fn member_snapshot<T: SyncObject>(
     fetch: &MemberFetch<'_>,
     normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
 ) -> Result<ScopeSync<T>, JmapError> {
-    for _ in 0..SNAPSHOT_ATTEMPTS {
-        if let Some(sync) = snapshot_attempt(fetch, normalize).await? {
-            return Ok(sync);
-        }
-    }
-    Err(JmapError::Unsettled(fetch.type_name.to_owned()))
-}
-
-/// One pass over the whole query: the snapshot when its query held still and the count adds up,
-/// `None` when it did not.
-async fn snapshot_attempt<T: SyncObject>(
-    fetch: &MemberFetch<'_>,
-    normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
-) -> Result<Option<ScopeSync<T>>, JmapError> {
-    let limit = page_size(fetch.executor);
-    let first = query_page(fetch, None, 0, limit, None, normalize).await?;
-    let (cursor, query_state) = (first.state, first.query_state);
-    let mut steady = true;
-    let mut total = first.total;
-    let mut present: BTreeSet<ProviderKey> = first.present.into_iter().collect();
+    let mut walk = Walk::new(fetch, None, None, Order::Server, page_size(fetch.executor));
+    let mut present = BTreeSet::new();
     let mut fetched = Fetched::default();
-    fetched.upsert(first.changed);
-    let mut next = first.next_position;
-    while let Some(position) = next {
-        let page = query_page(fetch, None, position, limit, None, normalize).await?;
-        steady &= page.query_state == query_state;
-        total = page.total.or(total);
+    while !walk.is_done() {
+        let page = walk.next(normalize).await?;
         present.extend(page.present);
         fetched.upsert(page.changed);
-        next = page.next_position;
     }
-    let settled = steady && is_complete(total, present.len());
-    Ok(settled.then(|| {
-        ScopeSync::new(
-            SyncUpdate::snapshot(fetched.into_changed(), present),
-            cursor,
-        )
-    }))
+    let missed = walk.settle(normalize).await?;
+    present.extend(missed.present);
+    fetched.upsert(missed.changed);
+    Ok(ScopeSync::new(
+        SyncUpdate::snapshot(fetched.into_changed(), present),
+        walk.cursor()?,
+    ))
 }
 
 /// A delta, paged by `maxChanges` so each page's `/get` of its created and updated ids stays
@@ -211,10 +178,7 @@ async fn paged_delta<T: SyncObject>(
             // A server with no intermediate state to offer answers `cannotCalculateChanges`
             // (RFC 8620 §5.2); claiming more at the same state is the same answer, so the caller
             // recovers with a snapshot rather than paging forever or failing every pass.
-            return Err(JmapError::Method {
-                call_id: call.changes,
-                error_type: "cannotCalculateChanges".to_owned(),
-            });
+            return Err(cannot_calculate_changes(call.changes));
         }
         since = diff.new_state;
         if !diff.has_more {

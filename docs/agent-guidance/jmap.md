@@ -39,8 +39,9 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   per-account `TlsClientConfig` in `JmapConfig` (`tls.md`). Layers: `transport`
   (auth + HTTP), `request` (the `{using, methodCalls}` envelope, `#id`
   back-references, typed responses), `session` (discovery + URL policy),
-  `fetch` (the paged query page and the `member_page` primitive `stream_email`
-  re-chunks), `fetch_scope` (whole-scope queried/container sync, bounded by
+  `fetch` (the `MemberPass` `stream_email` re-chunks, and the `Foo/changes` page),
+  `walk` (a snapshot's anchored walk over `Foo/query`), `fetch_scope` (whole-scope
+  queried/container sync, bounded by
   `maxObjectsInGet`), `mail`/`calendar`/`json` (normalizers),
   `submit` (sending), `provider` (the trait impl) behind an `Executor` seam.
 - **`engine-sync`** — the per-scope loop: `claim → fetch → project/derive →
@@ -154,17 +155,35 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `/get` outright with `requestTooLarge` (RFC 8620 §5.1, including `ids: null` once the
   type holds more than the limit); it does not truncate. Fastmail (9,808 events against
   a limit it enforces) and the Stalwart harness (500) both answer it. So every
-  whole-scope pass (`fetch_scope`) pages: a queried snapshot pages `Foo/query` by
-  `position`/`limit` with `limit` = `maxObjectsInGet`, and every delta pages
-  `Foo/changes` by `maxChanges` = `maxObjectsInGet`, so each page's `/get` fits.
-  - The cursor a paged snapshot records is the `state` read in the **first** page's
-    request, so a change landing mid-pass is replayed by the next delta.
-  - A snapshot is stored only once its query held still. A `queryState` that differs
-    between pages, or a count short of `total`, means an id may have shifted past a page
-    boundary unseen (a destroy on an earlier page moves every later id up one), and no
-    later delta names an object that did not change. Such a pass is taken again, up to
-    three times; a scope that never holds still fails the pass as `Retryable`
-    (`JmapError::Unsettled`) rather than storing part of itself.
+  whole-scope pass pages: a snapshot walks `Foo/query` with `limit` = `maxObjectsInGet`,
+  and every delta pages `Foo/changes` by `maxChanges` = `maxObjectsInGet`, so each
+  page's `/get` fits.
+- **A snapshot walk stays correct while other clients change the account** (`walk.rs`).
+  The account is live between the requests of a multi-page snapshot, so:
+  - Each page is anchored after the last id the previous page returned (`anchor`,
+    `anchorOffset: 1`, RFC 8620 §5.5), never placed at a `position`. A position counts
+    from the top, so a destroy above it moves every later id up one place and the walk
+    skips an object no later delta names. An anchor that was itself destroyed answers
+    `anchorNotFound`, and the walk steps back through the ids it was given (the last
+    four, then twice as far each time); an id it is given again is not handed on twice.
+  - The cursor is the type's `state` read with the **first** page, so whatever changes
+    during the walk (a destroy, a create above the walk, a flag) is replayed by the next
+    delta.
+  - A walk of more than one page ends with a listing of the ids (ids only), and any the
+    walk did not see are fetched by id. An object can move from ahead of the walk to
+    behind it unseen, and a delta does not name it if it moved without changing.
+    `Mailbox`, `CalendarEvent` and `ContactCard` are walked in the server's own order,
+    which an update may change (`Order::Server`); there the listing must hold still
+    (`queryState` unchanged across it), and one that never does fails the pass as
+    `Retryable` (`JmapError::Unsettled`) rather than storing part of the scope. `Email`
+    is walked by `receivedAt`, which no update changes (RFC 8621 §4.1, `Order::Fixed`),
+    and the listing is taken all the same: **Stalwart lists a message it has just stored
+    last and sorts it into place within half a second, without moving `queryState`.** A
+    message stored just before the first page is read at the end, moves to the top while
+    the walk is on later pages, and is in no delta, since it predates the cursor. A single
+    move is caught either way: the walk saw it before it moved, or the listing sees it
+    after. `Foo/queryChanges` (§5.6) would not help, since a server that moves results
+    without moving `queryState` names nothing there either.
   - Paged changes apply in order, the last page to mention an object deciding whether it
     exists. A `hasMoreChanges` that does not move `newState` is treated as
     `cannotCalculateChanges` (§5.2), so the pass recovers with a snapshot rather than
@@ -173,25 +192,28 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     books than one `/get` carries; there is no `/query` to page them by.
 
   Pinned offline against a server fake that refuses an oversized `/get`
-  (`bounded_server.rs`, `fetch_scope_tests.rs`) and live against Stalwart
-  (`tests/live_scope_limits.rs`, which fails on unpaged code).
-- **Streaming member fetch (`stream_email` re-chunks `member_page`).** Email streams
+  (`bounded_server.rs`, `fetch_scope_tests.rs`, `walk_tests.rs`, which also changes
+  the data between two requests, or re-sorts it without a state change) and live against
+  Stalwart: `tests/live_scope_limits.rs` fails on unpaged code; `tests/live_snapshot_walk.rs`
+  deletes the newest message and the next page's anchor between two pages of a first mail
+  sync (position paging loses two messages), and stores a message just before one (a walk
+  without the closing listing loses it).
+- **Streaming member fetch (`stream_email` re-chunks a `MemberPass`).** Email streams
   as `EmailChunk`s so a host stays responsive. The JMAP round trip is atomic (a page
-  arrives whole), so `stream_email` loops `member_page` and re-chunks each page with
-  `split_page` — a **snapshot** page becomes `Reconcile` chunks, a **delta** page
-  `Additive` chunks — then yields a final marker chunk carrying the cursor. JMAP is
-  not cheaply resumable mid-pass, so intermediate chunks **hold** the cursor
-  (`additive_held`) and a crash re-runs the pass. A **snapshot** page is `Email/query`
-  sorted `receivedAt` descending (newest first) at a `position` with a `limit` and
-  `calculateTotal:true`, then `Email/get` over the page's `#ids`; the query ids are the
-  page's `present` set and `next_position` (driven by `total`, or a short page when the
-  server omits it) decides whether another page follows. A **delta** page is
+  arrives whole), so `stream_email` pulls one `MemberPass` page at a time and re-chunks
+  it with `split_page` (a **snapshot** page becomes `Reconcile` chunks, a **delta**
+  page `Additive` chunks), then yields a final marker chunk carrying the cursor. JMAP
+  is not cheaply resumable mid-pass, so intermediate chunks **hold** the cursor
+  (`additive_held`) and a crash re-runs the pass. A **snapshot** is the anchored walk
+  above, sorted `receivedAt` descending (newest first), with `calculateTotal:true` for
+  the progress total; each page's new ids are its `present` share. A **delta** page is
   `Email/changes` bounded by `maxChanges`, paging on `hasMoreChanges` and resuming from
-  each page's `newState`. The streaming knobs map on: `fetch_batch` is the per-page
-  `limit` (clamped to `maxObjectsInGet`; `0` = the server's max), `chunk_size` is how
-  many messages `split_page` emits per commit. The page's mode + offset/state travel in
-  the opaque `PageToken` (`s:<position>` / `d:<state>`) — a provider-**internal** helper
-  now, not trait surface — so a continuation page resumes and the engine never parses it.
+  each page's `newState`; a page past the first that claims more without moving its
+  state ends the pass there, so the next pass meets it on its first page and recovers
+  with a snapshot. The streaming knobs map on: `fetch_batch` is the per-page `limit`
+  (clamped to `maxObjectsInGet`; `0` = the server's max), `chunk_size` is how many
+  messages `split_page` emits per commit. The pass is held in memory, so no page token
+  is encoded or parsed.
 - **Sync-depth window (JMAP now windows).** `stream_email` takes a `SyncWindow { since }`
   **per sync** and threads it into the snapshot `Email/query` as an `after` filter on
   `receivedAt` (RFC 8621 §4.4.1), so a large mailbox syncs only recent mail — JMAP is no
@@ -714,12 +736,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   through the CalDAV whole-document verb today. Editing one already exists on both. It is
   the obvious next extension of the draft, and the live `recurrence_override_edit` test
   works around it by editing the seeded series and restoring it.
-- **Calendar events are still fetched whole**, not streamed: only email has a
-  streaming primitive (`stream_email`) so far. Events have no natural recency sort and
-  the seed fits one page; when streaming is wanted there, generalize `member_page` with
-  a per-type sort and add an event stream. Snapshot-during-mutation across pages
-  remains inherently racy (JMAP gives no cross-query consistency token); the final
-  page's cursor is the resume point.
+- **Calendar events are not streamed**: only email has a streaming primitive
+  (`stream_email`). Events, contacts and mailboxes sync whole through `fetch_scope`
+  (walked in pages, delivered as one `ScopeSync`); an event stream would be a
+  `MemberPass` over `CalendarEvent` with its own sort.
 - **JSCalendar verbatim order.** The preserved payload is re-serialized from the
   parsed value, so object key order may normalize; all data survives.
 

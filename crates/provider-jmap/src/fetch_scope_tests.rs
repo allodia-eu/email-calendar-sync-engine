@@ -5,10 +5,7 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
-use engine_core::{
-    error::FailureClass,
-    sync::{SyncState, SyncUpdate},
-};
+use engine_core::sync::{SyncState, SyncUpdate};
 use engine_provider::{ContactSourceSync, ContactsProvider, Provider};
 
 use super::{
@@ -46,7 +43,11 @@ async fn an_event_snapshot_larger_than_one_get_arrives_whole() {
     assert_eq!(objects.len(), 1203);
     assert_eq!(present.len(), 1203);
     assert_eq!(sync.next_cursor.as_str(), server.state("CalendarEvent"));
-    assert_eq!(server.request_count(), 3, "three pages of at most {LIMIT}");
+    assert_eq!(
+        server.request_count(),
+        6,
+        "three pages of at most {LIMIT}, and a listing of three"
+    );
 }
 
 #[tokio::test]
@@ -65,50 +66,38 @@ async fn a_server_that_caps_its_query_is_paged_to_the_end() {
     assert_eq!(objects.len(), 250);
 }
 
-/// Destroying an object on an earlier page moves every later id up one position, so a pass that
-/// paged on would skip an object no later delta mentions. The pass is taken again instead, and
-/// arrives as a snapshot of what is there now.
+/// A destroy on a page already read moves the query, so the server-ordered walk lists the ids
+/// again; it missed nothing, and the destroyed event leaves with the next delta.
 #[tokio::test]
-async fn a_snapshot_whose_query_moved_mid_pass_is_taken_again() {
+async fn a_destroy_during_the_walk_is_checked_against_a_fresh_listing() {
     let server = Arc::new(BoundedServer::new(LIMIT));
     server.seed("CalendarEvent", (0..1203).map(event));
+    let before = server.state("CalendarEvent");
     server.change_after(0, "CalendarEvent", |store| store.destroy("e00000"));
+    let provider = provider_over(&server);
 
-    let sync = provider_over(&server)
-        .sync_events(&account(), None)
-        .await
-        .unwrap();
+    let sync = provider.sync_events(&account(), None).await.unwrap();
 
     let SyncUpdate::Snapshot { objects, present } = &sync.update else {
-        panic!("a pass taken again on a settled query is a snapshot");
+        panic!("a first sync is a snapshot");
     };
-    assert_eq!(objects.len(), 1202);
-    assert_eq!(present.len(), 1202);
-    assert!(!keys(objects).contains("e00000"));
-    assert!(keys(objects).contains("e00500"), "the id that moved pages");
-    assert_eq!(sync.next_cursor.as_str(), server.state("CalendarEvent"));
-    assert_eq!(server.request_count(), 6, "the pass, then the pass again");
-}
+    assert_eq!(objects.len(), 1203);
+    assert_eq!(present.len(), 1203);
+    assert!(
+        keys(objects).contains("e00500"),
+        "the id that opened page two"
+    );
+    assert_eq!(sync.next_cursor.as_str(), before);
+    assert_eq!(server.request_count(), 6, "the walk, then a listing of ids");
 
-/// A query that moves under every pass has no complete answer to store, so the pass fails as one
-/// to retry rather than storing part of the scope.
-#[tokio::test]
-async fn a_snapshot_that_never_settles_fails_the_pass_for_a_retry() {
-    let server = Arc::new(BoundedServer::new(LIMIT));
-    server.seed("CalendarEvent", (0..1203).map(event));
-    for request in 0..20 {
-        server.change_after(request, "CalendarEvent", move |store| {
-            store.upsert(event(5000 + request));
-        });
-    }
-
-    let error = provider_over(&server)
-        .sync_events(&account(), None)
+    let delta = provider
+        .sync_events(&account(), Some(&sync.next_cursor))
         .await
-        .unwrap_err();
-
-    assert_eq!(error.class(), FailureClass::Retryable, "{error}");
-    assert_eq!(server.request_count(), 9, "three passes of three pages");
+        .unwrap();
+    let SyncUpdate::Delta { removed, .. } = &delta.update else {
+        panic!("a cursor gives a delta");
+    };
+    assert_eq!(removed.len(), 1);
 }
 
 #[tokio::test]
@@ -126,7 +115,11 @@ async fn a_mailbox_tree_larger_than_one_get_arrives_whole() {
     };
     assert_eq!(objects.len(), 1203);
     assert_eq!(present.len(), 1203);
-    assert_eq!(server.request_count(), 3, "three pages of at most {LIMIT}");
+    assert_eq!(
+        server.request_count(),
+        6,
+        "three pages of at most {LIMIT}, and a listing of three"
+    );
 }
 
 #[tokio::test]
