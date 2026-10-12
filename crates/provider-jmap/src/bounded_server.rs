@@ -2,11 +2,13 @@
 //!
 //! [`FakeExecutor`](super::provider_test_support::FakeExecutor) replays canned bytes whatever it
 //! is sent, so it cannot fail a request that is too large. This one holds objects per type and
-//! evaluates each call: `Foo/query` pages by `position`/`limit` (optionally capping the page the
-//! way a server may), `Foo/get` resolves `#ids` back-references and refuses more than
-//! `maxObjectsInGet` ids with `requestTooLarge` (RFC 8620 §5.1, including `ids: null`), and
-//! `Foo/changes` pages its log by `maxChanges` (§5.2). A test can also change the data between
-//! two requests, which is how a pass that spans several requests is shown to stay correct.
+//! evaluates each call: `Foo/query` pages by `position` or by `anchor`/`anchorOffset` (answering
+//! `anchorNotFound` for an id it no longer holds) up to `limit`, optionally capping the page the
+//! way a server may and ordering by a property an update can change, `Foo/get` resolves `#ids`
+//! back-references and refuses more than `maxObjectsInGet` ids with `requestTooLarge` (RFC 8620
+//! §5.1, including `ids: null`), and `Foo/changes` pages its log by `maxChanges` (§5.2). A test can
+//! also change the data between two requests, which is how a pass that spans several requests is
+//! shown to stay correct.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -51,6 +53,14 @@ impl TypeStore {
         self.log.push(Change::Upserted { id, created });
     }
 
+    /// Sets `property` of `id` without logging a change, as a server whose query index catches
+    /// up with a write it has already answered for: the order moves, and no state does.
+    pub(crate) fn resort(&mut self, id: &str, property: &str, value: Value) {
+        if let Some(object) = self.objects.get_mut(id) {
+            object[property] = value;
+        }
+    }
+
     /// Removes the object `id` and logs it.
     pub(crate) fn destroy(&mut self, id: &str) {
         self.objects.remove(id);
@@ -64,6 +74,7 @@ pub(crate) struct BoundedServer {
     session: Session,
     max_objects_in_get: usize,
     query_cap: Option<usize>,
+    order_by: Option<&'static str>,
     stores: Mutex<HashMap<String, TypeStore>>,
     /// Changes applied right after the request with that index (0-based) was answered.
     between: Mutex<Vec<(usize, Mutation)>>,
@@ -94,6 +105,7 @@ impl BoundedServer {
                 .unwrap(),
             max_objects_in_get,
             query_cap: None,
+            order_by: None,
             stores: Mutex::new(HashMap::new()),
             between: Mutex::new(Vec::new()),
             requests: Mutex::new(Vec::new()),
@@ -104,6 +116,13 @@ impl BoundedServer {
     /// lets a server cap it, and it says so in the result's `limit`).
     pub(crate) fn with_query_cap(mut self, cap: usize) -> Self {
         self.query_cap = Some(cap);
+        self
+    }
+
+    /// Orders every query by `property` (then id) instead of by id alone, so an update to that
+    /// property moves an object, as a server's own order may.
+    pub(crate) fn with_order_by(mut self, property: &'static str) -> Self {
+        self.order_by = Some(property);
         self
     }
 
@@ -164,7 +183,7 @@ impl BoundedServer {
             let (type_name, verb) = method.split_once('/').expect("Type/verb");
             let store = stores.entry(type_name.to_owned()).or_default();
             let result = match verb {
-                "query" => Ok(self.query(store, &args)),
+                "query" => self.query(store, &args),
                 "get" => self.get(store, &args),
                 "changes" => changes(store, &args),
                 _ => Err("unknownMethod"),
@@ -177,16 +196,29 @@ impl BoundedServer {
         json!({ "methodResponses": responses, "sessionState": "s" })
     }
 
-    fn query(&self, store: &TypeStore, args: &Value) -> Value {
-        let position = args["position"].as_u64().map_or(0, as_count);
+    fn query(&self, store: &TypeStore, args: &Value) -> Result<Value, &'static str> {
+        let mut ordered: Vec<&String> = store.objects.keys().collect();
+        if let Some(property) = self.order_by {
+            ordered.sort_by_key(|id| (store.objects[id.as_str()][property].to_string(), *id));
+        }
+        let position = match args["anchor"].as_str() {
+            Some(anchor) => {
+                let at = ordered
+                    .iter()
+                    .position(|id| id.as_str() == anchor)
+                    .ok_or("anchorNotFound")?;
+                let offset = args["anchorOffset"].as_i64().unwrap_or(0);
+                usize::try_from(i64::try_from(at).unwrap() + offset).unwrap_or(0)
+            }
+            None => args["position"].as_u64().map_or(0, as_count),
+        };
         let asked = args["limit"].as_u64().map(as_count);
         let limit = match (asked, self.query_cap) {
             (Some(asked), Some(cap)) => Some(asked.min(cap)),
             (asked, cap) => asked.or(cap),
         };
-        let ids: Vec<&String> = store
-            .objects
-            .keys()
+        let ids: Vec<&String> = ordered
+            .into_iter()
             .skip(position)
             .take(limit.unwrap_or(usize::MAX))
             .collect();
@@ -203,7 +235,7 @@ impl BoundedServer {
         if let Some(limit) = limit.filter(|&limit| Some(limit) != asked) {
             result["limit"] = json!(limit);
         }
-        result
+        Ok(result)
     }
 
     fn get(&self, store: &TypeStore, args: &Value) -> Result<Value, &'static str> {
@@ -346,4 +378,15 @@ pub(crate) fn card(n: usize) -> Value {
 /// A minimal mailbox, `id` `m<n>`.
 pub(crate) fn mailbox(n: usize) -> Value {
     json!({ "id": format!("m{n:05}"), "name": format!("Folder {n}") })
+}
+
+/// A minimal email, `id` `x<n>`, in one mailbox.
+pub(crate) fn email(n: usize) -> Value {
+    json!({
+        "id": format!("x{n:05}"),
+        "mailboxIds": { "inbox": true },
+        "keywords": {},
+        "receivedAt": "2026-01-05T10:00:00Z",
+        "size": 100
+    })
 }

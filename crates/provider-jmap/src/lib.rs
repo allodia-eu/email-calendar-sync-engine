@@ -66,6 +66,7 @@ mod submit;
 mod submit_body;
 mod sync_ops;
 mod transport;
+mod walk;
 mod watch;
 
 use core::fmt;

@@ -100,17 +100,28 @@ async fn email_first_sync_is_a_complete_snapshot() {
 
 /// A synthetic `Email/query`+`Email/get` page response (one minimal email per id),
 /// so snapshot paging can be driven offline without a multi-page fixture.
-fn email_query_page(ids: &[&str], total: usize) -> Value {
+fn email_query_page(ids: &[&str], position: usize, total: usize) -> Value {
     let list: Vec<Value> = ids
         .iter()
         .map(|id| json!({ "id": id, "mailboxIds": { "a": true } }))
         .collect();
     json!({
         "methodResponses": [
-            ["Email/query", { "accountId": "c", "queryState": "q", "position": 0, "ids": ids, "total": total }, "0"],
+            ["Email/query", { "accountId": "c", "queryState": "q", "position": position, "ids": ids, "total": total }, "0"],
             ["Email/get", { "accountId": "c", "state": "sX", "list": list, "notFound": [] }, "1"]
         ]
     })
+}
+
+/// A synthetic ids-only `Email/query` response: one page of the listing that closes a walk of
+/// more than one page.
+fn email_listing_page(ids: &[&str], position: usize, total: Option<usize>) -> Value {
+    let mut query =
+        json!({ "accountId": "c", "queryState": "q", "position": position, "ids": ids });
+    if let Some(total) = total {
+        query["total"] = json!(total);
+    }
+    json!({ "methodResponses": [["Email/query", query, "0"]] })
 }
 
 #[tokio::test]
@@ -118,8 +129,10 @@ async fn email_snapshot_pages_chain_until_exhausted() {
     // Three emails over two internal pages of two (fetch_batch = 2): the stream drains
     // both and yields a reconciling pass whose present set covers all three.
     let p = provider(vec![
-        email_query_page(&["e1", "e2"], 3),
-        email_query_page(&["e3"], 3),
+        email_query_page(&["e1", "e2"], 0, 3),
+        email_query_page(&["e3"], 2, 3),
+        email_listing_page(&["e1", "e2"], 0, Some(3)),
+        email_listing_page(&["e3"], 2, Some(3)),
     ]);
 
     let chunks = drain(p.stream_email(&account(), None, SyncWindow::full(), 2, 0)).await;
@@ -147,7 +160,12 @@ async fn email_snapshot_without_total_pages_until_a_short_page() {
             ]
         })
     };
-    let p = provider(vec![page(&["e1", "e2"]), page(&["e3"])]);
+    let p = provider(vec![
+        page(&["e1", "e2"]),
+        page(&["e3"]),
+        email_listing_page(&["e1", "e2"], 0, None),
+        email_listing_page(&["e3"], 0, None),
+    ]);
 
     let chunks = drain(p.stream_email(&account(), None, SyncWindow::full(), 2, 0)).await;
     assert_eq!(chunks[0].total, None, "no total advertised");

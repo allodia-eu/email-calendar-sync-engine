@@ -90,33 +90,6 @@ pub(crate) fn total(result: &Value) -> Option<usize> {
         .and_then(|t| usize::try_from(t).ok())
 }
 
-/// Whether an `Email/query` snapshot fetched every id in the scope: true when the
-/// server reported no `total`, or a `total` within what we fetched.
-pub(crate) fn is_complete(total: Option<usize>, fetched: usize) -> bool {
-    total.is_none_or(|t| fetched >= t)
-}
-
-/// The `Email/query` position to resume from after fetching `fetched` ids at
-/// `position` with page size `limit`, or `None` once the scope is exhausted.
-///
-/// More remain when the server reported a `total` beyond what is now covered or —
-/// when it reported none — when this page came back full (a short page marks the
-/// end). An empty page always terminates, so paging cannot loop.
-pub(crate) fn next_position(
-    position: usize,
-    limit: usize,
-    fetched: usize,
-    total: Option<usize>,
-) -> Option<usize> {
-    let covered = position.saturating_add(fetched);
-    let more = fetched > 0
-        && match total {
-            Some(total) => covered < total,
-            None => fetched >= limit,
-        };
-    more.then_some(covered)
-}
-
 /// Clamps a requested page size to the server's `maxObjectsInGet` (RFC 8620 core
 /// capability), treating a requested `0` as "as many as the server allows".
 pub(crate) fn clamp_limit(requested: usize, max_objects_in_get: usize) -> usize {
@@ -189,34 +162,6 @@ mod tests {
         assert!(keys(&json!({ "created": [42] }), "created").is_err());
         // Absent array is an empty list, not an error.
         assert!(keys(&json!({}), "created").unwrap().is_empty());
-    }
-
-    #[test]
-    fn completeness_tracks_the_query_total() {
-        assert!(is_complete(None, 5)); // no total reported → treat as complete
-        assert!(is_complete(Some(9), 9));
-        assert!(is_complete(Some(8), 9));
-        assert!(!is_complete(Some(10), 9)); // more on the server than we fetched
-    }
-
-    #[test]
-    fn next_position_advances_until_the_scope_is_exhausted() {
-        // A known total drives termination exactly: pages of 4 over 9 items.
-        assert_eq!(next_position(0, 4, 4, Some(9)), Some(4));
-        assert_eq!(next_position(4, 4, 4, Some(9)), Some(8));
-        assert_eq!(next_position(8, 4, 1, Some(9)), None);
-        // The final full page that exactly reaches the total still stops.
-        assert_eq!(next_position(6, 3, 3, Some(9)), None);
-    }
-
-    #[test]
-    fn next_position_without_total_stops_on_a_short_page() {
-        // No total: a full page implies more; a short or empty page is the end.
-        assert_eq!(next_position(0, 4, 4, None), Some(4));
-        assert_eq!(next_position(4, 4, 2, None), None);
-        assert_eq!(next_position(4, 4, 0, None), None);
-        // An empty page terminates even when a (stale) total says otherwise.
-        assert_eq!(next_position(4, 4, 0, Some(99)), None);
     }
 
     #[test]

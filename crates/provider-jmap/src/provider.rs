@@ -19,8 +19,8 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver, MessageReport,
-    PageToken, PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity,
-    SenderIdentityId, SourceStream, SubmissionReceipt, SyncKind, split_page,
+    PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
+    SourceStream, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
@@ -228,35 +228,23 @@ impl Provider for JmapProvider {
             // The JMAP round trip is atomic, so each page is fetched whole and
             // re-chunked for incremental commit; intermediate chunks hold the cursor
             // and a final marker advances it (JMAP is not cheaply resumable mid-pass).
-            let mut page_token: Option<PageToken> = None;
+            let mut pass = fetch::MemberPass::new(&fetch, sort, filter, fetch_batch, cursor);
+            let updated = UpdatedAsState {
+                properties: EMAIL_STATE_PROPERTIES,
+                normalize: state_from_json,
+            };
             let mut mode: Option<PassMode> = None;
             let mut total: Option<usize> = None;
             let final_cursor = loop {
-                let page = fetch::member_page(
-                    &fetch,
-                    sort.clone(),
-                    cursor,
-                    page_token.as_ref(),
-                    fetch_batch,
-                    filter.as_ref(),
-                    message_from_json,
-                    &UpdatedAsState {
-                        properties: EMAIL_STATE_PROPERTIES,
-                        normalize: state_from_json,
-                    },
-                )
-                .await?;
-                total = total.or(page.total);
-                // Decide the pass mode once, from the first page. A JMAP page arrives
-                // whole and is not cheaply resumable mid-pass, so a snapshot (first
-                // sync or `cannotCalculateChanges`) reconciles — its present set
-                // tombstones absent rows; a delta is additive.
+                let page = pass.next(message_from_json, &updated).await?;
+                total = page.total.or(total);
+                // Decide the pass mode once, from the first page: a snapshot (first sync or
+                // `cannotCalculateChanges`) reconciles, its present set tombstoning absent
+                // rows; a delta is additive.
                 let pass_mode = *mode.get_or_insert(match page.kind {
                     SyncKind::Snapshot => PassMode::Reconcile,
                     SyncKind::Delta => PassMode::Additive,
                 });
-                let is_last = page.next_page.is_none();
-                let next_cursor = page.next_cursor.clone();
                 for chunk in split_page(
                     pass_mode,
                     page.changed,
@@ -268,10 +256,9 @@ impl Provider for JmapProvider {
                 ) {
                     yield chunk;
                 }
-                if is_last {
-                    break next_cursor;
+                if let Some(cursor) = page.next_cursor {
+                    break cursor;
                 }
-                page_token = page.next_page;
             };
             // The final marker carries the cursor (and, for reconcile, tombstones
             // against the accumulated present set).
@@ -450,6 +437,10 @@ pub(crate) mod bounded_server;
 #[cfg(test)]
 #[path = "fetch_scope_tests.rs"]
 mod fetch_scope_tests;
+
+#[cfg(test)]
+#[path = "walk_tests.rs"]
+mod walk_tests;
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]
