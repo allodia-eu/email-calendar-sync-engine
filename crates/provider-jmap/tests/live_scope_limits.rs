@@ -140,7 +140,7 @@ impl Scope {
         );
     }
 
-    /// Creates `objects` in batches the server accepts, answering their `uid`s.
+    /// Creates `objects` in batches the server accepts.
     fn create(&self, urn: &str, type_name: &str, objects: &[Value]) {
         for batch in objects.chunks(self.per_set()) {
             let create: serde_json::Map<String, Value> = batch

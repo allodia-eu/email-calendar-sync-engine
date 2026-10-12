@@ -83,6 +83,11 @@ pub enum JmapError {
     /// The session resource was missing a required field.
     #[error("invalid JMAP session: {0}")]
     Session(String),
+
+    /// A scope larger than one request moved under every attempt to page it whole, so no
+    /// attempt is a complete answer to store. Carries the type name; the next pass tries again.
+    #[error("{0}/query kept changing while it was paged")]
+    Unsettled(String),
 }
 
 impl JmapError {
@@ -202,6 +207,7 @@ impl JmapError {
             }
             Self::Method { error_type, .. } => method_class(error_type),
             Self::Set { error_type, .. } => set_error_class(error_type),
+            Self::Unsettled(_) => FailureClass::Retryable,
         }
     }
 }

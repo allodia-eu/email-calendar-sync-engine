@@ -75,10 +75,12 @@ impl BoundedServer {
         let session_doc = json!({
             "capabilities": {
                 "urn:ietf:params:jmap:core": { "maxObjectsInGet": max_objects_in_get },
+                "urn:ietf:params:jmap:mail": {},
                 "urn:ietf:params:jmap:calendars": {},
                 "urn:ietf:params:jmap:contacts": {}
             },
             "primaryAccounts": {
+                "urn:ietf:params:jmap:mail": "c",
                 "urn:ietf:params:jmap:calendars": "c",
                 "urn:ietf:params:jmap:contacts": "c"
             },
@@ -339,4 +341,9 @@ pub(crate) fn card(n: usize) -> Value {
         "addressBookIds": { "book": true },
         "name": { "full": format!("Person {n}") }
     })
+}
+
+/// A minimal mailbox, `id` `m<n>`.
+pub(crate) fn mailbox(n: usize) -> Value {
+    json!({ "id": format!("m{n:05}"), "name": format!("Folder {n}") })
 }

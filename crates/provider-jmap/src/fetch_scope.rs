@@ -1,18 +1,21 @@
 //! Whole-scope JMAP sync: every type a provider hands over as one [`ScopeSync`], however large.
 //!
-//! Two shapes cover every type: **containers** (`Mailbox`, `Calendar`, `AddressBook`) snapshot
-//! with one `Foo/get`, since a server holds few of them; **members** (`CalendarEvent`,
-//! `ContactCard`) snapshot by paging `Foo/query`, each page's ids fetched by a `#ids`
-//! back-reference in the same request. Both delta by paging `Foo/changes`. Every page asks for at
+//! Two shapes cover every type. **Queried** types (`Mailbox`, `CalendarEvent`, `ContactCard`)
+//! snapshot by paging `Foo/query`, each page's ids fetched by a `#ids` back-reference in the same
+//! request. **Containers** (`Calendar`, `AddressBook`) snapshot with one `Foo/get`: neither has a
+//! `/query` to page (JMAP Calendars, RFC 9610), so a server holding more of them than one `/get`
+//! may carry refuses the snapshot. Both delta by paging `Foo/changes`. Every page asks for at
 //! most `maxObjectsInGet` ids (RFC 8620 §5.1), because a server refuses a larger `/get` outright
 //! with `requestTooLarge` rather than truncating it; a scope larger than one `/get` therefore
 //! takes several requests, and the rules below keep the result correct across them.
 //!
 //! - **The cursor is the state read with the first page.** A change landing mid-pass is then
 //!   replayed by the next delta rather than lost behind a later state.
-//! - **A snapshot whose query moved mid-pass tombstones nothing.** A `queryState` that differs
-//!   between pages means an id may have shifted past a page boundary unseen, so the pass is applied
-//!   as an additive delta, and the next delta reconciles what it missed.
+//! - **A snapshot is stored only once its query held still.** A `queryState` that differs between
+//!   pages, or a count short of the `total`, means an id may have shifted past a page boundary
+//!   unseen, and no later delta names an object that did not change. Such a pass is taken again, up
+//!   to [`SNAPSHOT_ATTEMPTS`] times, and a scope that never holds still fails the pass as one to
+//!   retry ([`JmapError::Unsettled`]) rather than storing part of itself.
 //! - **Paged changes are applied in order,** so the last page to mention an object decides whether
 //!   it exists.
 
@@ -29,9 +32,9 @@ use serde_json::{Value, json};
 use crate::{
     error::JmapError,
     executor::Executor,
-    fetch::{MemberFetch, back_ref_get, query_page},
+    fetch::{MemberFetch, changes_request, query_page},
     request::Request,
-    sync_ops::{Changes, is_complete, objects, snapshot_or_delta, state},
+    sync_ops::{Changes, is_complete, objects, state},
 };
 
 /// The most ids one page of a pass asks for: the server's `maxObjectsInGet`.
@@ -46,13 +49,10 @@ pub(crate) async fn container_sync<T: SyncObject>(
     type_name: &str,
     cursor: Option<&SyncState>,
     normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
-    key_of: impl Fn(&T) -> ProviderKey + Copy,
 ) -> Result<ScopeSync<T>, JmapError> {
-    container_sync_with_status(
-        executor, account, using, type_name, cursor, normalize, key_of,
-    )
-    .await
-    .map(|(sync, _)| sync)
+    container_sync_with_status(executor, account, using, type_name, cursor, normalize)
+        .await
+        .map(|(sync, _)| sync)
 }
 
 /// Container sync plus whether an expired changes state forced a snapshot.
@@ -63,7 +63,6 @@ pub(crate) async fn container_sync_with_status<T: SyncObject>(
     type_name: &str,
     cursor: Option<&SyncState>,
     normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
-    key_of: impl Fn(&T) -> ProviderKey + Copy,
 ) -> Result<(ScopeSync<T>, bool), JmapError> {
     let fetch = MemberFetch {
         executor,
@@ -73,13 +72,13 @@ pub(crate) async fn container_sync_with_status<T: SyncObject>(
         properties: None,
     };
     let Some(cursor) = cursor else {
-        return container_snapshot(&fetch, normalize, key_of)
+        return container_snapshot(&fetch, normalize)
             .await
             .map(|sync| (sync, false));
     };
     match paged_delta(&fetch, cursor, normalize).await {
         Err(e) if e.failure_class() == FailureClass::NeedsResync => {
-            container_snapshot(&fetch, normalize, key_of)
+            container_snapshot(&fetch, normalize)
                 .await
                 .map(|sync| (sync, true))
         }
@@ -91,7 +90,6 @@ pub(crate) async fn container_sync_with_status<T: SyncObject>(
 async fn container_snapshot<T: SyncObject>(
     fetch: &MemberFetch<'_>,
     normalize: impl Fn(&Value) -> Result<T, JmapError>,
-    key_of: impl Fn(&T) -> ProviderKey,
 ) -> Result<ScopeSync<T>, JmapError> {
     let mut req = Request::new(fetch.using.iter().copied());
     let get = req.invoke(
@@ -101,7 +99,10 @@ async fn container_snapshot<T: SyncObject>(
     let resp = fetch.executor.execute(&req).await?;
     let result = resp.result(&get)?;
     let items = objects(result, normalize)?;
-    let present: BTreeSet<ProviderKey> = items.iter().map(key_of).collect();
+    let present: BTreeSet<ProviderKey> = items
+        .iter()
+        .map(|item| item.provider_key().clone())
+        .collect();
     Ok(ScopeSync::new(
         SyncUpdate::snapshot(items, present),
         state(result, "state")?,
@@ -142,10 +143,27 @@ pub(crate) async fn member_sync<T: SyncObject>(
         .map(|(sync, _)| sync)
 }
 
+/// How many times a snapshot is taken before a scope that keeps moving fails the pass.
+const SNAPSHOT_ATTEMPTS: usize = 3;
+
 async fn member_snapshot<T: SyncObject>(
     fetch: &MemberFetch<'_>,
     normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
 ) -> Result<ScopeSync<T>, JmapError> {
+    for _ in 0..SNAPSHOT_ATTEMPTS {
+        if let Some(sync) = snapshot_attempt(fetch, normalize).await? {
+            return Ok(sync);
+        }
+    }
+    Err(JmapError::Unsettled(fetch.type_name.to_owned()))
+}
+
+/// One pass over the whole query: the snapshot when its query held still and the count adds up,
+/// `None` when it did not.
+async fn snapshot_attempt<T: SyncObject>(
+    fetch: &MemberFetch<'_>,
+    normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
+) -> Result<Option<ScopeSync<T>>, JmapError> {
     let limit = page_size(fetch.executor);
     let first = query_page(fetch, None, 0, limit, None, normalize).await?;
     let (cursor, query_state) = (first.state, first.query_state);
@@ -163,11 +181,13 @@ async fn member_snapshot<T: SyncObject>(
         fetched.upsert(page.changed);
         next = page.next_position;
     }
-    let complete = steady && is_complete(total, present.len());
-    Ok(ScopeSync::new(
-        snapshot_or_delta(fetched.into_changed(), present, complete),
-        cursor,
-    ))
+    let settled = steady && is_complete(total, present.len());
+    Ok(settled.then(|| {
+        ScopeSync::new(
+            SyncUpdate::snapshot(fetched.into_changed(), present),
+            cursor,
+        )
+    }))
 }
 
 /// A delta, paged by `maxChanges` so each page's `/get` of its created and updated ids stays
@@ -181,33 +201,20 @@ async fn paged_delta<T: SyncObject>(
     let mut since = since.clone();
     let mut fetched = Fetched::default();
     loop {
-        let mut req = Request::new(fetch.using.iter().copied());
-        let changes_method = format!("{}/changes", fetch.type_name);
-        let changes_id = req.invoke(
-            changes_method.clone(),
-            json!({ "accountId": fetch.account, "sinceState": since.as_str(), "maxChanges": limit }),
-        );
-        let [created, updated] = ["/created", "/updated"].map(|path| {
-            req.invoke(
-                format!("{}/get", fetch.type_name),
-                back_ref_get(
-                    fetch.account,
-                    &changes_id,
-                    &changes_method,
-                    path,
-                    fetch.properties,
-                ),
-            )
-        });
-        let resp = fetch.executor.execute(&req).await?;
-        let diff = Changes::parse(resp.result(&changes_id)?)?;
-        fetched.upsert(objects(resp.result(&created)?, normalize)?);
-        fetched.upsert(objects(resp.result(&updated)?, normalize)?);
+        let call = changes_request(fetch, &since, limit, fetch.properties);
+        let resp = fetch.executor.execute(&call.request).await?;
+        let diff = Changes::parse(resp.result(&call.changes)?)?;
+        fetched.upsert(objects(resp.result(&call.created)?, normalize)?);
+        fetched.upsert(objects(resp.result(&call.updated)?, normalize)?);
         fetched.destroy(diff.destroyed);
         if diff.has_more && diff.new_state == since {
-            return Err(JmapError::protocol(format!(
-                "{changes_method} reported more changes without moving its state"
-            )));
+            // A server with no intermediate state to offer answers `cannotCalculateChanges`
+            // (RFC 8620 §5.2); claiming more at the same state is the same answer, so the caller
+            // recovers with a snapshot rather than paging forever or failing every pass.
+            return Err(JmapError::Method {
+                call_id: call.changes,
+                error_type: "cannotCalculateChanges".to_owned(),
+            });
         }
         since = diff.new_state;
         if !diff.has_more {

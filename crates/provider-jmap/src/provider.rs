@@ -188,16 +188,14 @@ impl Provider for JmapProvider {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
         let account = self.mail_account()?;
-        Ok(fetch_scope::container_sync(
-            self.executor.as_ref(),
-            &account,
-            &[capability::CORE, capability::MAIL],
-            "Mailbox",
-            cursor,
-            mailbox_from_json,
-            |mailbox| mailbox.id.key().clone(),
-        )
-        .await?)
+        let fetch = MemberFetch {
+            executor: self.executor.as_ref(),
+            account: &account,
+            using: &[capability::CORE, capability::MAIL],
+            type_name: "Mailbox",
+            properties: None,
+        };
+        Ok(fetch_scope::member_sync(&fetch, cursor, mailbox_from_json).await?)
     }
 
     fn stream_email<'a>(
@@ -301,7 +299,6 @@ impl Provider for JmapProvider {
             "Calendar",
             cursor,
             calendar_from_json,
-            |calendar| calendar.id.key().clone(),
         )
         .await?)
     }

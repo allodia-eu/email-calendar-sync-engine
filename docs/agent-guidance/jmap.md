@@ -40,7 +40,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   (auth + HTTP), `request` (the `{using, methodCalls}` envelope, `#id`
   back-references, typed responses), `session` (discovery + URL policy),
   `fetch` (the paged query page and the `member_page` primitive `stream_email`
-  re-chunks), `fetch_scope` (whole-scope container/member sync, bounded by
+  re-chunks), `fetch_scope` (whole-scope queried/container sync, bounded by
   `maxObjectsInGet`), `mail`/`calendar`/`json` (normalizers),
   `submit` (sending), `provider` (the trait impl) behind an `Executor` seam.
 - **`engine-sync`** — the per-scope loop: `claim → fetch → project/derive →
@@ -144,29 +144,37 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   only aim the request at a path the connection host does not route. It did exactly
   that: every Fastmail message-source download hit a catch-all `302` to a marketing
   page, so no JMAP body ever cached.
-- **Generic container/member fetch.** Containers (`Mailbox`, `Calendar`,
-  `AddressBook`) snapshot with one `Foo/get`. Members (`Email`, `CalendarEvent`,
-  `ContactCard`) snapshot by `Foo/query`→`Foo/get`. Both delta by `Foo/changes`→
-  `Foo/get`. Each page's ids are fetched in the same request via an `#ids` result
-  back-reference. The only per-type difference is the method-name prefix, the
-  capability set, and the normalizer.
+- **Generic queried/container fetch.** Queried types (`Mailbox`, `Email`,
+  `CalendarEvent`, `ContactCard`) snapshot by `Foo/query`→`Foo/get`. Containers
+  (`Calendar`, `AddressBook`) snapshot with one `Foo/get`, having no `/query`. Both
+  delta by `Foo/changes`→`Foo/get`. Each page's ids are fetched in the same request via
+  an `#ids` result back-reference. The only per-type difference is the method-name
+  prefix, the capability set, and the normalizer.
 - **No request asks for more than `maxObjectsInGet` ids.** A server refuses a larger
   `/get` outright with `requestTooLarge` (RFC 8620 §5.1, including `ids: null` once the
-  type holds more than the limit); it does not truncate. So every whole-scope pass
-  (`fetch_scope`) pages: a member snapshot pages `Foo/query` by `position`/`limit` with
-  `limit` = `maxObjectsInGet`, and every delta pages `Foo/changes` by `maxChanges` =
-  `maxObjectsInGet`, so each page's `/get` fits. The cursor a paged snapshot records is
-  the `state` read in the **first** page's request, so a change landing mid-pass is
-  replayed by the next delta; a `queryState` that differs between pages means an id may
-  have crossed a page boundary unseen, and the pass then applies as an additive delta
-  rather than tombstoning; paged changes apply in order, the last page to mention an
-  object deciding whether it exists. Containers keep one `Foo/get`: an account holds few
-  of them, and `Calendar` and `AddressBook` have no `/query` to page by. Before this,
-  `CalendarEvent` and `ContactCard` were fetched whole and **every** sync of an account
-  past the limit failed: Fastmail (9,808 events against a limit it enforces) and the
-  Stalwart harness (500) both answer `requestTooLarge`. Pinned offline against a server
-  fake that refuses an oversized `/get` (`bounded_server.rs`, `fetch_scope_tests.rs`) and
-  live against Stalwart (`tests/live_scope_limits.rs`, which fails on the unpaged code).
+  type holds more than the limit); it does not truncate. Fastmail (9,808 events against
+  a limit it enforces) and the Stalwart harness (500) both answer it. So every
+  whole-scope pass (`fetch_scope`) pages: a queried snapshot pages `Foo/query` by
+  `position`/`limit` with `limit` = `maxObjectsInGet`, and every delta pages
+  `Foo/changes` by `maxChanges` = `maxObjectsInGet`, so each page's `/get` fits.
+  - The cursor a paged snapshot records is the `state` read in the **first** page's
+    request, so a change landing mid-pass is replayed by the next delta.
+  - A snapshot is stored only once its query held still. A `queryState` that differs
+    between pages, or a count short of `total`, means an id may have shifted past a page
+    boundary unseen (a destroy on an earlier page moves every later id up one), and no
+    later delta names an object that did not change. Such a pass is taken again, up to
+    three times; a scope that never holds still fails the pass as `Retryable`
+    (`JmapError::Unsettled`) rather than storing part of itself.
+  - Paged changes apply in order, the last page to mention an object deciding whether it
+    exists. A `hasMoreChanges` that does not move `newState` is treated as
+    `cannotCalculateChanges` (§5.2), so the pass recovers with a snapshot rather than
+    paging forever.
+  - A container's one `Foo/get` is refused once a server holds more calendars or address
+    books than one `/get` carries; there is no `/query` to page them by.
+
+  Pinned offline against a server fake that refuses an oversized `/get`
+  (`bounded_server.rs`, `fetch_scope_tests.rs`) and live against Stalwart
+  (`tests/live_scope_limits.rs`, which fails on unpaged code).
 - **Streaming member fetch (`stream_email` re-chunks `member_page`).** Email streams
   as `EmailChunk`s so a host stays responsive. The JMAP round trip is atomic (a page
   arrives whole), so `stream_email` loops `member_page` and re-chunks each page with
