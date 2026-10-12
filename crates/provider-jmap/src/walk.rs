@@ -20,7 +20,8 @@
 //!   listing is taken every time. A single move is caught either way: the walk saw the object
 //!   before it moved, or the listing sees it after. Where an update can move objects again, the
 //!   listing must hold still (`queryState` unchanged across it), and one that never does fails the
-//!   pass as one to retry ([`JmapError::Unsettled`]) rather than storing part of the scope.
+//!   pass as one to retry ([`JmapError::Unsettled`]) rather than storing part of the scope. The
+//!   listing fetches no objects, so it asks for large pages, and usually takes one request.
 //!
 //! `Foo/queryChanges` (§5.6) would name what moved in one call, but a server need not offer it
 //! (`canCalculateChanges`), and a server that moves results without moving `queryState` would
@@ -38,7 +39,7 @@ use crate::{
     error::JmapError,
     fetch::{MemberFetch, get_ids},
     request::{Request, result_ref, with_back_reference},
-    sync_ops::{keys, objects, state, total},
+    sync_ops::{keys, state, total},
 };
 
 /// How many pages in a row may bring nothing new, beyond the pages a step back re-reads, before
@@ -46,6 +47,12 @@ use crate::{
 const IDLE_PAGES: usize = 3;
 /// How many times [`Walk::settle`] lists the ids again before the pass fails as unsettled.
 const LISTINGS: usize = 3;
+/// How many ids one page of the closing listing asks for. It fetches no objects, so
+/// `maxObjectsInGet` does not bound it; a server caps it as it likes and says so in `limit`, and
+/// a listing answered in one page is answered at once.
+const LISTING_PAGE: usize = 5_000;
+/// How many times a walk starts again from the top when every anchor it tried was destroyed.
+const RESTARTS: usize = 1;
 
 /// Whether an update can change an object's place in the query's order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +80,8 @@ pub(crate) struct Walk<'f, 'a> {
     filter: Option<Value>,
     order: Order,
     limit: usize,
+    /// The page size the server last answered with, which a server may cap below `limit`.
+    served: usize,
     /// `false` for the ids-only listing [`Walk::settle`] runs.
     with_objects: bool,
     cursor: Option<SyncState>,
@@ -88,6 +97,7 @@ pub(crate) struct Walk<'f, 'a> {
     idle: usize,
     /// Pages a step back is expected to re-read before the walk is past where it was.
     reread: usize,
+    restarts: usize,
 }
 
 impl<'f, 'a> Walk<'f, 'a> {
@@ -105,6 +115,7 @@ impl<'f, 'a> Walk<'f, 'a> {
             filter,
             order,
             limit: limit.max(1),
+            served: limit.max(1),
             with_objects: true,
             cursor: None,
             query_state: None,
@@ -116,6 +127,7 @@ impl<'f, 'a> Walk<'f, 'a> {
             done: false,
             idle: 0,
             reread: 0,
+            restarts: 0,
         }
     }
 
@@ -154,14 +166,17 @@ impl<'f, 'a> Walk<'f, 'a> {
                 .and_then(|n| usize::try_from(n).ok())
         };
         let (position, page_limit) = (count("position"), count("limit").unwrap_or(self.limit));
+        self.served = page_limit.max(1);
         let query_state = query
             .get("queryState")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        // A server that sends no `queryState` (RFC 8620 §5.5 requires one) gives nothing to
+        // compare, and its listing is taken as it is rather than never.
         if self.pages == 0 {
             self.query_state = query_state;
         } else {
-            self.steady &= query_state.is_some() && query_state == self.query_state;
+            self.steady &= query_state == self.query_state;
         }
         self.pages += 1;
         self.total = total(&query).or(self.total);
@@ -181,11 +196,20 @@ impl<'f, 'a> Walk<'f, 'a> {
                 if self.cursor.is_none() {
                     self.cursor = Some(state(&result, "state")?);
                 }
-                let wanted: BTreeSet<&ProviderKey> = fresh.iter().collect();
-                objects(&result, normalize)?
-                    .into_iter()
-                    .filter(|object| wanted.contains(object.provider_key()))
-                    .collect()
+                let wanted: BTreeSet<&str> = fresh.iter().map(ProviderKey::as_str).collect();
+                result
+                    .get("list")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| JmapError::protocol("/get result has no list"))?
+                    .iter()
+                    .filter(|object| {
+                        object
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| wanted.contains(id))
+                    })
+                    .map(&normalize)
+                    .collect::<Result<Vec<_>, _>>()?
             }
             None => Vec::new(),
         };
@@ -233,14 +257,19 @@ impl<'f, 'a> Walk<'f, 'a> {
                     self.sort.clone(),
                     self.filter.clone(),
                     self.order,
-                    self.limit,
+                    LISTING_PAGE.max(self.limit),
                 )
             };
-            while !listing.is_done() {
-                listing.next(normalize).await?;
+            let mut listed = Ok(());
+            while listed.is_ok() && !listing.is_done() {
+                listed = listing.next(normalize).await.map(drop);
             }
-            let held_still = listing.steady && listing.query_state.is_some();
-            if self.order == Order::Server && !held_still {
+            match listed {
+                // A server-ordered listing that lost its place moved under it: list again.
+                Err(JmapError::Unsettled(_)) if self.order == Order::Server => continue,
+                other => other?,
+            }
+            if self.order == Order::Server && !listing.steady {
                 continue;
             }
             let missed: Vec<ProviderKey> = listing
@@ -252,10 +281,17 @@ impl<'f, 'a> Walk<'f, 'a> {
             for chunk in missed.chunks(self.limit) {
                 changed.extend(get_ids(self.fetch, chunk, normalize).await?);
             }
-            self.seen.extend(missed.iter().cloned());
+            // An id destroyed between the listing and its `/get` is answered as `notFound`, and
+            // is not present.
+            let fetched: BTreeSet<&ProviderKey> = changed.iter().map(Keyed::provider_key).collect();
+            let present: Vec<ProviderKey> = missed
+                .into_iter()
+                .filter(|id| fetched.contains(id))
+                .collect();
+            self.seen.extend(present.iter().cloned());
             return Ok(WalkPage {
                 changed,
-                present: missed,
+                present,
                 total: listing.total.or(self.total),
             });
         }
@@ -273,13 +309,20 @@ impl<'f, 'a> Walk<'f, 'a> {
             match self.request(Some(anchor)).await {
                 Err(JmapError::Method { error_type, .. }) if error_type == "anchorNotFound" => {}
                 other => {
-                    self.reread += back / self.limit;
+                    self.reread += back / self.served;
                     return other;
                 }
             }
         }
-        // Every id the walk was given has been destroyed since: there is nowhere to resume.
-        Err(self.unsettled())
+        // Every id tried has been destroyed since: start again from the top. What the walk has
+        // seen stays seen, so the pages it re-reads hand nothing on twice, and they are allowed
+        // for as a step back is.
+        if self.restarts >= RESTARTS {
+            return Err(self.unsettled());
+        }
+        self.restarts += 1;
+        self.reread += self.trail.len() / self.served + 1;
+        self.request(None).await
     }
 
     async fn request(

@@ -75,6 +75,7 @@ pub(crate) struct BoundedServer {
     max_objects_in_get: usize,
     query_cap: Option<usize>,
     order_by: Option<&'static str>,
+    query_state: bool,
     stores: Mutex<HashMap<String, TypeStore>>,
     /// Changes applied right after the request with that index (0-based) was answered.
     between: Mutex<Vec<(usize, Mutation)>>,
@@ -106,6 +107,7 @@ impl BoundedServer {
             max_objects_in_get,
             query_cap: None,
             order_by: None,
+            query_state: true,
             stores: Mutex::new(HashMap::new()),
             between: Mutex::new(Vec::new()),
             requests: Mutex::new(Vec::new()),
@@ -123,6 +125,12 @@ impl BoundedServer {
     /// property moves an object, as a server's own order may.
     pub(crate) fn with_order_by(mut self, property: &'static str) -> Self {
         self.order_by = Some(property);
+        self
+    }
+
+    /// Leaves `queryState` out of every query result, as a server short of RFC 8620 §5.5 may.
+    pub(crate) fn without_query_state(mut self) -> Self {
+        self.query_state = false;
         self
     }
 
@@ -229,6 +237,9 @@ impl BoundedServer {
             "position": position,
             "ids": ids,
         });
+        if !self.query_state {
+            result.as_object_mut().unwrap().remove("queryState");
+        }
         if args["calculateTotal"].as_bool() == Some(true) {
             result["total"] = json!(store.objects.len());
         }

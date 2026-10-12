@@ -165,12 +165,19 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     from the top, so a destroy above it moves every later id up one place and the walk
     skips an object no later delta names. An anchor that was itself destroyed answers
     `anchorNotFound`, and the walk steps back through the ids it was given (the last
-    four, then twice as far each time); an id it is given again is not handed on twice.
+    four, then twice as far each time), or starts again from the top once every one
+    tried is gone; an id it is given again is not handed on twice. The pages a step back
+    re-reads are allowed for in the page size the server serves, which may be smaller
+    than the one asked for.
   - The cursor is the type's `state` read with the **first** page, so whatever changes
     during the walk (a destroy, a create above the walk, a flag) is replayed by the next
     delta.
-  - A walk of more than one page ends with a listing of the ids (ids only), and any the
-    walk did not see are fetched by id. An object can move from ahead of the walk to
+  - A walk of more than one page ends with a listing of the ids, and any the walk did not
+    see are fetched by id. The listing fetches no objects, so `maxObjectsInGet` does not
+    bound it: it asks for 5,000 ids a page and usually takes one request, which is
+    answered at once. An id destroyed before its fetch is answered as `notFound` and
+    left out. A server that sends no `queryState` (RFC 8620 §5.5 requires one) gives
+    nothing to compare, and its listing is taken as it is rather than never. An object can move from ahead of the walk to
     behind it unseen, and a delta does not name it if it moved without changing.
     `Mailbox`, `CalendarEvent` and `ContactCard` are walked in the server's own order,
     which an update may change (`Order::Server`); there the listing must hold still

@@ -70,7 +70,7 @@ pub(crate) struct MemberPass<'f, 'a> {
 
 enum Step<'f, 'a> {
     Start(Option<SyncState>),
-    Snapshot(Walk<'f, 'a>),
+    Snapshot(Box<Walk<'f, 'a>>),
     Delta(SyncState),
     Done,
 }
@@ -132,7 +132,7 @@ impl<'f, 'a> MemberPass<'f, 'a> {
                     other => Ok(self.delta(other?)),
                 }
             }
-            Step::Snapshot(walk) => self.snapshot(walk, normalize).await,
+            Step::Snapshot(walk) => self.snapshot(*walk, normalize).await,
             Step::Delta(since) => {
                 match delta_page(self.fetch, &since, self.limit, normalize, updated).await {
                     // Stuck past the first page: end the pass where it is, so the next one starts
@@ -174,9 +174,10 @@ impl<'f, 'a> MemberPass<'f, 'a> {
             let missed = walk.settle(normalize).await?;
             page.changed.extend(missed.changed);
             page.present.extend(missed.present);
+            page.total = missed.total;
             Some(walk.cursor()?)
         } else {
-            self.step = Step::Snapshot(walk);
+            self.step = Step::Snapshot(Box::new(walk));
             None
         };
         Ok(PassPage {
