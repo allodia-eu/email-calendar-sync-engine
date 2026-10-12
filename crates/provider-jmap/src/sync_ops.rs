@@ -7,12 +7,7 @@
 //! the parsing is unit-tested offline (RFC 8620 §5.1 `/get`, §5.2 `/changes`,
 //! §5.5 `/query`).
 
-use std::collections::BTreeSet;
-
-use engine_core::{
-    ids::ProviderKey,
-    sync::{SyncObject, SyncState, SyncUpdate},
-};
+use engine_core::{ids::ProviderKey, sync::SyncState};
 use serde_json::Value;
 
 use crate::error::JmapError;
@@ -132,33 +127,8 @@ pub(crate) fn clamp_limit(requested: usize, max_objects_in_get: usize) -> usize 
     }
 }
 
-/// Builds a snapshot update when the fetch was complete, or an **additive delta**
-/// (no removals) when it was not.
-///
-/// A partial first sync must never tombstone ids it simply did not fetch; degrading
-/// to a delta keeps the fetched objects and tombstones nothing, and subsequent
-/// `Email/changes` deltas reconcile destroys correctly. Single-page first-sync is a
-/// documented step-4 limitation (`docs/agent-guidance/jmap.md`); the seed fits one
-/// page so the snapshot path is what runs live.
-pub(crate) fn snapshot_or_delta<T: SyncObject>(
-    objects: Vec<T>,
-    present: BTreeSet<ProviderKey>,
-    complete: bool,
-) -> SyncUpdate<T> {
-    if complete {
-        SyncUpdate::snapshot(objects, present)
-    } else {
-        SyncUpdate::delta(objects, Vec::new())
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use engine_core::{
-        ids::{MailboxId, MessageId},
-        mail::Message,
-        membership::Memberships,
-    };
     use serde_json::json;
 
     use super::*;
@@ -254,30 +224,5 @@ mod tests {
         assert_eq!(clamp_limit(50, 500), 50);
         assert_eq!(clamp_limit(900, 500), 500); // above the ceiling → clamped
         assert_eq!(clamp_limit(0, 500), 500); // 0 means "as many as allowed"
-    }
-
-    fn message(id: &str) -> Message {
-        Message::new(
-            MessageId::try_from(id).unwrap(),
-            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
-        )
-    }
-
-    #[test]
-    fn snapshot_or_delta_picks_shape_by_completeness() {
-        let present: BTreeSet<ProviderKey> = [ProviderKey::new("a").unwrap()].into_iter().collect();
-        let complete = snapshot_or_delta(vec![message("a")], present.clone(), true);
-        assert!(complete.is_snapshot());
-        // Incomplete → additive delta that tombstones nothing.
-        let partial = snapshot_or_delta(vec![message("a")], present, false);
-        assert!(!partial.is_snapshot());
-        assert_eq!(
-            partial,
-            SyncUpdate::Delta {
-                changed: vec![message("a")],
-                patched: vec![],
-                removed: vec![],
-            }
-        );
     }
 }

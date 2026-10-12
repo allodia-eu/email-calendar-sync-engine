@@ -233,7 +233,6 @@ impl ContactsProvider for JmapProvider {
             "AddressBook",
             cursor,
             address_book,
-            |book| book.id.key().clone(),
         )
         .await?;
         Ok(ContactSourceSync::Available {

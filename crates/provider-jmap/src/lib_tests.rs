@@ -195,7 +195,7 @@ async fn http_error_status_surfaces_as_a_classified_error() {
 #[tokio::test]
 async fn jmap_provider_connects_and_syncs_through_the_real_client() {
     use engine_provider::Provider;
-    let mailboxes = r#"{"methodResponses":[["Mailbox/get",{"state":"s1","list":[]},"0"]]}"#;
+    let mailboxes = r#"{"methodResponses":[["Mailbox/query",{"queryState":"q1","position":0,"total":0,"ids":[]},"0"],["Mailbox/get",{"state":"s1","list":[]},"1"]]}"#;
     let base = mock_server(vec![http_ok(SESSION_DOC), http_ok(mailboxes)]);
     let provider = JmapProvider::connect(
         JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session"),

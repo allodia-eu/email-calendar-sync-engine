@@ -5,12 +5,15 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
-use engine_core::sync::{SyncState, SyncUpdate};
+use engine_core::{
+    error::FailureClass,
+    sync::{SyncState, SyncUpdate},
+};
 use engine_provider::{ContactSourceSync, ContactsProvider, Provider};
 
 use super::{
     JmapProvider,
-    bounded_server::{BoundedServer, card, event},
+    bounded_server::{BoundedServer, card, event, mailbox},
     provider_test_support::account,
 };
 
@@ -62,14 +65,13 @@ async fn a_server_that_caps_its_query_is_paged_to_the_end() {
     assert_eq!(objects.len(), 250);
 }
 
-/// The query's order moved under the pass, so an id may have been skipped: nothing is
-/// tombstoned, and the cursor is the state read beside the first page, so the next delta
-/// replays whatever changed during the pass.
+/// Destroying an object on an earlier page moves every later id up one position, so a pass that
+/// paged on would skip an object no later delta mentions. The pass is taken again instead, and
+/// arrives as a snapshot of what is there now.
 #[tokio::test]
-async fn a_snapshot_whose_query_moved_mid_pass_removes_nothing() {
+async fn a_snapshot_whose_query_moved_mid_pass_is_taken_again() {
     let server = Arc::new(BoundedServer::new(LIMIT));
     server.seed("CalendarEvent", (0..1203).map(event));
-    let before = server.state("CalendarEvent");
     server.change_after(0, "CalendarEvent", |store| store.destroy("e00000"));
 
     let sync = provider_over(&server)
@@ -77,15 +79,54 @@ async fn a_snapshot_whose_query_moved_mid_pass_removes_nothing() {
         .await
         .unwrap();
 
-    let SyncUpdate::Delta {
-        changed, removed, ..
-    } = &sync.update
-    else {
-        panic!("a pass the server changed under is never a tombstoning snapshot");
+    let SyncUpdate::Snapshot { objects, present } = &sync.update else {
+        panic!("a pass taken again on a settled query is a snapshot");
     };
-    assert!(removed.is_empty());
-    assert!(changed.len() >= 1202);
-    assert_eq!(sync.next_cursor.as_str(), before);
+    assert_eq!(objects.len(), 1202);
+    assert_eq!(present.len(), 1202);
+    assert!(!keys(objects).contains("e00000"));
+    assert!(keys(objects).contains("e00500"), "the id that moved pages");
+    assert_eq!(sync.next_cursor.as_str(), server.state("CalendarEvent"));
+    assert_eq!(server.request_count(), 6, "the pass, then the pass again");
+}
+
+/// A query that moves under every pass has no complete answer to store, so the pass fails as one
+/// to retry rather than storing part of the scope.
+#[tokio::test]
+async fn a_snapshot_that_never_settles_fails_the_pass_for_a_retry() {
+    let server = Arc::new(BoundedServer::new(LIMIT));
+    server.seed("CalendarEvent", (0..1203).map(event));
+    for request in 0..20 {
+        server.change_after(request, "CalendarEvent", move |store| {
+            store.upsert(event(5000 + request));
+        });
+    }
+
+    let error = provider_over(&server)
+        .sync_events(&account(), None)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.class(), FailureClass::Retryable, "{error}");
+    assert_eq!(server.request_count(), 9, "three passes of three pages");
+}
+
+#[tokio::test]
+async fn a_mailbox_tree_larger_than_one_get_arrives_whole() {
+    let server = Arc::new(BoundedServer::new(LIMIT));
+    server.seed("Mailbox", (0..1203).map(mailbox));
+
+    let sync = provider_over(&server)
+        .sync_mailboxes(&account(), None)
+        .await
+        .unwrap();
+
+    let SyncUpdate::Snapshot { objects, present } = &sync.update else {
+        panic!("a complete pass is a snapshot");
+    };
+    assert_eq!(objects.len(), 1203);
+    assert_eq!(present.len(), 1203);
+    assert_eq!(server.request_count(), 3, "three pages of at most {LIMIT}");
 }
 
 #[tokio::test]
@@ -211,25 +252,29 @@ async fn a_container_delta_larger_than_one_get_arrives_whole() {
     assert_eq!(sync.next_cursor.as_str(), server.state("Calendar"));
 }
 
-/// A server that keeps saying there is more without moving its state would page forever.
+/// A server that keeps saying there is more without moving its state would page forever, so the
+/// pass recovers with a snapshot as it would from `cannotCalculateChanges`.
 #[tokio::test]
-async fn more_changes_without_a_new_state_is_refused_rather_than_looped() {
-    let page = serde_json::json!({ "methodResponses": [
+async fn more_changes_without_a_new_state_recovers_with_a_snapshot() {
+    let stuck = serde_json::json!({ "methodResponses": [
         ["CalendarEvent/changes", { "accountId": "c", "oldState": "s1", "newState": "s1",
             "hasMoreChanges": true, "created": [], "updated": [], "destroyed": [] }, "0"],
         ["CalendarEvent/get", { "accountId": "c", "state": "s1", "list": [] }, "1"],
         ["CalendarEvent/get", { "accountId": "c", "state": "s1", "list": [] }, "2"]
     ] });
-    let (provider, exec) = super::provider_test_support::recording(vec![page]);
+    let snapshot = serde_json::json!({ "methodResponses": [
+        ["CalendarEvent/query", { "accountId": "c", "queryState": "q1", "ids": [],
+            "position": 0, "total": 0, "canCalculateChanges": false }, "0"],
+        ["CalendarEvent/get", { "accountId": "c", "state": "s2", "list": [] }, "1"]
+    ] });
+    let (provider, exec) = super::provider_test_support::recording(vec![stuck, snapshot]);
 
-    let error = provider
+    let sync = provider
         .sync_events(&account(), Some(&SyncState::new("s1")))
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert!(
-        error.to_string().contains("without moving its state"),
-        "{error}"
-    );
-    assert_eq!(exec.request_count(), 1);
+    assert!(sync.update.is_snapshot(), "{:?}", sync.update);
+    assert_eq!(sync.next_cursor.as_str(), "s2");
+    assert_eq!(exec.request_count(), 2);
 }

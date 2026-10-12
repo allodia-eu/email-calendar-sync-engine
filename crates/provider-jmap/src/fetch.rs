@@ -19,7 +19,7 @@ use crate::{
     sync_ops::{Changes, clamp_limit, keys, next_position, objects, state, total},
 };
 
-/// The fixed configuration for one member type's paged fetch — everything that is
+/// The fixed configuration for one type's paged fetch — everything that is
 /// constant across the pages of a pass. Bundled so each page builder takes a sane
 /// argument count and the per-call inputs (sort, cursor, page, limit) stand out.
 pub(crate) struct MemberFetch<'a> {
@@ -206,37 +206,12 @@ async fn delta_page<T: SyncObject>(
     normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
     updated_handling: &UpdatedAsState<T::Patch>,
 ) -> Result<SyncPage<T>, JmapError> {
-    let mut req = Request::new(fetch.using.iter().copied());
-    let changes_method = format!("{}/changes", fetch.type_name);
-    let changes_id = req.invoke(
-        changes_method.clone(),
-        json!({ "accountId": fetch.account, "sinceState": since.as_str(), "maxChanges": limit }),
-    );
-    let created = req.invoke(
-        format!("{}/get", fetch.type_name),
-        back_ref_get(
-            fetch.account,
-            &changes_id,
-            &changes_method,
-            "/created",
-            fetch.properties,
-        ),
-    );
     // An updated id costs only the type's mutable half.
-    let updated = req.invoke(
-        format!("{}/get", fetch.type_name),
-        back_ref_get(
-            fetch.account,
-            &changes_id,
-            &changes_method,
-            "/updated",
-            Some(updated_handling.properties),
-        ),
-    );
-    let resp = fetch.executor.execute(&req).await?;
-    let diff = Changes::parse(resp.result(&changes_id)?)?;
-    let changed = objects(resp.result(&created)?, normalize)?;
-    let patched = objects(resp.result(&updated)?, updated_handling.normalize)?;
+    let call = changes_request(fetch, since, limit, Some(updated_handling.properties));
+    let resp = fetch.executor.execute(&call.request).await?;
+    let diff = Changes::parse(resp.result(&call.changes)?)?;
+    let changed = objects(resp.result(&call.created)?, normalize)?;
+    let patched = objects(resp.result(&call.updated)?, updated_handling.normalize)?;
     let next_page = diff
         .has_more
         .then(|| PageCursor::Delta(diff.new_state.clone()).to_token());
@@ -250,6 +225,49 @@ async fn delta_page<T: SyncObject>(
         next_cursor: diff.new_state,
         total: None,
     })
+}
+
+/// One `Foo/changes` page, bounded by `maxChanges`, and the two `Foo/get`s that resolve its
+/// created and updated ids by back-reference, in one request.
+pub(crate) struct ChangesRequest {
+    /// The request to execute.
+    pub(crate) request: Request,
+    /// The `Foo/changes` call id.
+    pub(crate) changes: String,
+    /// The call id of the `Foo/get` over the created ids.
+    pub(crate) created: String,
+    /// The call id of the `Foo/get` over the updated ids.
+    pub(crate) updated: String,
+}
+
+/// Builds a [`ChangesRequest`] from `since`; `updated_properties` narrows the `Foo/get` of the
+/// updated ids, while the created ids are read with `fetch.properties`.
+pub(crate) fn changes_request(
+    fetch: &MemberFetch<'_>,
+    since: &SyncState,
+    limit: usize,
+    updated_properties: Option<&[&str]>,
+) -> ChangesRequest {
+    let mut request = Request::new(fetch.using.iter().copied());
+    let changes_method = format!("{}/changes", fetch.type_name);
+    let changes = request.invoke(
+        changes_method.clone(),
+        json!({ "accountId": fetch.account, "sinceState": since.as_str(), "maxChanges": limit }),
+    );
+    let mut get = |path: &str, properties: Option<&[&str]>| {
+        request.invoke(
+            format!("{}/get", fetch.type_name),
+            back_ref_get(fetch.account, &changes, &changes_method, path, properties),
+        )
+    };
+    let created = get("/created", fetch.properties);
+    let updated = get("/updated", updated_properties);
+    ChangesRequest {
+        request,
+        changes,
+        created,
+        updated,
+    }
 }
 
 /// The mode and offset a [`PageToken`] carries between member pages, so a paused
@@ -289,7 +307,7 @@ impl PageCursor {
 
 /// Builds a `Foo/get` argument object that fetches the ids a prior call produced,
 /// via a `#ids` result back-reference (RFC 8620 §3.7).
-pub(crate) fn back_ref_get(
+fn back_ref_get(
     account: &str,
     result_of: &str,
     name: &str,
