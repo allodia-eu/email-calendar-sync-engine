@@ -70,11 +70,7 @@ async fn a_message_deleted_on_a_page_already_read_skips_nothing() {
         before,
         "the state read with the first page"
     );
-    assert_eq!(
-        server.request_count(),
-        6,
-        "three pages and a listing of three"
-    );
+    assert_eq!(server.request_count(), 4, "three pages and a listing");
 
     let delta = provider
         .sync_email(&account(), Some(&sync.next_cursor))
@@ -110,8 +106,8 @@ async fn a_deleted_anchor_steps_back_to_the_message_before_it() {
     assert_eq!(objects.len(), 1203);
     assert_eq!(
         server.request_count(),
-        7,
-        "three pages, one refused anchor, and a listing of three"
+        5,
+        "three pages, one refused anchor, and a listing"
     );
 }
 
@@ -200,8 +196,8 @@ async fn mail_sorted_into_place_during_the_walk_is_found_by_the_closing_listing(
     assert!(keys(objects).contains("x99999"));
     assert_eq!(
         server.request_count(),
-        7,
-        "three pages, a listing of three, and the one missed message"
+        5,
+        "three pages, a listing, and the one missed message"
     );
 }
 
@@ -237,16 +233,17 @@ async fn an_object_that_moves_behind_the_walk_is_found_by_a_fresh_listing() {
     assert!(keys(objects).contains("e01100"));
     assert_eq!(
         server.request_count(),
-        7,
-        "three pages, a listing of three, and the one missed object"
+        5,
+        "three pages, a listing, and the one missed object"
     );
 }
 
 /// A query that keeps moving under every listing has no complete answer to store, so the pass
-/// fails as one to retry rather than storing part of the scope.
+/// fails as one to retry rather than storing part of the scope. The server caps its pages, so the
+/// listing takes several requests; one answered in a single page is answered at once.
 #[tokio::test]
 async fn a_listing_that_never_holds_still_fails_the_pass_for_a_retry() {
-    let server = Arc::new(BoundedServer::new(LIMIT));
+    let server = Arc::new(BoundedServer::new(LIMIT).with_query_cap(LIMIT));
     server.seed("CalendarEvent", (0..1203).map(event));
     for request in 0..30 {
         server.change_after(request, "CalendarEvent", move |store| {
@@ -260,6 +257,84 @@ async fn a_listing_that_never_holds_still_fails_the_pass_for_a_retry() {
         .unwrap_err();
 
     assert_eq!(error.class(), FailureClass::Retryable, "{error}");
+}
+
+/// The ids a walk anchored on, from the end of a trail of `len` in id order, at each step back
+/// tried before `stop`.
+fn anchors_before(len: usize, stop: usize) -> Vec<String> {
+    anchors(len)
+        .take_while(|&back| back != stop)
+        .map(|back| format!("x{:05}", len - 1 - back))
+        .collect()
+}
+
+/// A server capping its pages at 100 when 500 were asked for, and a step back of 512 ids: the
+/// walk re-reads five pages with nothing new, which it allows for in the server's page size,
+/// not the one it asked for.
+#[tokio::test]
+async fn a_long_step_back_is_allowed_for_in_the_pages_the_server_serves() {
+    let server = Arc::new(BoundedServer::new(LIMIT).with_query_cap(100));
+    server.seed("Email", (0..1203).map(email));
+    let destroyed = anchors_before(600, 512);
+    server.change_after(5, "Email", move |store| {
+        for id in &destroyed {
+            store.destroy(id);
+        }
+    });
+
+    let sync = provider_over(&server)
+        .sync_email(&account(), None)
+        .await
+        .unwrap();
+
+    let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
+        panic!("a first sync is a snapshot");
+    };
+    assert_eq!(objects.len(), 1203);
+}
+
+/// Every id the walk tries as its anchor has been destroyed: it starts again from the top, and
+/// hands on nothing twice.
+#[tokio::test]
+async fn a_walk_whose_every_anchor_is_gone_starts_again_from_the_top() {
+    let server = mailbox_of(1203);
+    let destroyed = anchors_before(500, usize::MAX);
+    server.change_after(0, "Email", move |store| {
+        for id in &destroyed {
+            store.destroy(id);
+        }
+    });
+
+    let sync = provider_over(&server)
+        .sync_email(&account(), None)
+        .await
+        .unwrap();
+
+    let SyncUpdate::Snapshot { objects, present } = &sync.update else {
+        panic!("a first sync is a snapshot");
+    };
+    assert_eq!(objects.len(), 1203);
+    assert_eq!(present.len(), 1203, "nothing handed on twice");
+}
+
+/// A server that sends no `queryState` gives the closing listing nothing to compare, so it is
+/// taken as it is: the snapshot finishes rather than failing on every pass. The server caps its
+/// pages, so the listing takes several requests and has states to compare.
+#[tokio::test]
+async fn a_server_without_query_state_still_finishes_a_snapshot() {
+    let server = Arc::new(
+        BoundedServer::new(LIMIT)
+            .with_query_cap(LIMIT)
+            .without_query_state(),
+    );
+    server.seed("CalendarEvent", (0..1203).map(event));
+
+    let sync = provider_over(&server)
+        .sync_events(&account(), None)
+        .await
+        .unwrap();
+
+    assert!(sync.update.is_snapshot());
 }
 
 #[tokio::test]

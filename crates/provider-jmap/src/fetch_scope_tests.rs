@@ -45,8 +45,8 @@ async fn an_event_snapshot_larger_than_one_get_arrives_whole() {
     assert_eq!(sync.next_cursor.as_str(), server.state("CalendarEvent"));
     assert_eq!(
         server.request_count(),
-        6,
-        "three pages of at most {LIMIT}, and a listing of three"
+        4,
+        "three pages of at most {LIMIT}, and a listing"
     );
 }
 
@@ -88,7 +88,7 @@ async fn a_destroy_during_the_walk_is_checked_against_a_fresh_listing() {
         "the id that opened page two"
     );
     assert_eq!(sync.next_cursor.as_str(), before);
-    assert_eq!(server.request_count(), 6, "the walk, then a listing of ids");
+    assert_eq!(server.request_count(), 4, "the walk, then a listing of ids");
 
     let delta = provider
         .sync_events(&account(), Some(&sync.next_cursor))
@@ -117,8 +117,8 @@ async fn a_mailbox_tree_larger_than_one_get_arrives_whole() {
     assert_eq!(present.len(), 1203);
     assert_eq!(
         server.request_count(),
-        6,
-        "three pages of at most {LIMIT}, and a listing of three"
+        4,
+        "three pages of at most {LIMIT}, and a listing"
     );
 }
 
