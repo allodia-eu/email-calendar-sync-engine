@@ -244,6 +244,12 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   correlated with a local copy by `Message-ID`**, so anything matching the two has to use
   the key `put_draft` returned. `tests/live_drafts.rs` pins the rewrite itself, and
   identifies drafts by subject for exactly this reason.
+- ⚠️ **`drafts.create` refuses an empty `To` group.** `To: undisclosed-recipients:;`, the
+  header a Bcc-only *send* carries, answers `400 invalidArgument` "Invalid To header", so a
+  draft saved before anyone is addressed failed on every autosave (observed through a host).
+  A stored draft therefore names only the recipients it has: `assemble_draft_message` writes
+  no `To` header when there are none, and every adapter that stores MIME drafts uses it.
+  `tests/live_drafts.rs` saves one with no recipients.
 - **A whole-account snapshot is expensive enough to fail a live run.** Gmail meters a
   "Total Query Cost" of 6000 units per minute per user, and a `sync_email` snapshot
   fetches every message; a few in quick succession answer `403 rateLimitExceeded`, which

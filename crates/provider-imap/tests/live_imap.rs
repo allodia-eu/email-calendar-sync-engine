@@ -437,6 +437,16 @@ async fn live_imap_saves_a_draft() {
 
     // Save it via IMAP APPEND into the resolved Drafts folder (flagged \Draft).
     provider.save_draft(&draft).await.expect("save_draft");
+    // And one saved before anyone was addressed, which carries no `To` header at all.
+    let unaddressed_id = "step5-imap-draft-unaddressed@test.local";
+    let unaddressed = Draft::new(
+        MessageIdHeader::new(unaddressed_id).unwrap(),
+        EmailAddress::new(harness.account.as_str()),
+        Vec::new(),
+        "Step 5 IMAP draft, no recipients",
+        "Saved as a draft by the live test (no SMTP).",
+    );
+    provider.save_draft(&unaddressed).await.expect("save_draft");
 
     // Re-sync Drafts; the saved draft is there, found by Message-ID and flagged.
     sync_mail(
@@ -467,6 +477,21 @@ async fn live_imap_saves_a_draft() {
             .iter()
             .any(|k| k.as_system() == Some(SystemKeyword::Draft)),
         "the saved message is flagged \\Draft"
+    );
+    let unaddressed = messages_in(&store, &scope)
+        .await
+        .into_iter()
+        .find(|m| {
+            m.envelope
+                .message_id
+                .iter()
+                .any(|id| id.as_str() == unaddressed_id)
+        })
+        .expect("the draft with no recipients is in Drafts");
+    assert!(
+        unaddressed.envelope.to.is_empty(),
+        "{:?}",
+        unaddressed.envelope.to
     );
 }
 

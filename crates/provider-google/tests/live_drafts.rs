@@ -163,6 +163,31 @@ async fn live_gmail_replacing_a_draft_keeps_its_draft_id() {
         .expect("a second discard is done, not an error");
 }
 
+/// A draft saved before anyone is addressed: Gmail refused the empty `To` group a Bcc-only send
+/// carries ("Invalid To header"), so a stored draft writes no `To` at all.
+#[tokio::test]
+async fn live_gmail_a_draft_with_no_recipients_is_stored() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_gmail_a_draft_with_no_recipients: GOOGLE_ACCESS_TOKEN unset");
+        return;
+    };
+    let p = provider(token);
+    let run = unique_run_id();
+    let unaddressed = Draft::new(
+        MessageIdHeader::new(format!("live-gmail-draft-unaddressed-{run}@test.local")).unwrap(),
+        EmailAddress::new(SELF_ADDRESS),
+        Vec::new(),
+        format!("Live draft {run}: no recipients"),
+        "Saved as a draft by the live test (never sent).",
+    );
+
+    let key = p
+        .put_draft(&account(), &unaddressed, None)
+        .await
+        .expect("a draft with no recipients is stored");
+    p.delete_draft(&account(), &key).await.expect("discard");
+}
+
 #[tokio::test]
 async fn live_gmail_a_saved_draft_is_labelled_a_draft() {
     let Some(token) = token() else {
