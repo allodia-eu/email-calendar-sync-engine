@@ -6,21 +6,23 @@ use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 
 use crate::{base64, mime};
 
-/// Whether the assembled message carries a `Bcc` header — the one difference between
-/// the over-the-wire message and the filed Sent/Drafts copy.
+/// Which copy of a message is being assembled. The three differ only in their recipient headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BccHeader {
+pub(crate) enum Assembly {
     /// Over-the-wire: omit `Bcc`. Bcc recipients are reached out-of-band (the SMTP
     /// envelope, or the server parsing the MIME), so no recipient can see the Bcc list.
-    Omit,
-    /// Filed Sent/Drafts copy: include `Bcc`, so the sender keeps a record of whom
+    Wire,
+    /// The sender's filed Sent copy: include `Bcc`, so the sender keeps a record of whom
     /// they Bcc'd while it stays private to them.
-    Include,
+    Filed,
+    /// A stored draft: the filed copy, except that it names only the recipients it has, so a
+    /// draft with no `To` recipients carries no `To` header (see [`assemble_draft_message`]).
+    Draft,
 }
 
 /// Assembles the **over-the-wire** RFC 5322 message for `draft` — **without** a `Bcc`
 /// header, so no recipient can see the Bcc list. Use [`assemble_filed_message`] for the
-/// Sent/Drafts copy.
+/// Sent copy and [`assemble_draft_message`] for a stored draft.
 ///
 /// The caller's pre-generated `Message-ID` is set verbatim (so the sent copy reconciles
 /// by it on a later sync); a non-ASCII subject or display name is emitted as an RFC 2047
@@ -33,10 +35,10 @@ pub(crate) enum BccHeader {
 /// addresses, subject, display names, the threading ids, attachment media metadata)
 /// carries CR/LF/NUL, or the `Date` cannot be formatted.
 pub fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ProviderResult<Vec<u8>> {
-    assemble(draft, date, BccHeader::Omit)
+    assemble(draft, date, Assembly::Wire)
 }
 
-/// Assembles the RFC 5322 message for the **filed Sent/Drafts copy** — identical to
+/// Assembles the RFC 5322 message for the **filed Sent copy** — identical to
 /// [`assemble_message`] but **with** the `Bcc` header, so the sender's Sent folder
 /// records whom they Bcc'd. This copy is filed locally (IMAP `APPEND`) or handed to a
 /// server that strips the `Bcc` before delivery (Graph `sendMail`), so the Bcc never
@@ -46,11 +48,26 @@ pub fn assemble_message(draft: &Draft, date: OffsetDateTime) -> ProviderResult<V
 ///
 /// A [`ProviderError::permanent`] on the same conditions as [`assemble_message`].
 pub fn assemble_filed_message(draft: &Draft, date: OffsetDateTime) -> ProviderResult<Vec<u8>> {
-    assemble(draft, date, BccHeader::Include)
+    assemble(draft, date, Assembly::Filed)
+}
+
+/// Assembles a **stored draft**: [`assemble_filed_message`], except that a draft with no `To`
+/// recipients carries no `To` header.
+///
+/// A draft is often saved before anyone is addressed, and `To` is optional in RFC 5322 §3.6.
+/// The empty group a Bcc-only send needs does not belong in one: Gmail's `drafts.create`
+/// refuses it with HTTP 400 "Invalid To header", and a client resuming the draft would read the
+/// group's name as a recipient. JMAP stores an empty `to` list for the same draft.
+///
+/// # Errors
+///
+/// A [`ProviderError::permanent`] on the same conditions as [`assemble_message`].
+pub fn assemble_draft_message(draft: &Draft, date: OffsetDateTime) -> ProviderResult<Vec<u8>> {
+    assemble(draft, date, Assembly::Draft)
 }
 
 /// Assembles the RFC 5322 message bytes for `draft`, stamped with `date` (CRLF line
-/// endings), emitting a `Bcc` header only when `bcc` is [`BccHeader::Include`].
+/// endings), emitting the recipient headers `assembly` calls for.
 ///
 /// The caller's pre-generated `Message-ID` is set verbatim so the sent copy reconciles
 /// by it on a later sync (`store-and-sync.md`).
@@ -68,15 +85,17 @@ pub fn assemble_filed_message(draft: &Draft, date: OffsetDateTime) -> ProviderRe
 /// forward the `In-Reply-To` and `References` headers (RFC 5322 §3.6.4) thread the
 /// message with its original; each is omitted when its draft field is empty. A `Cc`
 /// header is emitted when the draft carries Cc recipients (visible to everyone); a
-/// `Bcc` header is emitted only for [`BccHeader::Include`] (the filed copy), never for
-/// transmission.
-fn assemble(draft: &Draft, date: OffsetDateTime, bcc: BccHeader) -> ProviderResult<Vec<u8>> {
+/// `Bcc` header is emitted only in a filed copy or a draft, never for transmission.
+fn assemble(draft: &Draft, date: OffsetDateTime, assembly: Assembly) -> ProviderResult<Vec<u8>> {
     let message_id = reject_control("Message-ID", draft.message_id.as_str())?;
     let from = address_field(&draft.from)?;
     // A message with no To recipients (a Bcc-only send) still needs a valid `To` header — name
     // an empty RFC 5322 §3.4 group, exactly as Outlook/Thunderbird do — rather than emit a bare
     // empty `To:` that many MTAs and spam filters penalize.
-    let to_header = if draft.to.is_empty() {
+    // A draft names only the recipients it has (`assemble_draft_message`).
+    let to_header = if draft.to.is_empty() && assembly == Assembly::Draft {
+        String::new()
+    } else if draft.to.is_empty() {
         "To: undisclosed-recipients:;\r\n".to_owned()
     } else {
         format!("To: {}\r\n", address_list(&draft.to)?)
@@ -87,9 +106,9 @@ fn assemble(draft: &Draft, date: OffsetDateTime, bcc: BccHeader) -> ProviderResu
     } else {
         format!("Cc: {}\r\n", address_list(&draft.cc)?)
     };
-    // A `Bcc:` header is emitted ONLY for the filed Sent/Drafts copy (`BccHeader::Include`).
-    // The transmitted message omits it, so Bcc recipients stay hidden from every recipient.
-    let bcc_header = if bcc == BccHeader::Omit || draft.bcc.is_empty() {
+    // A `Bcc:` header is emitted ONLY in the filed Sent copy and a draft. The transmitted
+    // message omits it, so Bcc recipients stay hidden from every recipient.
+    let bcc_header = if assembly == Assembly::Wire || draft.bcc.is_empty() {
         String::new()
     } else {
         format!("Bcc: {}\r\n", address_list(&draft.bcc)?)

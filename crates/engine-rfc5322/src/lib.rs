@@ -14,15 +14,17 @@
 //! `multipart/{alternative,related,mixed}` nesting, exclusive-`DTEND`-style edge
 //! cases — in one tested place rather than duplicated per transport.
 //!
-//! # Two assemblies, one difference
+//! # Three assemblies
 //!
 //! [`assemble_message`] builds the **over-the-wire** copy — **without** a `Bcc`
 //! header, so no recipient can see the Bcc list. [`assemble_filed_message`] builds
-//! the **filed Sent/Drafts** copy — **with** the `Bcc` header, so the sender's own
+//! the **filed Sent** copy — **with** the `Bcc` header, so the sender's own
 //! folder records whom they Bcc'd (Outlook/Thunderbird behavior). They are identical
 //! when the draft has no Bcc. A transport that hands the whole MIME to the server for
 //! *both* delivery and filing (Graph `sendMail`) uses the filed variant, since the
-//! server strips the `Bcc` header before delivery itself.
+//! server strips the `Bcc` header before delivery itself. [`assemble_draft_message`]
+//! builds a **stored draft**: the filed copy, except that a draft with no `To`
+//! recipients carries no `To` header rather than the empty group a Bcc-only send needs.
 //!
 //! # Hostile input
 //!
@@ -36,7 +38,7 @@ mod assemble;
 mod base64;
 mod mime;
 
-pub use assemble::{assemble_filed_message, assemble_message};
+pub use assemble::{assemble_draft_message, assemble_filed_message, assemble_message};
 
 /// Standard RFC 4648 base64 of `bytes`.
 ///
