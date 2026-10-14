@@ -526,6 +526,13 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   move is rejected if it would change the time *form* (`has_same_form`). The raw Graph
   event JSON is preserved beside the projection in `Event::extended`
   (`"microsoft.graph/event"`), since Graph is neither iCal nor JSCalendar.
+  A meeting create adds the complete `attendees` array, sets `responseRequested: true`, and
+  uses the draft UID as `transactionId` so a retry can be recognised. Graph permits at most
+  500 attendees, which the adapter validates before sending. A roster edit replaces the
+  complete array from the preserved raw event, retaining response and unknown fields. It
+  cannot edit the organiser or one occurrence. Exchange derives the organiser from the target
+  calendar; callers use the synced `Calendar::owner`, and the write does not attempt an
+  organiser override Graph cannot express.
   - **The ETag a create echoes is current, so guarding the next write on it is sound.** Measured
     on both mailbox kinds a host meets, an outlook.com account and an Exchange Online tenant
     mailbox: create an event, read it straight back, and `@odata.etag` is byte-identical. Worth

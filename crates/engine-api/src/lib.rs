@@ -136,15 +136,16 @@ pub use engine_http::{
     IgnoreThrottles, RequestGate, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver,
 };
 pub use engine_provider::{
-    CalendarUserAddresses, CalendarWrites, Capabilities, ContactDestination, ContactPhoto,
-    ContactsProvider, ContentIdHeader, DeleteTarget, Draft, DraftAttachment,
+    CalendarAddress, CalendarUserAddresses, CalendarWrites, Capabilities, ContactDestination,
+    ContactPhoto, ContactsProvider, ContentIdHeader, DeleteTarget, Draft, DraftAttachment,
     DraftAttachmentDisposition, DraftCalendar, DraftRecurrence, EventDeletion, EventDraft,
-    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, IdentityControls, KeywordName,
-    MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport,
-    Occurrence, OverrideSurvival, PatchTarget, Provider, RecurrenceEdit, ReplyDelivery,
-    ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls,
-    RsvpResponse, SenderIdentity, SenderIdentityId, SentCopy, SourceStream, SubmissionReceipt,
-    TextEdit, WriteGuard, WritePrecondition,
+    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, IdentityControls,
+    InvitationError, Invitee, InviteePatch, InviteeRole, KeywordName, MailEdit, MailEditReceipt,
+    MailboxEdit, MailboxEditReceipt, MailboxWrites, MeetingDraft, MessageReport, Occurrence,
+    OverrideSurvival, PatchTarget, Provider, RecurrenceEdit, ReplyDelivery, ReportControls,
+    ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse,
+    SchedulingIdentity, SenderIdentity, SenderIdentityId, SentCopy, SourceStream,
+    SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,

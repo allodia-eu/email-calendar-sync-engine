@@ -56,11 +56,14 @@ async fn live_calendar_snapshot_then_delta_cycle() {
 #[tokio::test]
 async fn live_calendar_create_patch_delete() {
     use engine_core::{
-        calendar::Event,
+        calendar::ParticipantRole,
         ids::Uid,
         time::{CalendarDateTime, LocalDateTime, TimeZoneId, UtcDateTime},
     };
-    use engine_provider::{EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget};
+    use engine_provider::{
+        CalendarAddress, EventDeletion, EventDraft, EventEdit, EventPatch, Invitee, InviteePatch,
+        MeetingDraft, PatchTarget, SchedulingIdentity,
+    };
 
     let Some(token) = token() else {
         eprintln!("skipping live_calendar_create_patch_delete: GOOGLE_ACCESS_TOKEN unset");
@@ -68,22 +71,48 @@ async fn live_calendar_create_patch_delete() {
     };
     let provider = calendar_provider(token);
     let cal = CalendarId::try_from("primary").unwrap();
-    let stamp: UtcDateTime = "2026-07-18T10:00:00Z".parse().unwrap();
-    let zoned = |s: &str| CalendarDateTime::Zoned {
-        local: s.parse::<LocalDateTime>().unwrap(),
-        zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+    let calendars = provider
+        .sync_calendars(&account(), None)
+        .await
+        .expect("sync calendars");
+    let SyncUpdate::Snapshot { objects, .. } = calendars.update else {
+        panic!("expected a calendar snapshot");
     };
-
+    let organiser = objects
+        .into_iter()
+        .find(|calendar| calendar.is_default)
+        .expect("a primary calendar")
+        .id;
+    let organiser = CalendarAddress::parse(organiser.key().as_str())
+        .expect("the primary calendar id is the account's email address");
+    let invitee = CalendarAddress::parse("calendar-engine-live@example.invalid").unwrap();
+    let stamp: UtcDateTime = "2026-07-18T10:00:00Z".parse().unwrap();
+    let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(60);
+    let at = |hour: u8| {
+        format!("{date}T{hour:02}:00:00")
+            .parse::<LocalDateTime>()
+            .unwrap()
+    };
     // Create a throwaway event.
     let draft = EventDraft::new(
         cal.clone(),
         Uid::new(format!("live-cal-{}@example.test", std::process::id())).unwrap(),
-        "Live create/patch/delete",
-        zoned("2026-09-01T10:00:00"),
-        zoned("2026-09-01T10:30:00"),
+        "Live invitation create/patch/delete",
+        CalendarDateTime::Zoned {
+            local: at(10),
+            zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+        },
+        CalendarDateTime::Zoned {
+            local: at(11),
+            zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+        },
         stamp,
     )
-    .location("Room Live");
+    .location("Room Live")
+    .meeting(MeetingDraft::new(
+        SchedulingIdentity::new(organiser),
+        vec![Invitee::required(SchedulingIdentity::new(invitee.clone()))],
+    ));
     let created = provider
         .create_event(&account(), &draft)
         .await
@@ -91,18 +120,30 @@ async fn live_calendar_create_patch_delete() {
     let first_etag = created.revisions.etag.clone();
     assert!(first_etag.is_some(), "the created event carries an ETag");
 
-    // Build the base event as read, then patch it (rename) — the ETag must advance.
-    let mut base = Event::new(
-        created.event.clone(),
-        created.uid.clone(),
-        engine_core::membership::Memberships::of_one(cal.clone()),
-        zoned("2026-09-01T10:00:00"),
-    );
-    base.revisions = created.revisions.clone();
+    let snapshot = provider
+        .sync_events(&account(), None)
+        .await
+        .expect("read create");
+    let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {
+        panic!("expected an event snapshot");
+    };
+    let base = objects
+        .into_iter()
+        .find(|event| event.id == created.event)
+        .expect("the created invitation reads back");
+    assert!(base.participants.iter().any(|participant| {
+        participant.email.as_deref() == Some(invitee.as_str())
+            && participant.has_role(&ParticipantRole::Attendee)
+    }));
     let edit = EventEdit::new(
         &base,
         PatchTarget::Series,
-        EventPatch::new(stamp).summary("Live create/patch/delete (renamed)"),
+        EventPatch::new(stamp)
+            .summary("Live invitation create/patch/delete (renamed)")
+            .invitees(
+                InviteePatch::new()
+                    .upsert(Invitee::optional(SchedulingIdentity::new(invitee.clone()))),
+            ),
     );
     let patched = provider
         .patch_event(&account(), &base, &edit)
@@ -113,8 +154,23 @@ async fn live_calendar_create_patch_delete() {
         "the ETag advances on patch"
     );
 
-    // Delete it, guarded by the fresh ETag.
-    base.revisions = patched.revisions.clone();
+    let snapshot = provider
+        .sync_events(&account(), None)
+        .await
+        .expect("read patch");
+    let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {
+        panic!("expected an event snapshot");
+    };
+    let base = objects
+        .into_iter()
+        .find(|event| event.id == created.event)
+        .expect("the patched invitation reads back");
+    assert!(base.participants.iter().any(|participant| {
+        participant.email.as_deref() == Some(invitee.as_str())
+            && participant.has_role(&ParticipantRole::Optional)
+    }));
+
+    // Delete it, guarded by the fresh ETag. Google sends the cancellation.
     provider
         .delete_event(&account(), None, &EventDeletion::of(&base))
         .await

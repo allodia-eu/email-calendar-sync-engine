@@ -307,7 +307,33 @@ fn parse_participants(value: &Value) -> Vec<Participant> {
     let Some(map) = value.get("participants").and_then(Value::as_object) else {
         return Vec::new();
     };
-    map.values().map(participant_from_json).collect()
+    let mut parsed: Vec<Participant> = Vec::new();
+    for value in map.values() {
+        let participant = participant_from_json(value);
+        let duplicate = participant.email.as_deref().and_then(|email| {
+            parsed.iter_mut().find(|existing| {
+                existing
+                    .email
+                    .as_deref()
+                    .is_some_and(|address| engine_core::scheduling::addresses_match(address, email))
+            })
+        });
+        if let Some(existing) = duplicate {
+            if existing.name.is_none() {
+                existing.name.clone_from(&participant.name);
+            }
+            existing.roles.extend(participant.roles);
+            if existing.participation_status == ParticipationStatus::NeedsAction
+                && participant.participation_status != ParticipationStatus::NeedsAction
+            {
+                existing.participation_status = participant.participation_status;
+            }
+            existing.expect_reply |= participant.expect_reply;
+        } else {
+            parsed.push(participant);
+        }
+    }
+    parsed
 }
 
 fn participant_from_json(participant: &Value) -> Participant {
@@ -317,7 +343,10 @@ fn participant_from_json(participant: &Value) -> Participant {
         .map(|roles| {
             roles
                 .keys()
-                .map(|role| ParticipantRole::from_wire(role))
+                .map(|role| match role.as_str() {
+                    "required" => ParticipantRole::Attendee,
+                    _ => ParticipantRole::from_wire(role),
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -329,8 +358,7 @@ fn participant_from_json(participant: &Value) -> Participant {
         name: opt_str(participant, "name").map(str::to_owned),
         // A cal-address URI ("mailto:alice@…") in either JSCalendar version; store the
         // bare address as the reconciliation key.
-        email: participant_address(participant)
-            .map(|addr| addr.strip_prefix("mailto:").unwrap_or(addr).to_owned()),
+        email: participant_address(participant).map(engine_core::scheduling::normalize_address),
         kind: None,
         roles,
         participation_status,

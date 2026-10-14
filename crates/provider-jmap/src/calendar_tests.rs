@@ -89,6 +89,56 @@ fn meeting_maps_participants() {
 }
 
 #[test]
+fn duplicate_calendar_addresses_merge_into_one_participant() {
+    let event = event_from_json(&json!({
+        "@type": "Event",
+        "id": "duplicate-owner",
+        "calendarIds": { "b": true },
+        "uid": "duplicate-owner@test.local",
+        "title": "Meeting",
+        "start": "2026-08-01T09:00:00",
+        "duration": "PT30M",
+        "participants": {
+            "server": {
+                "@type": "Participant",
+                "calendarAddress": "mailto:owner@example.com",
+                "name": "Owner",
+            },
+            "client": {
+                "@type": "Participant",
+                "calendarAddress": "MAILTO:Owner@Example.com",
+                "roles": { "owner": true, "chair": true },
+                "participationStatus": "accepted",
+            },
+            "guest": {
+                "@type": "Participant",
+                "calendarAddress": "mailto:guest@example.com",
+                "roles": { "required": true },
+                "participationStatus": "needs-action",
+            },
+        },
+    }))
+    .unwrap();
+
+    assert_eq!(event.participants.len(), 2);
+    let owner = event
+        .participants
+        .iter()
+        .find(|participant| participant.email.as_deref() == Some("owner@example.com"))
+        .unwrap();
+    assert_eq!(owner.name.as_deref(), Some("Owner"));
+    assert_eq!(owner.participation_status, ParticipationStatus::Accepted);
+    assert!(owner.has_role(&ParticipantRole::Owner));
+    assert!(owner.has_role(&ParticipantRole::Chair));
+    let guest = event
+        .participants
+        .iter()
+        .find(|participant| participant.email.as_deref() == Some("guest@example.com"))
+        .unwrap();
+    assert!(guest.has_role(&ParticipantRole::Attendee));
+}
+
+#[test]
 fn a_jscalendar_1_0_participant_still_has_an_address() {
     // The fixture above is JSCalendar **2.0** (`calendarAddress`), which is what Stalwart
     // serves. RFC 8984 — 1.0 — states the same fact as `sendTo`, a map of *method* → URI,
