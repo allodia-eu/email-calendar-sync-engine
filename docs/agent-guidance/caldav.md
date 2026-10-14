@@ -344,10 +344,10 @@ are split escape-aware so the writer and the parser agree.
     Invitee edits are series-only and preserve untouched `ATTENDEE` parameters, including
     response state and scheduling status. The organiser cannot be edited through the roster.
   - **The organiser must be a calendar user address of the authenticated principal.** RFC 6638
-    defines those addresses through `calendar-user-address-set`. The adapter does not yet
-    discover or expose that set, so callers must use the account address they authenticated as
-    and must not offer organiser-alias selection on CalDAV yet. The server remains the final
-    enforcement point.
+    defines those addresses through `calendar-user-address-set`, which
+    `CalendarWrites::calendar_user_addresses` reads. A server schedules only for an organiser in
+    that set and says nothing about one outside it, so a caller checks the organiser against the
+    set before writing a meeting. The server remains the final enforcement point.
   - This machinery is **CalDAV's alone**, and that is the point: a JMAP `update` is already a
     JSON-pointer patch the *server* merges, so it has no use for line folding,
     `DTEND`-vs-`DURATION` exclusion or `SEQUENCE` bookkeeping. Hoisting the patcher would
