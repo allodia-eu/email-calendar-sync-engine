@@ -206,7 +206,11 @@ async fn live_jmap_refuses_an_itip_draft_it_cannot_encode() {
     .with_calendar(DraftCalendar::new(ScheduleMethod::Reply, REPLY_ICAL));
 
     let refusal = provider
-        .submit_email(&account(), &scheduling)
+        .submit_email(
+            &account(),
+            &scheduling,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect_err("a draft this transport cannot faithfully encode must be refused");
     assert_eq!(

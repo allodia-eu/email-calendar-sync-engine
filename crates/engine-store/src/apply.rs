@@ -321,6 +321,14 @@ pub struct ApplyBatch<'a, T: SyncObject> {
     /// so the next sync re-runs from it (idempotently) rather than skipping the
     /// un-applied pages.
     pub next_state: Option<&'a SyncState>,
+    /// When the pass that read these objects began reading the server, or `None` for "as of
+    /// now".
+    ///
+    /// A queued keyword change the server accepted after this instant may be missing from what
+    /// the pass read, so the store keeps showing it over the page
+    /// ([`KeywordEdit`](engine_core::write::KeywordEdit)). Without it, a pass that read a message
+    /// just before the change landed would undo it on screen until the next pass.
+    pub observed_from: Option<UtcDateTime>,
 }
 
 impl<'a, T: SyncObject> ApplyBatch<'a, T> {
@@ -350,7 +358,16 @@ impl<'a, T: SyncObject> ApplyBatch<'a, T> {
             reconcile,
             recipient_observations: &[],
             next_state,
+            observed_from: None,
         }
+    }
+
+    /// Records when the pass that read these objects began reading the server
+    /// ([`observed_from`](Self::observed_from)).
+    #[must_use]
+    pub fn observed_from(mut self, started: UtcDateTime) -> Self {
+        self.observed_from = Some(started);
+        self
     }
 
     /// Attaches observations that must commit atomically with the object page.

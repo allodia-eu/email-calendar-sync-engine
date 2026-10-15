@@ -152,7 +152,7 @@ async fn connect_and_execute_against_a_mock_server() {
 
     let mut req = request::Request::new([request::capability::CORE]);
     req.invoke("Mailbox/get", serde_json::json!({ "accountId": "c" }));
-    let resp = client.execute(&req).await.unwrap();
+    let resp = client.execute(&req, Exchange::Ordinary).await.unwrap();
     assert!(resp.result("0").is_ok());
 }
 
@@ -195,7 +195,7 @@ async fn http_error_status_surfaces_as_a_classified_error() {
 #[tokio::test]
 async fn jmap_provider_connects_and_syncs_through_the_real_client() {
     use engine_provider::Provider;
-    let mailboxes = r#"{"methodResponses":[["Mailbox/get",{"state":"s1","list":[]},"0"]]}"#;
+    let mailboxes = r#"{"methodResponses":[["Mailbox/query",{"queryState":"q1","position":0,"total":0,"ids":[]},"0"],["Mailbox/get",{"state":"s1","list":[]},"1"]]}"#;
     let base = mock_server(vec![http_ok(SESSION_DOC), http_ok(mailboxes)]);
     let provider = JmapProvider::connect(
         JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session"),
@@ -287,9 +287,9 @@ async fn the_body_warm_is_as_wide_as_the_session_says_it_may_be() {
     );
 }
 
-const RICH_SESSION_DOC: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{"maxObjectsInGet":500},"urn:ietf:params:jmap:mail":{},"urn:ietf:params:jmap:submission":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c","urn:ietf:params:jmap:submission":"c"},"apiUrl":"https://mail.test.local/jmap/","downloadUrl":"https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}","uploadUrl":"https://mail.test.local/upload/{accountId}/"}"#;
+pub(super) const RICH_SESSION_DOC: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{"maxObjectsInGet":500},"urn:ietf:params:jmap:mail":{},"urn:ietf:params:jmap:submission":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c","urn:ietf:params:jmap:submission":"c"},"apiUrl":"https://mail.test.local/jmap/","downloadUrl":"https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}","uploadUrl":"https://mail.test.local/upload/{accountId}/"}"#;
 
-fn rich_config(base: String) -> JmapConfig {
+pub(super) fn rich_config(base: String) -> JmapConfig {
     JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session")
 }
 
@@ -317,44 +317,6 @@ async fn fetch_message_source_downloads_the_blob_through_the_real_client() {
         .unwrap();
     // The GET body came back verbatim through get_bytes → download → the Executor.
     assert_eq!(raw_mime.as_bytes(), raw.as_bytes());
-}
-
-#[tokio::test]
-async fn submit_email_uploads_the_attachment_blob_through_the_real_client() {
-    use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
-    use engine_provider::{Draft, DraftAttachment, Provider};
-
-    // connect(session) → resolve_context(Mailbox/Identity) → upload(blob) → send.
-    let context = r#"{"methodResponses":[["Mailbox/get",{"list":[{"id":"d","name":"Drafts","role":"drafts"},{"id":"s","name":"Sent","role":"sent"}]},"0"],["Identity/get",{"list":[{"id":"id1","email":"a@test.local"}]},"1"]]}"#;
-    let sent = r#"{"methodResponses":[["Email/set",{"created":{"draft":{"id":"e9"}}},"0"],["EmailSubmission/set",{"created":{"sub":{"id":"sub1"}}},"1"]]}"#;
-    let base = mock_server(vec![
-        http_ok(RICH_SESSION_DOC),
-        http_ok(context),
-        http_ok(r#"{"blobId":"blob-att","type":"application/pdf","size":3}"#),
-        http_ok(sent),
-    ]);
-    let provider = JmapProvider::connect(rich_config(base)).await.unwrap();
-
-    let draft = Draft::new(
-        MessageIdHeader::new("m@test.local").unwrap(),
-        EmailAddress::new("a@test.local"),
-        vec![EmailAddress::new("b@test.local")],
-        "subject",
-        "body",
-    )
-    .with_attachment(DraftAttachment::attachment(
-        "r.pdf",
-        "application/pdf",
-        vec![1, 2, 3],
-    ));
-    let receipt = provider
-        .submit_email(
-            &engine_core::ids::AccountId::try_from("acct").unwrap(),
-            &draft,
-        )
-        .await
-        .unwrap();
-    assert_eq!(receipt.email_key.as_str(), "e9");
 }
 
 #[tokio::test]
@@ -498,3 +460,6 @@ async fn credentials_in_the_connection_url_never_reach_the_observer() {
         "the password must not leak into a step: {steps:?}"
     );
 }
+
+#[path = "lib_submit_tests.rs"]
+mod submit;

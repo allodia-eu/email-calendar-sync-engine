@@ -220,7 +220,10 @@ async fn a_replayed_post_carries_the_same_body() {
     ]);
     let envelope = json!({"using": ["urn:ietf:params:jmap:core"], "methodCalls": []});
 
-    let value = transport().post_json(&base, &envelope).await.unwrap();
+    let value = transport()
+        .post_json(&base, &envelope, engine_http::Exchange::Ordinary)
+        .await
+        .unwrap();
     assert!(value.get("methodResponses").is_some());
 
     let seen = seen.lock().unwrap();

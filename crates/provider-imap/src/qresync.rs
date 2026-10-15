@@ -1,11 +1,10 @@
 //! The QRESYNC incremental delta (RFC 7162) — flag changes and expunges of
 //! already-synced mail, reconciled without re-downloading their metadata.
 //!
-//! The non-QRESYNC delta in [`crate::sync`] fetches only new arrivals (UIDs at or
-//! above the cursor's `UIDNEXT`) and carries no removals, so flag and expunge changes
-//! to *already-synced* messages need a periodic snapshot to reconcile. When the
-//! session negotiated QRESYNC ([`Connection::negotiate_qresync`]) and the cursor
-//! carries a prior `HIGHESTMODSEQ`, this module replaces that delta.
+//! Without QRESYNC, [`crate::resync`] learns the same two facts by reading the flags of
+//! every held message and the set still present. When the session negotiated QRESYNC
+//! ([`Connection::negotiate_qresync`]) and the cursor carries a prior `HIGHESTMODSEQ`,
+//! this module asks the server for only what moved instead.
 //!
 //! The prior cursor's `UIDNEXT` splits the UID space, and the two halves are worth
 //! different amounts of network:
@@ -47,7 +46,6 @@ use crate::{
     error::ImapResult,
     mail::{flags_to_keywords, message_from_fetch, message_key},
     parse::FetchRow,
-    sync::FETCH_ITEMS,
     transport::Connection,
 };
 
@@ -95,7 +93,7 @@ where
     // (RFC 9051 §6.4.8) — unguarded, an idle mailbox would re-fetch its newest message
     // as an arrival on every sync.
     let mut arrivals = if uid_next > synced_below {
-        conn.uid_fetch(&format!("{synced_below}:*"), FETCH_ITEMS)
+        conn.uid_fetch_metadata(&format!("{synced_below}:*"))
             .await?
     } else {
         Vec::new()
@@ -162,7 +160,11 @@ where
 /// Until then the change is silent about the token rather than claiming it is absent, and the
 /// store keeps whatever it holds instead of blanking it
 /// ([`RevisionTokens::or`](engine_core::version::RevisionTokens::or)).
-fn state_change(row: &FetchRow, mailbox: &MailboxId, uid_validity: u32) -> MailStateChange {
+pub(crate) fn state_change(
+    row: &FetchRow,
+    mailbox: &MailboxId,
+    uid_validity: u32,
+) -> MailStateChange {
     MailStateChange::keywords(
         message_key(mailbox.as_str(), uid_validity, row.uid),
         flags_to_keywords(&row.flags),

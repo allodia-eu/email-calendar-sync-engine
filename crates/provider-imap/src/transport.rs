@@ -9,14 +9,14 @@
 
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 
 use crate::{
     capability::Negotiated,
+    deadline::{self, BOUNDS},
     error::{ImapError, ImapResult},
     parse::{self, FetchRow, ListRow},
     transport_command::{ListReturn, list_command, quote},
-    transport_read::BODY_READ_STALL,
 };
 
 /// A connected IMAP session over a generic async byte stream.
@@ -79,7 +79,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     }
 
     /// Reads the untagged greeting: `* OK`/`* PREAUTH` is success, `* BYE` is a
-    /// refusal.
+    /// refusal. A server that accepts the connection and never greets is given
+    /// [`Deadlines::reply`](engine_provider::Deadlines::reply), as every response is.
     async fn read_greeting(&mut self) -> ImapResult<()> {
         let line = self.read_line().await?;
         let text = String::from_utf8_lossy(&line);
@@ -106,11 +107,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// Writes raw bytes and flushes — the unframed send the IDLE primitives need to
     /// issue `<tag> IDLE\r\n` and the bare `DONE\r\n` continuation
     /// ([`crate::idle`]), which fall outside [`command`](Self::command)'s tagged
-    /// request/response shape.
+    /// request/response shape. Every write here goes through it, a piece at a time
+    /// ([`deadline::write`]), so a server that stops reading cannot hold one.
     pub(crate) async fn send_raw(&mut self, bytes: &[u8]) -> ImapResult<()> {
-        self.inner.write_all(bytes).await?;
-        self.inner.flush().await?;
-        Ok(())
+        Ok(deadline::write(&mut self.inner, bytes).await?)
     }
 
     /// Sends a tagged command and collects its untagged responses and completion
@@ -118,40 +118,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// preamble (`crate::transport_starttls`) can issue `CAPABILITY`/`STARTTLS` over
     /// the plaintext connection reusing the tagged round trip.
     pub(crate) async fn command(&mut self, command: &str) -> ImapResult<Response> {
-        self.command_within(command, None).await
+        self.command_within(command, BOUNDS.reply()).await
     }
 
-    /// [`command`](Self::command), with its response bounded by `stall` as
+    /// [`command`](Self::command), with each read of its response bounded by `stall` as
     /// [`read_line_within`](Self::read_line_within) bounds a line.
-    async fn command_within(
-        &mut self,
-        command: &str,
-        stall: Option<Duration>,
-    ) -> ImapResult<Response> {
+    async fn command_within(&mut self, command: &str, stall: Duration) -> ImapResult<Response> {
         // If a streamed `UID FETCH` was abandoned mid-response, finish reading it to
         // its tag first so this command's reply is not corrupted by leftover lines.
         self.drain_pending().await?;
         let tag = self.next_tag();
-        let request = format!("{tag} {command}\r\n");
-        self.inner.write_all(request.as_bytes()).await?;
-        self.inner.flush().await?;
+        self.send_raw(format!("{tag} {command}\r\n").as_bytes())
+            .await?;
         self.read_response_within(&tag, stall).await
     }
 
-    /// Reads untagged responses until this command's tagged completion.
+    /// Reads untagged responses until this command's tagged completion, each line bounded by
+    /// [`Deadlines::reply`](engine_provider::Deadlines::reply).
     pub(crate) async fn read_response(&mut self, tag: &str) -> ImapResult<Response> {
-        self.read_response_within(tag, None).await
+        self.read_response_within(tag, BOUNDS.reply()).await
     }
 
-    async fn read_response_within(
-        &mut self,
-        tag: &str,
-        stall: Option<Duration>,
-    ) -> ImapResult<Response> {
+    async fn read_response_within(&mut self, tag: &str, stall: Duration) -> ImapResult<Response> {
         let mut untagged = Vec::new();
         let prefix = format!("{tag} ");
         loop {
-            let line = self.read_line_within(stall).await?;
+            let line = self.read_line_within(Some(stall)).await?;
             if let Some(body) = strip_ascii_prefix(&line, b"* ") {
                 untagged.push(body.to_vec());
                 continue;
@@ -218,8 +210,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     ///
     /// [`ImapError::Io`] or another non-refusal failure of `CAPABILITY`/`ENABLE`.
     pub(crate) async fn negotiate(&mut self) -> ImapResult<()> {
-        let response = self.command("CAPABILITY").await?;
-        let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
+        let capabilities = self.capabilities().await?;
         self.negotiated = Negotiated::from_capabilities(&capabilities);
 
         let arguments = self.negotiated.enable_arguments();
@@ -268,15 +259,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Ok((rows, vanished))
     }
 
-    /// `UID SEARCH SINCE <date>` — the UIDs of messages whose `INTERNALDATE` is on or
-    /// after `date` (an IMAP `dd-Mon-yyyy` date, RFC 9051 §6.4.4), used to find the
-    /// floor of a sync-depth window so a snapshot fetches only recent mail. `date` is
-    /// caller-formatted from a calendar date (digits + a fixed month abbreviation), so
-    /// it carries no quoting or injection risk.
-    pub(crate) async fn uid_search_since(&mut self, date: &str) -> ImapResult<Vec<u32>> {
-        self.uid_search(&format!("SINCE {date}")).await
-    }
-
     /// `UID SEARCH <criteria>` in the selected mailbox — the matched UIDs (empty if none
     /// match), tolerating both the classic `* SEARCH` and the extended `* ESEARCH` reply.
     /// `criteria` is already-formed search syntax; a caller composing in a non-literal value
@@ -296,10 +278,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// concurrent flag update) cannot return the wrong message's bytes.
     pub(crate) async fn uid_fetch_body(&mut self, uid: u32) -> ImapResult<Option<Vec<u8>>> {
         let response = self
-            .command_within(
-                &format!("UID FETCH {uid} (BODY.PEEK[])"),
-                Some(BODY_READ_STALL),
-            )
+            .command_within(&format!("UID FETCH {uid} (BODY.PEEK[])"), BOUNDS.stall())
             .await?;
         Ok(crate::parse_body::parse_fetch_body(&response.untagged, uid))
     }
@@ -351,7 +330,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 /// Whether a completion's text opens with the argument-less response code `code`. A code
 /// is only a code at the start of the text (RFC 3501 `resp-text`), and it is an atom, so
 /// case does not matter.
-fn opens_with_code(detail: &str, code: &str) -> bool {
+pub(crate) fn opens_with_code(detail: &str, code: &str) -> bool {
     detail
         .strip_prefix('[')
         .and_then(|rest| rest.split_once(']'))

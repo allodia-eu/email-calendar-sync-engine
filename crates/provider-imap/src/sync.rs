@@ -12,9 +12,8 @@
 //!   (expunged or renumbered);
 //! - a **delta** otherwise. On a QRESYNC session ([`crate::qresync`]) with a prior `HIGHESTMODSEQ`
 //!   baseline, the delta reconciles flag changes **and** expunges of already-synced messages too
-//!   (`CHANGEDSINCE`/`VANISHED`, RFC 7162). Without QRESYNC the delta carries only UIDs at or above
-//!   the cursor's `UIDNEXT` (new arrivals) and no removals, so a periodic snapshot reconciles
-//!   flag/expunge changes — the honest non-QRESYNC baseline.
+//!   (`CHANGEDSINCE`/`VANISHED`, RFC 7162). Without QRESYNC the delta reads the flags of every held
+//!   message and the set still present, and reconciles against it ([`crate::resync`]).
 
 use std::cmp::Reverse;
 
@@ -26,20 +25,10 @@ use crate::{
     cursor::{self, MailboxCursor},
     error::ImapResult,
     mail::message_from_fetch,
+    metadata_fetch::FETCH_ITEMS,
     parse::{FetchRow, SelectData},
     transport::Connection,
 };
-
-/// The metadata `FETCH` items — Tier-1, all peek-safe (none sets `\Seen`).
-///
-/// `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` carries the `References` header, which
-/// `ENVELOPE` omits (RFC 9051 §7.5.2) — it is what local threading needs. The peek
-/// form is required so the read does not set `\Seen`; the server echoes it back as
-/// `BODY[HEADER.FIELDS (REFERENCES)]`.
-pub(crate) const FETCH_ITEMS: &str = concat!(
-    "UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODYSTRUCTURE ",
-    "BODY.PEEK[HEADER.FIELDS (REFERENCES)]"
-);
 
 /// Fetches one page of the bound mailbox's mail since `cursor`, continuing from
 /// `page` (a UID boundary) and bounded by `limit` (`0` means the whole window in
@@ -94,6 +83,7 @@ pub(crate) async fn sync_page_selected<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    let limit = conn.negotiated.within_message_limit(limit);
     let qresync = conn.qresync_enabled();
     let uid_validity = select.uid_validity;
     let next_cursor = MailboxCursor {
@@ -101,6 +91,10 @@ where
         uid_next,
         highest_modseq: select.highest_modseq,
         backfill_low: None,
+        version: crate::cursor::CURSOR_VERSION,
+        // Every page-path pass ends in a reconcile, or in a QRESYNC delta that misses nothing,
+        // or skips a folder whose prior cursor already was.
+        reconciled: true,
     }
     .encode();
 
@@ -112,8 +106,8 @@ where
     // mail that predate this session, so a future `CHANGEDSINCE` (past those changes)
     // would never reconcile them. Re-snapshotting once both reconciles them and
     // establishes the baseline; thereafter deltas are incremental. Without QRESYNC the
-    // matching cursor stays a new-arrivals delta exactly as before.
-    let prior = cursor.and_then(MailboxCursor::decode);
+    // matching cursor stays a delta, which `crate::resync` reconciles.
+    let prior = cursor.and_then(MailboxCursor::current);
     let needs_baseline = qresync && prior.is_some_and(|p| p.highest_modseq.is_none());
     let (kind, low_bound) = match prior {
         Some(p) if p.uid_validity == uid_validity && !needs_baseline => {
@@ -124,11 +118,9 @@ where
 
     // QRESYNC incremental delta (RFC 7162): an enabled session with a prior
     // HIGHESTMODSEQ baseline reconciles flag changes AND expunges of already-synced
-    // mail — not just new arrivals. Without QRESYNC, or on the first delta after an
-    // upgrade (a prior cursor with no modseq), this falls through to the new-arrivals
-    // window below, which still records the fresh modseq so the *next* delta is
-    // incremental. `low_bound` is the prior UIDNEXT, which splits the already-synced
-    // mail from the arrivals.
+    // mail — not just new arrivals. A session without QRESYNC reads the same two facts
+    // the long way (`crate::resync`). `low_bound` is the prior UIDNEXT, which splits the
+    // already-synced mail from the arrivals.
     if let (SyncKind::Delta, true, Some(modseq)) =
         (kind, qresync, prior.and_then(|p| p.highest_modseq))
     {
@@ -140,6 +132,24 @@ where
             modseq,
             low_bound,
             uid_next,
+        )
+        .await;
+    }
+    if let (SyncKind::Delta, false, Some(p)) = (kind, qresync, prior)
+        && crate::resync::unchanged(&conn.negotiated, &p, uid_next, select.highest_modseq)
+    {
+        return Ok(empty_page(SyncKind::Delta, next_cursor, None));
+    }
+    if kind == SyncKind::Delta && !qresync {
+        return crate::resync::resync_page(
+            conn,
+            mailbox,
+            uid_validity,
+            next_cursor,
+            low_bound,
+            uid_next,
+            since,
+            limit,
         )
         .await;
     }
@@ -201,6 +211,7 @@ where
     rows.sort_unstable_by_key(|row| row.uid);
     let overshoot = rows.len() > target;
     let start = rows.len().saturating_sub(target);
+    conn.settle_attachments(&mut rows[start..]).await?;
     let kept = &rows[start..];
 
     // `FETCH` returns ascending UID; reverse so the page renders newest-first.
@@ -238,7 +249,7 @@ where
     })
 }
 
-/// Runs the sync-depth-windowed snapshot for `date`: a single `UID SEARCH SINCE` finds
+/// Runs the sync-depth-windowed snapshot for `date`: `UID SEARCH SINCE` finds
 /// the in-window UIDs, then [`windowed_snapshot_page`] pages them. Fetching **only** the
 /// reported UIDs — never the whole UID range above the oldest of them — keeps the
 /// download bounded when moved/imported mail scrambles the UID-vs-date order (the cause
@@ -315,7 +326,7 @@ where
     // download — is bounded to the window, not a range spanning the whole mailbox.
     let mut set = chunk.to_vec();
     set.sort_unstable();
-    let mut rows = conn.uid_fetch(&uid_set_spec(&set), FETCH_ITEMS).await?;
+    let mut rows = conn.uid_fetch_metadata(&uid_set_spec(&set)).await?;
     rows.sort_unstable_by_key(|row| Reverse(row.uid)); // newest first for display
     let messages: Vec<Message> = rows
         .iter()
@@ -405,3 +416,7 @@ where
 #[cfg(test)]
 #[path = "sync_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "resync_tests.rs"]
+mod resync_tests;

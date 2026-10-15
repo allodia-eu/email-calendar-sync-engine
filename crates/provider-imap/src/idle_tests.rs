@@ -175,3 +175,12 @@ fn classify_distinguishes_changes_informational_bye_and_tagged() {
     assert_eq!(classify(b""), IdleLine::Unexpected);
     assert_eq!(classify(b"* notanumber WORD\r\n"), IdleLine::Informational);
 }
+
+#[test]
+fn a_flag_change_in_uid_mode_is_a_change() {
+    // RFC 9586: once UIDONLY is enabled, a flag change arrives as `UIDFETCH`, numbered by UID.
+    assert_eq!(
+        classify(b"* 25996 UIDFETCH (FLAGS (\\Seen))\r\n"),
+        IdleLine::Changed
+    );
+}

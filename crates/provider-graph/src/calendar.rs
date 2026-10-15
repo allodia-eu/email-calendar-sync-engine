@@ -20,9 +20,9 @@ use engine_core::{
     time::TimeZoneId,
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
-    EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError, ProviderResult,
-    RsvpControls, ScopeSync, SyncKind, WriteGuard,
+    CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo, EventDeletion, EventDraft,
+    EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError,
+    ProviderResult, RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
 
 use crate::{
@@ -272,6 +272,22 @@ impl CalendarWrites for GraphCalendarProvider {
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
         cal_write::delete_event(&self.client, deletion).await
+    }
+
+    /// The mailbox address the calendar schedules as: Exchange sends and answers for the
+    /// mailbox that holds the calendar, so this is the address its sender identity carries,
+    /// read the same way (`crate::identity`). Its other proxy addresses are not listed.
+    async fn calendar_user_addresses(
+        &self,
+        _account: &AccountId,
+    ) -> ProviderResult<CalendarUserAddresses> {
+        let identities = crate::identity::sender_identity(&self.client).await?;
+        Ok(CalendarUserAddresses::Known(
+            identities
+                .into_iter()
+                .map(|identity| identity.address.email)
+                .collect(),
+        ))
     }
 }
 

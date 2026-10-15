@@ -442,6 +442,9 @@ async fn people_paging_filters_cursor_validation_and_recipient_history_are_expos
 #[path = "contact_cases/edges.rs"]
 mod edges;
 
+#[path = "contact_cases/forget.rs"]
+mod forget;
+
 #[path = "contact_cases/photos.rs"]
 mod photos;
 

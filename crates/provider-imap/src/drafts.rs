@@ -15,7 +15,7 @@
 
 use engine_core::ids::{MessageIdHeader, ProviderKey};
 use engine_provider::{Draft, ProviderResult};
-use engine_rfc5322::assemble_filed_message;
+use engine_rfc5322::assemble_draft_message;
 use time::OffsetDateTime;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -47,7 +47,7 @@ pub(crate) async fn put_draft<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let message = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
+    let message = assemble_draft_message(draft, OffsetDateTime::now_utc())?;
     let folder = resolve_filing_folder(connection, store, Filing::Drafts).await?;
     let append_uid = connection
         .append(&folder, Filing::Drafts.flags(), &message)

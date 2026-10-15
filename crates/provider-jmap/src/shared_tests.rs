@@ -111,7 +111,7 @@ async fn an_address_resolves_through_the_listing_and_the_own_account_never_does(
 async fn a_bound_client_addresses_the_share_and_reads_its_rights_off_each_folder() {
     let (provider, exec) = bound(
         Some(BOB),
-        vec![fixture("mailbox_get_shared_read_only_response.json")],
+        vec![fixture("mailbox_snapshot_shared_read_only_response.json")],
     );
     // Bob's account reports `isReadOnly: false` although the one mailbox it exposes grants
     // read alone — so writes stay advertised at the account level, as the RFC flag says,

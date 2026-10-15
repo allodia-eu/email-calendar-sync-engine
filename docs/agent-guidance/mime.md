@@ -20,7 +20,10 @@ store caches on demand — `store-and-sync.md`) into `MessageBody { plain, html 
 
 - `plain` — the canonical text rendering: the decoded `text/plain` body, or a text
   rendering of an HTML-only message, so a plain-text reading view always has
-  something to show.
+  something to show. The rendering leaves out what `<head>`, `<style>`, `<script>` and
+  `<template>` hold, whatever attributes the tag carries (`html_text`): the parser's own
+  converter recognises only the bare tag, so `<style type="text/css">` would put the
+  stylesheet into the list snippet and the search index.
 - `html` — the decoded **unsanitized** `text/html`, captured **only** when the
   message carries a real `text/html` part (the parser maps a text-only message's
   text part into its HTML body list too, so the list being non-empty does not prove
@@ -105,8 +108,8 @@ the same authors as our test target):
 
 `extract_body` is covered by fixtures for plain text, `multipart/alternative`
 (text+html), quoted-printable, base64, a non-UTF-8 charset (proving `full_encoding`),
-HTML-only fallback, `multipart/mixed` past an attachment, and adversarial/empty input
-(no panic). `extract_inline_parts` is covered by fixtures for a `multipart/related`
+HTML-only fallback (a stylesheet left out of the text), `multipart/mixed` past an
+attachment, and adversarial/empty input (no panic). `extract_inline_parts` is covered by fixtures for a `multipart/related`
 inline image (decoded bytes, stripped `cid`), an attachment without a `Content-ID` (not
 returned), plain/HTML-only messages (no inline parts), multiple inline parts in order, and
 adversarial/empty input (no panic). Attachment extraction is covered for metadata-only

@@ -208,7 +208,7 @@ pub(crate) fn insert_observations(
                 observation.source_message.as_str(),
                 observation.email.as_str(),
                 observation.name,
-                observation.sent_at.map(|instant| instant.to_string()),
+                observation.sent_at.map(crate::convert::instant_to_text),
             ],
         )
         .map_err(convert::backend)?;

@@ -63,7 +63,12 @@ async fn submit_over_smtp_delivers_and_files_the_sent_copy() {
     let (smtp_stream, smtp_recorded) = MockStream::new(smtp);
 
     let receipt = provider
-        .submit_over(smtp_stream, &submit_draft(), None)
+        .submit_over(
+            smtp_stream,
+            &submit_draft(),
+            None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap();
 
@@ -108,7 +113,12 @@ async fn submit_over_hides_bcc_on_the_wire_but_keeps_it_in_the_sent_copy() {
         .with_cc(vec![EmailAddress::new("carol@test.local")])
         .with_bcc(vec![EmailAddress::new("dave@test.local")]);
     provider
-        .submit_over(smtp_stream, &draft, None)
+        .submit_over(
+            smtp_stream,
+            &draft,
+            None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap();
 
@@ -180,7 +190,12 @@ async fn submit_over_deduplicates_a_recipient_listed_in_both_to_and_cc() {
     // submit_draft()'s To is bob@test.local; adding him to Cc must not yield a second RCPT.
     let draft = submit_draft().with_cc(vec![EmailAddress::new("bob@test.local")]);
     provider
-        .submit_over(smtp_stream, &draft, None)
+        .submit_over(
+            smtp_stream,
+            &draft,
+            None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap();
 
@@ -208,7 +223,12 @@ async fn submit_over_smtp_maps_a_lost_ack_to_needs_confirmation() {
     let (smtp_stream, _) = MockStream::new(smtp);
 
     let err = provider
-        .submit_over(smtp_stream, &submit_draft(), None)
+        .submit_over(
+            smtp_stream,
+            &submit_draft(),
+            None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -230,7 +250,12 @@ async fn submit_over_smtp_rejects_permanently_when_no_recipient_accepts() {
     let (smtp_stream, _) = MockStream::new(smtp);
 
     let err = provider
-        .submit_over(smtp_stream, &submit_draft(), None)
+        .submit_over(
+            smtp_stream,
+            &submit_draft(),
+            None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap_err();
     // A permanent rejection is neither retryable nor a confirmation case.
@@ -251,7 +276,12 @@ async fn submit_over_smtp_defers_retryably_on_a_transient_rejection() {
     let (smtp_stream, _) = MockStream::new(smtp);
 
     let err = provider
-        .submit_over(smtp_stream, &submit_draft(), None)
+        .submit_over(
+            smtp_stream,
+            &submit_draft(),
+            None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap_err();
     assert!(err.is_retryable(), "a 4xx must defer retryably");
@@ -281,7 +311,12 @@ async fn submit_falls_back_to_a_message_id_key_without_appenduid() {
     let (smtp_stream, _) = MockStream::new(smtp);
 
     let receipt = provider
-        .submit_over(smtp_stream, &submit_draft(), None)
+        .submit_over(
+            smtp_stream,
+            &submit_draft(),
+            None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap();
     assert_eq!(receipt.email_key.as_str(), "sent:offline-send@host");
@@ -313,7 +348,12 @@ async fn a_delivered_send_whose_sent_copy_cannot_be_filed_says_so() {
     let (smtp_stream, smtp_recorded) = MockStream::new(smtp);
 
     let receipt = provider
-        .submit_over(smtp_stream, &submit_draft(), None)
+        .submit_over(
+            smtp_stream,
+            &submit_draft(),
+            None,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("a delivered send is never failed for a filing error");
 

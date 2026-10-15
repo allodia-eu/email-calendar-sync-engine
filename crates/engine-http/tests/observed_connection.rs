@@ -147,10 +147,13 @@ async fn a_reply_the_classifier_had_to_read_still_reports_its_tls_version() {
     let retry = engine_http::RetryConfig::default()
         .labelled("test")
         .classifying(Arc::new(ClaimsThenDeclines));
-    let response =
-        engine_http::send_retrying(client.get(format!("https://127.0.0.1:{port}/")), &retry)
-            .await
-            .expect("GET over TLS should succeed");
+    let response = engine_http::send_retrying(
+        client.get(format!("https://127.0.0.1:{port}/")),
+        &retry,
+        engine_http::Exchange::Ordinary,
+    )
+    .await
+    .expect("GET over TLS should succeed");
 
     let observed = ObservedConnection::default();
     observed.record(&response);

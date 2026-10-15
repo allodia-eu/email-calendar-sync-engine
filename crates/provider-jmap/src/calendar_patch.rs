@@ -22,11 +22,12 @@
 //! `…/<start>`, `…/<start>/title`, `…/<start>/excluded` — comes back `invalidProperties`,
 //! while assigning the map succeeds. With the map present, all three are accepted.
 
-use engine_core::{calendar::Event, time::CalendarDateTime};
-use engine_provider::{EventEdit, PatchTarget, RecurrenceEdit, TextEdit};
+use engine_core::{calendar::Event, scheduling::addresses_match, time::CalendarDateTime};
+use engine_provider::{EventEdit, InviteeRole, PatchTarget, RecurrenceEdit, TextEdit};
 use serde_json::{Map, Value, json};
 
 use crate::{
+    calendar::participant_address,
     calendar_rule::render_rule,
     calendar_write::{NEW_LOCATION_ID, duration, escape_pointer, local_date_time},
     error::JmapError,
@@ -52,6 +53,7 @@ use crate::{
 pub(crate) fn patch_to_json(
     base: &Event,
     edit: &EventEdit,
+    max_participants: Option<usize>,
 ) -> Result<Map<String, Value>, JmapError> {
     // The recurrence id is the occurrence's identity within the series, so check it before
     // anything else: an id in the wrong form names no occurrence at all, and saying so beats
@@ -68,6 +70,18 @@ pub(crate) fn patch_to_json(
 
     let patch = &edit.patch;
     let mut out = Map::new();
+
+    if let Some(invitees) = patch.invitee_edit() {
+        if !matches!(edit.target, PatchTarget::Series) {
+            return Err(JmapError::protocol(
+                "invitees belong to the whole meeting, not one occurrence",
+            ));
+        }
+        out.insert(
+            "participants".to_owned(),
+            Value::Object(merge_participants(base, invitees, max_participants)?),
+        );
+    }
 
     if let Some(recurrence) = patch.recurrence_edit() {
         // A recurrence edit is series-level by definition, so it cannot go under the
@@ -154,6 +168,130 @@ pub(crate) fn patch_to_json(
         PatchTarget::Instance(_) => {}
     }
     Ok(out)
+}
+
+fn merge_participants(
+    base: &Event,
+    edit: &engine_provider::InviteePatch,
+    max_participants: Option<usize>,
+) -> Result<Map<String, Value>, JmapError> {
+    let raw = base.raw_jscalendar.as_ref().ok_or_else(|| {
+        JmapError::protocol("event has no preserved JSCalendar; re-sync it before editing invitees")
+    })?;
+    let value: Value = serde_json::from_str(raw.as_str()).map_err(|error| {
+        JmapError::protocol(format!("preserved JSCalendar is not JSON: {error}"))
+    })?;
+    let mut participants = value
+        .get("participants")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let organiser = value
+        .get("organizerCalendarAddress")
+        .and_then(Value::as_str);
+
+    for address in edit.removals() {
+        let owner = organiser.is_some_and(|value| addresses_match(value, address.as_str()))
+            || participants.iter().any(|(_, participant)| {
+                participant_address(participant)
+                    .is_some_and(|value| addresses_match(value, address.as_str()))
+                    && has_role(participant, "owner")
+            });
+        if owner {
+            return Err(JmapError::protocol(
+                "the organiser cannot be removed from their own meeting",
+            ));
+        }
+        participants.retain(|_, participant| {
+            !participant_address(participant)
+                .is_some_and(|value| addresses_match(value, address.as_str()))
+        });
+    }
+
+    for invitee in edit.upserts() {
+        let address = invitee.identity().address().as_str();
+        if organiser.is_some_and(|value| addresses_match(value, address)) {
+            return Err(JmapError::protocol(
+                "the organiser cannot be edited as an invitee",
+            ));
+        }
+        let existing = participants.iter().find_map(|(id, participant)| {
+            participant_address(participant)
+                .is_some_and(|value| addresses_match(value, address))
+                .then(|| id.clone())
+        });
+        if existing
+            .as_ref()
+            .and_then(|id| participants.get(id))
+            .is_some_and(|participant| has_role(participant, "owner"))
+        {
+            return Err(JmapError::protocol(
+                "the organiser cannot be edited as an invitee",
+            ));
+        }
+        let id = existing.unwrap_or_else(|| next_participant_id(&participants));
+        let participant = participants.entry(id).or_insert_with(|| {
+            json!({
+                "@type": "Participant",
+                "calendarAddress": format!("mailto:{address}"),
+                "participationStatus": "needs-action",
+                "expectReply": true,
+                "roles": {}
+            })
+        });
+        let object = participant
+            .as_object_mut()
+            .ok_or_else(|| JmapError::protocol("JSCalendar participant is not an object"))?;
+        object.insert(
+            "calendarAddress".to_owned(),
+            json!(format!("mailto:{address}")),
+        );
+        object.remove("sendTo");
+        if let Some(name) = invitee.identity().name() {
+            object.insert("name".to_owned(), json!(name));
+        }
+        let roles = object
+            .entry("roles")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| JmapError::protocol("JSCalendar participant roles are not an object"))?;
+        roles.remove("attendee");
+        roles.remove("required");
+        roles.remove("optional");
+        match invitee.role() {
+            InviteeRole::Required => {
+                roles.insert("required".to_owned(), json!(true));
+            }
+            InviteeRole::Optional => {
+                roles.insert("optional".to_owned(), json!(true));
+            }
+        }
+    }
+    if let Some(limit) = max_participants
+        && participants.len() > limit
+    {
+        return Err(JmapError::protocol(format!(
+            "provider accepts at most {limit} participants, got {}",
+            participants.len()
+        )));
+    }
+    Ok(participants)
+}
+
+fn has_role(participant: &Value, role: &str) -> bool {
+    participant
+        .get("roles")
+        .and_then(Value::as_object)
+        .and_then(|roles| roles.get(role))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn next_participant_id(participants: &Map<String, Value>) -> String {
+    (1..=participants.len() + 1)
+        .map(|index| format!("invitee-{index}"))
+        .find(|id| !participants.contains_key(id))
+        .expect("one of n + 1 numeric ids is absent from a map of n participants")
 }
 
 /// The `update` that removes one occurrence from a series.

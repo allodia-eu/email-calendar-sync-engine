@@ -7,12 +7,7 @@
 //! the parsing is unit-tested offline (RFC 8620 §5.1 `/get`, §5.2 `/changes`,
 //! §5.5 `/query`).
 
-use std::collections::BTreeSet;
-
-use engine_core::{
-    ids::ProviderKey,
-    sync::{SyncObject, SyncState, SyncUpdate},
-};
+use engine_core::{ids::ProviderKey, sync::SyncState};
 use serde_json::Value;
 
 use crate::error::JmapError;
@@ -76,12 +71,6 @@ pub(crate) fn keys(result: &Value, field: &str) -> Result<Vec<ProviderKey>, Jmap
         .collect()
 }
 
-/// Reads a string-array field as a [`ProviderKey`] set (e.g. the complete id set
-/// a snapshot tombstones against).
-pub(crate) fn key_set(result: &Value, field: &str) -> Result<BTreeSet<ProviderKey>, JmapError> {
-    Ok(keys(result, field)?.into_iter().collect())
-}
-
 /// Reads a required state-cursor field (`state` for `/get`, `newState` for
 /// `/changes`, `queryState` for `/query`).
 pub(crate) fn state(result: &Value, field: &str) -> Result<SyncState, JmapError> {
@@ -101,33 +90,6 @@ pub(crate) fn total(result: &Value) -> Option<usize> {
         .and_then(|t| usize::try_from(t).ok())
 }
 
-/// Whether an `Email/query` snapshot fetched every id in the scope: true when the
-/// server reported no `total`, or a `total` within what we fetched.
-pub(crate) fn is_complete(total: Option<usize>, fetched: usize) -> bool {
-    total.is_none_or(|t| fetched >= t)
-}
-
-/// The `Email/query` position to resume from after fetching `fetched` ids at
-/// `position` with page size `limit`, or `None` once the scope is exhausted.
-///
-/// More remain when the server reported a `total` beyond what is now covered or —
-/// when it reported none — when this page came back full (a short page marks the
-/// end). An empty page always terminates, so paging cannot loop.
-pub(crate) fn next_position(
-    position: usize,
-    limit: usize,
-    fetched: usize,
-    total: Option<usize>,
-) -> Option<usize> {
-    let covered = position.saturating_add(fetched);
-    let more = fetched > 0
-        && match total {
-            Some(total) => covered < total,
-            None => fetched >= limit,
-        };
-    more.then_some(covered)
-}
-
 /// Clamps a requested page size to the server's `maxObjectsInGet` (RFC 8620 core
 /// capability), treating a requested `0` as "as many as the server allows".
 pub(crate) fn clamp_limit(requested: usize, max_objects_in_get: usize) -> usize {
@@ -138,33 +100,8 @@ pub(crate) fn clamp_limit(requested: usize, max_objects_in_get: usize) -> usize 
     }
 }
 
-/// Builds a snapshot update when the fetch was complete, or an **additive delta**
-/// (no removals) when it was not.
-///
-/// A partial first sync must never tombstone ids it simply did not fetch; degrading
-/// to a delta keeps the fetched objects and tombstones nothing, and subsequent
-/// `Email/changes` deltas reconcile destroys correctly. Single-page first-sync is a
-/// documented step-4 limitation (`docs/agent-guidance/jmap.md`); the seed fits one
-/// page so the snapshot path is what runs live.
-pub(crate) fn snapshot_or_delta<T: SyncObject>(
-    objects: Vec<T>,
-    present: BTreeSet<ProviderKey>,
-    complete: bool,
-) -> SyncUpdate<T> {
-    if complete {
-        SyncUpdate::snapshot(objects, present)
-    } else {
-        SyncUpdate::delta(objects, Vec::new())
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use engine_core::{
-        ids::{MailboxId, MessageId},
-        mail::Message,
-        membership::Memberships,
-    };
     use serde_json::json;
 
     use super::*;
@@ -215,11 +152,8 @@ mod tests {
     }
 
     #[test]
-    fn key_set_reads_the_present_id_set_from_a_query() {
-        let query = json!({ "ids": ["a", "b", "a"], "queryState": "q1" });
-        let present = key_set(&query, "ids").unwrap();
-        // Deduplicated into a set.
-        assert_eq!(present.len(), 2);
+    fn a_query_state_reads_as_a_cursor() {
+        let query = json!({ "ids": ["a", "b"], "queryState": "q1" });
         assert_eq!(state(&query, "queryState").unwrap().as_str(), "q1");
     }
 
@@ -231,62 +165,9 @@ mod tests {
     }
 
     #[test]
-    fn completeness_tracks_the_query_total() {
-        assert!(is_complete(None, 5)); // no total reported → treat as complete
-        assert!(is_complete(Some(9), 9));
-        assert!(is_complete(Some(8), 9));
-        assert!(!is_complete(Some(10), 9)); // more on the server than we fetched
-    }
-
-    #[test]
-    fn next_position_advances_until_the_scope_is_exhausted() {
-        // A known total drives termination exactly: pages of 4 over 9 items.
-        assert_eq!(next_position(0, 4, 4, Some(9)), Some(4));
-        assert_eq!(next_position(4, 4, 4, Some(9)), Some(8));
-        assert_eq!(next_position(8, 4, 1, Some(9)), None);
-        // The final full page that exactly reaches the total still stops.
-        assert_eq!(next_position(6, 3, 3, Some(9)), None);
-    }
-
-    #[test]
-    fn next_position_without_total_stops_on_a_short_page() {
-        // No total: a full page implies more; a short or empty page is the end.
-        assert_eq!(next_position(0, 4, 4, None), Some(4));
-        assert_eq!(next_position(4, 4, 2, None), None);
-        assert_eq!(next_position(4, 4, 0, None), None);
-        // An empty page terminates even when a (stale) total says otherwise.
-        assert_eq!(next_position(4, 4, 0, Some(99)), None);
-    }
-
-    #[test]
     fn clamp_limit_respects_the_server_ceiling_and_treats_zero_as_max() {
         assert_eq!(clamp_limit(50, 500), 50);
         assert_eq!(clamp_limit(900, 500), 500); // above the ceiling → clamped
         assert_eq!(clamp_limit(0, 500), 500); // 0 means "as many as allowed"
-    }
-
-    fn message(id: &str) -> Message {
-        Message::new(
-            MessageId::try_from(id).unwrap(),
-            Memberships::of_one(MailboxId::try_from("inbox").unwrap()),
-        )
-    }
-
-    #[test]
-    fn snapshot_or_delta_picks_shape_by_completeness() {
-        let present: BTreeSet<ProviderKey> = [ProviderKey::new("a").unwrap()].into_iter().collect();
-        let complete = snapshot_or_delta(vec![message("a")], present.clone(), true);
-        assert!(complete.is_snapshot());
-        // Incomplete → additive delta that tombstones nothing.
-        let partial = snapshot_or_delta(vec![message("a")], present, false);
-        assert!(!partial.is_snapshot());
-        assert_eq!(
-            partial,
-            SyncUpdate::Delta {
-                changed: vec![message("a")],
-                patched: vec![],
-                removed: vec![],
-            }
-        );
     }
 }

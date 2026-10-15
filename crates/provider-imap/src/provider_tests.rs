@@ -5,7 +5,7 @@ use engine_core::{
     mail::{EmailAddress, MailboxRole},
     sync::{SyncScope, SyncWindow},
 };
-use engine_provider::{Draft, EmailChunk, Provider, TlsVersion};
+use engine_provider::{Draft, EmailChunk, Provider};
 use futures_util::StreamExt;
 
 use super::ImapProvider;
@@ -162,9 +162,9 @@ async fn sync_mailboxes_lists_folders_as_a_snapshot() {
 async fn a_first_sync_streams_a_resumable_backfill() {
     let select = "* 3 EXISTS\r\n* OK [UIDVALIDITY 1000] v\r\n\
                   * OK [UIDNEXT 4] n\r\na2 OK [READ-WRITE] done\r\n";
-    let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
-                 * 2 FETCH (UID 2 FLAGS () ENVELOPE (NIL \"b\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
-                 * 3 FETCH (UID 3 FLAGS () ENVELOPE (NIL \"c\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
+    let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
+                 * 2 FETCH (UID 2 FLAGS () ENVELOPE (NIL \"b\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
+                 * 3 FETCH (UID 3 FLAGS () ENVELOPE (NIL \"c\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
                  a3 OK FETCH done\r\n";
     let provider = connected_provider(script(&[GREETING, LOGIN_OK, select, fetch])).await;
 
@@ -189,7 +189,7 @@ async fn a_first_sync_streams_a_resumable_backfill() {
     );
     let upserted: usize = chunks.iter().map(|c| c.changed.len()).sum();
     assert_eq!(upserted, 3);
-    assert_eq!(last.advance_to.as_ref().unwrap().as_str(), "v1000;n4");
+    assert_eq!(last.advance_to.as_ref().unwrap().as_str(), "v1000;n4;g1;r");
 }
 
 #[tokio::test]
@@ -199,9 +199,9 @@ async fn the_drain_default_merges_a_first_sync_into_a_reconciling_snapshot() {
     // a reset over an existing store tombstones — matching JMAP/Graph first-sync.
     let select = "* 3 EXISTS\r\n* OK [UIDVALIDITY 1000] v\r\n\
                   * OK [UIDNEXT 4] n\r\na2 OK [READ-WRITE] done\r\n";
-    let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
-                 * 2 FETCH (UID 2 FLAGS () ENVELOPE (NIL \"b\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
-                 * 3 FETCH (UID 3 FLAGS () ENVELOPE (NIL \"c\" NIL NIL NIL NIL NIL NIL NIL NIL))\r\n\
+    let fetch = "* 1 FETCH (UID 1 FLAGS () ENVELOPE (NIL \"a\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
+                 * 2 FETCH (UID 2 FLAGS () ENVELOPE (NIL \"b\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
+                 * 3 FETCH (UID 3 FLAGS () ENVELOPE (NIL \"c\" NIL NIL NIL NIL NIL NIL NIL NIL) BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n\
                  a3 OK FETCH done\r\n";
     let provider = connected_provider(script(&[GREETING, LOGIN_OK, select, fetch])).await;
 
@@ -210,7 +210,7 @@ async fn the_drain_default_merges_a_first_sync_into_a_reconciling_snapshot() {
         sync.is_snapshot(),
         "a fresh backfill reconciles on completion"
     );
-    assert_eq!(sync.next_cursor.as_str(), "v1000;n4");
+    assert_eq!(sync.next_cursor.as_str(), "v1000;n4;g1;r");
 }
 
 #[tokio::test]
@@ -338,7 +338,11 @@ async fn submit_email_dispatches_the_plaintext_transport_end_to_end() {
     assert!(provider.connection_info().capabilities.sent_copy_keywords());
 
     let receipt = provider
-        .submit_email(&account(), &submit_draft())
+        .submit_email(
+            &account(),
+            &submit_draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap();
     assert_eq!(receipt.email_key.as_str(), "imap:v12:u3@Sent");
@@ -366,7 +370,14 @@ async fn submit_email_reports_the_keywords_the_filed_copy_carries() {
     let keyword = engine_core::mail::Keyword::new("project-x").unwrap();
     let draft = submit_draft().with_sent_copy_keyword(keyword.clone());
 
-    let receipt = provider.submit_email(&account(), &draft).await.unwrap();
+    let receipt = provider
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
     assert_eq!(receipt.sent_copy_keywords, [keyword].into());
 }
 
@@ -374,7 +385,11 @@ async fn submit_email_reports_the_keywords_the_filed_copy_carries() {
 async fn submit_email_without_a_transport_is_rejected() {
     let provider = connected_provider(script(&[GREETING, LOGIN_OK])).await;
     let err = provider
-        .submit_email(&account(), &submit_draft())
+        .submit_email(
+            &account(),
+            &submit_draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .unwrap_err();
     assert!(!provider.connection_info().capabilities.submission());
@@ -386,8 +401,7 @@ fn config_debug_redacts_the_password() {
     let config = ImapConfig::new(
         "127.0.0.1:11993",
         "localhost",
-        "alice@test.local",
-        "super-secret",
+        crate::credentials::Credentials::password("alice@test.local", "super-secret"),
     );
     let shown = format!("{config:?}");
     assert!(shown.contains("alice@test.local"));
@@ -395,93 +409,4 @@ fn config_debug_redacts_the_password() {
         !shown.contains("super-secret"),
         "password must not leak: {shown}"
     );
-}
-
-/// Records connect steps as the log lines a host would emit.
-#[derive(Default)]
-struct Recorder(std::sync::Mutex<Vec<String>>);
-
-impl engine_provider::ConnectObserver for Recorder {
-    fn step(&self, step: &engine_provider::ConnectStep<'_>) {
-        use engine_provider::ConnectStep;
-        let line = match step {
-            ConnectStep::TlsEstablished(version) => format!("tls {version:?}"),
-            ConnectStep::Authenticated => "authenticated".to_owned(),
-            ConnectStep::Negotiated {
-                dialect, features, ..
-            } => {
-                format!("negotiated {dialect} [{}]", features.join(" "))
-            }
-            other => format!("unexpected {other:?}"),
-        };
-        self.0.lock().unwrap().push(line);
-    }
-}
-
-/// Drives the shared dial over a mock stream, returning the steps it reported.
-async fn observed_open_session(server_script: Vec<u8>, tls: Option<TlsVersion>) -> Vec<String> {
-    let recorder = std::sync::Arc::new(Recorder::default());
-    let config = ImapConfig::new("h:993", "h", "alice@test.local", "pw")
-        .with_connect_observer(recorder.clone());
-    let (stream, _recorded) = MockStream::new(server_script);
-    crate::connect::open_session(stream, tls, &config)
-        .await
-        .expect("session");
-    let steps = recorder.0.lock().unwrap();
-    steps.clone()
-}
-
-#[tokio::test]
-async fn connect_reports_the_tls_handshake_then_the_login() {
-    // The exact sequence, in order: the handshake precedes the greeting, and `LOGIN`
-    // precedes the post-auth CAPABILITY (which is extension negotiation, not a step).
-    let steps = observed_open_session(
-        script(&[
-            GREETING,
-            LOGIN_OK,
-            "* CAPABILITY IMAP4rev2 IDLE\r\na2 OK done\r\n",
-            // Advertising rev2 makes the session enable it, so the script must answer.
-            "* ENABLED IMAP4rev2\r\na3 OK ENABLE done\r\n",
-        ]),
-        Some(TlsVersion::Tls1_3),
-    )
-    .await;
-    // The dialect step closes the trace, and shows what one ENABLE bought: this server
-    // advertised only IDLE, but rev2 folds LIST-STATUS, SPECIAL-USE and NAMESPACE in too.
-    // QRESYNC and ACL are absent because they are *not* folded in and this server never
-    // offered them — which is exactly the distinction a support session needs the line to
-    // make.
-    assert_eq!(
-        steps,
-        [
-            "tls Tls1_3",
-            "authenticated",
-            "negotiated IMAP4rev2 [IDLE LIST-STATUS SPECIAL-USE NAMESPACE]"
-        ]
-    );
-}
-
-#[tokio::test]
-async fn a_stream_that_is_not_tls_reports_only_the_login() {
-    // `tls_version` is `None` when the stream is not TLS — the fact is not applicable,
-    // not merely unobserved, so no step is invented for it.
-    let steps = observed_open_session(script(&[GREETING, LOGIN_OK, "a2 OK done\r\n"]), None).await;
-    // No capability list at all: rev1 baseline, nothing usable, and nothing to enable.
-    assert_eq!(steps, ["authenticated", "negotiated IMAP4rev1 []"]);
-}
-
-#[tokio::test]
-async fn a_failed_login_reports_the_handshake_but_never_authentication() {
-    // `Authenticated` means the server accepted the credentials. A `NO` must not emit
-    // it — a host driving a state machine off these steps would otherwise believe a
-    // rejected connection came up.
-    let recorder = std::sync::Arc::new(Recorder::default());
-    let config = ImapConfig::new("h:993", "h", "alice@test.local", "wrong")
-        .with_connect_observer(recorder.clone());
-    let (stream, _recorded) = MockStream::new(script(&[GREETING, "a1 NO bad credentials\r\n"]));
-    let err = crate::connect::open_session(stream, Some(TlsVersion::Tls1_2), &config)
-        .await
-        .expect_err("login must fail");
-    assert!(matches!(err, crate::error::ImapError::Auth(_)));
-    assert_eq!(*recorder.0.lock().unwrap(), ["tls Tls1_2"]);
 }

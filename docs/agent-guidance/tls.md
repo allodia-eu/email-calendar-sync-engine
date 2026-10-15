@@ -121,8 +121,9 @@ shares it (cloning is a cheap `Arc` bump):
 - **IMAP/SMTP** keep taking a `tokio_rustls::TlsConnector` (the host builds it via
   `tls.connector()`); the library bakes in no root store.
 
-`TlsClientConfig::reqwest_builder()` returns a preconfigured `reqwest::ClientBuilder`
-(each HTTP provider adds its own non-TLS settings, e.g. redirect policy). It
+`TlsClientConfig::reqwest_builder()` returns a preconfigured `reqwest::ClientBuilder`.
+Each HTTP provider starts from it through `engine_http::client(tls)`, which adds the dial
+bound (`deadlines.md`), and then adds its own non-TLS settings, e.g. redirect policy. It
 advertises ALPN `h2` then `http/1.1`, so the HTTP providers negotiate HTTP/2 where
 the server supports it (Google does; `graph.microsoft.com` answers HTTP/1.1 even when
 `h2` is offered — measured 2026-09-11 against the live account and confirmed with an

@@ -21,7 +21,7 @@ use engine_core::{
     sync::{SyncObject, SyncUpdate},
 };
 use engine_provider::{Draft, Provider, SharedMailbox, SharedMailboxes};
-use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::{Harness, SHARED_GROUP_ACCOUNT};
 use tokio_rustls::client::TlsStream;
 
@@ -51,8 +51,7 @@ fn config(harness: &Harness, user: &str, password: &str) -> ImapConfig {
     ImapConfig::new(
         harness.imap_addr.as_str(),
         host_of(&harness.imap_addr),
-        user,
-        password,
+        Credentials::password(user, password),
     )
 }
 
@@ -244,7 +243,14 @@ async fn live_a_message_sent_as_the_group_is_filed_in_the_groups_sent() {
         "Sent as the group mailbox over SMTP",
         "Sent by the shared-mailbox live suite.",
     );
-    let receipt = shared.submit_email(&account(), &draft).await.expect("sent");
+    let receipt = shared
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .expect("sent");
     // Filed into the group's Sent, which a flat first-match lookup could have missed.
     assert!(
         receipt.email_key.as_str().ends_with(group_sent.id.as_str()),

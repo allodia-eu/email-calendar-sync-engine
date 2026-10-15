@@ -109,6 +109,21 @@ pub(crate) fn bound_account<'a>(
         })
 }
 
+/// Whether `account`, the account addressed for `urn`, offers it: its `accountCapabilities`
+/// lists the URN. A server may support a domain that a given account lacks, and the account's
+/// list is what says so (RFC 8620 §2). A capability with no account to address is not
+/// offered, since every call for it is addressed to that account. An account object without
+/// the (required) map is taken at the server's word.
+pub(crate) fn account_offers(session: &Value, account: Option<&str>, urn: &str) -> bool {
+    let Some(id) = account else {
+        return false;
+    };
+    session
+        .pointer(&format!("/accounts/{id}/accountCapabilities"))
+        .and_then(Value::as_object)
+        .is_none_or(|account_caps| account_caps.contains_key(urn))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

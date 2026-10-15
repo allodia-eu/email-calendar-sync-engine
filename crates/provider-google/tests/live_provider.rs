@@ -233,7 +233,11 @@ async fn live_send_returns_a_real_id_and_gmail_rewrites_the_message_id() {
     let draft = live_draft(&marker);
 
     let receipt = provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     // Gmail returns the sent message's real id immediately (unlike SMTP/Graph sendMail).
@@ -271,7 +275,11 @@ async fn live_edit_mail_mark_read_and_flag_are_accepted() {
     let marker = format!("edit-p{}", std::process::id());
     // Send a throwaway to operate on, then exercise every edit verb's real request shape.
     let receipt = provider
-        .submit_email(&account(), &live_draft(&marker))
+        .submit_email(
+            &account(),
+            &live_draft(&marker),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     let key = receipt.email_key;
@@ -307,7 +315,11 @@ async fn live_archive_to_all_mail_leaves_the_inbox_and_is_accepted_by_gmail() {
     // A self-addressed send lands in INBOX (and SENT), so there is an inbox membership to
     // leave. This is the shape the product archives.
     let receipt = provider
-        .submit_email(&account(), &live_draft(&marker))
+        .submit_email(
+            &account(),
+            &live_draft(&marker),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     let key = receipt.email_key;
@@ -388,7 +400,11 @@ async fn live_a_label_change_comes_back_as_state_not_a_whole_message() {
     let provider = provider(token);
     let marker = format!("state-p{}", std::process::id());
     let receipt = provider
-        .submit_email(&account(), &live_draft(&marker))
+        .submit_email(
+            &account(),
+            &live_draft(&marker),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     let key = receipt.email_key;

@@ -26,8 +26,10 @@
 //!
 //! Mail, calendar, and People read/sync and writes share this transport spine.
 
+mod affiliation;
 mod base64url;
 mod cal_fetch;
+mod cal_invite;
 mod cal_normalize;
 mod cal_override;
 mod cal_write;
@@ -44,6 +46,7 @@ mod identity;
 mod json;
 mod labels_write;
 mod mutate;
+mod named_labels;
 mod normalize;
 mod provider;
 mod report;

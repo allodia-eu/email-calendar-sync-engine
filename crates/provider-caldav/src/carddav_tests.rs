@@ -1,27 +1,24 @@
 use std::sync::Arc;
 
 use engine_core::{
-    contact::{
-        ContactCard, ContactDraft, ContactField, ContactName, ContactPatch, ContactResource,
-        FieldPatch,
-    },
-    error::FailureClass,
+    contact::{ContactCard, ContactDraft, ContactField},
     ids::{AccountId, AddressBookId, ContactId},
     membership::Memberships,
     sync::{SyncScope, SyncState, SyncUpdate},
-    version::{ETag, RevisionTokens},
 };
-use engine_provider::{ContactSourceSync, ContactsProvider, Provider, WriteGuard};
+use engine_provider::{
+    ContactSourceSync, ContactsProvider, IgnoreConnectSteps, Provider, WriteGuard,
+};
 
 use crate::{
     CardDavProvider,
-    test_support::{Replay, ok, status, wrote},
+    test_support::{Replay, ok, options, status, wrote},
     transport::{DavMethod, Precondition},
 };
 
-const PRINCIPAL: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/</D:href><D:propstat><D:prop><C:addressbook-home-set><D:href>/dav/addressbooks/alice/</D:href></C:addressbook-home-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
-const BOOKS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:addressbook/></D:resourcetype><D:displayname>Contacts</D:displayname><D:current-user-privilege-set><D:privilege><D:read/></D:privilege><D:privilege><D:write-content/></D:privilege></D:current-user-privilege-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
-const CONTACTS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/ada.vcf</D:href><D:propstat><D:prop><D:getetag>"v1"</D:getetag><C:address-data><![CDATA[BEGIN:VCARD
+pub(crate) const PRINCIPAL: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/</D:href><D:propstat><D:prop><C:addressbook-home-set><D:href>/dav/addressbooks/alice/</D:href></C:addressbook-home-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+pub(crate) const BOOKS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:addressbook/></D:resourcetype><D:displayname>Contacts</D:displayname><D:current-user-privilege-set><D:privilege><D:read/></D:privilege><D:privilege><D:write-content/></D:privilege></D:current-user-privilege-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+pub(crate) const CONTACTS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/ada.vcf</D:href><D:propstat><D:prop><D:getetag>"v1"</D:getetag><C:address-data><![CDATA[BEGIN:VCARD
 VERSION:4.0
 UID:ada
 FN:Ada Lovelace
@@ -30,7 +27,7 @@ X-KEEP:untouched
 END:VCARD
 ]]></C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:sync-token>token-1</D:sync-token></D:multistatus>"#;
 const CTAG: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:CS="http://calendarserver.org/ns/"><D:response><D:href>/dav/addressbooks/alice/default/</D:href><D:propstat><D:prop><CS:getctag>ctag-1</CS:getctag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
-const READ_ONLY_BOOKS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:addressbook/></D:resourcetype><D:displayname>Read only</D:displayname><D:current-user-privilege-set><D:privilege><D:read/></D:privilege></D:current-user-privilege-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+pub(crate) const READ_ONLY_BOOKS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:addressbook/></D:resourcetype><D:displayname>Read only</D:displayname><D:current-user-privilege-set><D:privilege><D:read/></D:privilege></D:current-user-privilege-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
 const DELTA: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/ada.vcf</D:href><D:propstat><D:prop><D:getetag>"v2"</D:getetag><C:address-data><![CDATA[BEGIN:VCARD
 VERSION:4.0
 UID:ada
@@ -57,13 +54,18 @@ END:VCARD
 async fn a_snapshot_keeps_an_unparseable_card_present_instead_of_tombstoning_it() {
     let replay = Arc::new(Replay::new(vec![
         ok(PRINCIPAL),
+        options(Some("1, 3, addressbook")),
         ok(BOOKS),
         ok(CONTACTS_ONE_UNPARSEABLE),
     ]));
-    let provider =
-        CardDavProvider::with_executor(Box::new(replay.clone()), "/.well-known/carddav", "default")
-            .await
-            .unwrap();
+    let provider = CardDavProvider::with_executor(
+        Box::new(replay.clone()),
+        "/.well-known/carddav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .unwrap();
     let account = AccountId::try_from("account-1").unwrap();
     let result = provider.sync_contacts(&account, None).await.unwrap();
     let engine_provider::ContactSourceSync::Available { sync, .. } = result else {
@@ -84,11 +86,20 @@ async fn a_snapshot_keeps_an_unparseable_card_present_instead_of_tombstoning_it(
 
 #[tokio::test]
 async fn carddav_snapshot_preserves_raw_and_sends_rfc6578_shape() {
-    let replay = Arc::new(Replay::new(vec![ok(PRINCIPAL), ok(BOOKS), ok(CONTACTS)]));
-    let provider =
-        CardDavProvider::with_executor(Box::new(replay.clone()), "/.well-known/carddav", "default")
-            .await
-            .unwrap();
+    let replay = Arc::new(Replay::new(vec![
+        ok(PRINCIPAL),
+        options(Some("1, 3, addressbook")),
+        ok(BOOKS),
+        ok(CONTACTS),
+    ]));
+    let provider = CardDavProvider::with_executor(
+        Box::new(replay.clone()),
+        "/.well-known/carddav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .unwrap();
     let account = AccountId::try_from("account-1").unwrap();
     let result = provider.sync_contacts(&account, None).await.unwrap();
     let engine_provider::ContactSourceSync::Available { sync, .. } = result else {
@@ -120,13 +131,18 @@ async fn carddav_snapshot_preserves_raw_and_sends_rfc6578_shape() {
 async fn carddav_create_uses_vcard_put_and_if_none_match() {
     let replay = Arc::new(Replay::new(vec![
         ok(PRINCIPAL),
+        options(Some("1, 3, addressbook")),
         ok(BOOKS),
         wrote(201, Some("\"v1\"")),
     ]));
-    let provider =
-        CardDavProvider::with_executor(Box::new(replay.clone()), "/.well-known/carddav", "default")
-            .await
-            .unwrap();
+    let provider = CardDavProvider::with_executor(
+        Box::new(replay.clone()),
+        "/.well-known/carddav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .unwrap();
     let book = AddressBookId::try_from("/dav/addressbooks/alice/default/").unwrap();
     let mut card = ContactCard::new(
         ContactId::try_from("ignored").unwrap(),
@@ -156,15 +172,20 @@ async fn carddav_create_uses_vcard_put_and_if_none_match() {
 async fn unsupported_collection_sync_falls_back_to_an_unfiltered_snapshot() {
     let replay = Arc::new(Replay::new(vec![
         ok(PRINCIPAL),
+        options(Some("1, 3, addressbook")),
         ok(BOOKS),
         status(405, "sync-collection unsupported"),
         ok(CTAG),
         ok(CONTACTS),
     ]));
-    let provider =
-        CardDavProvider::with_executor(Box::new(replay.clone()), "/.well-known/carddav", "default")
-            .await
-            .unwrap();
+    let provider = CardDavProvider::with_executor(
+        Box::new(replay.clone()),
+        "/.well-known/carddav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .unwrap();
     let result = provider
         .sync_contacts(
             &AccountId::try_from("account-1").unwrap(),
@@ -188,17 +209,26 @@ async fn unsupported_collection_sync_falls_back_to_an_unfiltered_snapshot() {
     assert!(!query.contains("prop-filter"), "{query}");
 }
 
-fn account() -> AccountId {
+pub(crate) fn account() -> AccountId {
     AccountId::try_from("account-1").unwrap()
 }
 
 #[tokio::test]
 async fn address_book_discovery_scopes_capabilities_and_rebinding_are_explicit() {
-    let replay = Arc::new(Replay::new(vec![ok(PRINCIPAL), ok(BOOKS), ok(BOOKS)]));
-    let provider =
-        CardDavProvider::with_executor(Box::new(replay), "/.well-known/carddav", "default")
-            .await
-            .unwrap();
+    let replay = Arc::new(Replay::new(vec![
+        ok(PRINCIPAL),
+        options(Some("1, 3, addressbook")),
+        ok(BOOKS),
+        ok(BOOKS),
+    ]));
+    let provider = CardDavProvider::with_executor(
+        Box::new(replay),
+        "/.well-known/carddav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .unwrap();
     assert!(matches!(
         provider.address_book_scope(&account()),
         SyncScope::CardDavAddressBookList { .. }
@@ -236,9 +266,15 @@ async fn address_book_discovery_scopes_capabilities_and_rebinding_are_explicit()
 #[tokio::test]
 async fn delta_tombstones_and_expired_tokens_report_their_actual_mode() {
     let provider = CardDavProvider::with_executor(
-        Box::new(Replay::new(vec![ok(PRINCIPAL), ok(BOOKS), ok(DELTA)])),
+        Box::new(Replay::new(vec![
+            ok(PRINCIPAL),
+            options(Some("1, 3, addressbook")),
+            ok(BOOKS),
+            ok(DELTA),
+        ])),
         "/.well-known/carddav",
         "default",
+        &IgnoreConnectSteps,
     )
     .await
     .unwrap();
@@ -264,12 +300,14 @@ async fn delta_tombstones_and_expired_tokens_report_their_actual_mode() {
     let provider = CardDavProvider::with_executor(
         Box::new(Replay::new(vec![
             ok(PRINCIPAL),
+            options(Some("1, 3, addressbook")),
             ok(BOOKS),
             status(403, invalid),
             ok(CONTACTS),
         ])),
         "/.well-known/carddav",
         "default",
+        &IgnoreConnectSteps,
     )
     .await
     .unwrap();
@@ -288,11 +326,20 @@ async fn delta_tombstones_and_expired_tokens_report_their_actual_mode() {
 
 #[tokio::test]
 async fn an_unchanged_ctag_cursor_skips_the_addressbook_query() {
-    let replay = Arc::new(Replay::new(vec![ok(PRINCIPAL), ok(BOOKS), ok(CTAG)]));
-    let provider =
-        CardDavProvider::with_executor(Box::new(replay.clone()), "/.well-known/carddav", "default")
-            .await
-            .unwrap();
+    let replay = Arc::new(Replay::new(vec![
+        ok(PRINCIPAL),
+        options(Some("1, 3, addressbook")),
+        ok(BOOKS),
+        ok(CTAG),
+    ]));
+    let provider = CardDavProvider::with_executor(
+        Box::new(replay.clone()),
+        "/.well-known/carddav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .unwrap();
     let result = provider
         .sync_contacts(&account(), Some(&SyncState::new("ctag:ctag-1")))
         .await
@@ -305,165 +352,9 @@ async fn an_unchanged_ctag_cursor_skips_the_addressbook_query() {
         } if matches!(&sync.update, SyncUpdate::Delta { changed, removed, .. }
             if changed.is_empty() && removed.is_empty())
     ));
+    // Discovery, the home's `OPTIONS`, the address-book list, then the one `PROPFIND` of the
+    // ctag: no query for cards.
     let reads = replay.reads();
-    assert_eq!(reads.len(), 3);
+    assert_eq!(reads.len(), 4);
     assert_eq!(reads.last().unwrap().0, DavMethod::Propfind);
-}
-
-#[tokio::test]
-async fn direct_fetch_patch_delete_and_photos_use_exact_guards() {
-    let replay = Arc::new(Replay::new(vec![
-        ok(PRINCIPAL),
-        ok(BOOKS),
-        ok(CONTACTS),
-        wrote(204, Some("\"v2\"")),
-        wrote(404, None),
-        status(200, "uri-photo"),
-    ]));
-    let provider =
-        CardDavProvider::with_executor(Box::new(replay.clone()), "/.well-known/carddav", "default")
-            .await
-            .unwrap();
-    let mut card = provider
-        .fetch_contact(
-            &account(),
-            &ContactId::try_from("/dav/addressbooks/alice/default/ada.vcf").unwrap(),
-        )
-        .await
-        .unwrap();
-    let multiget = replay.reads().last().unwrap().3.clone();
-    assert!(multiget.contains("<d:href>/dav/addressbooks/alice/default/ada.vcf</d:href>"));
-
-    let mut patch = ContactPatch::default();
-    patch.fields.insert(
-        ContactField::Name,
-        FieldPatch::Set(
-            serde_json::to_value(ContactName {
-                full: Some("Ada Updated".into()),
-                ..ContactName::default()
-            })
-            .unwrap(),
-        ),
-    );
-    provider
-        .patch_contact(&account(), &card, &patch)
-        .await
-        .unwrap();
-    provider.delete_contact(&account(), &card).await.unwrap();
-    {
-        let writes = replay.writes();
-        assert_eq!(
-            writes[0].precondition,
-            Precondition::IfMatch("\"v1\"".into())
-        );
-        assert_eq!(
-            writes[1].precondition,
-            Precondition::IfMatch("\"v1\"".into())
-        );
-    }
-
-    let embedded = provider
-        .fetch_contact_photo(
-            &account(),
-            &card,
-            &ContactResource {
-                uri: "data:image/jpeg;base64,AQID".into(),
-                media_type: Some("image/jpeg".into()),
-                ..ContactResource::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(embedded.expect("inline photo").as_bytes(), &[1, 2, 3]);
-    let remote = provider
-        .fetch_contact_photo(
-            &account(),
-            &card,
-            &ContactResource {
-                uri: "https://contacts.example/photo".into(),
-                ..ContactResource::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(remote.expect("remote photo").as_bytes(), b"uri-photo");
-
-    card.revisions = RevisionTokens::none();
-    assert!(
-        provider
-            .patch_contact(&account(), &card, &ContactPatch::default())
-            .await
-            .is_err()
-    );
-    assert!(provider.delete_contact(&account(), &card).await.is_err());
-}
-
-#[tokio::test]
-async fn read_only_wrong_destination_conflicts_and_malformed_results_fail_closed() {
-    let read_only = CardDavProvider::with_executor(
-        Box::new(Replay::new(vec![ok(PRINCIPAL), ok(READ_ONLY_BOOKS)])),
-        "/.well-known/carddav",
-        "default",
-    )
-    .await
-    .unwrap();
-    assert!(read_only.contact_destination().is_none());
-    let book = AddressBookId::try_from("/dav/addressbooks/alice/default/").unwrap();
-    let card = ContactCard::new(
-        ContactId::try_from("card").unwrap(),
-        Memberships::of_one(book.clone()),
-    );
-    assert!(
-        read_only
-            .create_contact(
-                &account(),
-                &ContactDraft {
-                    address_book: book,
-                    card: card.clone(),
-                }
-            )
-            .await
-            .is_err()
-    );
-
-    let conflict = CardDavProvider::with_executor(
-        Box::new(Replay::new(vec![
-            ok(PRINCIPAL),
-            ok(BOOKS),
-            wrote(412, None),
-        ])),
-        "/.well-known/carddav",
-        "default",
-    )
-    .await
-    .unwrap();
-    let mut guarded = card.clone();
-    guarded.id = ContactId::try_from("/dav/addressbooks/alice/default/card.vcf").unwrap();
-    guarded.revisions = RevisionTokens::from_etag(ETag::new("\"old\""));
-    guarded.raw_vcard = Some(engine_core::raw::RawVcard::new(
-        "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Old\r\nEND:VCARD\r\n",
-    ));
-    let error = conflict
-        .patch_contact(&account(), &guarded, &ContactPatch::default())
-        .await
-        .unwrap_err();
-    assert_eq!(error.class(), FailureClass::Conflict);
-
-    let malformed = CardDavProvider::with_executor(
-        Box::new(Replay::new(vec![
-            ok(PRINCIPAL),
-            ok(BOOKS),
-            ok("<D:multistatus xmlns:D=\"DAV:\"><D:sync-token>x</D:sync-token></D:multistatus>"),
-        ])),
-        "/.well-known/carddav",
-        "default",
-    )
-    .await
-    .unwrap();
-    assert!(
-        malformed
-            .fetch_contact(&account(), &guarded.id)
-            .await
-            .is_err()
-    );
 }

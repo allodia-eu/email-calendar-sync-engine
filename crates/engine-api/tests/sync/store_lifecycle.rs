@@ -1,10 +1,10 @@
-//! The store's own lifecycle through the facade: resetting cursors, forgetting an account,
-//! pruning out-of-window mail, and vacuuming — the operations that reshape what is stored
-//! rather than sync it.
+//! The store's own lifecycle through the facade: resetting cursors, forgetting an account or
+//! one domain of it, pruning out-of-window mail, and vacuuming — the operations that reshape
+//! what is stored rather than sync it.
 //!
 //! Split from `sync_lifecycle.rs` to keep both inside the 500-line limit.
 
-use engine_api::{Engine, TimeZoneId};
+use engine_api::{Engine, SearchDomain, TimeZoneId};
 
 use super::*;
 
@@ -294,4 +294,71 @@ async fn vacuum_compacts_the_store_without_losing_data() {
     // test proves it reclaims the freed pages and shrinks the file on disk.
     engine.vacuum().await.unwrap();
     assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+}
+
+/// Syncs the fake account's mail and answers how many messages it upserted.
+async fn sync_fake_mail(engine: &Engine) -> usize {
+    engine
+        .sync_mail(
+            core::slice::from_ref(&FakeProvider::new()),
+            &account(),
+            plain(),
+            &quiet(),
+        )
+        .await
+        .upserted()
+}
+
+/// Syncs the fake account's calendar and answers how many events it upserted.
+async fn sync_fake_calendar(engine: &Engine) -> usize {
+    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+    engine
+        .sync_calendar(&FakeProvider::new(), &account(), horizon(), &zone)
+        .await
+        .unwrap()
+        .events
+        .applied
+        .upserted
+}
+
+#[tokio::test]
+async fn forgetting_the_calendar_keeps_mail_and_its_cursor() {
+    let engine = Engine::open_in_memory().unwrap();
+    sync_fake_mail(&engine).await;
+    let first = sync_fake_calendar(&engine).await;
+    assert!(first > 0);
+    assert!(!engine.events(&account()).await.unwrap().is_empty());
+
+    engine
+        .forget_account_domain(&account(), SearchDomain::Calendar)
+        .await
+        .unwrap();
+
+    assert!(engine.events(&account()).await.unwrap().is_empty());
+    assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
+    // Mail resumes from its cursor: nothing is fetched again.
+    assert_eq!(sync_fake_mail(&engine).await, 0, "the mail cursor survived");
+    // The calendar starts over from a snapshot.
+    assert_eq!(sync_fake_calendar(&engine).await, first);
+    assert!(!engine.events(&account()).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn forgetting_mail_keeps_the_calendar() {
+    let engine = Engine::open_in_memory().unwrap();
+    sync_fake_mail(&engine).await;
+    sync_fake_calendar(&engine).await;
+    let events = engine.events(&account()).await.unwrap().len();
+
+    engine
+        .forget_account_domain(&account(), SearchDomain::Mail)
+        .await
+        .unwrap();
+
+    assert!(engine.messages(&account()).await.unwrap().is_empty());
+    assert!(engine.mailboxes(&account()).await.unwrap().is_empty());
+    assert_eq!(engine.events(&account()).await.unwrap().len(), events);
+    // The calendar resumes from its cursor; mail re-snapshots from scratch.
+    assert_eq!(sync_fake_calendar(&engine).await, 0);
+    assert_eq!(sync_fake_mail(&engine).await, 2);
 }

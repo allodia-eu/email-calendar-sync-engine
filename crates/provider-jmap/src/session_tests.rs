@@ -27,7 +27,15 @@ fn session_doc() -> Value {
             "urn:ietf:params:jmap:calendars": "c"
         },
         "accounts": {
-            "c": { "name": "alice@test.local", "isReadOnly": false }
+            "c": {
+                "name": "alice@test.local",
+                "isReadOnly": false,
+                "accountCapabilities": {
+                    "urn:ietf:params:jmap:mail": {},
+                    "urn:ietf:params:jmap:submission": {},
+                    "urn:ietf:params:jmap:calendars": { "maxParticipantsPerEvent": 20 }
+                }
+            }
         },
         "apiUrl": "https://mail.test.local/jmap/",
         "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}",
@@ -122,6 +130,7 @@ fn reads_capabilities_and_limits() {
     assert_eq!(session.limits().max_calls_in_request, 16);
     // What a concurrent body warm is allowed to be: the server's number, not a guess.
     assert_eq!(session.limits().max_concurrent_requests, 4);
+    assert_eq!(session.max_participants_per_event(), Some(20));
 }
 
 #[test]
@@ -312,10 +321,10 @@ fn contacts_capability_exposes_account_and_write_features() {
 }
 
 #[test]
-fn mail_capability_without_a_primary_account_defaults_to_writable() {
-    // The mail URN is advertised but `primaryAccounts` names no mail account: the
-    // read-only check has no id to consult and defaults to writable, so `mail_writes`
-    // is still advertised (rather than panicking on the missing account).
+fn mail_capability_without_a_primary_account_is_not_offered() {
+    // The mail URN is advertised but `primaryAccounts` names no mail account. Every mail call is
+    // addressed to that account, so the session parses and offers no mail rather than an
+    // account whose first call fails.
     let base = Url::parse("http://127.0.0.1:18080").unwrap();
     let doc = json!({
         "capabilities": { "urn:ietf:params:jmap:mail": {} },
@@ -323,8 +332,9 @@ fn mail_capability_without_a_primary_account_defaults_to_writable() {
         "apiUrl": "https://mail.test.local/jmap/"
     });
     let session = Session::parse(&doc, &base, SessionUrlPolicy::RebaseToConnection, None).unwrap();
-    assert!(session.capabilities().mail());
-    assert!(session.capabilities().mail_writes());
+    assert!(!session.capabilities().mail());
+    assert!(!session.capabilities().mail_writes());
+    assert!(session.mail_account_id().is_err());
 }
 
 #[test]

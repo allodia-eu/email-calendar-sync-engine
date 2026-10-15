@@ -4,7 +4,10 @@
 //! actually changed may produce a different byte, plus the bookkeeping RFC 5545
 //! requires of a revised event (`DTSTAMP`, `LAST-MODIFIED`, `SEQUENCE`).
 
-use engine_core::time::{CalendarDateTime, UtcDateTime};
+use engine_core::{
+    scheduling::addresses_match,
+    time::{CalendarDateTime, UtcDateTime},
+};
 use engine_provider::{EventPatch, RecurrenceEdit, TextEdit};
 
 use super::{
@@ -15,7 +18,10 @@ use super::{
     },
     vevent::{Resource, Vevent, property_name},
 };
-use crate::error::IcalError;
+use crate::{
+    error::IcalError,
+    scheduling_write::{attendee_address, attendee_line, update_attendee_line},
+};
 
 /// Plans every line edit `patch` implies for `vevent`, writing them into `edits`.
 ///
@@ -89,8 +95,67 @@ pub(super) fn plan(
     if let Some(location) = patch.location_edit() {
         set_text(doc, vevent, edits, "LOCATION", location);
     }
+    if let Some(invitees) = patch.invitee_edit() {
+        set_invitees(doc, vevent, edits, invitees)?;
+    }
 
     revise(doc, vevent, edits, patch.stamp(), patch.is_significant());
+    Ok(())
+}
+
+fn set_invitees(
+    doc: &Document,
+    vevent: &Vevent,
+    edits: &mut Edits,
+    patch: &engine_provider::InviteePatch,
+) -> Result<(), IcalError> {
+    let organiser = vevent
+        .property(doc, "ORGANIZER")
+        .and_then(|group| attendee_address(&doc.logical(group)).map(str::to_owned));
+    for address in patch.removals() {
+        if organiser
+            .as_deref()
+            .is_some_and(|value| addresses_match(value, address.as_str()))
+        {
+            return Err(IcalError::new(
+                "the organiser cannot be removed from their own meeting",
+            ));
+        }
+        for &group in &vevent.own {
+            let logical = doc.logical(group);
+            if property_name(&logical).eq_ignore_ascii_case("ATTENDEE")
+                && attendee_address(&logical)
+                    .is_some_and(|value| addresses_match(value, address.as_str()))
+            {
+                remove(edits, group);
+            }
+        }
+    }
+    for invitee in patch.upserts() {
+        let address = invitee.identity().address().as_str();
+        if organiser
+            .as_deref()
+            .is_some_and(|value| addresses_match(value, address))
+        {
+            return Err(IcalError::new(
+                "the organiser cannot be edited as an invitee",
+            ));
+        }
+        let existing = vevent.own.iter().copied().find(|&group| {
+            let logical = doc.logical(group);
+            property_name(&logical).eq_ignore_ascii_case("ATTENDEE")
+                && attendee_address(&logical).is_some_and(|value| addresses_match(value, address))
+        });
+        if let Some(group) = existing {
+            replace(
+                edits,
+                group,
+                update_attendee_line(&doc.logical(group), invitee),
+            );
+        } else {
+            insert(doc, vevent, edits, &attendee_line(invitee));
+        }
+    }
     Ok(())
 }
 

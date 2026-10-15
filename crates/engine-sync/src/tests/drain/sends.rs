@@ -207,8 +207,22 @@ async fn a_drain_settles_a_failure_no_retry_fixes() {
             class: FailureClass::Permanent,
         }
     );
-    // Off the queue: nothing will attempt it again, and a host can say so.
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    // Settled, so nothing attempts it again; still listed, so the user sees a message that
+    // has not gone and can send it again or withdraw it.
+    let rows = store.list_pending_ops(account()).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, PendingOpState::Failed);
+    assert_eq!(rows[0].failure_class, Some(FailureClass::Permanent));
+    let again = drain_outbox(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+    assert!(again.attempted.is_empty(), "{again:?}");
 }
 /// A withdrawn send is gone for good: the drainer must not deliver a message the user
 /// deleted from the outbox.

@@ -14,9 +14,10 @@ use engine_provider::ProviderError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CalDavError {
-    /// The HTTP request itself failed (connect, timeout, TLS, body).
+    /// The HTTP exchange itself failed (connect, TLS, a body, or a server that went quiet
+    /// for longer than the shared deadlines allow).
     #[error("CalDAV transport error: {0}")]
-    Transport(#[from] reqwest::Error),
+    Transport(#[from] engine_http::SendError),
 
     /// The server returned a non-success HTTP status. The body is captured for
     /// diagnostics and for detecting the RFC 6578 `valid-sync-token` precondition.
@@ -136,13 +137,20 @@ fn status_class(status: u16, body: &str) -> FailureClass {
     }
 }
 
-/// Maps a reqwest transport error to a [`FailureClass`]. Connect/timeout failures
-/// are transient; a decode failure is a protocol problem.
-fn transport_class(err: &reqwest::Error) -> FailureClass {
+/// Maps a failed exchange to a [`FailureClass`]: a body that did not decode is a protocol
+/// problem; every other failure, a server gone quiet included, is transient.
+fn transport_class(err: &engine_http::SendError) -> FailureClass {
     if err.is_decode() {
         FailureClass::Permanent
     } else {
         FailureClass::Retryable
+    }
+}
+
+/// A client error outside any exchange, such as a client that could not be built.
+impl From<reqwest::Error> for CalDavError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Transport(err.into())
     }
 }
 

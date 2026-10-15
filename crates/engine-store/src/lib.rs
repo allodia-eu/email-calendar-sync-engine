@@ -20,6 +20,7 @@ mod lease;
 pub mod mem;
 mod outbox;
 mod read;
+mod settle;
 mod source;
 mod store;
 
@@ -36,10 +37,13 @@ pub use lease::{
     Clock, FenceToken, LeaseRequest, ManualClock, OpLease, SyncClaim, SyncLease, WorkerId,
 };
 pub use outbox::{
-    ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, OpRejection, PendingOpClaim, PendingOpRow,
-    PendingOpState, retry_delay,
+    ClaimRejection, Confirmation, LeasedPendingOp, MAX_ATTEMPTS, OpRejection, PendingOpClaim,
+    PendingOpRow, PendingOpState, retry_delay,
 };
 pub use read::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead};
+pub use settle::{
+    Recorded, interrupted_outcome, record_outcome, settles_on_attempts, stays_listed,
+};
 pub use source::{MessageBodyStore, MessageSourceCache, SourcesDropped};
 pub use store::Store;
 

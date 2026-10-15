@@ -228,7 +228,11 @@ async fn live_submit_email() {
         "Sent by the step-4 live submission test.",
     );
     let receipt = provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit");
     assert!(!receipt.email_key.as_str().is_empty());
@@ -260,7 +264,11 @@ async fn live_submit_email_with_attachment() {
         b"jmap-attachment-live-body".to_vec(),
     ));
     provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit with attachment");
 
@@ -314,7 +322,11 @@ async fn live_edit_mail_keyword_move_and_delete() {
         "A throwaway message the edit_mail live test mutates.",
     );
     provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit probe");
 
@@ -398,7 +410,11 @@ async fn live_watch_sees_a_change_over_event_source() {
         "Wakes the EventSource watcher.",
     );
     provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit");
 

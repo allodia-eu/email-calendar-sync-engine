@@ -12,6 +12,7 @@ use engine_provider::MailEdit;
 use super::*;
 use crate::{
     GoogleClient,
+    named_labels::NamedLabels,
     normalize::ALL_MAIL_ID,
     test_support::{
         capturing_replay_server, capturing_server, fake_client, fake_client_fallible, json, retry,
@@ -45,13 +46,21 @@ async fn mark_read_removes_unread_and_flag_adds_starred() {
         "/messages/message-1/modify",
         json(r#"{"id":"message-1"}"#),
     )]);
-    let receipt = edit(&client, &MailEdit::mark_seen(key("message-1"), true))
-        .await
-        .unwrap();
+    let receipt = edit(
+        &client,
+        &MailEdit::mark_seen(key("message-1"), true),
+        &NamedLabels::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(receipt.message_key.as_str(), "message-1");
-    edit(&client, &MailEdit::set_flagged(key("message-1"), true))
-        .await
-        .unwrap();
+    edit(
+        &client,
+        &MailEdit::set_flagged(key("message-1"), true),
+        &NamedLabels::default(),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -59,9 +68,13 @@ async fn mark_read_body_removes_unread_over_the_real_transport() {
     // Drive the REAL reqwest transport at a capturing server and assert the modify body.
     let (base, rx) = capturing_server("200 OK", r#"{"id":"message-1"}"#);
     let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
-    edit(&client, &MailEdit::mark_seen(key("message-1"), true))
-        .await
-        .unwrap();
+    edit(
+        &client,
+        &MailEdit::mark_seen(key("message-1"), true),
+        &NamedLabels::default(),
+    )
+    .await
+    .unwrap();
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
         request.starts_with("POST /gmail/v1/users/me/messages/message-1/modify "),
@@ -88,9 +101,13 @@ async fn mark_read_body_removes_unread_over_the_real_transport() {
 async fn mark_unread_adds_unread() {
     let (base, rx) = capturing_server("200 OK", r#"{"id":"message-1"}"#);
     let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
-    edit(&client, &MailEdit::mark_seen(key("message-1"), false))
-        .await
-        .unwrap();
+    edit(
+        &client,
+        &MailEdit::mark_seen(key("message-1"), false),
+        &NamedLabels::default(),
+    )
+    .await
+    .unwrap();
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     let body = request.split("\r\n\r\n").nth(1).unwrap();
     let json: serde_json::Value = serde_json::from_str(body).unwrap();
@@ -106,6 +123,7 @@ async fn move_to_trash_uses_the_trash_endpoint() {
     edit(
         &client,
         &MailEdit::move_to(key("message-4"), MailboxId::try_from("TRASH").unwrap()),
+        &NamedLabels::default(),
     )
     .await
     .unwrap();
@@ -136,6 +154,7 @@ async fn move_to_a_label_replaces_membership_leaving_state_intact() {
     let receipt = edit(
         &client,
         &MailEdit::move_to(key("message-1"), MailboxId::try_from("Label_1").unwrap()),
+        &NamedLabels::default(),
     )
     .await
     .unwrap();
@@ -164,6 +183,7 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
     edit(
         &client,
         &MailEdit::move_to(key("message-4"), MailboxId::try_from(ALL_MAIL_ID).unwrap()),
+        &NamedLabels::default(),
     )
     .await
     .unwrap();
@@ -201,9 +221,13 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
 async fn permanent_delete_hits_the_delete_endpoint() {
     let (base, rx) = capturing_server("204 No Content", "");
     let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
-    edit(&client, &MailEdit::delete(key("message-1")))
-        .await
-        .unwrap();
+    edit(
+        &client,
+        &MailEdit::delete(key("message-1")),
+        &NamedLabels::default(),
+    )
+    .await
+    .unwrap();
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
         request.starts_with("DELETE /gmail/v1/users/me/messages/message-1 "),
@@ -221,9 +245,13 @@ async fn a_stale_target_is_a_conflict() {
             json(r#"{"error":{"code":412,"errors":[{"reason":"conditionNotMet"}]}}"#),
         )),
     )]);
-    let err = edit(&client, &MailEdit::mark_seen(key("message-1"), true))
-        .await
-        .unwrap_err();
+    let err = edit(
+        &client,
+        &MailEdit::mark_seen(key("message-1"), true),
+        &NamedLabels::default(),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.class(), FailureClass::Conflict);
 }
 
@@ -280,4 +308,43 @@ fn the_two_writable_keywords_still_map_both_ways() {
     .unwrap();
     assert_eq!(add, Vec::<&str>::new());
     assert_eq!(remove, vec!["UNREAD", "STARRED"]);
+}
+
+#[tokio::test]
+async fn a_move_leaves_a_label_standing_for_a_keyword_on_the_message() {
+    let (client, log) = crate::test_support::recording_client(vec![
+        (
+            "/messages/message-1?format=minimal",
+            Ok(serde_json::json!({ "id": "message-1", "labelIds": ["INBOX", "Label_9"] })),
+        ),
+        (
+            "/messages/message-1/modify",
+            Ok(serde_json::json!({ "id": "message-1" })),
+        ),
+    ]);
+    let names =
+        [
+            engine_provider::KeywordName::new(Keyword::new("project-x").unwrap(), "Project X")
+                .unwrap(),
+        ];
+    let list = serde_json::json!([{ "id": "Label_9", "name": "Project X" }]);
+    let keyword_labels = NamedLabels::from_list(list.as_array().unwrap(), &names);
+    edit(
+        &client,
+        &MailEdit::move_to(key("message-1"), MailboxId::try_from("Label_1").unwrap()),
+        &keyword_labels,
+    )
+    .await
+    .unwrap();
+    let modify = log
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|request| request.url.ends_with("/modify"))
+        .and_then(|request| request.body.clone())
+        .unwrap();
+    assert_eq!(
+        modify,
+        serde_json::json!({ "addLabelIds": ["Label_1"], "removeLabelIds": ["INBOX"] })
+    );
 }

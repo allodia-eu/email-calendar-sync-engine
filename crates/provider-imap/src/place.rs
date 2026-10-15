@@ -200,8 +200,9 @@ where
     Ok(rows
         .iter()
         .filter_map(|row| {
-            let selectable = !crate::unseen::has_noselect(&row.attributes);
-            store.adopt(mailbox_from_list(row, modified_utf7)?, selectable)
+            let mailbox = mailbox_from_list(row, modified_utf7)?;
+            let selectable = mailbox.selectable;
+            store.adopt(mailbox, selectable)
         })
         .find(|mailbox| mailbox.role.as_ref() == Some(&role))
         .map(|mailbox| mailbox.id.as_str().to_owned()))

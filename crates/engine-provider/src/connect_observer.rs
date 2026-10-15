@@ -36,6 +36,7 @@
 //! | `provider-imap` | [`TlsEstablished`](ConnectStep::TlsEstablished) after the handshake, [`Authenticated`](ConnectStep::Authenticated) after `LOGIN`, [`Negotiated`](ConnectStep::Negotiated) after `CAPABILITY`/`ENABLE` |
 //! | `provider-jmap` | [`Redirected`](ConnectStep::Redirected) per well-known hop, [`Authenticated`](ConnectStep::Authenticated) on the session `2xx`, [`Discovered`](ConnectStep::Discovered) with the `apiUrl` |
 //! | `provider-caldav` | [`Redirected`](ConnectStep::Redirected) per hop, [`Discovered`](ConnectStep::Discovered) with the calendar-home href |
+//! | `provider-caldav` (CardDAV) | [`Redirected`](ConnectStep::Redirected) per hop, [`Discovered`](ConnectStep::Discovered) with the address-book-home href, [`Negotiated`](ConnectStep::Negotiated) with the home's `DAV:` classes |
 //! | `provider-graph` | nothing — `GraphClient::connect` performs no I/O |
 
 use std::borrow::Cow;
@@ -90,7 +91,7 @@ pub enum ConnectStep<'a> {
     /// The server accepted the account's credentials.
     Authenticated,
     /// Discovery settled on the endpoint that will serve requests — a JMAP `apiUrl`, a
-    /// CalDAV calendar-home href.
+    /// CalDAV calendar-home href, a CardDAV address-book-home href.
     ///
     /// Build with [`ConnectStep::discovered`]; the endpoint is userinfo-scrubbed.
     #[non_exhaustive]

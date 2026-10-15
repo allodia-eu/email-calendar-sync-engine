@@ -64,7 +64,11 @@ async fn send_probe(provider: &GmailProvider, marker: &str) -> ProviderKey {
         "Place probe body.",
     );
     provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send the probe")
         .email_key

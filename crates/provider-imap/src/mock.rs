@@ -23,6 +23,8 @@ pub(crate) type Recorded = Arc<Mutex<Vec<u8>>>;
 pub(crate) struct MockStream {
     to_client: io::Cursor<Vec<u8>>,
     from_client: Recorded,
+    /// Whether a read past the end of the script waits forever rather than reading EOF.
+    silent: bool,
 }
 
 impl MockStream {
@@ -33,7 +35,17 @@ impl MockStream {
         let stream = Self {
             to_client: io::Cursor::new(server_script.into()),
             from_client: Arc::clone(&recorded),
+            silent: false,
         };
+        (stream, recorded)
+    }
+
+    /// [`new`](Self::new), except that once the script is spent the server goes quiet
+    /// rather than closing: a read waits forever, as it does on a connection whose server
+    /// has stopped answering without closing anything.
+    pub(crate) fn silent_after(server_script: impl Into<Vec<u8>>) -> (Self, Recorded) {
+        let (mut stream, recorded) = Self::new(server_script);
+        stream.silent = true;
         (stream, recorded)
     }
 }
@@ -45,6 +57,10 @@ impl AsyncRead for MockStream {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let me = self.get_mut();
+        let spent = me.to_client.position() >= me.to_client.get_ref().len() as u64;
+        if me.silent && spent {
+            return Poll::Pending;
+        }
         let mut scratch = vec![0u8; buf.remaining()];
         let read = me.to_client.read(&mut scratch).unwrap_or(0);
         buf.put_slice(&scratch[..read]);

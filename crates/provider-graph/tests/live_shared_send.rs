@@ -111,7 +111,11 @@ async fn live_a_client_bound_to_a_shared_mailbox_sends_as_it() {
     // refused before any request, which the offline suite proves (`submit.rs`) — a live
     // check of it could only ever cost a second email if that guard broke.
     let receipt = bound
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("sendMail as the shared mailbox");
     assert_eq!(receipt.message_id, message_id);

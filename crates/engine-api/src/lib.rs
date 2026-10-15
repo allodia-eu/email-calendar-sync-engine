@@ -74,6 +74,8 @@ pub use engine_core::scheduling::{
     find_calendar_part, normalize_address, reconcile,
 };
 pub use engine_core::{
+    // What an adapter's `affiliation` answers, which a host stores with the account.
+    affiliation::Affiliation,
     contact::{
         AddressBook, ContactCard, ContactDraft, ContactField, ContactFieldSet, ContactKind,
         ContactPatch, ContactResource, ContactSourceClass, FieldPatch,
@@ -85,7 +87,7 @@ pub use engine_core::{
     // reach-around this re-export block exists to prevent.
     ids::{
         AccountId, AddressBookId, CalendarId, ContactId, EventId, MailboxId, MessageIdHeader,
-        PersonId, ProviderKey, SharedMailboxId, ThreadId, Uid,
+        OrganizationId, PersonId, ProviderKey, SharedMailboxId, ThreadId, Uid,
     },
     mail::{
         AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxAccess, MailboxRole,
@@ -105,7 +107,8 @@ pub use engine_core::{
     // scheduling payload needs to be able to name it.
     raw::RawIcal,
     recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
-    sync::{SyncScope, SyncWindow},
+    // `SearchDomain` names what `Engine::forget_account_domain` forgets.
+    sync::{SearchDomain, SyncScope, SyncWindow},
     // `CalendarDateTime` is the type of `Event::start` and `Event::recurrence_id`, and `Duration`
     // the type of `Event::duration` — both public fields on a type this facade returns.
     time::{
@@ -133,15 +136,16 @@ pub use engine_http::{
     IgnoreThrottles, RequestGate, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver,
 };
 pub use engine_provider::{
-    CalendarWrites, Capabilities, ContactDestination, ContactPhoto, ContactsProvider,
-    ContentIdHeader, DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition,
-    DraftCalendar, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp,
-    EventWrite, EventWriteReceipt, IdentityControls, MailEdit, MailEditReceipt, MailboxEdit,
-    MailboxEditReceipt, MailboxWrites, MessageReport, Occurrence, OverrideSurvival, PatchTarget,
-    Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence, ReportReceipt,
-    ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse, SenderIdentity, SenderIdentityId,
-    SentCopy, SharedMailbox, SharedMailboxes, SourceStream, SubmissionReceipt, TextEdit,
-    WriteGuard, WritePrecondition,
+    CalendarAddress, CalendarUserAddresses, CalendarWrites, Capabilities, ContactDestination,
+    ContactPhoto, ContactsProvider, ContentIdHeader, DeleteTarget, Draft, DraftAttachment,
+    DraftAttachmentDisposition, DraftCalendar, DraftRecurrence, EventDeletion, EventDraft,
+    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, IdentityControls,
+    InvitationError, Invitee, InviteePatch, InviteeRole, KeywordName, MailEdit, MailEditReceipt,
+    MailboxEdit, MailboxEditReceipt, MailboxWrites, MeetingDraft, MessageReport, Occurrence,
+    OverrideSurvival, PatchTarget, Provider, RecurrenceEdit, ReplyDelivery, ReportControls,
+    ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse,
+    SchedulingIdentity, SenderIdentity, SenderIdentityId, SentCopy, SharedMailbox, SharedMailboxes,
+    SourceStream, SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,
@@ -150,16 +154,17 @@ pub use engine_recurrence::{
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
 pub use engine_store::{
-    ContactPhotoFile, MailListRow, OccurrenceRow, OpRejection, PendingOpRow, PendingOpState,
-    PruneReport, SchemaStatus, SourcesDropped, SweepReport, SyncApplied, TzdataVersion,
+    Confirmation, ContactPhotoFile, MailListRow, OccurrenceRow, OpRejection, PendingOpRow,
+    PendingOpState, PruneReport, SchemaStatus, SourcesDropped, SweepReport, SyncApplied,
+    TzdataVersion,
 };
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
     ContactSourceReport, ContactSyncReport, ContactWriteOutcome, DraftPut, DrainOutcome,
     DrainReport, DrainedOp, EventSyncReport, FolderSync, HorizonExpansion, IgnoreCommits,
-    MailEditOutcome, MailSyncReport, MailboxChange, MailboxEditOutcome, MailboxNameError,
-    MailboxPlace, PeopleRebuildReport, ProgressSnapshot, PutDraftOutcome, ReportOutcome,
-    StreamTuning, SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming,
+    MailEditOutcome, MailEditSent, MailSyncReport, MailboxChange, MailboxEditOutcome,
+    MailboxNameError, MailboxPlace, PeopleRebuildReport, ProgressSnapshot, PutDraftOutcome,
+    ReportOutcome, StreamTuning, SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming,
     ThreadRebuildReport, UnexpandableEvent, validate_mailbox_name,
 };
 pub use scheduling::InboundScheduling;
@@ -209,6 +214,22 @@ impl ApiError {
             self,
             Self::Sync(SyncError::Provider(err))
                 if err.class() == engine_core::error::FailureClass::Conflict
+        )
+    }
+
+    /// Whether this call **never ran** because the runtime it was queued on is shutting
+    /// down.
+    ///
+    /// Not a failure of the account, the server or the store: nothing was attempted and
+    /// nothing was written, and the next launch does the work. A host that reports failures
+    /// (a status badge, a log line, a count) should report the process ending instead, or
+    /// nothing at all.
+    #[must_use]
+    pub fn is_shutting_down(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(StoreError::ShuttingDown)
+                | Self::Sync(SyncError::Store(StoreError::ShuttingDown))
         )
     }
 
@@ -285,5 +306,20 @@ mod error_tests {
         let transient = ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip")));
         assert!(!transient.is_conflict(), "retryable is not a conflict");
         assert!(!ApiError::Busy.is_conflict(), "Busy is not a conflict");
+    }
+
+    #[test]
+    fn a_call_the_shutdown_cancelled_is_told_apart_from_a_failure() {
+        // Both shapes a store call cancelled at shutdown reaches a host in: a direct store
+        // read, and a sync whose apply never ran.
+        assert!(ApiError::Store(StoreError::ShuttingDown).is_shutting_down());
+        assert!(ApiError::Sync(SyncError::Store(StoreError::ShuttingDown)).is_shutting_down());
+
+        assert!(!ApiError::Store(StoreError::Backend("disk full".into())).is_shutting_down());
+        assert!(
+            !ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip")))
+                .is_shutting_down()
+        );
+        assert!(!ApiError::Busy.is_shutting_down());
     }
 }

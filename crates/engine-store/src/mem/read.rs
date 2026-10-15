@@ -21,6 +21,7 @@ use crate::{
     lease::Clock,
     outbox::{PendingOpRow, PendingOpState},
     read::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead},
+    settle::stays_listed,
 };
 
 #[async_trait]
@@ -169,29 +170,42 @@ impl<C: Clock> StoreRead for MemStore<C> {
     }
 
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {
-        Ok(self.lock().ops.get(&id).map(|o| o.state))
+        let now = self.clock.now();
+        let inner = self.lock();
+        inner
+            .ops
+            .get(&id)
+            .map(|cell| Ok(cell.view(now)?.state))
+            .transpose()
     }
 
     async fn list_pending_ops(&self, account: AccountId) -> Result<Vec<PendingOpRow>> {
+        let now = self.clock.now();
         let inner = self.lock();
         // `ops` is a BTreeMap keyed by id, so this is already enqueue order.
-        Ok(inner
-            .ops
-            .iter()
-            .filter(|(_, cell)| cell.account == account && !cell.state.is_terminal())
-            .map(|(id, cell)| PendingOpRow {
+        let mut rows = Vec::new();
+        for (id, cell) in &inner.ops {
+            if cell.account != account {
+                continue;
+            }
+            let view = cell.view(now)?;
+            if !stays_listed(Some(cell.op.kind), view.state) {
+                continue;
+            }
+            rows.push(PendingOpRow {
                 id: *id,
                 kind: Some(cell.op.kind),
                 idempotency_key: cell.op.idempotency_key.clone(),
                 resource_key: cell.op.resource_key.clone(),
                 payload: cell.op.payload.clone(),
-                state: cell.state,
-                attempts: cell.attempts,
-                next_attempt_at: cell.next_attempt_at,
-                failure_class: cell.failure_class,
-                detail: cell.detail.clone(),
-            })
-            .collect())
+                state: view.state,
+                attempts: view.attempts,
+                next_attempt_at: view.next_attempt_at,
+                failure_class: view.failure_class,
+                detail: view.detail,
+            });
+        }
+        Ok(rows)
     }
 
     async fn index_row_counts(

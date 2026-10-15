@@ -214,7 +214,11 @@ async fn live_a_client_bound_to_a_group_mailbox_sends_as_it() {
         "Sent by the shared-mailbox live suite.",
     );
     shared
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("the group's own identity sends as the group");
 

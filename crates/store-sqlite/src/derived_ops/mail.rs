@@ -185,7 +185,7 @@ pub(super) fn apply_state_change(
 }
 
 /// Replaces one message's memberships **of a single kind**, leaving every other kind standing.
-fn replace_kind(
+pub(crate) fn replace_kind(
     tx: &Transaction<'_>,
     scope_key: &str,
     provider_key: &str,

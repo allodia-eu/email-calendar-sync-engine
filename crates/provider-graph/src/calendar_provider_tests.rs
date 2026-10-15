@@ -45,6 +45,19 @@ fn provider(client: GraphClient) -> GraphCalendarProvider {
     )
 }
 
+#[tokio::test]
+async fn the_calendar_schedules_as_the_mailbox_address() {
+    let provider = provider(fake_client(vec![(
+        "$select=displayName,mail,userPrincipalName",
+        serde_json::json!({ "displayName": "Alice", "mail": "alice@contoso.example",
+            "userPrincipalName": "alice@contoso.onmicrosoft.example" }),
+    )]));
+    assert_eq!(
+        provider.calendar_user_addresses(&account()).await.unwrap(),
+        CalendarUserAddresses::Known(vec!["alice@contoso.example".to_owned()])
+    );
+}
+
 #[test]
 fn debug_names_the_binding_without_leaking_the_token() {
     let provider = GraphCalendarProvider::new(

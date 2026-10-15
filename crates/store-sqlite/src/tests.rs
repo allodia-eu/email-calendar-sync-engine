@@ -168,26 +168,35 @@ async fn a_file_store_reads_through_a_connection_that_cannot_write() {
 
     let insert = "INSERT INTO meta (key, value) VALUES ('probe', '1')";
     let refused = store
-        .read(move |conn| conn.execute(insert, []).map_err(|err| err.to_string()))
+        .read(move |conn| {
+            conn.execute(insert, [])
+                .map_err(|err| engine_store::StoreError::Backend(err.to_string()))
+        })
         .await;
     assert!(
-        refused.is_err_and(|err| err.contains("readonly")),
+        refused.is_err_and(|err| matches!(
+            err,
+            engine_store::StoreError::Backend(message) if message.contains("readonly")
+        )),
         "a reader must refuse a write outright"
     );
 
     // The same statement on the writer succeeds, so the refusal above is the routing
     // and not a broken schema.
     store
-        .call(move |conn| conn.execute(insert, []).expect("the writer accepts it"))
-        .await;
+        .call(move |conn| Ok(conn.execute(insert, []).expect("the writer accepts it")))
+        .await
+        .unwrap();
     let stored = store
         .read(|conn| {
-            conn.query_row("SELECT value FROM meta WHERE key = 'probe'", [], |row| {
-                row.get::<_, String>(0)
-            })
-            .expect("read it back")
+            Ok(conn
+                .query_row("SELECT value FROM meta WHERE key = 'probe'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .expect("read it back"))
         })
-        .await;
+        .await
+        .unwrap();
     assert_eq!(stored, "1", "a reader sees the writer's committed row");
 }
 
@@ -224,8 +233,10 @@ async fn a_pre_v14_row_is_listed_and_cancellable_but_never_claimed() {
                 [],
             )
             .expect("seed a pre-v14 row");
+            Ok(())
         })
-        .await;
+        .await
+        .unwrap();
     let op = PendingOpId::new(1);
 
     // Listed, and honest about what it is: the kind was never recorded.
@@ -265,4 +276,76 @@ async fn a_pre_v14_row_is_listed_and_cancellable_but_never_claimed() {
         None
     );
     assert!(store.list_pending_ops(account).await.unwrap().is_empty());
+}
+
+/// A pre-v14 row an older build left `InFlight` under a lease that has since lapsed: no claim
+/// leases it now, so nothing else ever releases it. Recovery must, or it holds its resource
+/// against every batch claim and refuses the host's withdrawal as "in flight" for ever.
+#[tokio::test]
+async fn a_pre_v14_row_left_in_flight_is_released_and_cancellable() {
+    use engine_core::{
+        ids::{AccountId, ProviderKey},
+        write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, ResourceKey},
+    };
+    use engine_store::{LeaseRequest, PendingOpState, Store, StoreRead, WorkerId};
+
+    let store = SqliteStore::open_in_memory(ManualClock::new(
+        "2026-01-01T00:00:00Z".parse().expect("valid instant"),
+    ))
+    .expect("open");
+    let account = AccountId::new(ProviderKey::new("acct-legacy").unwrap());
+    store
+        .call(|conn| {
+            conn.execute(
+                "INSERT INTO pending_op
+                     (account, idempotency_key, resource_key, depends_on, payload, state, token,
+                      lease_expiry)
+                 VALUES ('acct-legacy', 'edit:1757942400:7', 'mail:imap:v1:u42@INBOX', '[]',
+                         'null', 'InFlight', 1, '2025-12-31T23:00:00Z')",
+                [],
+            )
+            .expect("seed a pre-v14 row in flight");
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let legacy = PendingOpId::new(1);
+
+    // A current write to the same resource is not held behind the dead legacy lease.
+    store
+        .enqueue_pending_op(
+            account.clone(),
+            PendingOp::new(
+                IdempotencyKey::new("edit:new").unwrap(),
+                PendingOpKind::MailEdit,
+                ResourceKey::new("mail:imap:v1:u42@INBOX").unwrap(),
+                serde_json::Value::Null,
+            ),
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_pending_ops(
+            account.clone(),
+            LeaseRequest::new(WorkerId::new("drainer"), core::time::Duration::from_mins(5)),
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        claimed.len(),
+        1,
+        "the legacy row's dead lease holds nothing"
+    );
+
+    let rows = store.list_pending_ops(account.clone()).await.unwrap();
+    let row = rows.iter().find(|row| row.id == legacy).expect("listed");
+    assert_eq!(row.state, PendingOpState::Pending);
+    assert_eq!(
+        store
+            .cancel_pending_op(account.clone(), legacy)
+            .await
+            .unwrap(),
+        None
+    );
 }

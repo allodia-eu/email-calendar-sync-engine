@@ -12,6 +12,7 @@ use engine_core::{
     mail::{Keyword, MailState, SystemKeyword},
     version::{ChangeKey, ETag, RevisionTokens},
 };
+use engine_provider::{KeywordName, keyword_named};
 use serde_json::Value;
 
 use crate::{
@@ -36,13 +37,16 @@ pub(crate) const MESSAGE_STATE_SELECT: &[&str] = &[
     "isRead",
     "isDraft",
     "flag",
+    "categories",
     "lastModifiedDateTime",
     "changeKey",
 ];
 
 /// The keywords a message's state properties imply. Graph models read/draft/flag as its
-/// own booleans, not a keyword set.
-pub(crate) fn keywords_from_json(value: &Value) -> BTreeSet<Keyword> {
+/// own booleans, not a keyword set, and keeps no free-form keyword at all: a category the
+/// host registered a name for (`names`) stands in for one ([`KeywordName`]). Any other
+/// category is the person's own and reports nothing.
+pub(crate) fn keywords_from_json(value: &Value, names: &[KeywordName]) -> BTreeSet<Keyword> {
     let mut keywords = BTreeSet::new();
     if bool_field(value, "isRead") {
         keywords.insert(Keyword::system(SystemKeyword::Seen));
@@ -52,6 +56,12 @@ pub(crate) fn keywords_from_json(value: &Value) -> BTreeSet<Keyword> {
     }
     if flag_is_flagged(value) {
         keywords.insert(Keyword::system(SystemKeyword::Flagged));
+    }
+    let categories = value.get("categories").and_then(Value::as_array);
+    for category in categories.into_iter().flatten().filter_map(Value::as_str) {
+        if let Some(keyword) = keyword_named(names, category) {
+            keywords.insert(keyword.clone());
+        }
     }
     keywords
 }
@@ -65,8 +75,11 @@ pub(crate) fn keywords_from_json(value: &Value) -> BTreeSet<Keyword> {
 /// # Errors
 ///
 /// Returns [`GraphError::Protocol`] if `lastModifiedDateTime` is malformed.
-pub(crate) fn state_from_json(value: &Value) -> Result<MailState, GraphError> {
-    Ok(MailState::with_keywords(keywords_from_json(value))
+pub(crate) fn state_from_json(
+    value: &Value,
+    names: &[KeywordName],
+) -> Result<MailState, GraphError> {
+    Ok(MailState::with_keywords(keywords_from_json(value, names))
         .revised(revisions(value), datetime(value, "lastModifiedDateTime")?))
 }
 

@@ -27,6 +27,8 @@
 //! account's pool for the pass (`crate::provider`), so concurrent passes run on separate
 //! connections.
 
+use std::sync::Arc;
+
 use engine_core::{
     ids::{MailboxId, ProviderKey},
     mail::Message,
@@ -40,14 +42,18 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     cursor::MailboxCursor,
     mail::message_from_fetch,
-    provider::format_imap_date,
-    sync::{FETCH_ITEMS, effective_uid_next, sync_page_selected, uid_set_spec},
+    metadata_fetch::{FETCH_ITEMS, needs_structure, settle_across, spare_helpers},
+    parse::FetchRow,
+    pool::ImapPool,
+    sync::{effective_uid_next, sync_page_selected, uid_set_spec},
     transport::Connection,
+    transport_command::format_imap_date,
 };
 
 /// Streams the bound mailbox's email for one pass. See the module docs.
 pub(crate) fn stream_email<'a, S>(
     conn: &'a mut Connection<S>,
+    pool: Option<&'a Arc<ImapPool<S>>>,
     mailbox: &'a MailboxId,
     cursor: Option<&'a SyncState>,
     window: SyncWindow,
@@ -55,9 +61,10 @@ pub(crate) fn stream_email<'a, S>(
     chunk_size: usize,
 ) -> impl Stream<Item = ProviderResult<EmailChunk>> + Send + 'a
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
     async_stream::try_stream! {
+        let fetch_batch = conn.negotiated.within_message_limit(fetch_batch);
         let qresync = conn.qresync_enabled();
         let select = if qresync {
             conn.select_condstore(mailbox.as_str()).await?
@@ -66,7 +73,7 @@ where
         };
         let uid_validity = select.uid_validity;
         let uid_next = effective_uid_next(conn, &select).await?;
-        let prior = cursor.and_then(MailboxCursor::decode);
+        let prior = cursor.and_then(MailboxCursor::current);
         let since = imap_since(window)?;
 
         // A cold backfill: a first sync (no cursor), or one resuming below a prior
@@ -86,19 +93,21 @@ where
             // expunge changes that happen, *during* the backfill are caught by the first
             // delta afterwards), preserved across resumes — the resumed SELECT's fresher
             // values would otherwise skip everything that changed since the kill.
-            let frontier = MailboxCursor {
-                uid_validity,
-                uid_next: prior.map_or(uid_next, |p| p.uid_next),
-                highest_modseq: prior.and_then(|p| p.highest_modseq).or(select.highest_modseq),
-                backfill_low: None,
-            };
             // A backfill that STARTS fresh this session (no prior watermark) sees the
             // whole in-window set in one run, so its completing chunk reconciles: it
             // tombstones local rows the server no longer has (the `reset`/`clear`/
             // normalizer contract). A *resumed* backfill only saw part of the set this
             // session, so it completes additively (no tombstone) — the reconcile lands
-            // on the next uninterrupted pass.
+            // on the next uninterrupted pass, which its cursor therefore may not skip.
             let is_fresh = prior.is_none();
+            let frontier = MailboxCursor {
+                uid_validity,
+                uid_next: prior.map_or(uid_next, |p| p.uid_next),
+                highest_modseq: prior.and_then(|p| p.highest_modseq).or(select.highest_modseq),
+                backfill_low: None,
+                reconciled: is_fresh,
+                version: crate::cursor::CURSOR_VERSION,
+            };
             let (groups, windowed_total) =
                 backfill_groups(conn, high, since.as_deref(), fetch_batch).await?;
             // The progress denominator: the in-window count when bounded, else the
@@ -108,6 +117,7 @@ where
             let empty = groups.is_empty();
             let scan = backfill_scan(
                 conn,
+                pool,
                 mailbox,
                 uid_validity,
                 groups,
@@ -201,6 +211,7 @@ where
 #[allow(clippy::too_many_arguments)] // the fetch inputs plus the reconcile flag are all distinct
 fn backfill_scan<'c, S>(
     conn: &'c mut Connection<S>,
+    pool: Option<&'c Arc<ImapPool<S>>>,
     mailbox: &'c MailboxId,
     uid_validity: u32,
     groups: Vec<(String, u32)>,
@@ -210,7 +221,7 @@ fn backfill_scan<'c, S>(
     is_fresh: bool,
 ) -> impl Stream<Item = ProviderResult<EmailChunk>> + 'c
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
     async_stream::try_stream! {
         let last_index = groups.len().saturating_sub(1);
@@ -220,7 +231,32 @@ where
         for (index, (spec, group_low)) in groups.into_iter().enumerate() {
             conn.uid_fetch_stream_start(&spec, FETCH_ITEMS).await?;
             let mut buf: Vec<Message> = Vec::new();
-            while let Some(row) = conn.next_fetch_row().await? {
+            // The rows whose headers left the attachment flag open wait for the group's
+            // metadata to end, then are settled at once over this connection and any spare
+            // ones (`crate::metadata_fetch`); a row the server returns no structure for goes
+            // out as it is.
+            let mut open: Vec<FetchRow> = Vec::new();
+            let mut ready: Vec<FetchRow> = Vec::new();
+            let mut settled = false;
+            loop {
+                let row = match conn.next_fetch_row().await? {
+                    Some(row) if needs_structure(&row) => {
+                        open.push(row);
+                        continue;
+                    }
+                    Some(row) => row,
+                    None if !settled && !open.is_empty() => {
+                        let helpers =
+                            spare_helpers(pool, mailbox.as_str(), uid_validity, open.len()).await;
+                        ready = settle_across(conn, helpers, &mut open).await?;
+                        settled = true;
+                        continue;
+                    }
+                    None => match ready.pop().or_else(|| open.pop()) {
+                        Some(row) => row,
+                        None => break,
+                    },
+                };
                 let message = message_from_fetch(&row, mailbox, uid_validity);
                 if is_fresh {
                     present.push(message.id.key().clone());
@@ -247,7 +283,11 @@ where
                 };
             } else {
                 // An intermediate group checkpoints its lowest UID (the resume point).
-                let checkpoint = MailboxCursor { backfill_low: Some(group_low), ..*frontier };
+                let checkpoint = MailboxCursor {
+                    backfill_low: Some(group_low),
+                    reconciled: false,
+                    ..*frontier
+                };
                 yield EmailChunk::additive(changed, Vec::new(), total, checkpoint.encode());
             }
         }

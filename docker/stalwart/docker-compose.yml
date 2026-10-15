@@ -23,31 +23,29 @@ name: stalwart-harness
 
 services:
   stalwart:
-    # stalwartlabs/stalwart v0.16.21, pinned by multi-arch digest (linux/amd64 +
+    # stalwartlabs/stalwart v0.16.24, pinned by multi-arch digest (linux/amd64 +
     # linux/arm64). Bump deliberately: re-resolve the digest and update CI too.
     #
-    # Bumped from v0.16.15 in its own change, after running the whole gated suite on both
-    # (see docs/agent-guidance/stalwart-harness.md → "The pinned version"). Every live
-    # test passed unchanged on both pins, so nothing the engine sends today behaves
-    # differently. What v0.16.16–v0.16.21 changed *near* this repo:
+    # Bumped from v0.16.21 in its own change, after running the whole gated suite from a
+    # wiped volume (see docs/agent-guidance/stalwart-harness.md → "The pinned version").
+    # What v0.16.22–v0.16.24 changed *near* this repo:
     #
-    #   - v0.16.21 rejects a `CalendarEvent/set` that asks for scheduling with a
-    #     `forbidden` `SetError` when the account cannot schedule (iTIP disabled, no
-    #     calendar address, or no `CalendarSchedulingSend`) — where earlier versions
-    #     ignored the request and stored the change. `provider-jmap` asks on *every*
-    #     calendar write, so on such an account every write now fails; the harness
-    #     accounts can schedule, which is why the suite is unaffected. Tracked as an
-    #     engine-side exposure, not a harness one (`docs/agent-guidance/jmap.md`).
-    #   - v0.16.18 made `CalendarEvent/set` schedule when an event is *created* with
-    #     participants. Unreachable from here: `EventDraft` cannot name one.
-    #   - v0.16.17 moved the server's own iTIP `text/calendar` part inside the
-    #     `multipart/alternative`, and stopped sending raw UTF-8 in IMAP `ENVELOPE`/
-    #     `BODYSTRUCTURE` to sessions that never enabled `UTF8=ACCEPT`. `engine-mime`
-    #     and `provider-imap` already read both shapes.
+    #   - v0.16.24 stopped `Email/set` giving a message IMAP UID 0 when one patch carries
+    #     a full `mailboxIds` equal to the current membership *and* a keyword change. That
+    #     is the report patch's shape whenever the message already sits in the
+    #     destination: reproduced on v0.16.22, where a junk report of a message already in
+    #     Junk left it at UID 0, which no IMAP client can address
+    #     (`docs/agent-guidance/jmap.md` → reporting).
     #
-    # `ifInState` enforcement (v0.16.14) is unchanged through v0.16.21, and the engine
+    # Still true from earlier pins: v0.16.21 rejects a `CalendarEvent/set` that asks for
+    # scheduling with a `forbidden` `SetError` when the account cannot schedule (iTIP
+    # disabled, no calendar address, or no `CalendarSchedulingSend`). `provider-jmap` asks
+    # on *every* calendar write, so on such an account every write fails; the harness
+    # accounts can schedule, which is why the suite is unaffected. Tracked as an
+    # engine-side exposure, not a harness one (`docs/agent-guidance/jmap.md`).
+    # `ifInState` enforcement (v0.16.14) is unchanged through v0.16.24, and the engine
     # still sends no precondition.
-    image: stalwartlabs/stalwart:v0.16.21@sha256:93c574e52249c1ebf90061da2c4c0756a7b72abfcc1fec34506a03c2e38b5977
+    image: stalwartlabs/stalwart:v0.16.24@sha256:ec011be228596e37e65f41aab17deed573859614430472f7eeb42178c50d87b7
     # Self-bootstrapping wrapper: bootstrap via API, restart to full server,
     # create accounts, seed, then run the server in the foreground.
     entrypoint: ["/bin/sh", "/harness/entrypoint.sh"]

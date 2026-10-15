@@ -36,8 +36,7 @@ fn fetch_resp(tag: &str, uids: &[u32]) -> String {
             "* {seq} FETCH (UID {uid} FLAGS (\\Seen) \
              INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 10 \
              ENVELOPE (NIL \"s{uid}\" NIL NIL NIL NIL NIL NIL NIL \"<m{uid}@h>\") \
-             BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 2 1) \
-             BODY[HEADER.FIELDS (REFERENCES)] \"\")\r\n"
+             BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n"
         )
         .unwrap();
     }
@@ -74,13 +73,13 @@ async fn first_sync_snapshots_a_uid_window_newest_first() {
     assert_eq!(page.changed[2].id.as_str(), "imap:v1000:u6@INBOX");
     assert_eq!(page.present.len(), 3);
     assert!(page.removed.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "v1000;n9");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n9;g1;r");
     // The next window ends just below this one.
     assert_eq!(page_high(page.next_page.as_ref().unwrap()), Some(5));
     // The client fetched exactly the newest window, including the References header.
     assert!(written(&recorded).contains(
         "UID FETCH 6:8 (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE \
-         BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES)])"
+         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)])"
     ));
 }
 
@@ -134,46 +133,6 @@ async fn a_continuation_page_fetches_the_next_window_down() {
 }
 
 #[tokio::test]
-async fn a_delta_with_no_new_arrivals_is_a_single_empty_page() {
-    // Same UIDVALIDITY, UIDNEXT unchanged at 10 → nothing at or above the watermark.
-    let select = select_resp("a2", 1000, 10, 8);
-    let server = script(&[GREETING, LOGIN_OK, &select]);
-    let mut conn = logged_in(server).await;
-
-    let cursor = SyncState::new("v1000;n10");
-    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
-        .await
-        .unwrap();
-    assert_eq!(page.kind, SyncKind::Delta);
-    assert!(page.changed.is_empty());
-    assert!(page.next_page.is_none());
-    assert_eq!(page.next_cursor.as_str(), "v1000;n10");
-}
-
-#[tokio::test]
-async fn a_delta_fetches_only_new_arrivals() {
-    // UIDNEXT advanced 5 → 8: new UIDs 5,6,7.
-    let select = select_resp("a2", 1000, 8, 7);
-    let fetch = fetch_resp("a3", &[5, 6, 7]);
-    let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
-    let (stream, recorded) = MockStream::new(server);
-    let mut conn = Connection::open(stream).await.unwrap();
-    conn.login("alice", "pw").await.unwrap();
-
-    let cursor = SyncState::new("v1000;n5");
-    let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
-        .await
-        .unwrap();
-    assert_eq!(page.kind, SyncKind::Delta);
-    assert_eq!(page.changed.len(), 3);
-    assert!(page.present.is_empty(), "a delta carries no present set");
-    assert!(page.removed.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "v1000;n8");
-    // Fetched the new-arrival window, not from UID 1.
-    assert!(written(&recorded).contains("UID FETCH 5:7"));
-}
-
-#[tokio::test]
 async fn a_uidvalidity_reset_forces_a_snapshot() {
     // The cursor's validity (111) no longer matches the server's (222): the UID
     // space was renumbered, so the whole mailbox is rediscovered as a snapshot.
@@ -182,7 +141,7 @@ async fn a_uidvalidity_reset_forces_a_snapshot() {
     let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
     let mut conn = logged_in(server).await;
 
-    let stale = SyncState::new("v111;n9");
+    let stale = SyncState::new("v111;n9;g1");
     let page = sync_page(&mut conn, &inbox(), Some(&stale), None, 50, None)
         .await
         .unwrap();
@@ -191,7 +150,7 @@ async fn a_uidvalidity_reset_forces_a_snapshot() {
     // Keys embed the NEW validity, so every old-validity row tombstones.
     assert_eq!(page.changed[0].id.as_str(), "imap:v222:u3@INBOX");
     assert_eq!(page.present.len(), 3);
-    assert_eq!(page.next_cursor.as_str(), "v222;n4");
+    assert_eq!(page.next_cursor.as_str(), "v222;n4;g1;r");
 }
 
 #[tokio::test]
@@ -212,7 +171,7 @@ async fn uid_next_is_derived_when_the_server_omits_it() {
     assert_eq!(page.kind, SyncKind::Snapshot);
     assert_eq!(page.changed.len(), 3);
     // Derived UIDNEXT = highest UID (3) + 1.
-    assert_eq!(page.next_cursor.as_str(), "v100;n4");
+    assert_eq!(page.next_cursor.as_str(), "v100;n4;g1;r");
     assert!(written(&recorded).contains("UID FETCH * (UID)"));
 }
 
@@ -230,7 +189,7 @@ async fn an_empty_mailbox_snapshots_to_nothing() {
     // An empty present set tombstones every local row — the mailbox was emptied.
     assert!(page.present.is_empty());
     assert_eq!(page.total, Some(0));
-    assert_eq!(page.next_cursor.as_str(), "v1000;n1");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n1;g1;r");
 }
 
 #[tokio::test]
@@ -279,40 +238,8 @@ async fn a_windowed_snapshot_with_no_matches_fetches_nothing() {
     assert!(page.changed.is_empty());
     assert!(page.present.is_empty());
     assert_eq!(page.total, Some(0));
-    assert_eq!(page.next_cursor.as_str(), "v1000;n9");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n9;g1;r");
     assert!(!written(&recorded).contains("UID FETCH"));
-}
-
-#[tokio::test]
-async fn a_delta_ignores_the_sync_depth_window() {
-    // A delta is already bounded to new arrivals, so the window triggers no `SEARCH` —
-    // new mail is recent by definition.
-    let select = select_resp("a2", 1000, 8, 7);
-    let fetch = fetch_resp("a3", &[5, 6, 7]);
-    let server = script(&[GREETING, LOGIN_OK, &select, &fetch]);
-    let (stream, recorded) = MockStream::new(server);
-    let mut conn = Connection::open(stream).await.unwrap();
-    conn.login("alice", "pw").await.unwrap();
-
-    let cursor = SyncState::new("v1000;n5");
-    let page = sync_page(
-        &mut conn,
-        &inbox(),
-        Some(&cursor),
-        None,
-        50,
-        Some("1-Mar-2026"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(page.kind, SyncKind::Delta);
-    assert_eq!(page.changed.len(), 3);
-    let sent = written(&recorded);
-    assert!(
-        !sent.contains("UID SEARCH"),
-        "a delta must not SEARCH: {sent}"
-    );
-    assert!(sent.contains("UID FETCH 5:7"));
 }
 
 #[tokio::test]
@@ -403,7 +330,7 @@ async fn a_qresync_delta_reconciles_flag_changes_and_expunges() {
     conn.login("alice", "pw").await.unwrap();
     conn.force_enabled("QRESYNC");
 
-    let cursor = SyncState::new("v1000;n5;m9");
+    let cursor = SyncState::new("v1000;n5;g1;m9");
     let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
         .await
         .unwrap();
@@ -415,7 +342,7 @@ async fn a_qresync_delta_reconciles_flag_changes_and_expunges() {
     assert_eq!(page.removed.len(), 1);
     assert_eq!(page.removed[0].as_str(), "imap:v1000:u3@INBOX");
     // The new modseq baseline rides the cursor forward.
-    assert_eq!(page.next_cursor.as_str(), "v1000;n8;m20");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n8;g1;m20;r");
 
     let sent = written(&recorded);
     assert!(sent.contains("SELECT \"INBOX\" (CONDSTORE)"), "{sent}");
@@ -446,7 +373,7 @@ async fn a_qresync_snapshot_records_the_modseq_baseline() {
         .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
     assert_eq!(page.changed.len(), 3);
-    assert_eq!(page.next_cursor.as_str(), "v1000;n4;m12");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n4;g1;m12;r");
     assert!(written(&recorded).contains("SELECT \"INBOX\" (CONDSTORE)"));
 }
 
@@ -465,7 +392,7 @@ async fn the_first_sync_after_upgrade_re_snapshots_to_establish_the_baseline() {
     conn.login("alice", "pw").await.unwrap();
     conn.force_enabled("QRESYNC");
 
-    let cursor = SyncState::new("v1000;n5"); // pre-QRESYNC: no modseq
+    let cursor = SyncState::new("v1000;n5;g1"); // pre-QRESYNC: no modseq
     let page = sync_page(&mut conn, &inbox(), Some(&cursor), None, 50, None)
         .await
         .unwrap();
@@ -484,7 +411,7 @@ async fn the_first_sync_after_upgrade_re_snapshots_to_establish_the_baseline() {
         7,
         "a snapshot tombstones against the full set"
     );
-    assert_eq!(page.next_cursor.as_str(), "v1000;n8;m20");
+    assert_eq!(page.next_cursor.as_str(), "v1000;n8;g1;m20;r");
     let sent = written(&recorded);
     assert!(!sent.contains("CHANGEDSINCE"), "no baseline yet: {sent}");
     assert!(

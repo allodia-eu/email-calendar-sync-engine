@@ -105,6 +105,8 @@ fn tombstoning_an_object_cascades_to_its_derived_rows() {
         &[],
         false,
         Some("c1"),
+        None,
+        instant("2026-01-01T00:00:00Z"),
     )
     .unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM object"), 1);
@@ -126,6 +128,8 @@ fn tombstoning_an_object_cascades_to_its_derived_rows() {
         &[],
         false,
         Some("c2"),
+        None,
+        instant("2026-01-01T00:00:00Z"),
     )
     .unwrap();
     assert_eq!(applied.tombstoned, 1);
@@ -153,6 +157,8 @@ fn replaying_occurrences_does_not_duplicate_rows() {
         &[],
         false,
         Some("c1"),
+        None,
+        instant("2026-01-01T00:00:00Z"),
     )
     .unwrap();
     apply(
@@ -165,6 +171,8 @@ fn replaying_occurrences_does_not_duplicate_rows() {
         &[],
         false,
         Some("c1"),
+        None,
+        instant("2026-01-01T00:00:00Z"),
     )
     .unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 1);
@@ -188,6 +196,8 @@ fn removed_derived_keys_clear_rows_but_keep_the_object() {
         &[],
         false,
         Some("c1"),
+        None,
+        instant("2026-01-01T00:00:00Z"),
     )
     .unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM fts_doc"), 1);
@@ -222,6 +232,8 @@ fn overridden_and_base_occurrences_coexist() {
         &[],
         false,
         Some("c1"),
+        None,
+        instant("2026-01-01T00:00:00Z"),
     )
     .unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM event_occurrence"), 2);
@@ -253,6 +265,8 @@ fn re_expansion_updates_version_and_keeps_instants_byte_stable() {
         &[],
         false,
         Some("c1"),
+        None,
+        instant("2026-01-01T00:00:00Z"),
     )
     .unwrap();
 
@@ -275,8 +289,9 @@ fn re_expansion_updates_version_and_keeps_instants_byte_stable() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(start, "2026-03-01T09:00:00Z");
-    assert_eq!(end, "2026-03-01T09:15:00Z");
+    // The fixed-width form: the same instant written again is the same bytes.
+    assert_eq!(start, "2026-03-01T09:00:00.000000000Z");
+    assert_eq!(end, "2026-03-01T09:15:00.000000000Z");
     assert_eq!(version, "2025b");
 }
 

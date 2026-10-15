@@ -339,3 +339,50 @@ async fn a_trashed_folder_lands_in_trash_with_its_mail_and_a_delete_removes_it_f
         assert_eq!(again, MailboxEditReceipt::removed(), "{label}");
     }
 }
+
+#[tokio::test]
+async fn a_parent_made_only_to_hold_a_folder_is_listed_as_not_selectable() {
+    let test = "a_parent_made_only_to_hold_a_folder_is_listed_as_not_selectable";
+    for server in &SERVERS {
+        let Some(provider) = connect_to(server, "INBOX", test).await else {
+            continue;
+        };
+        let label = server.label;
+        // The parent is never created: the child's `CREATE` names a path through it, and the
+        // server makes whatever it keeps for the level above.
+        let parent = id(&unique("Container"));
+        let child = resolved(
+            &edit(
+                &provider,
+                MailboxEdit::Create {
+                    name: "Child".into(),
+                    parent: Some(parent.clone()),
+                },
+                label,
+            )
+            .await,
+        );
+
+        let all = folders(&provider).await;
+        let held = listed(&all, &parent).unwrap_or_else(|| panic!("{label} lists {parent}"));
+        // Dovecot keeps a `\Noselect` level; Stalwart makes a real folder, which is the other
+        // direction of the same mapping, so neither answer can come from a stuck adapter.
+        assert_eq!(held.selectable, label == "stalwart", "{label}");
+        assert!(
+            listed(&all, &child).is_some_and(|m| m.selectable),
+            "{label}"
+        );
+
+        edit(
+            &provider,
+            MailboxEdit::Delete {
+                target: parent.clone(),
+            },
+            label,
+        )
+        .await;
+        let all = folders(&provider).await;
+        assert!(listed(&all, &parent).is_none(), "{label}");
+        assert!(listed(&all, &child).is_none(), "{label}");
+    }
+}

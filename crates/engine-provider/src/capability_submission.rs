@@ -8,7 +8,9 @@ impl Capabilities {
     /// the filed copy as supported.
     ///
     /// The adapter asks the server for them; the server may still decline (an IMAP folder
-    /// that does not allow new keywords), so what was kept is per send, in
+    /// that does not allow new keywords), and a provider that keeps a keyword only as a named
+    /// label or category keeps only those it has a [`KeywordName`](crate::KeywordName) for,
+    /// so what was kept is per send, in
     /// [`SubmissionReceipt::sent_copy_keywords`](crate::SubmissionReceipt::sent_copy_keywords).
     /// Without this flag the copy is filed without them and the receipt says so.
     #[must_use]

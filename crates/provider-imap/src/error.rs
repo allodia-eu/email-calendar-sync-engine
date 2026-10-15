@@ -33,6 +33,11 @@ pub enum ImapError {
     #[error("server is limiting sign-ins for this account: {0}")]
     RateLimited(String),
 
+    /// The account's [`CredentialSource`](crate::CredentialSource) could not produce a
+    /// credential, so nothing was dialled. Classified as the source classified it.
+    #[error("no credential to sign in with: {0}")]
+    Credential(ProviderError),
+
     /// A command returned a tagged `NO`: it is invalid in the resource's current
     /// state (e.g. `SELECT` of a missing mailbox), not retryable as-is.
     #[error("IMAP command rejected: {0}")]
@@ -94,6 +99,7 @@ impl ImapError {
             Self::Io(_) | Self::Bye(_) => FailureClass::Retryable,
             Self::Auth(_) => FailureClass::Authentication,
             Self::RateLimited(_) => FailureClass::RateLimited,
+            Self::Credential(source) => source.class(),
             // `NO` means "not now, in this state" — recompute, do not blind-retry.
             Self::No(_) => FailureClass::InvalidState,
             // `BAD`/malformed is a protocol-level incompatibility: the same request

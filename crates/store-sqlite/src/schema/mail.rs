@@ -1,8 +1,10 @@
-//! The mail row and the message-id graph: schema steps v8 through v10.
+//! The mail row and the message-id graph: schema steps v8 through v10, and v17; and v18, the
+//! instants every table stores.
 //!
 //! Split from [`super`], which holds the base store, the search layer and the calendar steps.
-//! These three are one story — a message's mutable half becoming a table, and the graph its
-//! conversation is a component of — and they are the steps a mail change touches.
+//! These are one story — a message's mutable half becoming a table, the graph its conversation
+//! is a component of, and the keywords it shows while a change to them is queued — and they are
+//! the steps a mail change touches.
 
 /// Migration v8: the thread lookup `mail_index` never had.
 ///
@@ -124,3 +126,33 @@ CREATE TABLE msgid_ref (
 
 CREATE INDEX msgid_ref_lookup ON msgid_ref (account, msgid);
 ";
+
+/// Migration v17: the keywords a message shows while a change to them is queued.
+///
+/// A queued op carries the [`KeywordEdit`](engine_core::write::KeywordEdit) it makes
+/// (`pending_op.keyword_edit`, JSON), which the store applies to the message the moment the op is
+/// queued. `server_keywords` holds, for a message with such an op still unsettled, the keyword set
+/// the server last reported: a sync replaces it, an accepted change joins it, and the message row
+/// shows it with every unsettled change applied. `pending_op.settled_at` records when an op
+/// settled, so a sync pass that began before an accepted change landed cannot undo it on screen.
+///
+/// Nothing to fill: no op queued before v17 carries a change, and so no message has a server set
+/// to keep.
+pub(crate) const V17: &str = "\
+ALTER TABLE pending_op ADD COLUMN keyword_edit TEXT;
+ALTER TABLE pending_op ADD COLUMN settled_at TEXT;
+CREATE TABLE server_keywords (
+    account      TEXT NOT NULL,
+    provider_key TEXT NOT NULL,
+    keywords     TEXT NOT NULL,
+    PRIMARY KEY (account, provider_key)
+) STRICT, WITHOUT ROWID;
+";
+
+/// Migration v18: every stored instant in its fixed-width form,
+/// [`UtcDateTime::to_sortable_string`](engine_core::time::UtcDateTime::to_sortable_string).
+///
+/// No DDL: the step is the rewrite in [`crate::backfill::fixed_width_instants`], which commits with
+/// it. The form a store wrote before dropped a zero fraction and trailing zeros, and so did not
+/// sort as text within one second.
+pub(crate) const V18: &str = "";

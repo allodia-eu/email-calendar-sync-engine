@@ -10,6 +10,7 @@
 //! - expose what it can do, and what its transport negotiated, via one [`ConnectionInfo`];
 //! - classify failures through [`ProviderError`] (the engine-neutral
 //!   [`FailureClass`](engine_core::error::FailureClass) taxonomy);
+//! - bound every wait on a server by the one shared [`Deadlines`];
 //! - signal delta-vs-snapshot (carried inside the [`SyncUpdate`](engine_core::sync::SyncUpdate)
 //!   itself).
 //!
@@ -31,6 +32,7 @@
 //! the provider-neutral scopes.
 
 mod boxed;
+mod calendar_user;
 mod calendar_write;
 mod capability;
 mod capability_calendar;
@@ -40,8 +42,11 @@ mod capability_submission;
 mod connect_observer;
 mod connection;
 mod contact;
+mod deadline;
 mod error;
+mod hand_over;
 mod identity;
+mod keyword_name;
 mod mail_edit;
 mod mailbox_edit;
 mod mailbox_write;
@@ -57,10 +62,12 @@ mod submit;
 mod sync;
 mod watch;
 
+pub use calendar_user::CalendarUserAddresses;
 pub use calendar_write::{
-    CalendarWrites, DeleteTarget, DraftRecurrence, EventDeletion, EventDraft, EventEdit,
-    EventPatch, EventRsvp, EventWrite, EventWriteReceipt, Occurrence, PatchTarget, RecurrenceEdit,
-    ReplyDelivery, RsvpResponse, TextEdit, WritePrecondition,
+    CalendarAddress, CalendarWrites, DeleteTarget, DraftRecurrence, EventDeletion, EventDraft,
+    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, InvitationError, Invitee,
+    InviteePatch, InviteeRole, MeetingDraft, Occurrence, PatchTarget, RecurrenceEdit,
+    ReplyDelivery, RsvpResponse, SchedulingIdentity, TextEdit, WritePrecondition,
 };
 pub use capability::Capabilities;
 pub use capability_calendar::{OverrideSurvival, RsvpControls, WriteGuard};
@@ -72,8 +79,11 @@ pub use contact::{
     ContactDestination, ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt,
     ContactsProvider,
 };
+pub use deadline::Deadlines;
 pub use error::{ProviderError, ProviderResult};
+pub use hand_over::{HandOver, HandOverLog, HandedOver, Unrecorded};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
+pub use keyword_name::{KeywordName, keyword_named};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use mailbox_edit::{MailboxEdit, MailboxEditReceipt};
 pub use mailbox_write::MailboxWrites;

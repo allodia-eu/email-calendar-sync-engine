@@ -16,7 +16,7 @@
 
 use async_trait::async_trait;
 use engine_http::RetryConfig;
-use engine_provider::{HttpVersion, TlsVersion};
+use engine_provider::{HandOver, HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -63,6 +63,23 @@ pub(crate) trait GraphTransport: Send + Sync {
         content_type: &str,
         body: Vec<u8>,
     ) -> Result<Option<Value>, GraphError>;
+
+    /// [`post`](Self::post) for the one request that submits a message (`sendMail`): its reply
+    /// waits the submission bound, and its failure after it may have reached the server
+    /// leaves the send ambiguous (`crate::submit`). A fake has no wait to make, so it posts.
+    async fn submit(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        hand_over: &HandOver<'_>,
+    ) -> Result<Option<Value>, GraphError> {
+        hand_over
+            .commit()
+            .await
+            .map_err(|err| engine_http::SendError::withheld(err.detail().to_owned()))?;
+        self.post(url, content_type, body).await
+    }
 
     /// `PATCH`es `body` with `content_type` to `url`, guarded by `if_match` (an
     /// `If-Match` ETag precondition; a stale one is `412` → [`FailureClass::Conflict`]).
@@ -304,6 +321,23 @@ impl GraphClient {
     ) -> Result<Option<Value>, GraphError> {
         self.transport
             .post(&self.rebase(url), content_type, body)
+            .await
+    }
+
+    /// [`post`](Self::post) for the request that submits a message (`sendMail`).
+    ///
+    /// # Errors
+    ///
+    /// As [`post`](Self::post).
+    pub(crate) async fn submit(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        hand_over: &HandOver<'_>,
+    ) -> Result<Option<Value>, GraphError> {
+        self.transport
+            .submit(&self.rebase(url), content_type, body, hand_over)
             .await
     }
 

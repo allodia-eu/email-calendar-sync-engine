@@ -196,6 +196,22 @@ fn format_wall_clock(dt: PrimitiveDateTime) -> String {
     out
 }
 
+/// Formats a wall-clock date-time as `YYYY-MM-DDThh:mm:ss.nnnnnnnnn`: every digit always present,
+/// so two values compare as text exactly as they compare as date-times.
+fn format_wall_clock_fixed(dt: PrimitiveDateTime) -> String {
+    let (date, time) = (dt.date(), dt.time());
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}",
+        date.year(),
+        u8::from(date.month()),
+        date.day(),
+        time.hour(),
+        time.minute(),
+        time.second(),
+        time.nanosecond(),
+    )
+}
+
 /// Parses a `YYYY-MM-DDThh:mm:ss[.fff]` wall-clock date-time (no zone/offset).
 fn parse_wall_clock(s: &str) -> Result<PrimitiveDateTime, TimeError> {
     if s.len() < 19 || s.as_bytes()[10] != b'T' {

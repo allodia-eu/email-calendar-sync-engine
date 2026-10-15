@@ -253,8 +253,9 @@ pub enum SyncScope {
     },
 }
 
-/// The search domain whose member objects a scope holds — the index a per-account
-/// query routes the scope to.
+/// Mail, calendar or contacts: the domain an account's data falls into. It names the index a
+/// per-account query routes a scope to ([`SyncScope::search_domain`]) and what a host forgets
+/// when one domain of an account is switched off ([`SyncScope::domain`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SearchDomain {
     /// Mail objects (the mail scalar/address/membership index plus full text).
@@ -334,10 +335,9 @@ impl SyncScope {
     ///
     /// This is how a host reads an account's objects without hard-coding or branching
     /// on protocol: enumerate the account's scopes (`StoreRead::account_scopes`), then
-    /// read the ones whose kind it wants. CalDAV collections classify as calendar
-    /// today; CardDAV address books will need disambiguation when contacts land (they
-    /// reuse [`DavCollection`](Self::DavCollection) /
-    /// [`DavCollectionList`](Self::DavCollectionList)).
+    /// read the ones whose kind it wants. The DAV collection scopes are CalDAV's; CardDAV has
+    /// its own ([`CardDavAddressBook`](Self::CardDavAddressBook) /
+    /// [`CardDavAddressBookList`](Self::CardDavAddressBookList)).
     #[must_use]
     pub fn object_kind(&self) -> Option<ObjectKind> {
         match self {
@@ -397,6 +397,56 @@ impl SyncScope {
             Some(ObjectKind::Mailbox | ObjectKind::Calendar | ObjectKind::AddressBook) | None => {
                 None
             }
+        }
+    }
+
+    /// The domain this scope's data belongs to, containers and discovery scopes included,
+    /// so forgetting a domain can leave nothing of it behind. `None` only for a JMAP data
+    /// type this build does not know.
+    ///
+    /// Written as one exhaustive match rather than derived from
+    /// [`object_kind`](Self::object_kind), which answers `None` for JMAP's `Thread` and
+    /// `EmailSubmission`: both hold mail state. A new variant does not compile until it is
+    /// placed here.
+    #[must_use]
+    pub fn domain(&self) -> Option<SearchDomain> {
+        match self {
+            Self::JmapType { data_type, .. } => match data_type {
+                JmapDataType::Email
+                | JmapDataType::Mailbox
+                | JmapDataType::Thread
+                | JmapDataType::EmailSubmission => Some(SearchDomain::Mail),
+                JmapDataType::Calendar | JmapDataType::CalendarEvent => {
+                    Some(SearchDomain::Calendar)
+                }
+                JmapDataType::AddressBook | JmapDataType::ContactCard => {
+                    Some(SearchDomain::Contacts)
+                }
+                JmapDataType::Other(_) => None,
+            },
+            Self::ImapMailboxList { .. }
+            | Self::ImapMailbox { .. }
+            | Self::GraphFolderList { .. }
+            | Self::GraphFolder { .. }
+            | Self::GmailMessages { .. }
+            | Self::GmailLabelList { .. } => Some(SearchDomain::Mail),
+            Self::DavCollectionList { .. }
+            | Self::DavCollection { .. }
+            | Self::GraphCalendarList { .. }
+            | Self::GraphCalendar { .. }
+            | Self::GoogleCalendarList { .. }
+            | Self::GoogleCalendar { .. } => Some(SearchDomain::Calendar),
+            Self::GraphContactFolderList { .. }
+            | Self::GraphContacts { .. }
+            | Self::GraphOrgContacts { .. }
+            | Self::GraphDirectoryUsers { .. }
+            | Self::GoogleContactSourceList { .. }
+            | Self::GoogleContacts { .. }
+            | Self::GoogleOtherContacts { .. }
+            | Self::GoogleDirectoryPeople { .. }
+            | Self::GoogleContactGroups { .. }
+            | Self::CardDavAddressBookList { .. }
+            | Self::CardDavAddressBook { .. } => Some(SearchDomain::Contacts),
         }
     }
 }

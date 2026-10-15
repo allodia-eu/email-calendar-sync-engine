@@ -157,6 +157,24 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   preserving cursors, so a cold backfill resumes from its last committed checkpoint
   immediately instead of waiting for the fixed `LEASE_TTL` or clearing state. This
   is not a normal `Busy` recovery path for live in-process contention.
+  `Engine::recover_interrupted_ops` is its outbox half and is called beside it. A send the
+  dead process left in flight is retried at once when it had not yet handed its message to
+  the server, and awaits confirmation when it had; every other write retries as a retryable
+  failure (`engine_store::interrupted_outcome`, `store-and-sync.md` → "A send survives its
+  process"). Without it nothing is lost: every write path recovers an attempt once its lease
+  has lapsed, and this only saves waiting the lease out.
+- **The outbox answers for every send until the host does.** `Engine::outbox` lists what has
+  not settled and every send that settled `Failed`, payload included (`queued_draft`), so a
+  message that could not be sent stays in front of the user. A host offers three verbs on a
+  row: `retry_pending_op_now` ("Send now", and "Send again" on a failed send),
+  `cancel_pending_op` (withdraw, which is also how a failed send is dismissed) and, on a send
+  awaiting confirmation, `confirm_pending_op` with `Confirmation::Delivered` ("it was sent")
+  or `NotDelivered` ("send it again"). A send whose copy syncs into a Sent mailbox is
+  confirmed without asking.
+- **A call the runtime cancelled is not a failure.** When a host drops the engine's runtime
+  with work queued, each store call that never ran fails with `StoreError::ShuttingDown`,
+  and `ApiError::is_shutting_down()` says so, so a host reports the process ending rather
+  than a failed sync. Nothing ran and nothing was written; the next launch does the work.
 - **Re-export signature types.** Types that appear in the facade's own signatures
   (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,
@@ -189,21 +207,29 @@ Step 6 lands in small, tested slices. Order and status:
 3. **Writes / outbox — _done_.** `Engine::submit_mail` drives `engine-sync`'s outbox
    `submit_mail` (durable op → claim → provider send → record), returning a
    `SubmitOutcome` (sent key, `Message-ID`, op id, what became of the Sent copy and
-   which of the draft's `sent_copy_keywords` it carries); a failed send is recorded
+   which of the draft's `sent_copy_keywords` it carries; a provider that keeps a keyword only as
+   a named category needs a `KeywordName`, re-exported here); a failed send is recorded
    `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the
    outbox never blind-retries. `Engine::pending_op_state` exposes
    `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an
    ambiguous send). `Engine::edit_mail` rides the same outbox for mail mutations —
    it takes a caller-minted idempotency key and a `MailEdit` (mark-read/flag, move,
-   or permanent delete) and returns a `MailEditOutcome` (resolved key + op id); a
-   failure (e.g. a stale-target `Conflict`) is recorded `Failed` before surfacing as
-   `ApiError::Sync`. `Engine::create_calendar_event` / `patch_calendar_event` /
+   or permanent delete) and returns a `MailEditSent`: `Applied(MailEditOutcome)`
+   (resolved key + op id), or `Queued` when the server refused for now and the outbox
+   will retry. Only a refusal that settles the op (e.g. a stale-target `Conflict`, or the
+   last attempt) surfaces as `ApiError::Sync`. It is `Engine::queue_mail_edit` then
+   `Engine::send_mail_edit`, which a host calls separately to show the edit first: a
+   keyword change is in every read of the message from the moment it is queued, and is
+   taken back only when refused for good (`store-and-sync.md`). `Engine::create_calendar_event` / `patch_calendar_event` /
    `delete_calendar_event` ride the same outbox for calendar mutations — a caller-minted
    idempotency key plus an `EventDraft` (the event you want), or the event **as you read
    it** plus a `PatchTarget` + `EventPatch` (what changed, and on which occurrence), or an
    `EventDeletion` — returning a `CalendarWrite` / `CalendarDelete`. These carry **intent**: the host never assembles
    iCalendar, mints an href, or touches an `ETag`, and the same call drives CalDAV and JMAP
    (`providers.md`). The write types are re-exported from `engine-api`.
+   `EventDraft::meeting` carries the organiser and required or optional invitees for a new
+   meeting. `EventPatch::invitees` carries whole-series roster upserts and removals. The
+   adapters preserve existing response state and provider fields while applying that intent.
    - **Read `Capabilities::calendar_write_guard()` before writing.** `WriteGuard::Enforced`
      (CalDAV) means a stale edit is refused — a `412` surfaces as a `Conflict`, to be
      recovered by re-syncing and re-applying, never a blind retry. `WriteGuard::Absent`
@@ -222,9 +248,9 @@ Step 6 lands in small, tested slices. Order and status:
      asks the server to store the document **only if nothing is there** (`WritePrecondition::IfAbsent`),
      so putting an invitation that arrived as mail onto the calendar is a guarded create: a
      resource that appeared in the meantime is a `Conflict`, never a silent overwrite. This
-     is the path for an inbound invitation specifically because
-     `create_calendar_event`/`EventDraft` carries neither organizer nor attendees and would
-     store a plain appointment with nothing to answer on.
+     is the path for an inbound invitation because only the received raw document preserves
+     its organiser, participant response states, sequence and extensions. `EventDraft::meeting`
+     is instead the organiser-authored path for creating a new invitation.
    - **A calendar write reconciles the store before it returns** (issue #65). A write's
      response is a *receipt*, not a document (a CalDAV `PUT` answers with an `ETag` and no
      body; a JMAP `/set` with an id and no object), so the driver alone would leave the row
@@ -343,9 +369,10 @@ facade"*).
   failure) — classification, not restringing. Add similar classifications there if
   another error class deserves a distinct host signal.
 - **Not every facade method needs the store.** `sender_identities`/`set_sender_name`
-  (`providers.md`) are the first pair that touches neither the store nor the outbox: a
-  sender name is a *host preference*, not synced PIM state, and the `From` a send carries
-  is assembled from the caller's `Draft`. What the engine owns there is the protocol.
+  (`providers.md`) touch neither the store nor the outbox: a sender name is a *host
+  preference*, not synced PIM state, and the `From` a send carries is assembled from the
+  caller's `Draft`. `calendar_user_addresses` sits beside them: it is the server's answer,
+  read when a host asks. What the engine owns there is the protocol.
   Passing a call straight to the provider is legitimate when the answer is not ours to
   keep; reach for the outbox when a side effect must survive a crash.
   `list_shared_mailboxes`/`resolve_shared_mailbox` are the second pair: which mailboxes a

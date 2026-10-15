@@ -87,6 +87,22 @@ fn resolves_relative_and_absolute_collections() {
     );
 }
 
+/// Stalwart names its principal at `/dav/cal/` but answers the address set only on the
+/// principal itself, so the provider asks the principal when a host asks it.
+#[tokio::test]
+async fn the_calendar_user_addresses_come_from_the_principal() {
+    let provider = connect(replay(&[
+        PRINCIPAL,
+        include_str!("../tests/fixtures/principal-addresses.xml"),
+    ]))
+    .await;
+    let account = AccountId::try_from("a").unwrap();
+    assert_eq!(
+        provider.calendar_user_addresses(&account).await.unwrap(),
+        CalendarUserAddresses::Known(vec!["alice@test.local".to_owned()])
+    );
+}
+
 #[tokio::test]
 async fn exposes_dav_scopes_and_the_calendar_capabilities() {
     let provider = connect(replay(&[PRINCIPAL])).await;

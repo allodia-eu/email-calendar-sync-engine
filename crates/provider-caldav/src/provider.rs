@@ -23,9 +23,10 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion,
-    EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, IgnoreConnectSteps,
-    OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard,
+    CalendarUserAddresses, CalendarWrites, Capabilities, ConnectObserver, ConnectStep,
+    ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
+    IgnoreConnectSteps, OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls,
+    ScopeSync, WriteGuard,
 };
 use engine_tls::TlsClientConfig;
 
@@ -182,6 +183,10 @@ pub struct CalDavProvider {
     capabilities: Capabilities,
     home_href: String,
     collection: DavCollectionId,
+    /// The `current-user-principal` discovery found, asked for the address set on demand.
+    principal: Option<String>,
+    /// The address set, when discovery already read it off the principal.
+    addresses: Option<CalendarUserAddresses>,
 }
 
 impl core::fmt::Debug for CalDavProvider {
@@ -233,8 +238,8 @@ impl CalDavProvider {
         calendar: &str,
         observer: &dyn ConnectObserver,
     ) -> Result<Self, CalDavError> {
-        let home_href =
-            discovery::discover_home(executor.as_ref(), discovery_path, observer).await?;
+        let home = discovery::discover_home(executor.as_ref(), discovery_path, observer).await?;
+        let home_href = home.href;
         // The calendar home is where every collection — including the bound one — is
         // resolved from: the endpoint this connect settled on.
         observer.step(&ConnectStep::discovered(&home_href));
@@ -260,6 +265,8 @@ impl CalDavProvider {
             },
             home_href,
             collection,
+            principal: home.principal,
+            addresses: home.addresses,
         })
     }
 
@@ -447,6 +454,21 @@ impl CalendarWrites for CalDavProvider {
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
         Ok(crate::write::delete_event(self.executor.as_ref(), base, deletion).await?)
+    }
+
+    /// The principal's `calendar-user-address-set`: kept from discovery when it read the
+    /// principal, otherwise asked of the principal now. Unknown when the server named none.
+    async fn calendar_user_addresses(
+        &self,
+        _account: &AccountId,
+    ) -> ProviderResult<CalendarUserAddresses> {
+        if let Some(addresses) = &self.addresses {
+            return Ok(addresses.clone());
+        }
+        let Some(principal) = &self.principal else {
+            return Ok(CalendarUserAddresses::Unknown);
+        };
+        Ok(discovery::principal_addresses(self.executor.as_ref(), principal).await?)
     }
 }
 

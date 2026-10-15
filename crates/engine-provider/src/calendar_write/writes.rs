@@ -16,16 +16,16 @@
 use async_trait::async_trait;
 use engine_core::{calendar::Event, ids::AccountId};
 
+use crate::{
+    CalendarUserAddresses, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite,
+    EventWriteReceipt, ProviderResult, error::unsupported,
+};
 // Named only by the doc links below, which rustdoc resolves against this module's scope.
 #[allow(
     unused_imports,
     reason = "named by intra-doc links on the trait's methods"
 )]
 use crate::{Capabilities, ProviderError, RsvpControls};
-use crate::{
-    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, ProviderResult,
-    error::unsupported,
-};
 
 /// The calendar-write verbs every adapter answers, rejecting by default.
 ///
@@ -180,5 +180,24 @@ pub trait CalendarWrites: Send + Sync {
     ) -> ProviderResult<()> {
         let _ = (account, base, deletion);
         Err(unsupported("calendar writes"))
+    }
+
+    /// The calendar user addresses the server treats as this account's user: the addresses
+    /// under which an answer or an invitation written here is scheduled by the server.
+    ///
+    /// Asked after connecting. An adapter that learns the set at connect answers from what it
+    /// kept; one that has to ask the server asks here. The default is
+    /// [`CalendarUserAddresses::Unknown`], which recognises nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`] when the server was asked and the request
+    /// failed.
+    async fn calendar_user_addresses(
+        &self,
+        account: &AccountId,
+    ) -> ProviderResult<CalendarUserAddresses> {
+        let _ = account;
+        Ok(CalendarUserAddresses::Unknown)
     }
 }

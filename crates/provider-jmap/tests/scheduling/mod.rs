@@ -1,31 +1,18 @@
-//! The two-party fixture the live scheduling scenarios share: a real invitation between two
-//! real accounts on the Stalwart harness, placed over CalDAV and worked over JMAP.
-//!
-//! # Why the invitation is seeded over CalDAV
-//!
-//! JMAP has no whole-document write, and `EventDraft` cannot state an `ORGANIZER`/`ATTENDEE`
-//! pair — so there is no way to *create* an invitation over JMAP alone. The organizer's copy
-//! is therefore placed with a CalDAV `PUT`, exactly as `provider-caldav`'s scheduling
-//! fixture does, and Stalwart's RFC 6638 auto-scheduling delivers it to the attendee. That
-//! is the counterparty's fixture, not the thing under test: **every assertion in the
-//! scenarios is about what JMAP did**.
-//!
-//! It also makes the tests stronger than same-protocol ones would be. The invitation arrives
-//! by one protocol and is worked by another, against one server — so the participant ids the
-//! JMAP projection sees really do address the resource CalDAV wrote, and the two protocols'
-//! scheduling behaviour can be compared with everything else held constant.
-//!
-//! The organizer therefore holds **both** clients: CalDAV to place the invitation, JMAP for
-//! the scenario that has them cancel it.
+//! The two-party fixture shared by the live JMAP scheduling scenarios. The organiser creates
+//! an invitation over JMAP, then the attendee answers it over JMAP. CalDAV reads the
+//! organiser's copy and removes scheduling inbox residue that JMAP does not expose.
 
 use engine_core::{
     calendar::{Event, ParticipationStatus},
     ids::{AccountId, Uid},
-    raw::RawIcal,
     scheduling::addresses_match,
     sync::SyncUpdate,
+    time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
-use engine_provider::{CalendarWrites, EventDeletion, EventWrite, Provider};
+use engine_provider::{
+    CalendarAddress, CalendarWrites, EventDeletion, EventDraft, Invitee, MeetingDraft, Provider,
+    SchedulingIdentity,
+};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials as DavCredentials};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::{Harness, ScratchAccount};
@@ -56,8 +43,8 @@ pub(crate) fn attendee_account() -> AccountId {
     AccountId::try_from("jmap-sched-attendee").unwrap()
 }
 
-/// The two parties. The organizer speaks CalDAV to *place* the invitation and JMAP to cancel
-/// it; the attendee speaks JMAP throughout, and is the one under test.
+/// The two parties. Both write through JMAP. CalDAV observes the organiser's copy and cleans
+/// up protocol resources that JMAP does not expose.
 pub(crate) struct Parties {
     pub(crate) organizer: CalDavProvider,
     pub(crate) organizer_jmap: JmapProvider,
@@ -148,25 +135,20 @@ fn invitation_date() -> String {
     )
 }
 
-/// The organizer's invitation document. Assembled by hand for the same reason the CalDAV
-/// fixture does it: a draft cannot state an `ORGANIZER`/`ATTENDEE` pair. The times of day
-/// are fixed; the day itself comes from [`invitation_date`], which explains why.
-fn invitation(parties: &Parties) -> String {
+fn invitation_time(hour: u8) -> CalendarDateTime {
     let day = invitation_date();
-    format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Harness//JMAP scheduling//EN\r\n\
-         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260701T080000Z\r\nSEQUENCE:0\r\n\
-         DTSTART;TZID=Europe/Amsterdam:{day}T140000\r\n\
-         DTEND;TZID=Europe/Amsterdam:{day}T150000\r\n\
-         SUMMARY:Scheduling over JMAP\r\n\
-         ORGANIZER;CN=Bob Tester:mailto:{organizer}\r\n\
-         ATTENDEE;CN=Carol;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:\
-         {attendee}\r\n\
-         END:VEVENT\r\nEND:VCALENDAR\r\n",
-        uid = parties.uid,
-        organizer = parties.organizer_address,
-        attendee = parties.attendee_address,
+    let local = format!(
+        "{}-{}-{}T{hour:02}:00:00",
+        &day[0..4],
+        &day[4..6],
+        &day[6..8]
     )
+    .parse()
+    .unwrap();
+    CalendarDateTime::Zoned {
+        local,
+        zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+    }
 }
 
 /// Every event an account currently holds, over whichever protocol it speaks.
@@ -283,22 +265,72 @@ pub(crate) async fn poll_organizer(
 /// Places the organizer's invitation and waits for it to reach the attendee over JMAP,
 /// unanswered. The shared opening of every scenario.
 pub(crate) async fn deliver_invitation(parties: &Parties) -> Event {
-    let href = parties
-        .organizer
-        .event_href(&Uid::new(parties.uid.clone()).unwrap())
-        .expect("mint event href");
-    parties
-        .organizer
-        .put_event(
-            &organizer_account(),
-            &EventWrite::unconditional(
-                href,
-                Uid::new(parties.uid.clone()).unwrap(),
-                RawIcal::new(invitation(parties)),
-            ),
-        )
+    let SyncUpdate::Snapshot { objects, .. } = parties
+        .organizer_jmap
+        .sync_calendars(&organizer_account(), None)
         .await
-        .expect("the organizer stores the invitation");
+        .expect("sync organiser calendars")
+        .update
+    else {
+        panic!("expected a calendar snapshot");
+    };
+    let calendar = objects
+        .into_iter()
+        .next()
+        .expect("organiser has a calendar");
+    let draft = EventDraft::new(
+        calendar.id,
+        Uid::new(parties.uid.clone()).unwrap(),
+        "Scheduling over JMAP",
+        invitation_time(14),
+        invitation_time(15),
+        UtcDateTime::new(2026, 7, 1, 8, 0, 0).unwrap(),
+    )
+    .meeting(MeetingDraft::new(
+        SchedulingIdentity::named(
+            CalendarAddress::parse(&parties.organizer_address).unwrap(),
+            "Bob Tester",
+        ),
+        vec![Invitee::required(SchedulingIdentity::named(
+            CalendarAddress::parse(&parties.attendee_address).unwrap(),
+            "Carol",
+        ))],
+    ));
+    parties
+        .organizer_jmap
+        .create_event(&organizer_account(), &draft)
+        .await
+        .expect("the organiser creates the invitation over JMAP");
+
+    let created = jmap_events(&parties.organizer_jmap, &organizer_account())
+        .await
+        .into_iter()
+        .find(|event| event.uid.as_str() == parties.uid)
+        .expect("the organiser can read back the created invitation");
+    let raw: serde_json::Value = serde_json::from_str(
+        created
+            .raw_jscalendar
+            .as_ref()
+            .expect("the JMAP adapter preserves the raw event")
+            .as_str(),
+    )
+    .expect("the preserved event is JSON");
+    assert_eq!(
+        raw["organizerCalendarAddress"],
+        format!("mailto:{}", parties.organizer_address)
+    );
+    assert_eq!(
+        created
+            .participants
+            .iter()
+            .filter(|participant| participant
+                .email
+                .as_deref()
+                .is_some_and(|address| { addresses_match(address, &parties.organizer_address) }))
+            .count(),
+        1,
+        "the neutral projection must merge the organiser duplicate produced by Stalwart: {raw}"
+    );
 
     let mine = poll_jmap(
         parties,

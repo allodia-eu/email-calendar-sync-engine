@@ -241,7 +241,10 @@ async fn an_unreadable_payload_settles_without_blocking_the_queue() {
     // The one behind it still went out, which is the whole point.
     assert_eq!(report.attempted[1].outcome, DrainOutcome::Succeeded);
     assert_eq!(report.delivered(), 1);
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    // The unreadable send is settled, and listed as failed so a host can show it.
+    let rows = store.list_pending_ops(account()).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, PendingOpState::Failed);
 }
 /// Whether a pass dispatches `kind` as a mail write, which is what decides whether an
 /// unreadable payload of it has to settle rather than be left alone.
@@ -313,6 +316,13 @@ async fn an_unreadable_payload_of_any_mail_kind_settles() {
             attempted.outcome
         );
     }
-    // All settled: none is left to be retried for ever.
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    // All settled: none is left to be retried for ever. A send that settles stays listed,
+    // as `Failed`, so a host can show the message that has not gone.
+    let rows = store.list_pending_ops(account()).await.unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| row.kind == Some(PendingOpKind::MailSubmit)
+                && row.state == PendingOpState::Failed),
+        "{rows:?}"
+    );
 }

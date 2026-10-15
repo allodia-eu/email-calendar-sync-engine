@@ -5,7 +5,9 @@ use core::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 use time::{Date, Month, PrimitiveDateTime, Time};
 
-use super::{TimeError, format_wall_clock, parse_wall_clock, split_numeric_offset};
+use super::{
+    TimeError, format_wall_clock, format_wall_clock_fixed, parse_wall_clock, split_numeric_offset,
+};
 
 /// Builds a [`PrimitiveDateTime`] from individual components, validating each.
 fn from_components(
@@ -240,6 +242,32 @@ impl UtcDateTime {
             .checked_add(time::Duration::new(secs, nanos))
             .map(Self)
     }
+
+    /// Returns this instant moved back by `span`, or `None` on overflow. The inverse of
+    /// [`checked_add`](Self::checked_add): a lease's claim time is its expiry less its TTL.
+    #[must_use]
+    pub fn checked_sub(self, span: core::time::Duration) -> Option<Self> {
+        let secs = i64::try_from(span.as_secs()).ok()?;
+        let nanos = i32::try_from(span.subsec_nanos()).ok()?;
+        self.0
+            .checked_sub(time::Duration::new(secs, nanos))
+            .map(Self)
+    }
+}
+
+impl UtcDateTime {
+    /// This instant as fixed-width text, `YYYY-MM-DDThh:mm:ss.nnnnnnnnnZ`, which parses back
+    /// through [`FromStr`].
+    ///
+    /// Every digit is always present, nine fraction digits included, so two instants compare as
+    /// text exactly as they compare as instants. For a store that orders and filters on text:
+    /// SQLite has no date-time type and compares `TEXT` byte by byte. Everything else uses the
+    /// canonical form [`Display`](fmt::Display) writes, which drops a zero fraction and trailing
+    /// zeros (RFC 8984 §1.4.4) and therefore does **not** sort as text within one second.
+    #[must_use]
+    pub fn to_sortable_string(self) -> String {
+        format!("{}Z", format_wall_clock_fixed(self.0))
+    }
 }
 
 impl fmt::Display for UtcDateTime {
@@ -277,6 +305,33 @@ impl From<UtcDateTime> for String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sortable_form_sorts_as_text_in_time_order_and_parses_back() {
+        // In time order. The canonical form sorts the second, third and fourth before the first
+        // as text (`.` before `Z`, `.12` after `.123`); the fixed-width one may not.
+        let ordered: Vec<UtcDateTime> = [
+            "0000-01-01T00:00:00Z",
+            "2026-10-06T10:00:00Z",
+            "2026-10-06T10:00:00.1Z",
+            "2026-10-06T10:00:00.12Z",
+            "2026-10-06T10:00:00.123Z",
+            "2026-10-06T10:00:01Z",
+            "9999-12-31T23:59:59.999999999Z",
+        ]
+        .iter()
+        .map(|text| text.parse().unwrap())
+        .collect();
+        let texts: Vec<String> = ordered.iter().map(|t| t.to_sortable_string()).collect();
+        let mut sorted = texts.clone();
+        sorted.sort();
+        assert_eq!(sorted, texts);
+        assert!(texts.iter().all(|text| text.len() == texts[0].len()));
+        for (instant, text) in ordered.iter().zip(&texts) {
+            assert_eq!(&text.parse::<UtcDateTime>().unwrap(), instant);
+        }
+        assert_eq!(texts[2], "2026-10-06T10:00:00.100000000Z");
+    }
 
     #[test]
     fn local_date_time_roundtrips() {

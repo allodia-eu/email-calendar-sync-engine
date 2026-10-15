@@ -8,8 +8,12 @@ use engine_core::{
     membership::Memberships,
     raw::RawIcal,
     time::{CalendarDateTime, UtcDateTime},
+    version::ScheduleTag,
 };
-use engine_provider::{EventPatch, Occurrence, PatchTarget};
+use engine_provider::{
+    CalendarAddress, EventPatch, Invitee, InviteePatch, MeetingDraft, Occurrence, PatchTarget,
+    SchedulingIdentity,
+};
 
 use super::*;
 use crate::test_support::{Replay, wrote};
@@ -94,6 +98,44 @@ async fn create_puts_the_built_document_with_if_none_match() {
 }
 
 #[tokio::test]
+async fn create_writes_an_rfc_5545_organizer_and_attendees() {
+    let exec = Replay::new(vec![wrote(201, Some("\"v1\""))]);
+    let draft = draft().meeting(MeetingDraft::new(
+        SchedulingIdentity::named(
+            CalendarAddress::parse("owner@example.com").unwrap(),
+            "Owner",
+        ),
+        vec![
+            Invitee::required(SchedulingIdentity::named(
+                CalendarAddress::parse("required@example.com").unwrap(),
+                "Required ^ Person",
+            )),
+            Invitee::optional(SchedulingIdentity::new(
+                CalendarAddress::parse("optional@example.com").unwrap(),
+            )),
+        ],
+    ));
+
+    create_event(&exec, href(), &draft).await.unwrap();
+
+    let body = exec.writes()[0].body.replace("\r\n ", "");
+    assert!(
+        body.contains("ORGANIZER;CN=Owner:mailto:owner@example.com\r\n"),
+        "{body}"
+    );
+    assert!(body.contains(
+        "ATTENDEE;CN=Required ^^ Person;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:required@example.com\r\n"
+    ), "{body}");
+    assert!(body.contains(
+        "ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=OPT-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:optional@example.com\r\n"
+    ), "{body}");
+    assert!(
+        !body.contains("METHOD:"),
+        "stored CalDAV objects must not carry METHOD"
+    );
+}
+
+#[tokio::test]
 async fn patch_puts_the_stored_document_edited_in_place_under_if_match() {
     let exec = Replay::new(vec![wrote(204, Some("\"v2\""))]);
     let base = stored(Some("\"v1\""));
@@ -117,6 +159,64 @@ async fn patch_puts_the_stored_document_edited_in_place_under_if_match() {
     assert!(writes[0].body.contains("SUMMARY:Renamed\r\n"));
     assert!(!writes[0].body.contains("SUMMARY:Old"));
     assert!(writes[0].body.contains("DTSTART:20260625T140000Z\r\n"));
+}
+
+#[tokio::test]
+async fn a_schedule_tag_guards_an_organiser_update_instead_of_the_etag() {
+    let exec = Replay::new(vec![wrote(204, Some("\"v2\""))]);
+    let mut base = stored(Some("\"v1\""));
+    base.revisions.schedule_tag = Some(ScheduleTag::new("\"schedule-1\""));
+    let edit = EventEdit::new(
+        &base,
+        PatchTarget::Series,
+        EventPatch::new(stamp()).summary("Renamed"),
+    );
+
+    patch_event(&exec, &base, &edit).await.unwrap();
+
+    assert_eq!(
+        exec.writes()[0].precondition,
+        Precondition::IfScheduleTagMatch("\"schedule-1\"".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn invitee_patch_preserves_reply_state_and_unknown_parameters() {
+    let exec = Replay::new(vec![wrote(204, Some("\"v2\""))]);
+    let mut base = stored(Some("\"v1\""));
+    base.raw_ical = Some(RawIcal::new(
+        BODY.replace(
+            "SUMMARY:Old\r\n",
+            "SUMMARY:Old\r\nORGANIZER:mailto:owner@example.com\r\n\
+             ATTENDEE;CN=Keep;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;X-TRACK=kept:mailto:keep@example.com\r\n\
+             ATTENDEE;PARTSTAT=TENTATIVE:mailto:remove@example.com\r\n",
+        ),
+    ));
+    let patch = EventPatch::new(stamp()).invitees(
+        InviteePatch::new()
+            .upsert(Invitee::optional(SchedulingIdentity::new(
+                CalendarAddress::parse("keep@example.com").unwrap(),
+            )))
+            .upsert(Invitee::required(SchedulingIdentity::new(
+                CalendarAddress::parse("new@example.com").unwrap(),
+            )))
+            .remove(CalendarAddress::parse("remove@example.com").unwrap()),
+    );
+    let edit = EventEdit::new(&base, PatchTarget::Series, patch);
+
+    patch_event(&exec, &base, &edit).await.unwrap();
+
+    let body = exec.writes()[0].body.replace("\r\n ", "");
+    assert!(body.contains("PARTSTAT=ACCEPTED;X-TRACK=kept"), "{body}");
+    assert!(
+        body.contains("ROLE=OPT-PARTICIPANT:mailto:keep@example.com"),
+        "{body}"
+    );
+    assert!(!body.contains("remove@example.com"), "{body}");
+    assert!(
+        body.contains("PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:new@example.com"),
+        "{body}"
+    );
 }
 
 #[tokio::test]

@@ -87,6 +87,9 @@ pub(crate) fn label_from_json(value: &Value) -> Result<Option<Mailbox>, GoogleEr
     let name = opt_str(value, "name").unwrap_or(id).to_owned();
     let mut mailbox = Mailbox::new(wrap_id(MailboxId::try_from(id), "label id")?, name);
     mailbox.role = label_role(id);
+    // A nested label is a user label named under its parent, and a user label's name cannot
+    // start with a system label's, so only a user label holds another (`labels_write`).
+    mailbox.accepts_children = opt_str(value, "type") == Some("user");
     // `users.labels.list` does not return counts — only `users.labels.get` does,
     // which would be one request per label on every folder-list sync. So this reads
     // the field where it is present and leaves it absent otherwise; Gmail folder
@@ -143,6 +146,7 @@ pub(crate) fn all_mail_mailbox() -> Mailbox {
         "All Mail",
     );
     mailbox.role = Some(MailboxRole::All);
+    mailbox.accepts_children = false;
     mailbox
 }
 

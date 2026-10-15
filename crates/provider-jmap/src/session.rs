@@ -29,6 +29,7 @@ use crate::{
     error::JmapError,
     request::capability,
     session_accounts::{self, SessionAccount},
+    session_limits::{max_participants_per_event, parse_limits},
     session_urls::{origin_of, rebase_template, resolve_against},
 };
 
@@ -136,6 +137,7 @@ pub struct Session {
     mail_account_id: Option<String>,
     submission_account_id: Option<String>,
     calendar_account_id: Option<String>,
+    pub(crate) max_participants_per_event: Option<usize>,
     contact_account_id: Option<String>,
     /// Every account the session lists — the credential's own and each shared with it —
     /// or `None` when it carries no `accounts` map at all.
@@ -212,7 +214,12 @@ impl Session {
 
         let caps = value.get("capabilities");
         let server_has = |urn: &str| caps.is_some_and(|c| c.get(urn).is_some());
-        let has = |urn: &str| server_has(urn) && bound.is_none_or(|account| account.supports(urn));
+        // Offered by the account each domain is addressed at — the primary one, or the bound
+        // one, whose `account_for` is `None` for a domain it does not expose.
+        let has = |urn: &str| {
+            server_has(urn)
+                && session_accounts::account_offers(value, account_for(urn).as_deref(), urn)
+        };
         let mut capabilities = build_capabilities(has);
         // On-demand raw-source fetch (Tier-3 bodies) works whenever the server
         // exposes mail and a download template — see [`crate::fetch::message_source`].
@@ -312,7 +319,7 @@ impl Session {
         // RFC 9404 advertises the extension for the session and, per account, the accounts it
         // covers; a blob read is scoped to an account, so it is the mail account's that counts
         // — the bound one, when this client opens a shared mailbox.
-        let blob_get = has(capability::BLOB)
+        let blob_get = server_has(capability::BLOB)
             && mail_account_id.as_deref().is_some_and(|id| {
                 accounts
                     .iter()
@@ -328,6 +335,10 @@ impl Session {
             event_source_url,
             mail_account_id,
             submission_account_id,
+            max_participants_per_event: max_participants_per_event(
+                value,
+                calendar_account_id.as_deref(),
+            ),
             calendar_account_id,
             contact_account_id,
             accounts,
@@ -438,7 +449,10 @@ impl Session {
         self.limits
     }
 
-    /// The data domains the server advertises.
+    /// What this account offers: each data domain its primary account lists in
+    /// `accountCapabilities`, where the server supports it too, plus what follows from those
+    /// (writes, push, raw sources). A host reads `mail()`, `submission()`, `calendars()` and
+    /// `contacts()` here to offer only the domains the signed-in account has.
     #[must_use]
     pub fn capabilities(&self) -> engine_provider::Capabilities {
         self.capabilities
@@ -451,7 +465,7 @@ impl Session {
     }
 }
 
-/// Builds the engine capability set from a "has this URN?" predicate.
+/// Builds the engine capability set from a "does this account offer this URN?" predicate.
 fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabilities {
     let mut caps = engine_provider::Capabilities::none();
     if has(capability::MAIL) {
@@ -475,25 +489,10 @@ fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabiliti
     caps
 }
 
-/// Reads the core-capability limit fields, falling back to [`CoreLimits::default`]
-/// per field.
-fn parse_limits(core: &Value) -> CoreLimits {
-    let defaults = CoreLimits::default();
-    let read = |name: &str, fallback: usize| {
-        core.get(name)
-            .and_then(Value::as_u64)
-            .and_then(|v| usize::try_from(v).ok())
-            .filter(|&v| v > 0)
-            .unwrap_or(fallback)
-    };
-    CoreLimits {
-        max_objects_in_get: read("maxObjectsInGet", defaults.max_objects_in_get),
-        max_objects_in_set: read("maxObjectsInSet", defaults.max_objects_in_set),
-        max_calls_in_request: read("maxCallsInRequest", defaults.max_calls_in_request),
-        max_concurrent_requests: read("maxConcurrentRequests", defaults.max_concurrent_requests),
-    }
-}
-
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "session_account_tests.rs"]
+mod account_tests;

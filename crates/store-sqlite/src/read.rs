@@ -91,12 +91,14 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
     }
 
     async fn list_pending_ops(&self, account: AccountId) -> Result<Vec<PendingOpRow>> {
-        self.read(move |conn| outbox_ops::list_pending_ops(conn, &account))
+        let now = self.clock.now();
+        self.read(move |conn| outbox_ops::list_pending_ops(conn, &account, now))
             .await
     }
 
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {
-        self.read(move |conn| outbox_ops::pending_op_state(conn, id))
+        let now = self.clock.now();
+        self.read(move |conn| outbox_ops::pending_op_state(conn, id, now))
             .await
     }
 

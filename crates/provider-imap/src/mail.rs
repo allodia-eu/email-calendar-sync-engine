@@ -11,7 +11,10 @@
 //! Tier-1 metadata only: the raw RFC 5322 source is not materialized here (durable
 //! blob storage is a later store sub-step), matching `provider-jmap`.
 
-use std::{collections::BTreeSet, ops::Range};
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    ops::Range,
+};
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ProviderKey},
@@ -73,20 +76,24 @@ pub(crate) fn message_from_fetch(
         // string form is, but normalizing it is a later refinement. INTERNALDATE
         // (delivery time) is the reliable instant here.
     }
-    message.has_attachment = row.has_attachment;
-    // `References` is not an ENVELOPE field; it rides a separate
-    // `BODY[HEADER.FIELDS (REFERENCES)]` fetch item (the threading chain). The
-    // value is the raw header line (`References: <a@x> <b@y>\r\n\r\n`); strip the
-    // field name so `extract_message_ids`' bare-value fallback can never mistake
-    // `References:` for an id when the header is empty.
-    if let Some(raw) = &row.references {
-        message.envelope.references = extract_message_ids(strip_header_name(raw));
+    message.has_attachment = row.has_attachment.unwrap_or(false);
+    // `References` is not an ENVELOPE field; it rides the fetched header section (the
+    // threading chain), beside other fields whose values may hold `<…>` too.
+    if let Some(references) = row
+        .header_fields
+        .as_deref()
+        .and_then(|fields| header_field(fields, "References"))
+    {
+        message.envelope.references = extract_message_ids(&references);
     }
     message
 }
 
-/// Normalizes one `LIST` row into a [`Mailbox`]; `None` for an unusable
-/// (`\NonExistent` or empty-named) entry.
+/// Normalizes one `LIST` row into a [`Mailbox`]; `None` for an empty-named entry.
+///
+/// A `\Noselect` or `\NonExistent` row is a level of the hierarchy rather than a folder, and
+/// comes back with [`Mailbox::selectable`] cleared. Whether a `\NonExistent` one belongs in the
+/// list at all depends on the rest of it, which is [`mailboxes_from_list`]'s question.
 ///
 /// `modified_utf7` says how this session's wire encodes names — IMAP4rev1 does, IMAP4rev2
 /// does not (RFC 9051 §5.1) — and must come from what the session *negotiated*, never from
@@ -106,20 +113,63 @@ pub(crate) fn message_from_fetch(
 /// Role matching runs on the **full** path: `INBOX` is a reserved name at the top level, and a
 /// folder called `Sent` inside another one is not the account's Sent.
 pub(crate) fn mailbox_from_list(row: &ListRow, modified_utf7: bool) -> Option<Mailbox> {
-    if has_attribute(&row.attributes, "NonExistent") {
-        return None;
-    }
     let name = if modified_utf7 {
         crate::utf7::decode(&row.name)
     } else {
         row.name.clone()
     };
-    let id = MailboxId::try_from(name.as_str()).ok()?;
+    let id = mailbox_id_of(&name)?;
     let delimiter = row.delimiter.as_deref();
     let mut mailbox = Mailbox::new(id, leaf_of(&name, delimiter));
     mailbox.role = role_for(&name, &row.attributes);
     mailbox.parent = parent_of(&name, delimiter);
+    // RFC 3501 §7.2.2 `\Noinferiors`; with no delimiter there is no level to make.
+    mailbox.accepts_children =
+        delimiter.is_some() && !has_attribute(&row.attributes, "Noinferiors");
+    mailbox.selectable = !is_hierarchy_level(&row.attributes);
     Some(mailbox)
+}
+
+/// Normalizes a whole `LIST` response, keeping each mailbox beside the row it came from.
+///
+/// A `\NonExistent` row is kept only while a listed folder sits beneath it. Dovecot answers the
+/// extended `LIST` this way for the parent of a folder made inside one nobody made (the plain
+/// `LIST` says `\Noselect`), and dropping it would leave that folder's parent missing from the
+/// tree. Without a folder beneath it, it names nothing a host could show.
+pub(crate) fn mailboxes_from_list(
+    rows: &[ListRow],
+    modified_utf7: bool,
+) -> Vec<(&ListRow, Mailbox)> {
+    let mapped: Vec<_> = rows
+        .iter()
+        .filter_map(|row| Some((row, mailbox_from_list(row, modified_utf7)?)))
+        .collect();
+    let by_id: HashMap<&MailboxId, &Mailbox> = mapped.iter().map(|(_, m)| (&m.id, m)).collect();
+    let mut holding: HashSet<&MailboxId> = HashSet::new();
+    for (row, mailbox) in &mapped {
+        if has_attribute(&row.attributes, "NonExistent") {
+            continue;
+        }
+        let mut above = mailbox.parent.as_ref();
+        while let Some(parent) = above
+            && holding.insert(parent)
+        {
+            above = by_id.get(parent).and_then(|m| m.parent.as_ref());
+        }
+    }
+    let holding: HashSet<MailboxId> = holding.into_iter().cloned().collect();
+    mapped
+        .into_iter()
+        .filter(|(row, mailbox)| {
+            !has_attribute(&row.attributes, "NonExistent") || holding.contains(&mailbox.id)
+        })
+        .collect()
+}
+
+/// Whether a `LIST` row names a level of the hierarchy that cannot be selected. RFC 9051
+/// §7.3.1: `\NonExistent` implies `\Noselect`.
+pub(crate) fn is_hierarchy_level(attributes: &[String]) -> bool {
+    has_attribute(attributes, "Noselect") || has_attribute(attributes, "NonExistent")
 }
 
 /// Maps IMAP flags to engine [`Keyword`]s. The four standard system flags map to
@@ -301,15 +351,30 @@ fn extract_message_ids(raw: &str) -> Vec<MessageIdHeader> {
     ids
 }
 
-/// Strips a leading `Header-Name:` field-name prefix from a raw header line, so a
-/// fetched `BODY[HEADER.FIELDS (...)]` value yields only the field body. Returns the
-/// input unchanged when there is no `name:` prefix before the first `<`.
-fn strip_header_name(raw: &str) -> &str {
-    match (raw.find(':'), raw.find('<')) {
-        // A colon that precedes any angle bracket is the field-name separator.
-        (Some(colon), open) if open.is_none_or(|o| colon < o) => raw[colon + 1..].trim(),
-        _ => raw.trim(),
+/// The unfolded value of the field `name` in a raw header section, or `None` when the
+/// section has no such field. A line that starts with whitespace continues the field
+/// before it (RFC 5322 §2.2.3).
+fn header_field(section: &str, name: &str) -> Option<String> {
+    let mut value: Option<String> = None;
+    for line in section.lines() {
+        if line.starts_with([' ', '\t']) {
+            if let Some(value) = value.as_mut() {
+                value.push(' ');
+                value.push_str(line.trim());
+            }
+            continue;
+        }
+        if value.is_some() {
+            break;
+        }
+        let Some((field, rest)) = line.split_once(':') else {
+            continue;
+        };
+        if field.trim().eq_ignore_ascii_case(name) {
+            value = Some(rest.trim().to_owned());
+        }
     }
+    value
 }
 
 /// Whether the attribute list carries `\<attr>` (case-insensitively).
@@ -349,7 +414,20 @@ fn role_for(name: &str, attributes: &[String]) -> Option<MailboxRole> {
 
 /// Derives a parent mailbox id from a hierarchical name and its delimiter.
 fn parent_of(name: &str, delimiter: Option<&str>) -> Option<MailboxId> {
-    MailboxId::try_from(&name[..split_at(name, delimiter)?.start]).ok()
+    mailbox_id_of(&name[..split_at(name, delimiter)?.start])
+}
+
+/// The id of the mailbox a full path names: the path itself, except that the inbox is `INBOX`
+/// however the server spells it. RFC 9051 §5.1 makes the reserved name case-insensitive, and a
+/// host binds the inbox by it, so an id in the server's spelling (Yahoo lists `Inbox`) would be
+/// a second scope for the same mailbox.
+fn mailbox_id_of(path: &str) -> Option<MailboxId> {
+    let path = if path.eq_ignore_ascii_case("INBOX") {
+        "INBOX"
+    } else {
+        path
+    };
+    MailboxId::try_from(path).ok()
 }
 
 /// The folder's own name: whatever follows the last delimiter in a hierarchical name, and the

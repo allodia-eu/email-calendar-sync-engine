@@ -14,7 +14,9 @@ use crate::{extended::ExtendedProperties, ids::MailboxId, version::RevisionToken
 /// The caller's **access rights** are a universal field ([`access`](Mailbox::access)),
 /// not a provider extra: both mail protocols that share mailboxes standardise them (JMAP
 /// `MailboxRights`, RFC 8621 §2; IMAP ACL, RFC 4314), and there is no usable answer above
-/// the collection — see [`MailboxAccess`] (`modeling.md`).
+/// the collection — see [`MailboxAccess`] (`modeling.md`). So are what the hierarchy allows
+/// here, [`accepts_children`](Mailbox::accepts_children) and
+/// [`selectable`](Mailbox::selectable).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mailbox {
     /// The collection's stable id.
@@ -52,6 +54,21 @@ pub struct Mailbox {
     /// what a row says only until the next sync replaces it with the server's answer.
     #[serde(default)]
     pub access: MailboxAccess,
+    /// Whether a collection may be made inside this one, or moved into it. `false` only where
+    /// the provider says so: an IMAP `\Noinferiors` or delimiter-less folder, a JMAP mailbox
+    /// without `mayCreateChild`, a Gmail system label. `true` claims nothing, because the server
+    /// still refuses what it will not hold.
+    ///
+    /// A portable field rather than a right in [`extended`](Mailbox::extended) because a host
+    /// decides from it what to offer, and all four transports can answer it.
+    #[serde(default = "accepts_children_unless_told")]
+    pub accepts_children: bool,
+    /// Whether the collection can be opened to list its messages. `false` for a level of the
+    /// hierarchy that holds none: IMAP `\Noselect` (Gmail's `[Gmail]`, a server's parent of a
+    /// nested folder), or a JMAP mailbox without `mayReadItems`. A host keeps it in the tree,
+    /// so its children stay under it, and neither opens nor syncs it.
+    #[serde(default = "selectable_unless_stated")]
+    pub selectable: bool,
     /// Per-object revision tokens, if the provider supplies any.
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
@@ -72,10 +89,21 @@ impl Mailbox {
             subscribed: true,
             unread_count: None,
             access: MailboxAccess::owner(),
+            accepts_children: true,
+            selectable: true,
             revisions: RevisionTokens::none(),
             extended: ExtendedProperties::new(),
         }
     }
+}
+
+const fn accepts_children_unless_told() -> bool {
+    true
+}
+
+/// A row stored before [`Mailbox::selectable`] existed is a folder a host could open.
+const fn selectable_unless_stated() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -93,6 +121,7 @@ mod tests {
         assert!(mailbox.parent.is_none());
         assert!(mailbox.role.is_none());
         assert!(mailbox.subscribed);
+        assert!(mailbox.selectable);
         // Absent, not zero: a mailbox nobody has counted yet is not an empty one.
         assert!(mailbox.unread_count.is_none());
         // Owner rights: the constructor builds a credential's own folder, and an adapter
@@ -126,6 +155,10 @@ mod tests {
         // The same row predates rights too, and reads as what callers assumed before there
         // was a field: the owner's.
         assert_eq!(loaded.access, MailboxAccess::owner());
+        // Nothing was known against it, so nothing is withheld: the server still answers.
+        assert!(loaded.accepts_children);
+        // Every folder stored before the field existed was one a host could open.
+        assert!(loaded.selectable);
     }
 
     #[test]
@@ -138,6 +171,27 @@ mod tests {
         let back: Mailbox = serde_json::from_str(&json).unwrap();
         assert_eq!(back, shared);
         assert!(back.access.may_read_items && !back.access.may_add_items);
+    }
+
+    #[test]
+    fn a_new_mailbox_accepts_children_and_a_refusal_roundtrips() {
+        let mut mailbox = Mailbox::new(id("inbox"), "Inbox");
+        assert!(mailbox.accepts_children);
+        mailbox.accepts_children = false;
+        let json = serde_json::to_string(&mailbox).unwrap();
+        assert!(
+            !serde_json::from_str::<Mailbox>(&json)
+                .unwrap()
+                .accepts_children
+        );
+    }
+
+    #[test]
+    fn a_container_roundtrips_as_one() {
+        let mut container = Mailbox::new(id("work"), "Work");
+        container.selectable = false;
+        let json = serde_json::to_string(&container).unwrap();
+        assert_eq!(serde_json::from_str::<Mailbox>(&json).unwrap(), container);
     }
 
     #[test]

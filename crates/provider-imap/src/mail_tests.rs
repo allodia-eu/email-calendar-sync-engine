@@ -135,6 +135,33 @@ fn references_header_threads_through_to_the_envelope() {
 }
 
 #[test]
+fn references_are_read_from_their_own_field_of_the_header_section() {
+    // The section holds other fields, whose values may carry `<…>` too, and a long
+    // References header arrives folded over several lines.
+    let section = "Content-Type: text/html; x=\"<c@x>\"\r\nReferences: <a@x>\r\n\t<b@y>\r\n\
+                   Content-Disposition: inline; filename=\"<d@x>\"\r\n\r\n";
+    let mut bytes =
+        br#"1 FETCH (UID 1 ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL "<m@h>") "#.to_vec();
+    bytes.extend_from_slice(
+        format!(
+            "BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] {{{}}}\r\n{section})",
+            section.len()
+        )
+        .as_bytes(),
+    );
+
+    let rows = parse_fetch(&[bytes]).unwrap();
+    let message = message_from_fetch(&rows[0], &MailboxId::try_from("INBOX").unwrap(), 1);
+    let refs: Vec<_> = message
+        .envelope
+        .references
+        .iter()
+        .map(MessageIdHeader::as_str)
+        .collect();
+    assert_eq!(refs, ["a@x", "b@y"]);
+}
+
+#[test]
 fn an_empty_references_header_yields_no_ids() {
     // A message with no References: the echoed value is empty, so the field name
     // must not be mistaken for an id (the bare-value fallback's trap).
@@ -205,6 +232,96 @@ fn mailbox_from_list_maps_inbox_special_use_and_roleless() {
 }
 
 #[test]
+fn the_inbox_is_listed_as_inbox_however_the_server_spells_it() {
+    // RFC 9051 §5.1: `INBOX` is case-insensitive, so `Inbox` is the same mailbox. A host binds
+    // the inbox by its reserved name; an id in the server's spelling would sync it a second
+    // time under another scope.
+    let rows =
+        crate::parse::parse_list(&[br#"LIST (\HasNoChildren) "/" "Inbox""#.to_vec()]).unwrap();
+    let inbox = mailbox_from_list(&rows[0], true).unwrap();
+    assert_eq!(inbox.id.as_str(), "INBOX");
+    assert_eq!(inbox.role, Some(MailboxRole::Inbox));
+    assert_eq!(inbox.name, "Inbox");
+}
+
+#[test]
+fn a_folder_inside_the_inbox_names_inbox_as_its_parent() {
+    // Courier nests every folder under the inbox. The child's own id is the server's path, which
+    // is what `SELECT` takes; only the reserved top-level name is folded.
+    let rows = crate::parse::parse_list(&[
+        br#"LIST (\HasChildren) "." "Inbox""#.to_vec(),
+        br#"LIST (\HasNoChildren) "." "Inbox.Receipts""#.to_vec(),
+    ])
+    .unwrap();
+    let child = mailbox_from_list(&rows[1], true).unwrap();
+    assert_eq!(child.id.as_str(), "Inbox.Receipts");
+    assert_eq!(child.parent.as_ref().unwrap().as_str(), "INBOX");
+}
+
+#[test]
+fn a_noselect_container_is_listed_but_not_selectable() {
+    // Gmail's `[Gmail]` and any server's parent of a nested folder it holds no mail in: the row
+    // is a level of the tree, so it stays in the list to keep its children under it, and
+    // `SELECT` on it is an error.
+    let rows = crate::parse::parse_list(&[
+        br#"LIST (\Noselect \HasChildren) "/" "[Gmail]""#.to_vec(),
+        br#"LIST (\NoSelect \HasChildren) "/" "Work""#.to_vec(),
+        br#"LIST (\HasNoChildren \All) "/" "[Gmail]/All Mail""#.to_vec(),
+    ])
+    .unwrap();
+    let mailboxes: Vec<_> = rows
+        .iter()
+        .filter_map(|row| mailbox_from_list(row, true))
+        .collect();
+
+    let selectable: Vec<_> = mailboxes
+        .iter()
+        .map(|m| (m.id.as_str(), m.selectable))
+        .collect();
+    assert_eq!(
+        selectable,
+        [
+            ("[Gmail]", false),
+            ("Work", false),
+            ("[Gmail]/All Mail", true)
+        ]
+    );
+}
+
+#[test]
+fn a_nonexistent_level_is_a_container_while_a_listed_folder_sits_beneath_it() {
+    // Dovecot's answer to the extended `LIST` for a folder made inside a parent nobody made:
+    // the parent is `\NonExistent`, where the plain `LIST` calls it `\Noselect`.
+    let rows = crate::parse::parse_list(&[
+        br#"LIST (\NonExistent) "/" Parent"#.to_vec(),
+        br#"LIST () "/" Parent/Child"#.to_vec(),
+        br#"LIST (\NonExistent) "/" A"#.to_vec(),
+        br#"LIST (\NonExistent) "/" A/B"#.to_vec(),
+        br#"LIST () "/" A/B/C"#.to_vec(),
+        // Nothing listed beneath either, so neither is a level of anything.
+        br#"LIST (\NonExistent) "/" Gone"#.to_vec(),
+        br#"LIST (\NonExistent) "/" Gone/Too"#.to_vec(),
+    ])
+    .unwrap();
+
+    let kept = mailboxes_from_list(&rows, true);
+    let kept: Vec<_> = kept
+        .iter()
+        .map(|(_, m)| (m.id.as_str(), m.selectable))
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            ("Parent", false),
+            ("Parent/Child", true),
+            ("A", false),
+            ("A/B", false),
+            ("A/B/C", true),
+        ]
+    );
+}
+
+#[test]
 fn hierarchy_parent_is_derived_from_the_delimiter() {
     let rows = crate::parse::parse_list(&[br#"LIST () "/" "Work/Clients""#.to_vec()]).unwrap();
     let mailbox = mailbox_from_list(&rows[0], true).unwrap();
@@ -258,6 +375,19 @@ fn a_flat_namespace_keeps_the_whole_name() {
     let mailbox = mailbox_from_list(&rows[0], true).unwrap();
     assert_eq!(mailbox.parent, None);
     assert_eq!(mailbox.name, "Work/Clients");
+}
+
+#[test]
+fn a_folder_accepts_children_only_with_a_delimiter_and_without_noinferiors() {
+    let accepts = |line: &[u8]| {
+        let rows = crate::parse::parse_list(&[line.to_vec()]).unwrap();
+        mailbox_from_list(&rows[0], true).unwrap().accepts_children
+    };
+    assert!(accepts(br#"LIST (\HasNoChildren) "/" "Work""#));
+    // RFC 3501 §7.2.2: no child level exists or can be created.
+    assert!(!accepts(br#"LIST (\Noinferiors \Trash) "/" "Trash""#));
+    // A flat namespace has nowhere to put a level.
+    assert!(!accepts(br#"LIST () NIL "Work""#));
 }
 
 #[test]

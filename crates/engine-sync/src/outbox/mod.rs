@@ -21,9 +21,11 @@ mod calendar;
 mod contact;
 mod drafts;
 mod drain;
+mod drain_report;
 mod mail;
 mod mailbox;
 mod mailbox_plan;
+mod submit;
 
 use core::time::Duration;
 
@@ -36,16 +38,19 @@ pub use drafts::{DraftPut, PutDraftOutcome, delete_draft_mail, put_draft_mail};
 pub use drain::{DrainOutcome, DrainReport, DrainedOp, drain_outbox};
 use engine_core::{
     ids::AccountId,
-    write::{PendingOp, PendingOutcome},
+    write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_store::{
-    ClaimRejection, LeaseRequest, LeasedPendingOp, PendingOpClaim, Store, WorkerId,
+    ClaimRejection, LeaseRequest, LeasedPendingOp, OpLease, PendingOpClaim, Store, StoreError,
+    WorkerId,
 };
 pub use mail::{
-    MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
+    MailEditOutcome, MailEditSent, ReportOutcome, edit_mail, mail_edit_op, queue_mail_edit,
+    report_message, send_mail_edit,
 };
 pub use mailbox::{MailboxEditOutcome, edit_mailbox};
 pub use mailbox_plan::{MailboxChange, MailboxNameError, MailboxPlace, validate_mailbox_name};
+pub use submit::{SubmitOutcome, submit_mail};
 // Tokio's own `Instant`, so the wait's bound holds under a paused test clock too.
 use tokio::time::Instant;
 
@@ -86,20 +91,67 @@ async fn enqueue_and_claim<S: Store>(
     op: PendingOp,
 ) -> Result<LeasedPendingOp, SyncError> {
     let op_id = store.enqueue_pending_op(account.clone(), op).await?;
+    claim_waiting(store, account, worker, ttl, op_id)
+        .await?
+        .map_err(|reason| {
+            SyncError::Outbox(format!(
+                "enqueued op {op_id:?} was not claimable: {reason:?}"
+            ))
+        })
+}
+
+/// Claims op `op_id` by id, waiting out a resource another op holds for up to
+/// [`RESOURCE_WAIT`]; any other refusal, or a resource still held past it, is returned for the
+/// caller to act on.
+async fn claim_waiting<S: Store>(
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+    op_id: PendingOpId,
+) -> Result<Result<LeasedPendingOp, ClaimRejection>, SyncError> {
     let deadline = Instant::now() + RESOURCE_WAIT;
     loop {
         let req = LeaseRequest::new(worker.clone(), ttl);
         match store.claim_pending_op(account.clone(), op_id, req).await? {
-            PendingOpClaim::Leased(leased) => return Ok(*leased),
+            PendingOpClaim::Leased(leased) => return Ok(Ok(*leased)),
             PendingOpClaim::Refused(ClaimRejection::Busy) if Instant::now() < deadline => {
                 tokio::time::sleep(RESOURCE_POLL).await;
             }
-            PendingOpClaim::Refused(reason) => {
-                return Err(SyncError::Outbox(format!(
-                    "enqueued op {op_id:?} was not claimable: {reason:?}"
-                )));
+            PendingOpClaim::Refused(reason) => return Ok(Err(reason)),
+        }
+    }
+}
+
+/// Runs `work` while renewing `lease` every third of `ttl`, and stops renewing when it
+/// returns.
+///
+/// An attempt can outlast any fixed lease: a large upload on a slow line, a server that takes
+/// minutes to accept a message. Without renewal its lease lapses mid-attempt and another
+/// worker (a second drain, another process on the same store) recovers the op under it. A
+/// renewal refused as stale means that happened anyway (the process was suspended past its
+/// lease, say), and the attempt carries on: the hand-over record decides what it may still do,
+/// and the store refuses what it may not. A renewal that fails for any other reason is tried
+/// again at the next tick, which is still well inside the lease.
+pub(crate) async fn holding<S: Store, F: Future>(
+    store: &S,
+    lease: &OpLease,
+    ttl: Duration,
+    work: F,
+) -> F::Output {
+    let renew = async {
+        let every = ttl / 3;
+        loop {
+            tokio::time::sleep(every).await;
+            if let Err(StoreError::StaleLease) = store.renew_pending_op_lease(lease, ttl).await {
+                return core::future::pending::<core::convert::Infallible>().await;
             }
         }
+    };
+    tokio::select! {
+        biased;
+        done = work => done,
+        never = renew => match never {},
     }
 }
 

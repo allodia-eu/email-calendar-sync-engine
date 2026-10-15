@@ -14,7 +14,7 @@ use engine_core::{
 };
 
 use crate::{
-    CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, MailEdit,
+    CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, HandOver, MailEdit,
     MailEditReceipt, MailboxWrites, MessageReport, ProviderError, ProviderResult, ReportReceipt,
     ScopeSync, SenderIdentity, SenderIdentityId, SharedMailbox, SourceStream, SubmissionReceipt,
     error::unsupported,
@@ -23,10 +23,7 @@ use crate::{
 // rustdoc resolves those against the *module's* scope — a link that worked in the crate root
 // silently breaks on a move, and this crate denies rustdoc warnings, so the move would fail
 // the build rather than quietly produce dead links.
-#[allow(
-    unused_imports,
-    reason = "named by intra-doc links on the trait's methods"
-)]
+#[allow(unused_imports, reason = "named by intra-doc links only")]
 use crate::{
     Capabilities, EmailChunk, IdentityControls, PageToken, PassMode, ReportControls, RsvpControls,
     SharedMailboxes,
@@ -175,6 +172,14 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     /// on it. Submission is outbox-mediated by the caller (a durable pending op
     /// precedes this side effect); this method performs only the provider call.
     ///
+    /// **`hand_over` is committed immediately before the first byte that could deliver the
+    /// message, and that byte is written only if the commit succeeded** ([`HandOver`]). Whether
+    /// an interrupted send is retried or must be confirmed turns on that record, so marking
+    /// late can send a message twice, and marking early only asks the user about one that had
+    /// not gone. After the commit, an error is a definitive refusal only when the server
+    /// answered one; a reply that never came, or a connection lost before it, is
+    /// [`ProviderError::needs_confirmation`].
+    ///
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. The default returns
@@ -183,8 +188,9 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         &self,
         account: &AccountId,
         draft: &Draft,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        let _ = (account, draft);
+        let _ = (account, draft, hand_over);
         Err(unsupported("mail submission"))
     }
 
@@ -411,30 +417,24 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         Err(unsupported("changing the sender name"))
     }
 
-    /// Every mail store this credential can open besides the one it opens by default —
-    /// shared-mailbox discovery for a server that lists them (`crate::shared`). A fact about
-    /// the **credential**, like [`connection_info`](Self::connection_info): it takes no
-    /// account, touches no store, and is the same whichever store this provider is bound to.
-    /// Adapters advertising [`SharedMailboxes::Enumerable`] override this; the default rejects.
+    /// Every mail store this credential can open besides its default one (`crate::shared`): a
+    /// fact about the **credential**, like [`connection_info`](Self::connection_info), the same
+    /// whichever store this provider is bound to. [`SharedMailboxes::Enumerable`] overrides it.
     ///
     /// # Errors
     ///
-    /// A classified [`ProviderError`]. The default returns
+    /// A classified [`ProviderError`]; the default is
     /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
     async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
         Err(unsupported("listing shared mailboxes"))
     }
 
-    /// The mail store at `address`, if this credential can open it.
-    ///
-    /// The default answers from [`list_shared_mailboxes`](Self::list_shared_mailboxes) on an
-    /// adapter advertising [`SharedMailboxes::Enumerable`], matching the address the way
-    /// [`SharedMailbox::answers_to`] does. An adapter that can only answer by address
-    /// ([`SharedMailboxes::ByAddress`]) overrides it.
+    /// The mail store at `address`, if this credential can open it. The default matches
+    /// [`list_shared_mailboxes`](Self::list_shared_mailboxes) by [`SharedMailbox::answers_to`];
+    /// an adapter that can only answer by address ([`SharedMailboxes::ByAddress`]) overrides it.
     ///
     /// # Errors
     ///
-    /// A classified [`ProviderError`]:
     /// [`FailureClass::Permanent`](engine_core::error::FailureClass::Permanent) when nothing
     /// this credential can open answers to `address` (on some transports including a mailbox
     /// never shared with it: the server will not say which), and

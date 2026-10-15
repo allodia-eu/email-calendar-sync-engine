@@ -396,7 +396,7 @@ mod mail;
 mod threading;
 
 use mail::apply_state_change;
-pub(crate) use mail::upsert_message;
+pub(crate) use mail::{replace_kind, upsert_message};
 
 #[cfg(test)]
 mod tests;

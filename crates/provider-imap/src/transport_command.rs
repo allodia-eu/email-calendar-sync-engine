@@ -48,6 +48,34 @@ pub(crate) fn list_command(pattern: &str, returning: ListReturn) -> String {
     format!(r#"LIST "" {pattern} RETURN ({})"#, options.join(" "))
 }
 
+/// Formats a calendar date as the IMAP `d-Mon-yyyy` form `UID SEARCH SINCE` expects
+/// (RFC 9051 §6.4.4), e.g. 2026-03-18 → `18-Mar-2026`. The month is a fixed English
+/// abbreviation and the rest is digits, so the result is a safe, unquoted search atom.
+pub(crate) fn format_imap_date(date: time::Date) -> String {
+    let month = MONTHS[usize::from(u8::from(date.month())) - 1];
+    format!("{}-{month}-{}", date.day(), date.year())
+}
+
+/// The calendar day an IMAP date names: the leading `d-Mon-yyyy` of a search date or an
+/// `INTERNALDATE` (whose day may be space-padded), ignoring any time and zone after it, which
+/// is how `SINCE` compares (RFC 9051 §6.4.4).
+pub(crate) fn imap_day(text: &str) -> Option<time::Date> {
+    let date = text.trim_start().split(' ').next()?;
+    let mut parts = date.split('-');
+    let day = parts.next()?.parse().ok()?;
+    let month = parts.next()?;
+    let month = MONTHS
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case(month))?;
+    let year = parts.next()?.parse().ok()?;
+    let month = time::Month::try_from(u8::try_from(month + 1).ok()?).ok()?;
+    time::Date::from_calendar_date(year, month, day).ok()
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +136,26 @@ mod tests {
         assert_eq!(
             list_command(r#""Shared Folders/bob@test.local/*""#, ROLES),
             r#"LIST "" "Shared Folders/bob@test.local/*" RETURN (SPECIAL-USE)"#
+        );
+    }
+
+    #[test]
+    fn a_date_renders_as_the_unquoted_search_atom_imap_expects() {
+        // RFC 9051 §6.4.4's `d-Mon-yyyy`: a fixed English month abbreviation and digits,
+        // never a locale-formatted date and never a value needing quoting.
+        let date = |y, m, d| time::Date::from_calendar_date(y, m, d).unwrap();
+        assert_eq!(
+            format_imap_date(date(2026, time::Month::March, 18)),
+            "18-Mar-2026"
+        );
+        // A single-digit day is not zero-padded — the grammar allows either.
+        assert_eq!(
+            format_imap_date(date(2026, time::Month::January, 1)),
+            "1-Jan-2026"
+        );
+        assert_eq!(
+            format_imap_date(date(2025, time::Month::December, 31)),
+            "31-Dec-2025"
         );
     }
 

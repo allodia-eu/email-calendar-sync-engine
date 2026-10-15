@@ -240,3 +240,33 @@ fn keeps_every_href_in_a_multi_href_response() {
 fn malformed_xml_is_an_error_not_a_panic() {
     assert!(parse_multistatus("<D:multistatus><unclosed>").is_err());
 }
+
+#[test]
+fn a_property_holding_several_hrefs_keeps_all_of_them_in_order() {
+    let xml = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>/principals/alice/</D:href><D:propstat><D:prop><C:calendar-home-set><D:href>/calendars/alice/</D:href></C:calendar-home-set><C:calendar-user-address-set><D:href>mailto:alice@example.org</D:href><D:href>urn:uuid:0f0e</D:href><D:href>mailto:a.smith@example.org</D:href></C:calendar-user-address-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+    let parsed = parse_multistatus(xml).unwrap();
+    let props = &parsed.responses[0].props;
+    assert_eq!(
+        props.hrefs("calendar-user-address-set"),
+        Some(
+            &[
+                "mailto:alice@example.org".to_owned(),
+                "urn:uuid:0f0e".to_owned(),
+                "mailto:a.smith@example.org".to_owned(),
+            ][..]
+        )
+    );
+    assert_eq!(
+        props.hrefs("calendar-home-set"),
+        Some(&["/calendars/alice/".to_owned()][..])
+    );
+}
+
+#[test]
+fn a_property_reported_empty_is_present_and_a_404_one_is_absent() {
+    let xml = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>/p/</D:href><D:propstat><D:prop><C:calendar-user-address-set/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat><D:propstat><D:prop><C:schedule-inbox-URL/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response></D:multistatus>"#;
+    let props = &parse_multistatus(xml).unwrap().responses[0].props;
+    assert_eq!(props.hrefs("calendar-user-address-set"), Some(&[][..]));
+    assert_eq!(props.hrefs("schedule-inbox-url"), None);
+    assert_eq!(props.hrefs("never-asked"), None);
+}

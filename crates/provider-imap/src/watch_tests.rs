@@ -131,6 +131,39 @@ async fn a_change_at_the_keepalive_boundary_is_reported_as_changed() {
     server.await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn an_idle_is_bounded_by_its_keepalive_and_the_done_by_the_reply_bound() {
+    // Silence in `IDLE` is the point of `IDLE`, so it is not cut off after the reply bound
+    // every other read gets. A server that then never completes the `DONE` owes an answer
+    // and is given that bound.
+    let (client, server) = duplex(4096);
+    let server = tokio::spawn(async move {
+        let mut server = BufReader::new(server);
+        serve_handshake(&mut server).await;
+        assert!(read_line(&mut server).await.contains("IDLE"));
+        write(&mut server, "+ idling\r\n").await;
+        assert_eq!(read_line(&mut server).await.trim(), "DONE");
+        server
+    });
+    let mut watcher = start_watcher(client, DEFAULT_IDLE_KEEPALIVE).await;
+    let started = tokio::time::Instant::now();
+
+    let err = tokio::time::timeout(Duration::from_hours(1), watcher.next_event())
+        .await
+        .expect("hung: nothing bounded the wait for the DONE")
+        .expect_err("an unanswered DONE is a lost connection");
+
+    let elapsed = started.elapsed();
+    let bound = DEFAULT_IDLE_KEEPALIVE + engine_provider::Deadlines::STANDARD.reply();
+    assert!(
+        elapsed >= bound && elapsed < bound + Duration::from_secs(1),
+        "expected {bound:?}, took {elapsed:?}"
+    );
+    assert_eq!(err.class(), FailureClass::Retryable);
+    drop(watcher);
+    server.await.unwrap();
+}
+
 #[tokio::test]
 async fn start_fails_without_idle_capability() {
     let (client, server) = duplex(4096);

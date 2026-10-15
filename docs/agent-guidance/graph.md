@@ -157,6 +157,8 @@ when the sent copy syncs back and cannot carry `In-Reply-To`/`References` (Graph
 `internetMessageHeaders` only accepts custom `x-*` headers). The MIME form ships the
 whole message the caller assembled — pre-generated `Message-ID`, threading, `Cc`/
 `Bcc`, an HTML alternative, attachments — verbatim, exactly like IMAP's SMTP `DATA`.
+Its hand-over is recorded before the last piece of that body, the point of no return
+(`providers.md`).
 
 - **One shared assembler.** The RFC 5322 / MIME bytes come from **`engine-rfc5322`**
   (`assemble_filed_message`) — the same crate `provider-imap` feeds to SMTP `DATA`,
@@ -173,10 +175,46 @@ whole message the caller assembled — pre-generated `Message-ID`, threading, `C
   reconciles by `Message-ID` when Sent Items next syncs. A malformed MIME body is the
   documented `400 ErrorMimeContentInvalidBase64String` (permanent); `401`/`429`/`5xx`
   classify as auth/rate-limit/retryable through the shared status mapping.
+- **A `sendMail` that loses its answer needs confirming.** It goes through
+  `GraphClient::submit`, which waits the `submission` bound for the `202`. Once the request
+  may have reached Graph, a failure (a timeout or a dropped connection) is
+  `ProviderError::needs_confirmation`, never a retry; before it (connect, handshake, a body
+  Graph stopped taking) it is `Retryable` (`deadlines.md`).
 - **Live-verified.** A self-addressed send against the real account is confirmed to
   come back into the Inbox carrying the *exact* pre-generated `Message-ID` — proving
   Graph preserves it in the MIME form (`tests/live_provider.rs`, gated on
   `GRAPH_ACCESS_TOKEN`). The `Mail.Send` delegated scope is required.
+
+### Keywords on the filed copy, as categories
+
+Graph stores no free-form keyword. The nearest thing is `categories`, a list of names on each
+message that Outlook shows the person. So a keyword a draft asks for on its filed copy
+(`Draft::sent_copy_keywords`) is kept only when the host registered a name for it
+(`GraphProvider::with_keyword_names`, taking `KeywordName`s), and only then does the adapter
+advertise `sent_copy_keywords` (`crate::categories`).
+
+- **After the send, never inside it.** `sendMail` answers `202` and files the copy a moment
+  later, with no id. The copy is looked up in Sent Items by the `internetMessageId` the MIME
+  carried (`$filter=internetMessageId eq '<…>'`), after each wait of a short schedule (five
+  tries over about five seconds; a live mailbox shows it within about three), and given the
+  category with a `PATCH {categories}` that keeps any the person set. The message is delivered
+  before any of it starts: a copy not found or a refused `PATCH` only leaves the keyword out of
+  `SubmissionReceipt::sent_copy_keywords`.
+- **One category per keyword, whatever the device's language.** Before its first tag an adapter
+  asks Sent Items for a message already carrying any of the keyword's names
+  (`categories/any(c:c eq '…') or …`) and settles on the name it finds, creating the category
+  under `KeywordName::create_as` only when none is in use. The master category list
+  (`/me/outlook/masterCategories`) would answer directly, but reading it takes
+  `MailboxSettings.Read`, which a mail client has no other use for. A category set on a message
+  is **not** added to the master list (live-verified), so Outlook shows it without a colour.
+- **Read back through sync.** `categories` is in both `$select`s (`MESSAGE_SELECT` and
+  `MESSAGE_STATE_SELECT`), and a category matching a registered name, ignoring case, is reported
+  as the keyword. Any other category is the person's own and reports nothing. A category change
+  arrives in the folder's `messages/delta` (live-verified).
+- **Live-verified** (`tests/live_sent_copy_categories.rs`): the receipt keeps the keyword, the
+  Sent copy syncs back carrying it, and a second adapter registering the names the other way
+  round tags its copy with the category the first created. The copy delivered to the Inbox
+  carries none.
 
 ## Drafts
 
@@ -259,8 +297,9 @@ different Graph shapes (Graph models mail state as typed properties, not a keywo
 - **`SetKeywords` → `PATCH /messages/{id}` `{isRead, flag}`.** `$seen`→`isRead` (bool),
   `$flagged`→`flag.flagStatus` (`flagged`/`notFlagged`). These are the **only** two
   writable keyword-like properties Graph exposes, so any other keyword is **rejected**
-  (`InvalidState`), never silently dropped — `$draft` is read-only and Graph categories
-  are a separate concept. Both sides empty is a no-op (no request). The edits are
+  (`InvalidState`), never silently dropped — `$draft` is read-only, and a category is
+  written only as a named keyword on a sent message's filed copy (see "Keywords on the
+  filed copy, as categories"). Both sides empty is a no-op (no request). The edits are
   **unconditional** (no `If-Match`): the `MailEdit` shape carries no ETag guard, like
   IMAP `UID STORE` and JMAP `Email/set`.
 - **`MoveTo` → `POST /messages/{id}/move` `{destinationId}`.** Immutable ids are stable
@@ -589,6 +628,22 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   move is rejected if it would change the time *form* (`has_same_form`). The raw Graph
   event JSON is preserved beside the projection in `Event::extended`
   (`"microsoft.graph/event"`), since Graph is neither iCal nor JSCalendar.
+  A meeting create adds the complete `attendees` array, sets `responseRequested: true`, and
+  uses the draft UID as `transactionId` so a retry can be recognised. Graph permits at most
+  500 attendees, which the adapter validates before sending. A roster edit replaces the
+  complete array from the preserved raw event, retaining response and unknown fields. It
+  cannot edit the organiser or one occurrence. Exchange derives the organiser from the target
+  calendar; callers use the synced `Calendar::owner`, and the write does not attempt an
+  organiser override Graph cannot express.
+  - **The ETag a create echoes is current, so guarding the next write on it is sound.** Measured
+    on both mailbox kinds a host meets, an outlook.com account and an Exchange Online tenant
+    mailbox: create an event, read it straight back, and `@odata.etag` is byte-identical. Worth
+    knowing because a `412 ErrorIrresolvableConflict` on the patch in
+    `tests/live_calendar.rs` was once put down to the echo being stale on a work mailbox. It is
+    not: that suite passes five runs running against a tenant mailbox, and again beside the
+    recurrence and survival suites, and the read-back above says the echo was never the
+    explanation. If the `412` returns, read the event back at the point of the failure and compare
+    the two ETags before suspecting the guard.
 - **Both scheduling capabilities are constants here** (issue #105).
   `Capabilities::calendar_scheduling` is `true` — the service sends the iTIP
   `REQUEST`/`REPLY`/`CANCEL` a write implies, with no opt-out a client can reach (the
@@ -829,6 +884,37 @@ a live test cannot create the thing it needs to read — the present direction i
 coverable against a contact someone set up by hand. `live_a_saved_contact_with_a_picture…`
 walks whatever the account has rather than naming them, so renaming is fine; removing the
 one with a picture is what would silently uncover the path.
+
+## Personal or organization (`GraphClient::affiliation`)
+
+One credential is either a personal Microsoft account or one an Entra tenant administers, and
+the difference decides surfaces a host offers before it reaches them: a colleague directory
+(`/users`), a shared mailbox. `GraphClient::affiliation` answers with the neutral
+`engine_core::affiliation::Affiliation`, from `GET /organization?$select=id`:
+
+- **An organization's account gets its tenant back** (`value[0].id`), as
+  `Affiliation::Organization(OrganizationId)`.
+- **A personal account is refused with `400 BadRequest`**, "This API is not supported for MSA
+  accounts". That refusal is the answer `Affiliation::Personal`, matched on the status *and* the
+  envelope's `BadRequest` code. Anything else (`401`, `403`, `429`, a `5xx`, another `400` code)
+  is an error, never a guess, so a host retries rather than storing a wrong answer.
+- **Asked at the root, never under a principal**: a shared mailbox belongs to the organization of
+  whoever opens it.
+- **`User.Read` is enough**, which every Graph account here grants.
+
+Rejected alternatives, each of which also tells the two apart on today's accounts: the access
+token's `tid` claim (Microsoft documents access tokens as opaque to clients, and a personal
+account's is not a JWT at all), the id token's `tid` (needs `openid` on every sign-in), and the
+shape of `/me`'s `id` (16 hex digits on a personal account, a GUID in a tenant; observed, not
+documented).
+
+✅ **Live-verified** (`tests/live_affiliation.rs`) against an outlook.com account and an Exchange
+Online tenant in one run, so an adapter stuck on either answer fails it; shown red with the two
+tokens swapped. Fixtures: `organization/organization.json`,
+`error/organization_msa_unsupported.json`.
+
+Google has the same split (Gmail against a Workspace domain), answered from `userinfo`'s `hd`
+([`google.md`](google.md)).
 
 ## The mailbox's sender identity (read-only)
 

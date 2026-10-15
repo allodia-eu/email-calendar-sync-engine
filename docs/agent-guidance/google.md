@@ -115,6 +115,14 @@ Gmail labels drive all three of the message's independent axes (`modeling.md`):
   `SPAM`→Junk, `IMPORTANT`→Important, plus the synthetic All-Mail→All; category/chat/
   custom labels are roleless mailboxes.
 
+- **A label standing for a keyword** is neither. Gmail stores no free-form keyword, so a host
+  that wants one kept registers a `KeywordName` (`GmailProvider::with_keyword_names`): the name
+  to create the label under and every name it may already exist under. A label under any of
+  those names, ignoring case, is left out of the label list and out of every message's
+  membership, and the message carries the keyword instead (`crate::named_labels`). The adapter
+  learns the ids from each label-list read, or from a read of its own before the first one, and
+  a move leaves such a label on the message, since it is state rather than a place.
+
 `threadId` → the provider-assigned thread (`ThreadProvenance::ProviderAssigned`), never
 re-grouped by local derivation. The `Message-Id` header (mixed-case in the wire, so
 lookup is case-insensitive) is preserved bracket-stripped as a threading **hint**, never
@@ -194,12 +202,27 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   (`mutate_tests`) **and** a live round-trip (`live_archive_to_all_mail_…`).
   `Delete` is a **permanent** delete past Trash — enabled by the full `mail.google.com`
   scope. A `412` is a `Conflict` the outbox resolves by refetch-and-retry.
+- **A `messages.send` that loses its answer needs confirming.** It goes through
+  `GoogleClient::submit`, which waits the `submission` bound for the reply. Once the request
+  may have reached Gmail, a failure (a timeout or a dropped connection) is
+  `ProviderError::needs_confirmation`, never a retry; before it (connect, handshake, a body
+  Gmail stopped taking) it is `Retryable` (`deadlines.md`).
 - **`submit_email`** → `messages.send` with the whole RFC 5322 message as a base64url
   `raw` field, assembled through the shared `engine-rfc5322` (filed variant, keeping the
   `Bcc` header on the Sent copy). **Gmail rewrites the caller's `Message-ID` on send** (a
   captured finding), so reconcile-by-`Message-ID` would not match — but `send` **returns
   the sent message's id** in its response, so the receipt uses that directly (no reconcile
-  round-trip, unlike SMTP/Graph `sendMail`, which return nothing).
+  round-trip, unlike SMTP/Graph `sendMail`, which return nothing). Its hand-over is
+  recorded before the last piece of the request body, the point of no return
+  (`providers.md`), and a `2xx` whose `id` cannot be read falls back to the placeholder key
+  rather than failing a send Gmail has accepted.
+  With that id in hand, a keyword the draft asks for on its filed copy
+  (`Draft::sent_copy_keywords`) is kept as the label standing for it: an existing label under
+  any of the keyword's names, else one created under `KeywordName::create_as` with
+  `labelListVisibility: labelHide` and `messageListVisibility: show`, then one
+  `messages.modify` adding it. A `409` on the create (another device won by a moment) reads
+  the list again. Nothing in it fails the send; what was kept is in
+  `SubmissionReceipt::sent_copy_keywords`.
 
 - **`put_draft` / `delete_draft`** → the `users.drafts` collection. Gmail is the **one
   transport in this workspace with a draft object of its own**, so this is the only
@@ -221,6 +244,12 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   correlated with a local copy by `Message-ID`**, so anything matching the two has to use
   the key `put_draft` returned. `tests/live_drafts.rs` pins the rewrite itself, and
   identifies drafts by subject for exactly this reason.
+- ⚠️ **`drafts.create` refuses an empty `To` group.** `To: undisclosed-recipients:;`, the
+  header a Bcc-only *send* carries, answers `400 invalidArgument` "Invalid To header", so a
+  draft saved before anyone is addressed failed on every autosave (observed through a host).
+  A stored draft therefore names only the recipients it has: `assemble_draft_message` writes
+  no `To` header when there are none, and every adapter that stores MIME drafts uses it.
+  `tests/live_drafts.rs` saves one with no recipients.
 - **A whole-account snapshot is expensive enough to fail a live run.** Gmail meters a
   "Total Query Cost" of 6000 units per minute per user, and a `sync_email` snapshot
   fetches every message; a few in quick succession answer `403 rateLimitExceeded`, which
@@ -295,6 +324,16 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
   returns `412` (the deleted event is left cancelled with a new ETag, failing the stale
   `If-Match`), so the live test does not assert re-delete idempotency — the `404`/`410`
   path is proven offline.
+  A meeting create adds the complete `attendees` array with each new response set to
+  `needsAction`. A roster edit rebuilds that array from the preserved raw event, retaining
+  response status, additional guests and unknown fields. It refuses an event marked
+  `attendeesOmitted`, because replacing a partial list would remove unseen guests. The
+  organiser and one occurrence cannot be edited through the roster. Create, ordinary patch
+  and delete all send `sendUpdates=all` as a query parameter so invitation changes are
+  delivered. More than 200 guests remains a valid request, but Google does not propagate
+  response status to guests above that threshold. Google derives the organiser from the target
+  calendar; callers use the synced `Calendar::owner`, and the write does not attempt an
+  organiser override the API cannot express.
 - **Both scheduling capabilities are constants here** (issue #105).
   `Capabilities::calendar_scheduling` is `true` — the service sends the iTIP
   `REQUEST`/`REPLY`/`CANCEL` a write implies, with no opt-out a client can reach (the
@@ -571,6 +610,31 @@ press "not junk" on would not be in the account the engine shows.
 error, not a silent drop — a `$junk` write that reported success and did nothing is exactly
 the shape this mapping invites — and for the three junk keywords the error names
 `report_message` as the way to say it.
+
+## Personal or Workspace (`GoogleClient::affiliation`)
+
+The Google side of the neutral `engine_core::affiliation::Affiliation` (Graph's is in
+[`graph.md`](graph.md)): a Workspace domain has a directory and Gmail does not, and a host decides
+what to offer before it reaches either. `GET /oauth2/v3/userinfo`:
+
+- **A Workspace account's reply carries `hd`**, the hosted domain, answered as
+  `Affiliation::Organization`, named by that domain: the only name the reply gives the
+  organization.
+- **A personal account's reply has no `hd`**, the answer `Affiliation::Personal`.
+- **`userinfo.email` alone is enough**, observed live on both kinds of account with a token
+  narrowed to that scope. `hd` is the field Google documents on the ID token; `userinfo` carries
+  it too, and needs no `openid`.
+- **A token without `userinfo.email` gets `401`** ("Invalid Credentials"), which says nothing about
+  the account and stays an error, so a host never stores "personal" for a grant that could not ask.
+
+Rejected: the ID token's `hd` (only issued when `openid` was granted at sign-in), and the People
+API's own-profile `DOMAIN_PROFILE` source (it names no organization, and needs a People scope a
+calendar-only account does not hold).
+
+✅ **Live-verified** (`tests/live_affiliation.rs`) against a personal Gmail account and a
+Workspace account in one run, both with tokens narrowed to `userinfo.email`; shown red with the
+two tokens swapped. Fixtures: `identity/userinfo_workspace.json`,
+`identity/userinfo_personal.json`, `error/userinfo_without_scope.json`.
 
 ## Sender identities (send-as settings)
 

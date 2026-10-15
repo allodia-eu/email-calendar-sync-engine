@@ -12,8 +12,8 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     calendar::participant_address,
-    calendar_write::{escape_pointer, set_error},
-    error::JmapError,
+    calendar_write::escape_pointer,
+    error::{JmapError, set_refusal},
     executor::Executor,
     request::{Request, capability},
 };
@@ -82,8 +82,8 @@ pub(crate) async fn rsvp_event(
     let resp = executor.execute(&req).await?;
     let result = resp.result(&call)?;
 
-    if let Some(error_type) = set_error(result, "notUpdated", target) {
-        return Err(JmapError::set(target, error_type));
+    if let Some(refusal) = set_refusal(result, "notUpdated", target) {
+        return Err(JmapError::refused(target, refusal));
     }
     // As in `patch_event`: a target mentioned in neither map was silently dropped, which is
     // a conflict rather than a false success.

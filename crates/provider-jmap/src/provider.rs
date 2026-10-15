@@ -18,7 +18,7 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MessageReport, PageToken,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver, MessageReport,
     PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
     SharedMailbox, SourceStream, SubmissionReceipt, SyncKind, split_page,
 };
@@ -31,6 +31,7 @@ use crate::{
     executor::Executor,
     fetch,
     fetch::{MemberFetch, UpdatedAsState},
+    fetch_scope,
     mail::{
         EMAIL_PROPERTIES, EMAIL_STATE_PROPERTIES, mailbox_from_json, message_from_json,
         state_from_json,
@@ -187,16 +188,14 @@ impl Provider for JmapProvider {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
         let account = self.mail_account()?;
-        Ok(fetch::container_sync(
-            self.executor.as_ref(),
-            &account,
-            &[capability::CORE, capability::MAIL],
-            "Mailbox",
-            cursor,
-            mailbox_from_json,
-            |mailbox| mailbox.id.key().clone(),
-        )
-        .await?)
+        let fetch = MemberFetch {
+            executor: self.executor.as_ref(),
+            account: &account,
+            using: &[capability::CORE, capability::MAIL],
+            type_name: "Mailbox",
+            properties: None,
+        };
+        Ok(fetch_scope::member_sync(&fetch, cursor, mailbox_from_json).await?)
     }
 
     fn stream_email<'a>(
@@ -229,35 +228,23 @@ impl Provider for JmapProvider {
             // The JMAP round trip is atomic, so each page is fetched whole and
             // re-chunked for incremental commit; intermediate chunks hold the cursor
             // and a final marker advances it (JMAP is not cheaply resumable mid-pass).
-            let mut page_token: Option<PageToken> = None;
+            let mut pass = fetch::MemberPass::new(&fetch, sort, filter, fetch_batch, cursor);
+            let updated = UpdatedAsState {
+                properties: EMAIL_STATE_PROPERTIES,
+                normalize: state_from_json,
+            };
             let mut mode: Option<PassMode> = None;
             let mut total: Option<usize> = None;
             let final_cursor = loop {
-                let page = fetch::member_page(
-                    &fetch,
-                    sort.clone(),
-                    cursor,
-                    page_token.as_ref(),
-                    fetch_batch,
-                    filter.as_ref(),
-                    message_from_json,
-                    &UpdatedAsState {
-                        properties: EMAIL_STATE_PROPERTIES,
-                        normalize: state_from_json,
-                    },
-                )
-                .await?;
-                total = total.or(page.total);
-                // Decide the pass mode once, from the first page. A JMAP page arrives
-                // whole and is not cheaply resumable mid-pass, so a snapshot (first
-                // sync or `cannotCalculateChanges`) reconciles — its present set
-                // tombstones absent rows; a delta is additive.
+                let page = pass.next(message_from_json, &updated).await?;
+                total = page.total.or(total);
+                // Decide the pass mode once, from the first page: a snapshot (first sync or
+                // `cannotCalculateChanges`) reconciles, its present set tombstoning absent
+                // rows; a delta is additive.
                 let pass_mode = *mode.get_or_insert(match page.kind {
                     SyncKind::Snapshot => PassMode::Reconcile,
                     SyncKind::Delta => PassMode::Additive,
                 });
-                let is_last = page.next_page.is_none();
-                let next_cursor = page.next_cursor.clone();
                 for chunk in split_page(
                     pass_mode,
                     page.changed,
@@ -269,10 +256,9 @@ impl Provider for JmapProvider {
                 ) {
                     yield chunk;
                 }
-                if is_last {
-                    break next_cursor;
+                if let Some(cursor) = page.next_cursor {
+                    break cursor;
                 }
-                page_token = page.next_page;
             };
             // The final marker carries the cursor (and, for reconcile, tombstones
             // against the accumulated present set).
@@ -293,14 +279,13 @@ impl Provider for JmapProvider {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Calendar>> {
         let account = self.calendar_account()?;
-        Ok(fetch::container_sync(
+        Ok(fetch_scope::container_sync(
             self.executor.as_ref(),
             &account,
             &[capability::CORE, capability::CALENDARS],
             "Calendar",
             cursor,
             calendar_from_json,
-            |calendar| calendar.id.key().clone(),
         )
         .await?)
     }
@@ -311,16 +296,14 @@ impl Provider for JmapProvider {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         let account = self.calendar_account()?;
-        Ok(fetch::member_sync(
-            self.executor.as_ref(),
-            &account,
-            &[capability::CORE, capability::CALENDARS],
-            "CalendarEvent",
-            None,
-            cursor,
-            event_from_json,
-        )
-        .await?)
+        let fetch = MemberFetch {
+            executor: self.executor.as_ref(),
+            account: &account,
+            using: &[capability::CORE, capability::CALENDARS],
+            type_name: "CalendarEvent",
+            properties: None,
+        };
+        Ok(fetch_scope::member_sync(&fetch, cursor, event_from_json).await?)
     }
 
     // `put_event` is deliberately **not** implemented: replacing a whole stored document is
@@ -397,6 +380,7 @@ impl Provider for JmapProvider {
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
         crate::submit_body::reject_unsendable_calendar(draft)?;
         let mail_account = self.executor.session().mail_account_id()?.to_owned();
@@ -406,6 +390,7 @@ impl Provider for JmapProvider {
             &mail_account,
             &submission_account,
             draft,
+            hand_over,
         )
         .await?)
     }
@@ -453,6 +438,18 @@ impl Provider for JmapProvider {
 pub(crate) mod provider_test_support;
 
 #[cfg(test)]
+#[path = "bounded_server.rs"]
+pub(crate) mod bounded_server;
+
+#[cfg(test)]
+#[path = "fetch_scope_tests.rs"]
+mod fetch_scope_tests;
+
+#[cfg(test)]
+#[path = "walk_tests.rs"]
+mod walk_tests;
+
+#[cfg(test)]
 #[path = "provider_tests.rs"]
 mod tests;
 
@@ -471,6 +468,10 @@ mod calendar_recurrence_tests;
 #[cfg(test)]
 #[path = "calendar_write_tests.rs"]
 mod calendar_write_tests;
+
+#[cfg(test)]
+#[path = "calendar_invite_tests.rs"]
+mod calendar_invite_tests;
 
 #[cfg(test)]
 #[path = "report_provider_tests.rs"]

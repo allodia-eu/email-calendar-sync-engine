@@ -74,6 +74,20 @@ impl Provider for FakeMail {
                     .lock()
                     .expect("keyword delta mutex poisoned"),
             );
+            // A reconcile sends what an IMAP session without QRESYNC sends: the present set
+            // and the state changes on an intermediate chunk, then the marker that tombstones.
+            if let Some(present) = self.present.lock().expect("present mutex poisoned").take() {
+                let chunks = vec![
+                    Ok(EmailChunk::reconcile_page(changed, present, None).with_patched(keywords)),
+                    Ok(EmailChunk::reconcile_last(
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                        self.cursor.clone(),
+                    )),
+                ];
+                return Box::pin(futures_util::stream::iter(chunks));
+            }
             EmailChunk::additive(changed, Vec::new(), None, self.cursor.clone())
                 .with_patched(keywords)
         };
@@ -118,25 +132,31 @@ impl Provider for FakeMail {
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
+        if self.fails(Fault::Submit) || self.send_is_out() {
+            // Refused before anything could deliver it.
+            return Err(ProviderError::rate_limited("slow down", None));
+        }
+        let handed_over = hand_over.commit().await?;
         if self.fails(Fault::AmbiguousSubmit) {
             Err(ProviderError::needs_confirmation(
                 "post-DATA acknowledgement lost",
             ))
         } else if self.fails(Fault::PermanentSubmit) {
             Err(ProviderError::permanent("recipient rejected"))
-        } else if self.fails(Fault::Submit) || self.send_is_out() {
-            Err(ProviderError::rate_limited("slow down", None))
         } else if self.fails(Fault::UnfiledCopy) {
             Ok(SubmissionReceipt::unfiled(
                 ProviderKey::new("sent-1").unwrap(),
                 draft.message_id.clone(),
                 "APPEND refused: over quota",
+                &handed_over,
             ))
         } else {
             Ok(SubmissionReceipt::filed(
                 ProviderKey::new("sent-1").unwrap(),
                 draft.message_id.clone(),
+                &handed_over,
             )
             .with_sent_copy_keywords(draft.sent_copy_keywords.clone()))
         }
@@ -178,6 +198,9 @@ impl Provider for FakeMail {
             // The IMAP analogue of a CalDAV 412: a stale UID under a changed
             // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
             return Err(ProviderError::conflict("UIDVALIDITY changed"));
+        }
+        if self.fails(Fault::ThrottledEdit) {
+            return Err(ProviderError::rate_limited("slow down", None));
         }
         Ok(MailEditReceipt::new(edit.target().clone()))
     }

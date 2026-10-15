@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    RetryConfig, RetryPolicy, send_retrying,
+    Exchange, RetryConfig, RetryPolicy, send_retrying,
     send_test_support::{Reply, client, recording, scripted},
 };
 
@@ -19,7 +19,7 @@ use crate::{
 async fn a_reply_that_is_not_a_throttle_is_returned_after_one_send() {
     let (url, served) = scripted(vec![Reply("200 OK", "", "")]);
     let (retry, log) = recording();
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 200);
@@ -35,7 +35,7 @@ async fn a_throttle_that_clears_is_absorbed() {
     ]);
     let (retry, log) = recording();
     let started = tokio::time::Instant::now();
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 200, "the caller sees success");
@@ -56,7 +56,7 @@ async fn a_throttle_that_clears_is_absorbed() {
 async fn a_throttle_that_never_clears_is_handed_back_as_the_rate_limit_it_is() {
     let (url, served) = scripted(vec![Reply("429 Too Many Requests", "", "")]);
     let (retry, log) = recording();
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(
@@ -87,7 +87,7 @@ async fn the_servers_own_retry_after_decides_the_wait() {
     ]);
     let (retry, log) = recording();
     let started = tokio::time::Instant::now();
-    send_retrying(client().get(&url), &retry)
+    send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert!(
@@ -112,7 +112,7 @@ async fn a_retry_after_too_long_to_absorb_is_handed_back_carrying_its_instant() 
     )]);
     let (retry, log) = recording();
     let started = tokio::time::Instant::now();
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 429);
@@ -140,14 +140,14 @@ async fn a_reply_that_names_no_instant_carries_none() {
     // `Some(_)` would pass it to the outbox as the server's word.
     let (url, _) = scripted(vec![Reply("429 Too Many Requests", "", "")]);
     let (retry, _) = recording();
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 429);
     assert_eq!(response.stated_wait(), None);
 
     let (ok_url, _) = scripted(vec![Reply("200 OK", "Retry-After: 30\r\n", "")]);
-    let fine = send_retrying(client().get(&ok_url), &retry)
+    let fine = send_retrying(client().get(&ok_url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(
@@ -171,7 +171,7 @@ async fn a_long_stated_wait_gives_the_lane_back_instead_of_parking_on_it() {
     let gate = crate::RequestGate::new();
     gate.narrow_to(1);
     let retry = RetryConfig::default().labelled("test").gated(gate.clone());
-    let throttled = send_retrying(client().get(&url), &retry)
+    let throttled = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(throttled.stated_wait(), Some(Duration::from_secs(45)));
@@ -195,7 +195,7 @@ async fn a_retry_after_given_as_a_date_is_honoured_too() {
     let header: &'static str = Box::leak(format!("Retry-After: {when}\r\n").into_boxed_str());
     let (url, served) = scripted(vec![Reply("429 Too Many Requests", header, "")]);
     let (retry, log) = recording();
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 429);
@@ -225,7 +225,7 @@ async fn a_date_already_in_the_past_falls_back_to_the_backoff_schedule() {
     ]);
     let (retry, log) = recording();
     let started = tokio::time::Instant::now();
-    send_retrying(client().get(&url), &retry)
+    send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(served.load(Ordering::SeqCst), 2);
@@ -248,7 +248,7 @@ async fn a_retry_after_past_the_budget_hands_the_work_to_the_next_pass() {
         "",
     )]);
     let (retry, log) = recording();
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 429);
@@ -273,7 +273,7 @@ async fn the_number_the_server_named_is_not_the_number_we_waited() {
         Reply("200 OK", "", ""),
     ]);
     let (retry, log) = recording();
-    send_retrying(client().get(&url), &retry)
+    send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     let (_, _, delay, named, gave_up) = log.lock().unwrap()[0];
@@ -296,15 +296,19 @@ async fn a_503_is_waited_out_for_a_get_and_never_for_a_post() {
         Reply("200 OK", "", ""),
     ]);
     let (retry, _) = recording();
-    send_retrying(client().get(&url), &retry)
+    send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(served.load(Ordering::SeqCst), 2);
 
     let (post_url, post_served) = scripted(vec![Reply("503 Service Unavailable", "", "")]);
-    let response = send_retrying(client().post(&post_url).body("x"), &retry)
-        .await
-        .expect("sent");
+    let response = send_retrying(
+        client().post(&post_url).body("x"),
+        &retry,
+        Exchange::Ordinary,
+    )
+    .await
+    .expect("sent");
     assert_eq!(response.status().as_u16(), 503);
     assert_eq!(
         post_served.load(Ordering::SeqCst),
@@ -318,7 +322,7 @@ async fn the_none_policy_reports_the_throttle_without_waiting_it_out() {
     let (url, served) = scripted(vec![Reply("429 Too Many Requests", "", "")]);
     let (retry, log) = recording();
     let retry = retry.with_policy(RetryPolicy::none());
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 429);
@@ -333,9 +337,13 @@ async fn a_host_that_wires_no_observer_still_gets_the_backoff() {
         Reply("429 Too Many Requests", "", ""),
         Reply("200 OK", "", ""),
     ]);
-    let response = send_retrying(client().get(&url), &RetryConfig::default().labelled("test"))
-        .await
-        .expect("sent");
+    let response = send_retrying(
+        client().get(&url),
+        &RetryConfig::default().labelled("test"),
+        Exchange::Ordinary,
+    )
+    .await
+    .expect("sent");
     assert_eq!(response.status().as_u16(), 200);
     assert_eq!(served.load(Ordering::SeqCst), 2);
 }
@@ -385,7 +393,9 @@ async fn the_account_ceiling_bounds_what_is_in_flight_across_providers() {
         let (client, url, retry) = (client.clone(), url.clone(), retry.clone());
         handles.push(tokio::spawn(async move {
             let _ = index;
-            send_retrying(client.get(&url), &retry).await.expect("sent");
+            send_retrying(client.get(&url), &retry, Exchange::Ordinary)
+                .await
+                .expect("sent");
         }));
     }
     for handle in handles {
@@ -412,7 +422,11 @@ async fn a_lane_is_held_across_the_backoff_and_not_handed_on_mid_throttle() {
     let retry = RetryConfig::default().labelled("test").gated(gate.clone());
     let throttled = {
         let (client, url, retry) = (client(), url.clone(), retry.clone());
-        tokio::spawn(async move { send_retrying(client.get(&url), &retry).await.expect("sent") })
+        tokio::spawn(async move {
+            send_retrying(client.get(&url), &retry, Exchange::Ordinary)
+                .await
+                .expect("sent")
+        })
     };
     // Long enough that the first request is certainly inside its one-second backoff.
     tokio::time::sleep(Duration::from_millis(300)).await;

@@ -79,6 +79,15 @@ pub(crate) async fn calendars(client: &GoogleClient) -> Result<Vec<Calendar>, Go
     Ok(calendars)
 }
 
+/// The address the account's calendars schedule as: the id of its `primary` calendar
+/// (`calendars.get`), which Google names after the account's own address.
+pub(crate) async fn primary_calendar_address(client: &GoogleClient) -> Result<String, GoogleError> {
+    let doc = client
+        .get(&client.url(&format!("{CALENDAR_BASE}/calendars/primary")))
+        .await?;
+    Ok(req_str(&doc, "id")?.to_owned())
+}
+
 /// One page of events, plus the occurrence-level entries on it.
 ///
 /// The overrides ride beside the page rather than inside it because they cannot be applied

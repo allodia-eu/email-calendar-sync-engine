@@ -44,7 +44,7 @@
 //! adapter. [`jmap_cancelling_a_meeting_reaches_the_attendee`] does the same job for the
 //! write verbs, which carry the flag unconditionally.
 //!
-//! The full history is #102 (which inverts #93). The harness pins **v0.16.21**.
+//! The full history is #102 (which inverts #93). The harness pins **v0.16.24**.
 //!
 //! Every scenario leaves the harness exactly as it found it.
 
@@ -208,8 +208,8 @@ async fn jmap_a_quiet_answer_reaches_nobody() {
 /// happening**, with nothing anywhere reporting a failure. That is the same silent-failure
 /// shape as the RSVP bug, one verb over.
 ///
-/// The organizer places the invitation over CalDAV (a draft cannot name an attendee) and
-/// removes it over **JMAP**, so the cancellation is entirely this adapter's doing. What
+/// The organiser creates and removes the invitation over **JMAP**, so the cancellation is
+/// entirely this adapter's doing. What
 /// Stalwart then does to the attendee's copy is observed, not assumed: it may remove the copy
 /// or mark it cancelled, and either is a delivered `CANCEL` — what would fail the test is the
 /// attendee still holding a live, uncancelled meeting.

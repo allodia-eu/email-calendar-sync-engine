@@ -52,12 +52,23 @@ pub(crate) enum Extension {
     /// `LIST-MYRIGHTS` (RFC 8440) — a folder list can carry those rights, as `LIST-STATUS`
     /// carries the unread counts.
     ListMyrights,
+    /// `UIDONLY` (RFC 9586) — messages are addressed by UID alone. Yahoo documents its
+    /// default mode as showing a folder above `MESSAGELIMIT` only in part, and UID mode as the
+    /// whole of it.
+    UidOnly,
+    /// `PARTIAL` (RFC 9394) — a `FETCH` can ask for the first `n` messages of a set, which
+    /// pages a mailbox by message count rather than by UID.
+    Partial,
+    /// `XYMHIGHESTMODSEQ` — Yahoo's: `SELECT` and `STATUS` report a per-folder
+    /// `HIGHESTMODSEQ` without CONDSTORE, and it moves on every change to the folder (an
+    /// arrival, a flag, a removal). So an unchanged value means an unchanged folder.
+    XymHighestModseq,
 }
 
 impl Extension {
     /// Every extension, in declaration order — what the `ENABLE` argument list and the
     /// connect trace iterate, so a new one cannot be added here and forgotten there.
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Idle,
         Self::ListStatus,
         Self::SpecialUse,
@@ -65,6 +76,9 @@ impl Extension {
         Self::Namespace,
         Self::Acl,
         Self::ListMyrights,
+        Self::UidOnly,
+        Self::Partial,
+        Self::XymHighestModseq,
     ];
 
     /// The capability atom a server advertises this under.
@@ -77,6 +91,9 @@ impl Extension {
             Self::Namespace => "NAMESPACE",
             Self::Acl => "ACL",
             Self::ListMyrights => "LIST-MYRIGHTS",
+            Self::UidOnly => "UIDONLY",
+            Self::Partial => "PARTIAL",
+            Self::XymHighestModseq => "XYMHIGHESTMODSEQ",
         }
     }
 
@@ -89,7 +106,12 @@ impl Extension {
     pub(crate) const fn folded_into_rev2(self) -> bool {
         match self {
             Self::Idle | Self::ListStatus | Self::SpecialUse | Self::Namespace => true,
-            Self::Qresync | Self::Acl | Self::ListMyrights => false,
+            Self::Qresync
+            | Self::Acl
+            | Self::ListMyrights
+            | Self::UidOnly
+            | Self::Partial
+            | Self::XymHighestModseq => false,
         }
     }
 
@@ -98,13 +120,15 @@ impl Extension {
     /// announcement; one changes what the server sends unbidden, and so does the dialect.
     pub(crate) const fn needs_enable(self) -> bool {
         match self {
-            Self::Qresync => true,
+            Self::Qresync | Self::UidOnly => true,
             Self::Idle
             | Self::ListStatus
             | Self::SpecialUse
             | Self::Namespace
             | Self::Acl
-            | Self::ListMyrights => false,
+            | Self::ListMyrights
+            | Self::Partial
+            | Self::XymHighestModseq => false,
         }
     }
 }
@@ -173,6 +197,23 @@ impl Negotiated {
             return self.enabled.contains(&ext.atom().to_lowercase());
         }
         self.advertises(ext.atom()) || (self.rev2() && ext.folded_into_rev2())
+    }
+
+    /// The most messages one command may touch (RFC 9738 `MESSAGELIMIT=<n>`), if the server
+    /// stated a limit.
+    pub(crate) fn message_limit(&self) -> Option<usize> {
+        self.advertised
+            .iter()
+            .find_map(|atom| atom.strip_prefix("messagelimit=")?.parse().ok())
+    }
+
+    /// `requested` UIDs per `FETCH` (`0` for no cap), lowered to the server's message limit
+    /// where it states one, since a server may refuse a set naming more.
+    pub(crate) fn within_message_limit(&self, requested: usize) -> usize {
+        match self.message_limit() {
+            Some(limit) if limit > 0 && (requested == 0 || requested > limit) => limit,
+            _ => requested,
+        }
     }
 
     /// Whether a `LIST` has to ask for the SPECIAL-USE attributes with a return option.

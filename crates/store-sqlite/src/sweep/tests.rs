@@ -79,8 +79,10 @@ async fn removes_the_blob_no_row_names_and_keeps_the_one_that_is_named() {
         .call(|conn| {
             conn.execute("DELETE FROM message_source WHERE provider_key = 'gone'", [])
                 .unwrap();
+            Ok(())
         })
-        .await;
+        .await
+        .unwrap();
     age_blobs(&root);
 
     let report = store.sweep_unreferenced_blobs().await.unwrap();
@@ -123,8 +125,10 @@ async fn a_blob_two_rows_share_survives_losing_one_of_them() {
                 [],
             )
             .unwrap();
+            Ok(())
         })
-        .await;
+        .await
+        .unwrap();
     age_blobs(&root);
 
     assert_eq!(
@@ -151,8 +155,10 @@ async fn a_blob_young_enough_to_be_mid_write_is_spared() {
     store
         .call(|conn| {
             conn.execute("DELETE FROM message_source", []).unwrap();
+            Ok(())
         })
-        .await;
+        .await
+        .unwrap();
 
     assert_eq!(
         store.sweep_unreferenced_blobs().await.unwrap(),

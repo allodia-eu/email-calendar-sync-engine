@@ -6,6 +6,7 @@
 //! repeated), [`other_writes`] the edits and reports and everything a pass leaves alone.
 
 mod other_writes;
+mod overtaken;
 mod sends;
 
 use super::*;

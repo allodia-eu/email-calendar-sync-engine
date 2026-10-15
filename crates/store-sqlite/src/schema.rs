@@ -26,7 +26,7 @@
 //!
 //! `STRICT` enforces column types; the composite-key tables are `WITHOUT ROWID`
 //! (clustered by their key), while `pending_op` keeps a rowid so it maps onto
-//! `PendingOpId`. Time is ISO-8601 `TEXT` (sortable and exact to nanoseconds);
+//! `PendingOpId`. Time is fixed-width ISO-8601 `TEXT` (`convert::instant_to_text`);
 //! generations and ids are `INTEGER`; opaque normalized payloads are `TEXT` JSON
 //! (never queried in SQL — structured filters use derived columns, not payload
 //! introspection — so JSONB would only cost debuggability and portability here).
@@ -460,6 +460,41 @@ ALTER TABLE pending_op ADD COLUMN failure_class   TEXT;
 ALTER TABLE pending_op ADD COLUMN detail          TEXT;
 ";
 
+/// Migration v15: a person may have no display name.
+///
+/// `Person::display_name` is `None` for a card with neither a name nor an address, and the v7
+/// column refused it, failing the whole people write. SQLite cannot drop `NOT NULL` in place, so
+/// the table is rebuilt and its rows copied: the ids are what a host holds, and a rebuild that
+/// kept none would re-issue every one.
+pub(crate) const V15: &str = "CREATE TABLE person_v15 (
+    id           INTEGER NOT NULL PRIMARY KEY,
+    ordinal      INTEGER NOT NULL UNIQUE,
+    display_name TEXT,
+    payload      TEXT    NOT NULL
+) STRICT;
+
+INSERT INTO person_v15 (id, ordinal, display_name, payload)
+SELECT id, ordinal, display_name, payload FROM person;
+
+DROP TABLE person;
+ALTER TABLE person_v15 RENAME TO person;
+CREATE INDEX person_display_name ON person (display_name, id);
+";
+
+/// Migration v16: an outbox op records whether its attempt handed the message over.
+///
+/// `handed_over` holds the token of the attempt that recorded, just before the first byte that
+/// could deliver a send, that it was about to write it (`Store::record_hand_over`). Recovering a
+/// dead attempt turns on it: none, and the send is retried; one, and it awaits confirmation.
+///
+/// **A send already in flight when the store upgrades is taken as handed over.** Its build
+/// recorded nothing, so nothing proves it stopped short of the server, and asking is the only
+/// answer that cannot deliver a message twice.
+pub(crate) const V16: &str = "\
+ALTER TABLE pending_op ADD COLUMN handed_over INTEGER;
+UPDATE pending_op SET handed_over = token WHERE state = 'InFlight' AND kind = 'MailSubmit';
+";
+
 mod mail;
 
-pub(crate) use mail::{V8, V9, V10};
+pub(crate) use mail::{V8, V9, V10, V17, V18};

@@ -17,6 +17,7 @@ Read before relevant work:
 - `docs/agent-guidance/graph.md` before touching the Microsoft Graph mail client (`provider-graph`, the Graph mail sync path, or the OAuth/capture tool under `tools/graph-oauth/`).
 - `docs/agent-guidance/google.md` before touching the Google (Gmail + Google Calendar) client (`provider-google`, the Gmail/Calendar sync paths, or the OAuth/capture tool under `tools/google-oauth/`).
 - `docs/agent-guidance/http-throttling.md` before touching how an HTTP provider answers a `429` (`engine-http`, a provider's transport send path, or a host's throttle reporting).
+- `docs/agent-guidance/deadlines.md` before touching how long a provider waits on a server (`engine_provider::Deadlines`, a transport's connect, read or write, `engine-http`'s send funnel, or what a timed-out submission is classified as).
 - `docs/agent-guidance/tls.md` before touching TLS trust (`engine-tls`, a provider's transport/`connect` construction, or a host's certificate-trust wiring).
 - `docs/agent-guidance/store-and-sync.md` before touching the store trait, sync orchestration, or the outbox.
 - `docs/agent-guidance/search.md` before touching the query AST/DSL, the search executor, or projection→index rows.
@@ -140,6 +141,7 @@ impractical:
 | CalDAV (a second implementation) | the **SabreDAV** fixture (`docker/sabredav`) | `crates/provider-caldav/tests/live_sabredav.rs` |
 | Gmail · Google Calendar · Google People | a **throwaway Google test account** | `tools/google-oauth` mints the token; `crates/provider-google/tests/live_*.rs` |
 | Microsoft Graph | a **test Microsoft account** | `tools/graph-oauth` mints the token; `crates/provider-graph/tests/live_*.rs` |
+| IMAP/SMTP **SASL OAuth** (`OAUTHBEARER`, `XOAUTH2`) | a **throwaway Gmail account**; a **Yahoo test account** once its mail scope is approved | `tools/google-oauth token` (its default scope is already `https://mail.google.com/`) and `tools/yahoo-oauth` mint the tokens; `crates/provider-imap/tests/live_imap_oauth.rs`. Gmail advertises **both** mechanisms and so does Yahoo (observed — Yahoo's docs say otherwise), so the target does not pick the mechanism; the client's preference does. |
 
 The live tests are env-gated so the offline suite stays green without credentials — which makes them
 easy to forget. Forgetting is the failure mode this rule exists to prevent:
@@ -315,14 +317,14 @@ place — **`codecov.yml`** (`coverage.status.project.default.target` and
 `…patch.default.target`). CI's coverage job reads the floor from there with `yq`, and
 Codecov enforces both, so the number is defined once. Run the same check locally before
 `git push` so you catch a regression before CI does. The offline metric excludes the
-live/harness tests (they run in the gated `stalwart` job); the exclusion list mirrors
-CI's `COVERAGE_IGNORE` (see `.github/workflows/ci.yml`):
+live/harness tests (they run in the gated `stalwart` job) and the `dav-cli` debugging
+tool; the exclusion list mirrors CI's `COVERAGE_IGNORE` (see `.github/workflows/ci.yml`):
 
 ```sh
 cargo llvm-cov --no-report --workspace --all-features
 threshold="$(yq '.coverage.status.project.default.target' codecov.yml | tr -d '%')"   # single source
 cargo llvm-cov report --fail-under-lines "$threshold" \
-  --ignore-filename-regex 'stalwart-harness/|provider-[a-z]+/tests/'
+  --ignore-filename-regex 'stalwart-harness/|dav-cli/|provider-jmap/tests/|provider-imap/tests/|provider-caldav/tests/|provider-graph/tests/'
 ```
 
 New/changed lines must clear the **patch** target too, so cover new code. A provider's

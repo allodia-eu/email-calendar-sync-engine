@@ -131,3 +131,56 @@ fn list_myrights_is_had_only_where_advertised_on_either_dialect() {
     assert!(caps(&["IMAP4rev1", "LIST-MYRIGHTS"]).has(Extension::ListMyrights));
     assert!(!caps(&["IMAP4rev1", "ACL"]).has(Extension::ListMyrights));
 }
+
+/// Yahoo's capability line after login, verbatim.
+const YAHOO: &[&str] = &[
+    "IMAP4rev1",
+    "ID",
+    "MOVE",
+    "NAMESPACE",
+    "XYMHIGHESTMODSEQ",
+    "UIDPLUS",
+    "LITERAL+",
+    "CHILDREN",
+    "UNSELECT",
+    "X-MSG-EXT",
+    "OBJECTID",
+    "IDLE",
+    "ENABLE",
+    "UIDONLY",
+    "X-UIDONLY",
+    "LIST-EXTENDED",
+    "LIST-STATUS",
+    "SPECIAL-USE",
+    "MESSAGELIMIT=1000",
+    "PARTIAL",
+    "APPENDLIMIT=41697280",
+    "COMPRESS=DEFLATE",
+];
+
+#[test]
+fn uid_mode_is_asked_for_where_advertised_and_holds_only_once_confirmed() {
+    // RFC 9586: UIDONLY changes what the server sends, so it takes an `ENABLE`, and a server
+    // that limits a mailbox's view without it (Yahoo's default) shows only part of it.
+    let mut session = caps(YAHOO);
+    assert_eq!(session.enable_arguments(), ["UIDONLY"]);
+    assert!(!session.has(Extension::UidOnly));
+    session.confirm_enabled(&["UIDONLY".to_owned()]);
+    assert!(session.has(Extension::UidOnly));
+}
+
+#[test]
+fn the_message_limit_is_read_from_the_capability() {
+    // RFC 9738: the most messages one command may touch.
+    assert_eq!(caps(YAHOO).message_limit(), Some(1000));
+    assert_eq!(caps(&["IMAP4rev1"]).message_limit(), None);
+    assert_eq!(caps(&["MESSAGELIMIT=many"]).message_limit(), None);
+}
+
+#[test]
+fn a_fetch_never_names_more_than_the_message_limit() {
+    assert_eq!(caps(YAHOO).within_message_limit(0), 1000);
+    assert_eq!(caps(YAHOO).within_message_limit(5000), 1000);
+    assert_eq!(caps(YAHOO).within_message_limit(200), 200);
+    assert_eq!(caps(&["IMAP4rev1"]).within_message_limit(0), 0);
+}

@@ -42,10 +42,20 @@ impl HttpResponse {
     /// `x-calendar-access`, and the classes this drives a capability off must not be
     /// guessed.
     pub(crate) fn advertises(&self, token: &str) -> bool {
-        self.dav.as_deref().is_some_and(|header| {
+        self.dav_classes()
+            .iter()
+            .any(|class| class.eq_ignore_ascii_case(token))
+    }
+
+    /// The compliance classes the `DAV` header lists, trimmed, in the server's order. Empty
+    /// when the response carries no such header.
+    pub(crate) fn dav_classes(&self) -> Vec<&str> {
+        self.dav.as_deref().map_or_else(Vec::new, |header| {
             header
                 .split(',')
-                .any(|class| class.trim().eq_ignore_ascii_case(token))
+                .map(str::trim)
+                .filter(|class| !class.is_empty())
+                .collect()
         })
     }
 

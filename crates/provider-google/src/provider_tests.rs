@@ -210,7 +210,14 @@ async fn edit_mail_and_submit_email_route_through_the_provider() {
         "Body",
     )
     .with_sent_copy_keyword(engine_core::mail::Keyword::new("project-x").unwrap());
-    let sent = provider.submit_email(&account(), &draft).await.unwrap();
+    let sent = provider
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
     assert_eq!(sent.email_key.as_str(), "19f7sent0000abcd");
     // Gmail keeps no custom keyword, so the send goes out and says none were kept.
     assert!(sent.sent_copy_keywords.is_empty());
@@ -300,6 +307,19 @@ async fn setting_a_name_patches_the_send_as_resource_and_nothing_else() {
     assert_eq!(body["displayName"], "Alice Smith");
     // Naming `sendAsEmail` would ask Gmail to change which address the alias is.
     assert_eq!(body.as_object().unwrap().len(), 1, "{body}");
+}
+
+#[test]
+fn gmail_keeps_a_sent_copy_keyword_only_once_it_has_a_label_name() {
+    let provider = GmailProvider::new(fake_client(vec![]));
+    assert!(!provider.connection_info().capabilities.sent_copy_keywords());
+    let named = engine_provider::KeywordName::new(
+        engine_core::mail::Keyword::new("project-x").unwrap(),
+        "Project X",
+    )
+    .unwrap();
+    let provider = GmailProvider::new(fake_client(vec![])).with_keyword_names(vec![named]);
+    assert!(provider.connection_info().capabilities.sent_copy_keywords());
 }
 
 #[test]

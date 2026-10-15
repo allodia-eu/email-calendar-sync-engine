@@ -217,11 +217,16 @@ fn a_payload_without_sent_copy_keywords_still_deserializes() {
     assert!(restored.sent_copy_keywords.is_empty());
 }
 
-#[test]
-fn a_receipt_reports_no_kept_keywords_until_an_adapter_says_so() {
-    let filed = SubmissionReceipt::filed(ProviderKey::new("k").unwrap(), mid("a@host"));
+#[tokio::test]
+async fn a_receipt_reports_no_kept_keywords_until_an_adapter_says_so() {
+    let proof = crate::HandOver::new(&crate::Unrecorded)
+        .commit()
+        .await
+        .unwrap();
+    let filed = SubmissionReceipt::filed(ProviderKey::new("k").unwrap(), mid("a@host"), &proof);
     assert!(filed.sent_copy_keywords.is_empty());
-    let unfiled = SubmissionReceipt::unfiled(ProviderKey::new("k").unwrap(), mid("a@host"), "no");
+    let unfiled =
+        SubmissionReceipt::unfiled(ProviderKey::new("k").unwrap(), mid("a@host"), "no", &proof);
     assert!(unfiled.sent_copy_keywords.is_empty());
 
     let kept = filed.with_sent_copy_keywords(BTreeSet::from([keyword("project-x")]));

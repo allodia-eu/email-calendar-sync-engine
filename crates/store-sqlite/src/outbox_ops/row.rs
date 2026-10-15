@@ -6,7 +6,7 @@
 
 use engine_core::{
     time::UtcDateTime,
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, ResourceKey},
+    write::{IdempotencyKey, KeywordEdit, PendingOp, PendingOpId, PendingOpKind, ResourceKey},
 };
 use engine_store::{PendingOpState, Result};
 use rusqlite::{OptionalExtension, Transaction};
@@ -29,6 +29,12 @@ pub(super) struct LoadedOp {
     pub(super) next_attempt_at: Option<UtcDateTime>,
     pub(super) failure_class: Option<engine_core::error::FailureClass>,
     pub(super) detail: Option<String>,
+    /// The token of the attempt that recorded handing the message over, while it matters.
+    pub(super) handed_over: Option<u64>,
+    /// The account the op belongs to.
+    pub(super) account: String,
+    /// The keyword change the store shows while the op is unsettled.
+    pub(super) keyword_edit: Option<KeywordEdit>,
 }
 
 impl LoadedOp {
@@ -45,6 +51,7 @@ impl LoadedOp {
             depends_on: self.depends_on.clone(),
             resource_key: ResourceKey::new(self.resource_key.clone()).map_err(convert::backend)?,
             payload: self.payload.clone(),
+            keyword_edit: self.keyword_edit.clone(),
         })
     }
 }
@@ -55,28 +62,27 @@ pub(super) fn is_due(next_attempt_at: Option<UtcDateTime>, now: UtcDateTime) -> 
     next_attempt_at.is_none_or(|due| due <= now)
 }
 
-/// Whether an op may be leased now: fresh and due, or one whose lease died under it.
+/// Whether an op may be leased now: `Pending` and due. A claim recovers a dead attempt
+/// before it asks, so an `InFlight` op is never runnable as it stands.
 ///
 /// A row with no kind is never runnable. Those are the rows enqueued before v14, whose
 /// payload nothing can be deserialized as; attempting one would mean guessing which
 /// provider verb it was. They stay listed so a host can show and withdraw them.
 pub(super) fn is_runnable(op: &LoadedOp, now: UtcDateTime) -> bool {
-    if op.kind.is_none() {
-        return false;
-    }
-    match op.state {
-        PendingOpState::Pending => is_due(op.next_attempt_at, now),
-        PendingOpState::InFlight => !convert::is_live(op.lease_expiry, now),
-        PendingOpState::Succeeded
-        | PendingOpState::Failed
-        | PendingOpState::Cancelled
-        | PendingOpState::NeedsConfirmation => false,
+    op.kind.is_some() && op.state == PendingOpState::Pending && is_due(op.next_attempt_at, now)
+}
+
+impl LoadedOp {
+    /// Whether this op's attempt is gone: `InFlight` under a lease that has lapsed.
+    pub(super) fn is_dead(&self, now: UtcDateTime) -> bool {
+        self.state == PendingOpState::InFlight && !convert::is_live(self.lease_expiry, now)
     }
 }
 
 /// The `SELECT` list every op load shares, in [`LoadedOp`]'s field order.
 pub(super) const OP_COLUMNS: &str = "id, kind, idempotency_key, resource_key, depends_on, \
-     payload, state, token, lease_expiry, attempts, next_attempt_at, failure_class, detail";
+     payload, state, token, lease_expiry, attempts, next_attempt_at, failure_class, detail, \
+     handed_over, account, keyword_edit";
 
 /// Loads one op by id, scoped to `account` so an id from another account reads as
 /// absent rather than as someone else's work.
@@ -106,6 +112,26 @@ pub(super) fn load_account_ops(tx: &Transaction<'_>, account: &str) -> Result<Ve
     raws.into_iter().map(parse_op_row).collect()
 }
 
+/// Every op in `InFlight`, of `account` or of every account, in id order. Rides the partial
+/// index `pending_op_held_resource`, so it reads the few ops in flight and not the outbox.
+pub(super) fn load_in_flight_ops(
+    tx: &Transaction<'_>,
+    account: Option<&str>,
+) -> Result<Vec<LoadedOp>> {
+    let sql = format!(
+        "SELECT {OP_COLUMNS} FROM pending_op
+          WHERE state = 'InFlight' AND (?1 IS NULL OR account = ?1) ORDER BY id"
+    );
+    let mut stmt = tx.prepare(&sql).map_err(convert::backend)?;
+    let raws = stmt
+        .query_map([account], read_op_row)
+        .map_err(convert::backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(convert::backend)?;
+
+    raws.into_iter().map(parse_op_row).collect()
+}
+
 /// One op row as stored, in [`OP_COLUMNS`] order.
 type OpRow = (
     i64,
@@ -120,6 +146,9 @@ type OpRow = (
     i64,
     Option<String>,
     Option<String>,
+    Option<String>,
+    Option<i64>,
+    String,
     Option<String>,
 );
 
@@ -139,6 +168,9 @@ pub(super) fn read_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<OpRow> {
         r.get(10)?,
         r.get(11)?,
         r.get(12)?,
+        r.get(13)?,
+        r.get(14)?,
+        r.get(15)?,
     ))
 }
 
@@ -158,6 +190,9 @@ pub(super) fn parse_op_row(raw: OpRow) -> Result<LoadedOp> {
         next_attempt_at,
         failure_class,
         detail,
+        handed_over,
+        account,
+        keyword_edit,
     ) = raw;
     Ok(LoadedOp {
         id,
@@ -173,6 +208,11 @@ pub(super) fn parse_op_row(raw: OpRow) -> Result<LoadedOp> {
         next_attempt_at: convert::parse_opt_instant(next_attempt_at)?,
         failure_class: convert::parse_class(failure_class.as_deref())?,
         detail,
+        handed_over: handed_over.map(convert::generation_from_i64).transpose()?,
+        account,
+        keyword_edit: keyword_edit
+            .map(|json| serde_json::from_str(&json).map_err(convert::backend))
+            .transpose()?,
     })
 }
 

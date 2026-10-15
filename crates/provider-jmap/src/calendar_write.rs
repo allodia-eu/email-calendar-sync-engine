@@ -34,7 +34,7 @@
 //! Stalwart's own handling of it changed under us, and neither state changes the above.
 //! v0.16.11 through v0.16.13 parsed `ifInState` and never compared it (a stale-state `/set`
 //! was applied and returned a fresh `newState`, where RFC 8620 §5.3 requires a
-//! `stateMismatch`); v0.16.14 fixed that, and the harness pins v0.16.21 — so a
+//! `stateMismatch`); v0.16.14 fixed that, and the harness pins v0.16.24 — so a
 //! stale-but-well-formed token is refused with `stateMismatch` and the write does not land on
 //! the server our live tests meet. Which only sharpens reason 2: the probe's state had moved
 //! because of an edit to a *different* property of a *different* event, exactly the spurious
@@ -46,14 +46,15 @@
 //! concurrency everywhere when here it gives none (`jmap.md`).
 
 use engine_core::{calendar::Event, ids::EventId, time::CalendarDateTime, version::RevisionTokens};
-use engine_provider::{EventDeletion, EventDraft, EventEdit, EventWriteReceipt};
+use engine_provider::{EventDeletion, EventDraft, EventEdit, EventWriteReceipt, InviteeRole};
 use serde_json::{Map, Value, json};
 
 use crate::{
     calendar_patch::{exclusion, patch_to_json},
     calendar_rule::render_rule,
-    error::JmapError,
+    error::{JmapError, set_error_type, set_refusal},
     executor::Executor,
+    participant_identity::organiser_participant_id,
     request::{Request, capability},
 };
 
@@ -73,8 +74,8 @@ pub(crate) const NEW_LOCATION_ID: &str = "1";
 /// is "tell nobody". Cancelling a meeting you organize would store the deletion and leave
 /// every attendee holding a meeting that is not happening; moving one would leave them at
 /// the old time. The neutral write verbs carry no notify control for a caller to state
-/// instead ([`EventDraft`] cannot even name a participant), and the transports that do
-/// schedule — CalDAV's RFC 6638 auto-schedule, and Graph — do it unconditionally. So the
+/// instead, and the transports that do schedule, CalDAV's RFC 6638 auto-schedule and Graph,
+/// do it unconditionally. So the
 /// engine's answer to "does a calendar write reach its participants?" stays the same
 /// whichever transport is under it.
 ///
@@ -99,7 +100,28 @@ pub(crate) async fn create_event(
     calendar_account: &str,
     draft: &EventDraft,
 ) -> Result<EventWriteReceipt, JmapError> {
-    let object = draft_to_json(draft)?;
+    if let Some(meeting) = &draft.meeting {
+        let max_invitees = executor
+            .session()
+            .max_participants_per_event()
+            .map(|participants| participants.saturating_sub(1));
+        meeting
+            .validate(max_invitees)
+            .map_err(|error| JmapError::protocol(error.to_string()))?;
+    }
+    let organiser_id = if let Some(meeting) = &draft.meeting {
+        Some(
+            organiser_participant_id(
+                executor,
+                calendar_account,
+                meeting.organiser().address().as_str(),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let object = draft_to_json(draft, organiser_id.as_deref())?;
     let args = json!({
         "accountId": calendar_account,
         "create": { CREATION_ID: object },
@@ -111,8 +133,8 @@ pub(crate) async fn create_event(
     let resp = executor.execute(&req).await?;
     let result = resp.result(&call)?;
 
-    if let Some(error_type) = set_error(result, "notCreated", CREATION_ID) {
-        return Err(JmapError::set(CREATION_ID, error_type));
+    if let Some(refusal) = set_refusal(result, "notCreated", CREATION_ID) {
+        return Err(JmapError::refused(CREATION_ID, refusal));
     }
     // The server-assigned id is the whole point of the `created` map; a create the server
     // neither confirmed nor rejected is a conflict, never a silent success.
@@ -153,7 +175,7 @@ pub(crate) async fn patch_event(
     edit: &EventEdit,
 ) -> Result<EventWriteReceipt, JmapError> {
     let target = edit.event.as_str();
-    let patch = patch_to_json(base, edit)?;
+    let patch = patch_to_json(base, edit, executor.session().max_participants_per_event())?;
 
     // An empty patch would be a no-op `update` the server may still bump state for. The
     // caller asked for nothing; give the network nothing.
@@ -197,8 +219,8 @@ async fn apply_update(
     let resp = executor.execute(&req).await?;
     let result = resp.result(&call)?;
 
-    if let Some(error_type) = set_error(result, "notUpdated", target) {
-        return Err(JmapError::set(target, error_type));
+    if let Some(refusal) = set_refusal(result, "notUpdated", target) {
+        return Err(JmapError::refused(target, refusal));
     }
     // `updated` is an object keyed by id; its value may be `null` (the server made no extra
     // server-set changes) — still an acknowledgement. A target mentioned in neither map was
@@ -259,12 +281,12 @@ pub(crate) async fn delete_event(
     let resp = executor.execute(&req).await?;
     let result = resp.result(&call)?;
 
-    if let Some(error_type) = set_error(result, "notDestroyed", target) {
+    if let Some(refusal) = set_refusal(result, "notDestroyed", target) {
         // Already gone is the end state we asked for.
-        if error_type == "notFound" {
+        if set_error_type(refusal) == "notFound" {
             return Ok(());
         }
-        return Err(JmapError::set(target, error_type));
+        return Err(JmapError::refused(target, refusal));
     }
     // `destroyed` is an array of ids.
     let destroyed = result
@@ -278,19 +300,14 @@ pub(crate) async fn delete_event(
     }
 }
 
-/// The `SetError` type the server reported for `target` under `map`, if any (RFC 8620 §5.3).
-pub(crate) fn set_error<'a>(result: &'a Value, map: &str, target: &str) -> Option<&'a str> {
-    result
-        .get(map)
-        .and_then(|f| f.get(target))
-        .and_then(|e| e.get("type"))
-        .and_then(Value::as_str)
-}
-
 /// Renders an [`EventDraft`] as a JSCalendar `Event` object (RFC 8984 §5).
-fn draft_to_json(draft: &EventDraft) -> Result<Value, JmapError> {
+fn draft_to_json(draft: &EventDraft, organiser_id: Option<&str>) -> Result<Value, JmapError> {
     let mut object = Map::new();
     object.insert("@type".to_owned(), json!("Event"));
+    // JSCalendar 2.0 (draft-ietf-calext-jscalendarbis) makes `version` required, and Fastmail
+    // refuses a create without it as `invalidProperties`; Stalwart accepts it and stores the same
+    // object. Everything else this sends is already 2.0-shaped (the singular `recurrenceRule`).
+    object.insert("version".to_owned(), json!("2.0"));
     object.insert("uid".to_owned(), json!(draft.uid.as_str()));
     object.insert(
         "calendarIds".to_owned(),
@@ -326,7 +343,60 @@ fn draft_to_json(draft: &EventDraft) -> Result<Value, JmapError> {
         // either spelling, so this only makes the write side agree with the read side.
         object.insert("recurrenceRule".to_owned(), render_rule(&recurrence.rule)?);
     }
+    if let Some(meeting) = &draft.meeting {
+        let organiser_id = organiser_id.ok_or_else(|| {
+            JmapError::protocol("a meeting create needs a resolved participant identity")
+        })?;
+        object.insert(
+            "organizerCalendarAddress".to_owned(),
+            json!(format!("mailto:{}", meeting.organiser().address().as_str())),
+        );
+        let mut participants = Map::new();
+        participants.insert(
+            organiser_id.to_owned(),
+            participant_json(
+                meeting.organiser(),
+                json!({ "owner": true, "chair": true }),
+                "accepted",
+                false,
+            ),
+        );
+        for (index, invitee) in meeting.invitees().iter().enumerate() {
+            let roles = match invitee.role() {
+                InviteeRole::Required => json!({ "required": true }),
+                InviteeRole::Optional => json!({ "optional": true }),
+            };
+            participants.insert(
+                format!("invitee-{}", index + 1),
+                participant_json(invitee.identity(), roles, "needs-action", true),
+            );
+        }
+        object.insert("participants".to_owned(), Value::Object(participants));
+    }
     Ok(Value::Object(object))
+}
+
+fn participant_json(
+    identity: &engine_provider::SchedulingIdentity,
+    roles: Value,
+    status: &str,
+    expect_reply: bool,
+) -> Value {
+    let mut participant = Map::new();
+    participant.insert("@type".to_owned(), json!("Participant"));
+    participant.insert(
+        "calendarAddress".to_owned(),
+        json!(format!("mailto:{}", identity.address().as_str())),
+    );
+    if let Some(name) = identity.name() {
+        participant.insert("name".to_owned(), json!(name));
+    }
+    participant.insert("roles".to_owned(), roles);
+    participant.insert("participationStatus".to_owned(), json!(status));
+    if expect_reply {
+        participant.insert("expectReply".to_owned(), json!(true));
+    }
+    Value::Object(participant)
 }
 
 /// `start` + the fields that state its form: `timeZone` for a zoned value, `showWithoutTime`

@@ -15,8 +15,14 @@ use std::{
 
 use crate::{RetryConfig, ThrottleEvent};
 
-/// The client every provider here builds, so these send through the stack that ships.
+/// The client every provider here builds, so these send through the stack that ships, with
+/// the bounds on a silent server off on this thread and none on the connect.
+///
+/// These suites run on tokio's paused clock, which jumps to the next timer whenever the runtime
+/// waits, a wait for a socket included, so an armed bound races every reply here to its own
+/// deadline. What they test is throttling. The bounds are `deadline_tests`' to test.
 pub(crate) fn client() -> reqwest::Client {
+    crate::deadline::UNBOUNDED.set(true);
     engine_tls::TlsClientConfig::bundled()
         .reqwest_builder()
         .build()

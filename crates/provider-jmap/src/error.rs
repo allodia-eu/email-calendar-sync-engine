@@ -9,14 +9,16 @@
 
 use engine_core::error::FailureClass;
 use engine_provider::ProviderError;
+use serde_json::Value;
 
 /// A JMAP protocol or transport failure.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum JmapError {
-    /// The HTTP request itself failed (connect, timeout, TLS, body).
+    /// The HTTP exchange itself failed (connect, TLS, a body, or a server that went quiet
+    /// for longer than the shared deadlines allow).
     #[error("JMAP transport error: {0}")]
-    Transport(#[from] reqwest::Error),
+    Transport(#[from] engine_http::SendError),
 
     /// The server returned a non-success HTTP status. The body is captured for
     /// diagnostics (a JMAP "problem details" document for request-level errors,
@@ -54,12 +56,19 @@ pub enum JmapError {
     /// A `/set` method rejected an individual object with a `SetError` (RFC 8620
     /// §5.3) — the method call itself succeeded, but the create/update/destroy of one
     /// object failed. Classified per the set-error `type`.
-    #[error("JMAP set error '{error_type}' for object '{object_id}'")]
+    #[error(
+        "JMAP set error '{error_type}' for object '{object_id}'{}",
+        named_properties(properties)
+    )]
     Set {
         /// The id (or creation id) of the object that failed.
         object_id: String,
         /// The JMAP `SetError` `type` string.
         error_type: String,
+        /// The properties the server named as at fault (`invalidProperties` carries them),
+        /// empty when it named none. Property names only: a `SetError`'s `description` is
+        /// the server's own prose and may quote the values it refused.
+        properties: Vec<String>,
     },
 
     /// The batched response carried no entry for a call id that was sent.
@@ -79,6 +88,10 @@ pub enum JmapError {
     /// client must not: a draft whose `From` no identity on the account may send as.
     #[error("refused before sending: {0}")]
     Refused(String),
+    /// A scope larger than one request moved under every attempt to page it whole, so no
+    /// attempt is a complete answer to store. Carries the type name; the next pass tries again.
+    #[error("{0}/query kept changing while it was paged")]
+    Unsettled(String),
 }
 
 impl JmapError {
@@ -124,6 +137,64 @@ impl JmapError {
         Self::Set {
             object_id: object_id.into(),
             error_type: error_type.into(),
+            properties: Vec::new(),
+        }
+    }
+
+    /// Builds a [`JmapError::Set`] from the `SetError` object a server answered for
+    /// `object_id` (RFC 8620 §5.3), keeping its `type` and the properties it names.
+    pub(crate) fn refused(object_id: impl Into<String>, set_error: &Value) -> Self {
+        Self::Set {
+            object_id: object_id.into(),
+            error_type: set_error_type(set_error).to_owned(),
+            properties: set_error
+                .get("properties")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+
+    /// What this error is as the failure of a submission: the class it always has, except
+    /// for an exchange that failed after the request may have reached the server. That one
+    /// may have sent the message, so it needs confirming and is never retried
+    /// (`ProviderError::needs_confirmation`).
+    ///
+    /// Two more are the same case. A gateway's `502` or `504` says the server behind it gave
+    /// no answer, not that it refused; every other status is the server's own answer. And a
+    /// `200` whose body cannot be read is an answer nobody can read.
+    pub(crate) fn into_submission_error(self) -> ProviderError {
+        match &self {
+            Self::Transport(err) if err.may_have_been_received() => {
+                let detail = format!("{self}; the message may have been sent");
+                ProviderError::needs_confirmation(detail).with_source(self)
+            }
+            Self::Status {
+                status: 502 | 504, ..
+            }
+            | Self::Json(_)
+            | Self::Protocol(_)
+            | Self::MissingResponse(_) => {
+                let detail = format!("{self}; the message may have been sent");
+                ProviderError::needs_confirmation(detail).with_source(self)
+            }
+            _ => self.into(),
+        }
+    }
+
+    /// What this error is as the failure to read a submission's answer, after the server
+    /// may have acted on it: a refusal the answer states (a `SetError`, a method error) keeps
+    /// its class, and an answer that cannot be read leaves the send ambiguous.
+    pub(crate) fn into_answer_error(self) -> ProviderError {
+        match &self {
+            Self::Set { .. } | Self::Method { .. } => self.into(),
+            _ => {
+                let detail = format!("{self}; the message may have been sent");
+                ProviderError::needs_confirmation(detail).with_source(self)
+            }
         }
     }
 
@@ -142,6 +213,7 @@ impl JmapError {
             | Self::Refused(_) => FailureClass::Permanent,
             Self::Method { error_type, .. } => method_class(error_type),
             Self::Set { error_type, .. } => set_error_class(error_type),
+            Self::Unsettled(_) => FailureClass::Retryable,
         }
     }
 }
@@ -244,15 +316,20 @@ impl engine_http::ThrottleClassifier for JmapThrottles {
     }
 }
 
-/// Maps a reqwest transport error to a [`FailureClass`]. Connect/timeout failures
-/// are transient; a decode failure is a protocol problem.
-fn transport_class(err: &reqwest::Error) -> FailureClass {
-    if err.is_timeout() || err.is_connect() || err.is_request() {
-        FailureClass::Retryable
-    } else if err.is_decode() {
+/// Maps a failed exchange to a [`FailureClass`]: a body that did not decode is a protocol
+/// problem; every other failure, a server gone quiet included, is transient.
+fn transport_class(err: &engine_http::SendError) -> FailureClass {
+    if err.is_decode() {
         FailureClass::Permanent
     } else {
         FailureClass::Retryable
+    }
+}
+
+/// A client error outside any exchange, such as a client that could not be built.
+impl From<reqwest::Error> for JmapError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Transport(err.into())
     }
 }
 
@@ -274,3 +351,26 @@ impl From<JmapError> for ProviderError {
 #[cfg(test)]
 #[path = "error_tests.rs"]
 mod tests;
+
+/// The `SetError` a `/set` result reports for `target` under `map` (`notCreated`,
+/// `notUpdated` or `notDestroyed`), if any (RFC 8620 §5.3).
+pub(crate) fn set_refusal<'a>(result: &'a Value, map: &str, target: &str) -> Option<&'a Value> {
+    result.get(map).and_then(|refused| refused.get(target))
+}
+
+/// A `SetError`'s `type`, or `unknown` when it carries none.
+pub(crate) fn set_error_type(set_error: &Value) -> &str {
+    set_error
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+}
+
+/// The ` (properties: a, b)` suffix a [`JmapError::Set`] message carries when it names any.
+fn named_properties(properties: &[String]) -> String {
+    if properties.is_empty() {
+        String::new()
+    } else {
+        format!(" (properties: {})", properties.join(", "))
+    }
+}

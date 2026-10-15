@@ -133,7 +133,11 @@ async fn a_cc_recipient_receives_the_reply_threaded() {
     .with_cc(vec![EmailAddress::new(&bob_auth.address)])
     .in_reply_to(parent.clone(), vec![root.clone(), parent.clone()]);
     carol
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit");
 
@@ -181,7 +185,11 @@ async fn a_bcc_recipient_receives_the_message_and_no_recipient_sees_the_bcc() {
     )
     .with_bcc(vec![EmailAddress::new(&bob_auth.address)]);
     let receipt = carol
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit");
 

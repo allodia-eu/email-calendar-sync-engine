@@ -55,6 +55,7 @@ async fn create_posts_a_jscalendar_object_and_learns_the_server_assigned_id() {
             "accountId": "c",
             "create": { "new": {
                 "@type": "Event",
+                "version": "2.0",
                 "uid": "evt-1@test.local",
                 "calendarIds": { "b": true },
                 "title": "Sprint planning",
@@ -65,7 +66,7 @@ async fn create_posts_a_jscalendar_object_and_learns_the_server_assigned_id() {
             }},
             "sendSchedulingMessages": true,
         }),
-        "the create must post a JSCalendar object with the wall clock and the zone stated \
+        "the create must post a JSCalendar 2.0 object with the wall clock and the zone stated \
          separately — never the UTC instant"
     );
     // And no `ifInState`: it guards the account's whole event state, not this object.
@@ -140,6 +141,34 @@ async fn a_create_the_server_neither_confirmed_nor_rejected_is_a_conflict() {
     );
     let err = p.create_event(&account(), &draft).await.unwrap_err();
     assert_eq!(err.class(), FailureClass::Conflict);
+}
+
+/// `invalidProperties` names the properties at fault (RFC 8620 §5.3), and that list is the
+/// difference between a refusal anyone can act on and one nobody can.
+#[tokio::test]
+async fn a_refused_create_names_the_properties_the_server_rejected() {
+    let p = provider(vec![set_response(&json!({ "notCreated": { "new": {
+        "type": "invalidProperties",
+        "properties": ["recurrenceRule", "locations/l1/name"],
+        "description": "server text"
+    } } }))]);
+    let draft = EventDraft::new(
+        calendar(),
+        uid(),
+        "Sprint planning",
+        zoned("2026-08-01T09:00:00"),
+        zoned("2026-08-01T09:30:00"),
+        stamp(),
+    );
+    let err = p.create_event(&account(), &draft).await.unwrap_err();
+    assert_eq!(err.class(), FailureClass::Permanent);
+    let text = err.to_string();
+    assert!(text.contains("invalidProperties"), "{text}");
+    assert!(text.contains("recurrenceRule, locations/l1/name"), "{text}");
+    assert!(
+        !text.contains("server text"),
+        "a server's own words stay out: {text}"
+    );
 }
 
 #[tokio::test]
@@ -251,7 +280,7 @@ async fn there_is_no_whole_document_write_verb_on_this_transport() {
 /// The base event with two participants, keyed the way a JMAP server keys them: by an
 /// **opaque id**, not by the address. Resolving that id is the whole difficulty of a JMAP
 /// RSVP.
-fn invited() -> Event {
+pub(super) fn invited() -> Event {
     stored(&json!({
         "@type": "Event",
         "id": EVENT,

@@ -15,3 +15,9 @@ object_id! {
     /// drops all data under the old id and full-resyncs under the new one.
     AccountId
 }
+
+object_id! {
+    /// Identifies the organization that administers an account: a Microsoft Entra tenant, a
+    /// Google Workspace customer. Opaque, and the same for every account the organization holds.
+    OrganizationId
+}

@@ -3,8 +3,8 @@
 //! error), and the pending-op state poll for an unknown op.
 
 use engine_api::{
-    ApiError, Engine, FailureClass, OpRejection, PendingOpId, PendingOpKind, PendingOpState,
-    queued_draft,
+    ApiError, Engine, FailureClass, MailEditSent, OpRejection, PendingOpId, PendingOpKind,
+    PendingOpState, queued_draft,
 };
 
 use super::*;
@@ -100,6 +100,9 @@ async fn edit_mail_records_a_successful_edit() {
         )
         .await
         .unwrap();
+    let MailEditSent::Applied(outcome) = outcome else {
+        panic!("the fake applies every edit");
+    };
     assert_eq!(outcome.message_key, target);
     // The durable op committed Succeeded, pollable by the returned id.
     assert_eq!(

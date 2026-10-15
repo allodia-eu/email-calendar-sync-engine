@@ -33,13 +33,16 @@
 //! Tier-1 metadata only: like the other adapters, the raw MIME/body is fetched on
 //! demand later, not materialized here.
 
+mod affiliation;
 mod cal_fetch;
+mod cal_invite;
 mod cal_normalize;
 mod cal_override;
 mod cal_recur;
 mod cal_recur_render;
 mod cal_write;
 mod calendar;
+mod categories;
 mod contact;
 mod contact_normalize;
 mod contact_photo;

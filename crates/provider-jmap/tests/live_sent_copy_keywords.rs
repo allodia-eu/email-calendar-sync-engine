@@ -106,7 +106,11 @@ async fn the_filed_copy_carries_the_keywords_and_the_delivered_one_does_not() {
     .with_sent_copy_keyword(keyword.clone());
 
     let receipt = carol
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit");
     assert!(

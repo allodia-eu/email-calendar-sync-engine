@@ -36,6 +36,8 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/message_detail.json` | `GET /me/messages/{id}` | full single-message shape (the changed-id re-fetch) |
 | `mail/message_state.json` | `GET /me/messages/{id}?$select=id,isRead,isDraft,flag,lastModifiedDateTime,changeKey` | the **state-only** read a lightweight partial resolves through — and that it answers with `@odata.etag` (see Finding 15) |
 | `mail/message_patched.json` | `PATCH /me/messages/{id}` body `{isRead,flag}` | the write echo of a mark-read + flag edit (`isRead:true`, `flag.flagStatus:"flagged"`) |
+| `mail/sent_copy_lookup.json` | `GET /me/mailFolders/sentitems/messages?$filter=internetMessageId eq '<…>'&$select=id,categories&$top=1`, a few seconds after a `sendMail` | finding the filed copy of a just-sent message by the `Message-ID` its MIME carried, to give it a category (`categories`) |
+| `mail/category_in_use.json` | the same folder, `$filter=categories/any(c:c eq '…') or categories/any(c:c eq '…')` | which of a keyword's names a sent message already carries, so a device reuses it rather than adding a second |
 | `mail/message_moved.json` | `POST /me/messages/{id}/move` body `{destinationId}` | the move echo — **same `id`** (immutable), `parentFolderId` now the destination |
 | `wellknown/*.json` | `GET /me/mailFolders/{inbox,drafts,…}` | well-known-name → id role resolution |
 | `mail/message_reported.json` | `POST {beta}/messages/{id}/reportMessage` `{ReportAction,IsMessageMoveRequested}` | the report echo — a **`reportMessageCommandResult`**, not the `message` object the docs describe (see Finding 17) |
@@ -53,6 +55,8 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `error/photo_image_not_found.json` | `GET /me/photos/240x240/$value` with no photo set | the 404 that means "there is no image" |
 | `error/photo_invalid_size.json` | `GET /me/photos/999x999/$value` | the 404 that means "that size is not offered" (see Finding 16) |
 | `me.json` | `GET /me` | account identity probe |
+| `organization/organization.json` | `GET /organization?$select=id`, on an Exchange Online tenant | an organization's account named by its tenant (`affiliation`); the tenant id is replaced with a fake GUID |
+| `error/organization_msa_unsupported.json` | the same call on a personal account | the `400 BadRequest` that is the answer "personal" |
 
 ## Real-behavior findings (captured, not assumed)
 

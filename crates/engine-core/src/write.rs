@@ -18,7 +18,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{error::FailureClass, ids::ProviderKey, time::Duration};
+use crate::{error::FailureClass, ids::ProviderKey, sync::SearchDomain, time::Duration};
+
+#[path = "write_keyword_edit.rs"]
+mod keyword_edit;
+
+pub use keyword_edit::KeywordEdit;
 
 /// Defines a non-empty string newtype used by the write contract.
 macro_rules! nonempty_str {
@@ -174,6 +179,28 @@ impl PendingOpKind {
         Self::ContactPatch,
         Self::ContactDelete,
     ];
+
+    /// The domain this op writes to, so forgetting a domain withdraws its queued writes and
+    /// only those.
+    #[must_use]
+    pub fn domain(self) -> SearchDomain {
+        match self {
+            Self::MailSubmit
+            | Self::MailEdit
+            | Self::MailReport
+            | Self::MailDraftPut
+            | Self::MailDraftDelete
+            | Self::MailboxEdit => SearchDomain::Mail,
+            Self::CalendarCreate
+            | Self::CalendarPatch
+            | Self::CalendarDocument
+            | Self::CalendarRsvp
+            | Self::CalendarDelete => SearchDomain::Calendar,
+            Self::ContactCreate | Self::ContactPatch | Self::ContactDelete => {
+                SearchDomain::Contacts
+            }
+        }
+    }
 }
 
 /// A durable pending write operation.
@@ -193,6 +220,11 @@ pub struct PendingOp {
     pub resource_key: ResourceKey,
     /// The operation description, interpreted by the outbox/provider layer.
     pub payload: Value,
+    /// The keyword change this op makes, which the store shows from the moment it is queued
+    /// until the server confirms it or refuses it for good ([`KeywordEdit`]). `None` for every
+    /// op whose effect the store learns only from the server.
+    #[serde(default)]
+    pub keyword_edit: Option<KeywordEdit>,
 }
 
 impl PendingOp {
@@ -210,7 +242,15 @@ impl PendingOp {
             depends_on: Vec::new(),
             resource_key,
             payload,
+            keyword_edit: None,
         }
+    }
+
+    /// The same op, showing `edit` in the store while it is queued.
+    #[must_use]
+    pub fn with_keyword_edit(mut self, edit: KeywordEdit) -> Self {
+        self.keyword_edit = Some(edit);
+        self
     }
 }
 
@@ -290,6 +330,22 @@ mod tests {
         }
         // Two verbs that share a resource key are still told apart by the kind.
         assert_ne!(PendingOpKind::MailEdit, PendingOpKind::MailReport);
+    }
+
+    #[test]
+    fn every_kind_belongs_to_the_domain_it_writes() {
+        use crate::sync::SearchDomain::{Calendar, Contacts, Mail};
+        for kind in PendingOpKind::ALL {
+            let name = format!("{kind:?}");
+            let expected = if name.starts_with("Mail") {
+                Mail
+            } else if name.starts_with("Calendar") {
+                Calendar
+            } else {
+                Contacts
+            };
+            assert_eq!(kind.domain(), expected, "{kind:?}");
+        }
     }
 
     #[test]

@@ -16,12 +16,12 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     capability::Extension,
     error::ImapError,
-    mail::mailbox_from_list,
+    mail::mailboxes_from_list,
     parse::ListRow,
     provider::ImapProvider,
     store::{MailStore, Namespaces, shared_store},
     transport::Connection,
-    unseen::{has_noselect, unseen_by_probing},
+    unseen::unseen_by_probing,
 };
 
 impl<S> ImapProvider<S> {
@@ -143,13 +143,11 @@ where
 {
     let modified_utf7 = connection.names_are_modified_utf7();
     let listing = connection.list_folders(&store.list_pattern()).await?;
-    let kept: Vec<(ListRow, Mailbox)> = listing
-        .rows
+    let kept: Vec<(ListRow, Mailbox)> = mailboxes_from_list(&listing.rows, modified_utf7)
         .into_iter()
-        .filter_map(|row| {
-            let selectable = !has_noselect(&row.attributes);
-            let mailbox = store.adopt(mailbox_from_list(&row, modified_utf7)?, selectable)?;
-            Some((row, mailbox))
+        .filter_map(|(row, mailbox)| {
+            let selectable = mailbox.selectable;
+            Some((row.clone(), store.adopt(mailbox, selectable)?))
         })
         .collect();
     if kept.is_empty() && matches!(store, MailStore::Shared { .. }) {
@@ -204,7 +202,7 @@ where
     }
     let names: Vec<String> = kept
         .iter()
-        .filter(|(row, _)| !has_noselect(&row.attributes))
+        .filter(|(_, mailbox)| mailbox.selectable)
         .map(|(_, mailbox)| mailbox.id.as_str().to_owned())
         .collect();
     let letters = connection.myrights(&names).await?;
