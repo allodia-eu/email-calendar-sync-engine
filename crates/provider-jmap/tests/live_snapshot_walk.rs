@@ -19,6 +19,8 @@ use stalwart_harness::Harness;
 const MAIL: &str = "urn:ietf:params:jmap:mail";
 const COUNT: usize = 250;
 const PAGE: usize = 100;
+/// How many times the late-sort scenario is set up before the race counts as unreproducible.
+const ATTEMPTS: usize = 60;
 
 fn call(harness: &Harness, method: &str, args: &Value) -> Value {
     let body = json!({
@@ -313,18 +315,33 @@ async fn a_message_the_server_sorts_late_is_not_lost() {
     mailbox.wait_until("sorted the new messages first", |listed| listed == created);
     let account = engine_core::ids::AccountId::try_from("live").unwrap();
 
-    let late = mailbox.create_newest();
-    let mut stream = provider.stream_email(&account, None, SyncWindow::full(), PAGE, 0);
-    let first = stream
-        .next()
-        .await
-        .expect("a first chunk")
-        .expect("first page");
-    let mut present: BTreeSet<String> = ids(&first).collect();
-    assert!(
-        !present.contains(&late),
-        "the server had sorted it already, so the race was not reproduced"
-    );
+    // Whether the server sorts the message before the first page is read is a race the test
+    // cannot win every time. When it loses, the scenario was not set up at all, so it is undone
+    // and set up again — never passed without the late sort it exists to exercise.
+    let mut attempt = 0;
+    let (late, mut stream, mut present) = loop {
+        attempt += 1;
+        let late = mailbox.create_newest();
+        let mut stream = provider.stream_email(&account, None, SyncWindow::full(), PAGE, 0);
+        let first = stream
+            .next()
+            .await
+            .expect("a first chunk")
+            .expect("first page");
+        let present: BTreeSet<String> = ids(&first).collect();
+        if !present.contains(&late) {
+            eprintln!("the late sort was reproduced on attempt {attempt}");
+            break (late, stream, present);
+        }
+        assert!(
+            attempt < ATTEMPTS,
+            "the server had sorted the message before the first page in all {ATTEMPTS} \
+             attempts, so the race was never reproduced"
+        );
+        drop(stream);
+        mailbox.destroy_emails(&[&late]);
+        mailbox.wait_until("dropped the late message", |listed| listed == created);
+    };
     mailbox.wait_until("sorted the late message first", |listed| {
         listed.first() == Some(&late)
     });
