@@ -5,10 +5,34 @@
 //! it can neither exercise the transport nor observe a negotiated HTTP version. Split
 //! out of `transport.rs` to keep that file under the line limit.
 
+use std::sync::{Arc, Mutex};
+
 use super::*;
 use crate::test_support::{
-    mock_server, mock_server_bytes, mock_server_capturing, multistatus, options_response, redirect,
+    mock_server, mock_server_bytes, multistatus, options_response, redirect,
 };
+
+/// Serves canned responses and hands back every request's raw head, so a test can
+/// assert on the headers that actually went out (notably `Authorization`).
+fn mock_server_capturing(responses: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for response in responses {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 8192];
+            let read = stream.read(&mut buf).unwrap_or(0);
+            sink.lock()
+                .expect("seen lock")
+                .push(String::from_utf8_lossy(&buf[..read]).into_owned());
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
 
 /// A vCard `PHOTO;VALUE=uri` is *card content* — it can name any host. Resolving it
 /// through `Url::join` yields that foreign absolute URL unchanged, so authenticating

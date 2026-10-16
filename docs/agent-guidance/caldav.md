@@ -160,16 +160,6 @@ are split escape-aware so the writer and the parser agree.
   resolved calendar home once discovery settles. The principal → home-set second step
   is **not** a redirect and emits nothing: it is a second `PROPFIND` of a *different*
   resource, not the same resource moving.
-- **`Credentials::Token` follows the server's challenge.** An OAuth access token is sent as
-  RFC 6750 Bearer until a `401` whose `WWW-Authenticate` offers `Basic` and not `Bearer`; the
-  transport then sends the refused request once more with the token as the Basic password for
-  the account's username, and the connection keeps presenting it that way. Observed on a
-  sabre/dav deployment beside an OAuth mail server, which accepts the access token only as a
-  password. A `401` that offers `Bearer` refused the token itself and is not retried, and
-  `Credentials::Bearer` names no username, so it never becomes a password. The decision lives
-  in `auth.rs`; it covers CardDAV too, which shares the transport, and the SabreDAV fixture
-  proves it live (`sabredav_takes_a_token_as_the_basic_password_after_its_challenge`, with a
-  bare Bearer as the control).
 - **The same `PROPFIND` asks for the principal's `calendar-user-address-set`** (RFC 6638
   §2.4.1), the addresses the server schedules as for this user, read through
   `CalendarWrites::calendar_user_addresses`. Only the principal carries it: Stalwart names
@@ -603,6 +593,14 @@ what a client would assume:
   bootstrap so the suite is re-runnable (`stalwart-harness.md`).
 
 ## Known limitations (documented, not bugs)
+
+- **A bearer token is only ever sent as `Bearer`, never as a Basic password**, whatever the
+  server's challenge offers. A sabre/dav server using its IMAP auth backend relays the Basic
+  password to the mail server, and one such deployment accepted an OAuth access token that way
+  only shortly after the same token had logged in over IMAP `OAUTHBEARER`: an artefact of the mail
+  server's auth cache, not support for OAuth. A DAV server that challenges with `Basic` alone has
+  said it does not take a token, and whether a host may receive one at all is the host's decision
+  under the OAuth profile, not the transport's.
 
 - **Stalwart rate-limits its DAV endpoint, and a refusal there now reaches the caller.** It
   answers `429` with a `Retry-After` — 31 seconds, observed — and since the engine stopped

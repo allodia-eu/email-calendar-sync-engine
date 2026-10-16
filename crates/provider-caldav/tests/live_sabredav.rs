@@ -41,16 +41,13 @@ fn harness() -> Option<(String, String, String)> {
 
 /// Connects, retrying briefly so a just-started container is tolerated.
 async fn connect(addr: &str, user: &str, pass: &str) -> CalDavProvider {
-    let credentials = Credentials::Basic {
-        username: user.to_owned(),
-        password: pass.to_owned(),
-    };
-    connect_with(addr, credentials).await
-}
-
-/// [`connect`], presenting `credentials`.
-async fn connect_with(addr: &str, credentials: Credentials) -> CalDavProvider {
-    let config = CalDavConfig::new(format!("http://{addr}"), credentials);
+    let config = CalDavConfig::new(
+        format!("http://{addr}"),
+        Credentials::Basic {
+            username: user.to_owned(),
+            password: pass.to_owned(),
+        },
+    );
     let mut last_err = None;
     for _ in 0..15 {
         match CalDavProvider::connect(config.clone()).await {
@@ -85,42 +82,6 @@ async fn sabredav_recognises_the_accounts_own_address() {
     assert_eq!(
         addresses,
         engine_provider::CalendarUserAddresses::Known(vec![user])
-    );
-}
-
-/// The fixture authenticates with Basic only and answers anything else with
-/// `WWW-Authenticate: Basic`, as DAV servers beside an OAuth mail server do when they take the
-/// access token as a password. The fixture's password stands in for that token.
-#[tokio::test]
-async fn sabredav_takes_a_token_as_the_basic_password_after_its_challenge() {
-    let Some((addr, user, pass)) = harness() else {
-        eprintln!(
-            "skipping sabredav_takes_a_token_as_the_basic_password_after_its_challenge: SABREDAV_HTTP_ADDR unset"
-        );
-        return;
-    };
-    let token = Credentials::Token {
-        username: user.clone(),
-        token: pass.clone(),
-    };
-    let provider = connect_with(&addr, token).await;
-    let addresses = engine_provider::CalendarWrites::calendar_user_addresses(
-        &provider,
-        &AccountId::try_from("sabredav-token-live").unwrap(),
-    )
-    .await
-    .expect("address set");
-    assert_eq!(
-        addresses,
-        engine_provider::CalendarUserAddresses::Known(vec![user])
-    );
-
-    // The control: the same secret as a bare Bearer is refused, so the connect above
-    // succeeded because the token followed the challenge, not because Bearer works here.
-    let bearer = CalDavConfig::new(format!("http://{addr}"), Credentials::Bearer(pass));
-    assert!(
-        CalDavProvider::connect(bearer).await.is_err(),
-        "the fixture accepted a Bearer token, so this test proves nothing about the challenge"
     );
 }
 
