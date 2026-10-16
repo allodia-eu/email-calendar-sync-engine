@@ -39,7 +39,6 @@
 //!   document rather than a property patch.
 //! - `provider` — the [`Provider`](engine_provider::Provider) implementation.
 
-mod auth;
 mod calendar;
 mod carddav;
 mod carddav_config;
