@@ -43,6 +43,7 @@ mod calendar;
 mod carddav;
 mod carddav_config;
 mod carddav_ops;
+mod credential_hosts;
 mod dav;
 mod discovery;
 mod error;
@@ -75,6 +76,7 @@ mod vcard_tests;
 
 pub use carddav::CardDavProvider;
 pub use carddav_config::CardDavConfig;
+pub use credential_hosts::CredentialHosts;
 pub use error::CalDavError;
 pub use provider::{CalDavConfig, CalDavProvider};
 pub use transport::Credentials;

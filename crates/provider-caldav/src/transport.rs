@@ -8,13 +8,18 @@
 //! XML body, and — like the JMAP transport — **does not auto-follow redirects**,
 //! so discovery can resolve the RFC 6764 well-known `307` itself.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use engine_http::{Exchange, ObservedConnection, RetryConfig, send_retrying};
 use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{Client, Method, redirect::Policy};
 
-use crate::error::CalDavError;
+use crate::{
+    credential_hosts::{self, CredentialHosts},
+    error::CalDavError,
+};
 
 /// How a host authenticates to the CalDAV server.
 #[derive(Clone)]
@@ -207,6 +212,8 @@ pub(crate) struct DavClient {
     /// during `connect`, read once per request afterwards.
     base: std::sync::RwLock<reqwest::Url>,
     credentials: Credentials,
+    /// The host's say over which origins the credential may move to ([`CredentialHosts`]).
+    credential_hosts: Option<Arc<dyn CredentialHosts>>,
     /// The HTTP and TLS versions most recently observed — the post-connect facts
     /// `ConnectionInfo` reports. Every response funnels through
     /// [`DavClient::collect`], and the discovery `PROPFIND` that
@@ -255,6 +262,7 @@ impl DavClient {
             client,
             base: std::sync::RwLock::new(base),
             credentials,
+            credential_hosts: None,
             connection: ObservedConnection::default(),
             retry: retry.clone().labelled("caldav"),
         })
@@ -262,6 +270,16 @@ impl DavClient {
 }
 
 impl DavClient {
+    /// Lets `policy` refuse an origin discovery would move the credential to.
+    #[must_use]
+    pub(crate) fn with_credential_hosts(
+        mut self,
+        policy: Option<Arc<dyn CredentialHosts>>,
+    ) -> Self {
+        self.credential_hosts = policy;
+        self
+    }
+
     /// The connection's current origin. Cloned rather than borrowed so no request is
     /// built while the lock is held.
     fn base(&self) -> reqwest::Url {
@@ -362,6 +380,9 @@ impl DavExecutor for DavClient {
         // the wire in cleartext, at a host the user never typed. A chain that began in
         // plaintext (the loopback fixtures) is left alone.
         if base.scheme() == "https" && next.scheme() != "https" {
+            return false;
+        }
+        if !credential_hosts::permitted(self.credential_hosts.as_ref(), next.as_str()) {
             return false;
         }
         // The origin alone: a redirect names one resource, and every later href is

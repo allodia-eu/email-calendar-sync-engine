@@ -182,6 +182,11 @@ are split escape-aware so the writer and the parser agree.
   **that refusal lives in `adopt_origin`, not in `redirect_href`**: a walk starts at a bare
   well-known path, which names no scheme, so on the first hop only the connection knows it
   is being asked to give up TLS. A refusal fails the walk rather than continuing over it.
+  A host may also confine the credential with a `CredentialHosts` policy
+  (`CalDavConfig::with_credential_hosts`, the same on `CardDavConfig`): the configured base URL
+  and every origin a hop moves to must be a host it permits, or the connect fails before anything
+  is sent there. Which hosts qualify is the host's decision; for an OAuth token it is the token
+  issuer's resources, which this adapter knows nothing of.
   CalDAV emits no `Authenticated` step —
   credentials ride on every `PROPFIND`, so there is no discrete authentication
   exchange to observe — and no `TlsEstablished`, because an HTTP adapter learns its TLS

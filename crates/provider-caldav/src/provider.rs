@@ -31,6 +31,7 @@ use engine_provider::{
 use engine_tls::TlsClientConfig;
 
 use crate::{
+    credential_hosts::{CredentialHosts, refuse_unpermitted_base},
     discovery,
     error::CalDavError,
     href::{bind_collection, encode_path_segment, ensure_bound_present},
@@ -83,6 +84,8 @@ pub struct CalDavConfig {
     /// [`CalDavConfig::with_connect_observer`] and read only by
     /// [`CalDavProvider::connect`].
     connect_observer: Option<Arc<dyn ConnectObserver>>,
+    /// Private for the same reason; set through [`CalDavConfig::with_credential_hosts`].
+    credential_hosts: Option<Arc<dyn CredentialHosts>>,
 }
 
 impl core::fmt::Debug for CalDavConfig {
@@ -97,6 +100,7 @@ impl core::fmt::Debug for CalDavConfig {
             .field("tls", &self.tls)
             .field("retry", &self.retry)
             .field("connect_observer", &self.connect_observer.is_some())
+            .field("credential_hosts", &self.credential_hosts.is_some())
             .finish()
     }
 }
@@ -114,7 +118,15 @@ impl CalDavConfig {
             tls: TlsClientConfig::default(),
             retry: engine_http::RetryConfig::default(),
             connect_observer: None,
+            credential_hosts: None,
         }
+    }
+
+    /// Lets `policy` decide which hosts receive the credential ([`CredentialHosts`]).
+    #[must_use]
+    pub fn with_credential_hosts(mut self, policy: Arc<dyn CredentialHosts>) -> Self {
+        self.credential_hosts = Some(policy);
+        self
     }
 
     /// Binds events to a different calendar collection (a home-relative name or an
@@ -215,12 +227,14 @@ impl CalDavProvider {
             .connect_observer
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
+        refuse_unpermitted_base(config.credential_hosts.as_ref(), &config.base_url)?;
         let client = DavClient::new(
             &config.base_url,
             config.credentials,
             &config.tls,
             &config.retry,
-        )?;
+        )?
+        .with_credential_hosts(config.credential_hosts);
         Self::with_executor(
             Box::new(client),
             &config.discovery_path,
