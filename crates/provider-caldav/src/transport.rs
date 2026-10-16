@@ -14,36 +14,8 @@ use engine_provider::{HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{Client, Method, redirect::Policy};
 
-use crate::error::CalDavError;
-
-/// How a host authenticates to the CalDAV server.
-#[derive(Clone)]
-#[non_exhaustive]
-pub enum Credentials {
-    /// HTTP Basic auth (RFC 7617) — the common CalDAV case.
-    Basic {
-        /// The user name.
-        username: String,
-        /// The password.
-        password: String,
-    },
-    /// An OAuth 2.0 bearer token (RFC 6750), for providers that require it.
-    Bearer(String),
-}
-
-impl core::fmt::Debug for Credentials {
-    /// Redacts the secret: credentials must never reach logs (`north-star.md`).
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Basic { username, .. } => f
-                .debug_struct("Basic")
-                .field("username", username)
-                .field("password", &"<redacted>")
-                .finish(),
-            Self::Bearer(_) => f.debug_tuple("Bearer").field(&"<redacted>").finish(),
-        }
-    }
-}
+pub use crate::auth::Credentials;
+use crate::{auth::Presenter, error::CalDavError};
 
 /// The WebDAV methods this adapter issues — the read reports plus the write verbs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,7 +178,7 @@ pub(crate) struct DavClient {
     /// the connection ([`DavExecutor::adopt_origin`]). Written at most once per hop
     /// during `connect`, read once per request afterwards.
     base: std::sync::RwLock<reqwest::Url>,
-    credentials: Credentials,
+    presenter: Presenter,
     /// The HTTP and TLS versions most recently observed — the post-connect facts
     /// `ConnectionInfo` reports. Every response funnels through
     /// [`DavClient::collect`], and the discovery `PROPFIND` that
@@ -254,7 +226,7 @@ impl DavClient {
         Ok(Self {
             client,
             base: std::sync::RwLock::new(base),
-            credentials,
+            presenter: Presenter::new(credentials),
             connection: ObservedConnection::default(),
             retry: retry.clone().labelled("caldav"),
         })
@@ -309,28 +281,62 @@ impl DavClient {
     /// foreign URL unchanged. Authenticating those would send the account's Basic
     /// password (or bearer token) to whoever the card names, so they are fetched
     /// anonymously instead (`engine_provider::same_origin`).
-    fn request(
-        &self,
-        method: DavMethod,
-        href: &str,
-    ) -> Result<reqwest::RequestBuilder, CalDavError> {
+    fn request(&self, method: DavMethod, href: &str) -> Result<Request, CalDavError> {
         let base = self.base();
         let url = base
             .join(href)
             .map_err(|e| CalDavError::protocol(format!("bad href {href:?}: {e}")))?;
         let method = Method::from_bytes(method.as_str().as_bytes())
             .map_err(|e| CalDavError::protocol(format!("bad method: {e}")))?;
-        let authenticate = engine_provider::same_origin(url.as_str(), base.as_str());
-        let builder = self.client.request(method, url);
-        if !authenticate {
-            return Ok(builder);
-        }
-        Ok(match &self.credentials {
-            Credentials::Basic { username, password } => {
-                builder.basic_auth(username, Some(password))
-            }
-            Credentials::Bearer(token) => builder.bearer_auth(token),
+        Ok(Request {
+            authenticate: engine_provider::same_origin(url.as_str(), base.as_str()),
+            builder: self.client.request(method, url),
         })
+    }
+
+    /// Sends `request` with this connection's credentials, and once more when the refusal
+    /// taught the connection to present them differently ([`Presenter::learn`]).
+    async fn dispatch(&self, request: Request) -> Result<engine_http::Sent, CalDavError> {
+        let Request {
+            builder,
+            authenticate,
+        } = request;
+        if !authenticate {
+            return Ok(send_retrying(builder, &self.retry, Exchange::Ordinary).await?);
+        }
+        let again = builder.try_clone();
+        let response = send_retrying(
+            self.presenter.apply(builder),
+            &self.retry,
+            Exchange::Ordinary,
+        )
+        .await?;
+        match again {
+            Some(again) if self.presenter.learn(&response) => {
+                Ok(
+                    send_retrying(self.presenter.apply(again), &self.retry, Exchange::Ordinary)
+                        .await?,
+                )
+            }
+            _ => Ok(response),
+        }
+    }
+}
+
+/// A request not yet authenticated: credentials are added at [`DavClient::dispatch`], so a
+/// refused request can be sent again with different ones.
+struct Request {
+    builder: reqwest::RequestBuilder,
+    /// Whether the URL is the account's own origin, the only one credentials go to.
+    authenticate: bool,
+}
+
+impl Request {
+    fn map(self, f: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder) -> Self {
+        Self {
+            builder: f(self.builder),
+            ..self
+        }
     }
 }
 
@@ -379,27 +385,28 @@ impl DavExecutor for DavClient {
         depth: &str,
         body: String,
     ) -> Result<HttpResponse, CalDavError> {
-        let request = self
-            .request(method, href)?
-            .header("Depth", depth)
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                "application/xml; charset=utf-8",
-            )
-            .body(body);
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
+        let request = self.request(method, href)?.map(|builder| {
+            builder
+                .header("Depth", depth)
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    "application/xml; charset=utf-8",
+                )
+                .body(body)
+        });
+        let response = self.dispatch(request).await?;
         self.collect(response).await
     }
 
     async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
-        let request = self.request(DavMethod::Options, href)?;
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
+        let response = self
+            .dispatch(self.request(DavMethod::Options, href)?)
+            .await?;
         self.collect(response).await
     }
 
     async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
-        let request = self.request(DavMethod::Get, href)?;
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
+        let response = self.dispatch(self.request(DavMethod::Get, href)?).await?;
         self.connection.record(&response);
         let status = response.status().as_u16();
         let wait = response.stated_wait();
@@ -415,23 +422,31 @@ impl DavExecutor for DavClient {
     }
 
     async fn send_write(&self, request: WriteRequest) -> Result<HttpResponse, CalDavError> {
-        let mut builder = self.request(request.method, &request.href)?;
-        if let Some(content_type) = request.content_type {
-            builder = builder.header(reqwest::header::CONTENT_TYPE, content_type);
-        }
-        builder = match request.precondition {
-            // RFC 7232: `If-None-Match: *` admits only a create; `If-Match` admits
-            // a replace/delete only while the entity tag is unchanged.
-            Precondition::IfNoneMatch => builder.header(reqwest::header::IF_NONE_MATCH, "*"),
-            Precondition::IfMatch(etag) => builder.header(reqwest::header::IF_MATCH, etag),
-            Precondition::IfScheduleTagMatch(tag) => builder.header("If-Schedule-Tag-Match", tag),
-            Precondition::None => builder,
-        };
+        let prepared = self
+            .request(request.method, &request.href)?
+            .map(|mut builder| {
+                if let Some(content_type) = request.content_type {
+                    builder = builder.header(reqwest::header::CONTENT_TYPE, content_type);
+                }
+                builder = match request.precondition {
+                    // RFC 7232: `If-None-Match: *` admits only a create; `If-Match` admits
+                    // a replace/delete only while the entity tag is unchanged.
+                    Precondition::IfNoneMatch => {
+                        builder.header(reqwest::header::IF_NONE_MATCH, "*")
+                    }
+                    Precondition::IfMatch(etag) => builder.header(reqwest::header::IF_MATCH, etag),
+                    Precondition::IfScheduleTagMatch(tag) => {
+                        builder.header("If-Schedule-Tag-Match", tag)
+                    }
+                    Precondition::None => builder,
+                };
+                builder.body(request.body)
+            });
         // A write is ordinary, a scheduling one included: an iTIP message a `PUT` sends is the
         // server's to send, and the precondition the write carries is what keeps a replay
-        // from sending it twice (`docs/agent-guidance/deadlines.md`).
-        let request = builder.body(request.body);
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
+        // from sending it twice (`docs/agent-guidance/deadlines.md`). A `401` processed
+        // nothing, so sending it again after learning how to authenticate repeats no write.
+        let response = self.dispatch(prepared).await?;
         self.collect(response).await
     }
 }
