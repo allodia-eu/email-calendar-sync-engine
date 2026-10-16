@@ -160,6 +160,16 @@ are split escape-aware so the writer and the parser agree.
   resolved calendar home once discovery settles. The principal → home-set second step
   is **not** a redirect and emits nothing: it is a second `PROPFIND` of a *different*
   resource, not the same resource moving.
+- **`Credentials::Token` follows the server's challenge.** An OAuth access token is sent as
+  RFC 6750 Bearer until a `401` whose `WWW-Authenticate` offers `Basic` and not `Bearer`; the
+  transport then sends the refused request once more with the token as the Basic password for
+  the account's username, and the connection keeps presenting it that way. Observed on a
+  sabre/dav deployment beside an OAuth mail server, which accepts the access token only as a
+  password. A `401` that offers `Bearer` refused the token itself and is not retried, and
+  `Credentials::Bearer` names no username, so it never becomes a password. The decision lives
+  in `auth.rs`; it covers CardDAV too, which shares the transport, and the SabreDAV fixture
+  proves it live (`sabredav_takes_a_token_as_the_basic_password_after_its_challenge`, with a
+  bare Bearer as the control).
 - **The same `PROPFIND` asks for the principal's `calendar-user-address-set`** (RFC 6638
   §2.4.1), the addresses the server schedules as for this user, read through
   `CalendarWrites::calendar_user_addresses`. Only the principal carries it: Stalwart names
