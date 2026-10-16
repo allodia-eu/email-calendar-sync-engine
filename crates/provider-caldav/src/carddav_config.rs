@@ -8,7 +8,7 @@ use std::sync::Arc;
 use engine_provider::ConnectObserver;
 use engine_tls::TlsClientConfig;
 
-use crate::transport::Credentials;
+use crate::{credential_hosts::CredentialHosts, transport::Credentials};
 
 /// CardDAV connection settings.
 #[derive(Clone)]
@@ -28,6 +28,8 @@ pub struct CardDavConfig {
     /// Private, as on `CalDavConfig`: a `dyn` observer is neither `Debug` nor meaningfully
     /// inspectable, so it is set through [`CardDavConfig::with_connect_observer`].
     pub(crate) connect_observer: Option<Arc<dyn ConnectObserver>>,
+    /// Private for the same reason; set through [`CardDavConfig::with_credential_hosts`].
+    pub(crate) credential_hosts: Option<Arc<dyn CredentialHosts>>,
 }
 
 impl core::fmt::Debug for CardDavConfig {
@@ -42,6 +44,7 @@ impl core::fmt::Debug for CardDavConfig {
             .field("tls", &self.tls)
             .field("retry", &self.retry)
             .field("connect_observer", &self.connect_observer.is_some())
+            .field("credential_hosts", &self.credential_hosts.is_some())
             .finish()
     }
 }
@@ -58,7 +61,15 @@ impl CardDavConfig {
             tls: TlsClientConfig::default(),
             retry: engine_http::RetryConfig::default(),
             connect_observer: None,
+            credential_hosts: None,
         }
+    }
+
+    /// Lets `policy` decide which hosts receive the credential ([`CredentialHosts`]).
+    #[must_use]
+    pub fn with_credential_hosts(mut self, policy: Arc<dyn CredentialHosts>) -> Self {
+        self.credential_hosts = Some(policy);
+        self
     }
 
     /// Binds a different address book.
