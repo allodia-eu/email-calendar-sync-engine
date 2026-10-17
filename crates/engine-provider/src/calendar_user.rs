@@ -9,7 +9,9 @@
 //!
 //! Where the answer comes from is the adapter's business: the CalDAV principal's address set,
 //! JMAP's `ParticipantIdentity` objects, or the mailbox address a Graph or Google calendar
-//! schedules as.
+//! schedules as. The last two name only the mailbox's primary address and none of its aliases,
+//! so their answer is [`CalendarUserAddresses::Including`]: enough to recognise an address,
+//! never to rule one out.
 
 use engine_core::scheduling::addresses_match;
 
@@ -20,6 +22,10 @@ pub enum CalendarUserAddresses {
     /// that are not email addresses (a `urn:uuid:`, an `https:` URI) are left out, so the list
     /// is empty when the server named only those.
     Known(Vec<String>),
+    /// The server schedules as these addresses and may schedule as others it does not name:
+    /// Exchange answers for a mailbox's proxy addresses, and Graph and Google expose only the
+    /// primary one.
+    Including(Vec<String>),
     /// The server described the user and named no address set. RFC 6638 §2.4.1 reads that as
     /// a principal not enabled for scheduling: the server schedules for no address at all.
     NotEnabled,
@@ -39,7 +45,7 @@ impl CalendarUserAddresses {
     #[must_use]
     pub fn addresses(&self) -> &[String] {
         match self {
-            Self::Known(addresses) => addresses,
+            Self::Known(addresses) | Self::Including(addresses) => addresses,
             Self::NotEnabled | Self::Unknown => &[],
         }
     }
@@ -52,6 +58,19 @@ impl CalendarUserAddresses {
         self.addresses()
             .iter()
             .any(|known| addresses_match(known, address))
+    }
+
+    /// Whether the server is known **not** to schedule as `address`: it named its whole set and
+    /// `address` is not in it, or it schedules for nobody. `false` for
+    /// [`Including`](Self::Including) and [`Unknown`](Self::Unknown), whose answer cannot rule
+    /// an address out.
+    #[must_use]
+    pub fn excludes(&self, address: &str) -> bool {
+        match self {
+            Self::Known(_) => !self.recognises(address),
+            Self::NotEnabled => true,
+            Self::Including(_) | Self::Unknown => false,
+        }
     }
 }
 

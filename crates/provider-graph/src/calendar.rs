@@ -276,13 +276,14 @@ impl CalendarWrites for GraphCalendarProvider {
 
     /// The mailbox address the calendar schedules as: Exchange sends and answers for the
     /// mailbox that holds the calendar, so this is the address its sender identity carries,
-    /// read the same way (`crate::identity`). Its other proxy addresses are not listed.
+    /// read the same way (`crate::identity`). Exchange schedules for the mailbox's other proxy
+    /// addresses too and none is listed, so the set is [`CalendarUserAddresses::Including`].
     async fn calendar_user_addresses(
         &self,
         _account: &AccountId,
     ) -> ProviderResult<CalendarUserAddresses> {
         let identities = crate::identity::sender_identity(&self.client).await?;
-        Ok(CalendarUserAddresses::Known(
+        Ok(CalendarUserAddresses::Including(
             identities
                 .into_iter()
                 .map(|identity| identity.address.email)

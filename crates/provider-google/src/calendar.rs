@@ -267,13 +267,15 @@ impl CalendarWrites for GoogleCalendarProvider {
     }
 
     /// The account's primary calendar id, which is the address Google organises and answers
-    /// as for every calendar the account holds (`cal_fetch`).
+    /// as for every calendar the account holds (`cal_fetch`). The account's aliases are not
+    /// listed and nothing says Google does not answer for them, so the set is
+    /// [`CalendarUserAddresses::Including`].
     async fn calendar_user_addresses(
         &self,
         _account: &AccountId,
     ) -> ProviderResult<CalendarUserAddresses> {
         let address = crate::cal_fetch::primary_calendar_address(&self.client).await?;
-        Ok(CalendarUserAddresses::Known(vec![address]))
+        Ok(CalendarUserAddresses::Including(vec![address]))
     }
 }
 
