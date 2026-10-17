@@ -49,7 +49,7 @@ async fn the_calendars_schedule_as_the_primary_calendars_address() {
     )]);
     assert_eq!(
         provider.calendar_user_addresses(&account()).await.unwrap(),
-        CalendarUserAddresses::Known(vec!["alice@example.org".to_owned()])
+        CalendarUserAddresses::Including(vec!["alice@example.org".to_owned()])
     );
 }
 

@@ -54,3 +54,24 @@ fn neither_not_enabled_nor_unknown_recognises_anything() {
         assert!(!set.recognises("alice@example.org"));
     }
 }
+
+#[test]
+fn only_a_whole_set_or_none_at_all_rules_an_address_out() {
+    let whole = CalendarUserAddresses::Known(vec!["alice@example.org".to_owned()]);
+    assert!(!whole.excludes("Alice@example.org"));
+    assert!(whole.excludes("info@example.org"));
+    assert!(CalendarUserAddresses::NotEnabled.excludes("alice@example.org"));
+    assert!(!CalendarUserAddresses::Unknown.excludes("alice@example.org"));
+}
+
+#[test]
+fn a_partial_set_recognises_what_it_names_and_rules_nothing_out() {
+    let partial = CalendarUserAddresses::Including(vec!["alice@example.org".to_owned()]);
+    assert_eq!(partial.addresses(), ["alice@example.org"]);
+    assert!(partial.recognises("alice@example.org"));
+    assert!(!partial.recognises("info@example.org"));
+    assert!(
+        !partial.excludes("info@example.org"),
+        "an alias it does not list"
+    );
+}
