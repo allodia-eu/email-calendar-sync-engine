@@ -43,6 +43,15 @@ pub(crate) enum Extension {
     SpecialUse,
     /// `QRESYNC` (RFC 7162) — a mailbox delta can reconcile flags and expunges.
     Qresync,
+    /// `NAMESPACE` (RFC 2342) — the server says which part of the mailbox tree is the
+    /// credential's own and which is someone else's.
+    Namespace,
+    /// `ACL` (RFC 4314) — the server can say what the credential may do in a mailbox
+    /// (`MYRIGHTS`), and is how one user grants another access at all.
+    Acl,
+    /// `LIST-MYRIGHTS` (RFC 8440) — a folder list can carry those rights, as `LIST-STATUS`
+    /// carries the unread counts.
+    ListMyrights,
     /// `UIDONLY` (RFC 9586) — messages are addressed by UID alone. Yahoo documents its
     /// default mode as showing a folder above `MESSAGELIMIT` only in part, and UID mode as the
     /// whole of it.
@@ -57,6 +66,21 @@ pub(crate) enum Extension {
 }
 
 impl Extension {
+    /// Every extension, in declaration order — what the `ENABLE` argument list and the
+    /// connect trace iterate, so a new one cannot be added here and forgotten there.
+    pub(crate) const ALL: [Self; 10] = [
+        Self::Idle,
+        Self::ListStatus,
+        Self::SpecialUse,
+        Self::Qresync,
+        Self::Namespace,
+        Self::Acl,
+        Self::ListMyrights,
+        Self::UidOnly,
+        Self::Partial,
+        Self::XymHighestModseq,
+    ];
+
     /// The capability atom a server advertises this under.
     pub(crate) const fn atom(self) -> &'static str {
         match self {
@@ -64,6 +88,9 @@ impl Extension {
             Self::ListStatus => "LIST-STATUS",
             Self::SpecialUse => "SPECIAL-USE",
             Self::Qresync => "QRESYNC",
+            Self::Namespace => "NAMESPACE",
+            Self::Acl => "ACL",
+            Self::ListMyrights => "LIST-MYRIGHTS",
             Self::UidOnly => "UIDONLY",
             Self::Partial => "PARTIAL",
             Self::XymHighestModseq => "XYMHIGHESTMODSEQ",
@@ -74,11 +101,17 @@ impl Extension {
     /// 2–3), so a rev2 session has it without the server advertising it separately.
     ///
     /// `QRESYNC` is **not** folded in — rev2 took only its `CLOSED` response code (item 9),
-    /// leaving the extension itself to RFC 7162 and to its own `ENABLE`.
+    /// leaving the extension itself to RFC 7162 and to its own `ENABLE`. Nor are `ACL` and
+    /// `LIST-MYRIGHTS`, which Appendix E does not mention; `NAMESPACE` is, in item 2.
     pub(crate) const fn folded_into_rev2(self) -> bool {
         match self {
-            Self::Idle | Self::ListStatus | Self::SpecialUse => true,
-            Self::Qresync | Self::UidOnly | Self::Partial | Self::XymHighestModseq => false,
+            Self::Idle | Self::ListStatus | Self::SpecialUse | Self::Namespace => true,
+            Self::Qresync
+            | Self::Acl
+            | Self::ListMyrights
+            | Self::UidOnly
+            | Self::Partial
+            | Self::XymHighestModseq => false,
         }
     }
 
@@ -91,6 +124,9 @@ impl Extension {
             Self::Idle
             | Self::ListStatus
             | Self::SpecialUse
+            | Self::Namespace
+            | Self::Acl
+            | Self::ListMyrights
             | Self::Partial
             | Self::XymHighestModseq => false,
         }
@@ -132,16 +168,10 @@ impl Negotiated {
             arguments.push(IMAP4REV2);
         }
         arguments.extend(
-            [
-                Extension::Idle,
-                Extension::ListStatus,
-                Extension::SpecialUse,
-                Extension::Qresync,
-                Extension::UidOnly,
-            ]
-            .into_iter()
-            .filter(|ext| ext.needs_enable() && self.advertises(ext.atom()))
-            .map(Extension::atom),
+            Extension::ALL
+                .into_iter()
+                .filter(|ext| ext.needs_enable() && self.advertises(ext.atom()))
+                .map(Extension::atom),
         );
         arguments
     }
@@ -222,19 +252,11 @@ impl Negotiated {
     /// extensions folded into the base protocol, which is exactly the difference a
     /// support session is trying to see.
     pub(crate) fn available_extensions(&self) -> Vec<&'static str> {
-        [
-            Extension::Idle,
-            Extension::ListStatus,
-            Extension::SpecialUse,
-            Extension::Qresync,
-            Extension::UidOnly,
-            Extension::Partial,
-            Extension::XymHighestModseq,
-        ]
-        .into_iter()
-        .filter(|ext| self.has(*ext))
-        .map(Extension::atom)
-        .collect()
+        Extension::ALL
+            .into_iter()
+            .filter(|ext| self.has(*ext))
+            .map(Extension::atom)
+            .collect()
     }
 
     /// Whether mailbox names on this session's wire are modified UTF-7 (RFC 3501 §5.1.3)

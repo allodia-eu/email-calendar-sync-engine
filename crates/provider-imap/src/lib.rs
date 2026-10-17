@@ -70,6 +70,7 @@
 //! yet (durable blob storage is a later store sub-step).
 
 mod account;
+mod acl;
 mod base64;
 mod bodystructure;
 mod capability;
@@ -84,7 +85,9 @@ mod fetch;
 mod fetch_batch;
 mod fetch_stream;
 pub(crate) mod filing;
+mod folders;
 mod idle;
+mod listing;
 mod mail;
 mod mailbox_write;
 mod metadata_fetch;
@@ -103,7 +106,9 @@ mod resync;
 mod sasl;
 mod smtp;
 mod smtp_auth;
+mod smtp_sender;
 mod smtp_stream;
+mod store;
 mod stream;
 mod sync;
 mod target;
@@ -118,6 +123,7 @@ mod transport_search;
 mod transport_select;
 mod transport_session;
 mod transport_starttls;
+mod transport_store;
 mod unseen;
 mod utf7;
 mod watch;

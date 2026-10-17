@@ -83,7 +83,7 @@ async fn a_server_silent_after_any_command_fails_retryable_after_the_reply_bound
     assert_took(elapsed, BOUNDS.reply());
 
     let (mut c, _) = session(&[]);
-    let (outcome, elapsed) = timed(c.list()).await;
+    let (outcome, elapsed) = timed(c.list("*")).await;
     assert_timed_out(outcome);
     assert_took(elapsed, BOUNDS.reply());
 
@@ -118,7 +118,7 @@ async fn a_server_silent_partway_through_a_response_fails_after_the_reply_bound(
     // The server has begun to answer and then stops before the completion that ends it.
     let (mut c, _) = session(&["* LIST (\\HasNoChildren) \"/\" INBOX\r\n"]);
 
-    let (outcome, elapsed) = timed(c.list()).await;
+    let (outcome, elapsed) = timed(c.list("*")).await;
 
     assert_timed_out(outcome);
     assert_took(elapsed, BOUNDS.reply());

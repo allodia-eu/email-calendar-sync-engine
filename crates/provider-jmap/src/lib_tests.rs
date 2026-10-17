@@ -107,7 +107,7 @@ fn fuzz_entry_point_runs_without_panicking() {
 
 // A blocking single-shot mock HTTP server lets the live-only transport,
 // session discovery, and `execute` be exercised offline (no harness).
-pub(super) fn mock_server(http_responses: Vec<String>) -> String {
+pub(crate) fn mock_server(http_responses: Vec<String>) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -121,7 +121,7 @@ pub(super) fn mock_server(http_responses: Vec<String>) -> String {
     format!("http://{addr}")
 }
 
-pub(super) fn http_ok(body: &str) -> String {
+pub(crate) fn http_ok(body: &str) -> String {
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -375,7 +375,7 @@ async fn connect_reports_every_well_known_hop_then_auth_then_the_api_url() {
         http_redirect("/jmap/session"),
         http_ok(SESSION_DOC),
     ]);
-    let recorder = Arc::new(Recorder::default());
+    let recorder = std::sync::Arc::new(Recorder::default());
     JmapClient::connect(
         JmapConfig::new(base.clone(), Credentials::basic("a", "b"))
             .with_connect_observer(recorder.clone()),
@@ -399,7 +399,7 @@ async fn connect_reports_every_well_known_hop_then_auth_then_the_api_url() {
 #[tokio::test]
 async fn a_session_served_without_a_redirect_reports_no_hop() {
     let base = mock_server(vec![http_ok(SESSION_DOC)]);
-    let recorder = Arc::new(Recorder::default());
+    let recorder = std::sync::Arc::new(Recorder::default());
     JmapClient::connect(
         JmapConfig::new(base.clone(), Credentials::basic("a", "b"))
             .with_session_path("/jmap/session")
@@ -435,7 +435,7 @@ async fn credentials_in_the_connection_url_never_reach_the_observer() {
     // URL a step would carry. These steps exist to be logged (`north-star.md`).
     let base = mock_server(vec![http_redirect("/jmap/session"), http_ok(SESSION_DOC)]);
     let authority = base.strip_prefix("http://").unwrap();
-    let recorder = Arc::new(Recorder::default());
+    let recorder = std::sync::Arc::new(Recorder::default());
     JmapClient::connect(
         JmapConfig::new(
             format!("http://alice:hunter2@{authority}"),

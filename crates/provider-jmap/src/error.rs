@@ -84,6 +84,10 @@ pub enum JmapError {
     #[error("invalid JMAP session: {0}")]
     Session(String),
 
+    /// The adapter refused a request before sending it, because the protocol says the
+    /// client must not: a draft whose `From` no identity on the account may send as.
+    #[error("refused before sending: {0}")]
+    Refused(String),
     /// A scope larger than one request moved under every attempt to page it whole, so no
     /// attempt is a complete answer to store. Carries the type name; the next pass tries again.
     #[error("{0}/query kept changing while it was paged")]
@@ -202,9 +206,11 @@ impl JmapError {
             Self::Status { status, body, .. } => status_class(*status, body),
             // A malformed response/session is a protocol-level incompatibility:
             // retrying the same request will not fix it.
-            Self::Json(_) | Self::Protocol(_) | Self::Session(_) | Self::MissingResponse(_) => {
-                FailureClass::Permanent
-            }
+            Self::Json(_)
+            | Self::Protocol(_)
+            | Self::Session(_)
+            | Self::MissingResponse(_)
+            | Self::Refused(_) => FailureClass::Permanent,
             Self::Method { error_type, .. } => method_class(error_type),
             Self::Set { error_type, .. } => set_error_class(error_type),
             Self::Unsettled(_) => FailureClass::Retryable,

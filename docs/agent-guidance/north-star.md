@@ -80,6 +80,7 @@ pim-sync-engine/
 - Search and threading are per-account by default; cross-account unified views are host-composed presentation, not storage-level joins.
 - Calendar normalization uses JSCalendar-shaped projections and supports floating times, all-day events, embedded timezones, recurrence rules, recurrence overrides, exclusions, and cross-DST expansion.
 - Calendars carry access rights, subscription, owner, default reminders, and color, not only event membership.
+- Mail collections carry the caller's access rights too — per collection, because no protocol answers "may I write here?" above it.
 - Events carry a kind (default plus provider kinds such as working-location, focus-time, out-of-office); the model preserves kind-specific payload.
 - Provider-native raw data is preserved beside normalized projections.
 - Provider extended properties and extensions are preserved as normalized, namespaced data, distinct from raw payloads and first-class fields.

@@ -17,7 +17,7 @@
 //! outcome travelling up *is* the diagnostic. What it must never do is fail the send: the
 //! mail is already gone, and a caller that treated filing as delivery would re-send it.
 
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
 use engine_core::ids::ProviderKey;
 use engine_provider::{
@@ -31,86 +31,17 @@ use tokio::{
 };
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
+pub(crate) use crate::smtp_sender::{SmtpSender, resolve_smtp};
 use crate::{
-    config::{ImapConfig, SmtpSecurity, SmtpSettings, port_of},
-    credentials::{CredentialSource, Credentials, with_renewal},
+    credentials::with_renewal,
     deadline,
     error::{ImapError, ImapResult},
     place::{Filing, Placed, append_to_role_folder, place_if_absent, placed_key},
     provider::ImapProvider,
     smtp::{self, Disposition, SmtpResult},
     smtp_auth::SmtpAuth,
+    transport::Connection,
 };
-
-/// The resolved SMTP transport a provider holds after `connect`: plaintext, implicit
-/// TLS, or STARTTLS, the two TLS variants carrying the connector each fresh send re-dials
-/// with and the source each send asks for its credential (submission opens a new
-/// connection per send, so it presents a token that is valid when it sends).
-pub(crate) enum SmtpSender {
-    Plaintext {
-        addr: String,
-    },
-    ImplicitTls {
-        addr: String,
-        server_name: String,
-        connector: TlsConnector,
-        credentials: Arc<dyn CredentialSource>,
-    },
-    StartTls {
-        addr: String,
-        server_name: String,
-        connector: TlsConnector,
-        credentials: Arc<dyn CredentialSource>,
-    },
-}
-
-impl SmtpSender {
-    /// The authentication this transport presents with `credentials`, or `None` for the
-    /// unauthenticated plaintext MX. `host`/`port` name the **SMTP** server, not the IMAP
-    /// one: a SASL `OAUTHBEARER` response describes the connection it rides on (RFC 7628
-    /// §3.1), and submission is a different host and port from the mailbox it files into.
-    fn auth<'a>(&'a self, credentials: &'a Credentials) -> Option<SmtpAuth<'a>> {
-        match self {
-            Self::Plaintext { .. } => None,
-            Self::ImplicitTls {
-                addr, server_name, ..
-            }
-            | Self::StartTls {
-                addr, server_name, ..
-            } => Some(SmtpAuth {
-                credentials,
-                host: server_name,
-                port: port_of(addr),
-            }),
-        }
-    }
-}
-
-/// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,
-/// capturing the TLS connector and credentials each future send re-dials with.
-pub(crate) fn resolve_smtp(
-    settings: &SmtpSettings,
-    connector: &TlsConnector,
-    config: &ImapConfig,
-) -> SmtpSender {
-    match &settings.security {
-        SmtpSecurity::Plaintext => SmtpSender::Plaintext {
-            addr: settings.addr.clone(),
-        },
-        SmtpSecurity::ImplicitTls { server_name } => SmtpSender::ImplicitTls {
-            addr: settings.addr.clone(),
-            server_name: server_name.clone(),
-            connector: connector.clone(),
-            credentials: Arc::clone(&config.credentials),
-        },
-        SmtpSecurity::StartTls { server_name } => SmtpSender::StartTls {
-            addr: settings.addr.clone(),
-            server_name: server_name.clone(),
-            connector: connector.clone(),
-            credentials: Arc::clone(&config.credentials),
-        },
-    }
-}
 
 /// Everything derived from a draft once, shared by the wire send and the filed copy —
 /// so a STARTTLS send (which negotiates before transmitting) and a plaintext/implicit
@@ -342,12 +273,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
     async fn file_sent_copy(&self, filed: &[u8], draft: &Draft) -> Result<Placed, String> {
         let first = match self.session().await {
             Ok(mut connection) => {
-                let result = append_to_role_folder(
-                    &mut connection,
-                    Filing::Sent,
-                    filed,
-                    &draft.sent_copy_keywords,
-                )
+                let result = async {
+                    let store = self.store_on(&mut connection).await?;
+                    append_to_role_folder(
+                        &mut connection,
+                        &store,
+                        Filing::Sent,
+                        filed,
+                        &draft.sent_copy_keywords,
+                    )
+                    .await
+                }
                 .await;
                 connection.settle(result)
             }
@@ -374,17 +310,38 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         draft: &Draft,
     ) -> ProviderResult<Placed> {
         let mut connection = self.pool.acquire_checked().await?;
-        // `APPEND` is not idempotent, so the probe inside asks before placing: a first
-        // attempt that committed and lost its response must not become two copies.
-        let result = place_if_absent(
-            &mut connection,
+        let result = self
+            .place_sent_if_absent(&mut connection, filed, draft)
+            .await;
+        connection.settle(result)
+    }
+
+    /// Places the Sent copy over `connection` unless it is already there. The store is the
+    /// provider's, not the session's: whichever connection places the copy, it goes in the Sent
+    /// folder of the mail this provider covers. `APPEND` is not idempotent, so the probe inside
+    /// asks before placing: a first attempt that committed and lost its response must not
+    /// become two copies.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`ProviderError`] on a `LIST`, `SEARCH` or `APPEND` failure.
+    async fn place_sent_if_absent(
+        &self,
+        connection: &mut Connection<S>,
+        filed: &[u8],
+        draft: &Draft,
+    ) -> ProviderResult<Placed> {
+        let store = self.store_on(connection).await?;
+        let keywords = &draft.sent_copy_keywords;
+        place_if_absent(
+            connection,
+            &store,
             Filing::Sent,
             &draft.message_id,
             filed,
-            &draft.sent_copy_keywords,
+            keywords,
         )
-        .await;
-        connection.settle(result)
+        .await
     }
 
     /// Files the Sent copy of a message that **has already been delivered** — the repair a
@@ -406,14 +363,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         let filed = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
         let first = match self.session().await {
             Ok(mut connection) => {
-                let result = place_if_absent(
-                    &mut connection,
-                    Filing::Sent,
-                    &draft.message_id,
-                    &filed,
-                    &draft.sent_copy_keywords,
-                )
-                .await;
+                let result = self
+                    .place_sent_if_absent(&mut connection, &filed, draft)
+                    .await;
                 connection.settle(result)
             }
             Err(err) => Err(err),
@@ -442,7 +394,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
     /// a Sent copy this fails loudly: saving the draft is the whole operation.
     pub async fn save_draft(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
         let mut connection = self.session().await?;
-        let result = crate::drafts::put_draft(&mut connection, draft, None).await;
+        let result = async {
+            let store = self.store_on(&mut connection).await?;
+            crate::drafts::put_draft(&mut connection, &store, draft, None).await
+        }
+        .await;
         connection.settle(result)
     }
 }

@@ -102,7 +102,7 @@ impl BoundedServer {
         });
         let base = Url::parse("https://jmap.test.local").unwrap();
         Self {
-            session: Session::parse(&session_doc, &base, SessionUrlPolicy::TrustAdvertised)
+            session: Session::parse(&session_doc, &base, SessionUrlPolicy::TrustAdvertised, None)
                 .unwrap(),
             max_objects_in_get,
             query_cap: None,

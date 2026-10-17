@@ -10,8 +10,10 @@
 #   1. start the server (bootstrap mode if the store is empty),
 #   2. complete setup via `x:Bootstrap/set` (no ACME/auto-TLS), restart to full,
 #   3. create the test accounts via `x:Account/set` (idempotent),
-#   4. seed mail (IMAP over TLS), calendars (CalDAV), and contacts (CardDAV),
-#   5. write a readiness marker and run the server in the foreground.
+#   4. create the `support` **group** mailbox and put alice in it, so alice's
+#      credential reaches a store it does not own (the shared-mailbox fixture),
+#   5. seed mail (IMAP over TLS), calendars (CalDAV), and contacts (CardDAV),
+#   6. write a readiness marker and run the server in the foreground.
 #
 # It is idempotent: on a re-run against an already-bootstrapped data volume it
 # skips bootstrap and skips existing accounts, and the content seeder clears
@@ -83,6 +85,52 @@ ensure_account() { # local-name  description  password
     return 1
   fi
   log "created account $1"
+}
+
+# Server-assigned id of a principal, by local name. Asking for `name` alone keeps each
+# entry flat (`{"name":"alice","id":"c"}`), so one grep per entry is safe without jq. Ids
+# follow creation order and are not stable across a fresh bootstrap, which is why callers
+# look them up rather than hard-coding one.
+account_id() { # local-name
+  jmap '["x:Account/get",{"ids":null,"properties":["name"]},"c0"]' \
+    | grep -oE "\{\"name\":\"$1\",\"id\":\"[^\"]+\"\}" \
+    | grep -oE '"id":"[^"]+"' | cut -d'"' -f4
+}
+
+# A **group** principal: a mailbox with no credentials of its own. Each member's JMAP
+# session then lists it as an account with `isPersonal: false` (RFC 8620 §1.6.2), and each
+# member's IMAP session shows it under the `Shared Folders` namespace (RFC 2342) — the
+# vendor-neutral analogue of a Microsoft 365 shared mailbox, and what the engine's
+# shared-mailbox discovery is tested against (docs/agent-guidance/stalwart-harness.md).
+ensure_group() { # local-name  description
+  if account_exists "$1"; then
+    log "group $1 already present"
+    return 0
+  fi
+  resp=$(jmap "[\"x:Account/set\",{\"create\":{\"g\":{\"@type\":\"Group\",\"name\":\"$1\",\"domainId\":\"$DOMAIN_ID\",\"description\":\"$2\"}}},\"c0\"]")
+  if ! printf '%s' "$resp" | grep -q '"created"'; then
+    log "FAILED to create group $1: $resp"
+    return 1
+  fi
+  log "created group $1"
+}
+
+# Membership is recorded on the **member**: `memberGroupIds` is a set on the user
+# principal, not a list on the group. Re-setting the same set is a no-op update, so this
+# is idempotent across a warm start.
+ensure_group_member() { # member-local-name  group-local-name
+  member_id="$(account_id "$1")"
+  group_id="$(account_id "$2")"
+  [ -n "$member_id" ] && [ -n "$group_id" ] || {
+    log "FAILED to resolve ids for member $1 / group $2"
+    return 1
+  }
+  resp=$(jmap "[\"x:Account/set\",{\"update\":{\"$member_id\":{\"memberGroupIds\":{\"$group_id\":true}}}},\"c0\"]")
+  if ! printf '%s' "$resp" | grep -q '"updated"'; then
+    log "FAILED to add $1 to group $2: $resp"
+    return 1
+  fi
+  log "$1 is a member of group $2"
 }
 
 listener_exists() { # name
@@ -176,6 +224,13 @@ ensure_account bob "Bob Tester" "${HARNESS_BOB_PW:-harness-bob-pw}"
 ensure_account carol "Carol Tester" "${HARNESS_CAROL_PW:-harness-carol-pw}"
 
 relax_inbound_throttles
+
+# The shared-mailbox fixture's first half: a credential-less group mailbox alice belongs
+# to, so she holds every right on it. The second half — bob granting alice read-only
+# access to *his* INBOX, which is what proves rights belong to the folder rather than the
+# account — is an IMAP `SETACL`, so it lives in seed.sh with the rest of the IMAP seeding.
+ensure_group support "Support Shared Mailbox"
+ensure_group_member alice support
 
 # STARTTLS listeners for the IMAP (143) and SMTP submission (587) transports the
 # provider speaks in addition to implicit TLS. A newly created listener needs a server

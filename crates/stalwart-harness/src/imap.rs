@@ -24,6 +24,12 @@ pub struct ImapProbe {
     /// INBOX messages whose `SUBJECT` matches the duplicate-`Message-ID` pair —
     /// two are seeded, proving both are stored as distinct objects.
     pub dup_subject_hits: usize,
+    /// The untagged `* NAMESPACE` line (RFC 2342), verbatim: the personal namespace, and —
+    /// because the seeded account has been granted access to other stores — a foreign one.
+    pub namespace: String,
+    /// Mailbox names from `LIST "" "*"`, in server order. The shared ones are nested under
+    /// the foreign prefix the [`namespace`](Self::namespace) line advertises.
+    pub mailboxes: Vec<String>,
 }
 
 /// Drive the IMAP probe over an established (already TLS-wrapped) stream.
@@ -57,7 +63,18 @@ pub fn run_probe<S: Read + Write>(
         .find_map(|line| line.strip_prefix("* SEARCH"))
         .map_or(0, |rest| rest.split_whitespace().count());
 
-    let _ = conn.write_line("a7 LOGOUT");
+    let namespace = conn
+        .command("a7", "NAMESPACE")?
+        .into_iter()
+        .find(|line| line.starts_with("* NAMESPACE"))
+        .ok_or_else(|| protocol("NAMESPACE returned no untagged line".to_owned()))?;
+    let mailboxes = conn
+        .command("a8", r#"LIST "" "*""#)?
+        .iter()
+        .filter_map(|line| quoted_list_name(line))
+        .collect();
+
+    let _ = conn.write_line("a9 LOGOUT");
 
     Ok(ImapProbe {
         greeting,
@@ -65,7 +82,20 @@ pub fn run_probe<S: Read + Write>(
         archive_exists,
         projects_exists,
         dup_subject_hits,
+        namespace,
+        mailboxes,
     })
+}
+
+/// The mailbox name of a `* LIST (attrs) "delim" "name"` line: its last quoted token, since
+/// a shared path carries a space and an `@` that a whitespace split would break. `None` for
+/// any other line, and for a name sent unquoted — fine for a probe, since the provider, not
+/// this, is what must parse `LIST` exhaustively.
+fn quoted_list_name(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("* LIST ")?;
+    let close = rest.rfind('"')?;
+    let open = rest[..close].rfind('"')?;
+    Some(rest[open + 1..close].to_owned())
 }
 
 fn protocol(detail: String) -> HarnessError {
@@ -209,11 +239,38 @@ a1 OK login ok\n\
 * 1 EXISTS\na4 OK selected\n\
 * 8 EXISTS\na5 OK selected\n\
 * SEARCH 2 3\na6 OK search done\n\
-a7 OK bye\n";
+* NAMESPACE ((\"\" \"/\")) ((\"Shared Folders\" \"/\")) NIL\na7 OK namespace done\n\
+* LIST () \"/\" \"INBOX\"\n\
+* LIST (\\NoSelect) \"/\" \"Shared Folders/support@test.local\"\n\
+* LIST () \"/\" \"Shared Folders/support@test.local/INBOX\"\n\
+a8 OK list done\n\
+a9 OK bye\n";
         let probe = run_probe(canned(script), "alice@test.local", "pw").unwrap();
         assert_eq!(probe.inbox_exists, 8);
         assert_eq!(probe.archive_exists, 1);
         assert_eq!(probe.projects_exists, 1);
         assert_eq!(probe.dup_subject_hits, 2);
+        assert!(probe.namespace.contains("Shared Folders"));
+        assert_eq!(
+            probe.mailboxes,
+            [
+                "INBOX",
+                "Shared Folders/support@test.local",
+                "Shared Folders/support@test.local/INBOX"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_list_name_is_the_last_quoted_token() {
+        // A shared path carries a space and an `@`, which is why the name is read as the
+        // last quoted token rather than split on whitespace.
+        assert_eq!(
+            super::quoted_list_name(r#"* LIST (\NoSelect) "/" "Shared Folders/bob@test.local""#)
+                .as_deref(),
+            Some("Shared Folders/bob@test.local")
+        );
+        assert_eq!(super::quoted_list_name("* 8 EXISTS"), None);
+        assert_eq!(super::quoted_list_name("* LIST () NIL INBOX"), None);
     }
 }

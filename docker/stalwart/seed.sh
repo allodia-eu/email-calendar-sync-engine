@@ -24,6 +24,12 @@ CONTACT_DIR="$SEED_DIR/contacts"
 
 ALICE="alice@test.local"
 ALICE_PW="${HARNESS_ALICE_PW:-harness-alice-pw}"
+BOB="bob@test.local"
+BOB_PW="${HARNESS_BOB_PW:-harness-bob-pw}"
+
+# The group mailbox, as alice reaches it: under the `Shared Folders` namespace Stalwart
+# advertises (RFC 2342). The space is percent-encoded because the path rides a curl URL.
+SUPPORT_SHARED="Shared%20Folders/support@test.local"
 
 IMAPS="imaps://127.0.0.1:993"
 HTTP="http://127.0.0.1:8080"
@@ -49,6 +55,12 @@ imap_append() { # file  mailbox
 
 imap_cmd() { # mailbox  command
   imap --url "$IMAPS/$1" --request "$2"
+}
+
+# The same round trip as `imap_cmd`, authenticated as **bob** — needed only to grant alice
+# an ACL on bob's own INBOX, which nobody but its owner can do.
+imap_cmd_bob() { # mailbox  command
+  curl -sk --user "$BOB:$BOB_PW" --url "$IMAPS/$1" --request "$2"
 }
 
 imap_clear() { # mailbox
@@ -176,6 +188,20 @@ if ! imap_cmd INBOX "MOVE 9 Projects" >/dev/null 2>&1; then
   imap_cmd INBOX "STORE 9 +FLAGS (\\Deleted)" >/dev/null
   imap_cmd INBOX "EXPUNGE" >/dev/null
 fi
+
+# ---- The shared-mailbox fixture (RFC 2342 namespaces + RFC 4314 ACL) ----
+#
+# Two stores alice can open besides her own, differing on purpose in their *rights*:
+# she is a member of the `support` group, so she holds every right on its folders, while
+# bob grants her only `lr` (lookup + read) on his INBOX. Stalwart reports both as
+# `isReadOnly: false` in alice's JMAP session, so nothing at the account level tells them
+# apart — only the per-folder rights do (docs/agent-guidance/stalwart-harness.md).
+log "granting alice read-only (lr) access to bob's INBOX"
+imap_cmd_bob INBOX "SETACL \"INBOX\" \"$ALICE\" lr" >/dev/null
+
+log "seeding the support group mailbox"
+imap_clear "$SUPPORT_SHARED/INBOX"
+imap_append "$MAIL_DIR/12-shared.eml" "$SUPPORT_SHARED/INBOX"
 
 log "putting calendar fixtures into the default calendar"
 put_calendar "$CAL_DIR/one-off.ics" oneoff-2001

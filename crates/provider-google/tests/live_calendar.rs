@@ -25,6 +25,22 @@ async fn live_calendars_list() {
     };
     // The account has at least its own primary calendar.
     assert!(objects.iter().any(|c| c.is_default), "a primary calendar");
+
+    // `accessRole` against the roles this account really holds. The primary calendar is
+    // `owner`: everything, the calendar's own sharing included.
+    let primary = objects.iter().find(|c| c.is_default).expect("primary");
+    assert!(primary.access.may_write && primary.access.may_share && primary.access.may_delete);
+    // The subscribed holiday calendar is `reader`: visible, immutable — a host that offered
+    // "add an event" there would have the write refused by the API. Found by its id, not as
+    // "the other one": an interrupted `live_calendar_roles.rs` run can leave more subscribed.
+    let subscribed = objects
+        .iter()
+        .find(|c| !c.is_default && c.id.as_str().contains("#holiday"))
+        .expect("the subscribed holiday calendar");
+    assert!(subscribed.access.may_read);
+    assert!(!subscribed.access.may_write && !subscribed.access.may_share);
+    // The roles only another account's calendar can carry — `writer`,
+    // `writerWithoutPrivateAccess`, `freeBusyReader` — are proven in `live_calendar_roles.rs`.
 }
 
 #[tokio::test]

@@ -608,6 +608,16 @@ A fix to one adapter's **sync**, rather than to decoding, does not need this: th
 versions its own cursor and reads an older one as no cursor, so only its scopes re-sync
 (IMAP: `CURSOR_VERSION`, `imap-smtp.md`).
 
+Version **6** is a bump that is not about decoding bytes: a mailbox now carries the caller's
+rights (`Mailbox::access`, `modeling.md`), read from JMAP `myRights` and the IMAP `MYRIGHTS`
+letters. A mailbox stored before that holds none and loads as the `owner()` default. IMAP and
+Graph re-list their folders every pass and would correct it on their own, but a JMAP folder
+list is a `Mailbox/changes` delta, so an unchanged mailbox would keep the default for good —
+the re-snapshot is what makes each one say what it really allows. The cost is the usual one
+and is not small: the clear is global, so every account's **mail** re-snapshots once too,
+not only its folder lists. A per-scope-kind invalidation would make a folder-only change
+cheaper; it does not exist, and building it belongs in its own change. (No schema change.)
+
 The **host-triggered reset** (`Engine::reset`) uses the same primitive: clear the cursors
 so the next sync is a full refetch. It is the manual counterpart of the automatic
 version-driven clear — a "reset / clean state" action a host exposes, and the escape hatch
