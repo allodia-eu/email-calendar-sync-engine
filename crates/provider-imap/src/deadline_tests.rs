@@ -29,6 +29,16 @@ use crate::{
 /// Longer than any bound under test, so only a missing bound reaches it.
 const GUARD: Duration = Duration::from_hours(1);
 
+/// How long a TLS handshake may take ([`dial`](engine_provider::Deadlines::dial)), and a
+/// server its greeting ([`greeting`](engine_provider::Deadlines::greeting)). Written out
+/// rather than read from [`BOUNDS`], as [`EACH_COMMAND`] is, because the figure is what a
+/// user pressing Send against a silent server waits.
+const FIRST_ANSWER: Duration = Duration::from_secs(15);
+
+/// How long a submission server may take over each reply before the message
+/// ([`setup`](engine_provider::Deadlines::setup)).
+const EACH_COMMAND: Duration = Duration::from_secs(30);
+
 const GREETING: &str = "220 mail ESMTP\r\n";
 const EHLO: &str = "250-mail\r\n250 AUTH PLAIN\r\n";
 const MAIL: &str = "250 2.1.0 OK\r\n";
@@ -79,13 +89,13 @@ async fn submit(stream: MockStream, auth: Option<SmtpAuth<'_>>) -> ImapResult<Sm
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_server_silent_before_its_greeting_fails_retryable_after_the_reply_stall() {
+async fn a_server_silent_before_its_greeting_fails_retryable_after_the_first_answer_bound() {
     let (stream, _) = MockStream::silent_after(script(&[]));
 
     let (outcome, elapsed) = timed(submit(stream, None)).await;
 
     assert_timed_out(outcome);
-    assert_took(elapsed, BOUNDS.reply());
+    assert_took(elapsed, FIRST_ANSWER);
 }
 
 #[tokio::test(start_paused = true)]
@@ -105,7 +115,7 @@ async fn a_server_silent_before_the_message_is_handed_over_fails_retryable() {
         let (outcome, elapsed) = timed(submit(stream, None)).await;
 
         assert_timed_out(outcome);
-        assert_took(elapsed, BOUNDS.reply());
+        assert_took(elapsed, EACH_COMMAND);
         assert!(!written(&recorded).contains("hi\r\n"), "{replies:?}");
     }
 }
@@ -123,7 +133,7 @@ async fn a_server_silent_after_auth_fails_retryable() {
     let (outcome, elapsed) = timed(submit(stream, Some(auth))).await;
 
     assert_timed_out(outcome);
-    assert_took(elapsed, BOUNDS.reply());
+    assert_took(elapsed, EACH_COMMAND);
     assert!(written(&recorded).contains("AUTH PLAIN"));
 }
 
@@ -180,20 +190,21 @@ async fn a_silent_submission_server_bounds_every_probe() {
     let (stream, _) = MockStream::silent_after(script(&[]));
     let (outcome, elapsed) = timed(smtp::extensions(stream, "test.local")).await;
     assert_timed_out(outcome);
-    assert_took(elapsed, BOUNDS.reply());
+    assert_took(elapsed, FIRST_ANSWER);
 
     // Before the `220` that lets the upgrade start.
     let ehlo = "250-mail\r\n250 STARTTLS\r\n";
     let (stream, _) = MockStream::silent_after(script(&[GREETING, ehlo]));
     let (outcome, elapsed) = timed(smtp::negotiate_starttls(stream, "test.local")).await;
     assert_timed_out(outcome);
-    assert_took(elapsed, BOUNDS.reply());
+    assert_took(elapsed, EACH_COMMAND);
 
-    // Over the upgraded link, before `EHLO`'s reply.
+    // Over the upgraded link, before `EHLO`'s reply: no greeting comes after an upgrade, so
+    // the first answer owed there is a command's.
     let (stream, _) = MockStream::silent_after(script(&[]));
     let (outcome, elapsed) = timed(smtp::extensions_after_starttls(stream, "test.local")).await;
     assert_timed_out(outcome);
-    assert_took(elapsed, BOUNDS.reply());
+    assert_took(elapsed, EACH_COMMAND);
 }
 
 #[tokio::test(start_paused = true)]
@@ -203,11 +214,27 @@ async fn an_imap_server_silent_before_its_greeting_fails_retryable() {
     let (outcome, elapsed) = timed(Connection::open(stream)).await;
 
     assert_timed_out(outcome);
-    assert_took(elapsed, BOUNDS.reply());
+    assert_took(elapsed, FIRST_ANSWER);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_imap_command_after_the_greeting_keeps_the_longer_reply_bound() {
+    // A `SEARCH` or a `FETCH` over a large mailbox can be silent for a while on a server
+    // that is working, so a read waits longer than a send does.
+    let (stream, _) = MockStream::silent_after(script(&["* OK ready\r\n"]));
+
+    let (outcome, elapsed) = timed(async {
+        let mut connection = Connection::open(stream).await?;
+        connection.command("UID SEARCH ALL").await.map(drop)
+    })
+    .await;
+
+    assert_timed_out(outcome);
+    assert_took(elapsed, Duration::from_mins(1));
 }
 
 #[tokio::test]
-async fn a_server_silent_through_the_tls_handshake_fails_retryable_after_the_dial_stall() {
+async fn a_server_silent_through_the_tls_handshake_fails_retryable_after_the_dial_bound() {
     // A real socket, because the handshake is rustls driving one. The clock is paused only once
     // the connection is up, so the bound under test is the handshake's alone.
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -221,5 +248,5 @@ async fn a_server_silent_through_the_tls_handshake_fails_retryable_after_the_dia
     let (outcome, elapsed) = timed(handshake(&connector, name, tcp)).await;
 
     assert_timed_out(outcome);
-    assert_took(elapsed, BOUNDS.dial());
+    assert_took(elapsed, FIRST_ANSWER);
 }

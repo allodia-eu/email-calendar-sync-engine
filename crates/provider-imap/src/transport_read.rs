@@ -26,7 +26,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// can themselves announce further literals, so this loops.
     ///
     /// Every wait is bounded by [`Deadlines::reply`](engine_provider::Deadlines::reply): a
-    /// line is something a server owes. The one read that may wait without a bound is a
+    /// line is something a server owes. The greeting is read under its own, shorter
+    /// [`Deadlines::greeting`](engine_provider::Deadlines::greeting) instead. The one read
+    /// that may wait without a bound is a
     /// connection in `IDLE`, which [`crate::idle`] makes with
     /// [`read_line_within`](Self::read_line_within) and the watch bounds by its keep-alive.
     pub(crate) async fn read_line(&mut self) -> ImapResult<Vec<u8>> {

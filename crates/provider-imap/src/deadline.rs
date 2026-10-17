@@ -5,7 +5,9 @@
 //! | Wait | Bound |
 //! |---|---|
 //! | TCP connect, TLS handshake | [`dial`](Deadlines::dial), each |
-//! | an IMAP or SMTP greeting, every line of an IMAP command's response, every SMTP reply before the message | [`reply`](Deadlines::reply), per line |
+//! | an IMAP or SMTP greeting | [`greeting`](Deadlines::greeting), per line |
+//! | every SMTP reply after the greeting and before the message | [`setup`](Deadlines::setup), per line |
+//! | every line of an IMAP command's response | [`reply`](Deadlines::reply), per line |
 //! | each read of a body (a `FETCH` literal) and each piece of a write (a command, an `APPEND` literal, an SMTP message) | [`stall`](Deadlines::stall), per piece |
 //! | SMTP's reply to the final `.` | [`submission`](Deadlines::submission) |
 //!
