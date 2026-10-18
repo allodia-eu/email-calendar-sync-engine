@@ -177,6 +177,25 @@ implementations a host's users correspond with read v6 keys and SEIPDv2.
 
 Never usage 255, never Simple S2K, never Argon2 without usage 253 (§3.7.2.1).
 
+## Certificates
+
+`Certificate::parse` reads exactly one transferable public key, armoured or binary (a keyring is
+`NotOne`; version 3 and unknown versions are `Unsupported`). `Certificate::at(time)` evaluates it
+at one instant, because nearly every answer depends on when: a signature made in March is checked
+against the certificate as it stood in March. The evaluation applies the rules under "Policy" and
+gives:
+
+- `status()`: `Usable`, `NotYetValid`, `Expired`, `Revoked` (with its reach) or `Unusable`
+  (no valid self-signature, or a refused algorithm). A retroactive revocation is in force at every
+  instant, including before it was made.
+- `binds(address)`: the `SenderBinding` a signature verdict carries.
+- `signing_keys()` and `encryption_keys(purpose)`: the component keys that may be used, each with
+  its own fingerprint and expiry. Empty unless the certificate is usable.
+- `facts()`: the same, as `engine_core::e2e::CertificateFacts` for a host or a store.
+
+User IDs follow their own rule: the latest statement about a User ID holds, so a certification
+made after a revocation binds the address again, whatever the revocation's reason.
+
 ## PGP/MIME recognition
 
 `PgpMime` is the crate's `engine_e2e::LayerRecogniser`:
