@@ -447,6 +447,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-e2e"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "mail-parser",
+]
+
+[[package]]
 name = "engine-http"
 version = "0.1.0"
 dependencies = [
