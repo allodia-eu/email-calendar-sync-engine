@@ -337,6 +337,13 @@ impl ContactsProvider for JmapProvider {
             .await
             .map_err(JmapError::after_write)?;
         check_set_error(&result, "notUpdated", base.id.as_str())?;
+        if result
+            .get("updated")
+            .and_then(|updated| updated.get(base.id.as_str()))
+            .is_none()
+        {
+            return Err(JmapError::unanswered(base.id.as_str(), "updated", "notUpdated").into());
+        }
         Ok(ContactWriteReceipt::new(base.id.clone()))
     }
 
@@ -351,12 +358,23 @@ impl ContactsProvider for JmapProvider {
             )
             .await
             .map_err(JmapError::after_write)?;
-        if let Some(refusal) = set_refusal(&result, "notDestroyed", base.id.as_str())
-            && set_error_type(refusal) != "notFound"
-        {
+        if let Some(refusal) = set_refusal(&result, "notDestroyed", base.id.as_str()) {
+            // Already gone is the end state we asked for.
+            if set_error_type(refusal) == "notFound" {
+                return Ok(());
+            }
             return Err(JmapError::refused(base.id.as_str(), refusal)
                 .after_write()
                 .into());
+        }
+        let destroyed = result
+            .get("destroyed")
+            .and_then(Value::as_array)
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(base.id.as_str())));
+        if !destroyed {
+            return Err(
+                JmapError::unanswered(base.id.as_str(), "destroyed", "notDestroyed").into(),
+            );
         }
         Ok(())
     }

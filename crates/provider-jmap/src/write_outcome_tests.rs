@@ -271,3 +271,107 @@ fn an_unconfirmed_set_is_never_retried_and_says_why() {
         JmapError::Unconfirmed(_)
     ));
 }
+
+fn stored_card() -> ContactCard {
+    ContactCard::new(
+        ContactId::try_from("card-1").unwrap(),
+        Memberships::of_one(AddressBookId::try_from("book-1").unwrap()),
+    )
+}
+
+fn renamed() -> engine_core::contact::ContactPatch {
+    let mut patch = engine_core::contact::ContactPatch::default();
+    patch.fields.insert(
+        engine_core::contact::ContactField::Name,
+        engine_core::contact::FieldPatch::Set(json!({ "full": "Ada L." })),
+    );
+    patch
+}
+
+/// RFC 8620 §5.3 has the server account for every id it was asked to change, in the map
+/// that says it was or the one that says why not. An answer naming it in neither does not
+/// say, so it is never a success.
+#[tokio::test]
+async fn a_contact_change_the_answer_never_names_is_unconfirmed() {
+    for arguments in [
+        json!({}),
+        json!({ "updated": { "card-2": null } }),
+        json!({ "notUpdated": {} }),
+    ] {
+        let p = provider(vec![answer("ContactCard/set", &arguments)]);
+        let err = p
+            .patch_contact(&account(), &stored_card(), &renamed())
+            .await
+            .expect_err("not named");
+        assert!(err.requires_confirmation(), "{arguments}: {err}");
+    }
+    for arguments in [
+        json!({}),
+        json!({ "destroyed": ["card-2"] }),
+        json!({ "notDestroyed": {} }),
+    ] {
+        let p = provider(vec![answer("ContactCard/set", &arguments)]);
+        let err = p
+            .delete_contact(&account(), &stored_card())
+            .await
+            .expect_err("not named");
+        assert!(err.requires_confirmation(), "{arguments}: {err}");
+    }
+    // The answers that do say: done, already gone, refused.
+    let updated = answer("ContactCard/set", &json!({ "updated": { "card-1": null } }));
+    provider(vec![updated])
+        .patch_contact(&account(), &stored_card(), &renamed())
+        .await
+        .expect("updated");
+    let destroyed = answer("ContactCard/set", &json!({ "destroyed": ["card-1"] }));
+    provider(vec![destroyed])
+        .delete_contact(&account(), &stored_card())
+        .await
+        .expect("destroyed");
+    let refused = answer(
+        "ContactCard/set",
+        &json!({ "notUpdated": { "card-1": { "type": "forbidden" } } }),
+    );
+    let err = provider(vec![refused])
+        .patch_contact(&account(), &stored_card(), &renamed())
+        .await
+        .expect_err("refused");
+    assert!(!err.requires_confirmation(), "{err}");
+}
+
+#[tokio::test]
+async fn an_event_change_the_answer_never_names_is_unconfirmed() {
+    use engine_provider::{EventDeletion, EventEdit, EventPatch, PatchTarget};
+
+    let set_response = |arguments: &serde_json::Value| answer("CalendarEvent/set", arguments);
+    let edit = EventEdit::new;
+    let stamp = || UtcDateTime::new(2026, 7, 14, 10, 0, 0).unwrap();
+    let base = engine_core::calendar::Event::new(
+        engine_core::ids::EventId::try_from("l").unwrap(),
+        Uid::new("evt-1@test.local").unwrap(),
+        Memberships::of_one(CalendarId::try_from("b").unwrap()),
+        draft().start,
+    );
+    for arguments in [json!({}), json!({ "updated": { "other": null } })] {
+        let err = provider(vec![set_response(&arguments)])
+            .patch_event(
+                &account(),
+                &base,
+                &edit(
+                    &base,
+                    PatchTarget::Series,
+                    EventPatch::new(stamp()).summary("Renamed"),
+                ),
+            )
+            .await
+            .expect_err("not named");
+        assert!(err.requires_confirmation(), "{arguments}: {err}");
+    }
+    for arguments in [json!({}), json!({ "destroyed": ["other"] })] {
+        let err = provider(vec![set_response(&arguments)])
+            .delete_event(&account(), None, &EventDeletion::of(&base))
+            .await
+            .expect_err("not named");
+        assert!(err.requires_confirmation(), "{arguments}: {err}");
+    }
+}
