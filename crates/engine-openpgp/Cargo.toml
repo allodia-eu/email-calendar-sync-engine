@@ -1,0 +1,20 @@
+[package]
+name = "engine-openpgp"
+description = "OpenPGP (RFC 9580) and PGP/MIME (RFC 3156) for the PIM sync engine: the mechanism behind engine-e2e, with certificate semantics and policy on top of rPGP. Pure: no I/O, no async; secret keys are handed in per call and never stored."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-e2e = { workspace = true }
+pgp = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
