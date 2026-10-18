@@ -38,6 +38,10 @@ writing, covered:
   and the v6 Direct Key requirement (§5.2.3.10), the primary User ID (§5.2.3.27), revocation
   reasons and their reach (§5.2.3.31), hashed-only subpackets (§13.13), and the RSA and DSA
   refusals (§12.4, §12.5).
+- RFC 9580 message-signature rules: malformed and unknown signatures (§5.2.5), unknown critical
+  subpackets (§5.2.3.7), the hashed creation time (§5.2.3.11), issuer fingerprint versions
+  (§5.2.3.35), Intended Recipient Fingerprints (§5.2.3.36), text canonicalisation (§5.2.4), the
+  check octets (§5.2.3.6), and weak hashes (§9.5).
 
 The certificate tests draw on three sources, so that no rule is checked only against our own
 reading of it: RFC 9580's Appendix A vectors; certificates GnuPG 2.4 made
