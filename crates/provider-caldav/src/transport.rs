@@ -290,7 +290,14 @@ impl DavClient {
     /// the `Location`/`ETag` headers — and recording the negotiated HTTP and TLS
     /// versions on the way through. The one funnel every read and write response passes,
     /// so no path can forget to observe them.
-    async fn collect(&self, response: engine_http::Sent) -> Result<HttpResponse, CalDavError> {
+    ///
+    /// On a `write` the status is the server's whole answer, so a body lost after it leaves
+    /// the reply as the status says rather than failing it.
+    async fn collect(
+        &self,
+        response: engine_http::Sent,
+        write: bool,
+    ) -> Result<HttpResponse, CalDavError> {
         self.connection.record(&response);
         let status = response.status().as_u16();
         let header = |name: reqwest::header::HeaderName| {
@@ -306,7 +313,11 @@ impl DavClient {
         // Read before the body consumes the reply: this is the funnel's own note of what
         // the server said about when, and it is the last place it exists.
         let retry_after = response.stated_wait();
-        let body = response.text().await?;
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(_) if write => String::new(),
+            Err(err) => return Err(err.into()),
+        };
         Ok(HttpResponse {
             status,
             body,
@@ -409,13 +420,13 @@ impl DavExecutor for DavClient {
             )
             .body(body);
         let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
-        self.collect(response).await
+        self.collect(response, false).await
     }
 
     async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
         let request = self.request(DavMethod::Options, href)?;
         let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
-        self.collect(response).await
+        self.collect(response, false).await
     }
 
     async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
@@ -452,8 +463,10 @@ impl DavExecutor for DavClient {
         // server's to send, and the precondition the write carries is what keeps a replay
         // from sending it twice (`docs/agent-guidance/deadlines.md`).
         let request = builder.body(request.body);
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
-        self.collect(response).await
+        let response = send_retrying(request, &self.retry, Exchange::Ordinary)
+            .await
+            .map_err(|err| CalDavError::from(err).after_write())?;
+        self.collect(response, true).await
     }
 }
 

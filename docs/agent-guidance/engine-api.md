@@ -364,7 +364,13 @@ facade"*).
   there; the facade just calls it.
 - **Errors wrap, never restring.** `ApiError::Store`/`Sync` carry the underlying
   engine error unchanged so its `source()` chain (provider failure class, store
-  backend detail) stays inspectable. The one deliberate exception is `ScopeHeld`,
+  backend detail) stays inspectable. A host asks a failed write one question,
+  `ApiError::may_have_applied()`: `true` for a `ProviderError` that
+  `requires_confirmation` (the outcome is unknown) and for `SyncError::Unrecorded` (applied,
+  not recorded), `false` for every other failure, which means the write was not applied
+  (`providers.md`). For a calendar or contact write and a send it is the same answer on every
+  provider, so a host never asks which one it was. Mail and folder edits do not classify a
+  lost answer, so for them `false` does not mean "not applied". The one deliberate exception is `ScopeHeld`,
   which `map_sync_error` classifies as `ApiError::Busy` (a retryable race, not a
   failure) — classification, not restringing. Add similar classifications there if
   another error class deserves a distinct host signal.

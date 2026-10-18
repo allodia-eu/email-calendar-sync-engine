@@ -175,7 +175,9 @@ pub use scheduling::InboundScheduling;
 /// engine error unchanged, so the original `source()` chain (provider failure
 /// class, store backend detail) stays inspectable. [`Busy`](ApiError::Busy) is
 /// split out from a sync failure so a host can tell a benign scope-contention race
-/// — safe to retry — from a real error.
+/// — safe to retry — from a real error. A failed write answers
+/// [`may_have_applied`](ApiError::may_have_applied): whether to tell the user it was not
+/// saved, or that it was not confirmed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ApiError {
@@ -215,6 +217,36 @@ impl ApiError {
             Self::Sync(SyncError::Provider(err))
                 if err.class() == engine_core::error::FailureClass::Conflict
         )
+    }
+
+    /// Whether a write that failed **may have been applied** all the same.
+    ///
+    /// `true` where the request may have reached the server and no answer of the server's
+    /// own came back: the reply was lost or never came, a gateway answered for a server that
+    /// gave none, or the answer could not be read. Also `true` where the server applied the
+    /// write and only recording that locally failed. `false` means it was not applied: the
+    /// server refused it, the request never reached the server, or the call failed before
+    /// sending anything.
+    ///
+    /// The same answer on every provider for a calendar or contact write and for a send, so a
+    /// host can say "not confirmed" rather than "not saved" without asking which provider it
+    /// was. Do not repeat the write to find out: a create would be made twice. The next sync
+    /// shows what the server holds.
+    ///
+    /// **Mail and folder edits are not covered.** Their adapters do not classify a lost
+    /// answer, so a failed mark-read, move, delete or folder change answers `false` whether or
+    /// not the server applied it; the next sync reconciles it.
+    ///
+    /// The provider half of this is
+    /// [`ProviderError::requires_confirmation`](engine_provider::ProviderError::requires_confirmation),
+    /// reachable through [`source`](std::error::Error::source) from this error.
+    #[must_use]
+    pub fn may_have_applied(&self) -> bool {
+        match self {
+            Self::Sync(SyncError::Provider(err)) => err.requires_confirmation(),
+            Self::Sync(SyncError::Unrecorded(_)) => true,
+            _ => false,
+        }
     }
 
     /// Whether this call **never ran** because the runtime it was queued on is shutting
@@ -306,6 +338,33 @@ mod error_tests {
         let transient = ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip")));
         assert!(!transient.is_conflict(), "retryable is not a conflict");
         assert!(!ApiError::Busy.is_conflict(), "Busy is not a conflict");
+    }
+
+    #[test]
+    fn a_write_that_may_have_been_applied_is_told_apart_from_one_that_was_not() {
+        let unconfirmed = ApiError::Sync(SyncError::Provider(ProviderError::needs_confirmation(
+            "the reply never came",
+        )));
+        assert!(unconfirmed.may_have_applied());
+        let unrecorded = ApiError::Sync(SyncError::Unrecorded(StoreError::StaleLease));
+        assert!(unrecorded.may_have_applied());
+        // Something written is not "nothing was attempted".
+        let shutdown = ApiError::Sync(SyncError::Unrecorded(StoreError::ShuttingDown));
+        assert!(!shutdown.is_shutting_down());
+
+        for not_applied in [
+            ApiError::Sync(SyncError::Provider(ProviderError::retryable(
+                "connect refused",
+            ))),
+            ApiError::Sync(SyncError::Provider(ProviderError::permanent("403"))),
+            ApiError::Sync(SyncError::Provider(ProviderError::conflict("412"))),
+            ApiError::Sync(SyncError::Store(StoreError::Backend("disk full".into()))),
+            ApiError::Sync(SyncError::Outbox("not claimable".into())),
+            ApiError::Busy,
+            ApiError::InvalidInput("bad".into()),
+        ] {
+            assert!(!not_applied.may_have_applied(), "{not_applied}");
+        }
     }
 
     #[test]

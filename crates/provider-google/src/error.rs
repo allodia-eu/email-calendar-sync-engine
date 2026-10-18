@@ -119,27 +119,55 @@ impl GoogleError {
     }
 
     /// What this error is as the failure of a submission: the class it always has, except
-    /// for an exchange that failed after the request may have reached the server. That one
-    /// may have sent the message, so it needs confirming and is never retried
+    /// where the request may have reached the server and no answer of its own came back
+    /// ([`leaves_outcome_unknown`](Self::leaves_outcome_unknown)). That one may have sent the
+    /// message, so it needs confirming and is never retried
     /// (`ProviderError::needs_confirmation`).
-    ///
-    /// Two more are the same case. A gateway's `502` or `504` says the server behind it gave
-    /// no answer, not that it refused; every other status is the server's own answer. And a
-    /// success whose body cannot be read is an answer nobody can read.
     pub(crate) fn into_submission_error(self) -> ProviderError {
-        match &self {
-            Self::Transport(err) if err.may_have_been_received() => {
-                let detail = format!("{self}; the message may have been sent");
-                ProviderError::needs_confirmation(detail).with_source(self)
-            }
-            Self::Status {
-                status: 502 | 504, ..
-            }
-            | Self::Json(_) => {
-                let detail = format!("{self}; the message may have been sent");
-                ProviderError::needs_confirmation(detail).with_source(self)
-            }
-            _ => self.into(),
+        self.unless_unknown("the message may have been sent")
+    }
+
+    /// What this error is as the failure of a calendar or contact write: the class it always
+    /// has, which means the write was not applied, except where it may have been
+    /// ([`leaves_outcome_unknown`](Self::leaves_outcome_unknown)).
+    pub(crate) fn into_write_error(self) -> ProviderError {
+        self.unless_unknown("the change may have been applied")
+    }
+
+    /// Whether this error, ending a request that changes something, leaves unknown whether it
+    /// did: the exchange failed after the request may have reached the server, a gateway's
+    /// `502` or `504` says the server behind it gave no answer rather than that it refused,
+    /// or a success arrived whose body cannot be read. Every other status is the server's own
+    /// answer, and a connect or handshake that never completed sent nothing.
+    fn leaves_outcome_unknown(&self) -> bool {
+        match self {
+            Self::Transport(err) => err.may_have_been_received(),
+            Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
+            Self::Json(_) => true,
+            Self::HistoryExpired(_) | Self::Protocol(_) => false,
+        }
+    }
+
+    /// The body of a write's success, where the adapter needs nothing from it beyond the
+    /// status: the body when it reads, and none when it is not JSON, because the status
+    /// already says the write was done. Every failure is as
+    /// [`into_write_error`](Self::into_write_error).
+    pub(crate) fn optional_answer(
+        result: Result<Option<Value>, Self>,
+    ) -> Result<Option<Value>, ProviderError> {
+        match result {
+            // The transport makes this only from a success's body.
+            Err(Self::Json(_)) => Ok(None),
+            other => other.map_err(Self::into_write_error),
+        }
+    }
+
+    fn unless_unknown(self, outcome: &str) -> ProviderError {
+        if self.leaves_outcome_unknown() {
+            let detail = format!("{self}; {outcome}");
+            ProviderError::needs_confirmation(detail).with_source(self)
+        } else {
+            self.into()
         }
     }
 
@@ -227,6 +255,14 @@ fn status_class(status: u16, reason: Option<&str>) -> FailureClass {
         500..=599 => FailureClass::Retryable,
         _ => FailureClass::Permanent,
     }
+}
+
+/// A calendar or contact write the server said it performed, in an answer that does not say
+/// what it performed: a success with no body, or one missing the identity the caller needs.
+/// The write may have been applied, so it needs confirming
+/// (`ProviderError::needs_confirmation`).
+pub(crate) fn unread_answer(detail: &str) -> ProviderError {
+    ProviderError::needs_confirmation(format!("{detail}; the change may have been applied"))
 }
 
 impl From<GoogleError> for ProviderError {

@@ -309,10 +309,13 @@ are split escape-aware so the writer and the parser agree.
   **idempotent HTTP methods** (RFC 7231 §4.2.2), and the precondition makes a retry
   self-correcting: a retried create `412`s if the first landed, a retried patch `412`s once
   the ETag moved, and a retried delete sees the resource already gone. So a lost-response
-  retry is **safe** — there is no ambiguous `NeedsConfirmation` case as there is for SMTP.
-  A reply that never comes within the `reply` bound is the same case and is retried under
-  the same precondition, a write whose server schedules iTIP from it included
-  (`deadlines.md`).
+  retry would be **safe**, but nothing makes one: a write whose request may have reached the
+  server and whose reply was lost, or never came within the `reply` bound, may have been
+  applied, and is `needs_confirmation` (`CalDavError::Unconfirmed`, `providers.md`), as is a
+  gateway's `502`/`504`. The classification is in `DavClient::send_write`, the one place a
+  write meets the network, and in `into_write_etag`. A write's status is its whole answer:
+  the new `ETag` rides in a header, so a body lost after the status leaves the reply as the
+  status says.
 - **`DELETE` is idempotent: already-gone is success.** A `DELETE` whose resource is
   **already absent** (`404`/`410`) resolves as `Ok` (RFC 7231 §4.3.5), not a `Permanent`
   error — so re-running a delete whose response was lost (the first one landed) succeeds

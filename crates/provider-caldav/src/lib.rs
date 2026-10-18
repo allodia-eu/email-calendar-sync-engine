@@ -73,6 +73,8 @@ mod carddav_unit_tests;
 mod carddav_write_tests;
 #[cfg(test)]
 mod vcard_tests;
+#[cfg(test)]
+mod write_outcome_tests;
 
 pub use carddav::CardDavProvider;
 pub use carddav_config::CardDavConfig;

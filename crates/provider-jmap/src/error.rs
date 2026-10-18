@@ -88,6 +88,12 @@ pub enum JmapError {
     /// attempt is a complete answer to store. Carries the type name; the next pass tries again.
     #[error("{0}/query kept changing while it was paged")]
     Unsettled(String),
+
+    /// A `/set` that may have been applied: its request may have reached the server and no
+    /// answer of the server's own about the object came back. Becomes
+    /// [`ProviderError::needs_confirmation`].
+    #[error("{0}; the change may have been applied")]
+    Unconfirmed(Box<JmapError>),
 }
 
 impl JmapError {
@@ -163,21 +169,17 @@ impl JmapError {
     /// no answer, not that it refused; every other status is the server's own answer. And a
     /// `200` whose body cannot be read is an answer nobody can read.
     pub(crate) fn into_submission_error(self) -> ProviderError {
-        match &self {
-            Self::Transport(err) if err.may_have_been_received() => {
-                let detail = format!("{self}; the message may have been sent");
-                ProviderError::needs_confirmation(detail).with_source(self)
-            }
-            Self::Status {
-                status: 502 | 504, ..
-            }
-            | Self::Json(_)
-            | Self::Protocol(_)
-            | Self::MissingResponse(_) => {
-                let detail = format!("{self}; the message may have been sent");
-                ProviderError::needs_confirmation(detail).with_source(self)
-            }
-            _ => self.into(),
+        let lost = match &self {
+            Self::Transport(err) => err.may_have_been_received(),
+            Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
+            Self::Json(_) | Self::Protocol(_) | Self::MissingResponse(_) => true,
+            _ => false,
+        };
+        if lost {
+            let detail = format!("{self}; the message may have been sent");
+            ProviderError::needs_confirmation(detail).with_source(self)
+        } else {
+            self.into()
         }
     }
 
@@ -194,6 +196,42 @@ impl JmapError {
         }
     }
 
+    /// What this error means as the end of a `/set` that changes a calendar or a contact:
+    /// [`Unconfirmed`](Self::Unconfirmed) where the change may have been applied, and itself
+    /// where it was not.
+    ///
+    /// It may have been when the request may have reached the server and the exchange then
+    /// failed; when a gateway answered `502` or `504`, which says the server behind it gave
+    /// no answer; when the answer cannot be read, or carries no response to the call; and on
+    /// the method error `serverPartialFail`, which RFC 8620 §3.6.2 defines as some of the
+    /// changes having been made (it is not a `SetError` type). A refusal the answer states (any
+    /// other method error or `SetError`, any other status) is the server's own, and the change
+    /// was not made.
+    pub(crate) fn after_write(self) -> Self {
+        let unknown = match &self {
+            Self::Transport(err) => err.may_have_been_received(),
+            Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
+            Self::Json(_) | Self::Protocol(_) | Self::MissingResponse(_) => true,
+            Self::Method { error_type, .. } => error_type == "serverPartialFail",
+            Self::Set { .. } | Self::Session(_) | Self::Unsettled(_) | Self::Unconfirmed(_) => {
+                false
+            }
+        };
+        if unknown {
+            Self::Unconfirmed(Box::new(self))
+        } else {
+            self
+        }
+    }
+
+    /// A `/set` answer that names `target` in neither of the maps that would say what became
+    /// of it (RFC 8620 §5.3 requires one of them), so the change may or may not have been made.
+    pub(crate) fn unanswered(target: &str, done: &str, refused: &str) -> Self {
+        Self::Unconfirmed(Box::new(Self::protocol(format!(
+            "the answer named '{target}' in neither {done} nor {refused}"
+        ))))
+    }
+
     /// The engine-neutral class this protocol error maps to.
     #[must_use]
     pub fn failure_class(&self) -> FailureClass {
@@ -208,6 +246,8 @@ impl JmapError {
             Self::Method { error_type, .. } => method_class(error_type),
             Self::Set { error_type, .. } => set_error_class(error_type),
             Self::Unsettled(_) => FailureClass::Retryable,
+            // Never retried as it stands: the first attempt may have landed.
+            Self::Unconfirmed(_) => FailureClass::InvalidState,
         }
     }
 }
@@ -329,6 +369,9 @@ impl From<reqwest::Error> for JmapError {
 
 impl From<JmapError> for ProviderError {
     fn from(err: JmapError) -> Self {
+        if matches!(err, JmapError::Unconfirmed(_)) {
+            return ProviderError::needs_confirmation(err.to_string()).with_source(err);
+        }
         let class = err.failure_class();
         let detail = err.to_string();
         // A rate limit is the one class that carries *when*: the outbox obeys a provider's

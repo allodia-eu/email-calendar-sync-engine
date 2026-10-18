@@ -129,7 +129,7 @@ async fn an_all_day_create_states_the_day_not_a_midnight_instant() {
 }
 
 #[tokio::test]
-async fn a_create_the_server_neither_confirmed_nor_rejected_is_a_conflict() {
+async fn a_create_the_server_neither_confirmed_nor_rejected_is_unconfirmed() {
     let p = provider(vec![set_response(&json!({ "created": {} }))]);
     let draft = EventDraft::new(
         calendar(),
@@ -139,8 +139,10 @@ async fn a_create_the_server_neither_confirmed_nor_rejected_is_a_conflict() {
         zoned("2026-08-01T09:30:00"),
         stamp(),
     );
+    // The answer says nothing about the object, so it may exist: refetching and creating it
+    // again would make two.
     let err = p.create_event(&account(), &draft).await.unwrap_err();
-    assert_eq!(err.class(), FailureClass::Conflict);
+    assert!(err.requires_confirmation(), "{err}");
 }
 
 /// `invalidProperties` names the properties at fault (RFC 8620 §5.3), and that list is the

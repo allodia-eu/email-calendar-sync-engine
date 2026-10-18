@@ -463,3 +463,6 @@ mod tests;
 #[cfg(test)]
 #[path = "redirect_tests.rs"]
 mod redirect_tests;
+
+#[cfg(test)]
+mod write_outcome_tests;

@@ -5,12 +5,12 @@ use core::time::Duration;
 use engine_core::{
     contact::{ContactCard, ContactDraft, ContactPatch},
     ids::{AccountId, ContactId},
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, ResourceKey},
 };
 use engine_provider::{ContactWriteReceipt, ContactsProvider};
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
-use super::{enqueue_and_claim, record_failure};
+use super::{enqueue_and_claim, write_applied, write_failed};
 use crate::SyncError;
 
 /// Successful contact write identity.
@@ -128,20 +128,10 @@ where
     .await?;
     match provider.delete_contact(account, base).await {
         Ok(()) => {
-            store
-                .mark_pending_op(
-                    &leased.lease,
-                    PendingOutcome::Succeeded {
-                        provider_key: base.id.key().clone(),
-                    },
-                )
-                .await?;
+            write_applied(store, &leased, base.id.key().clone()).await?;
             Ok(leased.id)
         }
-        Err(error) => {
-            record_failure(store, &leased, &error).await?;
-            Err(SyncError::Provider(error))
-        }
+        Err(error) => Err(write_failed(store, &leased, error).await),
     }
 }
 
@@ -152,23 +142,13 @@ async fn resolve<S: Store>(
 ) -> Result<ContactWriteOutcome, SyncError> {
     match result {
         Ok(receipt) => {
-            store
-                .mark_pending_op(
-                    &leased.lease,
-                    PendingOutcome::Succeeded {
-                        provider_key: receipt.contact.key().clone(),
-                    },
-                )
-                .await?;
+            write_applied(store, &leased, receipt.contact.key().clone()).await?;
             Ok(ContactWriteOutcome {
                 op: leased.id,
                 contact: receipt.contact,
             })
         }
-        Err(error) => {
-            record_failure(store, &leased, &error).await?;
-            Err(SyncError::Provider(error))
-        }
+        Err(error) => Err(write_failed(store, &leased, error).await),
     }
 }
 

@@ -427,9 +427,10 @@ async fn a_set_error_on_an_update_classifies() {
 }
 
 #[tokio::test]
-async fn a_silently_dropped_target_is_a_conflict_never_a_false_success() {
+async fn a_silently_dropped_target_is_unconfirmed_never_a_false_success() {
     // The server acknowledged neither our id nor a failure for it. Reporting success would
-    // tell the user their edit saved when it did not.
+    // tell the user their edit saved when it may not have; reporting a refusal would tell
+    // them it did not when it may have.
     let p = provider(vec![set_response(
         &json!({ "updated": { "other": null }, "notUpdated": {} }),
     )]);
@@ -446,5 +447,5 @@ async fn a_silently_dropped_target_is_a_conflict_never_a_false_success() {
         )
         .await
         .unwrap_err();
-    assert_eq!(err.class(), FailureClass::Conflict);
+    assert!(err.requires_confirmation(), "{err}");
 }
