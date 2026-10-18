@@ -51,8 +51,8 @@ use crate::{
 /// Returns [`JmapError::Protocol`] if the event carries no preserved JSCalendar (never
 /// synced from this transport) or has no participant at that address — you cannot answer an
 /// invitation you are not on. Returns [`JmapError`] on a transport/method failure, or
-/// [`JmapError::Set`] when the server rejects the update (or silently drops it — a conflict,
-/// never a false success).
+/// [`JmapError::Set`] when the server rejects the update. An answer naming the event in
+/// neither `updated` nor `notUpdated` is [`JmapError::Unconfirmed`], never a false success.
 pub(crate) async fn rsvp_event(
     executor: &dyn Executor,
     calendar_account: &str,

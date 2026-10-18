@@ -228,10 +228,14 @@ impl ApiError {
     /// server refused it, the request never reached the server, or the call failed before
     /// sending anything.
     ///
-    /// The same answer for every provider and every write, a send included, so a host can
-    /// say "not confirmed" rather than "not saved" without asking which provider it was. Do
-    /// not repeat the write to find out: a create would be made twice. The next sync shows
-    /// what the server holds.
+    /// The same answer on every provider for a calendar or contact write and for a send, so a
+    /// host can say "not confirmed" rather than "not saved" without asking which provider it
+    /// was. Do not repeat the write to find out: a create would be made twice. The next sync
+    /// shows what the server holds.
+    ///
+    /// **Mail and folder edits are not covered.** Their adapters do not classify a lost
+    /// answer, so a failed mark-read, move, delete or folder change answers `false` whether or
+    /// not the server applied it; the next sync reconciles it.
     ///
     /// The provider half of this is
     /// [`ProviderError::requires_confirmation`](engine_provider::ProviderError::requires_confirmation),

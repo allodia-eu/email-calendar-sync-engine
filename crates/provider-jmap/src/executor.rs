@@ -70,10 +70,7 @@ pub(crate) async fn write(
         .execute(request)
         .await
         .map_err(JmapError::after_write)?;
-    response
-        .result(call)
-        .cloned()
-        .map_err(JmapError::after_write)
+    response.into_result(call).map_err(JmapError::after_write)
 }
 
 #[async_trait]

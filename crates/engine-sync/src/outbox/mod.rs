@@ -199,18 +199,18 @@ async fn write_applied<S: Store>(
         .map_err(SyncError::Unrecorded)
 }
 
-/// Records a calendar or contact write's failure, and returns what the caller is told.
+/// Records a calendar or contact write's failure, and returns what the caller is told: the
+/// provider's failure, whether or not recording it succeeded.
 ///
-/// The provider's failure, unless recording it failed. Even then a write whose outcome is
-/// unknown is returned as such: a store error in its place would tell the caller nothing was
-/// applied. The op is left to recovery, which finds it as an interrupted attempt.
+/// A store error in its place would lose what the caller acts on (a conflict to refetch
+/// after, an instant to wait for, credentials to renew), and for a write whose outcome is
+/// unknown it would say nothing was applied. A failed record leaves the op to recovery, which
+/// finds it as an interrupted attempt.
 async fn write_failed<S: Store>(
     store: &S,
     leased: &LeasedPendingOp,
     err: engine_provider::ProviderError,
 ) -> SyncError {
-    match record_failure(store, leased, &err).await {
-        Err(recording) if !err.requires_confirmation() => recording,
-        _ => SyncError::Provider(err),
-    }
+    let _ = record_failure(store, leased, &err).await;
+    SyncError::Provider(err)
 }

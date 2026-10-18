@@ -179,3 +179,110 @@ async fn a_delete_the_server_refused_or_already_made_is_answered_as_such() {
     let err = delete(gateway.url()).await.expect_err("no answer");
     assert!(err.requires_confirmation(), "{err}");
 }
+
+fn stored_event() -> engine_core::calendar::Event {
+    let mut event = engine_core::calendar::Event::new(
+        EventId::try_from("e1").unwrap(),
+        Uid::new("evt-1@test.local").unwrap(),
+        Memberships::of_one(CalendarId::try_from("cal1").unwrap()),
+        draft().start,
+    );
+    event.revisions =
+        engine_core::version::RevisionTokens::from_etag(engine_core::version::ETag::new("\"v1\""));
+    event
+}
+
+/// What each write that changes an existing object makes of a `200` whose body is not JSON.
+async fn changes_answered(base: &str) -> Vec<(&'static str, Result<(), ProviderError>)> {
+    use engine_provider::{
+        EventEdit, EventPatch, EventRsvp, Occurrence, PatchTarget, RsvpResponse,
+    };
+
+    let event = stored_event();
+    let stamp = UtcDateTime::new(2026, 7, 14, 10, 0, 0).unwrap();
+    let edit = |target| EventEdit::new(&event, target, EventPatch::new(stamp).summary("Renamed"));
+    let occurrence = Occurrence::starting(draft().start);
+    let rsvp = EventRsvp::to(&event, "me@test.local", RsvpResponse::Accepted);
+    let mut card = ContactCard::new(
+        ContactId::try_from("c1").unwrap(),
+        Memberships::of_one(AddressBookId::try_from("graph-personal-root").unwrap()),
+    );
+    card.revisions = event.revisions.clone();
+    let mut patch = engine_core::contact::ContactPatch::default();
+    patch.fields.insert(
+        engine_core::contact::ContactField::Name,
+        engine_core::contact::FieldPatch::Set(serde_json::json!({ "full": "Ada L." })),
+    );
+    let cal = client(base);
+    vec![
+        (
+            "series patch",
+            crate::cal_write::patch_event(&cal, &event, &edit(PatchTarget::Series))
+                .await
+                .map(drop),
+        ),
+        (
+            "occurrence patch",
+            crate::cal_write::patch_event(&cal, &event, &edit(PatchTarget::Instance(occurrence)))
+                .await
+                .map(drop),
+        ),
+        (
+            "rsvp",
+            crate::cal_write::rsvp_event(&cal, &event, &rsvp)
+                .await
+                .map(drop),
+        ),
+        (
+            "contact patch",
+            GraphContactProvider::personal(client(base))
+                .patch_contact(&account(), &card, &patch)
+                .await
+                .map(drop),
+        ),
+    ]
+}
+
+/// A write's status is its answer wherever the adapter needs nothing from the body, so a body
+/// that is not JSON changes nothing there; where the receipt is read from it, it is an answer
+/// nobody can read.
+#[tokio::test]
+async fn an_unreadable_body_matters_only_where_the_answer_is_needed() {
+    for (status, needed) in [
+        ("series patch", true),
+        ("occurrence patch", false),
+        ("rsvp", false),
+        ("contact patch", false),
+    ] {
+        let server =
+            SilentServer::start(vec![reply("200 OK", "application/json", "not json"); 4]).await;
+        let (_, outcome) = changes_answered(server.url())
+            .await
+            .into_iter()
+            .find(|(what, _)| *what == status)
+            .expect("ran");
+        match outcome {
+            Ok(()) => assert!(!needed, "{status}: read as done"),
+            Err(err) => {
+                assert!(needed, "{status}: {err}");
+                assert!(err.requires_confirmation(), "{status}: {err}");
+            }
+        }
+    }
+}
+
+/// An identity the server answered with but that cannot be read keeps why, as the source.
+#[tokio::test]
+async fn an_unreadable_identity_keeps_its_parse_error() {
+    let server = SilentServer::start(vec![reply(
+        "201 Created",
+        "application/json",
+        r#"{"id":""}"#,
+    )])
+    .await;
+    let err = create_contact(server.url())
+        .await
+        .expect_err("no usable id");
+    assert!(err.requires_confirmation(), "{err}");
+    assert!(std::error::Error::source(&err).is_some(), "{err}");
+}

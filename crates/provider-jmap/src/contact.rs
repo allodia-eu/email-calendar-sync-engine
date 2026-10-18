@@ -23,8 +23,8 @@ use serde_json::{Value, json};
 use crate::{
     JmapProvider, contact_fields, contact_write,
     error::{JmapError, set_error_type, set_refusal},
-    fetch, fetch_scope,
-    request::capability,
+    executor, fetch, fetch_scope,
+    request::{Request, capability},
 };
 
 const CREATION_ID: &str = "new";
@@ -295,15 +295,11 @@ impl ContactsProvider for JmapProvider {
             json!({ draft.address_book.as_str(): true }),
         );
         let result = self
-            .contact_call(
-                "ContactCard/set",
-                json!({
-                    "accountId": self.contact_account()?,
-                    "create": { CREATION_ID: object }
-                }),
-            )
-            .await
-            .map_err(JmapError::after_write)?;
+            .contact_set(json!({
+                "accountId": self.contact_account()?,
+                "create": { CREATION_ID: object }
+            }))
+            .await?;
         check_set_error(&result, "notCreated", CREATION_ID)?;
         let id = result
             .get("created")
@@ -327,15 +323,11 @@ impl ContactsProvider for JmapProvider {
             return Ok(ContactWriteReceipt::new(base.id.clone()));
         }
         let result = self
-            .contact_call(
-                "ContactCard/set",
-                json!({
-                    "accountId": self.contact_account()?,
-                    "update": { base.id.as_str(): object }
-                }),
-            )
-            .await
-            .map_err(JmapError::after_write)?;
+            .contact_set(json!({
+                "accountId": self.contact_account()?,
+                "update": { base.id.as_str(): object }
+            }))
+            .await?;
         check_set_error(&result, "notUpdated", base.id.as_str())?;
         if result
             .get("updated")
@@ -349,15 +341,11 @@ impl ContactsProvider for JmapProvider {
 
     async fn delete_contact(&self, _account: &AccountId, base: &ContactCard) -> ProviderResult<()> {
         let result = self
-            .contact_call(
-                "ContactCard/set",
-                json!({
-                    "accountId": self.contact_account()?,
-                    "destroy": [base.id.as_str()]
-                }),
-            )
-            .await
-            .map_err(JmapError::after_write)?;
+            .contact_set(json!({
+                "accountId": self.contact_account()?,
+                "destroy": [base.id.as_str()]
+            }))
+            .await?;
         if let Some(refusal) = set_refusal(&result, "notDestroyed", base.id.as_str()) {
             // Already gone is the end state we asked for.
             if set_error_type(refusal) == "notFound" {
@@ -440,6 +428,16 @@ fn supported_fields() -> ContactFieldSet {
         ContactField::Directories,
         ContactField::Keywords,
     ])
+}
+
+impl JmapProvider {
+    /// One `ContactCard/set` that changes a card, its failures classified as a write's
+    /// (`executor::write`).
+    async fn contact_set(&self, arguments: Value) -> Result<Value, JmapError> {
+        let mut request = Request::new([capability::CORE, capability::CONTACTS]);
+        let call = request.invoke("ContactCard/set", arguments);
+        executor::write(self.executor.as_ref(), &request, &call).await
+    }
 }
 
 fn check_set_error(result: &Value, map: &str, target: &str) -> Result<(), JmapError> {

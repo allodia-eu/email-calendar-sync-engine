@@ -93,21 +93,24 @@ pub(crate) async fn patch_event(
         }
     };
     let body = build_patch(base, &edit.patch)?;
-    let updated = client
+    let answer = client
         .patch(
             &client.url(&format!("{}/{id}?sendUpdates=all", events_path(calendar))),
             "application/json",
             guard,
             serde_json::to_vec(&body).map_err(GoogleError::from)?,
         )
-        .await
-        .map_err(GoogleError::into_write_error)?;
+        .await;
     // An instance patch answers with the *occurrence*, whose id is not the series'. The
     // receipt names what the caller asked about — the event they hold — so the echo is read
-    // only for a series edit.
-    match (updated, &edit.target) {
-        (Some(event), PatchTarget::Series) => receipt(&event, base.uid.clone()),
-        _ => Ok(EventWriteReceipt::new(
+    // only for a series edit, where it carries the new revision.
+    let updated = match &edit.target {
+        PatchTarget::Series => answer.map_err(GoogleError::into_write_error)?,
+        PatchTarget::Instance(_) => GoogleError::optional_answer(answer).map(|_| None)?,
+    };
+    match updated {
+        Some(event) => receipt(&event, base.uid.clone()),
+        None => Ok(EventWriteReceipt::new(
             base.id.clone(),
             base.uid.clone(),
             RevisionTokens::none(),
@@ -162,9 +165,8 @@ pub(crate) async fn rsvp_event(
                 .map(ETag::as_str),
             serde_json::to_vec(&build_rsvp(rsvp)).map_err(GoogleError::from)?,
         )
-        .await
-        .map_err(GoogleError::into_write_error)?;
-    match updated {
+        .await;
+    match GoogleError::optional_answer(updated)? {
         Some(event) => receipt(&event, base.uid.clone()),
         None => Ok(EventWriteReceipt::new(
             base.id.clone(),
@@ -442,8 +444,8 @@ fn receipt(
     fallback_uid: engine_core::ids::Uid,
 ) -> ProviderResult<EventWriteReceipt> {
     let id = opt_str(event, "id").ok_or_else(|| unread_answer("write response had no event id"))?;
-    let event_id =
-        EventId::try_from(id).map_err(|e| unread_answer(&format!("bad created event id: {e}")))?;
+    let event_id = EventId::try_from(id)
+        .map_err(|e| unread_answer(&format!("bad created event id: {e}")).with_source(e))?;
     let uid = opt_str(event, "iCalUID")
         .and_then(|u| engine_core::ids::Uid::new(u).ok())
         .unwrap_or(fallback_uid);

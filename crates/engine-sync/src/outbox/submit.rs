@@ -126,6 +126,14 @@ where
     match store.mark_pending_op(&leased.lease, outcome).await {
         Ok(()) => {}
         Err(StoreError::StaleLease) => return Ok(Attempt::Superseded(sent)),
+        // Delivered, or it may have been: a store error would read as "not sent".
+        Err(err)
+            if sent
+                .as_ref()
+                .map_or_else(ProviderError::requires_confirmation, |_| true) =>
+        {
+            return Err(SyncError::Unrecorded(err));
+        }
         Err(err) => return Err(err.into()),
     }
     Ok(match sent {
@@ -144,8 +152,10 @@ where
 /// # Errors
 ///
 /// Returns [`SyncError::Provider`] if the send fails (after recording it),
-/// [`SyncError::Store`] on a store failure, or [`SyncError::Outbox`] if the draft
-/// cannot be encoded or the just-enqueued op is not claimable.
+/// [`SyncError::Unrecorded`] if the message was delivered, or may have been, and that could
+/// not be recorded, [`SyncError::Store`] on any other store failure, or
+/// [`SyncError::Outbox`] if the draft cannot be encoded or the just-enqueued op is not
+/// claimable.
 pub async fn submit_mail<P, S>(
     provider: &P,
     store: &S,

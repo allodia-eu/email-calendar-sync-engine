@@ -45,7 +45,8 @@ use crate::SyncError;
 /// # Errors
 ///
 /// Returns [`SyncError::Store`] if the queue cannot be read or an outcome cannot be
-/// recorded. A **provider** failure is not an error: it is recorded against its op and
+/// recorded, and [`SyncError::Unrecorded`] where that outcome is a send that was delivered
+/// or may have been. A **provider** failure is not an error: it is recorded against its op and
 /// reported in the [`DrainReport`], because one unreachable recipient must not stop the
 /// rest of the queue going out.
 pub async fn drain_outbox<P, S>(

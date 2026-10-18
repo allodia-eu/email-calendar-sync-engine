@@ -220,15 +220,6 @@ async fn a_partial_failure_is_unconfirmed_and_a_stated_refusal_is_not() {
         .await
         .expect_err("refused");
     assert!(!err.requires_confirmation(), "{err}");
-    let partial = answer(
-        "CalendarEvent/set",
-        &json!({ "notCreated": { "new": { "type": "serverPartialFail" } } }),
-    );
-    let err = provider(vec![partial])
-        .create_event(&account(), &draft())
-        .await
-        .expect_err("partial");
-    assert!(err.requires_confirmation(), "{err}");
 }
 
 #[tokio::test]

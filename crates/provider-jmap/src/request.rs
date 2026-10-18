@@ -41,6 +41,23 @@ pub(crate) struct Invocation {
 }
 
 impl Invocation {
+    /// The method error (RFC 8620 §3.6.2) this invocation is, if it is one.
+    fn answered(&self) -> Result<(), super::error::JmapError> {
+        if self.method != "error" {
+            return Ok(());
+        }
+        let error_type = self
+            .arguments
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned();
+        Err(super::error::JmapError::Method {
+            call_id: self.call_id.clone(),
+            error_type,
+        })
+    }
+
     fn to_json(&self) -> Value {
         json!([self.method, self.arguments, self.call_id])
     }
@@ -138,19 +155,21 @@ impl Response {
             .iter()
             .find(|inv| inv.call_id == call_id)
             .ok_or_else(|| super::error::JmapError::MissingResponse(call_id.to_owned()))?;
-        if invocation.method == "error" {
-            let error_type = invocation
-                .arguments
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_owned();
-            return Err(super::error::JmapError::Method {
-                call_id: call_id.to_owned(),
-                error_type,
-            });
-        }
+        invocation.answered()?;
         Ok(&invocation.arguments)
+    }
+
+    /// [`result`](Self::result), taking the arguments out of the response rather than
+    /// borrowing them.
+    pub(crate) fn into_result(mut self, call_id: &str) -> Result<Value, super::error::JmapError> {
+        let at = self
+            .responses
+            .iter()
+            .position(|inv| inv.call_id == call_id)
+            .ok_or_else(|| super::error::JmapError::MissingResponse(call_id.to_owned()))?;
+        let invocation = self.responses.swap_remove(at);
+        invocation.answered()?;
+        Ok(invocation.arguments)
     }
 }
 

@@ -117,7 +117,7 @@ impl CalDavError {
     pub(crate) fn after_write(self) -> Self {
         let unknown = match &self {
             Self::Transport(err) => err.may_have_been_received(),
-            Self::Status { status, .. } => matches!(status, 502 | 504),
+            Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
             Self::Xml(_) | Self::Ical(_) | Self::Protocol(_) | Self::Unconfirmed(_) => false,
         };
         if unknown {

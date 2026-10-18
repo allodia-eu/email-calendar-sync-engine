@@ -88,21 +88,24 @@ pub(crate) async fn patch_event(
         ),
     };
     let body = build_patch(base, &edit.patch)?;
-    let updated = client
+    let answer = client
         .patch(
             &client.url(&format!("/events/{id}")),
             "application/json",
             guard,
             serde_json::to_vec(&body).map_err(GraphError::from)?,
         )
-        .await
-        .map_err(GraphError::into_write_error)?;
+        .await;
     // Graph echoes the event it patched. On an instance that is the *occurrence*, whose id
-    // is not the series' — so the echo is read only for a series edit; the receipt always
-    // names the event the caller holds.
-    match (updated, &edit.target) {
-        (Some(event), PatchTarget::Series) => receipt(&event, base.uid.clone()),
-        _ => Ok(EventWriteReceipt::new(
+    // is not the series' — so the echo is read only for a series edit, where it carries the
+    // new revision; the receipt always names the event the caller holds.
+    let updated = match &edit.target {
+        PatchTarget::Series => answer.map_err(GraphError::into_write_error)?,
+        PatchTarget::Instance(_) => GraphError::optional_answer(answer).map(|_| None)?,
+    };
+    match updated {
+        Some(event) => receipt(&event, base.uid.clone()),
+        None => Ok(EventWriteReceipt::new(
             base.id.clone(),
             base.uid.clone(),
             RevisionTokens::none(),
@@ -135,7 +138,7 @@ pub(crate) async fn rsvp_event(
     base: &Event,
     rsvp: &EventRsvp,
 ) -> ProviderResult<EventWriteReceipt> {
-    client
+    let answer = client
         .post(
             &client.url(&format!(
                 "/events/{}/{}",
@@ -145,8 +148,8 @@ pub(crate) async fn rsvp_event(
             "application/json",
             serde_json::to_vec(&build_rsvp(rsvp)).map_err(GraphError::from)?,
         )
-        .await
-        .map_err(GraphError::into_write_error)?;
+        .await;
+    GraphError::optional_answer(answer)?;
     Ok(EventWriteReceipt::new(
         base.id.clone(),
         base.uid.clone(),
@@ -404,8 +407,8 @@ fn receipt(
     fallback_uid: engine_core::ids::Uid,
 ) -> ProviderResult<EventWriteReceipt> {
     let id = opt_str(event, "id").ok_or_else(|| unread_answer("write response had no event id"))?;
-    let event_id =
-        EventId::try_from(id).map_err(|e| unread_answer(&format!("bad created event id: {e}")))?;
+    let event_id = EventId::try_from(id)
+        .map_err(|e| unread_answer(&format!("bad created event id: {e}")).with_source(e))?;
     let uid = cross_system_uid(event)
         .and_then(|u| engine_core::ids::Uid::new(u).ok())
         .unwrap_or(fallback_uid);

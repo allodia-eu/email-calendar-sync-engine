@@ -93,8 +93,8 @@ const SCHEDULE: bool = true;
 /// # Errors
 ///
 /// Returns [`JmapError`] on a transport/method failure, or [`JmapError::Set`] when the
-/// server rejects the object with a `SetError` (or silently drops it — treated as a
-/// `notFound` conflict, never a false success).
+/// server rejects the object with a `SetError`. An answer that does not say what became of
+/// the object is [`JmapError::Unconfirmed`], never a false success.
 pub(crate) async fn create_event(
     executor: &dyn Executor,
     calendar_account: &str,

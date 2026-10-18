@@ -334,9 +334,9 @@ impl ContactsProvider for GoogleContactProvider {
             .get("resourceName")
             .and_then(Value::as_str)
             .ok_or_else(|| unread_answer("created person missing resourceName"))?;
-        Ok(ContactWriteReceipt::new(
-            contact_id(name).map_err(|error| unread_answer(&error.to_string()))?,
-        ))
+        Ok(ContactWriteReceipt::new(contact_id(name).map_err(
+            |error| unread_answer(&error.to_string()).with_source(error),
+        )?))
     }
 
     async fn patch_contact(
@@ -350,7 +350,8 @@ impl ContactsProvider for GoogleContactProvider {
         if fields.is_empty() {
             return Ok(ContactWriteReceipt::new(base.id.clone()));
         }
-        self.client
+        let answer = self
+            .client
             .patch(
                 &self.client.people_url(&format!(
                     "/v1/{}:updateContact?updatePersonFields={fields}&personFields={}",
@@ -364,8 +365,8 @@ impl ContactsProvider for GoogleContactProvider {
                     .map(engine_core::version::ETag::as_str),
                 contact_write::patch_body(base, patch)?,
             )
-            .await
-            .map_err(GoogleError::into_write_error)?;
+            .await;
+        GoogleError::optional_answer(answer)?;
         Ok(ContactWriteReceipt::new(base.id.clone()))
     }
 

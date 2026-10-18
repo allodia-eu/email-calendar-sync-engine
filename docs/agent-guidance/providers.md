@@ -230,7 +230,7 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
   knows which is true. Unknown means the request may have reached the server and no answer
   of the server's own came back: a transport failure where
   `SendError::may_have_been_received` is `true` (a reply that never came included), a
-  gateway's `502`/`504`, or a success whose answer the adapter needed and could not read.
+  gateway's `502`/`504` (`engine_http::gateway_without_answer`), or a success whose answer the adapter needed and could not read.
   Not unknown: a connect, handshake or request that never completed, and any other status,
   which is the server's own refusal (a `5xx` as much as a `4xx`). Each adapter classifies
   where the exchange happens, never earlier, so a validation or a read before the write
@@ -240,7 +240,7 @@ Run the first deterministic IMAP/SMTP/CalDAV tests against Stalwart. Add externa
   |---|---|---|
   | CalDAV, CardDAV | `DavClient::send_write`, `HttpResponse::into_write_etag` (`CalDavError::Unconfirmed`) | nothing: a write needs only its status and `ETag` header, so a lost body changes nothing |
   | JMAP | `executor::write`, `JmapError::after_write` (`JmapError::Unconfirmed`) | an answer that is not JSON or lacks the call; `serverPartialFail` (RFC 8620 §3.6.2: some of the changes were made); a `/set` answer naming the object in neither of its maps |
-  | Graph, Google | `into_write_error`, `unread_answer` | a success with no body, no id, or one that is not JSON, where the receipt needs it |
+  | Graph, Google | `into_write_error`, `unread_answer`, `optional_answer` | a create's success with no body, no id, or a body that is not JSON, and a series patch's echo that is not JSON; a contact patch, an occurrence patch and an RSVP need only their status |
 
   `serverFail` is not unknown: RFC 8620 §3.6.2 says it made no changes. The outbox settles
   such an op rather than retrying it (`store-and-sync.md`), and `ApiError::may_have_applied`

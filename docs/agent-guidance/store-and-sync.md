@@ -760,9 +760,11 @@ one event never race on either provider.
   twice. It is not `NeedsConfirmation`, which is the state a send waits in for the user; the
   caller has the answer in the error, and the next sync shows what the server holds.
 - **Recording the outcome never changes what the caller is told.** Where `mark_pending_op`
-  fails after the provider answered, an unknown outcome is still returned as the provider's
-  error, and an applied write is `SyncError::Unrecorded`, never `SyncError::Store`, which a
-  write returns only for a failure before anything was sent. The op is left to recovery.
+  fails after the provider answered, a calendar or contact write's failure is still returned
+  as the provider's error, so its class (a conflict, a throttle's instant, an expired
+  credential) and an unknown outcome both survive. An applied write, and a send that was
+  delivered or may have been, is `SyncError::Unrecorded`, never `SyncError::Store`. The op is
+  left to recovery.
   `ApiError::may_have_applied` is the host's one question over both (`engine-api.md`).
 
 - **The payload is the intent, not the rendered bytes.** A calendar patch stores the

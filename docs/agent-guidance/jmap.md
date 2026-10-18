@@ -599,8 +599,9 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     end state holds, which is what makes an outbox retry of a delete whose response was lost
     safe (the same contract CalDAV gets from treating `404`/`410` as success).
   - **`updated: {id: null}` is an acknowledgement**, and a target the server mentions in
-    *neither* the applied nor the failed map is a synthetic `notFound` conflict — never a
-    silent success. (Both hard-won on the `Email/set` path; see **Mail writes**.)
+    *neither* the applied nor the failed map is unconfirmed (above), never a silent success.
+    (Both hard-won on the `Email/set` path, where the second is still a `notFound` conflict;
+    see **Mail writes**.)
   - There is **no whole-document write verb**: a JSCalendar object is not a file whose bytes
     the client owns, so `Provider::put_event` stays unimplemented here even though the
     adapter advertises `calendar_writes` — that capability covers the neutral spine, not the

@@ -169,21 +169,17 @@ impl JmapError {
     /// no answer, not that it refused; every other status is the server's own answer. And a
     /// `200` whose body cannot be read is an answer nobody can read.
     pub(crate) fn into_submission_error(self) -> ProviderError {
-        match &self {
-            Self::Transport(err) if err.may_have_been_received() => {
-                let detail = format!("{self}; the message may have been sent");
-                ProviderError::needs_confirmation(detail).with_source(self)
-            }
-            Self::Status {
-                status: 502 | 504, ..
-            }
-            | Self::Json(_)
-            | Self::Protocol(_)
-            | Self::MissingResponse(_) => {
-                let detail = format!("{self}; the message may have been sent");
-                ProviderError::needs_confirmation(detail).with_source(self)
-            }
-            _ => self.into(),
+        let lost = match &self {
+            Self::Transport(err) => err.may_have_been_received(),
+            Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
+            Self::Json(_) | Self::Protocol(_) | Self::MissingResponse(_) => true,
+            _ => false,
+        };
+        if lost {
+            let detail = format!("{self}; the message may have been sent");
+            ProviderError::needs_confirmation(detail).with_source(self)
+        } else {
+            self.into()
         }
     }
 
@@ -207,18 +203,19 @@ impl JmapError {
     /// It may have been when the request may have reached the server and the exchange then
     /// failed; when a gateway answered `502` or `504`, which says the server behind it gave
     /// no answer; when the answer cannot be read, or carries no response to the call; and on
-    /// `serverPartialFail`, which RFC 8620 §3.6.2 defines as some of the changes having been
-    /// made. A refusal the answer states (any other method error or `SetError`, any other
-    /// status) is the server's own, and the change was not made.
+    /// the method error `serverPartialFail`, which RFC 8620 §3.6.2 defines as some of the
+    /// changes having been made (it is not a `SetError` type). A refusal the answer states (any
+    /// other method error or `SetError`, any other status) is the server's own, and the change
+    /// was not made.
     pub(crate) fn after_write(self) -> Self {
         let unknown = match &self {
             Self::Transport(err) => err.may_have_been_received(),
-            Self::Status { status, .. } => matches!(status, 502 | 504),
+            Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
             Self::Json(_) | Self::Protocol(_) | Self::MissingResponse(_) => true,
-            Self::Method { error_type, .. } | Self::Set { error_type, .. } => {
-                error_type == "serverPartialFail"
+            Self::Method { error_type, .. } => error_type == "serverPartialFail",
+            Self::Set { .. } | Self::Session(_) | Self::Unsettled(_) | Self::Unconfirmed(_) => {
+                false
             }
-            Self::Session(_) | Self::Unsettled(_) | Self::Unconfirmed(_) => false,
         };
         if unknown {
             Self::Unconfirmed(Box::new(self))

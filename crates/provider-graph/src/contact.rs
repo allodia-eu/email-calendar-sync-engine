@@ -368,9 +368,9 @@ impl ContactsProvider for GraphContactProvider {
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| unread_answer("contact create missing id"))?;
-        Ok(ContactWriteReceipt::new(
-            ContactId::try_from(id).map_err(|error| unread_answer(&error.to_string()))?,
-        ))
+        Ok(ContactWriteReceipt::new(ContactId::try_from(id).map_err(
+            |error| unread_answer(&error.to_string()).with_source(error),
+        )?))
     }
 
     async fn patch_contact(
@@ -380,15 +380,16 @@ impl ContactsProvider for GraphContactProvider {
         patch: &ContactPatch,
     ) -> ProviderResult<ContactWriteReceipt> {
         require_personal(&self.source)?;
-        self.client
+        let answer = self
+            .client
             .patch(
                 &self.item_url(&base.id),
                 "application/json",
                 None,
                 contact_write::patch_body(patch)?,
             )
-            .await
-            .map_err(GraphError::into_write_error)?;
+            .await;
+        GraphError::optional_answer(answer)?;
         Ok(ContactWriteReceipt::new(base.id.clone()))
     }
 

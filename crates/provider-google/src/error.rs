@@ -142,9 +142,23 @@ impl GoogleError {
     fn leaves_outcome_unknown(&self) -> bool {
         match self {
             Self::Transport(err) => err.may_have_been_received(),
-            Self::Status { status, .. } => matches!(status, 502 | 504),
+            Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
             Self::Json(_) => true,
             Self::HistoryExpired(_) | Self::Protocol(_) => false,
+        }
+    }
+
+    /// The body of a write's success, where the adapter needs nothing from it beyond the
+    /// status: the body when it reads, and none when it is not JSON, because the status
+    /// already says the write was done. Every failure is as
+    /// [`into_write_error`](Self::into_write_error).
+    pub(crate) fn optional_answer(
+        result: Result<Option<Value>, Self>,
+    ) -> Result<Option<Value>, ProviderError> {
+        match result {
+            // The transport makes this only from a success's body.
+            Err(Self::Json(_)) => Ok(None),
+            other => other.map_err(Self::into_write_error),
         }
     }
 
