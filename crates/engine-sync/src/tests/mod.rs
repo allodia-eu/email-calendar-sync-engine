@@ -63,6 +63,7 @@ mod state_change;
 mod streaming;
 mod streaming_resume;
 mod submit;
+mod unconfirmed_write;
 mod vanished;
 
 /// A way the fake provider can fail, so a test can drive one failure path without the

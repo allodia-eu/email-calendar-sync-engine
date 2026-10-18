@@ -1,7 +1,7 @@
 //! A DAV server that stops answering: a report, a write, and a body that arrives slowly but
-//! steadily. DAV submits no message, so there is no ambiguous send here: a write that loses
-//! its reply is retried, as one that loses its connection always was, and the precondition
-//! it carries is what keeps a replay from applying it twice.
+//! steadily. A report that loses its reply is retried; a write that loses it may have been
+//! applied, so it is unconfirmed rather than retried (`write_outcome_tests` has the rest of
+//! that rule).
 //!
 //! Through the real transport, on tokio's paused clock, under a guard that turns a missing
 //! bound into a failure rather than a hang (`engine_http::test_server` has the trap the
@@ -70,7 +70,7 @@ async fn a_silent_server_fails_a_report_retryable_after_the_reply_bound() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_write_whose_reply_never_comes_is_retried_under_its_precondition() {
+async fn a_write_whose_reply_never_comes_may_have_been_applied() {
     let server = SilentServer::start(Vec::new()).await;
     let client = client(server.url());
     let write = WriteRequest {
@@ -85,7 +85,11 @@ async fn a_write_whose_reply_never_comes_is_retried_under_its_precondition() {
         held_until(server.has_received(1), timed(client.send_write(write))).await;
 
     let err = ProviderError::from(outcome.expect_err("a silent server is a failure"));
-    assert_retryable_after_the_reply_bound(&err, elapsed);
+    assert!(err.requires_confirmation(), "{err}");
+    assert!(!err.is_retryable(), "{err}");
+    assert_eq!(server.received(), 1, "written once, never again");
+    assert!(elapsed >= BOUNDS.reply(), "{elapsed:?}");
+    assert!(elapsed < BOUNDS.reply() + BOUNDS.dial(), "{elapsed:?}");
 }
 
 #[tokio::test(start_paused = true)]

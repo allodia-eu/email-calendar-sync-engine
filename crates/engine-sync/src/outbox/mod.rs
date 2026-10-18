@@ -157,12 +157,14 @@ pub(crate) async fn holding<S: Store, F: Future>(
 
 /// Records a failed write outcome with its classification and backoff hint.
 ///
-/// Every calendar write is safe to retry — `PUT`/`DELETE` are idempotent HTTP methods (RFC
-/// 7231 §4.2.2), a JMAP `/set` addresses the object by id, and the revision guard makes a
-/// retry self-correcting — so, unlike an SMTP send whose post-`DATA` ack can be lost
-/// ambiguously, a failed calendar write has no `NeedsConfirmation` case: every failure is a
-/// plain classified `Failed`. The mail *edit* path shares this for the same reason
-/// (`imap-smtp.md`); only [`submit_mail`] branches.
+/// A calendar or contact write whose outcome is unknown
+/// ([`requires_confirmation`](engine_provider::ProviderError::requires_confirmation): its
+/// answer was lost after the server may have applied it) is recorded `Failed` like any other
+/// non-retryable class, so it settles rather than parking for a retry: a replayed create on a
+/// transport that assigns the id would make the object twice. It is not `NeedsConfirmation`,
+/// the state a send waits in for the user; the caller learns the outcome is unknown from the
+/// error, and the next sync shows what the server holds. Only [`submit_mail`] parks an
+/// ambiguous outcome.
 async fn record_failure<S: Store>(
     store: &S,
     leased: &LeasedPendingOp,
@@ -178,4 +180,37 @@ async fn record_failure<S: Store>(
         )
         .await?;
     Ok(())
+}
+
+/// Records a calendar or contact write the provider applied, as having resolved to
+/// `provider_key`.
+///
+/// A failure to record it is [`SyncError::Unrecorded`], never [`SyncError::Store`]: the change
+/// is on the server, and a store error would tell the caller it was not. The op is left to
+/// recovery, which finds it as an interrupted attempt.
+async fn write_applied<S: Store>(
+    store: &S,
+    leased: &LeasedPendingOp,
+    provider_key: engine_core::ids::ProviderKey,
+) -> Result<(), SyncError> {
+    store
+        .mark_pending_op(&leased.lease, PendingOutcome::Succeeded { provider_key })
+        .await
+        .map_err(SyncError::Unrecorded)
+}
+
+/// Records a calendar or contact write's failure, and returns what the caller is told.
+///
+/// The provider's failure, unless recording it failed. Even then a write whose outcome is
+/// unknown is returned as such: a store error in its place would tell the caller nothing was
+/// applied. The op is left to recovery, which finds it as an interrupted attempt.
+async fn write_failed<S: Store>(
+    store: &S,
+    leased: &LeasedPendingOp,
+    err: engine_provider::ProviderError,
+) -> SyncError {
+    match record_failure(store, leased, &err).await {
+        Err(recording) if !err.requires_confirmation() => recording,
+        _ => SyncError::Provider(err),
+    }
 }

@@ -37,6 +37,8 @@ struct FakeContacts {
     /// Answers every photo fetch with "this card has no image", the normal case for
     /// a correspondent outside the user's address books.
     no_photo: bool,
+    /// Fails every write with what this makes.
+    fail_writes: Option<fn() -> ProviderError>,
 }
 
 impl FakeContacts {
@@ -192,6 +194,9 @@ impl ContactsProvider for FakeContacts {
         _draft: &ContactDraft,
     ) -> ProviderResult<ContactWriteReceipt> {
         self.creates.fetch_add(1, Ordering::SeqCst);
+        if let Some(fail) = self.fail_writes {
+            return Err(fail());
+        }
         Ok(ContactWriteReceipt::new(ContactId::try_from("c2").unwrap()))
     }
 
@@ -202,6 +207,9 @@ impl ContactsProvider for FakeContacts {
         _patch: &ContactPatch,
     ) -> ProviderResult<ContactWriteReceipt> {
         self.patches.fetch_add(1, Ordering::SeqCst);
+        if let Some(fail) = self.fail_writes {
+            return Err(fail());
+        }
         Ok(ContactWriteReceipt::new(base.id.clone()))
     }
 
@@ -211,6 +219,9 @@ impl ContactsProvider for FakeContacts {
         _base: &ContactCard,
     ) -> ProviderResult<()> {
         self.deletes.fetch_add(1, Ordering::SeqCst);
+        if let Some(fail) = self.fail_writes {
+            return Err(fail());
+        }
         Ok(())
     }
 
@@ -450,3 +461,6 @@ mod photos;
 
 #[path = "contact_cases/reads.rs"]
 mod reads;
+
+#[path = "contact_cases/unconfirmed.rs"]
+mod unconfirmed;

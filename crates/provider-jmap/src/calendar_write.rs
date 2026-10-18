@@ -53,7 +53,7 @@ use crate::{
     calendar_patch::{exclusion, patch_to_json},
     calendar_rule::render_rule,
     error::{JmapError, set_error_type, set_refusal},
-    executor::Executor,
+    executor::{Executor, write},
     participant_identity::organiser_participant_id,
     request::{Request, capability},
 };
@@ -130,22 +130,21 @@ pub(crate) async fn create_event(
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
     let call = req.invoke("CalendarEvent/set", args);
-    let resp = executor.execute(&req).await?;
-    let result = resp.result(&call)?;
+    let result = write(executor, &req, &call).await?;
 
-    if let Some(refusal) = set_refusal(result, "notCreated", CREATION_ID) {
-        return Err(JmapError::refused(CREATION_ID, refusal));
+    if let Some(refusal) = set_refusal(&result, "notCreated", CREATION_ID) {
+        return Err(JmapError::refused(CREATION_ID, refusal).after_write());
     }
     // The server-assigned id is the whole point of the `created` map; a create the server
-    // neither confirmed nor rejected is a conflict, never a silent success.
+    // neither confirmed nor rejected may or may not exist, never a silent success.
     let id = result
         .get("created")
         .and_then(|c| c.get(CREATION_ID))
         .and_then(|o| o.get("id"))
         .and_then(Value::as_str)
-        .ok_or_else(|| JmapError::set(CREATION_ID, "notFound"))?;
+        .ok_or_else(|| JmapError::unanswered(CREATION_ID, "created", "notCreated"))?;
     let event = EventId::try_from(id)
-        .map_err(|e| JmapError::protocol(format!("bad created event id: {e}")))?;
+        .map_err(|e| JmapError::protocol(format!("bad created event id: {e}")).after_write())?;
 
     // A JMAP object has no revision token, so the receipt carries none — the caller learns
     // nothing about "the version I just wrote" here, because there is no such thing.
@@ -216,17 +215,16 @@ async fn apply_update(
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
     let call = req.invoke("CalendarEvent/set", args);
-    let resp = executor.execute(&req).await?;
-    let result = resp.result(&call)?;
+    let result = write(executor, &req, &call).await?;
 
-    if let Some(refusal) = set_refusal(result, "notUpdated", target) {
-        return Err(JmapError::refused(target, refusal));
+    if let Some(refusal) = set_refusal(&result, "notUpdated", target) {
+        return Err(JmapError::refused(target, refusal).after_write());
     }
     // `updated` is an object keyed by id; its value may be `null` (the server made no extra
-    // server-set changes) — still an acknowledgement. A target mentioned in neither map was
-    // silently dropped: a conflict, never a false success.
+    // server-set changes) — still an acknowledgement. A target mentioned in neither map is an
+    // answer that does not say, never a false success.
     if result.get("updated").and_then(|u| u.get(target)).is_none() {
-        return Err(JmapError::set(target, "notFound"));
+        return Err(JmapError::unanswered(target, "updated", "notUpdated"));
     }
     Ok(())
 }
@@ -278,15 +276,14 @@ pub(crate) async fn delete_event(
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
     let call = req.invoke("CalendarEvent/set", args);
-    let resp = executor.execute(&req).await?;
-    let result = resp.result(&call)?;
+    let result = write(executor, &req, &call).await?;
 
-    if let Some(refusal) = set_refusal(result, "notDestroyed", target) {
+    if let Some(refusal) = set_refusal(&result, "notDestroyed", target) {
         // Already gone is the end state we asked for.
         if set_error_type(refusal) == "notFound" {
             return Ok(());
         }
-        return Err(JmapError::refused(target, refusal));
+        return Err(JmapError::refused(target, refusal).after_write());
     }
     // `destroyed` is an array of ids.
     let destroyed = result
@@ -296,7 +293,7 @@ pub(crate) async fn delete_event(
     if destroyed {
         Ok(())
     } else {
-        Err(JmapError::set(target, "notFound"))
+        Err(JmapError::unanswered(target, "destroyed", "notDestroyed"))
     }
 }
 

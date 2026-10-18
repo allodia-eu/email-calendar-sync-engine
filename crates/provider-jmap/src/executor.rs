@@ -58,6 +58,24 @@ pub(crate) trait Executor: Send + Sync {
     }
 }
 
+/// Executes `request`, a `/set` that changes something, and returns the arguments of the
+/// answer to `call`, with every failure that leaves the change's outcome unknown marked
+/// [`JmapError::Unconfirmed`] ([`JmapError::after_write`]).
+pub(crate) async fn write(
+    executor: &dyn Executor,
+    request: &Request,
+    call: &str,
+) -> Result<serde_json::Value, JmapError> {
+    let response = executor
+        .execute(request)
+        .await
+        .map_err(JmapError::after_write)?;
+    response
+        .result(call)
+        .cloned()
+        .map_err(JmapError::after_write)
+}
+
 #[async_trait]
 impl Executor for JmapClient {
     async fn execute(&self, request: &Request) -> Result<Response, JmapError> {

@@ -302,15 +302,18 @@ impl ContactsProvider for JmapProvider {
                     "create": { CREATION_ID: object }
                 }),
             )
-            .await?;
+            .await
+            .map_err(JmapError::after_write)?;
         check_set_error(&result, "notCreated", CREATION_ID)?;
         let id = result
             .get("created")
             .and_then(|created| created.get(CREATION_ID))
             .and_then(|created| created.get("id"))
             .and_then(Value::as_str)
-            .ok_or_else(|| JmapError::set(CREATION_ID, "notFound"))?;
-        Ok(ContactWriteReceipt::new(contact_id(id)?))
+            .ok_or_else(|| JmapError::unanswered(CREATION_ID, "created", "notCreated"))?;
+        Ok(ContactWriteReceipt::new(
+            contact_id(id).map_err(JmapError::after_write)?,
+        ))
     }
 
     async fn patch_contact(
@@ -331,7 +334,8 @@ impl ContactsProvider for JmapProvider {
                     "update": { base.id.as_str(): object }
                 }),
             )
-            .await?;
+            .await
+            .map_err(JmapError::after_write)?;
         check_set_error(&result, "notUpdated", base.id.as_str())?;
         Ok(ContactWriteReceipt::new(base.id.clone()))
     }
@@ -345,11 +349,14 @@ impl ContactsProvider for JmapProvider {
                     "destroy": [base.id.as_str()]
                 }),
             )
-            .await?;
+            .await
+            .map_err(JmapError::after_write)?;
         if let Some(refusal) = set_refusal(&result, "notDestroyed", base.id.as_str())
             && set_error_type(refusal) != "notFound"
         {
-            return Err(JmapError::refused(base.id.as_str(), refusal).into());
+            return Err(JmapError::refused(base.id.as_str(), refusal)
+                .after_write()
+                .into());
         }
         Ok(())
     }
@@ -418,8 +425,9 @@ fn supported_fields() -> ContactFieldSet {
 }
 
 fn check_set_error(result: &Value, map: &str, target: &str) -> Result<(), JmapError> {
-    set_refusal(result, map, target)
-        .map_or(Ok(()), |refusal| Err(JmapError::refused(target, refusal)))
+    set_refusal(result, map, target).map_or(Ok(()), |refusal| {
+        Err(JmapError::refused(target, refusal).after_write())
+    })
 }
 
 fn required_text<'a>(value: &'a Value, field: &str) -> Result<&'a str, JmapError> {

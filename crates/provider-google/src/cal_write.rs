@@ -23,7 +23,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     cal_invite::{draft_attendees, merge_attendees},
-    error::GoogleError,
+    error::{GoogleError, unread_answer},
     json::opt_str,
     transport::GoogleClient,
 };
@@ -49,8 +49,9 @@ pub(crate) async fn create_event(
             "application/json",
             serde_json::to_vec(&body).map_err(GoogleError::from)?,
         )
-        .await?
-        .ok_or_else(|| ProviderError::permanent("create event returned no body"))?;
+        .await
+        .map_err(GoogleError::into_write_error)?
+        .ok_or_else(|| unread_answer("create event returned no body"))?;
     receipt(&created, draft.uid.clone())
 }
 
@@ -99,7 +100,8 @@ pub(crate) async fn patch_event(
             guard,
             serde_json::to_vec(&body).map_err(GoogleError::from)?,
         )
-        .await?;
+        .await
+        .map_err(GoogleError::into_write_error)?;
     // An instance patch answers with the *occurrence*, whose id is not the series'. The
     // receipt names what the caller asked about — the event they hold — so the echo is read
     // only for a series edit.
@@ -160,7 +162,8 @@ pub(crate) async fn rsvp_event(
                 .map(ETag::as_str),
             serde_json::to_vec(&build_rsvp(rsvp)).map_err(GoogleError::from)?,
         )
-        .await?;
+        .await
+        .map_err(GoogleError::into_write_error)?;
     match updated {
         Some(event) => receipt(&event, base.uid.clone()),
         None => Ok(EventWriteReceipt::new(
@@ -238,7 +241,7 @@ pub(crate) async fn delete_event(
         | Err(GoogleError::Status {
             status: 404 | 410, ..
         }) => Ok(()),
-        Err(other) => Err(other.into()),
+        Err(other) => Err(other.into_write_error()),
     }
 }
 
@@ -438,10 +441,9 @@ fn receipt(
     event: &Value,
     fallback_uid: engine_core::ids::Uid,
 ) -> ProviderResult<EventWriteReceipt> {
-    let id = opt_str(event, "id")
-        .ok_or_else(|| ProviderError::permanent("write response had no event id"))?;
-    let event_id = EventId::try_from(id)
-        .map_err(|e| ProviderError::permanent(format!("bad created event id: {e}")))?;
+    let id = opt_str(event, "id").ok_or_else(|| unread_answer("write response had no event id"))?;
+    let event_id =
+        EventId::try_from(id).map_err(|e| unread_answer(&format!("bad created event id: {e}")))?;
     let uid = opt_str(event, "iCalUID")
         .and_then(|u| engine_core::ids::Uid::new(u).ok())
         .unwrap_or(fallback_uid);

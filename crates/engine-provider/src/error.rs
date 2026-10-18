@@ -97,13 +97,17 @@ impl ProviderError {
         Self::new(FailureClass::Permanent, detail)
     }
 
-    /// The outcome is **genuinely ambiguous** and must not be blindly retried —
-    /// e.g. an SMTP send whose post-`DATA` acknowledgement was lost, which may or
-    /// may not have delivered (`providers.md`). The op is parked for confirmation
-    /// (sync reconciliation, `Message-ID` lookup, or an explicit resolve) rather
-    /// than retried. Classified [`FailureClass::InvalidState`] so it is never
-    /// plain-retryable; the outbox routes it to
-    /// [`PendingOutcome::NeedsConfirmation`](engine_core::write::PendingOutcome::NeedsConfirmation).
+    /// The outcome is **genuinely ambiguous** and must not be blindly retried: an SMTP send
+    /// whose post-`DATA` acknowledgement was lost, which may or may not have delivered, or a
+    /// calendar or contact write whose answer was lost after the server may have applied it
+    /// (`providers.md`). Classified [`FailureClass::InvalidState`] so it is never
+    /// plain-retryable.
+    ///
+    /// A send is parked as
+    /// [`PendingOutcome::NeedsConfirmation`](engine_core::write::PendingOutcome::NeedsConfirmation)
+    /// until sync reconciliation or the user resolves it. A calendar or contact write settles
+    /// `Failed`, and its caller is told the change may have been applied. On a write, every
+    /// failure that is **not** this one means the write was not applied.
     #[must_use]
     pub fn needs_confirmation(detail: impl Into<String>) -> Self {
         Self {

@@ -20,7 +20,9 @@ use engine_provider::{
 use serde_json::Value;
 
 use crate::{
-    contact_normalize, contact_photo, contact_write, error::GraphError, transport::GraphClient,
+    contact_normalize, contact_photo, contact_write,
+    error::{GraphError, unread_answer},
+    transport::GraphClient,
 };
 
 const ROOT_BOOK: &str = "graph-personal-root";
@@ -359,15 +361,16 @@ impl ContactsProvider for GraphContactProvider {
                 "application/json",
                 contact_write::create_body(&draft.card)?,
             )
-            .await?
-            .ok_or_else(|| GraphError::protocol("contact create returned no object"))?;
+            .await
+            .map_err(GraphError::into_write_error)?
+            .ok_or_else(|| unread_answer("contact create returned no object"))?;
         let id = value
             .get("id")
             .and_then(Value::as_str)
-            .ok_or_else(|| GraphError::protocol("contact create missing id"))?;
-        Ok(ContactWriteReceipt::new(ContactId::try_from(id).map_err(
-            |error| GraphError::protocol(error.to_string()),
-        )?))
+            .ok_or_else(|| unread_answer("contact create missing id"))?;
+        Ok(ContactWriteReceipt::new(
+            ContactId::try_from(id).map_err(|error| unread_answer(&error.to_string()))?,
+        ))
     }
 
     async fn patch_contact(
@@ -384,7 +387,8 @@ impl ContactsProvider for GraphContactProvider {
                 None,
                 contact_write::patch_body(patch)?,
             )
-            .await?;
+            .await
+            .map_err(GraphError::into_write_error)?;
         Ok(ContactWriteReceipt::new(base.id.clone()))
     }
 
@@ -392,7 +396,7 @@ impl ContactsProvider for GraphContactProvider {
         require_personal(&self.source)?;
         match self.client.delete(&self.item_url(&base.id), None).await {
             Ok(()) | Err(GraphError::Status { status: 404, .. }) => Ok(()),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error.into_write_error()),
         }
     }
 

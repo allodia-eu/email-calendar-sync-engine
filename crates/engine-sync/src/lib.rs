@@ -78,6 +78,12 @@ pub enum SyncError {
     /// Contact sources changed during every people-index CAS retry.
     #[error("contact sources kept changing during people-index rebuild")]
     ConcurrentPeopleRebuild,
+    /// A calendar or contact write the provider **applied**, whose success the store could
+    /// not record. The change is on the server; the next sync brings the store up to it.
+    /// Distinct from [`Store`](Self::Store), which a write returns only for a failure before
+    /// anything was sent.
+    #[error("the write was applied, and recording it failed: {0}")]
+    Unrecorded(#[source] StoreError),
 }
 
 impl SyncError {

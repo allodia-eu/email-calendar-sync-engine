@@ -79,16 +79,15 @@ pub(crate) async fn rsvp_event(
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
     let call = req.invoke("CalendarEvent/set", args);
-    let resp = executor.execute(&req).await?;
-    let result = resp.result(&call)?;
+    let result = crate::executor::write(executor, &req, &call).await?;
 
-    if let Some(refusal) = set_refusal(result, "notUpdated", target) {
-        return Err(JmapError::refused(target, refusal));
+    if let Some(refusal) = set_refusal(&result, "notUpdated", target) {
+        return Err(JmapError::refused(target, refusal).after_write());
     }
-    // As in `patch_event`: a target mentioned in neither map was silently dropped, which is
-    // a conflict rather than a false success.
+    // As in `patch_event`: a target mentioned in neither map is an answer that does not say,
+    // never a false success.
     if result.get("updated").and_then(|u| u.get(target)).is_none() {
-        return Err(JmapError::set(target, "notFound"));
+        return Err(JmapError::unanswered(target, "updated", "notUpdated"));
     }
     Ok(EventWriteReceipt::new(
         rsvp.event.clone(),

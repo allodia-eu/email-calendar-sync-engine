@@ -753,6 +753,18 @@ event's **`UID`** (`event:{uid}`) — the cross-system identity, which exists *b
 create has a provider id and survives a transport that assigns its own (JMAP), so writes to
 one event never race on either provider.
 
+- **A calendar or contact write whose outcome is unknown settles; it does not park.** The
+  adapter says so with `ProviderError::needs_confirmation` (`providers.md`), and the driver
+  records it `Failed` with its `InvalidState` class and returns it, so no later attempt
+  replays it: a replayed create on a transport that assigns the id would make the object
+  twice. It is not `NeedsConfirmation`, which is the state a send waits in for the user; the
+  caller has the answer in the error, and the next sync shows what the server holds.
+- **Recording the outcome never changes what the caller is told.** Where `mark_pending_op`
+  fails after the provider answered, an unknown outcome is still returned as the provider's
+  error, and an applied write is `SyncError::Unrecorded`, never `SyncError::Store`, which a
+  write returns only for a failure before anything was sent. The op is left to recovery.
+  `ApiError::may_have_applied` is the host's one question over both (`engine-api.md`).
+
 - **The payload is the intent, not the rendered bytes.** A calendar patch stores the
   `EventEdit` — which occurrence, and what changed — never the document it produced. That is
   what makes a `Conflict` recoverable: the retry re-applies the edit to a **freshly fetched**

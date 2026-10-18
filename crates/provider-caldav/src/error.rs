@@ -45,6 +45,11 @@ pub enum CalDavError {
     /// `response` with no `href`, or a `PROPFIND` that returned no collections).
     #[error("malformed CalDAV response: {0}")]
     Protocol(String),
+
+    /// A write that may have been applied: its request may have reached the server and no
+    /// answer of the server's own came back. Becomes [`ProviderError::needs_confirmation`].
+    #[error("{0}; the change may have been applied")]
+    Unconfirmed(Box<CalDavError>),
 }
 
 /// Carries an `engine-ical` parse failure into the CalDAV taxonomy as
@@ -100,6 +105,28 @@ impl CalDavError {
         Self::Protocol(detail.into())
     }
 
+    /// What this error means as the end of a `PUT` or `DELETE`: [`Unconfirmed`](Self::Unconfirmed)
+    /// where the write may have been applied, and itself where it was not.
+    ///
+    /// It may have been applied when the request may have reached the server and the
+    /// exchange then failed, a reply that never came included, and when a gateway answered
+    /// `502` or `504`: those say the server behind it gave no answer, not that it refused.
+    /// Every other status is the server's own answer, so the write was not applied. A
+    /// connect or handshake that never completed sent nothing.
+    #[must_use]
+    pub(crate) fn after_write(self) -> Self {
+        let unknown = match &self {
+            Self::Transport(err) => err.may_have_been_received(),
+            Self::Status { status, .. } => matches!(status, 502 | 504),
+            Self::Xml(_) | Self::Ical(_) | Self::Protocol(_) | Self::Unconfirmed(_) => false,
+        };
+        if unknown {
+            Self::Unconfirmed(Box::new(self))
+        } else {
+            self
+        }
+    }
+
     /// The engine-neutral class this protocol error maps to.
     #[must_use]
     pub fn failure_class(&self) -> FailureClass {
@@ -109,6 +136,8 @@ impl CalDavError {
             // A malformed response/object is a protocol-level incompatibility:
             // retrying the same request will not fix it.
             Self::Xml(_) | Self::Ical(_) | Self::Protocol(_) => FailureClass::Permanent,
+            // Never retried as it stands: the first attempt may have landed.
+            Self::Unconfirmed(_) => FailureClass::InvalidState,
         }
     }
 }
@@ -156,6 +185,9 @@ impl From<reqwest::Error> for CalDavError {
 
 impl From<CalDavError> for ProviderError {
     fn from(err: CalDavError) -> Self {
+        if matches!(err, CalDavError::Unconfirmed(_)) {
+            return ProviderError::needs_confirmation(err.to_string()).with_source(err);
+        }
         let class = err.failure_class();
         let detail = err.to_string();
         // A rate limit is the one class that carries *when*: the outbox obeys a provider's

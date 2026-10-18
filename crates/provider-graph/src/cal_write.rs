@@ -23,7 +23,7 @@ use crate::{
     cal_invite::{draft_attendees, merge_attendees},
     cal_normalize::cross_system_uid,
     cal_recur_render::render_recurrence,
-    error::GraphError,
+    error::{GraphError, unread_answer},
     json::opt_str,
     transport::GraphClient,
 };
@@ -45,8 +45,9 @@ pub(crate) async fn create_event(
             "application/json",
             serde_json::to_vec(&body).map_err(GraphError::from)?,
         )
-        .await?
-        .ok_or_else(|| ProviderError::permanent("create event returned no body"))?;
+        .await
+        .map_err(GraphError::into_write_error)?
+        .ok_or_else(|| unread_answer("create event returned no body"))?;
     receipt(&created, draft.uid.clone())
 }
 
@@ -94,7 +95,8 @@ pub(crate) async fn patch_event(
             guard,
             serde_json::to_vec(&body).map_err(GraphError::from)?,
         )
-        .await?;
+        .await
+        .map_err(GraphError::into_write_error)?;
     // Graph echoes the event it patched. On an instance that is the *occurrence*, whose id
     // is not the series' — so the echo is read only for a series edit; the receipt always
     // names the event the caller holds.
@@ -143,7 +145,8 @@ pub(crate) async fn rsvp_event(
             "application/json",
             serde_json::to_vec(&build_rsvp(rsvp)).map_err(GraphError::from)?,
         )
-        .await?;
+        .await
+        .map_err(GraphError::into_write_error)?;
     Ok(EventWriteReceipt::new(
         base.id.clone(),
         base.uid.clone(),
@@ -209,7 +212,7 @@ pub(crate) async fn delete_event(
     {
         // A `404` — already deleted (or moved) — is idempotent success, like a clean delete.
         Ok(()) | Err(GraphError::Status { status: 404, .. }) => Ok(()),
-        Err(other) => Err(other.into()),
+        Err(other) => Err(other.into_write_error()),
     }
 }
 
@@ -400,10 +403,9 @@ fn receipt(
     event: &Value,
     fallback_uid: engine_core::ids::Uid,
 ) -> ProviderResult<EventWriteReceipt> {
-    let id = opt_str(event, "id")
-        .ok_or_else(|| ProviderError::permanent("write response had no event id"))?;
-    let event_id = EventId::try_from(id)
-        .map_err(|e| ProviderError::permanent(format!("bad created event id: {e}")))?;
+    let id = opt_str(event, "id").ok_or_else(|| unread_answer("write response had no event id"))?;
+    let event_id =
+        EventId::try_from(id).map_err(|e| unread_answer(&format!("bad created event id: {e}")))?;
     let uid = cross_system_uid(event)
         .and_then(|u| engine_core::ids::Uid::new(u).ok())
         .unwrap_or(fallback_uid);

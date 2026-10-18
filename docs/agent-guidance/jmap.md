@@ -549,6 +549,12 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   it; `patch_event` → an `update` PatchObject; `delete_event` → a `destroy`. The
   `calendar_writes` capability is advertised whenever the account exposes calendars and is
   not `isReadOnly`, exactly as `mail_writes` is.
+  - **An answer that does not say what became of the object is unconfirmed**, not a
+    `notFound` conflict: one naming the object in neither `created`/`notCreated` (nor the
+    update and destroy pairs), one that is not JSON or lacks the call, and
+    `serverPartialFail` (`JmapError::after_write`). A conflict would send a host to refetch
+    and create again, and the first create may exist. `ContactCard/set` follows the same
+    rule (`providers.md`).
   - **A meeting create first resolves the organiser's account identity.**
     `ParticipantIdentity/get` supplies the participant id whose `calendarAddress` matches
     `EventDraft::meeting.organiser`. A foreign organiser address is refused. The create sets

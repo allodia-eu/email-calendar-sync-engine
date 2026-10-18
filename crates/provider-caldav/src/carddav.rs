@@ -395,7 +395,9 @@ impl ContactsProvider for CardDavProvider {
         match result {
             Ok(response) if (200..300).contains(&response.status) => Ok(()),
             Ok(response) if matches!(response.status, 404 | 410) => Ok(()),
-            Ok(response) => Err(CalDavError::status(response.status, response.body).into()),
+            Ok(response) => Err(CalDavError::status(response.status, response.body)
+                .after_write()
+                .into()),
             Err(error) => Err(error.into()),
         }
     }
