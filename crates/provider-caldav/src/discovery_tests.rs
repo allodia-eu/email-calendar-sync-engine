@@ -394,3 +394,16 @@ async fn a_response_without_a_home_set_is_an_error() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn a_home_on_a_host_the_connection_may_not_move_to_fails_the_walk() {
+    // Listing it anyway would send the request without the credential and read the refusal as
+    // the server's answer about the account.
+    let exec = RefusesToMove(Replay::new(vec![ok(
+        r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/u/</d:href><d:propstat><d:prop><c:calendar-home-set><d:href>http://dav.example.net/u/calendars/</d:href></c:calendar-home-set></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#,
+    )]));
+    let err = discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("home"), "unexpected: {err}");
+}

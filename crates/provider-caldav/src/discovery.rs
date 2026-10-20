@@ -66,6 +66,7 @@ pub(crate) async fn discover_home(
     let bootstrap = propfind_principal(exec, start_href, observer).await?;
     let principal = current_user_principal(&bootstrap);
     if let Some(href) = home_set(&bootstrap) {
+        adopt_home(exec, &href)?;
         // A resource that is not the principal answers the address set `404` (Stalwart's
         // does), which says nothing about the user; only a reported set is kept.
         return Ok(CalendarHome {
@@ -84,11 +85,35 @@ pub(crate) async fn discover_home(
     let from_principal = propfind_principal(exec, &principal, observer).await?;
     let href = home_set(&from_principal)
         .ok_or_else(|| CalDavError::protocol("principal PROPFIND returned no calendar-home-set"))?;
+    adopt_home(exec, &href)?;
     Ok(CalendarHome {
         href,
         principal: Some(principal),
         addresses: Some(address_set(&from_principal).unwrap_or(CalendarUserAddresses::NotEnabled)),
     })
+}
+
+/// Moves the connection to the origin of `home`, a collection home the account's own server
+/// named, when it names one on another host.
+///
+/// The home is where the account's collections are, so the credential follows it there as it
+/// follows a discovery redirect ([`DavExecutor::adopt_origin`]). iCloud answers the principal on
+/// `caldav.icloud.com` and names the home on `pNN-caldav.icloud.com`; left on the first origin,
+/// every request to the home goes out without the credential and is answered `401`.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] when the connection may not move there (a plaintext origin after TLS,
+/// or a host the credential policy refuses): listing the home anyway would read the refusal of
+/// an unauthenticated request as the server's answer about the account.
+pub(crate) fn adopt_home(exec: &dyn DavExecutor, home: &str) -> Result<(), CalDavError> {
+    if exec.adopt_origin(home) {
+        Ok(())
+    } else {
+        Err(CalDavError::protocol(
+            "the server named a home the credential may not follow it to",
+        ))
+    }
 }
 
 /// Asks `principal` for the addresses the server schedules as for this user.
@@ -245,3 +270,7 @@ fn current_user_principal(multistatus: &MultiStatus) -> Option<String> {
 #[cfg(test)]
 #[path = "discovery_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "home_origin_tests.rs"]
+mod home_origin_tests;
