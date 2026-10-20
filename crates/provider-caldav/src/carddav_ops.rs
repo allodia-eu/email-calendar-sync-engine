@@ -15,9 +15,10 @@ use crate::{
     discovery::{authenticate_before_reading, follow, trusted_start},
     error::CalDavError,
     href::redirect_href,
+    multiget::fill_bodies,
     request::{
         ADDRESS_BOOK_CTAG_PROPFIND, ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND,
-        ADDRESS_BOOK_QUERY_REPORT, address_book_sync_report,
+        ADDRESS_BOOK_QUERY_REPORT, address_book_sync_report, addressbook_multiget_report,
     },
     transport::{DavExecutor, DavMethod},
     vcard,
@@ -229,7 +230,7 @@ pub(crate) async fn fallback_contact_sync(
             next,
         ));
     }
-    let report = executor
+    let mut report = executor
         .send(
             DavMethod::Report,
             collection,
@@ -238,6 +239,14 @@ pub(crate) async fn fallback_contact_sync(
         )
         .await?
         .into_multistatus()?;
+    fill_bodies(
+        executor,
+        collection,
+        &mut report,
+        "address-data",
+        addressbook_multiget_report,
+    )
+    .await?;
     Ok(engine_provider::ScopeSync::new(
         contact_update(&report, book, writable, true),
         next,

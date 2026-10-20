@@ -89,11 +89,44 @@ pub(crate) fn sync_collection_report(sync_token: &str) -> String {
             r#"<?xml version="1.0" encoding="utf-8"?>"#,
             r#"<d:sync-collection xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
             r#"<d:sync-token>{token}</d:sync-token><d:sync-level>1</d:sync-level>"#,
-            r#"<d:prop><d:getetag/><c:schedule-tag/><c:calendar-data/></d:prop>"#,
+            "<d:prop><d:getetag/><c:schedule-tag/><c:calendar-data/></d:prop>",
             r#"</d:sync-collection>"#,
         ),
         token = xml_escape(sync_token),
     )
+}
+
+/// A `calendar-multiget` REPORT (RFC 4791 §7.9) for `hrefs`, asking for what
+/// [`sync_collection_report`] asks for.
+pub(crate) fn calendar_multiget_report(hrefs: &[String]) -> String {
+    multiget(
+        r#"<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
+        "<d:prop><d:getetag/><c:schedule-tag/><c:calendar-data/></d:prop>",
+        "</c:calendar-multiget>",
+        hrefs,
+    )
+}
+
+/// An `addressbook-multiget` REPORT (RFC 6352 §8.7) for `hrefs`, asking for what
+/// [`address_book_sync_report`] asks for.
+pub(crate) fn addressbook_multiget_report(hrefs: &[String]) -> String {
+    multiget(
+        r#"<a:addressbook-multiget xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
+        r#"<d:prop><d:getetag/><a:address-data content-type="text/vcard" version="4.0"/></d:prop>"#,
+        "</a:addressbook-multiget>",
+        hrefs,
+    )
+}
+
+fn multiget(open: &str, prop: &str, close: &str, hrefs: &[String]) -> String {
+    let mut body = format!(r#"<?xml version="1.0" encoding="utf-8"?>{open}{prop}"#);
+    for href in hrefs {
+        body.push_str("<d:href>");
+        body.push_str(&xml_escape(href));
+        body.push_str("</d:href>");
+    }
+    body.push_str(close);
+    body
 }
 
 /// Escapes the five XML special characters so an opaque sync-token cannot break

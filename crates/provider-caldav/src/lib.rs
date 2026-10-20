@@ -52,6 +52,7 @@ mod discovery;
 mod error;
 mod href;
 pub mod imip;
+mod multiget;
 mod provider;
 mod request;
 mod response;

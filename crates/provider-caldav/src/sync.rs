@@ -25,7 +25,8 @@ use engine_provider::ScopeSync;
 use crate::{
     dav::MultiStatus,
     error::CalDavError,
-    request::sync_collection_report,
+    multiget::fill_bodies,
+    request::{calendar_multiget_report, sync_collection_report},
     transport::{DavExecutor, DavMethod},
 };
 
@@ -42,7 +43,7 @@ pub(crate) async fn sync_events(
 ) -> Result<ScopeSync<Event>, CalDavError> {
     let token = cursor.map_or("", SyncState::as_str);
     let mut snapshot = token.is_empty();
-    let multistatus = match report(exec, collection_href, token).await {
+    let mut multistatus = match report(exec, collection_href, token).await {
         Ok(multistatus) => multistatus,
         // A rejected sync-token forces a full re-read (RFC 6578 §3.2).
         Err(err) if !snapshot && err.failure_class() == FailureClass::NeedsResync => {
@@ -51,6 +52,14 @@ pub(crate) async fn sync_events(
         }
         Err(err) => return Err(err),
     };
+    fill_bodies(
+        exec,
+        collection_href,
+        &mut multistatus,
+        "calendar-data",
+        calendar_multiget_report,
+    )
+    .await?;
 
     // RFC 6578 §3.6: a sync-collection response MUST carry the next sync-token.
     // A missing token is a protocol error — never silently coerced to "" (which
