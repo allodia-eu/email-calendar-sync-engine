@@ -182,6 +182,11 @@ are split escape-aware so the writer and the parser agree.
   **that refusal lives in `adopt_origin`, not in `redirect_href`**: a walk starts at a bare
   well-known path, which names no scheme, so on the first hop only the connection knows it
   is being asked to give up TLS. A refusal fails the walk rather than continuing over it.
+  A collection home the principal names on another host is followed the same way, under the
+  same refusals (`discovery::adopt_home`, in the CalDAV and CardDAV walks alike): iCloud answers
+  the principal on `caldav.icloud.com` and names the home on `pNN-caldav.icloud.com`, and its
+  contacts server does the same, so a home left on the first origin is listed without the
+  credential and answered `401`.
   A host may also confine the credential with a `CredentialHosts` policy
   (`CalDavConfig::with_credential_hosts`, the same on `CardDavConfig`): the configured base URL
   and every origin a hop moves to must be a host it permits, or the connect fails before anything

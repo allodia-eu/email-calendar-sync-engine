@@ -12,6 +12,7 @@ use engine_provider::{ConnectObserver, ConnectStep, ProviderResult};
 
 use crate::{
     dav::{DavResponse, MultiStatus},
+    discovery::adopt_home,
     error::CalDavError,
     href::redirect_href,
     request::{
@@ -28,16 +29,19 @@ pub(crate) async fn discover_home(
     observer: &dyn ConnectObserver,
 ) -> Result<String, CalDavError> {
     let first = principal_props(executor, start, observer).await?;
-    if let Some(home) = property(&first, "addressbook-home-set") {
-        return Ok(home);
-    }
-    let principal = property(&first, "current-user-principal")
-        .ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
-    property(
-        &principal_props(executor, &principal, observer).await?,
-        "addressbook-home-set",
-    )
-    .ok_or_else(|| CalDavError::protocol("CardDAV address-book home missing"))
+    let home = if let Some(home) = property(&first, "addressbook-home-set") {
+        home
+    } else {
+        let principal = property(&first, "current-user-principal")
+            .ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
+        property(
+            &principal_props(executor, &principal, observer).await?,
+            "addressbook-home-set",
+        )
+        .ok_or_else(|| CalDavError::protocol("CardDAV address-book home missing"))?
+    };
+    adopt_home(executor, &home)?;
+    Ok(home)
 }
 
 async fn principal_props(
