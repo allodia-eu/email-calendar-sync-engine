@@ -35,15 +35,15 @@ FN:Ada Updated
 END:VCARD
 ]]></C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/dav/addressbooks/alice/default/gone.vcf</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response><D:sync-token>token-2</D:sync-token></D:multistatus>"#;
 
-/// A snapshot whose second response is a card the parser cannot read (here: a
-/// response carrying `getetag` but no `address-data`, which is what a server returning
-/// a partial `propstat` looks like).
+/// A snapshot whose second response is a card the parser cannot read: its `address-data` is
+/// not a vCard. (A response without `address-data` at all is fetched again by multiget, in
+/// `multiget_tests.rs`.)
 const CONTACTS_ONE_UNPARSEABLE: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/ada.vcf</D:href><D:propstat><D:prop><D:getetag>"v1"</D:getetag><C:address-data><![CDATA[BEGIN:VCARD
 VERSION:4.0
 UID:ada
 FN:Ada Lovelace
 END:VCARD
-]]></C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/dav/addressbooks/alice/default/bad.vcf</D:href><D:propstat><D:prop><D:getetag>"v9"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:sync-token>token-1</D:sync-token></D:multistatus>"#;
+]]></C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/dav/addressbooks/alice/default/bad.vcf</D:href><D:propstat><D:prop><D:getetag>"v9"</D:getetag><C:address-data>not a vcard</C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:sync-token>token-1</D:sync-token></D:multistatus>"#;
 
 /// A card the parser chokes on must NOT be tombstoned. A snapshot's `present` set is
 /// the store's statement of "everything that exists server-side"; anything missing
