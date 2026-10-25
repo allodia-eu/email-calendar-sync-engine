@@ -388,6 +388,7 @@ async fn end_to_end_against_a_fixture_replay_server() {
         base,
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap();
     let provider = GraphProvider::new(client, MailboxId::try_from("folder-inbox").unwrap());
@@ -420,6 +421,7 @@ async fn replay_server_404s_an_unrouted_path() {
         crate::test_support::replay_server(vec![]),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap();
     assert!(client.get(&client.url("/me/nope")).await.is_err());

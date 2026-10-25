@@ -273,7 +273,7 @@ are split escape-aware so the writer and the parser agree.
   with an empty delta, and otherwise a Depth 1 `PROPFIND` listing each member's `getetag`,
   then a multiget for the bodies. The result is a snapshot, and the cursor is `ctag:` and the CTag. A collection
   with neither the report nor a CTag fails the pass.
-- **Every request carries a `User-Agent`** (`engine_http::client`), since reqwest sends
+- **Every request carries the host's `User-Agent`** (`engine_http::client`), since reqwest sends
   none and RFC 9110 §10.1.5 says a client should. Yahoo's address-book server answers an
   `addressbook-multiget` without one with a `500`.
 - **A refused href with an octet encoded twice is asked once more, encoded once.** Yahoo

@@ -23,6 +23,7 @@ async fn the_participant_identities_name_the_accounts_own_address() {
     let provider = JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");

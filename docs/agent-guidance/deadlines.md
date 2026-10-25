@@ -32,9 +32,9 @@ bound from the send, connect included, which is only sound while the connect giv
   write goes out through `deadline::write`, 8 KiB a piece under `stall`; `smtp::converse`
   waits `submission` for the end of data.
 - **HTTP** (`engine-http/src/deadline.rs`): the client every adapter builds with
-  `engine_http::client(tls)` carries `dial` as reqwest's connect timeout, which covers the
-  lookup, the connect and the handshake together. `send_retrying` hands reqwest the request
-  body in pieces and watches them go: `stall` between pieces, then `reply` (or `submission`,
+  `engine_http::client(tls, user_agent)` carries `dial` as reqwest's connect timeout, which
+  covers the lookup, the connect and the handshake together. `send_retrying` hands reqwest
+  the request body in pieces and watches them go: `stall` between pieces, then `reply` (or `submission`,
   for an `Exchange::Submission`) once the last one is out. `Sent::bytes` and `Sent::text`
   read each chunk under `stall`.
 

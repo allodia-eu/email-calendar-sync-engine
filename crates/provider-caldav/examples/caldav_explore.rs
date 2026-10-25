@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: user.clone(),
             password: pass,
         },
+        provider_caldav::UserAgent::new("caldav-explore", env!("CARGO_PKG_VERSION"))?,
     );
     if let Some(calendar) = pinned.clone() {
         config = config.with_calendar(calendar);

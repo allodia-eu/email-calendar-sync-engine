@@ -74,6 +74,7 @@ async fn a_message_moved_into_sent_is_observed_without_ever_being_re_fetched() {
     let provider = JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect JMAP");

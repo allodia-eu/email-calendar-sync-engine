@@ -179,9 +179,13 @@ async fn a_connect_from_the_config_carries_its_observer_over_the_wire() {
     ]);
     let steps = Arc::new(Steps::default());
     let provider = CardDavProvider::connect(
-        CardDavConfig::new(base.clone(), alice("pw"))
-            .with_retry(engine_http::RetryConfig::default())
-            .with_connect_observer(Arc::clone(&steps) as Arc<dyn ConnectObserver>),
+        CardDavConfig::new(
+            base.clone(),
+            alice("pw"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_retry(engine_http::RetryConfig::default())
+        .with_connect_observer(Arc::clone(&steps) as Arc<dyn ConnectObserver>),
     )
     .await
     .unwrap();
@@ -208,7 +212,8 @@ async fn a_class_on_a_second_dav_line_is_read() {
         multistatus(BOOKS),
     ]);
     let provider = CardDavProvider::connect(
-        CardDavConfig::new(base, alice("pw")).with_retry(engine_http::RetryConfig::default()),
+        CardDavConfig::new(base, alice("pw"), engine_http::test_server::user_agent())
+            .with_retry(engine_http::RetryConfig::default()),
     )
     .await
     .unwrap();
@@ -220,7 +225,11 @@ async fn a_class_on_a_second_dav_line_is_read() {
 fn config_debug_shows_the_observer_without_leaking_the_password() {
     // Hand-written because a `dyn` observer is not `Debug`, so the redaction the derive
     // inherited from `Credentials` is asserted here.
-    let config = CardDavConfig::new("https://dav.example.com", alice("hunter2"));
+    let config = CardDavConfig::new(
+        "https://dav.example.com",
+        alice("hunter2"),
+        engine_http::test_server::user_agent(),
+    );
     let shown = format!("{config:?}");
     assert!(shown.contains("alice") && shown.contains("dav.example.com"));
     assert!(

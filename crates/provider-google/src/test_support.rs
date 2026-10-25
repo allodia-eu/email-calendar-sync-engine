@@ -35,6 +35,11 @@ pub(crate) fn retry() -> engine_http::RetryConfig {
     engine_http::RetryConfig::default()
 }
 
+/// The product tests name in every request.
+pub(crate) fn user_agent() -> engine_http::UserAgent {
+    engine_http::test_server::user_agent()
+}
+
 /// What a fake route answers with: a fixture body, or an HTTP status plus the Google
 /// error envelope to fail with. The failing form exists so a recovery path can be
 /// driven offline — notably Google Calendar answering `410 fullSyncRequired` or Gmail

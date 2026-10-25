@@ -29,6 +29,13 @@ fn account() -> AccountId {
     AccountId::try_from("dav-cli").expect("a constant account id is valid")
 }
 
+/// What the tool names itself in every request: this crate, as itself. It is a developer's
+/// tool, so a provider should not read its traffic as an application's.
+pub(crate) fn user_agent() -> provider_caldav::UserAgent {
+    provider_caldav::UserAgent::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        .expect("the crate's name and version are tokens")
+}
+
 /// Connects and discovers, printing what the adapter concluded about the server.
 ///
 /// The capability line is the first thing worth knowing about an unfamiliar server, and it
@@ -42,6 +49,7 @@ pub(crate) async fn connect(profile: &Profile) -> Result<CalDavProvider, String>
             username: profile.user.clone(),
             password: profile.pass.clone(),
         },
+        user_agent(),
     );
     if let Some(calendar) = &profile.calendar {
         config = config.with_calendar(calendar.clone());

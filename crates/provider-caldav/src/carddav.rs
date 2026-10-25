@@ -112,6 +112,7 @@ impl CardDavProvider {
             config.credentials,
             &config.tls,
             &config.retry,
+            &config.user_agent,
         )?
         .with_credential_hosts(config.credential_hosts);
         Self::with_executor(

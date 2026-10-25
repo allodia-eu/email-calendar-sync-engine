@@ -77,6 +77,7 @@ pub(crate) async fn parties(test: &str) -> Option<Parties> {
             username: organizer_auth.address.clone(),
             password: organizer_auth.password.clone(),
         },
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("organizer connects over CalDAV");
@@ -101,6 +102,7 @@ async fn connect_jmap(base: &str, account: &ScratchAccount) -> JmapProvider {
     JmapProvider::connect(JmapConfig::new(
         base.to_owned(),
         Credentials::basic(&account.address, &account.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connects over JMAP")

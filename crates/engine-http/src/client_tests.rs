@@ -6,7 +6,7 @@ use tokio::{
 };
 
 #[tokio::test]
-async fn every_request_names_its_client() {
+async fn every_request_names_the_hosts_product() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("http://{}/", listener.local_addr().expect("address"));
     let server = tokio::spawn(async move {
@@ -24,7 +24,8 @@ async fn every_request_names_its_client() {
         String::from_utf8_lossy(&request).to_lowercase()
     });
 
-    crate::client(&engine_tls::TlsClientConfig::bundled())
+    let agent = crate::UserAgent::new("example-mail", "1.2.3").unwrap();
+    crate::client(&engine_tls::TlsClientConfig::bundled(), &agent)
         .build()
         .expect("client")
         .get(&url)
@@ -34,7 +35,7 @@ async fn every_request_names_its_client() {
 
     let request = server.await.expect("server");
     assert!(
-        request.contains("\r\nuser-agent: email-calendar-sync-engine/"),
+        request.contains("\r\nuser-agent: example-mail/1.2.3\r\n"),
         "{request}"
     );
 }

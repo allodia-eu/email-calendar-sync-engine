@@ -15,7 +15,7 @@ use tokio::{net::TcpListener, time::Instant};
 use crate::{
     GraphClient,
     categories::Categories,
-    test_support::{retry, tls},
+    test_support::{retry, tls, user_agent},
 };
 
 /// Longer than any bound under test, so only a missing bound reaches it.
@@ -33,7 +33,7 @@ async fn timed<T>(operation: impl Future<Output = T>) -> (T, Duration) {
 }
 
 fn client(base: &str) -> GraphClient {
-    GraphClient::with_base("token", base, tls(), &retry()).expect("client")
+    GraphClient::with_base("token", base, tls(), &retry(), &user_agent()).expect("client")
 }
 
 fn draft() -> Draft {

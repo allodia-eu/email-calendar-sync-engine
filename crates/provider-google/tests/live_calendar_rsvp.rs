@@ -75,6 +75,7 @@ fn provider(token: String) -> GoogleCalendarProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GoogleCalendarProvider::new(client, calendar())

@@ -173,13 +173,14 @@ mod tests {
 
         use crate::{
             GraphClient,
-            test_support::{base64_decode, capturing_server, retry, tls},
+            test_support::{base64_decode, capturing_server, retry, tls, user_agent},
         };
 
         // Drive the REAL reqwest transport (via `with_base`) at a capturing server, so
         // the offline suite asserts the actual request shape the Fake can't (`AGENTS.md`).
         let (base, rx) = capturing_server("202 Accepted", "");
-        let client = GraphClient::with_base("secret-token", base, tls(), &retry()).unwrap();
+        let client =
+            GraphClient::with_base("secret-token", base, tls(), &retry(), &user_agent()).unwrap();
 
         let draft = draft()
             .with_cc(vec![EmailAddress::new("carol@test.local")])

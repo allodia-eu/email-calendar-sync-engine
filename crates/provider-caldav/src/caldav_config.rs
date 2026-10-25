@@ -30,6 +30,8 @@ pub struct CalDavConfig {
     /// (`docs/agent-guidance/http-throttling.md`). Defaults to waiting a `429` out;
     /// override with [`CalDavConfig::with_retry`].
     pub retry: engine_http::RetryConfig,
+    /// The product every request names in its `User-Agent`: the host's application.
+    pub user_agent: engine_http::UserAgent,
     /// Private, unlike its siblings: a `dyn` observer is neither `Debug` nor
     /// meaningfully inspectable, so it is set through
     /// [`CalDavConfig::with_connect_observer`] and read only by
@@ -50,6 +52,7 @@ impl core::fmt::Debug for CalDavConfig {
             .field("calendar", &self.calendar)
             .field("tls", &self.tls)
             .field("retry", &self.retry)
+            .field("user_agent", &self.user_agent)
             .field("connect_observer", &self.connect_observer.is_some())
             .field("credential_hosts", &self.credential_hosts.is_some())
             .finish()
@@ -60,7 +63,11 @@ impl CalDavConfig {
     /// Settings with the RFC 6764 well-known discovery path and the `default`
     /// calendar.
     #[must_use]
-    pub fn new(base_url: impl Into<String>, credentials: Credentials) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        credentials: Credentials,
+        user_agent: engine_http::UserAgent,
+    ) -> Self {
         Self {
             base_url: base_url.into(),
             credentials,
@@ -68,6 +75,7 @@ impl CalDavConfig {
             calendar: "default".to_owned(),
             tls: TlsClientConfig::default(),
             retry: engine_http::RetryConfig::default(),
+            user_agent,
             connect_observer: None,
             credential_hosts: None,
         }

@@ -48,8 +48,11 @@ impl Transport {
         credentials: Credentials,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, JmapError> {
-        let client = engine_http::client(tls).redirect(Policy::none()).build()?;
+        let client = engine_http::client(tls, user_agent)
+            .redirect(Policy::none())
+            .build()?;
         Ok(Self {
             client,
             scheme: NegotiatedScheme::new(credentials.preferred_scheme()),

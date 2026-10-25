@@ -39,6 +39,7 @@ async fn connect(harness: &Harness) -> JmapProvider {
     JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect JMAP")

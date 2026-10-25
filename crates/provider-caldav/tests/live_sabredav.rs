@@ -47,6 +47,7 @@ async fn connect(addr: &str, user: &str, pass: &str) -> CalDavProvider {
             username: user.to_owned(),
             password: pass.to_owned(),
         },
+        engine_http::test_server::user_agent(),
     );
     let mut last_err = None;
     for _ in 0..15 {
