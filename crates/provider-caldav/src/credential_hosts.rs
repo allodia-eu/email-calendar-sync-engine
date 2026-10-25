@@ -1,7 +1,7 @@
 //! Which hosts may receive the account's credential, decided by the host application.
 //!
 //! Discovery follows a server's redirect to another origin and takes the credential along
-//! ([`DavExecutor::adopt_origin`](crate::transport::DavExecutor::adopt_origin)), which is right
+//! ([`DavExecutor::trust_origin`](crate::transport::DavExecutor::trust_origin)), which is right
 //! for the server the account was configured against and wrong for a host nobody vouched for. A
 //! password is the host's to confine; an OAuth access token is more pressing, because whoever
 //! receives one can use it wherever its issuer's resource servers accept it. Which hosts qualify

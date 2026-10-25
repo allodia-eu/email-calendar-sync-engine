@@ -311,9 +311,10 @@ byte fetch, and the client picks between them by origin.
 
 **The guard is about who named the URL, not about which origin it is.** A host named by
 *content* never gets the credential. A host the account's **own server** redirects
-discovery to is the opposite case: it is that server saying where its resources live, so
-the connection adopts the new origin and credentials follow (`provider-jmap`'s
-`fetch_session`, `provider-caldav`'s `adopt_origin`). Both adapters resolve a `Location`
+discovery to is the opposite case: it is that server saying where its resources live.
+`provider-jmap`'s `fetch_session` adopts the new origin and the credential follows;
+`provider-caldav` trusts it and sends the credential once it asks with a `401` challenge
+(`DavExecutor::trust_origin`, RFC 9110 §11.5). Both adapters resolve a `Location`
 against the URL that issued it (RFC 9110 §10.2.2, `engine_provider::redirect_target`) and
 refuse a hop that leaves TLS. Resolving a redirect against the *configured base* instead
 is what one of these adapters shipped: it turned a provider whose apex redirects to its

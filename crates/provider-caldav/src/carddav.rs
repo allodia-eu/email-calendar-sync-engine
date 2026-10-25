@@ -125,8 +125,9 @@ impl CardDavProvider {
         address_book: &str,
         observer: &dyn ConnectObserver,
     ) -> Result<Self, CalDavError> {
-        let home_href = discover_home(executor.as_ref(), discovery_path, observer).await?;
-        observer.step(&ConnectStep::discovered(&home_href));
+        let home = discover_home(executor.as_ref(), discovery_path, observer).await?;
+        observer.step(&ConnectStep::discovered(&home));
+        let home_href = executor.settle_on(&home);
         let classes = advertised_classes(executor.as_ref(), &home_href).await?;
         let listed: Vec<&str> = classes.iter().map(String::as_str).collect();
         observer.step(&ConnectStep::negotiated("CardDAV", &listed));
