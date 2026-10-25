@@ -197,6 +197,25 @@ async fn a_connect_from_the_config_carries_its_observer_over_the_wire() {
     );
 }
 
+/// Fastmail sends its classes as two `DAV` field lines, with `addressbook` only in the second.
+#[tokio::test]
+async fn a_class_on_a_second_dav_line_is_read() {
+    let base = mock_server(vec![
+        multistatus(HOME),
+        multistatus(r#"<d:multistatus xmlns:d="DAV:"/>"#),
+        "HTTP/1.1 200 OK\r\nDAV: 1, 2, 3, access-control\r\nDAV: addressbook\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_owned(),
+        multistatus(BOOKS),
+    ]);
+    let provider = CardDavProvider::connect(
+        CardDavConfig::new(base, alice("pw")).with_retry(engine_http::RetryConfig::default()),
+    )
+    .await
+    .unwrap();
+
+    assert!(provider.connection_info().capabilities.contacts());
+}
+
 #[test]
 fn config_debug_shows_the_observer_without_leaking_the_password() {
     // Hand-written because a `dyn` observer is not `Debug`, so the redaction the derive

@@ -169,7 +169,7 @@ async fn carddav_create_uses_vcard_put_and_if_none_match() {
 }
 
 #[tokio::test]
-async fn unsupported_collection_sync_falls_back_to_an_unfiltered_snapshot() {
+async fn unsupported_collection_sync_falls_back_to_a_ctag_snapshot() {
     let replay = Arc::new(Replay::new(vec![
         ok(PRINCIPAL),
         options(Some("1, 3, addressbook")),
@@ -203,10 +203,12 @@ async fn unsupported_collection_sync_falls_back_to_an_unfiltered_snapshot() {
     assert!(cursor_recovered);
     assert_eq!(sync.next_cursor.as_str(), "ctag:ctag-1");
     assert!(matches!(sync.update, SyncUpdate::Snapshot { .. }));
+    // The members are listed with a `PROPFIND`, which every server answers, and arrived with
+    // their bodies, so nothing is fetched again.
     let reads = replay.reads();
-    let (_, _, _, query) = reads.last().unwrap();
-    assert!(query.contains("<a:filter/>"), "{query}");
-    assert!(!query.contains("prop-filter"), "{query}");
+    let (method, _, depth, listing) = reads.last().unwrap();
+    assert_eq!((*method, depth.as_str()), (DavMethod::Propfind, "1"));
+    assert!(listing.contains("<d:getetag/>"), "{listing}");
 }
 
 pub(crate) fn account() -> AccountId {

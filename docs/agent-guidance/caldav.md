@@ -32,9 +32,9 @@ a server with nothing to offer is a capability the host reads, not an error, and
 a `405` answer to the `OPTIONS` is read the same way. The connect observer
 (`CardDavConfig::with_connect_observer`) sees each redirect, the home, and the
 classes the home advertised. Cards sync with RFC 6578
-`sync-collection`; expired tokens restart with a snapshot. Servers without that
-report use a CTag check followed by a full `addressbook-query`, retaining each
-resource ETag. Direct canonical refetch uses `addressbook-multiget`.
+`sync-collection`; expired tokens restart with a snapshot. A server without that
+report is read through its CTag, as calendars are ("A server without
+`sync-collection`" below). Direct canonical refetch uses `addressbook-multiget`.
 
 vCard 3/4 input is unfolded and normalized into the JSContact-shaped
 `ContactCard` while retaining the complete raw vCard, including malformed legacy
@@ -258,8 +258,27 @@ are split escape-aware so the writer and the parser agree.
   href is the key the store holds. The collection's own entry is not a member, and a
   member that is listed but cannot be read (no body even after the multiget, or iCalendar
   that does not parse) still counts as present, so a snapshot never deletes it locally.
-  CardDAV does the same with `addressbook-multiget`. A failed multiget fails the pass:
-  advancing the cursor without the bodies would never fetch them.
+  CardDAV does the same with `addressbook-multiget`. A member the multiget answers with a
+  `404` was removed after the sync listed it, and is a removal. A failed multiget fails the
+  pass: advancing the cursor without the bodies would never fetch them.
+- **A server without `sync-collection`** is read through its CTag (`ctag_sync`), for
+  calendars and address books alike. It counts as one when the report is refused with the
+  `DAV:supported-report` precondition in a `403` or `409` (RFC 3253 §3.6, the answer the RFC
+  requires), with a `405` or `501`, or with a `400` to the first request of a collection (one
+  carrying a token is not read that way: a server that never did the report never issued
+  one), or when the answer carries no sync-token. Yahoo does the last for a calendar, an
+  empty `207`, and answers an address book's report with a `400`; it refuses
+  `addressbook-query` with a `400` too (`docs/spec-deviations.md`). So the fallback uses only what every server
+  answers: a `PROPFIND` of the collection's `getctag`, which while unchanged ends the pass
+  with an empty delta, and otherwise a Depth 1 `PROPFIND` listing each member's `getetag`,
+  then a multiget for the bodies. The result is a snapshot, and the cursor is `ctag:` and the CTag. A collection
+  with neither the report nor a CTag fails the pass.
+- **Every request carries a `User-Agent`** (`engine_http::client`), since reqwest sends
+  none and RFC 9110 §10.1.5 says a client should. Yahoo's address-book server answers an
+  `addressbook-multiget` without one with a `500`.
+- **A `DAV` header may span several field lines.** Fastmail sends four, with
+  `addressbook` and `calendar-auto-schedule` on lines after the first; they are read as one
+  comma-separated list (RFC 9110 §5.3).
 - **Self-healing invalid token.** A server that rejects a stale token (RFC 6578
   §3.2 `valid-sync-token`, a `403`/`409` precondition) is recovered by re-running
   the REPORT with an empty token — a snapshot — **inside the adapter**, the same
@@ -688,9 +707,6 @@ what a client would assume:
 - **`RRULE UNTIL` with a `Z` (UTC) bound** is read as its wall-clock value;
   converting it to the event's zone needs tzdata and is staged. The supported seed
   uses `COUNT`, not `UNTIL`.
-- **Calendar CalDAV has no CTag fallback yet.** Calendar event sync still relies
-  on RFC 6578. CardDAV implements CTag + per-resource ETag snapshot fallback
-  when `sync-collection` is unavailable.
 - **Calendar events are fetched whole, not paged** — consistent with the JMAP
   calendar slice (events have no natural recency sort, and the REPORT returns the
   collection in one pass).

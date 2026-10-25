@@ -126,7 +126,18 @@ impl DavClient {
         };
         let location = header(reqwest::header::LOCATION);
         let etag = header(reqwest::header::ETAG);
-        let dav = header(reqwest::header::HeaderName::from_static("dav"));
+        // Fastmail splits `DAV` over several field lines, with `addressbook` after the first, and
+        // RFC 9110 §5.3 reads repeated lines as one comma-separated list
+        // (`docs/spec-deviations.md`, "Permitted, and easy to get wrong").
+        let dav = {
+            let lines: Vec<&str> = response
+                .headers()
+                .get_all("dav")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .collect();
+            (!lines.is_empty()).then(|| lines.join(", "))
+        };
         // Read before the body consumes the reply: this is the funnel's own note of what
         // the server said about when, and it is the last place it exists.
         let retry_after = response.stated_wait();

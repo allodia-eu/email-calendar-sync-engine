@@ -7,7 +7,8 @@
 //! `sync-token`, which becomes the cursor. A server that rejects a stale token
 //! (RFC 6578 §3.2 `valid-sync-token`) is recovered by re-running as a snapshot,
 //! inside the adapter — the same self-healing the JMAP adapter does for
-//! `cannotCalculateChanges`. A single malformed resource is skipped, never failing
+//! `cannotCalculateChanges`. A server that does not do the report is read through its CTag
+//! instead (`ctag_sync`). A single malformed resource is skipped, never failing
 //! the whole pass (`calendar-semantics.md`).
 
 use std::collections::BTreeSet;
@@ -23,6 +24,7 @@ use engine_ical::parse_calendar_object;
 use engine_provider::ScopeSync;
 
 use crate::{
+    ctag_sync::{CtagSync, ctag_sync, is_ctag_cursor, refuses_sync_collection},
     dav::MultiStatus,
     error::CalDavError,
     multiget::{fill_bodies, same_path},
@@ -41,16 +43,21 @@ pub(crate) async fn sync_events(
     calendar: &CalendarId,
     cursor: Option<&SyncState>,
 ) -> Result<ScopeSync<Event>, CalDavError> {
+    if is_ctag_cursor(cursor) {
+        return by_ctag(exec, collection_href, calendar, cursor).await;
+    }
     let token = cursor.map_or("", SyncState::as_str);
     let mut snapshot = token.is_empty();
     let mut multistatus = match report(exec, collection_href, token).await {
-        Ok(multistatus) => multistatus,
+        Ok(multistatus) if multistatus.sync_token.is_some() => multistatus,
         // A rejected sync-token forces a full re-read (RFC 6578 §3.2).
         Err(err) if !snapshot && err.failure_class() == FailureClass::NeedsResync => {
             snapshot = true;
             report(exec, collection_href, "").await?
         }
-        Err(err) => return Err(err),
+        Err(err) if !refuses_sync_collection(&err, snapshot) => return Err(err),
+        // A refusal, or an answer without a sync-token: the server does not do the report.
+        _ => return by_ctag(exec, collection_href, calendar, cursor).await,
     };
     fill_bodies(
         exec,
@@ -61,9 +68,9 @@ pub(crate) async fn sync_events(
     )
     .await?;
 
-    // RFC 6578 §3.6: a sync-collection response MUST carry the next sync-token.
-    // A missing token is a protocol error — never silently coerced to "" (which
-    // would force a full re-snapshot every pass, masking the violation).
+    // RFC 6578 §3.6: a sync-collection response MUST carry the next sync-token. The first
+    // answer without one went to the CTag path, so only the re-read after a rejected token
+    // gets here without it, and that is a protocol error, never coerced to "".
     let next_cursor = multistatus
         .sync_token
         .clone()
@@ -71,6 +78,32 @@ pub(crate) async fn sync_events(
         .ok_or_else(|| CalDavError::protocol("sync-collection response had no sync-token"))?;
     let update = build_update(&multistatus, collection_href, calendar, snapshot);
     Ok(ScopeSync::new(update, next_cursor))
+}
+
+/// Syncs `collection_href` through its CTag, as a snapshot whenever it moved.
+async fn by_ctag(
+    exec: &dyn DavExecutor,
+    collection_href: &str,
+    calendar: &CalendarId,
+    cursor: Option<&SyncState>,
+) -> Result<ScopeSync<Event>, CalDavError> {
+    let sync = ctag_sync(
+        exec,
+        collection_href,
+        cursor,
+        "calendar-data",
+        calendar_multiget_report,
+    )
+    .await?;
+    Ok(match sync {
+        CtagSync::Unchanged(next) => {
+            ScopeSync::new(SyncUpdate::delta(Vec::new(), Vec::new()), next)
+        }
+        CtagSync::Changed { members, next } => ScopeSync::new(
+            build_update(&members, collection_href, calendar, true),
+            next,
+        ),
+    })
 }
 
 /// Issues one `sync-collection` REPORT and parses the multistatus body.
@@ -303,11 +336,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_response_missing_the_sync_token_is_an_error() {
-        // RFC 6578 requires the next sync-token; omitting it must error, not
-        // silently reset the cursor to "" (which would force perpetual snapshots).
+    async fn a_server_without_sync_collection_or_a_ctag_is_an_error() {
+        // An answer without the sync-token RFC 6578 requires sends the pass to the CTag, and a
+        // collection with no CTag either has nothing to sync by: an error, not a cursor of "".
         let body = "<D:multistatus xmlns:D=\"DAV:\"></D:multistatus>";
-        let exec = replay(vec![ok(body)]);
+        let exec = replay(vec![ok(body), ok(body)]);
         let result = sync_events(
             &exec,
             "/dav/cal/alice%40test.local/default/",
