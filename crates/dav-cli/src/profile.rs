@@ -58,6 +58,8 @@ pub(crate) struct Profile {
     pub(crate) pass: String,
     /// The collection to bind, when the account's is not called `default`.
     pub(crate) calendar: Option<String>,
+    /// Where discovery starts instead of the well-known path: a principal a host stored.
+    pub(crate) start: Option<String>,
 }
 
 /// A profile could not be resolved, with a message naming what to fix.
@@ -118,6 +120,7 @@ fn built_in(name: &str) -> Option<Profile> {
         user: user.to_owned(),
         pass: pass.to_owned(),
         calendar: None,
+        start: None,
     })
 }
 
@@ -202,6 +205,7 @@ pub(crate) fn load(name: &str) -> Result<Profile, ProfileError> {
         user: require("USER")?,
         pass: require("PASS")?,
         calendar: values.get("CALENDAR").cloned(),
+        start: None,
     })
 }
 

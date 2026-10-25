@@ -69,6 +69,13 @@ pub(crate) async fn discover_home(
     observer: &dyn ConnectObserver,
 ) -> Result<CalendarHome, CalDavError> {
     let start = exec.absolute(start_href);
+    // The start is the host's configuration (its well-known URL, or a principal it stored), so
+    // its origin may receive the credential once it asks, under the same checks as any other.
+    if !exec.trust_origin(&start) {
+        return Err(CalDavError::protocol(format!(
+            "the configured start {start:?} is a host the credential may not go to"
+        )));
+    }
     let (bootstrap, at) = propfind_principal(exec, &start, observer).await?;
     let principal = current_user_principal(&bootstrap)
         .map(|principal| follow(exec, &at, &principal))

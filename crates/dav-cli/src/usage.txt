@@ -4,12 +4,14 @@ dav — talk to a real CalDAV server through the engine's own adapter.
   RSVP path the product uses. What it prints is what a host would get.
 
 USAGE
-  dav [--profile NAME] [--url U --user U --pass P] [--calendar C] <command>
+  dav [--profile NAME] [--url U --user U --pass P] [--calendar C] [--start URL] <command>
 
 CONNECTION
   --profile, -p NAME   a file in ~/.config/allodia/servers/, or a built-in fixture
   --url --user --pass  an explicit server; overrides the profile's fields
   --calendar C         bind one collection (a real account's is rarely `default`)
+  --start URL          start discovery at URL, such as the principal `info` printed,
+                       instead of /.well-known/caldav: how a host resumes an account
 
 COMMANDS
   profiles                  what is configured, and where each came from

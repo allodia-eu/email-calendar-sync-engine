@@ -18,7 +18,7 @@ use crate::test_support::{
 async fn a_foreign_photo_uri_is_fetched_without_the_account_credentials() {
     let body = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_owned();
     let (foreign, foreign_seen) = mock_server_capturing(vec![body.clone()]);
-    let (base, base_seen) = mock_server_capturing(vec![body]);
+    let (base, base_seen) = mock_server_capturing(vec![challenge(), body]);
     let client = DavClient::new(
         &base,
         Credentials::Basic {
@@ -40,7 +40,7 @@ async fn a_foreign_photo_uri_is_fetched_without_the_account_credentials() {
         !sent.contains("authorization"),
         "credentials leaked to a foreign photo host: {sent}"
     );
-    // The account's own server still authenticates as before.
+    // The account's own server still authenticates, once it asks.
     DavExecutor::get_bytes(&client, "/contacts/ada.jpg")
         .await
         .expect("same-origin get");
@@ -84,6 +84,7 @@ async fn the_scheduling_probe_is_a_bare_options_whose_dav_header_reaches_the_cap
     // that it carries none of the read path's XML framing, and that the `DAV` header of
     // the reply is what the capability is read from.
     let (base, seen) = mock_server_capturing(vec![
+        challenge(),
         multistatus(include_str!("../tests/fixtures/principal.xml")),
         options_response(include_str!("../tests/fixtures/options-dav-stalwart.txt").trim()),
     ]);
@@ -103,7 +104,8 @@ async fn the_scheduling_probe_is_a_bare_options_whose_dav_header_reaches_the_cap
             .calendar_scheduling()
     );
 
-    let probe = &seen.lock().expect("seen")[1];
+    // The first request was asked for the credential and sent again with it.
+    let probe = &seen.lock().expect("seen")[2];
     assert!(
         probe.starts_with("OPTIONS /dav/cal/alice%40test.local/ HTTP/1.1"),
         "the probe must be an OPTIONS on the discovered calendar home: {probe}"
@@ -447,4 +449,22 @@ async fn an_origin_that_leaves_tls_is_not_trusted() {
     let client = basic_client("https://dav.example.com");
     assert!(!client.trust_origin("http://evil.test/principals/u/"));
     assert!(client.trust_origin("https://dav.example.net/principals/u/"));
+}
+
+/// A server that answers `401` with no challenge at all (Yahoo's calendar server does, against
+/// RFC 9110 §15.5.2) is still asking for credentials: a trusted origin is sent them.
+#[tokio::test]
+async fn a_bare_401_from_a_trusted_origin_is_answered() {
+    let unasked =
+        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+    let (base, seen) = mock_server_capturing(vec![unasked, ok_body()]);
+    let client = basic_client(&base);
+
+    DavExecutor::get_bytes(&client, "/principals/a.png")
+        .await
+        .expect("answered after the bare 401");
+
+    let seen = seen.lock().expect("seen");
+    assert!(!seen[0].to_lowercase().contains("authorization"));
+    assert!(seen[1].to_lowercase().contains("authorization: basic"));
 }

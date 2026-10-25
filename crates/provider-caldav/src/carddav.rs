@@ -60,6 +60,8 @@ fn no_address_books() -> ContactUnavailable {
 pub struct CardDavProvider {
     executor: Box<dyn DavExecutor>,
     home_href: String,
+    /// The `current-user-principal` the server named during discovery, if it named one.
+    principal: Option<String>,
     collection: AddressBookId,
     /// Every address book the home listed as writable at connect time. Kept so
     /// [`CardDavProvider::rebind`] can answer "may I write here?" for the collection it
@@ -126,8 +128,9 @@ impl CardDavProvider {
         observer: &dyn ConnectObserver,
     ) -> Result<Self, CalDavError> {
         let home = discover_home(executor.as_ref(), discovery_path, observer).await?;
-        observer.step(&ConnectStep::discovered(&home));
-        let home_href = executor.settle_on(&home);
+        observer.step(&ConnectStep::discovered(&home.href));
+        let home_href = executor.settle_on(&home.href);
+        let principal = home.principal;
         let classes = advertised_classes(executor.as_ref(), &home_href).await?;
         let listed: Vec<&str> = classes.iter().map(String::as_str).collect();
         observer.step(&ConnectStep::negotiated("CardDAV", &listed));
@@ -150,12 +153,21 @@ impl CardDavProvider {
         Ok(Self {
             executor,
             home_href,
+            principal,
             capabilities: capabilities(advertised, writable),
             collection,
             writable_books,
             writable,
             advertised,
         })
+    }
+
+    /// The principal URL the server named during discovery, absolute, when it named one: what a
+    /// host stores and starts the next connect from (RFC 6764 §6, RFC 6352 §9.3), rather than
+    /// the home, which the principal names afresh on every connect.
+    #[must_use]
+    pub fn principal_url(&self) -> Option<&str> {
+        self.principal.as_deref()
     }
 
     /// Rebinds to another address book in the same home, without repeating discovery.

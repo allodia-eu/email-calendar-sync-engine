@@ -23,25 +23,48 @@ use crate::{
     vcard,
 };
 
+/// What the CardDAV walk settled on: the address-book home, and the principal the server named
+/// on the way, which a host stores to start the next connect from (RFC 6764 §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AddressBookHome {
+    /// The address-book home, absolute when the transport has an origin.
+    pub(crate) href: String,
+    /// The `current-user-principal`, when the server named one.
+    pub(crate) principal: Option<String>,
+}
+
 pub(crate) async fn discover_home(
     executor: &dyn DavExecutor,
     start: &str,
     observer: &dyn ConnectObserver,
-) -> Result<String, CalDavError> {
-    // The same walk as CalDAV's (`discovery::discover_home`): every href resolves against the
-    // request that returned it, and each origin it leads to is trusted on the way.
+) -> Result<AddressBookHome, CalDavError> {
+    // The same walk as CalDAV's (`discovery::discover_home`): the start is trusted like any
+    // other origin, every href resolves against the request that returned it, and each origin
+    // it leads to is trusted on the way.
     let start = executor.absolute(start);
-    let (first, at) = principal_props(executor, &start, observer).await?;
-    if let Some(home) = property(&first, "addressbook-home-set") {
-        return follow(executor, &at, &home);
+    if !executor.trust_origin(&start) {
+        return Err(CalDavError::protocol(format!(
+            "the configured start {start:?} is a host the credential may not go to"
+        )));
     }
+    let (first, at) = principal_props(executor, &start, observer).await?;
     let principal = property(&first, "current-user-principal")
-        .ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
-    let principal = follow(executor, &at, &principal)?;
+        .map(|principal| follow(executor, &at, &principal))
+        .transpose()?;
+    if let Some(home) = property(&first, "addressbook-home-set") {
+        return Ok(AddressBookHome {
+            href: follow(executor, &at, &home)?,
+            principal,
+        });
+    }
+    let principal = principal.ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
     let (from_principal, at) = principal_props(executor, &principal, observer).await?;
     let home = property(&from_principal, "addressbook-home-set")
         .ok_or_else(|| CalDavError::protocol("CardDAV address-book home missing"))?;
-    follow(executor, &at, &home)
+    Ok(AddressBookHome {
+        href: follow(executor, &at, &home)?,
+        principal: Some(principal),
+    })
 }
 
 async fn principal_props(

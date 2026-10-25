@@ -98,8 +98,9 @@ impl DavExecutor for RefusesToMove {
         self.0.send_write(request).await
     }
 
-    fn trust_origin(&self, _url: &str) -> bool {
-        false
+    fn trust_origin(&self, url: &str) -> bool {
+        // A bare path names no host, so the live client accepts it too.
+        !url.contains("://")
     }
 }
 

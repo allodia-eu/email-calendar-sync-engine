@@ -82,7 +82,8 @@ async fn discovery_accepts_direct_home_and_fails_closed_on_missing_or_redirected
             &IgnoreConnectSteps
         )
         .await
-        .unwrap(),
+        .unwrap()
+        .href,
         "/books/"
     );
 
