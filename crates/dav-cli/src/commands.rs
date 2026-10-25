@@ -29,19 +29,19 @@ fn account() -> AccountId {
     AccountId::try_from("dav-cli").expect("a constant account id is valid")
 }
 
+/// What the tool names itself in every request: this crate, as itself. It is a developer's
+/// tool, so a provider should not read its traffic as an application's.
+pub(crate) fn user_agent() -> provider_caldav::UserAgent {
+    provider_caldav::UserAgent::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        .expect("the crate's name and version are tokens")
+}
+
 /// Connects and discovers, printing what the adapter concluded about the server.
 ///
 /// The capability line is the first thing worth knowing about an unfamiliar server, and it
 /// decides whether the RSVP verdict is even askable: `calendar_scheduling` is discovered from
 /// the `calendar-auto-schedule` token of RFC 6638 §2, and where it is false, nothing reports
 /// delivery because nothing schedules.
-/// What the tool names itself in every request: this crate, as itself. It is a developer's
-/// tool, so a provider should not read its traffic as an application's.
-fn user_agent() -> provider_caldav::UserAgent {
-    provider_caldav::UserAgent::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
-        .expect("the crate's name and version are tokens")
-}
-
 pub(crate) async fn connect(profile: &Profile) -> Result<CalDavProvider, String> {
     let mut config = CalDavConfig::new(
         profile.url.clone(),

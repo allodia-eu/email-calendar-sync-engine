@@ -372,7 +372,7 @@ let provider = GraphProvider::new(
 );
 ```
 
-Shared mailboxes can be accessed with `GraphClient::for_mailbox(token, MailboxPrincipal::user("shared@example.com"), &tls)`. Token acquisition and refresh are the host's responsibility.
+Shared mailboxes can be accessed with `GraphClient::for_mailbox(token, MailboxPrincipal::user("shared@example.com"), &tls, &retry, &agent)`. Token acquisition and refresh are the host's responsibility.
 
 ### Notes
 
