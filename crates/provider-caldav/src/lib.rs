@@ -79,6 +79,8 @@ mod carddav_write_tests;
 #[cfg(test)]
 mod ctag_sync_tests;
 #[cfg(test)]
+mod double_encoding_tests;
+#[cfg(test)]
 mod vcard_tests;
 #[cfg(test)]
 mod write_outcome_tests;

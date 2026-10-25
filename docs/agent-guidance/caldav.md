@@ -276,6 +276,12 @@ are split escape-aware so the writer and the parser agree.
 - **Every request carries a `User-Agent`** (`engine_http::client`), since reqwest sends
   none and RFC 9110 §10.1.5 says a client should. Yahoo's address-book server answers an
   `addressbook-multiget` without one with a `500`.
+- **A refused href with an octet encoded twice is asked once more, encoded once.** Yahoo
+  lists the events it names after their `UID` with the `%` of `%40` encoded again
+  (`%2540`) and answers a request to that href with a `400`; the resource answers at `%40`.
+  So a `400` to a URL holding `%25` and two hex digits is sent once more with that layer
+  removed (`href::single_encoded`, `DavClient::exchange`); a `400` applied nothing, so a
+  write is safe to repeat. The stored key stays the href the server listed.
 - **A `DAV` header may span several field lines.** Fastmail sends four, with
   `addressbook` and `calendar-auto-schedule` on lines after the first; they are read as one
   comma-separated list (RFC 9110 §5.3).

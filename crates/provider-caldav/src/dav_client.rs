@@ -15,6 +15,7 @@ use crate::{
     credential_hosts::{self, CredentialHosts},
     credential_scope::CredentialScope,
     error::CalDavError,
+    href::single_encoded,
     transport::{Credentials, DavExecutor, DavMethod, HttpResponse, Precondition, WriteRequest},
 };
 
@@ -193,6 +194,10 @@ impl DavClient {
     /// credential's scheme is asked again with it when it is trusted, and never otherwise, so
     /// a host named by remote content (a vCard photo URL) is not sent the password however it
     /// asks.
+    ///
+    /// A `400` to a URL with a doubly encoded octet is asked once more with it encoded once
+    /// ([`single_encoded`]): a server that lists such an href and then refuses it means the
+    /// resource that answers there. A `400` applied nothing, so a write is safe to send again.
     async fn exchange(
         &self,
         method: DavMethod,
@@ -201,9 +206,30 @@ impl DavClient {
         body: Option<bytes::Bytes>,
     ) -> Result<engine_http::Sent, CalDavError> {
         let url = self.target(href)?;
+        let response = self
+            .exchange_at(method, &url, &dress, body.as_ref())
+            .await?;
+        if response.status() != reqwest::StatusCode::BAD_REQUEST {
+            return Ok(response);
+        }
+        match single_encoded(&url) {
+            Some(once) => self.exchange_at(method, &once, &dress, body.as_ref()).await,
+            None => Ok(response),
+        }
+    }
+
+    /// One [`exchange`](Self::exchange) at `url`, answering one challenge.
+    async fn exchange_at(
+        &self,
+        method: DavMethod,
+        url: &reqwest::Url,
+        dress: &impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+        body: Option<&bytes::Bytes>,
+    ) -> Result<engine_http::Sent, CalDavError> {
+        let url = url.clone();
         let build = |authenticate| -> Result<reqwest::RequestBuilder, CalDavError> {
             let request = dress(self.request(method, url.clone(), authenticate)?);
-            Ok(match &body {
+            Ok(match body {
                 Some(body) => request.body(body.clone()),
                 None => request,
             })
