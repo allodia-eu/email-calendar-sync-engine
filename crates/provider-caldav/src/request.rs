@@ -83,6 +83,13 @@ pub(crate) const MEMBER_ETAGS_PROPFIND: &str = concat!(
     r#"<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"#,
 );
 
+/// Reads a calendar object's `schedule-tag` (RFC 6638 §3.2.10), for a delete guarded by one.
+pub(crate) const SCHEDULE_TAG_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
+    r#"<d:prop><c:schedule-tag/></d:prop></d:propfind>"#,
+);
+
 /// Asks a resource who the requester is (RFC 5397): the cheapest request whose answer shows
 /// whether the server knows, and so draws the challenge from one that wants the credential.
 pub(crate) const CURRENT_USER_PRINCIPAL_PROPFIND: &str = concat!(

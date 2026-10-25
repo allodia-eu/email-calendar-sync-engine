@@ -49,6 +49,7 @@ mod credential_scope;
 mod ctag_sync;
 mod dav;
 mod dav_client;
+mod delete_guard;
 mod discovery;
 mod error;
 mod href;
@@ -78,6 +79,10 @@ mod carddav_unit_tests;
 mod carddav_write_tests;
 #[cfg(test)]
 mod ctag_sync_tests;
+#[cfg(test)]
+mod delete_guard_tests;
+#[cfg(test)]
+mod double_encoding_tests;
 #[cfg(test)]
 mod vcard_tests;
 #[cfg(test)]
