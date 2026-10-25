@@ -22,7 +22,7 @@ use store_sqlite::SqliteStore;
 
 use super::*;
 use crate::{
-    href::{redirect_href, resolve_collection},
+    href::{redirect_href, resolve_collection, resolve_reference},
     test_support::{Replay, ok, options},
 };
 
@@ -447,5 +447,17 @@ fn a_redirect_off_tls_is_refused_in_href_space() {
     assert_eq!(
         redirect_href("https://dav.example.net/p/", "http://[::bad"),
         None
+    );
+}
+
+#[test]
+fn a_relative_href_naming_a_url_in_its_query_resolves_against_its_response() {
+    assert_eq!(
+        resolve_reference("https://p1.example.net/u/", "/home/?next=https://x.test/").ok(),
+        Some("https://p1.example.net/home/?next=https://x.test/".to_owned())
+    );
+    assert_eq!(
+        resolve_reference("https://p1.example.net/u/", "https://p2.example.net/h/").ok(),
+        Some("https://p2.example.net/h/".to_owned())
     );
 }

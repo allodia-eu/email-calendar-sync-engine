@@ -21,6 +21,7 @@ engine-provider = { workspace = true, features = ["http"] }
 # One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).
 engine-http = { workspace = true }
 engine-tls = { workspace = true, features = ["reqwest"] }
+bytes = { workspace = true }
 reqwest = { workspace = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }

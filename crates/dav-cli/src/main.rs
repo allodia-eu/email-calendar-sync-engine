@@ -14,7 +14,7 @@
 //! # Usage
 //!
 //! ```text
-//! dav [--profile NAME] [--url U --user U --pass P] [--calendar C] <command>
+//! dav [--profile NAME] [--url U --user U --pass P] [--calendar C] [--start URL] <command>
 //!
 //!   profiles                      what is configured, and where it came from
 //!   info                          connect, and print what discovery concluded
@@ -89,7 +89,7 @@ fn list_profiles() {
 /// Pulls the connection flags off the front of the argument list.
 fn parse_invocation(args: Vec<String>) -> Result<Invocation, String> {
     let mut named: Option<String> = None;
-    let (mut url, mut user, mut pass, mut calendar) = (None, None, None, None);
+    let (mut url, mut user, mut pass, mut calendar, mut start) = (None, None, None, None, None);
     let mut rest = Vec::new();
 
     let mut iter = args.into_iter();
@@ -101,6 +101,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Invocation, String> {
             "--user" => user = Some(take("user")?),
             "--pass" => pass = Some(take("pass")?),
             "--calendar" => calendar = Some(take("calendar")?),
+            "--start" => start = Some(take("start")?),
             _ => rest.push(arg),
         }
     }
@@ -113,6 +114,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Invocation, String> {
             user: String::new(),
             pass: String::new(),
             calendar: None,
+            start: None,
         },
     };
     if let Some(value) = url {
@@ -126,6 +128,9 @@ fn parse_invocation(args: Vec<String>) -> Result<Invocation, String> {
     }
     if calendar.is_some() {
         profile.calendar = calendar;
+    }
+    if start.is_some() {
+        profile.start = start;
     }
     if profile.url.is_empty() || profile.user.is_empty() {
         return Err(
@@ -151,6 +156,9 @@ async fn run(args: Vec<String>) -> Result<(), String> {
     println!("as        {}", profile.user);
     if let Some(calendar) = &profile.calendar {
         println!("calendar  {calendar}");
+    }
+    if let Some(start) = &profile.start {
+        println!("start     {start}");
     }
     println!();
 

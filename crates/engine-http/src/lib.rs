@@ -55,7 +55,7 @@ pub mod test_server;
 
 pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
 pub use deadline::{Exchange, chunk_within, client};
-pub use error::SendError;
+pub use error::{SendError, gateway_without_answer};
 pub use gate::{GatePermit, RequestGate};
 pub use observed::ObservedConnection;
 pub use observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver};

@@ -139,6 +139,7 @@ impractical:
 |---|---|---|
 | JMAP · IMAP · CalDAV · CardDAV | the Dockerized **Stalwart** harness (`docker/stalwart`) | `scripts/ci/stalwart-live.sh` / the `stalwart-live` skill; `crates/provider-{jmap,imap}/tests/live_*.rs` |
 | CalDAV (a second implementation) | the **SabreDAV** fixture (`docker/sabredav`) | `crates/provider-caldav/tests/live_sabredav.rs` |
+| CalDAV · CardDAV (a real deployment) | the **Nextcloud** fixture (`docker/nextcloud`) | `crates/provider-caldav/tests/live_nextcloud.rs`, `live_nextcloud_contacts.rs` |
 | Gmail · Google Calendar · Google People | a **throwaway Google test account** | `tools/google-oauth` mints the token; `crates/provider-google/tests/live_*.rs` |
 | Microsoft Graph | a **test Microsoft account** | `tools/graph-oauth` mints the token; `crates/provider-graph/tests/live_*.rs` |
 | IMAP/SMTP **SASL OAuth** (`OAUTHBEARER`, `XOAUTH2`) | a **throwaway Gmail account**; a **Yahoo test account** once its mail scope is approved | `tools/google-oauth token` (its default scope is already `https://mail.google.com/`) and `tools/yahoo-oauth` mint the tokens; `crates/provider-imap/tests/live_imap_oauth.rs`. Gmail advertises **both** mechanisms and so does Yahoo (observed — Yahoo's docs say otherwise), so the target does not pick the mechanism; the client's preference does. |

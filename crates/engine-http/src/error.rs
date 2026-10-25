@@ -108,6 +108,16 @@ impl SendError {
     }
 }
 
+/// Whether `status` is a gateway saying the server behind it gave no answer: `502 Bad Gateway`
+/// or `504 Gateway Timeout` (RFC 9110 §15.6.3, §15.6.5).
+///
+/// Every other status is the server's own answer. These two are a lost answer in disguise, so
+/// a request that changes something and meets one may have been applied.
+#[must_use]
+pub fn gateway_without_answer(status: u16) -> bool {
+    matches!(status, 502 | 504)
+}
+
 impl core::fmt::Display for SendError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match &self.cause {

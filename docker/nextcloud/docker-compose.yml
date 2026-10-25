@@ -1,0 +1,42 @@
+# Deterministic Nextcloud CalDAV and CardDAV fixture for provider-caldav tests: the third DAV
+# server beside Stalwart (docker/stalwart/) and SabreDAV (docker/sabredav/). Nextcloud is
+# SabreDAV underneath with its own authentication, principal layout and default collections,
+# and it is a common choice for a self-hosted calendar and address book. See README.md.
+#
+# `docker compose up -d --wait` installs Nextcloud on SQLite, runs the post-installation hook
+# (which creates the account's calendar and address book and writes a readiness marker) and
+# reports healthy only then. Host port 18082 avoids Stalwart's 18080 and SabreDAV's 18081.
+
+name: nextcloud-harness
+
+services:
+  nextcloud:
+    # nextcloud:35.0.2-apache, pinned by multi-arch digest (linux/amd64 + linux/arm64).
+    # Bump deliberately: re-resolve the digest and run the gated suite.
+    image: nextcloud:35.0.2-apache@sha256:89af7ee7a96ff5e9668280566209268ae6b2d02327f6ef6d56f6d68228cf9431
+    container_name: pim-nextcloud-harness
+    environment:
+      SQLITE_DATABASE: nextcloud
+      # Throwaway harness credentials, committed on purpose. Never real data.
+      NEXTCLOUD_ADMIN_USER: alice
+      NEXTCLOUD_ADMIN_PASSWORD: nextcloud-alice-pw
+      NEXTCLOUD_TRUSTED_DOMAINS: 127.0.0.1 localhost
+      HARNESS_EMAIL: alice@test.local
+    ports:
+      # Loopback-only, high port. CalDAV and CardDAV over plaintext HTTP.
+      - "127.0.0.1:18082:80"
+    volumes:
+      - ./hooks:/docker-entrypoint-hooks.d/post-installation:ro
+      # The calendar seed the other two harnesses use.
+      - ../stalwart/seed/calendar:/seed/calendar:ro
+    tmpfs:
+      # A fresh install every `up`, so no run inherits another's. `docker compose restart` keeps
+      # the installed config and loses this, so recreate the container instead.
+      - /var/www/html/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test -f /tmp/.nextcloud-harness-ready && curl -fsS http://127.0.0.1/status.php | grep -q '"installed":true'
+      interval: 5s
+      timeout: 5s
+      retries: 60

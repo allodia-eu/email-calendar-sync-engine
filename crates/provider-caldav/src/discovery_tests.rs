@@ -76,7 +76,7 @@ async fn a_relative_redirect_after_an_origin_change_stays_on_the_new_origin() {
 }
 
 /// A `Replay` whose connection refuses to move — what the live client answers when
-/// the hop names a plaintext origin (`DavExecutor::adopt_origin`).
+/// the hop names a plaintext origin (`DavExecutor::trust_origin`).
 struct RefusesToMove(Replay);
 
 #[async_trait::async_trait]
@@ -98,8 +98,9 @@ impl DavExecutor for RefusesToMove {
         self.0.send_write(request).await
     }
 
-    fn adopt_origin(&self, _url: &str) -> bool {
-        false
+    fn trust_origin(&self, url: &str) -> bool {
+        // A bare path names no host, so the live client accepts it too.
+        !url.contains("://")
     }
 }
 
@@ -392,5 +393,21 @@ async fn a_response_without_a_home_set_is_an_error() {
         discover_home(&exec, "/x", &IgnoreConnectSteps)
             .await
             .is_err()
+    );
+}
+
+#[tokio::test]
+async fn a_home_on_a_host_the_connection_may_not_move_to_fails_the_walk() {
+    // Listing it anyway would send the request without the credential and read the refusal as
+    // the server's answer about the account.
+    let exec = RefusesToMove(Replay::new(vec![ok(
+        r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/u/</d:href><d:propstat><d:prop><c:calendar-home-set><d:href>http://dav.example.net/u/calendars/</d:href></c:calendar-home-set></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#,
+    )]));
+    let err = discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("may not go to"),
+        "unexpected: {err}"
     );
 }

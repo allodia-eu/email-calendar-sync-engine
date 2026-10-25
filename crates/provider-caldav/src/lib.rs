@@ -39,11 +39,15 @@
 //!   document rather than a property patch.
 //! - `provider` — the [`Provider`](engine_provider::Provider) implementation.
 
+mod caldav_config;
 mod calendar;
 mod carddav;
 mod carddav_config;
 mod carddav_ops;
+mod credential_hosts;
+mod credential_scope;
 mod dav;
+mod dav_client;
 mod discovery;
 mod error;
 mod href;
@@ -72,11 +76,15 @@ mod carddav_unit_tests;
 mod carddav_write_tests;
 #[cfg(test)]
 mod vcard_tests;
+#[cfg(test)]
+mod write_outcome_tests;
 
+pub use caldav_config::CalDavConfig;
 pub use carddav::CardDavProvider;
 pub use carddav_config::CardDavConfig;
+pub use credential_hosts::CredentialHosts;
 pub use error::CalDavError;
-pub use provider::{CalDavConfig, CalDavProvider};
+pub use provider::CalDavProvider;
 pub use transport::Credentials;
 
 /// Parses arbitrary bytes as an iCalendar object resource through the full

@@ -215,7 +215,7 @@ pub(crate) fn json(fixture: &str) -> Value {
 /// without a live token. Routes are matched in order, so list the most specific
 /// first. The background thread serves connections for the test's lifetime.
 pub(crate) fn replay_server(routes: Vec<(&'static str, Value)>) -> String {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let routes: Vec<(String, String)> = routes
         .into_iter()
         .map(|(key, doc)| (key.to_owned(), doc.to_string()))
@@ -225,9 +225,8 @@ pub(crate) fn replay_server(routes: Vec<(&'static str, Value)>) -> String {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let mut buf = [0u8; 8192];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let request = String::from_utf8_lossy(&buf[..n]);
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            let request = String::from_utf8_lossy(&request);
             let path = request
                 .lines()
                 .next()
@@ -269,52 +268,13 @@ pub(crate) fn capturing_server(
     );
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
-            let request = read_full_request(&mut stream);
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            let request = String::from_utf8_lossy(&request).into_owned();
             let _ = tx.send(request);
             let _ = stream.write_all(response.as_bytes());
         }
     });
     (format!("http://{addr}"), rx)
-}
-
-/// Reads a full HTTP request (headers + `Content-Length` body) off `stream`.
-fn read_full_request(stream: &mut std::net::TcpStream) -> String {
-    use std::io::Read;
-    let mut data = Vec::new();
-    let mut buf = [0u8; 4096];
-    while let Ok(n) = stream.read(&mut buf) {
-        if n == 0 {
-            break;
-        }
-        data.extend_from_slice(&buf[..n]);
-        // Stop once the headers and exactly `Content-Length` more body bytes are in.
-        if request_complete(&data) {
-            break;
-        }
-    }
-    String::from_utf8_lossy(&data).into_owned()
-}
-
-/// Whether `data` holds a complete HTTP request: the header terminator plus at least
-/// the `Content-Length` body bytes that follow it.
-fn request_complete(data: &[u8]) -> bool {
-    let Some(header_end) = data
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
-    else {
-        return false;
-    };
-    let headers = String::from_utf8_lossy(&data[..header_end]);
-    let len = headers
-        .lines()
-        .find_map(|line| {
-            line.to_ascii_lowercase()
-                .strip_prefix("content-length:")
-                .and_then(|v| v.trim().parse::<usize>().ok())
-        })
-        .unwrap_or(0);
-    data.len() >= header_end + len
 }
 
 /// Decodes a standard RFC 4648 base64 string (test-only; the crate itself only

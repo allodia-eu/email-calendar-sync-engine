@@ -5,34 +5,10 @@
 //! it can neither exercise the transport nor observe a negotiated HTTP version. Split
 //! out of `transport.rs` to keep that file under the line limit.
 
-use std::sync::{Arc, Mutex};
-
 use super::*;
 use crate::test_support::{
-    mock_server, mock_server_bytes, multistatus, options_response, redirect,
+    mock_server, mock_server_bytes, mock_server_capturing, multistatus, options_response, redirect,
 };
-
-/// Serves canned responses and hands back every request's raw head, so a test can
-/// assert on the headers that actually went out (notably `Authorization`).
-fn mock_server_capturing(responses: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
-    use std::io::{Read, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().expect("local addr");
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&seen);
-    std::thread::spawn(move || {
-        for response in responses {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut buf = [0u8; 8192];
-            let read = stream.read(&mut buf).unwrap_or(0);
-            sink.lock()
-                .expect("seen lock")
-                .push(String::from_utf8_lossy(&buf[..read]).into_owned());
-            let _ = stream.write_all(response.as_bytes());
-        }
-    });
-    (format!("http://{addr}"), seen)
-}
 
 /// A vCard `PHOTO;VALUE=uri` is *card content* — it can name any host. Resolving it
 /// through `Url::join` yields that foreign absolute URL unchanged, so authenticating
@@ -42,7 +18,7 @@ fn mock_server_capturing(responses: Vec<String>) -> (String, Arc<Mutex<Vec<Strin
 async fn a_foreign_photo_uri_is_fetched_without_the_account_credentials() {
     let body = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_owned();
     let (foreign, foreign_seen) = mock_server_capturing(vec![body.clone()]);
-    let (base, base_seen) = mock_server_capturing(vec![body]);
+    let (base, base_seen) = mock_server_capturing(vec![challenge(), body]);
     let client = DavClient::new(
         &base,
         Credentials::Basic {
@@ -64,7 +40,7 @@ async fn a_foreign_photo_uri_is_fetched_without_the_account_credentials() {
         !sent.contains("authorization"),
         "credentials leaked to a foreign photo host: {sent}"
     );
-    // The account's own server still authenticates as before.
+    // The account's own server still authenticates, once it asks.
     DavExecutor::get_bytes(&client, "/contacts/ada.jpg")
         .await
         .expect("same-origin get");
@@ -108,6 +84,7 @@ async fn the_scheduling_probe_is_a_bare_options_whose_dav_header_reaches_the_cap
     // that it carries none of the read path's XML framing, and that the `DAV` header of
     // the reply is what the capability is read from.
     let (base, seen) = mock_server_capturing(vec![
+        challenge(),
         multistatus(include_str!("../tests/fixtures/principal.xml")),
         options_response(include_str!("../tests/fixtures/options-dav-stalwart.txt").trim()),
     ]);
@@ -127,7 +104,8 @@ async fn the_scheduling_probe_is_a_bare_options_whose_dav_header_reaches_the_cap
             .calendar_scheduling()
     );
 
-    let probe = &seen.lock().expect("seen")[1];
+    // The first request was asked for the credential and sent again with it.
+    let probe = &seen.lock().expect("seen")[2];
     assert!(
         probe.starts_with("OPTIONS /dav/cal/alice%40test.local/ HTTP/1.1"),
         "the probe must be an OPTIONS on the discovered calendar home: {probe}"
@@ -150,6 +128,8 @@ async fn a_server_advertising_no_scheduling_class_yields_a_non_scheduling_capabi
     // organizer nothing, so the capability must say so.
     let base = mock_server(vec![
         multistatus(include_str!("../tests/fixtures/principal.xml")),
+        // What the server answers the probe for the requester before its classes are read.
+        multistatus(r#"<d:multistatus xmlns:d="DAV:"/>"#),
         options_response(include_str!("../tests/fixtures/options-dav-sabredav.txt").trim()),
     ]);
     let provider = crate::CalDavProvider::connect(crate::CalDavConfig::new(
@@ -253,13 +233,15 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
     let base = mock_server(vec![
         redirect("/dav/cal"),
         multistatus(include_str!("../tests/fixtures/principal.xml")),
+        // What the server answers the probe for the requester before its classes are read.
+        multistatus(r#"<d:multistatus xmlns:d="DAV:"/>"#),
         options_response("1, 3, calendar-access"),
     ]);
     let steps: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
     let recorded = std::sync::Arc::clone(&steps);
     let provider = crate::CalDavProvider::connect(
         crate::CalDavConfig::new(
-            base,
+            base.clone(),
             Credentials::Basic {
                 username: "alice".to_owned(),
                 password: "pw".to_owned(),
@@ -286,11 +268,13 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
     assert_eq!(
         *steps.lock().unwrap(),
         [
-            "redirected /.well-known/caldav -> /dav/cal",
+            // Each href absolute: discovery resolves what it reads against the request that
+            // returned it (RFC 4918 §8.3).
+            format!("redirected {base}/.well-known/caldav -> {base}/dav/cal"),
             // CalDAV emits no `Authenticated` (no discrete auth exchange) and no
             // `TlsEstablished` (an HTTP adapter learns its TLS version from a response,
             // after the connect phase).
-            "discovered /dav/cal/alice%40test.local/",
+            format!("discovered {base}/dav/cal/alice%40test.local/"),
         ]
     );
     assert_eq!(
@@ -304,6 +288,8 @@ async fn a_connect_without_an_observer_still_discovers() {
     // Additive: the pre-existing config path is untouched.
     let base = mock_server(vec![
         multistatus(include_str!("../tests/fixtures/principal.xml")),
+        // What the server answers the probe for the requester before its classes are read.
+        multistatus(r#"<d:multistatus xmlns:d="DAV:"/>"#),
         options_response("1, 3, calendar-access"),
     ]);
     let provider = crate::CalDavProvider::connect(crate::CalDavConfig::new(
@@ -349,17 +335,20 @@ async fn config_debug_shows_the_observer_without_leaking_the_password() {
     );
 }
 
-/// The counterpart of the foreign-photo rule: when the account's *own* server redirects
-/// discovery to another host, that host becomes the account's server. Credentials follow
-/// it, and the relative hrefs it then issues resolve onto it rather than onto the domain
-/// discovery started from.
-#[tokio::test]
-async fn credentials_follow_a_discovery_redirect_to_a_new_origin() {
-    let body = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_owned();
-    let (moved, moved_seen) = mock_server_capturing(vec![body.clone()]);
-    let (base, _base_seen) = mock_server_capturing(vec![body]);
-    let client = DavClient::new(
-        &base,
+/// A challenge in the credential's scheme, then an answer: what a server sends a request that
+/// arrives without credentials and then one that carries them.
+fn challenge() -> String {
+    "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"dav\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        .to_owned()
+}
+
+fn ok_body() -> String {
+    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_owned()
+}
+
+fn basic_client(base: &str) -> DavClient {
+    DavClient::new(
+        base,
         Credentials::Basic {
             username: "alice".to_owned(),
             password: "super-secret".to_owned(),
@@ -367,28 +356,80 @@ async fn credentials_follow_a_discovery_redirect_to_a_new_origin() {
         &engine_tls::TlsClientConfig::default(),
         &engine_http::RetryConfig::default(),
     )
-    .expect("client");
+    .expect("client")
+}
 
-    client.adopt_origin(&format!("{moved}/principals/u/"));
-    // A *relative* href now resolves onto the adopted origin, with credentials.
-    DavExecutor::get_bytes(&client, "/calendars/u/")
+/// The counterpart of the foreign-photo rule: an origin the account's own server led
+/// discovery to may receive the credential, but only once it asks for it (RFC 9110 §11.5:
+/// a protection space does not extend past its own server), and from then on unasked.
+#[tokio::test]
+async fn a_trusted_origin_is_sent_the_credential_only_once_it_asks() {
+    let (moved, moved_seen) = mock_server_capturing(vec![challenge(), ok_body(), ok_body()]);
+    let (base, _) = mock_server_capturing(vec![]);
+    let client = basic_client(&base);
+
+    assert!(client.trust_origin(&format!("{moved}/principals/u/")));
+    let photo = format!("{moved}/calendars/u/a.png");
+    DavExecutor::get_bytes(&client, &photo)
         .await
-        .expect("get after the move");
-    let sent = moved_seen.lock().expect("seen").join("\n").to_lowercase();
-    assert!(
-        sent.contains("get /calendars/u/ "),
-        "the request did not resolve onto the adopted origin: {sent}"
-    );
-    assert!(
-        sent.contains("authorization: basic"),
-        "credentials did not follow the server's own redirect: {sent}"
+        .expect("answered after the challenge");
+    DavExecutor::get_bytes(&client, &photo)
+        .await
+        .expect("answered again");
+
+    let seen = moved_seen.lock().expect("seen");
+    let carried: Vec<bool> = seen
+        .iter()
+        .map(|request| request.to_lowercase().contains("authorization: basic"))
+        .collect();
+    assert_eq!(
+        carried,
+        [false, true, true],
+        "unasked, answered, then sent: {seen:?}"
     );
 }
 
-/// `adopt_origin` moves the connection, so it must not be reachable by anything a
-/// server merely *mentions*. Only a resolvable, origin-bearing URL moves it.
+/// A foreign host that *asks* for the credential still does not get it: only an origin the
+/// account's server led discovery to may answer a challenge.
 #[tokio::test]
-async fn adopt_origin_ignores_a_url_that_names_no_origin() {
+async fn a_foreign_photo_host_that_asks_for_the_credential_is_not_sent_it() {
+    let (foreign, foreign_seen) = mock_server_capturing(vec![challenge(), ok_body()]);
+    let (base, _) = mock_server_capturing(vec![]);
+    let client = basic_client(&base);
+
+    let err = DavExecutor::get_bytes(&client, &format!("{foreign}/p.png"))
+        .await
+        .expect_err("the challenge stands");
+    assert!(err.to_string().contains("401"), "{err}");
+    let seen = foreign_seen.lock().expect("seen");
+    assert_eq!(seen.len(), 1, "asked once, never again with the password");
+    assert!(!seen[0].to_lowercase().contains("authorization"));
+}
+
+/// Settling on the home moves where relative hrefs resolve: every href a response from the
+/// home carries is relative to the home's origin (RFC 4918 §8.3).
+#[tokio::test]
+async fn settling_on_a_home_resolves_relative_hrefs_onto_its_origin() {
+    let (moved, moved_seen) = mock_server_capturing(vec![challenge(), ok_body()]);
+    let (base, _) = mock_server_capturing(vec![]);
+    let client = basic_client(&base);
+    let home = format!("{moved}/calendars/u/");
+
+    assert!(client.trust_origin(&home));
+    assert_eq!(client.settle_on(&home), "/calendars/u/");
+    DavExecutor::get_bytes(&client, "/calendars/u/a.png")
+        .await
+        .expect("get after settling");
+
+    let sent = moved_seen.lock().expect("seen").join("\n").to_lowercase();
+    assert!(sent.contains("get /calendars/u/a.png "), "{sent}");
+    assert!(sent.contains("authorization: basic"), "{sent}");
+}
+
+/// Only a resolvable, origin-bearing URL names anything to trust or settle on: a href a
+/// server merely mentions moves nothing.
+#[tokio::test]
+async fn a_url_that_names_no_origin_trusts_and_moves_nothing() {
     let (base, _) = mock_server_capturing(vec![]);
     let client = DavClient::new(
         &base,
@@ -399,35 +440,37 @@ async fn adopt_origin_ignores_a_url_that_names_no_origin() {
     .expect("client");
     let before = format!("{client:?}");
     for noise in ["/principals/u/", "not a url", "data:text/plain,hi", ""] {
-        assert!(client.adopt_origin(noise), "refused {noise:?}");
+        assert!(client.trust_origin(noise), "refused {noise:?}");
+        assert_eq!(client.settle_on(noise), noise);
         assert_eq!(format!("{client:?}"), before, "moved by {noise:?}");
     }
 }
 
-/// The other half of "credentials follow the server's own redirect": they follow it only
-/// while it stays on TLS. `href::redirect_href` cannot catch this hop — discovery starts
-/// at a bare well-known path, which names no scheme — so the connection is what refuses,
-/// and the walk fails rather than putting the account's password on the wire in the clear.
+/// An origin the server leads discovery to is trusted only while it stays on TLS.
+/// `href::redirect_href` cannot catch this hop, since discovery starts at a bare well-known
+/// path that names no scheme, so the connection is what refuses, and the walk fails rather
+/// than putting the account's password on the wire in the clear.
 #[tokio::test]
-async fn adopt_origin_refuses_a_hop_that_leaves_tls() {
-    let client = DavClient::new(
-        "https://dav.example.com",
-        Credentials::Basic {
-            username: "alice".to_owned(),
-            password: "super-secret".to_owned(),
-        },
-        &engine_tls::TlsClientConfig::default(),
-        &engine_http::RetryConfig::default(),
-    )
-    .expect("client");
-    let before = format!("{client:?}");
-    assert!(!client.adopt_origin("http://evil.test/principals/u/"));
-    assert_eq!(
-        format!("{client:?}"),
-        before,
-        "the downgrade moved the base"
-    );
-    // The same hop over TLS is the case the feature exists for.
-    assert!(client.adopt_origin("https://dav.example.net/principals/u/"));
-    assert!(format!("{client:?}").contains("dav.example.net"));
+async fn an_origin_that_leaves_tls_is_not_trusted() {
+    let client = basic_client("https://dav.example.com");
+    assert!(!client.trust_origin("http://evil.test/principals/u/"));
+    assert!(client.trust_origin("https://dav.example.net/principals/u/"));
+}
+
+/// A server that answers `401` with no challenge at all (Yahoo's calendar server does, against
+/// RFC 9110 §15.5.2) is still asking for credentials: a trusted origin is sent them.
+#[tokio::test]
+async fn a_bare_401_from_a_trusted_origin_is_answered() {
+    let unasked =
+        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+    let (base, seen) = mock_server_capturing(vec![unasked, ok_body()]);
+    let client = basic_client(&base);
+
+    DavExecutor::get_bytes(&client, "/principals/a.png")
+        .await
+        .expect("answered after the bare 401");
+
+    let seen = seen.lock().expect("seen");
+    assert!(!seen[0].to_lowercase().contains("authorization"));
+    assert!(seen[1].to_lowercase().contains("authorization: basic"));
 }

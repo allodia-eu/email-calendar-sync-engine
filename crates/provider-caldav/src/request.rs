@@ -74,6 +74,13 @@ pub(crate) const ADDRESS_BOOK_QUERY_REPORT: &str = concat!(
     r#"<a:filter/></a:addressbook-query>"#,
 );
 
+/// Asks a resource who the requester is (RFC 5397): the cheapest request whose answer shows
+/// whether the server knows, and so draws the challenge from one that wants the credential.
+pub(crate) const CURRENT_USER_PRINCIPAL_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>"#,
+);
+
 /// Builds a `sync-collection` REPORT body (RFC 6578 §3.2) for the given prior
 /// `sync_token` — empty for an initial (full) sync.
 pub(crate) fn sync_collection_report(sync_token: &str) -> String {

@@ -46,6 +46,9 @@ pub(crate) async fn connect(profile: &Profile) -> Result<CalDavProvider, String>
     if let Some(calendar) = &profile.calendar {
         config = config.with_calendar(calendar.clone());
     }
+    if let Some(start) = &profile.start {
+        config = config.with_discovery_path(start.clone());
+    }
     CalDavProvider::connect(config)
         .await
         .map_err(|err| format!("connect failed: {err}"))
@@ -54,6 +57,10 @@ pub(crate) async fn connect(profile: &Profile) -> Result<CalDavProvider, String>
 /// Prints what discovery learned: the capabilities that decide what the other commands can do.
 pub(crate) fn describe(provider: &CalDavProvider) {
     let capabilities = provider.connection_info().capabilities;
+    println!(
+        "  principal           {}   (what a host stores; pass it to --start)",
+        provider.principal_url().unwrap_or("(none named)")
+    );
     println!("  calendars           {}", capabilities.calendars());
     println!("  calendar writes     {}", capabilities.calendar_writes());
     println!(

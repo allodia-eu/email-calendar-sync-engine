@@ -4,7 +4,8 @@
 //! Behind the `test-server` feature, which only the adapters' dev-dependencies turn on, so
 //! each adapter's suite drives its own funnel against the same servers rather than keeping a
 //! copy of them. Plain HTTP on the loopback address, in the caller's runtime, so a test on
-//! tokio's paused clock passes a one-minute bound in no wall time.
+//! tokio's paused clock passes a one-minute bound in no wall time. [`read_request_blocking`]
+//! is the same request framing for the blocking one-shot mocks the adapters keep themselves.
 //!
 //! ⚠️ **On the paused clock, bytes in flight lose to every timer.** tokio moves the paused
 //! clock to the next timer whenever every task is waiting, and a task waiting for a socket
@@ -261,11 +262,8 @@ async fn answer(
 /// its length, or `None` once the client has closed the connection.
 async fn read_request(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Option<usize> {
     loop {
-        if let Some(head) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
-            let end = head + 4 + content_length(&buffer[..head]);
-            if buffer.len() >= end {
-                return Some(end);
-            }
+        if let Some(end) = request_end(buffer) {
+            return Some(end);
         }
         let mut chunk = [0_u8; 8 * 1024];
         match stream.read(&mut chunk).await {
@@ -273,6 +271,36 @@ async fn read_request(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Option<us
             Ok(read) => buffer.extend_from_slice(&chunk[..read]),
         }
     }
+}
+
+/// Reads one whole request (its head and a `Content-Length` body) off a blocking socket and
+/// returns it, or whatever arrived before the client closed the connection.
+///
+/// For the one-shot mocks the adapters' suites keep, which answer a request and close: a
+/// socket closed with part of the request still unread is reset rather than closed, and the
+/// client can meet the reset before the reply. A single `read` returns whatever has arrived,
+/// which is often the head alone, so a mock that answers after one turns the reply into a
+/// transport error some runs and not others (observed on Windows as `10053`/`10054`).
+pub fn read_request_blocking(stream: &mut impl std::io::Read) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    loop {
+        if let Some(end) = request_end(&buffer) {
+            buffer.truncate(end);
+            return buffer;
+        }
+        let mut chunk = [0_u8; 8 * 1024];
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return buffer,
+            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+        }
+    }
+}
+
+/// Where the first request in `buffer` ends, once all of it is there.
+fn request_end(buffer: &[u8]) -> Option<usize> {
+    let head = buffer.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let end = head + 4 + content_length(&buffer[..head]);
+    (buffer.len() >= end).then_some(end)
 }
 
 /// The `Content-Length` a request head declares, or zero.
@@ -284,3 +312,7 @@ fn content_length(head: &[u8]) -> usize {
         .and_then(|(_, value)| value.trim().parse().ok())
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+#[path = "test_server_tests.rs"]
+mod tests;

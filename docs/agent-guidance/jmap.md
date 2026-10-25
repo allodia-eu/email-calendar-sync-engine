@@ -560,6 +560,12 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   it; `patch_event` → an `update` PatchObject; `delete_event` → a `destroy`. The
   `calendar_writes` capability is advertised whenever the account exposes calendars and is
   not `isReadOnly`, exactly as `mail_writes` is.
+  - **An answer that does not say what became of the object is unconfirmed**, not a
+    `notFound` conflict: one naming the object in neither `created`/`notCreated` (nor the
+    update and destroy pairs), one that is not JSON or lacks the call, and
+    `serverPartialFail` (`JmapError::after_write`). A conflict would send a host to refetch
+    and create again, and the first create may exist. `ContactCard/set` follows the same
+    rule (`providers.md`).
   - **A meeting create first resolves the organiser's account identity.**
     `ParticipantIdentity/get` supplies the participant id whose `calendarAddress` matches
     `EventDraft::meeting.organiser`. A foreign organiser address is refused. The create sets
@@ -604,8 +610,9 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     end state holds, which is what makes an outbox retry of a delete whose response was lost
     safe (the same contract CalDAV gets from treating `404`/`410` as success).
   - **`updated: {id: null}` is an acknowledgement**, and a target the server mentions in
-    *neither* the applied nor the failed map is a synthetic `notFound` conflict — never a
-    silent success. (Both hard-won on the `Email/set` path; see **Mail writes**.)
+    *neither* the applied nor the failed map is unconfirmed (above), never a silent success.
+    (Both hard-won on the `Email/set` path, where the second is still a `notFound` conflict;
+    see **Mail writes**.)
   - There is **no whole-document write verb**: a JSCalendar object is not a file whose bytes
     the client owns, so `Provider::put_event` stays unimplemented here even though the
     adapter advertises `calendar_writes` — that capability covers the neutral spine, not the

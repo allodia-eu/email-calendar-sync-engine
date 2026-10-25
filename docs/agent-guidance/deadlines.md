@@ -52,9 +52,11 @@ would cut off a slow upload of a large attachment.
 ## Classification: a timeout is a lost connection, and a send is never repeated
 
 A bound that fires fails the operation exactly as a connection lost at that point does. For
-everything but a submission that is the class the transport already gave a lost connection:
-`Retryable` on every adapter (`ImapError::Io`, and each HTTP adapter's `transport_class`,
-which is `Retryable` for everything but a body that did not decode).
+everything but a submission and a calendar or contact write that is the class the transport
+already gave a lost connection: `Retryable` on every adapter (`ImapError::Io`, and each HTTP
+adapter's `transport_class`, which is `Retryable` for everything but a body that did not
+decode). A calendar or contact write follows the submission rule below, for the reason
+`providers.md` gives: its caller must not be told nothing changed when something may have.
 
 **A submission is the exception, and the reason the HTTP funnel reports more than a
 timeout.** `engine_http::SendError::may_have_been_received` is `false` only when the server
@@ -76,18 +78,22 @@ that never sends a message twice.
 | SMTP | the message | `stall` per 8 KiB | `Retryable`: its end never left |
 | SMTP | the final `.` itself (written after the hand-over) | `stall` | `NeedsConfirmation`: it may have reached the server |
 | SMTP | the reply to the final `.` | `submission` | `NeedsConfirmation` |
-| JMAP | session, method calls (sync and every `/set`), blob upload and download | `stall`, then `reply` | `Retryable` |
+| JMAP | session, method calls (sync, and every `/set` but a calendar or contact one), blob upload and download | `stall`, then `reply` | `Retryable` |
+| JMAP | a `CalendarEvent/set` or `ContactCard/set` | `stall`, then `reply` | `NeedsConfirmation` once it may have been received, `Retryable` before |
 | JMAP | the `Email/set` + `EmailSubmission/set` request | `stall`, then `submission` | `NeedsConfirmation` once it may have been received, `Retryable` before |
 | JMAP | the EventSource stream | `ping` + `reply` per read | `Retryable`: the host reconnects |
-| Graph | reads, deltas, `$value`, every write (`PATCH`, `POST`, `DELETE`, drafts) | `stall`, then `reply` | `Retryable` |
+| Graph | reads, deltas, `$value`, mail and draft writes (`PATCH`, `POST`, `DELETE`) | `stall`, then `reply` | `Retryable` |
+| Graph | an event or contact create, patch, RSVP or delete | `stall`, then `reply` | `NeedsConfirmation` once it may have been received, `Retryable` before |
 | Graph | `sendMail` | `stall`, then `submission` | `NeedsConfirmation` once it may have been received, `Retryable` before |
-| Google | Gmail, Calendar and People reads and writes, drafts, `messages.insert` | `stall`, then `reply` | `Retryable` |
+| Google | Gmail, Calendar and People reads, Gmail writes, drafts, `messages.insert` | `stall`, then `reply` | `Retryable` |
+| Google | a Calendar or People create, patch, RSVP or delete | `stall`, then `reply` | `NeedsConfirmation` once it may have been received, `Retryable` before |
 | Google | `messages.send` | `stall`, then `submission` | `NeedsConfirmation` once it may have been received, `Retryable` before |
 | CalDAV, CardDAV | `PROPFIND`, `REPORT`, `OPTIONS`, `GET` | `stall`, then `reply` | `Retryable` |
-| CalDAV, CardDAV | `PUT`, `DELETE`, a `PUT` the server schedules from included | `stall`, then `reply` | `Retryable`: the precondition the write carries makes the replay safe (`caldav.md`) |
+| CalDAV, CardDAV | `PUT`, `DELETE`, a `PUT` the server schedules from included | `stall`, then `reply` | `NeedsConfirmation` once it may have been received, `Retryable` before (`caldav.md`) |
 
-**An answer is the server's own unless it says otherwise.** After a submission may have been
-received, a status the server sends is a refusal and keeps its class, with two exceptions
+**An answer is the server's own unless it says otherwise.** After a submission, or a calendar
+or contact write, may have been received, a status the server sends is a refusal and keeps
+its class, with two exceptions
 that are lost answers in disguise: a gateway's `502` or `504` says the server behind it gave
 none, and a success whose body cannot be read (or a JMAP response missing the call) is an
 answer nobody can read. Both are `NeedsConfirmation`. A submission whose hand-over could not
@@ -101,7 +107,9 @@ time and a wait with none fails as a hang rather than hanging the run: `deadline
 in `engine-http`, each HTTP adapter and `provider-imap`, plus `deadline_imap_tests.rs`,
 `deadline_submit_tests.rs` and the watch suites. `engine_http::test_server` (behind the
 `test-server` feature, which only dev-dependencies turn on) is the silent and the trickling
-server the HTTP adapters share.
+server the HTTP adapters share, and its `read_request_blocking` is how their one-shot mocks
+read a request: a mock that answers after a single `read` can close with the body still
+unread, which resets the connection under the reply (a flaky `10053`/`10054` on Windows).
 
 ⚠️ **On the paused clock, bytes in flight lose to every timer.** tokio moves the paused clock
 to the next timer whenever every task is waiting, and a task waiting for a socket counts as
@@ -131,9 +139,5 @@ remove it, so no exchange a test expects to complete runs with the clock free:
 
 ## Known gaps
 
-- **Writes other than submissions keep their lost-connection class.** A JMAP
-  `CalendarEvent/set` carries no lost-update guard, so a replay after a lost reply can repeat
-  a scheduling message the server sent. A timeout there behaves as a reset connection always
-  has; the guard is the fix, not the timeout.
 - `dav-cli` and the live suites build reqwest clients from `reqwest_builder` directly and are
   not bounded. They are tools, and a hang there is visible to whoever is running them.

@@ -54,7 +54,7 @@ async fn the_calendar_schedules_as_the_mailbox_address() {
     )]));
     assert_eq!(
         provider.calendar_user_addresses(&account()).await.unwrap(),
-        CalendarUserAddresses::Known(vec!["alice@contoso.example".to_owned()])
+        CalendarUserAddresses::Including(vec!["alice@contoso.example".to_owned()])
     );
 }
 

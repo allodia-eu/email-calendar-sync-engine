@@ -113,8 +113,7 @@ pub(crate) fn mock_server(http_responses: Vec<String>) -> String {
     std::thread::spawn(move || {
         for response in http_responses {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 8192];
-            let _ = std::io::Read::read(&mut stream, &mut buf);
+            let _ = engine_http::test_server::read_request_blocking(&mut stream);
             let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
         }
     });

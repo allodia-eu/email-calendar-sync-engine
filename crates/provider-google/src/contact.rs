@@ -21,7 +21,7 @@ use crate::{
         require_owned, supported_fields,
     },
     contact_write,
-    error::GoogleError,
+    error::{GoogleError, unread_answer},
     transport::{GoogleClient, encode_query_value},
 };
 
@@ -327,13 +327,15 @@ impl ContactsProvider for GoogleContactProvider {
                 "application/json",
                 contact_write::create_body(draft)?,
             )
-            .await?
-            .ok_or_else(|| GoogleError::protocol("createContact returned no person"))?;
-        Ok(ContactWriteReceipt::new(contact_id(
-            value
-                .get("resourceName")
-                .and_then(Value::as_str)
-                .ok_or_else(|| GoogleError::protocol("created person missing resourceName"))?,
+            .await
+            .map_err(GoogleError::into_write_error)?
+            .ok_or_else(|| unread_answer("createContact returned no person"))?;
+        let name = value
+            .get("resourceName")
+            .and_then(Value::as_str)
+            .ok_or_else(|| unread_answer("created person missing resourceName"))?;
+        Ok(ContactWriteReceipt::new(contact_id(name).map_err(
+            |error| unread_answer(&error.to_string()).with_source(error),
         )?))
     }
 
@@ -348,7 +350,8 @@ impl ContactsProvider for GoogleContactProvider {
         if fields.is_empty() {
             return Ok(ContactWriteReceipt::new(base.id.clone()));
         }
-        self.client
+        let answer = self
+            .client
             .patch(
                 &self.client.people_url(&format!(
                     "/v1/{}:updateContact?updatePersonFields={fields}&personFields={}",
@@ -362,7 +365,8 @@ impl ContactsProvider for GoogleContactProvider {
                     .map(engine_core::version::ETag::as_str),
                 contact_write::patch_body(base, patch)?,
             )
-            .await?;
+            .await;
+        GoogleError::optional_answer(answer)?;
         Ok(ContactWriteReceipt::new(base.id.clone()))
     }
 
@@ -382,7 +386,7 @@ impl ContactsProvider for GoogleContactProvider {
             .await
         {
             Ok(()) | Err(GoogleError::Status { status: 404, .. }) => Ok(()),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error.into_write_error()),
         }
     }
 

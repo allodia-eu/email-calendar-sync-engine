@@ -72,6 +72,8 @@ mod contact_fixture_tests;
 mod contact_tests;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod write_outcome_tests;
 
 pub use cal_fetch::CalendarWindow;
 pub use calendar::GraphCalendarProvider;

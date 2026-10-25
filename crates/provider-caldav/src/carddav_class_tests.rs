@@ -172,12 +172,14 @@ async fn a_connect_from_the_config_carries_its_observer_over_the_wire() {
     let base = mock_server(vec![
         redirect("/dav/"),
         multistatus(HOME),
+        // What the server answers the probe for the requester before its classes are read.
+        multistatus(r#"<d:multistatus xmlns:d="DAV:"/>"#),
         options_response("1, 3, addressbook"),
         multistatus(BOOKS),
     ]);
     let steps = Arc::new(Steps::default());
     let provider = CardDavProvider::connect(
-        CardDavConfig::new(base, alice("pw"))
+        CardDavConfig::new(base.clone(), alice("pw"))
             .with_retry(engine_http::RetryConfig::default())
             .with_connect_observer(Arc::clone(&steps) as Arc<dyn ConnectObserver>),
     )
@@ -188,9 +190,9 @@ async fn a_connect_from_the_config_carries_its_observer_over_the_wire() {
     assert_eq!(
         *steps.0.lock().unwrap(),
         [
-            "redirected /.well-known/carddav -> /dav/",
-            "discovered /dav/addressbooks/alice/",
-            "negotiated CardDAV [1, 3, addressbook]",
+            format!("redirected {base}/.well-known/carddav -> {base}/dav/"),
+            format!("discovered {base}/dav/addressbooks/alice/"),
+            "negotiated CardDAV [1, 3, addressbook]".to_owned(),
         ]
     );
 }

@@ -124,8 +124,10 @@ are split escape-aware so the writer and the parser agree.
     error. A server may answer `OPTIONS` with a `405` and still read and write perfectly;
     failing the connect over one discovery question would refuse a working account. A
     transport failure still propagates, like every other discovery step.
-  - Both answers are live-pinned, and the pair is the evidence: **Stalwart advertises it,
-    the SabreDAV fixture does not** ("Which server proves what"). The SabreDAV negative is
+  - Both answers are live-pinned, and the pair is the evidence: **Stalwart and Nextcloud
+    advertise it, the SabreDAV fixture does not** ("Which server proves what"). Nextcloud
+    is SabreDAV with the scheduling plugin loaded, so the same server software answers both
+    ways. The SabreDAV negative is
     a property of that harness's configuration — `docker/sabredav/server.php` loads
     `Sabre\CalDAV\Plugin` and deliberately *not* `Sabre\CalDAV\Schedule\Plugin` — and it
     must stay that way: it is the only server here that can show the capability answering
@@ -174,17 +176,39 @@ are split escape-aware so the writer and the parser agree.
   path is left for the executor to resolve onto the connection, but once a hop has moved
   to an absolute URL the next one belongs to *that* origin, and leaving it a path walks
   the chain silently back onto the connection base — a different server that answers
-  plausibly. When a hop does change origin the connection **follows** it
-  (`DavExecutor::adopt_origin`): the account's own server redirecting discovery is not the
-  case the `same_origin` credential guard exists for (`providers.md`), so credentials
-  travel to the new origin and the relative hrefs it then issues resolve there. A hop off
-  TLS is refused outright, since every one of these requests carries the credential, and
-  **that refusal lives in `adopt_origin`, not in `redirect_href`**: a walk starts at a bare
-  well-known path, which names no scheme, so on the first hop only the connection knows it
-  is being asked to give up TLS. A refusal fails the walk rather than continuing over it.
+  plausibly. Every href a discovery step *reads* (a principal, a home) is resolved the same
+  way, against the request that returned it (RFC 4918 §8.3, `href::resolve_reference`), so
+  the principal keeps the host that named it after the walk has moved on. Each origin the walk
+  is led to (a redirect target, the principal, the home: `discovery::follow`, in the CalDAV
+  and CardDAV walks alike) is **trusted**, not handed the credential: per RFC 9110 §11.5 a
+  protection space does not extend past its own server, so a trusted origin receives the
+  credential only once it answers `401` with a challenge in the credential's scheme, and an
+  untrusted one (a vCard photo URL) never does (`credential_scope.rs`). The start URL is
+  trusted the same way and gets no exception: nothing is sent the credential before it asks.
+  "Asks" covers the three shapes real servers use, each proven live against
+  `docker/sabredav` (`tests/live_challenges.rs`): a `401` offering the credential's scheme, a
+  `401` with no challenge at all (Yahoo, Google, AOL; `/bare/`), and a `207` naming the
+  requester `<DAV:unauthenticated/>` (RFC 5397 §3; `/open/`), which re-sends the request once
+  with the credential. A `401` offering only other schemes is
+  `CalDavError::UnsupportedAuthentication`, not a refused sign-in, and a home's DAV classes are
+  read only after its origin has the credential (`discovery::authenticate_before_reading`).
+  A host resumes at the principal it stored (`with_discovery_path` with the URL
+  `principal_url()` reported), never at a home. A plaintext origin after TLS is refused
+  outright, and **that refusal lives in `DavExecutor::trust_origin`, not in
+  `redirect_href`**: a walk starts at a bare well-known path, which names no scheme, so on the
+  first hop only the connection knows it is being asked to give up TLS. A refusal fails the
+  walk rather than continuing over it. Once the home is found the connection settles on its
+  origin (`DavExecutor::settle_on`): iCloud answers the principal on `caldav.icloud.com` and
+  names the home on `pNN-caldav.icloud.com`, and every collection href the home returns is
+  relative to the latter. `crates/provider-caldav/README.md` draws the whole walk.
+  A host may also confine the credential with a `CredentialHosts` policy
+  (`CalDavConfig::with_credential_hosts`, the same on `CardDavConfig`): the configured base URL
+  and every origin discovery is led to must be a host it permits, or the connect fails before
+  anything is sent there. Which hosts qualify is the host's decision; for an OAuth token it is the token
+  issuer's resources, which this adapter knows nothing of.
   CalDAV emits no `Authenticated` step —
-  credentials ride on every `PROPFIND`, so there is no discrete authentication
-  exchange to observe — and no `TlsEstablished`, because an HTTP adapter learns its TLS
+  credentials ride on every `PROPFIND` to an answered origin, so there is no discrete
+  authentication exchange to observe — and no `TlsEstablished`, because an HTTP adapter learns its TLS
   version from a *response*, too late for a connect-phase step; it lands in
   `ConnectionInfo::tls_version` instead (`tls.md`). Then `PROPFIND Depth:1` the home and keep the responses
   whose `resourcetype` marks them a `calendar`. Hrefs may be absolute paths or full
@@ -304,10 +328,13 @@ are split escape-aware so the writer and the parser agree.
   **idempotent HTTP methods** (RFC 7231 §4.2.2), and the precondition makes a retry
   self-correcting: a retried create `412`s if the first landed, a retried patch `412`s once
   the ETag moved, and a retried delete sees the resource already gone. So a lost-response
-  retry is **safe** — there is no ambiguous `NeedsConfirmation` case as there is for SMTP.
-  A reply that never comes within the `reply` bound is the same case and is retried under
-  the same precondition, a write whose server schedules iTIP from it included
-  (`deadlines.md`).
+  retry would be **safe**, but nothing makes one: a write whose request may have reached the
+  server and whose reply was lost, or never came within the `reply` bound, may have been
+  applied, and is `needs_confirmation` (`CalDavError::Unconfirmed`, `providers.md`), as is a
+  gateway's `502`/`504`. The classification is in `DavClient::send_write`, the one place a
+  write meets the network, and in `into_write_etag`. A write's status is its whole answer:
+  the new `ETag` rides in a header, so a body lost after the status leaves the reply as the
+  status says.
 - **`DELETE` is idempotent: already-gone is success.** A `DELETE` whose resource is
   **already absent** (`404`/`410`) resolves as `Ok` (RFC 7231 §4.3.5), not a `Permanent`
   error — so re-running a delete whose response was lost (the first one landed) succeeds
@@ -506,7 +533,8 @@ adapter never sees — or miss one it does.
 
 ```sh
 cargo run -p dav-cli -- profiles                     # what is configured, and from where
-cargo run -p dav-cli -- -p stalwart info             # capabilities discovery concluded
+cargo run -p dav-cli -- -p stalwart info             # capabilities discovery concluded, and the principal
+cargo run -p dav-cli -- -p stalwart --start <principal> info   # resume there, as a host does
 cargo run -p dav-cli -- -p soverin list              # events + the reply verdict each carries
 cargo run -p dav-cli -- -p soverin get <uid>         # the stored document, verbatim
 cargo run -p dav-cli -- -p soverin store invite.eml  # guarded create from a real invitation
@@ -527,9 +555,9 @@ need when the adapter and the server disagree.
 `CALENDAR`. It lives outside every checkout for two reasons: it holds a password, and the
 engine and the product core are worked on in parallel, so a profile written while debugging
 one is usable from the other without being copied. `stalwart`, `stalwart-organizer` and
-`sabredav` need no file — they are this repo's own docker fixtures, and they follow
-`STALWART_HTTP_ADDR` / `SABREDAV_HTTP_ADDR` so the tool always points at the same server the
-live suite does. Nothing else is built in: the product core runs its *own* harness on its own
+`sabredav` and `nextcloud` need no file — they are this repo's own docker fixtures, and they
+follow `STALWART_HTTP_ADDR` / `SABREDAV_HTTP_ADDR` / `NEXTCLOUD_HTTP_ADDR` so the tool always
+points at the same server the live suite does. Nothing else is built in: the product core runs its *own* harness on its own
 ports as a separate compose project, and hard-coding that here would put product knowledge
 into a product-neutral engine.
 
@@ -593,6 +621,14 @@ what a client would assume:
   bootstrap so the suite is re-runnable (`stalwart-harness.md`).
 
 ## Known limitations (documented, not bugs)
+
+- **A bearer token is only ever sent as `Bearer`, never as a Basic password**, whatever the
+  server's challenge offers. A sabre/dav server using its IMAP auth backend relays the Basic
+  password to the mail server, and one such deployment accepted an OAuth access token that way
+  only shortly after the same token had logged in over IMAP `OAUTHBEARER`: an artefact of the mail
+  server's auth cache, not support for OAuth. A DAV server that challenges with `Basic` alone has
+  said it does not take a token, and whether a host may receive one at all is the host's decision
+  under the OAuth profile, not the transport's.
 
 - **Stalwart rate-limits its DAV endpoint, and a refusal there now reaches the caller.** It
   answers `429` with a `Retry-After` — 31 seconds, observed — and since the engine stopped
@@ -685,11 +721,12 @@ what a client would assume:
   accepted `PARTSTAT` and no transit-only `METHOD`), plus the security case that a
   parsed `REQUEST` whose `ORGANIZER` mismatches the authenticated sender is rejected,
   not written.
-- **Live, against two real servers.** `tests/live_caldav.rs` (gated on
-  `STALWART_HTTP_ADDR`, run by the `stalwart` CI job) and `tests/live_sabredav.rs`
-  (gated on `SABREDAV_HTTP_ADDR`, run by the `sabredav` job) both connect over HTTP, run
+- **Live, against three real servers.** `tests/live_caldav.rs` (gated on
+  `STALWART_HTTP_ADDR`, run by the `stalwart` CI job), `tests/live_sabredav.rs`
+  (gated on `SABREDAV_HTTP_ADDR`, run by the `sabredav` job) and `tests/live_nextcloud.rs`
+  (gated on `NEXTCLOUD_HTTP_ADDR`, run by the `nextcloud` job) all connect over HTTP, run
   discovery + `sync-collection`, and assert the seed invariants in the store plus an
-  idempotent **empty delta** on a second sync (the held sync-token). Both then run the
+  idempotent **empty delta** on a second sync (the held sync-token). All three then run the
   **same four write scenarios** from `tests/common/write.rs`. Every test in a binary
   **serializes** on a shared guard — each scenario transiently adds an event, which must
   not race the exact-count assertion or another scenario — and each pre-cleans its own
@@ -735,18 +772,19 @@ what a client would assume:
 
 ### Which server proves what
 
-The two fixtures are **not interchangeable as evidence**, and the difference decides how
-the preservation assertion is written. Observed against both:
+The fixtures are **not interchangeable as evidence**, and the difference decides how
+the preservation assertion is written. Observed against each:
 
-| | **Stalwart** | **SabreDAV** |
-| --- | --- | --- |
-| Stored iCalendar | **Reserializes** — keeps every property, but re-folds content lines and reorders `RRULE` parts | **Verbatim** — the bytes you `PUT` are the bytes you `GET` |
-| `ETag` on `PUT` | Yes (create + update) | Yes (create + update) |
-| Stale `If-Match` | `412` | `412` |
-| Master + `RECURRENCE-ID` in one resource | Accepted | Accepted |
-| Read-only collection | **Cannot produce one** — the harness account owns everything it can see | **The privilege fixture**: Bob's calendar, shared to Alice read-only |
-| Scheduling (RFC 6638) | **Full auto-schedule** — advertises `calendar-auto-schedule`, exposes `CALDAV:schedule-inbox-URL` | **None** — the fixture loads no `Schedule\Plugin`, so its `DAV:` header lists `calendar-access` and not `calendar-auto-schedule` |
-| `Capabilities::calendar_scheduling` | `true` | `false` — **the only negative case in the repo** |
+| | **Stalwart** | **SabreDAV** | **Nextcloud** |
+| --- | --- | --- | --- |
+| Stored iCalendar | **Reserializes** — keeps every property, but re-folds content lines and reorders `RRULE` parts | **Verbatim** — the bytes you `PUT` are the bytes you `GET` | **Verbatim** (SabreDAV underneath) |
+| `ETag` on `PUT` | Yes (create + update) | Yes (create + update) | Yes (create + update) |
+| Stale `If-Match` | `412` | `412` | `412` |
+| Master + `RECURRENCE-ID` in one resource | Accepted | Accepted | Accepted |
+| Read-only collection | **Cannot produce one** — the harness account owns everything it can see | **The privilege fixture**: Bob's calendar, shared to Alice read-only | Two **address books**: the instance's users and an app's recently contacted |
+| Scheduling (RFC 6638) | **Full auto-schedule** — advertises `calendar-auto-schedule`, exposes `CALDAV:schedule-inbox-URL` | **None** — the fixture loads no `Schedule\Plugin`, so its `DAV:` header lists `calendar-access` and not `calendar-auto-schedule` | Advertises `calendar-auto-schedule` |
+| `Capabilities::calendar_scheduling` | `true` | `false` — **the only negative case in the repo** | `true`: the positive answer on the same server software |
+| Home | One calendar | One calendar | Several: `personal`, a generated birthday calendar, an inbox and an outbox, so a test binds `harness` by name |
 
 Two consequences to keep in mind before touching these tests:
 

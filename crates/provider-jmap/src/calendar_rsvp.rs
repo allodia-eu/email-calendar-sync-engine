@@ -51,8 +51,8 @@ use crate::{
 /// Returns [`JmapError::Protocol`] if the event carries no preserved JSCalendar (never
 /// synced from this transport) or has no participant at that address — you cannot answer an
 /// invitation you are not on. Returns [`JmapError`] on a transport/method failure, or
-/// [`JmapError::Set`] when the server rejects the update (or silently drops it — a conflict,
-/// never a false success).
+/// [`JmapError::Set`] when the server rejects the update. An answer naming the event in
+/// neither `updated` nor `notUpdated` is [`JmapError::Unconfirmed`], never a false success.
 pub(crate) async fn rsvp_event(
     executor: &dyn Executor,
     calendar_account: &str,
@@ -79,16 +79,15 @@ pub(crate) async fn rsvp_event(
 
     let mut req = Request::new([capability::CORE, capability::CALENDARS]);
     let call = req.invoke("CalendarEvent/set", args);
-    let resp = executor.execute(&req).await?;
-    let result = resp.result(&call)?;
+    let result = crate::executor::write(executor, &req, &call).await?;
 
-    if let Some(refusal) = set_refusal(result, "notUpdated", target) {
-        return Err(JmapError::refused(target, refusal));
+    if let Some(refusal) = set_refusal(&result, "notUpdated", target) {
+        return Err(JmapError::refused(target, refusal).after_write());
     }
-    // As in `patch_event`: a target mentioned in neither map was silently dropped, which is
-    // a conflict rather than a false success.
+    // As in `patch_event`: a target mentioned in neither map is an answer that does not say,
+    // never a false success.
     if result.get("updated").and_then(|u| u.get(target)).is_none() {
-        return Err(JmapError::set(target, "notFound"));
+        return Err(JmapError::unanswered(target, "updated", "notUpdated"));
     }
     Ok(EventWriteReceipt::new(
         rsvp.event.clone(),
