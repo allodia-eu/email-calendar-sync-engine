@@ -72,6 +72,14 @@ impl CardDavConfig {
         self
     }
 
+    /// Starts discovery at `path` instead of `/.well-known/carddav`: a path on the base URL, or
+    /// an absolute URL such as a principal the host stored from an earlier connect.
+    #[must_use]
+    pub fn with_discovery_path(mut self, path: impl Into<String>) -> Self {
+        self.discovery_path = path.into();
+        self
+    }
+
     /// Binds a different address book.
     #[must_use]
     pub fn with_address_book(mut self, address_book: impl Into<String>) -> Self {

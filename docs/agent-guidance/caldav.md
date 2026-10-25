@@ -181,8 +181,10 @@ are split escape-aware so the writer and the parser agree.
   and CardDAV walks alike) is **trusted**, not handed the credential: per RFC 9110 §11.5 a
   protection space does not extend past its own server, so a trusted origin receives the
   credential only once it answers `401` with a challenge in the credential's scheme, and an
-  untrusted one (a vCard photo URL) never does (`credential_scope.rs`). The configured server
-  is the one exception, sent the credential unasked. A plaintext origin after TLS is refused
+  untrusted one (a vCard photo URL) never does (`credential_scope.rs`). The start URL is
+  trusted the same way and gets no exception: nothing is sent the credential before it asks.
+  A host resumes at the principal it stored (`with_discovery_path` with the URL
+  `principal_url()` reported), never at a home. A plaintext origin after TLS is refused
   outright, and **that refusal lives in `DavExecutor::trust_origin`, not in
   `redirect_href`**: a walk starts at a bare well-known path, which names no scheme, so on the
   first hop only the connection knows it is being asked to give up TLS. A refusal fails the
@@ -522,7 +524,8 @@ adapter never sees — or miss one it does.
 
 ```sh
 cargo run -p dav-cli -- profiles                     # what is configured, and from where
-cargo run -p dav-cli -- -p stalwart info             # capabilities discovery concluded
+cargo run -p dav-cli -- -p stalwart info             # capabilities discovery concluded, and the principal
+cargo run -p dav-cli -- -p stalwart --start <principal> info   # resume there, as a host does
 cargo run -p dav-cli -- -p soverin list              # events + the reply verdict each carries
 cargo run -p dav-cli -- -p soverin get <uid>         # the stored document, verbatim
 cargo run -p dav-cli -- -p soverin store invite.eml  # guarded create from a real invitation

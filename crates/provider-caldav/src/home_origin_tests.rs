@@ -82,8 +82,8 @@ async fn an_address_book_home_on_another_host_is_sent_the_credential_once_it_ask
     let found = crate::carddav_ops::discover_home(&client, "/", &IgnoreConnectSteps)
         .await
         .expect("the home is found");
-    assert_eq!(found, home);
-    let path = client.settle_on(&found);
+    assert_eq!(found.href, home);
+    let path = client.settle_on(&found.href);
     client
         .send(DavMethod::Propfind, &path, "1", String::new())
         .await
@@ -155,4 +155,72 @@ async fn a_principal_on_another_host_is_sent_the_credential_once_it_asks() {
         "asked, then answered"
     );
     assert_eq!(found.href, format!("{principal_host}/123/calendars/"));
+}
+
+/// A principal answer that names itself and its home, as a principal resource does.
+fn principal_answer(principal: &str, home_property: &str, namespace: &str, home: &str) -> String {
+    multistatus(&format!(
+        r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:x="{namespace}"><d:response><d:href>{principal}</d:href><d:propstat><d:prop><d:current-user-principal><d:href>{principal}</d:href></d:current-user-principal><x:{home_property}><d:href>{home}</d:href></x:{home_property}></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#
+    ))
+}
+
+/// A host that stored the principal starts the next connect there (RFC 6764 §6): the walk asks
+/// it for the home, sends the credential only once it asks, and reports the principal back.
+#[tokio::test]
+async fn a_connect_resumes_at_a_stored_principal() {
+    let (host, seen) = mock_server_capturing(vec![
+        challenge(),
+        principal_answer("/123/principal/", "calendar-home-set", CALDAV, "/123/calendars/"),
+        "HTTP/1.1 200 OK\r\nDAV: 1, calendar-access\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_owned(),
+    ]);
+    let principal = format!("{host}/123/principal/");
+    let provider = crate::CalDavProvider::connect(
+        crate::CalDavConfig::new(
+            host.clone(),
+            Credentials::Basic {
+                username: "alice".to_owned(),
+                password: "super-secret".to_owned(),
+            },
+        )
+        .with_discovery_path(principal.clone()),
+    )
+    .await
+    .expect("the stored principal answers");
+
+    assert_eq!(provider.principal_url(), Some(principal.as_str()));
+    let seen = seen.lock().expect("seen");
+    assert!(
+        seen[0]
+            .to_lowercase()
+            .starts_with("propfind /123/principal/ "),
+        "{}",
+        seen[0]
+    );
+    assert!(
+        !seen[0].to_lowercase().contains("authorization"),
+        "nothing sent unasked"
+    );
+    assert!(seen[1].to_lowercase().contains("authorization: basic"));
+}
+
+#[tokio::test]
+async fn the_carddav_walk_reports_the_principal_it_found() {
+    let (base, _) = mock_server_capturing(vec![
+        naming("current-user-principal", "DAV:", "/123/principal/"),
+        principal_answer(
+            "/123/principal/",
+            "addressbook-home-set",
+            CARDDAV,
+            "/123/carddavhome/",
+        ),
+    ]);
+    let client = client(&base);
+
+    let found = crate::carddav_ops::discover_home(&client, "/", &IgnoreConnectSteps)
+        .await
+        .expect("the home is found");
+
+    assert_eq!(found.principal, Some(format!("{base}/123/principal/")));
+    assert_eq!(found.href, format!("{base}/123/carddavhome/"));
 }

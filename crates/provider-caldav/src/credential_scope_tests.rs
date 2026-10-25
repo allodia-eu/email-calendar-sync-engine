@@ -43,12 +43,26 @@ fn a_challenge_is_found_in_either_shape_a_server_sends() {
 }
 
 #[test]
-fn only_the_configured_server_is_sent_the_credential_unasked() {
+fn a_401_without_any_challenge_still_asks() {
+    // Yahoo's calendar server answers 401 with no `WWW-Authenticate` at all.
+    assert!(offers(&HeaderMap::new(), "basic"));
+    assert!(offers(&HeaderMap::new(), "bearer"));
+}
+
+#[test]
+fn no_origin_is_sent_the_credential_before_it_asks() {
     let configured = Url::parse("https://dav.example.net/").unwrap();
     let home = Url::parse("https://p1.dav.example.net/u/calendars/").unwrap();
     let scope = CredentialScope::new(&configured);
 
-    assert!(scope.sends_to(&configured.join("/anything").unwrap()));
+    let anywhere = configured.join("/anything").unwrap();
+    assert!(!scope.sends_to(&anywhere), "not even the configured server");
+    assert!(scope.answers(
+        &configured,
+        &challenges(&[r#"Basic realm="cal""#]),
+        &basic()
+    ));
+    assert!(scope.sends_to(&anywhere));
     scope.trust(&home);
     assert!(!scope.sends_to(&home), "trusted is not the same as asked");
     assert!(scope.answers(&home, &challenges(&[r#"Basic realm="cal""#]), &basic()));
