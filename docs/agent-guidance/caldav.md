@@ -282,6 +282,12 @@ are split escape-aware so the writer and the parser agree.
   So a `400` to a URL holding `%25` and two hex digits is sent once more with that layer
   removed (`href::single_encoded`, `DavClient::exchange`); a `400` applied nothing, so a
   write is safe to repeat. The stored key stays the href the server listed.
+- **A guarded `DELETE` reads the resource's ETag first** (`delete_guard`), on every server:
+  Yahoo performs a delete whatever its `If-Match` says, while refusing the same guard on a
+  `PUT`. A different ETag is answered with a `412` without the delete being sent, so it
+  reads as the `Conflict` it is; an ETag that cannot be read lets the delete go with its own
+  guard. It costs one `PROPFIND` per delete, and a change between the two requests still
+  goes through on a server that ignores the guard.
 - **A `DAV` header may span several field lines.** Fastmail sends four, with
   `addressbook` and `calendar-auto-schedule` on lines after the first; they are read as one
   comma-separated list (RFC 9110 §5.3).

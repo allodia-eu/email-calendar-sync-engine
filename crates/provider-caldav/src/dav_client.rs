@@ -14,6 +14,7 @@ use reqwest::{Client, Method, redirect::Policy};
 use crate::{
     credential_hosts::{self, CredentialHosts},
     credential_scope::CredentialScope,
+    delete_guard::refused_before_delete,
     error::CalDavError,
     href::single_encoded,
     transport::{Credentials, DavExecutor, DavMethod, HttpResponse, Precondition, WriteRequest},
@@ -378,6 +379,12 @@ impl DavExecutor for DavClient {
             precondition,
             body,
         } = request;
+        if method == DavMethod::Delete
+            && let Precondition::IfMatch(etag) = &precondition
+            && let Some(refused) = refused_before_delete(self, &href, etag).await
+        {
+            return Ok(refused);
+        }
         let response = self
             .exchange(
                 method,

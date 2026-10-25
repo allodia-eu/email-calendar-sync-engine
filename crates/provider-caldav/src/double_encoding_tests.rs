@@ -64,25 +64,25 @@ async fn a_refused_doubly_encoded_href_is_asked_once_more_encoded_once() {
 
     let reply = client
         .send_write(WriteRequest {
-            method: DavMethod::Delete,
+            method: DavMethod::Put,
             href: "/cal/131/uid%2540example.invalid.ics".to_owned(),
-            content_type: None,
+            content_type: Some("text/calendar; charset=utf-8"),
             precondition: Precondition::IfMatch("\"e1\"".to_owned()),
-            body: String::new(),
+            body: "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".to_owned(),
         })
         .await
-        .expect("delete");
+        .expect("update");
 
     assert_eq!(reply.status, 204);
     assert_eq!(
         lines(&seen),
         [
             (
-                "DELETE /cal/131/uid%2540example.invalid.ics HTTP/1.1".to_owned(),
+                "PUT /cal/131/uid%2540example.invalid.ics HTTP/1.1".to_owned(),
                 true
             ),
             (
-                "DELETE /cal/131/uid%40example.invalid.ics HTTP/1.1".to_owned(),
+                "PUT /cal/131/uid%40example.invalid.ics HTTP/1.1".to_owned(),
                 true
             ),
         ],
