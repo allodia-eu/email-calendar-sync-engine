@@ -339,7 +339,7 @@ the connection stops right there), see [`docs/outbox-and-sending.md`](docs/outbo
 │   ├── provider-google/          # Gmail + Google Calendar + People adapter
 │   ├── engine-cli/               # Headless debugging / fixture harness
 │   └── stalwart-harness/         # Docker-based protocol test harness
-├── docker/                       # Stalwart and SabreDAV test servers
+├── docker/                       # Stalwart, SabreDAV and Nextcloud test servers
 ├── tools/                        # OAuth helpers for the Graph and Google live tests
 ├── fuzz/                         # cargo-fuzz targets for the hostile-input parsers
 ├── scripts/ci/                   # The gate CI runs, runnable locally

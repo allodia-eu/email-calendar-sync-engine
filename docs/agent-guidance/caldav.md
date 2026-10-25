@@ -124,8 +124,10 @@ are split escape-aware so the writer and the parser agree.
     error. A server may answer `OPTIONS` with a `405` and still read and write perfectly;
     failing the connect over one discovery question would refuse a working account. A
     transport failure still propagates, like every other discovery step.
-  - Both answers are live-pinned, and the pair is the evidence: **Stalwart advertises it,
-    the SabreDAV fixture does not** ("Which server proves what"). The SabreDAV negative is
+  - Both answers are live-pinned, and the pair is the evidence: **Stalwart and Nextcloud
+    advertise it, the SabreDAV fixture does not** ("Which server proves what"). Nextcloud
+    is SabreDAV with the scheduling plugin loaded, so the same server software answers both
+    ways. The SabreDAV negative is
     a property of that harness's configuration — `docker/sabredav/server.php` loads
     `Sabre\CalDAV\Plugin` and deliberately *not* `Sabre\CalDAV\Schedule\Plugin` — and it
     must stay that way: it is the only server here that can show the capability answering
@@ -553,9 +555,9 @@ need when the adapter and the server disagree.
 `CALENDAR`. It lives outside every checkout for two reasons: it holds a password, and the
 engine and the product core are worked on in parallel, so a profile written while debugging
 one is usable from the other without being copied. `stalwart`, `stalwart-organizer` and
-`sabredav` need no file — they are this repo's own docker fixtures, and they follow
-`STALWART_HTTP_ADDR` / `SABREDAV_HTTP_ADDR` so the tool always points at the same server the
-live suite does. Nothing else is built in: the product core runs its *own* harness on its own
+`sabredav` and `nextcloud` need no file — they are this repo's own docker fixtures, and they
+follow `STALWART_HTTP_ADDR` / `SABREDAV_HTTP_ADDR` / `NEXTCLOUD_HTTP_ADDR` so the tool always
+points at the same server the live suite does. Nothing else is built in: the product core runs its *own* harness on its own
 ports as a separate compose project, and hard-coding that here would put product knowledge
 into a product-neutral engine.
 
@@ -719,11 +721,12 @@ what a client would assume:
   accepted `PARTSTAT` and no transit-only `METHOD`), plus the security case that a
   parsed `REQUEST` whose `ORGANIZER` mismatches the authenticated sender is rejected,
   not written.
-- **Live, against two real servers.** `tests/live_caldav.rs` (gated on
-  `STALWART_HTTP_ADDR`, run by the `stalwart` CI job) and `tests/live_sabredav.rs`
-  (gated on `SABREDAV_HTTP_ADDR`, run by the `sabredav` job) both connect over HTTP, run
+- **Live, against three real servers.** `tests/live_caldav.rs` (gated on
+  `STALWART_HTTP_ADDR`, run by the `stalwart` CI job), `tests/live_sabredav.rs`
+  (gated on `SABREDAV_HTTP_ADDR`, run by the `sabredav` job) and `tests/live_nextcloud.rs`
+  (gated on `NEXTCLOUD_HTTP_ADDR`, run by the `nextcloud` job) all connect over HTTP, run
   discovery + `sync-collection`, and assert the seed invariants in the store plus an
-  idempotent **empty delta** on a second sync (the held sync-token). Both then run the
+  idempotent **empty delta** on a second sync (the held sync-token). All three then run the
   **same four write scenarios** from `tests/common/write.rs`. Every test in a binary
   **serializes** on a shared guard — each scenario transiently adds an event, which must
   not race the exact-count assertion or another scenario — and each pre-cleans its own
@@ -769,18 +772,19 @@ what a client would assume:
 
 ### Which server proves what
 
-The two fixtures are **not interchangeable as evidence**, and the difference decides how
-the preservation assertion is written. Observed against both:
+The fixtures are **not interchangeable as evidence**, and the difference decides how
+the preservation assertion is written. Observed against each:
 
-| | **Stalwart** | **SabreDAV** |
-| --- | --- | --- |
-| Stored iCalendar | **Reserializes** — keeps every property, but re-folds content lines and reorders `RRULE` parts | **Verbatim** — the bytes you `PUT` are the bytes you `GET` |
-| `ETag` on `PUT` | Yes (create + update) | Yes (create + update) |
-| Stale `If-Match` | `412` | `412` |
-| Master + `RECURRENCE-ID` in one resource | Accepted | Accepted |
-| Read-only collection | **Cannot produce one** — the harness account owns everything it can see | **The privilege fixture**: Bob's calendar, shared to Alice read-only |
-| Scheduling (RFC 6638) | **Full auto-schedule** — advertises `calendar-auto-schedule`, exposes `CALDAV:schedule-inbox-URL` | **None** — the fixture loads no `Schedule\Plugin`, so its `DAV:` header lists `calendar-access` and not `calendar-auto-schedule` |
-| `Capabilities::calendar_scheduling` | `true` | `false` — **the only negative case in the repo** |
+| | **Stalwart** | **SabreDAV** | **Nextcloud** |
+| --- | --- | --- | --- |
+| Stored iCalendar | **Reserializes** — keeps every property, but re-folds content lines and reorders `RRULE` parts | **Verbatim** — the bytes you `PUT` are the bytes you `GET` | **Verbatim** (SabreDAV underneath) |
+| `ETag` on `PUT` | Yes (create + update) | Yes (create + update) | Yes (create + update) |
+| Stale `If-Match` | `412` | `412` | `412` |
+| Master + `RECURRENCE-ID` in one resource | Accepted | Accepted | Accepted |
+| Read-only collection | **Cannot produce one** — the harness account owns everything it can see | **The privilege fixture**: Bob's calendar, shared to Alice read-only | Two **address books**: the instance's users and an app's recently contacted |
+| Scheduling (RFC 6638) | **Full auto-schedule** — advertises `calendar-auto-schedule`, exposes `CALDAV:schedule-inbox-URL` | **None** — the fixture loads no `Schedule\Plugin`, so its `DAV:` header lists `calendar-access` and not `calendar-auto-schedule` | Advertises `calendar-auto-schedule` |
+| `Capabilities::calendar_scheduling` | `true` | `false` — **the only negative case in the repo** | `true`: the positive answer on the same server software |
+| Home | One calendar | One calendar | Several: `personal`, a generated birthday calendar, an inbox and an outbox, so a test binds `harness` by name |
 
 Two consequences to keep in mind before touching these tests:
 

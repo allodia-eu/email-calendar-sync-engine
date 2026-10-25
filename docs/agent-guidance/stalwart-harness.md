@@ -15,9 +15,9 @@ part of it.
 > `caldav.md`). It validates `provider-caldav` against a different real
 > implementation than Stalwart (two-step RFC 6764 discovery, the
 > `http://sabre.io/ns/sync/N` sync-token form) and **reuses this harness's shared
-> calendar seed** (`seed/calendar/`), so one dataset validates both servers. The
-> determinism, gating-by-env-var, and excluded-from-offline-coverage conventions
-> below apply to it too.
+> calendar seed** (`seed/calendar/`), so one dataset validates both servers. A third,
+> **Nextcloud** (`docker/nextcloud/`), imports the same seed. The determinism,
+> gating-by-env-var, and excluded-from-offline-coverage conventions below apply to both.
 >
 > The two are **not interchangeable as evidence**, and `caldav.md` ("Which server
 > proves what") is authoritative for the split. Two facts about *this* harness drive

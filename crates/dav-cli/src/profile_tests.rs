@@ -71,14 +71,23 @@ fn the_two_stalwart_fixtures_are_different_principals() {
 }
 
 #[test]
+fn the_nextcloud_fixture_binds_its_seeded_calendar() {
+    // Its home holds `personal`, a birthday calendar, an inbox and an outbox, and no `default`,
+    // so an unbound profile would sync a calendar the seed never wrote to.
+    let nextcloud = built_in("nextcloud").expect("nextcloud");
+    assert_eq!(nextcloud.calendar.as_deref(), Some("harness"));
+}
+
+#[test]
 fn an_unknown_name_is_not_a_built_in() {
     assert!(built_in("definitely-not-a-fixture").is_none());
 }
 
 #[test]
 fn a_configured_fixture_address_wins_over_the_published_port() {
-    // The live suites are driven by STALWART_HTTP_ADDR / SABREDAV_HTTP_ADDR; the tool must
-    // follow them, or it debugs a different server than the suite that just failed.
+    // The live suites are driven by STALWART_HTTP_ADDR / SABREDAV_HTTP_ADDR / NEXTCLOUD_HTTP_ADDR;
+    // the tool must follow them, or it debugs a different server than the suite that just
+    // failed.
     assert_eq!(
         fixture_url(Some("127.0.0.1:9999"), "127.0.0.1:18080"),
         "http://127.0.0.1:9999"
