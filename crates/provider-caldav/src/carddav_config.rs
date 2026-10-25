@@ -25,6 +25,8 @@ pub struct CardDavConfig {
     pub tls: TlsClientConfig,
     /// Shared throttling policy (`docs/agent-guidance/http-throttling.md`).
     pub retry: engine_http::RetryConfig,
+    /// The product every request names in its `User-Agent`: the host's application.
+    pub user_agent: engine_http::UserAgent,
     /// Private, as on `CalDavConfig`: a `dyn` observer is neither `Debug` nor meaningfully
     /// inspectable, so it is set through [`CardDavConfig::with_connect_observer`].
     pub(crate) connect_observer: Option<Arc<dyn ConnectObserver>>,
@@ -43,6 +45,7 @@ impl core::fmt::Debug for CardDavConfig {
             .field("address_book", &self.address_book)
             .field("tls", &self.tls)
             .field("retry", &self.retry)
+            .field("user_agent", &self.user_agent)
             .field("connect_observer", &self.connect_observer.is_some())
             .field("credential_hosts", &self.credential_hosts.is_some())
             .finish()
@@ -52,7 +55,11 @@ impl core::fmt::Debug for CardDavConfig {
 impl CardDavConfig {
     /// Creates settings bound to the `default` address book.
     #[must_use]
-    pub fn new(base_url: impl Into<String>, credentials: Credentials) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        credentials: Credentials,
+        user_agent: engine_http::UserAgent,
+    ) -> Self {
         Self {
             base_url: base_url.into(),
             credentials,
@@ -60,6 +67,7 @@ impl CardDavConfig {
             address_book: "default".into(),
             tls: TlsClientConfig::default(),
             retry: engine_http::RetryConfig::default(),
+            user_agent,
             connect_observer: None,
             credential_hosts: None,
         }

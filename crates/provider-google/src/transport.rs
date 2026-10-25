@@ -181,13 +181,14 @@ impl GoogleClient {
     ///
     /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`) and `retry` its
     /// throttling policy (`docs/agent-guidance/http-throttling.md`), both shared with the
-    /// account's other providers.
+    /// account's other providers; `user_agent` names the host's application in every request.
     pub fn connect(
         token: impl Into<String>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GoogleError> {
-        let transport = Box::new(HttpTransport::new(token.into(), tls, retry)?);
+        let transport = Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?);
         Ok(Self::with_transport(transport, GOOGLE_BASE.to_owned()))
     }
 
@@ -205,9 +206,10 @@ impl GoogleClient {
         base: impl Into<String>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GoogleError> {
         Ok(Self::with_transport(
-            Box::new(HttpTransport::new(token.into(), tls, retry)?),
+            Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?),
             base.into(),
         ))
     }
@@ -360,6 +362,7 @@ mod tests {
             "super-secret-token",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(
@@ -372,6 +375,7 @@ mod tests {
             "http://127.0.0.1:9",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(
@@ -391,6 +395,7 @@ mod tests {
             "t",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(
@@ -408,6 +413,7 @@ mod tests {
             "http://127.0.0.1:9",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(

@@ -176,13 +176,16 @@ mod tests {
             .and_then(|listener| listener.local_addr())
             .expect("free port")
             .port();
-        let refused = crate::client(&engine_tls::TlsClientConfig::bundled())
-            .build()
-            .expect("client")
-            .get(format!("http://127.0.0.1:{port}/"))
-            .send()
-            .await
-            .expect_err("nothing listens there");
+        let refused = crate::client(
+            &engine_tls::TlsClientConfig::bundled(),
+            &crate::test_server::user_agent(),
+        )
+        .build()
+        .expect("client")
+        .get(format!("http://127.0.0.1:{port}/"))
+        .send()
+        .await
+        .expect_err("nothing listens there");
         let err = SendError::http(refused, Reached::Possibly);
         assert!(!err.may_have_been_received(), "{err}");
         assert!(!err.is_timeout(), "{err}");

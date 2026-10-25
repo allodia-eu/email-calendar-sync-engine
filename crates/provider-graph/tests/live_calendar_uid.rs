@@ -99,6 +99,7 @@ async fn calendar_provider(token: &str) -> GraphCalendarProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     let placeholder = GraphCalendarProvider::new(
@@ -124,6 +125,7 @@ async fn calendar_provider(token: &str) -> GraphCalendarProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GraphCalendarProvider::new(

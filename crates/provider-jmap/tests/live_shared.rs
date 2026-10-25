@@ -43,6 +43,7 @@ fn config(harness: &Harness) -> JmapConfig {
     JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     )
 }
 
@@ -227,6 +228,7 @@ async fn live_a_client_bound_to_a_group_mailbox_sends_as_it() {
     let as_bob = connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&bob.address, &bob.password),
+        engine_http::test_server::user_agent(),
     ))
     .await;
     let mut delivered = None;

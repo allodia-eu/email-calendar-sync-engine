@@ -14,7 +14,9 @@ use reqwest::{Client, Method, redirect::Policy};
 use crate::{
     credential_hosts::{self, CredentialHosts},
     credential_scope::CredentialScope,
+    delete_guard::refused_before_delete,
     error::CalDavError,
+    href::single_encoded,
     transport::{Credentials, DavExecutor, DavMethod, HttpResponse, Precondition, WriteRequest},
 };
 
@@ -70,10 +72,13 @@ impl DavClient {
         credentials: Credentials,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, CalDavError> {
         let base = reqwest::Url::parse(base_url)
             .map_err(|e| CalDavError::protocol(format!("bad base URL {base_url:?}: {e}")))?;
-        let client = engine_http::client(tls).redirect(Policy::none()).build()?;
+        let client = engine_http::client(tls, user_agent)
+            .redirect(Policy::none())
+            .build()?;
         Ok(Self {
             client,
             scope: CredentialScope::new(&base),
@@ -126,7 +131,18 @@ impl DavClient {
         };
         let location = header(reqwest::header::LOCATION);
         let etag = header(reqwest::header::ETAG);
-        let dav = header(reqwest::header::HeaderName::from_static("dav"));
+        // Fastmail splits `DAV` over several field lines, with `addressbook` after the first, and
+        // RFC 9110 §5.3 reads repeated lines as one comma-separated list
+        // (`docs/spec-deviations.md`, "Permitted, and easy to get wrong").
+        let dav = {
+            let lines: Vec<&str> = response
+                .headers()
+                .get_all("dav")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .collect();
+            (!lines.is_empty()).then(|| lines.join(", "))
+        };
         // Read before the body consumes the reply: this is the funnel's own note of what
         // the server said about when, and it is the last place it exists.
         let retry_after = response.stated_wait();
@@ -182,17 +198,48 @@ impl DavClient {
     /// credential's scheme is asked again with it when it is trusted, and never otherwise, so
     /// a host named by remote content (a vCard photo URL) is not sent the password however it
     /// asks.
+    ///
+    /// With `respell`, a `400` to a URL with a doubly encoded octet is asked once more with it
+    /// encoded once ([`single_encoded`]): a server that lists such an href and then refuses it
+    /// means the resource that answers there. A `400` applied nothing, so a write is safe to send
+    /// again. The once-encoded URL names another resource on a server that meant the `%25`, so a
+    /// write is respelled only when it carries a guard, which that other resource refuses.
     async fn exchange(
         &self,
         method: DavMethod,
         href: &str,
         dress: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
         body: Option<bytes::Bytes>,
+        respell: bool,
     ) -> Result<engine_http::Sent, CalDavError> {
         let url = self.target(href)?;
+        let response = self
+            .exchange_at(method, &url, &dress, body.as_ref())
+            .await?;
+        if !respell || response.status() != reqwest::StatusCode::BAD_REQUEST {
+            return Ok(response);
+        }
+        let Some(once) = single_encoded(&url) else {
+            return Ok(response);
+        };
+        // Released before the second request, so its connection is not held open by an
+        // unread body.
+        drop(response);
+        self.exchange_at(method, &once, &dress, body.as_ref()).await
+    }
+
+    /// One [`exchange`](Self::exchange) at `url`, answering one challenge.
+    async fn exchange_at(
+        &self,
+        method: DavMethod,
+        url: &reqwest::Url,
+        dress: &impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+        body: Option<&bytes::Bytes>,
+    ) -> Result<engine_http::Sent, CalDavError> {
+        let url = url.clone();
         let build = |authenticate| -> Result<reqwest::RequestBuilder, CalDavError> {
             let request = dress(self.request(method, url.clone(), authenticate)?);
-            Ok(match &body {
+            Ok(match body {
                 Some(body) => request.body(body.clone()),
                 None => request,
             })
@@ -299,6 +346,7 @@ impl DavExecutor for DavClient {
                     )
                 },
                 Some(body.into()),
+                true,
             )
             .await?;
         self.collect(response, false).await
@@ -306,14 +354,14 @@ impl DavExecutor for DavClient {
 
     async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
         let response = self
-            .exchange(DavMethod::Options, href, |request| request, None)
+            .exchange(DavMethod::Options, href, |request| request, None, true)
             .await?;
         self.collect(response, false).await
     }
 
     async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
         let response = self
-            .exchange(DavMethod::Get, href, |request| request, None)
+            .exchange(DavMethod::Get, href, |request| request, None, true)
             .await?;
         self.connection.record(&response);
         let status = response.status().as_u16();
@@ -341,6 +389,12 @@ impl DavExecutor for DavClient {
             precondition,
             body,
         } = request;
+        if method == DavMethod::Delete
+            && let Some(refused) = refused_before_delete(self, &href, &precondition).await
+        {
+            return Ok(refused);
+        }
+        let guarded = !matches!(precondition, Precondition::None);
         let response = self
             .exchange(
                 method,
@@ -365,6 +419,7 @@ impl DavExecutor for DavClient {
                     }
                 },
                 Some(body.into()),
+                guarded,
             )
             .await
             .map_err(CalDavError::after_write)?;

@@ -35,15 +35,15 @@ FN:Ada Updated
 END:VCARD
 ]]></C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/dav/addressbooks/alice/default/gone.vcf</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response><D:sync-token>token-2</D:sync-token></D:multistatus>"#;
 
-/// A snapshot whose second response is a card the parser cannot read (here: a
-/// response carrying `getetag` but no `address-data`, which is what a server returning
-/// a partial `propstat` looks like).
+/// A snapshot whose second response is a card the parser cannot read: its `address-data` is
+/// not a vCard. (A response without `address-data` at all is fetched again by multiget, in
+/// `multiget_tests.rs`.)
 const CONTACTS_ONE_UNPARSEABLE: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/ada.vcf</D:href><D:propstat><D:prop><D:getetag>"v1"</D:getetag><C:address-data><![CDATA[BEGIN:VCARD
 VERSION:4.0
 UID:ada
 FN:Ada Lovelace
 END:VCARD
-]]></C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/dav/addressbooks/alice/default/bad.vcf</D:href><D:propstat><D:prop><D:getetag>"v9"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:sync-token>token-1</D:sync-token></D:multistatus>"#;
+]]></C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/dav/addressbooks/alice/default/bad.vcf</D:href><D:propstat><D:prop><D:getetag>"v9"</D:getetag><C:address-data>not a vcard</C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:sync-token>token-1</D:sync-token></D:multistatus>"#;
 
 /// A card the parser chokes on must NOT be tombstoned. A snapshot's `present` set is
 /// the store's statement of "everything that exists server-side"; anything missing
@@ -169,7 +169,7 @@ async fn carddav_create_uses_vcard_put_and_if_none_match() {
 }
 
 #[tokio::test]
-async fn unsupported_collection_sync_falls_back_to_an_unfiltered_snapshot() {
+async fn unsupported_collection_sync_falls_back_to_a_ctag_snapshot() {
     let replay = Arc::new(Replay::new(vec![
         ok(PRINCIPAL),
         options(Some("1, 3, addressbook")),
@@ -203,10 +203,12 @@ async fn unsupported_collection_sync_falls_back_to_an_unfiltered_snapshot() {
     assert!(cursor_recovered);
     assert_eq!(sync.next_cursor.as_str(), "ctag:ctag-1");
     assert!(matches!(sync.update, SyncUpdate::Snapshot { .. }));
+    // The members are listed with a `PROPFIND`, which every server answers, and arrived with
+    // their bodies, so nothing is fetched again.
     let reads = replay.reads();
-    let (_, _, _, query) = reads.last().unwrap();
-    assert!(query.contains("<a:filter/>"), "{query}");
-    assert!(!query.contains("prop-filter"), "{query}");
+    let (method, _, depth, listing) = reads.last().unwrap();
+    assert_eq!((*method, depth.as_str()), (DavMethod::Propfind, "1"));
+    assert!(listing.contains("<d:getetag/>"), "{listing}");
 }
 
 pub(crate) fn account() -> AccountId {

@@ -32,9 +32,9 @@ a server with nothing to offer is a capability the host reads, not an error, and
 a `405` answer to the `OPTIONS` is read the same way. The connect observer
 (`CardDavConfig::with_connect_observer`) sees each redirect, the home, and the
 classes the home advertised. Cards sync with RFC 6578
-`sync-collection`; expired tokens restart with a snapshot. Servers without that
-report use a CTag check followed by a full `addressbook-query`, retaining each
-resource ETag. Direct canonical refetch uses `addressbook-multiget`.
+`sync-collection`; expired tokens restart with a snapshot. A server without that
+report is read through its CTag, as calendars are ("A server without
+`sync-collection`" below). Direct canonical refetch uses `addressbook-multiget`.
 
 vCard 3/4 input is unfolded and normalized into the JSContact-shaped
 `ContactCard` while retaining the complete raw vCard, including malformed legacy
@@ -248,9 +248,52 @@ are split escape-aware so the writer and the parser agree.
   whose accumulated `present` set tombstones anything absent — while a **held**
   token returns only the changed (`2xx`, carrying inline `calendar-data`) and
   removed (a response-level `404`) resources — a **delta**. Either way the response
-  carries the next `sync-token`, which becomes the opaque cursor. No separate
-  `calendar-query`/`calendar-multiget` round trip: requesting `<C:calendar-data/>`
-  in the REPORT returns each resource's iCalendar inline.
+  carries the next `sync-token`, which becomes the opaque cursor. Requesting
+  `<C:calendar-data/>` in the REPORT returns each resource's iCalendar inline on most
+  servers, but RFC 6578 §3.2 lets a server return fewer properties than were asked
+  for, and iCloud returns every member with its `getetag` alone. A changed member
+  without `calendar-data` is fetched again with a `calendar-multiget`, a hundred hrefs
+  at a time (`multiget::fill_bodies`), asking for exactly what the sync asked for; the
+  member keeps the href the sync named it by and takes only the properties, since that
+  href is the key the store holds. The collection's own entry is not a member, and a
+  member that is listed but cannot be read (no body even after the multiget, or iCalendar
+  that does not parse) still counts as present, so a snapshot never deletes it locally.
+  CardDAV does the same with `addressbook-multiget`. A member the multiget answers with a
+  `404` was removed after the sync listed it, and is a removal. A failed multiget fails the
+  pass: advancing the cursor without the bodies would never fetch them.
+- **A server without `sync-collection`** is read through its CTag (`ctag_sync`), for
+  calendars and address books alike. It counts as one when the report is refused with the
+  `DAV:supported-report` precondition in a `403` or `409` (RFC 3253 §3.6, the answer the RFC
+  requires), with a `405` or `501`, or with a `400` to the first request of a collection (one
+  carrying a token is not read that way: a server that never did the report never issued
+  one), or when the answer carries no sync-token. Yahoo does the last for a calendar, an
+  empty `207`, and answers an address book's report with a `400`; it refuses
+  `addressbook-query` with a `400` too (`docs/spec-deviations.md`). So the fallback uses only what every server
+  answers: a `PROPFIND` of the collection's `getctag`, which while unchanged ends the pass
+  with an empty delta, and otherwise a Depth 1 `PROPFIND` listing each member's `getetag`,
+  then a multiget for the bodies. The result is a snapshot, and the cursor is `ctag:` and the CTag. A collection
+  with neither the report nor a CTag fails the pass.
+- **Every request carries the host's `User-Agent`** (`engine_http::client`), since reqwest sends
+  none and RFC 9110 §10.1.5 says a client should. Yahoo's address-book server answers an
+  `addressbook-multiget` without one with a `500`.
+- **A refused href with an octet encoded twice is asked once more, encoded once.** Yahoo
+  lists the events it names after their `UID` with the `%` of `%40` encoded again
+  (`%2540`) and answers a request to that href with a `400`; the resource answers at `%40`.
+  So a `400` to a URL holding `%25` and two hex digits is sent once more with that layer
+  removed (`href::single_encoded`, `DavClient::exchange`); a `400` applied nothing, so a
+  write is safe to repeat. Only a read or a guarded write is respelled: on a server that
+  meant the `%25`, the once-encoded URL is another resource, which a guard refuses and an
+  unguarded write would change. The stored key stays the href the server listed.
+- **A guarded `DELETE` reads the resource's ETag first** (`delete_guard`), or its
+  `schedule-tag` for a delete guarded by one, on every server:
+  Yahoo performs a delete whatever its `If-Match` says, while refusing the same guard on a
+  `PUT`. A different ETag is answered with a `412` without the delete being sent, so it
+  reads as the `Conflict` it is; an ETag that cannot be read lets the delete go with its own
+  guard. It costs one `PROPFIND` per delete, and a change between the two requests still
+  goes through on a server that ignores the guard.
+- **A `DAV` header may span several field lines.** Fastmail sends four, with
+  `addressbook` and `calendar-auto-schedule` on lines after the first; they are read as one
+  comma-separated list (RFC 9110 §5.3).
 - **Self-healing invalid token.** A server that rejects a stale token (RFC 6578
   §3.2 `valid-sync-token`, a `403`/`409` precondition) is recovered by re-running
   the REPORT with an empty token — a snapshot — **inside the adapter**, the same
@@ -679,9 +722,6 @@ what a client would assume:
 - **`RRULE UNTIL` with a `Z` (UTC) bound** is read as its wall-clock value;
   converting it to the event's zone needs tzdata and is staged. The supported seed
   uses `COUNT`, not `UNTIL`.
-- **Calendar CalDAV has no CTag fallback yet.** Calendar event sync still relies
-  on RFC 6578. CardDAV implements CTag + per-resource ETag snapshot fallback
-  when `sync-collection` is unavailable.
 - **Calendar events are fetched whole, not paged** — consistent with the JMAP
   calendar slice (events have no natural recency sort, and the REPORT returns the
   collection in one pass).

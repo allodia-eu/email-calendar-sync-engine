@@ -135,6 +135,10 @@ pub use engine_core::{error::FailureClass, mail::MailFlags, search_index::MailRo
 pub use engine_http::{
     IgnoreThrottles, RequestGate, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver,
 };
+/// The product a host names in every request's `User-Agent`, required by every HTTP provider's
+/// constructor: the host's application and its version, so a provider can tell whose traffic
+/// it is. The engine adds no product of its own.
+pub use engine_http::{InvalidUserAgent, UserAgent};
 pub use engine_provider::{
     CalendarAddress, CalendarUserAddresses, CalendarWrites, Capabilities, ContactDestination,
     ContactPhoto, ContactsProvider, ContentIdHeader, DeleteTarget, Draft, DraftAttachment,

@@ -24,8 +24,13 @@ fn client(variable: &str) -> Option<GoogleClient> {
         .ok()
         .filter(|token| !token.is_empty())?;
     Some(
-        GoogleClient::connect(token, &TlsClientConfig::bundled(), &RetryConfig::default())
-            .expect("a Google client"),
+        GoogleClient::connect(
+            token,
+            &TlsClientConfig::bundled(),
+            &RetryConfig::default(),
+            &engine_http::test_server::user_agent(),
+        )
+        .expect("a Google client"),
     )
 }
 

@@ -35,8 +35,12 @@ const SESSION: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{},"urn:ie
 
 /// A provider whose session `server` served first, connected in real time.
 async fn connected(server: &SilentServer) -> JmapProvider {
-    let config = JmapConfig::new(server.url(), Credentials::basic("alice", "pw"))
-        .with_session_path("/jmap/session");
+    let config = JmapConfig::new(
+        server.url(),
+        Credentials::basic("alice", "pw"),
+        engine_http::test_server::user_agent(),
+    )
+    .with_session_path("/jmap/session");
     JmapProvider::connect(config).await.expect("session")
 }
 
@@ -114,13 +118,16 @@ impl Executor for Refused {
             .and_then(|listener| listener.local_addr())
             .expect("free port")
             .port();
-        let refused = engine_http::client(&engine_tls::TlsClientConfig::default())
-            .build()
-            .expect("client")
-            .post(format!("http://127.0.0.1:{port}/jmap/"))
-            .send()
-            .await
-            .expect_err("nothing listens there");
+        let refused = engine_http::client(
+            &engine_tls::TlsClientConfig::default(),
+            &engine_http::test_server::user_agent(),
+        )
+        .build()
+        .expect("client")
+        .post(format!("http://127.0.0.1:{port}/jmap/"))
+        .send()
+        .await
+        .expect_err("nothing listens there");
         Err(refused.into())
     }
 

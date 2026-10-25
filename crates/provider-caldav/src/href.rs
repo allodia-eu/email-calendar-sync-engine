@@ -143,3 +143,35 @@ fn is_unreserved(byte: u8) -> bool {
 fn hex_upper(nibble: u8) -> char {
     char::from_digit(u32::from(nibble), 16).map_or('0', |c| c.to_ascii_uppercase())
 }
+
+/// `url` with every `%25` that is followed by two hex digits decoded once, so `%2540` becomes
+/// `%40`; `None` when there is none.
+///
+/// Yahoo lists the events it names after their `UID` with the `%` of `%40` encoded again, then
+/// refuses a request to that href with a `400` (`docs/spec-deviations.md`, YAHOO-8). The resource
+/// answers once the extra layer is removed.
+pub(crate) fn single_encoded(url: &reqwest::Url) -> Option<reqwest::Url> {
+    let path = url.path();
+    let bytes = path.as_bytes();
+    let mut out = String::with_capacity(path.len());
+    let mut changed = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        let doubled = bytes[at..].starts_with(b"%25")
+            && bytes.get(at + 3).is_some_and(u8::is_ascii_hexdigit)
+            && bytes.get(at + 4).is_some_and(u8::is_ascii_hexdigit);
+        if doubled {
+            out.push('%');
+            at += 3;
+            changed = true;
+        } else {
+            out.push(char::from(bytes[at]));
+            at += 1;
+        }
+    }
+    changed.then(|| {
+        let mut once = url.clone();
+        once.set_path(&out);
+        once
+    })
+}

@@ -68,6 +68,7 @@ async fn caldav_calendar_sync_loop() {
             username: harness.account.clone(),
             password: harness.password.clone(),
         },
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect + discover");
@@ -186,6 +187,7 @@ async fn connect(test: &str) -> Option<(CalDavProvider, AccountId)> {
             username: harness.account.clone(),
             password: harness.password.clone(),
         },
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect + discover");

@@ -37,6 +37,7 @@ fn provider(token: &str, names: Vec<KeywordName>) -> GmailProvider {
         token.to_owned(),
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GmailProvider::new(client)

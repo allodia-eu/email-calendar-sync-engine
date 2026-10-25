@@ -14,9 +14,13 @@ use crate::{
 const SESSION: &str = include_str!("../tests/fixtures/session_shared_accounts.json");
 
 fn bound(base: String, handle: &str) -> JmapConfig {
-    JmapConfig::new(base, Credentials::basic("alice", "pw"))
-        .with_session_path("/jmap/session")
-        .with_shared_mailbox(SharedMailboxId::try_from(handle).unwrap())
+    JmapConfig::new(
+        base,
+        Credentials::basic("alice", "pw"),
+        engine_http::test_server::user_agent(),
+    )
+    .with_session_path("/jmap/session")
+    .with_shared_mailbox(SharedMailboxId::try_from(handle).unwrap())
 }
 
 #[tokio::test]

@@ -12,7 +12,7 @@ use serde_json::json;
 
 use crate::{
     GraphClient, GraphContactProvider,
-    test_support::{capturing_server, fake_client, fake_client_fallible, retry, tls},
+    test_support::{capturing_server, fake_client, fake_client_fallible, retry, tls, user_agent},
 };
 
 fn account() -> AccountId {
@@ -68,7 +68,7 @@ async fn create_uses_graph_contact_shape_without_a_conditional_guard() {
     let response = r#"{"id":"created-1","displayName":"Ada","emailAddresses":[]}"#;
     let (base, captured) = capturing_server("201 Created", response);
     let provider = GraphContactProvider::personal(
-        GraphClient::with_base("token", base, tls(), &retry()).unwrap(),
+        GraphClient::with_base("token", base, tls(), &retry(), &user_agent()).unwrap(),
     );
     let book = AddressBookId::try_from("graph-personal-root").unwrap();
     let mut card = ContactCard::new(

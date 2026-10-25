@@ -8,10 +8,7 @@ use engine_tls::TlsClientConfig;
 
 use crate::{
     CardDavConfig, CardDavProvider, Credentials,
-    carddav_ops::{
-        bind_collection, decode_data_uri, discover_home, encode_segment, multiget_report,
-        stable_suffix,
-    },
+    carddav_ops::{bind_collection, decode_data_uri, discover_home, encode_segment, stable_suffix},
     test_support::{Replay, ok, options},
     transport::HttpResponse,
 };
@@ -25,9 +22,13 @@ fn credentials() -> Credentials {
 
 #[tokio::test]
 async fn public_config_builders_and_invalid_connect_are_explicit() {
-    let config = CardDavConfig::new("not a url", credentials())
-        .with_address_book("team")
-        .with_tls(TlsClientConfig::default());
+    let config = CardDavConfig::new(
+        "not a url",
+        credentials(),
+        engine_http::test_server::user_agent(),
+    )
+    .with_address_book("team")
+    .with_tls(TlsClientConfig::default());
     assert_eq!(config.base_url, "not a url");
     assert_eq!(config.discovery_path, "/.well-known/carddav");
     assert_eq!(config.address_book, "team");
@@ -49,7 +50,7 @@ fn collection_uri_and_stable_resource_helpers_cover_edge_input() {
         "/dav/books/alice/team/"
     );
     assert_eq!(encode_segment("Ada + Zoë"), "Ada%20%2B%20Zo%C3%AB");
-    let report = multiget_report("/book/a&b.vcf");
+    let report = crate::request::addressbook_multiget_report(&["/book/a&b.vcf".to_owned()]);
     assert!(report.contains("/book/a&amp;b.vcf"));
 
     let book = AddressBookId::try_from("/book/").unwrap();

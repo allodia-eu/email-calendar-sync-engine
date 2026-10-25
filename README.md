@@ -83,14 +83,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use engine_tls::TlsClientConfig;
+use engine_http::UserAgent;
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 
 // The bundled Mozilla roots (the engine default). For bundled ∪ OS store, custom roots, or
 // the platform verifier, build one from a policy: engine_tls::client_config(&TlsPolicy::…)?
 let tls = TlsClientConfig::bundled();
+// The host's application, named in every request's `User-Agent`.
+let agent = UserAgent::new("example-mail", "1.4.0")?;
 let config = JmapConfig::new(
     "https://jmap.example.com",
     Credentials::basic("alice@example.com", "app-password"),
+    agent,
 )
 .with_tls(tls);
 

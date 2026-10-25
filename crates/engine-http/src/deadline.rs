@@ -58,15 +58,20 @@ impl Exchange<'_> {
 }
 
 /// The reqwest client builder every HTTP adapter starts from: the host's trust policy, as
-/// [`reqwest_builder`](engine_tls::TlsClientConfig::reqwest_builder) configures it, and the
-/// [`dial`](Deadlines::dial) bound on the connect and the TLS handshake.
+/// [`reqwest_builder`](engine_tls::TlsClientConfig::reqwest_builder) configures it, the
+/// [`dial`](Deadlines::dial) bound on the connect and the TLS handshake, and the host's
+/// [`UserAgent`](crate::UserAgent).
 ///
 /// reqwest's connect timeout covers the name lookup, the TCP connect and the TLS handshake
 /// together, and a failure there is a connect error, which [`SendError`] knows never reached
 /// the server.
-pub fn client(tls: &engine_tls::TlsClientConfig) -> reqwest::ClientBuilder {
+pub fn client(
+    tls: &engine_tls::TlsClientConfig,
+    user_agent: &crate::UserAgent,
+) -> reqwest::ClientBuilder {
     tls.reqwest_builder()
         .connect_timeout(Deadlines::STANDARD.dial())
+        .user_agent(user_agent.as_str())
 }
 
 /// How large a piece of a request body reqwest is handed at a time.
@@ -343,3 +348,7 @@ fn armed() -> bool {
 #[cfg(test)]
 #[path = "deadline_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod client_tests;

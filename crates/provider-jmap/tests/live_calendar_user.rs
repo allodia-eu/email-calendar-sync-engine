@@ -15,6 +15,7 @@ async fn addresses_of(harness: &Harness, user: &str, password: &str) -> Calendar
     let provider = JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(user, password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");

@@ -29,7 +29,9 @@ pub(crate) const CALENDAR_LIST_PROPFIND: &str = concat!(
     r#"<ic:calendar-color/><c:calendar-description/></d:prop></d:propfind>"#,
 );
 
-/// CardDAV principal/address-book-home discovery.
+/// CardDAV principal/address-book-home discovery. Both properties go in one request: Yahoo
+/// answers a principal `PROPFIND` for `current-user-principal` alone with a `400`
+/// (`docs/spec-deviations.md`, YAHOO-5).
 pub(crate) const ADDRESS_BOOK_PRINCIPAL_PROPFIND: &str = concat!(
     r#"<?xml version="1.0" encoding="utf-8"?>"#,
     r#"<d:propfind xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
@@ -45,6 +47,15 @@ pub(crate) const ADDRESS_BOOK_LIST_PROPFIND: &str = concat!(
     r#"<d:current-user-privilege-set/><a:addressbook-description/></d:prop></d:propfind>"#,
 );
 
+/// What a calendar sync and a calendar multiget ask for of each resource: one string, so a body
+/// a multiget fills in carries exactly what the sync would have.
+const CALENDAR_OBJECT_PROPS: &str =
+    "<d:prop><d:getetag/><c:schedule-tag/><c:calendar-data/></d:prop>";
+
+/// What an address-book sync and an address-book multiget ask for of each card.
+const ADDRESS_OBJECT_PROPS: &str =
+    r#"<d:prop><d:getetag/><a:address-data content-type="text/vcard" version="4.0"/></d:prop>"#;
+
 /// CardDAV RFC 6578 sync report requesting vCard payloads.
 pub(crate) fn address_book_sync_report(sync_token: &str) -> String {
     format!(
@@ -52,26 +63,31 @@ pub(crate) fn address_book_sync_report(sync_token: &str) -> String {
             r#"<?xml version="1.0" encoding="utf-8"?>"#,
             r#"<d:sync-collection xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
             r#"<d:sync-token>{token}</d:sync-token><d:sync-level>1</d:sync-level>"#,
-            r#"<d:prop><d:getetag/><a:address-data content-type="text/vcard" version="4.0"/>"#,
-            r#"</d:prop></d:sync-collection>"#,
+            "{props}</d:sync-collection>",
         ),
         token = xml_escape(sync_token),
+        props = ADDRESS_OBJECT_PROPS,
     )
 }
 
-/// Reads the collection CTag when RFC 6578 sync is unavailable.
-pub(crate) const ADDRESS_BOOK_CTAG_PROPFIND: &str = concat!(
+/// Reads a collection's CTag when RFC 6578 sync is unavailable.
+pub(crate) const CTAG_PROPFIND: &str = concat!(
     r#"<?xml version="1.0" encoding="utf-8"?>"#,
     r#"<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">"#,
     r#"<d:prop><cs:getctag/></d:prop></d:propfind>"#,
 );
 
-/// Full CardDAV addressbook-query used by the CTag fallback.
-pub(crate) const ADDRESS_BOOK_QUERY_REPORT: &str = concat!(
+/// Lists a collection's members with their ETags, for the CTag fallback to fetch by multiget.
+pub(crate) const MEMBER_ETAGS_PROPFIND: &str = concat!(
     r#"<?xml version="1.0" encoding="utf-8"?>"#,
-    r#"<a:addressbook-query xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
-    r#"<d:prop><d:getetag/><a:address-data/></d:prop>"#,
-    r#"<a:filter/></a:addressbook-query>"#,
+    r#"<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"#,
+);
+
+/// Reads a calendar object's `schedule-tag` (RFC 6638 §3.2.10), for a delete guarded by one.
+pub(crate) const SCHEDULE_TAG_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
+    r#"<d:prop><c:schedule-tag/></d:prop></d:propfind>"#,
 );
 
 /// Asks a resource who the requester is (RFC 5397): the cheapest request whose answer shows
@@ -89,11 +105,57 @@ pub(crate) fn sync_collection_report(sync_token: &str) -> String {
             r#"<?xml version="1.0" encoding="utf-8"?>"#,
             r#"<d:sync-collection xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
             r#"<d:sync-token>{token}</d:sync-token><d:sync-level>1</d:sync-level>"#,
-            r#"<d:prop><d:getetag/><c:schedule-tag/><c:calendar-data/></d:prop>"#,
-            r#"</d:sync-collection>"#,
+            "{props}</d:sync-collection>",
         ),
         token = xml_escape(sync_token),
+        props = CALENDAR_OBJECT_PROPS,
     )
+}
+
+/// A `calendar-multiget` REPORT (RFC 4791 §7.9) for `hrefs`, asking for what
+/// [`sync_collection_report`] asks for.
+pub(crate) fn calendar_multiget_report(hrefs: &[String]) -> String {
+    multiget(
+        r#"<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
+        CALENDAR_OBJECT_PROPS,
+        "</c:calendar-multiget>",
+        hrefs,
+    )
+}
+
+/// An `addressbook-multiget` REPORT (RFC 6352 §8.7) for `hrefs`, asking for what
+/// [`address_book_sync_report`] asks for.
+pub(crate) fn addressbook_multiget_report(hrefs: &[String]) -> String {
+    multiget(
+        r#"<a:addressbook-multiget xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
+        ADDRESS_OBJECT_PROPS,
+        "</a:addressbook-multiget>",
+        hrefs,
+    )
+}
+
+/// An `addressbook-multiget` REPORT for `hrefs` that asks for each card as the server stores it,
+/// with no `version`: the CTag fallback and a single card's refetch ask for nothing the server
+/// was not already asked for, and RFC 6352 requires a server to support vCard 3.0 only, so a
+/// server that cannot convert to 4.0 may refuse a request for it.
+pub(crate) fn addressbook_multiget_as_stored(hrefs: &[String]) -> String {
+    multiget(
+        r#"<a:addressbook-multiget xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
+        "<d:prop><d:getetag/><a:address-data/></d:prop>",
+        "</a:addressbook-multiget>",
+        hrefs,
+    )
+}
+
+fn multiget(open: &str, prop: &str, close: &str, hrefs: &[String]) -> String {
+    let mut body = format!(r#"<?xml version="1.0" encoding="utf-8"?>{open}{prop}"#);
+    for href in hrefs {
+        body.push_str("<d:href>");
+        body.push_str(&xml_escape(href));
+        body.push_str("</d:href>");
+    }
+    body.push_str(close);
+    body
 }
 
 /// Escapes the five XML special characters so an opaque sync-token cannot break

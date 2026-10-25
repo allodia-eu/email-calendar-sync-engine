@@ -52,6 +52,7 @@ mod policy;
 mod send;
 #[cfg(any(test, feature = "test-server"))]
 pub mod test_server;
+mod user_agent;
 
 pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
 pub use deadline::{Exchange, chunk_within, client};
@@ -61,6 +62,7 @@ pub use observed::ObservedConnection;
 pub use observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver};
 pub use policy::RetryPolicy;
 pub use send::{RetryConfig, Sent, send_retrying};
+pub use user_agent::{InvalidUserAgent, UserAgent};
 
 #[cfg(test)]
 mod classify_send_tests;

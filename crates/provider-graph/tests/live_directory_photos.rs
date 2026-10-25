@@ -126,6 +126,7 @@ async fn live_a_colleagues_photo_reads_without_the_admin_consented_scope() {
             token,
             &engine_tls::TlsClientConfig::bundled(),
             &engine_http::RetryConfig::default(),
+            &engine_http::test_server::user_agent(),
         )
         .expect("client"),
     );

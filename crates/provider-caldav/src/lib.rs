@@ -46,12 +46,15 @@ mod carddav_config;
 mod carddav_ops;
 mod credential_hosts;
 mod credential_scope;
+mod ctag_sync;
 mod dav;
 mod dav_client;
+mod delete_guard;
 mod discovery;
 mod error;
 mod href;
 pub mod imip;
+mod multiget;
 mod provider;
 mod request;
 mod response;
@@ -75,6 +78,12 @@ mod carddav_unit_tests;
 #[cfg(test)]
 mod carddav_write_tests;
 #[cfg(test)]
+mod ctag_sync_tests;
+#[cfg(test)]
+mod delete_guard_tests;
+#[cfg(test)]
+mod double_encoding_tests;
+#[cfg(test)]
 mod vcard_tests;
 #[cfg(test)]
 mod write_outcome_tests;
@@ -83,6 +92,8 @@ pub use caldav_config::CalDavConfig;
 pub use carddav::CardDavProvider;
 pub use carddav_config::CardDavConfig;
 pub use credential_hosts::CredentialHosts;
+/// The product a host names in every request's `User-Agent`, required by both configs.
+pub use engine_http::UserAgent;
 pub use error::CalDavError;
 pub use provider::CalDavProvider;
 pub use transport::Credentials;

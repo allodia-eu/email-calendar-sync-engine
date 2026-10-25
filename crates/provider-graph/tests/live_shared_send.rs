@@ -35,6 +35,7 @@ fn provider(token: &str, principal: MailboxPrincipal) -> GraphProvider {
         principal,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GraphProvider::new(client, MailboxId::try_from("sentitems").unwrap())

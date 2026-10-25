@@ -123,7 +123,12 @@ impl JmapClient {
             .connect_observer
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
-        let transport = Transport::new(config.credentials, &config.tls, &config.retry)?;
+        let transport = Transport::new(
+            config.credentials,
+            &config.tls,
+            &config.retry,
+            &config.user_agent,
+        )?;
         let (document, served_by) = fetch_session(
             &transport,
             &base,

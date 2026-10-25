@@ -120,9 +120,12 @@ impl HandOverLog for Watching {
 }
 
 fn client() -> reqwest::Client {
-    crate::client(&engine_tls::TlsClientConfig::bundled())
-        .build()
-        .unwrap()
+    crate::client(
+        &engine_tls::TlsClientConfig::bundled(),
+        &crate::test_server::user_agent(),
+    )
+    .build()
+    .unwrap()
 }
 
 const ACCEPTED: &str = "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n";

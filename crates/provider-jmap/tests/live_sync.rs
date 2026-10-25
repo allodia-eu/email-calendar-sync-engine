@@ -62,6 +62,7 @@ async fn full_mail_and_calendar_sync_loop() {
     let provider = JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");
@@ -228,6 +229,7 @@ async fn streamed_mail_sync_commits_pages_and_reports_progress() {
     let provider = JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");

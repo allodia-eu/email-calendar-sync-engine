@@ -135,10 +135,10 @@ const fn scheme_of(credentials: &Credentials) -> &'static str {
 /// challenge's parameters (RFC 9110 §11.6.1); a scheme is the element whose first token is not
 /// a `name=value` parameter. A comma inside a quoted parameter value separates nothing.
 ///
-/// RFC 9110 §15.5.2 says a `401` MUST carry a challenge, and Yahoo's calendar server sends
-/// none. A bare `401` from a trusted origin is still that server asking for credentials, so it
-/// is answered; a `401` whose challenges all name another scheme is not, since that server has
-/// said what it wants and it is not this credential.
+/// RFC 9110 §15.5.2 says a `401` MUST carry a challenge, and Yahoo's, Google's and AOL's calendar
+/// servers send none (`docs/spec-deviations.md`, YAHOO-1). A bare `401` from a trusted origin is
+/// still that server asking for credentials, so it is answered; a `401` whose challenges all name
+/// another scheme is not, since that server has said what it wants and it is not this credential.
 fn offers(headers: &HeaderMap, scheme: &str) -> bool {
     let offered = schemes(headers);
     offered.is_empty()

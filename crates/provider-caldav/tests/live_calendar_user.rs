@@ -31,6 +31,7 @@ async fn stalwart_recognises_the_accounts_own_address() {
             username: harness.account.clone(),
             password: harness.password.clone(),
         },
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect + discover");

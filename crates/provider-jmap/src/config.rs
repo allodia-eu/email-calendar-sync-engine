@@ -73,16 +73,21 @@ pub struct JmapConfig {
     pub(crate) session_urls: SessionUrlPolicy,
     pub(crate) tls: TlsClientConfig,
     pub(crate) retry: engine_http::RetryConfig,
+    pub(crate) user_agent: engine_http::UserAgent,
     pub(crate) connect_observer: Option<Arc<dyn ConnectObserver>>,
     pub(crate) shared_mailbox: Option<SharedMailboxId>,
 }
 
 impl JmapConfig {
     /// Configures a connection to `base_url` (e.g. `http://127.0.0.1:18080`) with
-    /// `credentials`, defaulting to well-known session discovery and rebasing
-    /// advertised URLs onto the connection.
+    /// `credentials`, naming `user_agent` in every request, defaulting to well-known session
+    /// discovery and rebasing advertised URLs onto the connection.
     #[must_use]
-    pub fn new(base_url: impl Into<String>, credentials: Credentials) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        credentials: Credentials,
+        user_agent: engine_http::UserAgent,
+    ) -> Self {
         Self {
             base_url: base_url.into(),
             credentials,
@@ -90,6 +95,7 @@ impl JmapConfig {
             session_urls: SessionUrlPolicy::RebaseToConnection,
             tls: TlsClientConfig::default(),
             retry: engine_http::RetryConfig::default(),
+            user_agent,
             connect_observer: None,
             shared_mailbox: None,
         }
@@ -172,6 +178,7 @@ impl fmt::Debug for JmapConfig {
             .field("base_url", &self.base_url)
             .field("session_path", &self.session_path)
             .field("session_urls", &self.session_urls)
+            .field("user_agent", &self.user_agent)
             .field("shared_mailbox", &self.shared_mailbox)
             .finish_non_exhaustive()
     }

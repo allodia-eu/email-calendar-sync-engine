@@ -11,7 +11,7 @@ use engine_core::{
 
 use super::*;
 use crate::test_support::{
-    capturing_replay_server, fake_client, fake_client_fallible, json, retry, tls,
+    capturing_replay_server, fake_client, fake_client_fallible, json, retry, tls, user_agent,
 };
 
 const LABELS: &str = include_str!("../tests/fixtures/mail/labels.json");
@@ -283,7 +283,7 @@ async fn setting_a_name_patches_the_send_as_resource_and_nothing_else() {
         "/settings/sendAs/",
         json(r#"{"sendAsEmail":"alice@example.com","displayName":"Alice Smith"}"#),
     )]);
-    let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     let provider = GmailProvider::new(client);
 
     provider

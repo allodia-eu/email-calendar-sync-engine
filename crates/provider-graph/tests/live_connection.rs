@@ -39,6 +39,7 @@ fn provider(token: String) -> GraphProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GraphProvider::new(client, MailboxId::try_from("inbox").unwrap())

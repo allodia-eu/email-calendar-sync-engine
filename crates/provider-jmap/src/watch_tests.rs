@@ -298,8 +298,12 @@ async fn connect_reads_a_change_over_a_real_event_stream() {
     // The whole path: session discovery → open EventSource (URL substitution + status
     // check) → real reqwest streaming chunks → SSE parse → classify → Changed.
     let mut watcher = JmapWatcher::connect(
-        crate::JmapConfig::new(base, crate::Credentials::basic("a", "b"))
-            .with_session_path("/jmap/session"),
+        crate::JmapConfig::new(
+            base,
+            crate::Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
         &[JmapDataType::Email],
         Duration::from_secs(30),
     )
@@ -318,8 +322,12 @@ async fn connect_with_no_types_subscribes_to_all() {
         http_response("text/event-stream", sse_body),
     ]);
     let mut watcher = JmapWatcher::connect(
-        crate::JmapConfig::new(base, crate::Credentials::basic("a", "b"))
-            .with_session_path("/jmap/session"),
+        crate::JmapConfig::new(
+            base,
+            crate::Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
         &[],
         Duration::from_secs(30),
     )
@@ -335,8 +343,12 @@ async fn connect_without_event_source_url_is_not_watchable() {
     let session = r#"{"capabilities":{"urn:ietf:params:jmap:mail":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c"},"apiUrl":"https://mail.test.local/jmap/"}"#;
     let base = mock_server(vec![http_response("application/json", session)]);
     let err = JmapWatcher::connect(
-        crate::JmapConfig::new(base, crate::Credentials::basic("a", "b"))
-            .with_session_path("/jmap/session"),
+        crate::JmapConfig::new(
+            base,
+            crate::Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
         &[JmapDataType::Email],
         Duration::from_secs(30),
     )
@@ -355,7 +367,9 @@ async fn a_stream_that_pings_is_kept_and_one_that_stops_is_a_lost_connection() {
     let every = DEFAULT_EVENT_SOURCE_PING;
     let url = engine_http::test_server::trickling(head, ping, 5, every).await;
     let tls = engine_tls::TlsClientConfig::bundled();
-    let client = engine_http::client(&tls).build().expect("client");
+    let client = engine_http::client(&tls, &engine_http::test_server::user_agent())
+        .build()
+        .expect("client");
     let response = engine_http::send_retrying(
         client.get(url),
         &engine_http::RetryConfig::default(),

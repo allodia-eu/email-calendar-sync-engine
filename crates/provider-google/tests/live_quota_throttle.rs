@@ -98,8 +98,13 @@ async fn live_a_gmail_quota_refusal_names_when_it_clears_and_coming_back_then_wo
             gave_up: e.gave_up,
         });
     }));
-    let client = GoogleClient::connect(token, &engine_tls::TlsClientConfig::bundled(), &retry)
-        .expect("client");
+    let client = GoogleClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        &retry,
+        &engine_http::test_server::user_agent(),
+    )
+    .expect("client");
     let provider = GmailProvider::new(client);
 
     // --- 1..3: spend the quota until a refusal names an instant. ---
