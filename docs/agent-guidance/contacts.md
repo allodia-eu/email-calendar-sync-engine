@@ -173,8 +173,9 @@ mail/calendar/identity scopes.
   discovery, normalization, and write code.
 - Discover address-book homes, ask the home whether it advertises the
   `addressbook` class, and only then list collections: a home without it offers
-  no contacts. Prefer RFC 6578 `sync-collection`;
-  use CTag/per-resource ETag comparison when the server lacks it.
+  no contacts. Prefer RFC 6578 `sync-collection`; a server without it is read through
+  its CTag, a member listing and a multiget (`caldav.md`, "A server without
+  `sync-collection`").
 - A changed card the sync returned without `address-data` (iCloud returns every card
   that way) is fetched with `addressbook-multiget`, requesting `getetag` and
   `address-data` (`multiget::fill_bodies`).

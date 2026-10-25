@@ -24,6 +24,7 @@ use crate::{
         contact_update, decode_data_uri, discover_home, encode_segment, fallback_contact_sync,
         list_address_books, normalize_response, require_writable, stable_suffix, supported_fields,
     },
+    ctag_sync::{is_ctag_cursor, refuses_sync_collection},
     error::CalDavError,
     multiget::fill_bodies,
     request::addressbook_multiget_report,
@@ -262,7 +263,7 @@ impl ContactsProvider for CardDavProvider {
         if !self.advertised {
             return Ok(ContactSourceSync::Unavailable(no_address_books()));
         }
-        if cursor.is_some_and(|cursor| cursor.as_str().starts_with("ctag:")) {
+        if is_ctag_cursor(cursor) {
             let sync = fallback_contact_sync(
                 self.executor.as_ref(),
                 self.href(),
@@ -280,10 +281,15 @@ impl ContactsProvider for CardDavProvider {
         let mut recovered = false;
         let mut snapshot = token.is_empty();
         let mut report = match contact_report(self.executor.as_ref(), self.href(), token).await {
-            Ok(report) => report,
-            Err(CalDavError::Status {
-                status: 405 | 501, ..
-            }) => {
+            Ok(report) if report.sync_token.is_some() => report,
+            Err(error) if !snapshot && error.failure_class() == FailureClass::NeedsResync => {
+                recovered = true;
+                snapshot = true;
+                contact_report(self.executor.as_ref(), self.href(), "").await?
+            }
+            Err(error) if !refuses_sync_collection(&error, snapshot) => return Err(error.into()),
+            // A refusal, or an answer without a sync-token: the server does not do the report.
+            _ => {
                 let sync = fallback_contact_sync(
                     self.executor.as_ref(),
                     self.href(),
@@ -297,12 +303,6 @@ impl ContactsProvider for CardDavProvider {
                     cursor_recovered: cursor.is_some(),
                 });
             }
-            Err(error) if !snapshot && error.failure_class() == FailureClass::NeedsResync => {
-                recovered = true;
-                snapshot = true;
-                contact_report(self.executor.as_ref(), self.href(), "").await?
-            }
-            Err(error) => return Err(error.into()),
         };
         fill_bodies(
             self.executor.as_ref(),

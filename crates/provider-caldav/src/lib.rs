@@ -46,6 +46,7 @@ mod carddav_config;
 mod carddav_ops;
 mod credential_hosts;
 mod credential_scope;
+mod ctag_sync;
 mod dav;
 mod dav_client;
 mod discovery;
@@ -75,6 +76,8 @@ mod carddav_tests;
 mod carddav_unit_tests;
 #[cfg(test)]
 mod carddav_write_tests;
+#[cfg(test)]
+mod ctag_sync_tests;
 #[cfg(test)]
 mod vcard_tests;
 #[cfg(test)]

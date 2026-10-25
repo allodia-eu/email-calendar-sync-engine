@@ -11,14 +11,15 @@ use engine_core::{
 use engine_provider::{ConnectObserver, ConnectStep, ProviderResult};
 
 use crate::{
+    ctag_sync::{CtagSync, ctag_sync},
     dav::{DavResponse, MultiStatus},
     discovery::{authenticate_before_reading, follow, trusted_start},
     error::CalDavError,
     href::redirect_href,
-    multiget::fill_bodies,
+    multiget::same_path,
     request::{
-        ADDRESS_BOOK_CTAG_PROPFIND, ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND,
-        ADDRESS_BOOK_QUERY_REPORT, address_book_sync_report, addressbook_multiget_report,
+        ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND, address_book_sync_report,
+        addressbook_multiget_report,
     },
     transport::{DavExecutor, DavMethod},
     vcard,
@@ -212,45 +213,22 @@ pub(crate) async fn fallback_contact_sync(
     writable: bool,
     cursor: Option<&engine_core::sync::SyncState>,
 ) -> Result<engine_provider::ScopeSync<ContactCard>, CalDavError> {
-    let properties = executor
-        .send(
-            DavMethod::Propfind,
-            collection,
-            "0",
-            ADDRESS_BOOK_CTAG_PROPFIND.into(),
-        )
-        .await?
-        .into_multistatus()?;
-    let ctag = property(&properties, "getctag")
-        .ok_or_else(|| CalDavError::protocol("CardDAV fallback response had no CTag"))?;
-    let next = engine_core::sync::SyncState::new(format!("ctag:{ctag}"));
-    if cursor.is_some_and(|cursor| cursor.as_str() == next.as_str()) {
-        return Ok(engine_provider::ScopeSync::new(
-            SyncUpdate::delta(Vec::new(), Vec::new()),
-            next,
-        ));
-    }
-    let mut report = executor
-        .send(
-            DavMethod::Report,
-            collection,
-            "1",
-            ADDRESS_BOOK_QUERY_REPORT.into(),
-        )
-        .await?
-        .into_multistatus()?;
-    fill_bodies(
+    let sync = ctag_sync(
         executor,
         collection,
-        &mut report,
+        cursor,
         "address-data",
         addressbook_multiget_report,
     )
     .await?;
-    Ok(engine_provider::ScopeSync::new(
-        contact_update(&report, book, writable, true),
-        next,
-    ))
+    Ok(match sync {
+        CtagSync::Unchanged(next) => {
+            engine_provider::ScopeSync::new(SyncUpdate::delta(Vec::new(), Vec::new()), next)
+        }
+        CtagSync::Changed { members, next } => {
+            engine_provider::ScopeSync::new(contact_update(&members, book, writable, true), next)
+        }
+    })
 }
 
 pub(crate) fn contact_update(
@@ -270,6 +248,10 @@ pub(crate) fn contact_update(
                     .iter()
                     .filter_map(|href| ProviderKey::new(href).ok()),
             );
+            continue;
+        }
+        // The address book's own entry is not a card.
+        if same_path(response.href(), book.as_str()) {
             continue;
         }
         // The `present` set is derived from what the server *listed*, not from what

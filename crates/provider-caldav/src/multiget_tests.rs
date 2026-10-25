@@ -175,9 +175,13 @@ async fn a_card_the_multiget_returns_without_a_body_stays_present() {
         panic!("expected a snapshot");
     };
     assert!(objects.is_empty());
-    assert!(
-        present.iter().any(|key| key.as_str().ends_with("/ada.vcf")),
-        "a card nobody could read was tombstoned: {present:?}"
+    assert_eq!(
+        present
+            .iter()
+            .map(engine_core::ids::ProviderKey::as_str)
+            .collect::<Vec<_>>(),
+        ["/dav/addressbooks/alice/default/ada.vcf"],
+        "a card nobody could read was tombstoned, or the address book counted as a card"
     );
 }
 

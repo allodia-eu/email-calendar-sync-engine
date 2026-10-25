@@ -29,7 +29,9 @@ pub(crate) const CALENDAR_LIST_PROPFIND: &str = concat!(
     r#"<ic:calendar-color/><c:calendar-description/></d:prop></d:propfind>"#,
 );
 
-/// CardDAV principal/address-book-home discovery.
+/// CardDAV principal/address-book-home discovery. Both properties go in one request: Yahoo
+/// answers a principal `PROPFIND` for `current-user-principal` alone with a `400`
+/// (`docs/spec-deviations.md`, YAHOO-5).
 pub(crate) const ADDRESS_BOOK_PRINCIPAL_PROPFIND: &str = concat!(
     r#"<?xml version="1.0" encoding="utf-8"?>"#,
     r#"<d:propfind xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
@@ -68,19 +70,17 @@ pub(crate) fn address_book_sync_report(sync_token: &str) -> String {
     )
 }
 
-/// Reads the collection CTag when RFC 6578 sync is unavailable.
-pub(crate) const ADDRESS_BOOK_CTAG_PROPFIND: &str = concat!(
+/// Reads a collection's CTag when RFC 6578 sync is unavailable.
+pub(crate) const CTAG_PROPFIND: &str = concat!(
     r#"<?xml version="1.0" encoding="utf-8"?>"#,
     r#"<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">"#,
     r#"<d:prop><cs:getctag/></d:prop></d:propfind>"#,
 );
 
-/// Full CardDAV addressbook-query used by the CTag fallback.
-pub(crate) const ADDRESS_BOOK_QUERY_REPORT: &str = concat!(
+/// Lists a collection's members with their ETags, for the CTag fallback to fetch by multiget.
+pub(crate) const MEMBER_ETAGS_PROPFIND: &str = concat!(
     r#"<?xml version="1.0" encoding="utf-8"?>"#,
-    r#"<a:addressbook-query xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
-    r#"<d:prop><d:getetag/><a:address-data/></d:prop>"#,
-    r#"<a:filter/></a:addressbook-query>"#,
+    r#"<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"#,
 );
 
 /// Asks a resource who the requester is (RFC 5397): the cheapest request whose answer shows
