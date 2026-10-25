@@ -196,27 +196,33 @@ impl DavClient {
     /// a host named by remote content (a vCard photo URL) is not sent the password however it
     /// asks.
     ///
-    /// A `400` to a URL with a doubly encoded octet is asked once more with it encoded once
-    /// ([`single_encoded`]): a server that lists such an href and then refuses it means the
-    /// resource that answers there. A `400` applied nothing, so a write is safe to send again.
+    /// With `respell`, a `400` to a URL with a doubly encoded octet is asked once more with it
+    /// encoded once ([`single_encoded`]): a server that lists such an href and then refuses it
+    /// means the resource that answers there. A `400` applied nothing, so a write is safe to send
+    /// again. The once-encoded URL names another resource on a server that meant the `%25`, so a
+    /// write is respelled only when it carries a guard, which that other resource refuses.
     async fn exchange(
         &self,
         method: DavMethod,
         href: &str,
         dress: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
         body: Option<bytes::Bytes>,
+        respell: bool,
     ) -> Result<engine_http::Sent, CalDavError> {
         let url = self.target(href)?;
         let response = self
             .exchange_at(method, &url, &dress, body.as_ref())
             .await?;
-        if response.status() != reqwest::StatusCode::BAD_REQUEST {
+        if !respell || response.status() != reqwest::StatusCode::BAD_REQUEST {
             return Ok(response);
         }
-        match single_encoded(&url) {
-            Some(once) => self.exchange_at(method, &once, &dress, body.as_ref()).await,
-            None => Ok(response),
-        }
+        let Some(once) = single_encoded(&url) else {
+            return Ok(response);
+        };
+        // Released before the second request, so its connection is not held open by an
+        // unread body.
+        drop(response);
+        self.exchange_at(method, &once, &dress, body.as_ref()).await
     }
 
     /// One [`exchange`](Self::exchange) at `url`, answering one challenge.
@@ -337,6 +343,7 @@ impl DavExecutor for DavClient {
                     )
                 },
                 Some(body.into()),
+                true,
             )
             .await?;
         self.collect(response, false).await
@@ -344,14 +351,14 @@ impl DavExecutor for DavClient {
 
     async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
         let response = self
-            .exchange(DavMethod::Options, href, |request| request, None)
+            .exchange(DavMethod::Options, href, |request| request, None, true)
             .await?;
         self.collect(response, false).await
     }
 
     async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
         let response = self
-            .exchange(DavMethod::Get, href, |request| request, None)
+            .exchange(DavMethod::Get, href, |request| request, None, true)
             .await?;
         self.connection.record(&response);
         let status = response.status().as_u16();
@@ -380,11 +387,11 @@ impl DavExecutor for DavClient {
             body,
         } = request;
         if method == DavMethod::Delete
-            && let Precondition::IfMatch(etag) = &precondition
-            && let Some(refused) = refused_before_delete(self, &href, etag).await
+            && let Some(refused) = refused_before_delete(self, &href, &precondition).await
         {
             return Ok(refused);
         }
+        let guarded = !matches!(precondition, Precondition::None);
         let response = self
             .exchange(
                 method,
@@ -409,6 +416,7 @@ impl DavExecutor for DavClient {
                     }
                 },
                 Some(body.into()),
+                guarded,
             )
             .await
             .map_err(CalDavError::after_write)?;

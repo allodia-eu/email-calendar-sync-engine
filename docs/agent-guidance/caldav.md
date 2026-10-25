@@ -281,8 +281,11 @@ are split escape-aware so the writer and the parser agree.
   (`%2540`) and answers a request to that href with a `400`; the resource answers at `%40`.
   So a `400` to a URL holding `%25` and two hex digits is sent once more with that layer
   removed (`href::single_encoded`, `DavClient::exchange`); a `400` applied nothing, so a
-  write is safe to repeat. The stored key stays the href the server listed.
-- **A guarded `DELETE` reads the resource's ETag first** (`delete_guard`), on every server:
+  write is safe to repeat. Only a read or a guarded write is respelled: on a server that
+  meant the `%25`, the once-encoded URL is another resource, which a guard refuses and an
+  unguarded write would change. The stored key stays the href the server listed.
+- **A guarded `DELETE` reads the resource's ETag first** (`delete_guard`), or its
+  `schedule-tag` for a delete guarded by one, on every server:
   Yahoo performs a delete whatever its `If-Match` says, while refusing the same guard on a
   `PUT`. A different ETag is answered with a `412` without the delete being sent, so it
   reads as the `Conflict` it is; an ETag that cannot be read lets the delete go with its own

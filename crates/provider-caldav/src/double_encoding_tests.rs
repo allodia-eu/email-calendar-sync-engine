@@ -42,7 +42,7 @@ fn a_doubly_encoded_octet_is_decoded_once() {
     );
 }
 
-/// The first request's request line, and whether each carried `If-Match`.
+/// Each request's request line, and whether it carried `If-Match`.
 fn lines(seen: &std::sync::Mutex<Vec<String>>) -> Vec<(String, bool)> {
     seen.lock()
         .unwrap()
@@ -102,4 +102,25 @@ async fn a_400_to_an_href_with_nothing_encoded_twice_is_the_answer() {
 
     assert_eq!(reply.status, 400);
     assert_eq!(seen.lock().unwrap().len(), 1, "nothing to ask again");
+}
+
+/// Without a guard nothing would stop the once-encoded URL's resource, which on a server that
+/// meant the `%25` is another one, from being written.
+#[tokio::test]
+async fn an_unguarded_write_is_not_respelled() {
+    let (base, seen) = mock_server_capturing(vec![status("400 Bad Request")]);
+
+    let reply = client(&base)
+        .send_write(WriteRequest {
+            method: DavMethod::Put,
+            href: "/cal/131/100%2541.ics".to_owned(),
+            content_type: Some("text/calendar; charset=utf-8"),
+            precondition: Precondition::None,
+            body: "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".to_owned(),
+        })
+        .await
+        .expect("an answer");
+
+    assert_eq!(reply.status, 400);
+    assert_eq!(seen.lock().unwrap().len(), 1);
 }
