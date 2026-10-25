@@ -26,6 +26,7 @@ fn config_debug_omits_credentials() {
     let config = JmapConfig::new(
         "http://127.0.0.1:18080",
         Credentials::basic("alice@test.local", "harness-alice-pw"),
+        engine_http::test_server::user_agent(),
     );
     let shown = format!("{config:?}");
     assert!(shown.contains("127.0.0.1:18080"));
@@ -34,9 +35,13 @@ fn config_debug_omits_credentials() {
 
 #[test]
 fn config_builder_overrides_defaults() {
-    let config = JmapConfig::new("http://h", Credentials::bearer("t"))
-        .with_session_path("/jmap/session")
-        .with_session_urls(SessionUrlPolicy::TrustAdvertised);
+    let config = JmapConfig::new(
+        "http://h",
+        Credentials::bearer("t"),
+        engine_http::test_server::user_agent(),
+    )
+    .with_session_path("/jmap/session")
+    .with_session_urls(SessionUrlPolicy::TrustAdvertised);
     assert_eq!(config.session_path, "/jmap/session");
     assert_eq!(config.session_urls, SessionUrlPolicy::TrustAdvertised);
 }
@@ -143,7 +148,12 @@ async fn connect_and_execute_against_a_mock_server() {
     let api = r#"{"methodResponses":[["Mailbox/get",{"state":"s1","list":[]},"0"]]}"#;
     let base = mock_server(vec![http_ok(SESSION_DOC), http_ok(api)]);
     let client = JmapClient::connect(
-        JmapConfig::new(base, Credentials::basic("alice", "pw")).with_session_path("/jmap/session"),
+        JmapConfig::new(
+            base,
+            Credentials::basic("alice", "pw"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
     )
     .await
     .unwrap();
@@ -161,9 +171,13 @@ async fn connect_follows_the_well_known_redirect() {
     let redirect = "HTTP/1.1 307 Temporary Redirect\r\nLocation: /jmap/session\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     let base = mock_server(vec![redirect.to_owned(), http_ok(SESSION_DOC)]);
     // Default session path is /.well-known/jmap → 307 → /jmap/session (rebased).
-    let client = JmapClient::connect(JmapConfig::new(base, Credentials::basic("a", "b")))
-        .await
-        .unwrap();
+    let client = JmapClient::connect(JmapConfig::new(
+        base,
+        Credentials::basic("a", "b"),
+        engine_http::test_server::user_agent(),
+    ))
+    .await
+    .unwrap();
     assert!(client.session().capabilities().mail());
     // The redirect was the *first* response this transport saw. The reported version
     // must describe the endpoint that actually served the session, not the redirector
@@ -182,7 +196,12 @@ async fn http_error_status_surfaces_as_a_classified_error() {
         "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\nConnection: close\r\n\r\nerr";
     let base = mock_server(vec![body.to_owned()]);
     let err = JmapClient::connect(
-        JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session"),
+        JmapConfig::new(
+            base,
+            Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
     )
     .await
     .unwrap_err();
@@ -198,7 +217,12 @@ async fn jmap_provider_connects_and_syncs_through_the_real_client() {
     let mailboxes = r#"{"methodResponses":[["Mailbox/query",{"queryState":"q1","position":0,"total":0,"ids":[]},"0"],["Mailbox/get",{"state":"s1","list":[]},"1"]]}"#;
     let base = mock_server(vec![http_ok(SESSION_DOC), http_ok(mailboxes)]);
     let provider = JmapProvider::connect(
-        JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session"),
+        JmapConfig::new(
+            base,
+            Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
     )
     .await
     .unwrap();
@@ -232,8 +256,12 @@ async fn jmap_provider_connects_and_syncs_through_the_real_client() {
 async fn transport_connect_failure_is_retryable() {
     // A refused connection surfaces as a retryable transport error.
     let err = JmapClient::connect(
-        JmapConfig::new("http://127.0.0.1:1", Credentials::basic("a", "b"))
-            .with_session_path("/jmap/session"),
+        JmapConfig::new(
+            "http://127.0.0.1:1",
+            Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
     )
     .await
     .unwrap_err();
@@ -244,7 +272,12 @@ async fn transport_connect_failure_is_retryable() {
 async fn malformed_session_body_is_a_permanent_decode_error() {
     let base = mock_server(vec![http_ok("this is not json")]);
     let err = JmapClient::connect(
-        JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session"),
+        JmapConfig::new(
+            base,
+            Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
     )
     .await
     .unwrap_err();
@@ -258,7 +291,12 @@ async fn malformed_session_body_is_a_permanent_decode_error() {
 async fn bearer_auth_connects() {
     let base = mock_server(vec![http_ok(SESSION_DOC)]);
     let client = JmapClient::connect(
-        JmapConfig::new(base, Credentials::bearer("tok")).with_session_path("/jmap/session"),
+        JmapConfig::new(
+            base,
+            Credentials::bearer("tok"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
     )
     .await
     .unwrap();
@@ -277,7 +315,12 @@ const CONCURRENT_SESSION_DOC: &str = r#"{"capabilities":{"urn:ietf:params:jmap:c
 async fn the_body_warm_is_as_wide_as_the_session_says_it_may_be() {
     let base = mock_server(vec![http_ok(CONCURRENT_SESSION_DOC)]);
     let provider = JmapProvider::connect(
-        JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session"),
+        JmapConfig::new(
+            base,
+            Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
     )
     .await
     .unwrap();
@@ -290,7 +333,12 @@ async fn the_body_warm_is_as_wide_as_the_session_says_it_may_be() {
 pub(super) const RICH_SESSION_DOC: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{"maxObjectsInGet":500},"urn:ietf:params:jmap:mail":{},"urn:ietf:params:jmap:submission":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c","urn:ietf:params:jmap:submission":"c"},"apiUrl":"https://mail.test.local/jmap/","downloadUrl":"https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}","uploadUrl":"https://mail.test.local/upload/{accountId}/"}"#;
 
 pub(super) fn rich_config(base: String) -> JmapConfig {
-    JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session")
+    JmapConfig::new(
+        base,
+        Credentials::basic("a", "b"),
+        engine_http::test_server::user_agent(),
+    )
+    .with_session_path("/jmap/session")
 }
 
 #[tokio::test]
@@ -336,130 +384,8 @@ async fn upload_without_a_blob_id_is_a_protocol_error() {
     );
 }
 
-/// Records connect steps as the log lines a host would emit, so the assertions below
-/// read as "exactly what would have reached the log, in order".
-#[derive(Default)]
-struct Recorder(std::sync::Mutex<Vec<String>>);
-
-impl engine_provider::ConnectObserver for Recorder {
-    fn step(&self, step: &ConnectStep<'_>) {
-        let line = match step {
-            ConnectStep::Redirected { from, to, .. } => format!("redirected {from} -> {to}"),
-            ConnectStep::TlsEstablished(version) => format!("tls {version:?}"),
-            ConnectStep::Authenticated => "authenticated".to_owned(),
-            ConnectStep::Discovered { endpoint, .. } => format!("discovered {endpoint}"),
-            other => format!("unmodeled {other:?}"),
-        };
-        self.0.lock().unwrap().push(line);
-    }
-}
-
-impl Recorder {
-    fn steps(&self) -> Vec<String> {
-        self.0.lock().unwrap().clone()
-    }
-}
-
-fn http_redirect(location: &str) -> String {
-    format!(
-        "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    )
-}
-
-#[tokio::test]
-async fn connect_reports_every_well_known_hop_then_auth_then_the_api_url() {
-    // Two hops, so the chain is a *sequence* and not a single latched observation:
-    // /.well-known/jmap -> /jmap/hop -> /jmap/session -> 200.
-    let base = mock_server(vec![
-        http_redirect("/jmap/hop"),
-        http_redirect("/jmap/session"),
-        http_ok(SESSION_DOC),
-    ]);
-    let recorder = Arc::new(Recorder::default());
-    JmapClient::connect(
-        JmapConfig::new(base.clone(), Credentials::basic("a", "b"))
-            .with_connect_observer(recorder.clone()),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(
-        recorder.steps(),
-        [
-            format!("redirected {base}/.well-known/jmap -> {base}/jmap/hop"),
-            format!("redirected {base}/jmap/hop -> {base}/jmap/session"),
-            "authenticated".to_owned(),
-            // `SESSION_DOC` advertises https://mail.test.local/jmap/; the default
-            // `RebaseToConnection` policy resolves it onto the connection origin.
-            format!("discovered {base}/jmap/"),
-        ]
-    );
-}
-
-#[tokio::test]
-async fn a_session_served_without_a_redirect_reports_no_hop() {
-    let base = mock_server(vec![http_ok(SESSION_DOC)]);
-    let recorder = Arc::new(Recorder::default());
-    JmapClient::connect(
-        JmapConfig::new(base.clone(), Credentials::basic("a", "b"))
-            .with_session_path("/jmap/session")
-            .with_connect_observer(recorder.clone()),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        recorder.steps(),
-        [
-            "authenticated".to_owned(),
-            format!("discovered {base}/jmap/")
-        ]
-    );
-}
-
-#[tokio::test]
-async fn a_connect_without_an_observer_is_the_no_op_default() {
-    // The seam is additive: the existing whole-config path still connects.
-    let base = mock_server(vec![http_ok(SESSION_DOC)]);
-    let client = JmapClient::connect(
-        JmapConfig::new(base, Credentials::basic("a", "b")).with_session_path("/jmap/session"),
-    )
-    .await
-    .unwrap();
-    assert!(client.session().capabilities().mail());
-}
-
-#[tokio::test]
-async fn credentials_in_the_connection_url_never_reach_the_observer() {
-    // `RebaseToConnection` derives both the fetched session URL and the advertised
-    // `apiUrl` from the connection base, so userinfo on the base propagates into every
-    // URL a step would carry. These steps exist to be logged (`north-star.md`).
-    let base = mock_server(vec![http_redirect("/jmap/session"), http_ok(SESSION_DOC)]);
-    let authority = base.strip_prefix("http://").unwrap();
-    let recorder = Arc::new(Recorder::default());
-    JmapClient::connect(
-        JmapConfig::new(
-            format!("http://alice:hunter2@{authority}"),
-            Credentials::basic("alice", "hunter2"),
-        )
-        .with_connect_observer(recorder.clone()),
-    )
-    .await
-    .unwrap();
-
-    let steps = recorder.steps();
-    assert_eq!(
-        steps,
-        [
-            format!("redirected {base}/.well-known/jmap -> {base}/jmap/session"),
-            "authenticated".to_owned(),
-            format!("discovered {base}/jmap/"),
-        ]
-    );
-    assert!(
-        !steps.concat().contains("hunter2"),
-        "the password must not leak into a step: {steps:?}"
-    );
-}
+#[path = "lib_connect_steps_tests.rs"]
+mod connect_steps;
 
 #[path = "lib_submit_tests.rs"]
 mod submit;

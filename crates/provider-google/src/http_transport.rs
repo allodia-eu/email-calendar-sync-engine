@@ -43,6 +43,7 @@ impl HttpTransport {
         token: String,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GoogleError> {
         let retry = retry
             .clone()
@@ -67,7 +68,7 @@ impl HttpTransport {
         // times the width drains it three times as fast.
         retry.gate().narrow_to(crate::fetch::MAX_CONCURRENT_GETS);
         Ok(Self {
-            client: engine_http::client(tls).build()?,
+            client: engine_http::client(tls, user_agent).build()?,
             token,
             connection: ObservedConnection::default(),
             retry,
@@ -303,6 +304,7 @@ mod tests {
             "super-secret".to_owned(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
 
@@ -348,6 +350,7 @@ mod tests {
             "tok".to_owned(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         let doc = transport.get(&base).await.unwrap();
@@ -363,6 +366,7 @@ mod tests {
             "tok".to_owned(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(GoogleTransport::http_version(&transport), None);
@@ -386,6 +390,7 @@ mod tests {
             "tok".to_owned(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap()
         .get(&base)
@@ -402,6 +407,7 @@ mod tests {
             "tok".to_owned(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap()
         .get(&base)
@@ -422,6 +428,7 @@ mod tests {
             "tok".to_owned(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap()
         .get("http://127.0.0.1:1/gmail/v1/users/me/labels")
@@ -439,6 +446,7 @@ mod tests {
             "tok".to_owned(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap()
         .post(&base, "application/json", b"{}".to_vec())
@@ -451,6 +459,7 @@ mod tests {
             "tok".to_owned(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap()
         .delete(&base, None)
@@ -466,6 +475,7 @@ mod tests {
             "tok".to_owned(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap()
         .post(&base, "application/json", b"{}".to_vec())

@@ -44,8 +44,12 @@ async fn timed<T>(operation: impl Future<Output = T>) -> (T, Duration) {
 
 /// A client whose session `server` served, connected in real time.
 async fn connected(server: &SilentServer) -> JmapClient {
-    let config = JmapConfig::new(server.url(), Credentials::basic("alice", "pw"))
-        .with_session_path("/jmap/session");
+    let config = JmapConfig::new(
+        server.url(),
+        Credentials::basic("alice", "pw"),
+        engine_http::test_server::user_agent(),
+    )
+    .with_session_path("/jmap/session");
     JmapClient::connect(config).await.expect("session")
 }
 

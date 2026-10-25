@@ -52,6 +52,7 @@ fn provider(token: String) -> GmailProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GmailProvider::new(client)

@@ -92,6 +92,8 @@ pub use caldav_config::CalDavConfig;
 pub use carddav::CardDavProvider;
 pub use carddav_config::CardDavConfig;
 pub use credential_hosts::CredentialHosts;
+/// The product a host names in every request's `User-Agent`, required by both configs.
+pub use engine_http::UserAgent;
 pub use error::CalDavError;
 pub use provider::CalDavProvider;
 pub use transport::Credentials;

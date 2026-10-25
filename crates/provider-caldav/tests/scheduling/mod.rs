@@ -115,6 +115,7 @@ pub(crate) async fn parties(test: &str) -> Option<Parties> {
                 username: account.address.clone(),
                 password: account.password.clone(),
             },
+            engine_http::test_server::user_agent(),
         ))
         .await
         .expect("connect + discover")

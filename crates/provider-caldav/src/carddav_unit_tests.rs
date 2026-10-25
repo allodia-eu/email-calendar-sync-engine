@@ -22,9 +22,13 @@ fn credentials() -> Credentials {
 
 #[tokio::test]
 async fn public_config_builders_and_invalid_connect_are_explicit() {
-    let config = CardDavConfig::new("not a url", credentials())
-        .with_address_book("team")
-        .with_tls(TlsClientConfig::default());
+    let config = CardDavConfig::new(
+        "not a url",
+        credentials(),
+        engine_http::test_server::user_agent(),
+    )
+    .with_address_book("team")
+    .with_tls(TlsClientConfig::default());
     assert_eq!(config.base_url, "not a url");
     assert_eq!(config.discovery_path, "/.well-known/carddav");
     assert_eq!(config.address_book, "team");

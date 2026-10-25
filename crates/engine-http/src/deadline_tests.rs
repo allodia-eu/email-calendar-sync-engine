@@ -30,9 +30,12 @@ const GUARD: Duration = Duration::from_hours(1);
 const BOUNDS: Deadlines = Deadlines::STANDARD;
 
 fn client() -> reqwest::Client {
-    crate::client(&engine_tls::TlsClientConfig::bundled())
-        .build()
-        .expect("client")
+    crate::client(
+        &engine_tls::TlsClientConfig::bundled(),
+        &crate::test_server::user_agent(),
+    )
+    .build()
+    .expect("client")
 }
 
 /// Runs `operation` under [`GUARD`], returning its result and how long it took.

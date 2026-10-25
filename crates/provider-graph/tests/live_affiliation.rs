@@ -25,8 +25,13 @@ fn client(variable: &str) -> Option<GraphClient> {
         .ok()
         .filter(|token| !token.is_empty())?;
     Some(
-        GraphClient::connect(token, &TlsClientConfig::bundled(), &RetryConfig::default())
-            .expect("a Graph client"),
+        GraphClient::connect(
+            token,
+            &TlsClientConfig::bundled(),
+            &RetryConfig::default(),
+            &engine_http::test_server::user_agent(),
+        )
+        .expect("a Graph client"),
     )
 }
 

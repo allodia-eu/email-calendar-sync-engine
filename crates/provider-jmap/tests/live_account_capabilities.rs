@@ -44,6 +44,7 @@ async fn the_offered_domains_are_the_ones_the_primary_accounts_list() {
     let client = JmapClient::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");

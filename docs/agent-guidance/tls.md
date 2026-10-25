@@ -117,7 +117,7 @@ shares it (cloning is a cheap `Arc` bump):
 - **CalDAV / JMAP** carry it in their config (`CalDavConfig::tls` /
   `JmapConfig::with_tls`), defaulting to bundled. `connect` reads `config.tls`.
 - **Graph** (token-based, no config struct) takes it as a parameter:
-  `GraphClient::connect(token, &tls)` / `for_mailbox` / `with_base`.
+  `GraphClient::connect(token, &tls, &retry, &user_agent)` / `for_mailbox` / `with_base`.
 - **IMAP/SMTP** keep taking a `tokio_rustls::TlsConnector` (the host builds it via
   `tls.connector()`); the library bakes in no root store.
 

@@ -41,6 +41,7 @@ impl HttpTransport {
         token: String,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GraphError> {
         let retry = retry.clone().labelled("graph");
         // What Exchange Online allows one mailbox, stated once for the whole account: the
@@ -50,7 +51,7 @@ impl HttpTransport {
         // be 56 ceilings of four.
         retry.gate().narrow_to(MAX_CONCURRENT_SOURCE_FETCHES);
         Ok(Self {
-            client: engine_http::client(tls).build()?,
+            client: engine_http::client(tls, user_agent).build()?,
             token,
             connection: ObservedConnection::default(),
             retry,

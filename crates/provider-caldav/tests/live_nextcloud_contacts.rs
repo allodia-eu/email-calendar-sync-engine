@@ -38,6 +38,7 @@ async fn connect(test: &str, book: &str) -> Option<CardDavProvider> {
             username: user.clone(),
             password: pass,
         },
+        engine_http::test_server::user_agent(),
     )
     .with_address_book(book);
     let mut last_err = None;

@@ -18,7 +18,7 @@ use tokio::net::TcpListener;
 
 use crate::{
     GoogleClient, GoogleContactProvider,
-    test_support::{retry, tls},
+    test_support::{retry, tls, user_agent},
 };
 
 /// Longer than any bound under test, so only a missing bound reaches it.
@@ -29,7 +29,7 @@ fn account() -> AccountId {
 }
 
 fn client(base: &str) -> GoogleClient {
-    GoogleClient::with_base("token", base, tls(), &retry()).expect("client")
+    GoogleClient::with_base("token", base, tls(), &retry(), &user_agent()).expect("client")
 }
 
 fn draft() -> EventDraft {

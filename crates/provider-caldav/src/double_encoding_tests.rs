@@ -16,6 +16,7 @@ fn client(base: &str) -> DavClient {
         },
         &engine_tls::TlsClientConfig::default(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client")
 }

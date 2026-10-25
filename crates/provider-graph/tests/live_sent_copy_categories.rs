@@ -37,6 +37,7 @@ fn provider(token: &str, folder: &str, names: Vec<KeywordName>) -> GraphProvider
         token.to_owned(),
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GraphProvider::new(client, MailboxId::try_from(folder).unwrap()).with_keyword_names(names)

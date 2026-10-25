@@ -27,6 +27,7 @@ async fn a_foreign_photo_uri_is_fetched_without_the_account_credentials() {
         },
         &engine_tls::TlsClientConfig::default(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
 
@@ -66,6 +67,7 @@ async fn binary_get_preserves_non_utf8_photo_bytes() {
         Credentials::Bearer("tok".to_owned()),
         &engine_tls::TlsClientConfig::default(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
 
@@ -94,6 +96,7 @@ async fn the_scheduling_probe_is_a_bare_options_whose_dav_header_reaches_the_cap
             username: "alice".to_owned(),
             password: "pw".to_owned(),
         },
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");
@@ -138,6 +141,7 @@ async fn a_server_advertising_no_scheduling_class_yields_a_non_scheduling_capabi
             username: "alice".to_owned(),
             password: "pw".to_owned(),
         },
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");
@@ -163,6 +167,7 @@ async fn a_connected_provider_reports_the_negotiated_http_version() {
             username: "alice".to_owned(),
             password: "pw".to_owned(),
         },
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");
@@ -191,6 +196,7 @@ async fn a_conditional_put_returns_its_new_etag_over_the_live_transport() {
         Credentials::Bearer("tok".to_owned()),
         &engine_tls::TlsClientConfig::default(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
 
@@ -245,7 +251,7 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
             Credentials::Basic {
                 username: "alice".to_owned(),
                 password: "pw".to_owned(),
-            },
+            }, engine_http::test_server::user_agent(),
         )
         // The blanket `Fn` impl: a host hands over a closure, not a named type.
         .with_connect_observer(std::sync::Arc::new(
@@ -298,6 +304,7 @@ async fn a_connect_without_an_observer_still_discovers() {
             username: "alice".to_owned(),
             password: "pw".to_owned(),
         },
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");
@@ -317,6 +324,7 @@ async fn config_debug_shows_the_observer_without_leaking_the_password() {
             username: "alice".to_owned(),
             password: "hunter2".to_owned(),
         },
+        engine_http::test_server::user_agent(),
     );
     let shown = format!("{config:?}");
     assert!(shown.contains("alice") && shown.contains("dav.example.com"));
@@ -355,6 +363,7 @@ fn basic_client(base: &str) -> DavClient {
         },
         &engine_tls::TlsClientConfig::default(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client")
 }
@@ -436,6 +445,7 @@ async fn a_url_that_names_no_origin_trusts_and_moves_nothing() {
         Credentials::Bearer("t".to_owned()),
         &engine_tls::TlsClientConfig::default(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     let before = format!("{client:?}");

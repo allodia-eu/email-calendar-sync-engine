@@ -33,6 +33,7 @@ async fn connect(addr: &str, user: &str, pass: &str, start: &str) -> CalDavProvi
             username: user.to_owned(),
             password: pass.to_owned(),
         },
+        engine_http::test_server::user_agent(),
     )
     .with_discovery_path(start);
     let mut last_err = None;

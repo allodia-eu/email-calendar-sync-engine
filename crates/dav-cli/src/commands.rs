@@ -35,6 +35,13 @@ fn account() -> AccountId {
 /// decides whether the RSVP verdict is even askable: `calendar_scheduling` is discovered from
 /// the `calendar-auto-schedule` token of RFC 6638 §2, and where it is false, nothing reports
 /// delivery because nothing schedules.
+/// What the tool names itself in every request: this crate, as itself. It is a developer's
+/// tool, so a provider should not read its traffic as an application's.
+fn user_agent() -> provider_caldav::UserAgent {
+    provider_caldav::UserAgent::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        .expect("the crate's name and version are tokens")
+}
+
 pub(crate) async fn connect(profile: &Profile) -> Result<CalDavProvider, String> {
     let mut config = CalDavConfig::new(
         profile.url.clone(),
@@ -42,6 +49,7 @@ pub(crate) async fn connect(profile: &Profile) -> Result<CalDavProvider, String>
             username: profile.user.clone(),
             password: profile.pass.clone(),
         },
+        user_agent(),
     );
     if let Some(calendar) = &profile.calendar {
         config = config.with_calendar(calendar.clone());

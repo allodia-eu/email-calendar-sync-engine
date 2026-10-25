@@ -71,9 +71,13 @@ fn account() -> AccountId {
 }
 
 async fn connect(base: &str, user: &str, password: &str) -> JmapProvider {
-    JmapProvider::connect(JmapConfig::new(base, Credentials::basic(user, password)))
-        .await
-        .expect("connect")
+    JmapProvider::connect(JmapConfig::new(
+        base,
+        Credentials::basic(user, password),
+        engine_http::test_server::user_agent(),
+    ))
+    .await
+    .expect("connect")
 }
 
 /// Not a test of its own: the body of a child process, and a no-op in an ordinary run. The

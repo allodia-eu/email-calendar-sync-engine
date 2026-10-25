@@ -47,6 +47,7 @@ async fn stalwart_advertises_address_books_on_the_home() {
                 username: harness.account.clone(),
                 password: harness.password.clone(),
             },
+            engine_http::test_server::user_agent(),
         )
         .with_connect_observer(Arc::clone(&observer) as Arc<dyn ConnectObserver>),
     )

@@ -76,6 +76,7 @@ fn calendar_provider_with_window(
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GraphCalendarProvider::new(client, calendar, window, amsterdam())

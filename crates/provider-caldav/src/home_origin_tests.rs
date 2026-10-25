@@ -22,6 +22,7 @@ fn client(base: &str) -> DavClient {
         },
         &engine_tls::TlsClientConfig::default(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client")
 }
@@ -182,6 +183,7 @@ async fn a_connect_resumes_at_a_stored_principal() {
                 username: "alice".to_owned(),
                 password: "super-secret".to_owned(),
             },
+            engine_http::test_server::user_agent(),
         )
         .with_discovery_path(principal.clone()),
     )

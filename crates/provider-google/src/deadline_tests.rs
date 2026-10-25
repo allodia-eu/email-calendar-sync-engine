@@ -15,7 +15,7 @@ use tokio::{net::TcpListener, time::Instant};
 use crate::{
     GoogleClient,
     named_labels::Labels,
-    test_support::{retry, tls},
+    test_support::{retry, tls, user_agent},
 };
 
 /// Longer than any bound under test, so only a missing bound reaches it.
@@ -33,7 +33,7 @@ async fn timed<T>(operation: impl Future<Output = T>) -> (T, Duration) {
 }
 
 fn client(base: &str) -> GoogleClient {
-    GoogleClient::with_base("token", base, tls(), &retry()).expect("client")
+    GoogleClient::with_base("token", base, tls(), &retry(), &user_agent()).expect("client")
 }
 
 fn draft() -> Draft {

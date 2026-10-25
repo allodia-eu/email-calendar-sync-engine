@@ -12,6 +12,8 @@ writes, guards, groups, and photos.
 
 All providers share one TLS trust policy via `engine_tls::TlsClientConfig`. See [`docs/agent-guidance/tls.md`](docs/agent-guidance/tls.md) for the trust model and platform guidance.
 
+Every HTTP provider (JMAP, CalDAV, CardDAV, Graph, Google) requires an `engine_http::UserAgent` in its constructor: the host's application and version, sent as `name/version` in every request's `User-Agent`. It names the application a person installed, so a provider can tell whose traffic it is; the engine adds no product token of its own. IMAP and SMTP send no `User-Agent`.
+
 ## Observing the connect phase
 
 `ConnectionInfo` describes a connection that already exists. To watch one being
@@ -148,12 +150,16 @@ contact writes/groups/photos, plus `idle` when `eventSourceUrl` is advertised.
 
 ```rust
 use engine_tls::TlsClientConfig;
+use engine_http::UserAgent;
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 
 let tls = TlsClientConfig::bundled();
+// The host's application, named in every request's `User-Agent`.
+let agent = UserAgent::new("example-mail", "1.4.0")?;
 let config = JmapConfig::new(
     "https://jmap.example.com",
     Credentials::basic("alice@example.com", "app-password"),
+    agent,
 )
 .with_tls(tls);
 
@@ -277,15 +283,17 @@ not supported.
 
 ```rust
 use engine_tls::TlsClientConfig;
-use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
+use provider_caldav::{CalDavConfig, CalDavProvider, Credentials, UserAgent};
 
 let tls = TlsClientConfig::bundled();
+let agent = UserAgent::new("example-mail", "1.4.0")?;
 let config = CalDavConfig::new(
     "https://dav.example.com",
     Credentials::Basic {
         username: "alice@example.com".to_owned(),
         password: "app-password".to_owned(),
     },
+    agent.clone(),
 )
 .with_calendar("default")
 .with_tls(tls);
@@ -299,6 +307,7 @@ let contacts = provider_caldav::CardDavProvider::connect(
             username: "alice@example.com".to_owned(),
             password: "app-password".to_owned(),
         },
+        agent,
     )
     .with_tls(TlsClientConfig::bundled()),
 )
@@ -351,10 +360,12 @@ Roster edits retain provider response fields and enforce Graph's 500-attendee li
 ```rust
 use engine_core::ids::MailboxId;
 use engine_tls::TlsClientConfig;
+use engine_http::{RetryConfig, UserAgent};
 use provider_graph::{GraphClient, GraphProvider};
 
 let tls = TlsClientConfig::bundled();
-let client = GraphClient::connect("oauth-access-token", &tls)?;
+let agent = UserAgent::new("example-mail", "1.4.0")?;
+let client = GraphClient::connect("oauth-access-token", &tls, &RetryConfig::default(), &agent)?;
 let provider = GraphProvider::new(
     client,
     MailboxId::try_from("inbox-folder-id")?,

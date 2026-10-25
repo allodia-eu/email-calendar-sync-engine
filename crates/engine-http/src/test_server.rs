@@ -284,3 +284,9 @@ fn content_length(head: &[u8]) -> usize {
         .and_then(|(_, value)| value.trim().parse().ok())
         .unwrap_or(0)
 }
+
+/// The [`UserAgent`](crate::UserAgent) tests connect with, so a test names no product.
+#[must_use]
+pub fn user_agent() -> crate::UserAgent {
+    crate::UserAgent::new("engine-tests", "0").expect("a valid token")
+}
