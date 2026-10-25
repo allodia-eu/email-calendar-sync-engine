@@ -22,6 +22,20 @@ Two things it proves that **Stalwart cannot** (see "Which server proves what" in
   Stalwart reserializes (re-folding lines, reordering `RRULE` parts). So the structural
   patcher's preservation guarantee is provable here in its strictest form.
 
+- **Each way a server asks for the credential.** The same account is served three ways,
+  so a client can be held to every one of them (`provider-caldav/tests/live_challenges.rs`):
+
+  | Path | An anonymous request gets | Real servers that answer this way |
+  |---|---|---|
+  | `/` | `401` with `WWW-Authenticate: Basic` | Stalwart, iCloud, Fastmail, GMX, mailbox.org, Nextcloud |
+  | `/open/` | `207` naming the requester `<DAV:unauthenticated/>` (RFC 5397 §3) | A SabreDAV deployment that allows anonymous reads (its ACL plugin's default ACL grants `{DAV:}read` to `{DAV:}all`) |
+  | `/bare/` | `401` with no `WWW-Authenticate`, against RFC 9110 §15.5.2 | Yahoo, Google, AOL |
+
+  None of twenty providers probed in October 2026 answered the `/open/` way, but the RFC
+  allows it and stock SabreDAV produces it with one setting, so it is reproduced here rather
+  than waited for. A client that starts at `/open/` or `/bare/` passes the path as its
+  discovery path: the well-known redirect leads to `/`.
+
 It is **test infrastructure, not product code**: PHP + Composer + `sabre/dav` over
 a SQLite backend, served by the PHP built-in web server, seeded over CalDAV.
 

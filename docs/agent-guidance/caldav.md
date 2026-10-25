@@ -183,6 +183,13 @@ are split escape-aware so the writer and the parser agree.
   credential only once it answers `401` with a challenge in the credential's scheme, and an
   untrusted one (a vCard photo URL) never does (`credential_scope.rs`). The start URL is
   trusted the same way and gets no exception: nothing is sent the credential before it asks.
+  "Asks" covers the three shapes real servers use, each proven live against
+  `docker/sabredav` (`tests/live_challenges.rs`): a `401` offering the credential's scheme, a
+  `401` with no challenge at all (Yahoo, Google, AOL; `/bare/`), and a `207` naming the
+  requester `<DAV:unauthenticated/>` (RFC 5397 §3; `/open/`), which re-sends the request once
+  with the credential. A `401` offering only other schemes is
+  `CalDavError::UnsupportedAuthentication`, not a refused sign-in, and a home's DAV classes are
+  read only after its origin has the credential (`discovery::authenticate_before_reading`).
   A host resumes at the principal it stored (`with_discovery_path` with the URL
   `principal_url()` reported), never at a home. A plaintext origin after TLS is refused
   outright, and **that refusal lives in `DavExecutor::trust_origin`, not in

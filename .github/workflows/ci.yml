@@ -318,7 +318,7 @@ jobs:
       - name: Run the gated SabreDAV CalDAV integration test (live)
         env:
           SABREDAV_HTTP_ADDR: 127.0.0.1:18081
-        run: cargo test -p provider-caldav --test live_sabredav -- --nocapture
+        run: cargo test -p provider-caldav --test live_sabredav --test live_challenges -- --nocapture
 
       - name: Dump SabreDAV logs on failure
         if: failure()

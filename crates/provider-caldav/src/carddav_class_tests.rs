@@ -172,6 +172,8 @@ async fn a_connect_from_the_config_carries_its_observer_over_the_wire() {
     let base = mock_server(vec![
         redirect("/dav/"),
         multistatus(HOME),
+        // What the server answers the probe for the requester before its classes are read.
+        multistatus(r#"<d:multistatus xmlns:d="DAV:"/>"#),
         options_response("1, 3, addressbook"),
         multistatus(BOOKS),
     ]);

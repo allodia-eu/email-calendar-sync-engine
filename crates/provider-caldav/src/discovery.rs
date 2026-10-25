@@ -28,7 +28,7 @@ use crate::{
     dav::MultiStatus,
     error::CalDavError,
     href::{redirect_href, resolve_reference},
-    request::{CALENDAR_LIST_PROPFIND, PRINCIPAL_PROPFIND},
+    request::{CALENDAR_LIST_PROPFIND, CURRENT_USER_PRINCIPAL_PROPFIND, PRINCIPAL_PROPFIND},
     transport::{DavExecutor, DavMethod},
 };
 
@@ -68,19 +68,13 @@ pub(crate) async fn discover_home(
     start_href: &str,
     observer: &dyn ConnectObserver,
 ) -> Result<CalendarHome, CalDavError> {
-    let start = exec.absolute(start_href);
-    // The start is the host's configuration (its well-known URL, or a principal it stored), so
-    // its origin may receive the credential once it asks, under the same checks as any other.
-    if !exec.trust_origin(&start) {
-        return Err(CalDavError::protocol(format!(
-            "the configured start {start:?} is a host the credential may not go to"
-        )));
-    }
+    let start = trusted_start(exec, start_href)?;
     let (bootstrap, at) = propfind_principal(exec, &start, observer).await?;
-    let principal = current_user_principal(&bootstrap)
-        .map(|principal| follow(exec, &at, &principal))
-        .transpose()?;
+    let named = current_user_principal(&bootstrap);
     if let Some(href) = home_set(&bootstrap) {
+        // The home is already known, so the principal is only kept for asking it the address
+        // set later; one the credential may not go to is dropped rather than failing the walk.
+        let principal = named.and_then(|principal| follow(exec, &at, &principal).ok());
         // A resource that is not the principal answers the address set `404` (Stalwart's
         // does), which says nothing about the user; only a reported set is kept.
         return Ok(CalendarHome {
@@ -91,6 +85,9 @@ pub(crate) async fn discover_home(
     }
     // RFC 6764 §6: the calendar-home-set is a property of the principal resource,
     // so resolve the principal first, then ask it for the home-set.
+    let principal = named
+        .map(|principal| follow(exec, &at, &principal))
+        .transpose()?;
     let principal = principal.ok_or_else(|| {
         CalDavError::protocol(
             "PROPFIND returned neither calendar-home-set nor current-user-principal",
@@ -104,6 +101,28 @@ pub(crate) async fn discover_home(
         principal: Some(principal),
         addresses: Some(address_set(&from_principal).unwrap_or(CalendarUserAddresses::NotEnabled)),
     })
+}
+
+/// `start_href` as an absolute URL, its origin trusted to receive the credential once it asks.
+///
+/// The start is the host's configuration (its well-known URL, or a principal it stored), so it
+/// is trusted under the same checks as any other origin.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] when the start names an origin the credential may not go to.
+pub(crate) fn trusted_start(
+    exec: &dyn DavExecutor,
+    start_href: &str,
+) -> Result<String, CalDavError> {
+    let start = exec.absolute(start_href);
+    if exec.trust_origin(&start) {
+        Ok(start)
+    } else {
+        Err(CalDavError::protocol(format!(
+            "the configured start {start:?} is a host the credential may not go to"
+        )))
+    }
 }
 
 /// Resolves `href`, which the response to a request at `at` named (a principal or a home),
@@ -186,7 +205,14 @@ async fn propfind_principal(
             }
             continue;
         }
-        return Ok((response.into_multistatus()?, href));
+        let multistatus = response.into_multistatus()?;
+        // A server that lets an anonymous request through answers it naming the requester
+        // `<DAV:unauthenticated/>` (RFC 5397 §3) rather than challenging: asked again once, with
+        // the credential, when the origin may receive it.
+        if multistatus.names_unauthenticated() && exec.authenticate_unasked(&href) {
+            continue;
+        }
+        return Ok((multistatus, href));
     }
     Err(CalDavError::protocol(
         "too many redirects resolving the calendar home",
@@ -221,10 +247,39 @@ pub(crate) async fn discover_scheduling(
     exec: &dyn DavExecutor,
     home_href: &str,
 ) -> Result<bool, CalDavError> {
+    authenticate_before_reading(exec, home_href).await;
     Ok(exec
         .send_options(home_href)
         .await?
         .advertises(AUTO_SCHEDULE))
+}
+
+/// Makes sure `href`'s origin has been sent the credential before something is read there whose
+/// answer depends on who asks, such as the DAV classes an `OPTIONS` reports: a server that lets
+/// an anonymous `OPTIONS` through may answer it with less than the account has. A `PROPFIND`
+/// for the requester draws the challenge, or names the requester unauthenticated (RFC 5397 §3),
+/// and either way the credential follows. A failure here is left to the read that follows,
+/// which meets the same server.
+pub(crate) async fn authenticate_before_reading(exec: &dyn DavExecutor, href: &str) {
+    if exec.sends_credential_to(href) {
+        return;
+    }
+    let Ok(response) = exec
+        .send(
+            DavMethod::Propfind,
+            href,
+            "0",
+            CURRENT_USER_PRINCIPAL_PROPFIND.to_owned(),
+        )
+        .await
+    else {
+        return;
+    };
+    if let Ok(multistatus) = response.into_multistatus()
+        && multistatus.names_unauthenticated()
+    {
+        exec.authenticate_unasked(href);
+    }
 }
 
 /// Lists the calendar collections under `home_href`.
@@ -289,3 +344,7 @@ mod tests;
 #[cfg(test)]
 #[path = "home_origin_tests.rs"]
 mod home_origin_tests;
+
+#[cfg(test)]
+#[path = "challenge_tests.rs"]
+mod challenge_tests;

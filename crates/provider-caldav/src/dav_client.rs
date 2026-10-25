@@ -173,8 +173,9 @@ impl DavClient {
         })
     }
 
-    /// Sends `method` to `href`, with whatever `dress` adds, and answers one authentication
-    /// challenge: the shared head of every read and write.
+    /// Sends `method` to `href`, with whatever `dress` adds and `body`, and answers one
+    /// authentication challenge: the shared head of every read and write. The body is `Bytes` so
+    /// answering a challenge sends the same buffer again rather than a copy.
     ///
     /// The credential rides along unasked only to an origin the scope already answers
     /// ([`CredentialScope::sends_to`]). An origin that answers `401` with a challenge in the
@@ -186,21 +187,37 @@ impl DavClient {
         method: DavMethod,
         href: &str,
         dress: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+        body: Option<bytes::Bytes>,
     ) -> Result<engine_http::Sent, CalDavError> {
         let url = self.target(href)?;
+        let build = |authenticate| -> Result<reqwest::RequestBuilder, CalDavError> {
+            let request = dress(self.request(method, url.clone(), authenticate)?);
+            Ok(match &body {
+                Some(body) => request.body(body.clone()),
+                None => request,
+            })
+        };
         let authenticated = self.scope.sends_to(&url);
-        let request = dress(self.request(method, url.clone(), authenticated)?);
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
-        if authenticated
-            || response.status() != reqwest::StatusCode::UNAUTHORIZED
-            || !self
-                .scope
-                .answers(&url, response.headers(), &self.credentials)
-        {
+        let response =
+            send_retrying(build(authenticated)?, &self.retry, Exchange::Ordinary).await?;
+        if authenticated || response.status() != reqwest::StatusCode::UNAUTHORIZED {
             return Ok(response);
         }
-        let request = dress(self.request(method, url, true)?);
-        Ok(send_retrying(request, &self.retry, Exchange::Ordinary).await?)
+        if !self
+            .scope
+            .answers(&url, response.headers(), &self.credentials)
+        {
+            // A trusted origin that asked only for a method this credential cannot answer: say so,
+            // rather than leave a `401` that reads as the credential being refused.
+            if let Some(offered) =
+                self.scope
+                    .unanswerable(&url, response.headers(), &self.credentials)
+            {
+                return Err(CalDavError::UnsupportedAuthentication(offered));
+            }
+            return Ok(response);
+        }
+        Ok(send_retrying(build(true)?, &self.retry, Exchange::Ordinary).await?)
     }
 }
 
@@ -217,6 +234,15 @@ impl DavExecutor for DavClient {
     fn absolute(&self, href: &str) -> String {
         self.target(href)
             .map_or_else(|_| href.to_owned(), |url| url.to_string())
+    }
+
+    fn sends_credential_to(&self, href: &str) -> bool {
+        self.target(href).is_ok_and(|url| self.scope.sends_to(&url))
+    }
+
+    fn authenticate_unasked(&self, href: &str) -> bool {
+        self.target(href)
+            .is_ok_and(|url| self.scope.volunteer(&url))
     }
 
     fn trust_origin(&self, url: &str) -> bool {
@@ -263,29 +289,31 @@ impl DavExecutor for DavClient {
         body: String,
     ) -> Result<HttpResponse, CalDavError> {
         let response = self
-            .exchange(method, href, |request| {
-                request
-                    .header("Depth", depth)
-                    .header(
+            .exchange(
+                method,
+                href,
+                |request| {
+                    request.header("Depth", depth).header(
                         reqwest::header::CONTENT_TYPE,
                         "application/xml; charset=utf-8",
                     )
-                    .body(body.clone())
-            })
+                },
+                Some(body.into()),
+            )
             .await?;
         self.collect(response, false).await
     }
 
     async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
         let response = self
-            .exchange(DavMethod::Options, href, |request| request)
+            .exchange(DavMethod::Options, href, |request| request, None)
             .await?;
         self.collect(response, false).await
     }
 
     async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
         let response = self
-            .exchange(DavMethod::Get, href, |request| request)
+            .exchange(DavMethod::Get, href, |request| request, None)
             .await?;
         self.connection.record(&response);
         let status = response.status().as_u16();
@@ -306,27 +334,38 @@ impl DavExecutor for DavClient {
         // server's to send, and the precondition the write carries is what keeps a replay
         // from sending it twice (`docs/agent-guidance/deadlines.md`). A `401` challenge
         // applied nothing, so answering it is not a replay either.
+        let WriteRequest {
+            method,
+            href,
+            content_type,
+            precondition,
+            body,
+        } = request;
         let response = self
-            .exchange(request.method, &request.href, |mut builder| {
-                if let Some(content_type) = request.content_type {
-                    builder = builder.header(reqwest::header::CONTENT_TYPE, content_type);
-                }
-                builder = match &request.precondition {
-                    // RFC 7232: `If-None-Match: *` admits only a create; `If-Match` admits
-                    // a replace/delete only while the entity tag is unchanged.
-                    Precondition::IfNoneMatch => {
-                        builder.header(reqwest::header::IF_NONE_MATCH, "*")
+            .exchange(
+                method,
+                &href,
+                |mut builder| {
+                    if let Some(content_type) = content_type {
+                        builder = builder.header(reqwest::header::CONTENT_TYPE, content_type);
                     }
-                    Precondition::IfMatch(etag) => {
-                        builder.header(reqwest::header::IF_MATCH, etag.as_str())
+                    match &precondition {
+                        // RFC 7232: `If-None-Match: *` admits only a create; `If-Match` admits
+                        // a replace/delete only while the entity tag is unchanged.
+                        Precondition::IfNoneMatch => {
+                            builder.header(reqwest::header::IF_NONE_MATCH, "*")
+                        }
+                        Precondition::IfMatch(etag) => {
+                            builder.header(reqwest::header::IF_MATCH, etag.as_str())
+                        }
+                        Precondition::IfScheduleTagMatch(tag) => {
+                            builder.header("If-Schedule-Tag-Match", tag.as_str())
+                        }
+                        Precondition::None => builder,
                     }
-                    Precondition::IfScheduleTagMatch(tag) => {
-                        builder.header("If-Schedule-Tag-Match", tag.as_str())
-                    }
-                    Precondition::None => builder,
-                };
-                builder.body(request.body.clone())
-            })
+                },
+                Some(body.into()),
+            )
             .await
             .map_err(CalDavError::after_write)?;
         self.collect(response, true).await

@@ -128,6 +128,8 @@ async fn a_server_advertising_no_scheduling_class_yields_a_non_scheduling_capabi
     // organizer nothing, so the capability must say so.
     let base = mock_server(vec![
         multistatus(include_str!("../tests/fixtures/principal.xml")),
+        // What the server answers the probe for the requester before its classes are read.
+        multistatus(r#"<d:multistatus xmlns:d="DAV:"/>"#),
         options_response(include_str!("../tests/fixtures/options-dav-sabredav.txt").trim()),
     ]);
     let provider = crate::CalDavProvider::connect(crate::CalDavConfig::new(
@@ -231,6 +233,8 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
     let base = mock_server(vec![
         redirect("/dav/cal"),
         multistatus(include_str!("../tests/fixtures/principal.xml")),
+        // What the server answers the probe for the requester before its classes are read.
+        multistatus(r#"<d:multistatus xmlns:d="DAV:"/>"#),
         options_response("1, 3, calendar-access"),
     ]);
     let steps: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
@@ -284,6 +288,8 @@ async fn a_connect_without_an_observer_still_discovers() {
     // Additive: the pre-existing config path is untouched.
     let base = mock_server(vec![
         multistatus(include_str!("../tests/fixtures/principal.xml")),
+        // What the server answers the probe for the requester before its classes are read.
+        multistatus(r#"<d:multistatus xmlns:d="DAV:"/>"#),
         options_response("1, 3, calendar-access"),
     ]);
     let provider = crate::CalDavProvider::connect(crate::CalDavConfig::new(
