@@ -22,10 +22,11 @@ use crate::{
     carddav_ops::{
         ADDRESSBOOK, advertised_classes, bind_collection, contact_id, contact_report,
         contact_update, decode_data_uri, discover_home, encode_segment, fallback_contact_sync,
-        list_address_books, multiget_report, normalize_response, require_writable, stable_suffix,
-        supported_fields,
+        list_address_books, normalize_response, require_writable, stable_suffix, supported_fields,
     },
     error::CalDavError,
+    multiget::fill_bodies,
+    request::addressbook_multiget_report,
     transport::{DavClient, DavExecutor, DavMethod, Precondition, WriteRequest},
     vcard_write,
 };
@@ -278,7 +279,7 @@ impl ContactsProvider for CardDavProvider {
         let token = cursor.map_or("", SyncState::as_str);
         let mut recovered = false;
         let mut snapshot = token.is_empty();
-        let report = match contact_report(self.executor.as_ref(), self.href(), token).await {
+        let mut report = match contact_report(self.executor.as_ref(), self.href(), token).await {
             Ok(report) => report,
             Err(CalDavError::Status {
                 status: 405 | 501, ..
@@ -303,6 +304,14 @@ impl ContactsProvider for CardDavProvider {
             }
             Err(error) => return Err(error.into()),
         };
+        fill_bodies(
+            self.executor.as_ref(),
+            self.href(),
+            &mut report,
+            "address-data",
+            addressbook_multiget_report,
+        )
+        .await?;
         let next = report
             .sync_token
             .as_deref()
@@ -320,7 +329,7 @@ impl ContactsProvider for CardDavProvider {
         _account: &AccountId,
         contact: &ContactId,
     ) -> ProviderResult<ContactCard> {
-        let body = multiget_report(contact.as_str());
+        let body = addressbook_multiget_report(&[contact.as_str().to_owned()]);
         let report = self
             .executor
             .send(DavMethod::Report, self.href(), "1", body)

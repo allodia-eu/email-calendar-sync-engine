@@ -15,9 +15,10 @@ use crate::{
     discovery::{authenticate_before_reading, follow, trusted_start},
     error::CalDavError,
     href::redirect_href,
+    multiget::fill_bodies,
     request::{
         ADDRESS_BOOK_CTAG_PROPFIND, ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND,
-        ADDRESS_BOOK_QUERY_REPORT, address_book_sync_report,
+        ADDRESS_BOOK_QUERY_REPORT, address_book_sync_report, addressbook_multiget_report,
     },
     transport::{DavExecutor, DavMethod},
     vcard,
@@ -229,7 +230,7 @@ pub(crate) async fn fallback_contact_sync(
             next,
         ));
     }
-    let report = executor
+    let mut report = executor
         .send(
             DavMethod::Report,
             collection,
@@ -238,6 +239,14 @@ pub(crate) async fn fallback_contact_sync(
         )
         .await?
         .into_multistatus()?;
+    fill_bodies(
+        executor,
+        collection,
+        &mut report,
+        "address-data",
+        addressbook_multiget_report,
+    )
+    .await?;
     Ok(engine_provider::ScopeSync::new(
         contact_update(&report, book, writable, true),
         next,
@@ -297,18 +306,6 @@ pub(crate) fn normalize_response(
         card.revisions = RevisionTokens::from_etag(ETag::new(etag));
     }
     Some(card)
-}
-
-pub(crate) fn multiget_report(href: &str) -> String {
-    format!(
-        concat!(
-            r#"<?xml version="1.0" encoding="utf-8"?>"#,
-            r#"<a:addressbook-multiget xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
-            r#"<d:prop><d:getetag/><a:address-data/></d:prop><d:href>{}</d:href>"#,
-            r#"</a:addressbook-multiget>"#
-        ),
-        xml_escape(href)
-    )
 }
 
 pub(crate) fn bind_collection(home: &str, value: &str) -> Result<AddressBookId, CalDavError> {
@@ -404,13 +401,4 @@ pub(crate) fn require_writable(writable: bool) -> ProviderResult<()> {
 
 pub(crate) fn contact_id(value: &str) -> Result<ContactId, CalDavError> {
     ContactId::try_from(value).map_err(|error| CalDavError::protocol(error.to_string()))
-}
-
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }

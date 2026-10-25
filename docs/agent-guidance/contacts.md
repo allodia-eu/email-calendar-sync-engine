@@ -175,8 +175,9 @@ mail/calendar/identity scopes.
   `addressbook` class, and only then list collections: a home without it offers
   no contacts. Prefer RFC 6578 `sync-collection`;
   use CTag/per-resource ETag comparison when the server lacks it.
-- Fetch changed cards with `addressbook-multiget`, requesting `getetag` and
-  `address-data`.
+- A changed card the sync returned without `address-data` (iCloud returns every card
+  that way) is fetched with `addressbook-multiget`, requesting `getetag` and
+  `address-data` (`multiget::fill_bodies`).
 - Parse vCard 4 and supported vCard 3 compatibility forms while retaining the
   original vCard.
 - Create with `If-None-Match: *`; update and delete with `If-Match` using the
