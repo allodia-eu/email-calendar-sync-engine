@@ -25,7 +25,7 @@ use engine_provider::ScopeSync;
 use crate::{
     dav::MultiStatus,
     error::CalDavError,
-    multiget::fill_bodies,
+    multiget::{fill_bodies, same_path},
     request::{calendar_multiget_report, sync_collection_report},
     transport::{DavExecutor, DavMethod},
 };
@@ -69,7 +69,7 @@ pub(crate) async fn sync_events(
         .clone()
         .map(SyncState::new)
         .ok_or_else(|| CalDavError::protocol("sync-collection response had no sync-token"))?;
-    let update = build_update(&multistatus, calendar, snapshot);
+    let update = build_update(&multistatus, collection_href, calendar, snapshot);
     Ok(ScopeSync::new(update, next_cursor))
 }
 
@@ -95,6 +95,7 @@ async fn report(
 /// whole pass), consistent with the per-resource degrade elsewhere.
 fn build_update(
     multistatus: &MultiStatus,
+    collection_href: &str,
     calendar: &CalendarId,
     snapshot: bool,
 ) -> SyncUpdate<Event> {
@@ -108,8 +109,15 @@ fn build_update(
             removed.extend(response.hrefs.iter().filter_map(|href| href_key(href)));
             continue;
         }
-        // A response with no calendar-data is the collection itself, not a
-        // resource — skip it.
+        // The collection's own entry is not a member.
+        if same_path(response.href(), collection_href) {
+            continue;
+        }
+        // A member the server listed is present whether or not it can be read: a snapshot's
+        // `present` set is the store's "everything that exists server-side", and anything
+        // missing from it is deleted locally, so an unreadable event must not be. CardDAV
+        // keeps the same rule (`carddav_ops::contact_update`).
+        present.extend(response.hrefs.iter().filter_map(|href| href_key(href)));
         let Some(data) = response.props.get("calendar-data") else {
             continue;
         };
@@ -127,7 +135,6 @@ fn build_update(
         if let Some(schedule_tag) = response.props.get("schedule-tag") {
             event.revisions.schedule_tag = Some(ScheduleTag::new(schedule_tag));
         }
-        present.insert(event.id.key().clone());
         changed.push(event);
     }
     if snapshot {

@@ -62,6 +62,58 @@ async fn a_member_synced_without_its_calendar_data_is_fetched_by_multiget() {
     );
 }
 
+/// The same event, named by the multiget with an absolute URL where the sync used a path.
+const EVENT_BODY_ABSOLUTE: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>https://dav.example.net/dav/cal/alice/default/a.ics</D:href><D:propstat><D:prop><D:getetag>"e1"</D:getetag><C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//EN
+BEGIN:VEVENT
+UID:a@test.local
+DTSTAMP:20260101T000000Z
+DTSTART:20260105T090000Z
+DTEND:20260105T100000Z
+SUMMARY:Standup
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+
+#[tokio::test]
+async fn a_member_keeps_the_href_the_sync_named_it_by() {
+    // The store holds the event under the sync's href; a key taken from the multiget's spelling
+    // would tombstone it and add it again under a new one.
+    let exec = Replay::new(vec![ok(BODILESS_SYNC), ok(EVENT_BODY_ABSOLUTE)]);
+    let calendar = CalendarId::try_from(CALENDAR).unwrap();
+
+    let result = sync_events(&exec, CALENDAR, &calendar, None).await.unwrap();
+
+    let SyncUpdate::Snapshot { objects, present } = &result.update else {
+        panic!("expected a snapshot");
+    };
+    assert_eq!(objects[0].id.as_str(), "/dav/cal/alice/default/a.ics");
+    assert!(
+        present
+            .iter()
+            .all(|key| key.as_str() == "/dav/cal/alice/default/a.ics")
+    );
+}
+
+#[tokio::test]
+async fn an_event_the_multiget_returns_without_a_body_stays_present() {
+    let exec = Replay::new(vec![ok(BODILESS_SYNC), ok(NO_BODY)]);
+    let calendar = CalendarId::try_from(CALENDAR).unwrap();
+
+    let result = sync_events(&exec, CALENDAR, &calendar, None).await.unwrap();
+
+    let SyncUpdate::Snapshot { objects, present } = &result.update else {
+        panic!("expected a snapshot");
+    };
+    assert!(objects.is_empty());
+    assert_eq!(
+        present.len(),
+        1,
+        "an event nobody could read was tombstoned, or the collection counted: {present:?}"
+    );
+}
+
 const BODILESS_CARDS: &str = r#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>/dav/addressbooks/alice/default/</D:href><D:propstat><D:prop><D:getetag>"c1"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/dav/addressbooks/alice/default/ada.vcf</D:href><D:propstat><D:prop><D:getetag>"v1"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:sync-token>token-1</D:sync-token></D:multistatus>"#;
 
 const CARD_BODY: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/dav/addressbooks/alice/default/ada.vcf</D:href><D:propstat><D:prop><D:getetag>"v1"</D:getetag><C:address-data>BEGIN:VCARD

@@ -22,8 +22,7 @@ use crate::{
     carddav_ops::{
         ADDRESSBOOK, advertised_classes, bind_collection, contact_id, contact_report,
         contact_update, decode_data_uri, discover_home, encode_segment, fallback_contact_sync,
-        list_address_books, multiget_report, normalize_response, require_writable, stable_suffix,
-        supported_fields,
+        list_address_books, normalize_response, require_writable, stable_suffix, supported_fields,
     },
     error::CalDavError,
     multiget::fill_bodies,
@@ -330,7 +329,7 @@ impl ContactsProvider for CardDavProvider {
         _account: &AccountId,
         contact: &ContactId,
     ) -> ProviderResult<ContactCard> {
-        let body = multiget_report(contact.as_str());
+        let body = addressbook_multiget_report(&[contact.as_str().to_owned()]);
         let report = self
             .executor
             .send(DavMethod::Report, self.href(), "1", body)

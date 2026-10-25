@@ -45,6 +45,15 @@ pub(crate) const ADDRESS_BOOK_LIST_PROPFIND: &str = concat!(
     r#"<d:current-user-privilege-set/><a:addressbook-description/></d:prop></d:propfind>"#,
 );
 
+/// What a calendar sync and a calendar multiget ask for of each resource: one string, so a body
+/// a multiget fills in carries exactly what the sync would have.
+const CALENDAR_OBJECT_PROPS: &str =
+    "<d:prop><d:getetag/><c:schedule-tag/><c:calendar-data/></d:prop>";
+
+/// What an address-book sync and an address-book multiget ask for of each card.
+const ADDRESS_OBJECT_PROPS: &str =
+    r#"<d:prop><d:getetag/><a:address-data content-type="text/vcard" version="4.0"/></d:prop>"#;
+
 /// CardDAV RFC 6578 sync report requesting vCard payloads.
 pub(crate) fn address_book_sync_report(sync_token: &str) -> String {
     format!(
@@ -52,10 +61,10 @@ pub(crate) fn address_book_sync_report(sync_token: &str) -> String {
             r#"<?xml version="1.0" encoding="utf-8"?>"#,
             r#"<d:sync-collection xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
             r#"<d:sync-token>{token}</d:sync-token><d:sync-level>1</d:sync-level>"#,
-            r#"<d:prop><d:getetag/><a:address-data content-type="text/vcard" version="4.0"/>"#,
-            r#"</d:prop></d:sync-collection>"#,
+            "{props}</d:sync-collection>",
         ),
         token = xml_escape(sync_token),
+        props = ADDRESS_OBJECT_PROPS,
     )
 }
 
@@ -89,10 +98,10 @@ pub(crate) fn sync_collection_report(sync_token: &str) -> String {
             r#"<?xml version="1.0" encoding="utf-8"?>"#,
             r#"<d:sync-collection xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
             r#"<d:sync-token>{token}</d:sync-token><d:sync-level>1</d:sync-level>"#,
-            "<d:prop><d:getetag/><c:schedule-tag/><c:calendar-data/></d:prop>",
-            r#"</d:sync-collection>"#,
+            "{props}</d:sync-collection>",
         ),
         token = xml_escape(sync_token),
+        props = CALENDAR_OBJECT_PROPS,
     )
 }
 
@@ -101,7 +110,7 @@ pub(crate) fn sync_collection_report(sync_token: &str) -> String {
 pub(crate) fn calendar_multiget_report(hrefs: &[String]) -> String {
     multiget(
         r#"<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
-        "<d:prop><d:getetag/><c:schedule-tag/><c:calendar-data/></d:prop>",
+        CALENDAR_OBJECT_PROPS,
         "</c:calendar-multiget>",
         hrefs,
     )
@@ -112,7 +121,7 @@ pub(crate) fn calendar_multiget_report(hrefs: &[String]) -> String {
 pub(crate) fn addressbook_multiget_report(hrefs: &[String]) -> String {
     multiget(
         r#"<a:addressbook-multiget xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
-        r#"<d:prop><d:getetag/><a:address-data content-type="text/vcard" version="4.0"/></d:prop>"#,
+        ADDRESS_OBJECT_PROPS,
         "</a:addressbook-multiget>",
         hrefs,
     )

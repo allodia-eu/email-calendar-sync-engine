@@ -308,18 +308,6 @@ pub(crate) fn normalize_response(
     Some(card)
 }
 
-pub(crate) fn multiget_report(href: &str) -> String {
-    format!(
-        concat!(
-            r#"<?xml version="1.0" encoding="utf-8"?>"#,
-            r#"<a:addressbook-multiget xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
-            r#"<d:prop><d:getetag/><a:address-data/></d:prop><d:href>{}</d:href>"#,
-            r#"</a:addressbook-multiget>"#
-        ),
-        xml_escape(href)
-    )
-}
-
 pub(crate) fn bind_collection(home: &str, value: &str) -> Result<AddressBookId, CalDavError> {
     let href = if value.starts_with('/') || value.contains("://") {
         value.to_owned()
@@ -413,13 +401,4 @@ pub(crate) fn require_writable(writable: bool) -> ProviderResult<()> {
 
 pub(crate) fn contact_id(value: &str) -> Result<ContactId, CalDavError> {
     ContactId::try_from(value).map_err(|error| CalDavError::protocol(error.to_string()))
-}
-
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }

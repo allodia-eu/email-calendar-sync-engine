@@ -6,6 +6,8 @@
 //! (RFC 4791 §7.9, RFC 6352 §8.7), and its answer takes the bodiless one's place, so what follows
 //! reads every changed member the same way whichever server sent it.
 
+use std::collections::HashMap;
+
 use crate::{
     dav::MultiStatus,
     error::CalDavError,
@@ -43,6 +45,15 @@ pub(crate) async fn fill_bodies(
         })
         .map(|response| response.href().to_owned())
         .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let slots: HashMap<String, usize> = report
+        .responses
+        .iter()
+        .enumerate()
+        .map(|(at, response)| (path_key(response.href()), at))
+        .collect();
     for batch in missing.chunks(BATCH) {
         let fetched = exec
             .send(DavMethod::Report, collection, "1", multiget(batch))
@@ -52,12 +63,10 @@ pub(crate) async fn fill_bodies(
             if found.props.get(data).is_none() {
                 continue;
             }
-            if let Some(slot) = report
-                .responses
-                .iter_mut()
-                .find(|response| same_path(response.href(), found.href()))
-            {
-                *slot = found;
+            // The member keeps the href the sync named it by, which is the key the store
+            // holds it under; a multiget may spell the same resource another way.
+            if let Some(&at) = slots.get(&path_key(found.href())) {
+                report.responses[at].props = found.props;
             }
         }
     }
@@ -66,8 +75,12 @@ pub(crate) async fn fill_bodies(
 
 /// Whether two hrefs name the same resource: compared by path, since a server may answer with a
 /// path where it was asked about an absolute URL, and with or without a trailing slash.
-fn same_path(a: &str, b: &str) -> bool {
-    path_of(a).trim_end_matches('/') == path_of(b).trim_end_matches('/')
+pub(crate) fn same_path(a: &str, b: &str) -> bool {
+    path_key(a) == path_key(b)
+}
+
+fn path_key(href: &str) -> String {
+    path_of(href).trim_end_matches('/').to_owned()
 }
 
 fn path_of(href: &str) -> &str {
