@@ -63,6 +63,38 @@ impl CredentialScope {
             .contains(&origin_of(url))
     }
 
+    /// Lets `url`'s origin receive the credential from now on although it never challenged,
+    /// because it answered reporting the requester as `<DAV:unauthenticated/>` (RFC 5397 §3):
+    /// how a server that lets anonymous requests through says it does not know who asked.
+    /// Returns whether anything changed: `false` for an origin that is not trusted or is
+    /// already answered.
+    pub(crate) fn volunteer(&self, url: &Url) -> bool {
+        let origin = origin_of(url);
+        self.trusted.read().expect("trusted lock").contains(&origin)
+            && self.answered.write().expect("answered lock").insert(origin)
+    }
+
+    /// The schemes a `401` from `url` carrying `headers` offers, when `url`'s origin is trusted
+    /// and none of them is the one `credentials` are for: the server wants a method this account
+    /// cannot use, so nothing was sent and nothing is wrong with the credential.
+    pub(crate) fn unanswerable(
+        &self,
+        url: &Url,
+        headers: &HeaderMap,
+        credentials: &Credentials,
+    ) -> Option<String> {
+        if !self
+            .trusted
+            .read()
+            .expect("trusted lock")
+            .contains(&origin_of(url))
+            || offers(headers, scheme_of(credentials))
+        {
+            return None;
+        }
+        Some(schemes(headers).join(", "))
+    }
+
     /// Whether a `401` from `url` carrying `headers` is a challenge `credentials` should answer:
     /// the origin is trusted and offers the credential's scheme. An origin that qualifies is
     /// answered from then on.
@@ -101,22 +133,53 @@ const fn scheme_of(credentials: &Credentials) -> &'static str {
 ///
 /// A field value may carry several challenges, separated by commas that also separate each
 /// challenge's parameters (RFC 9110 §11.6.1); a scheme is the element whose first token is not
-/// a `name=value` parameter.
+/// a `name=value` parameter. A comma inside a quoted parameter value separates nothing.
 ///
 /// RFC 9110 §15.5.2 says a `401` MUST carry a challenge, and Yahoo's calendar server sends
 /// none. A bare `401` from a trusted origin is still that server asking for credentials, so it
 /// is answered; a `401` whose challenges all name another scheme is not, since that server has
 /// said what it wants and it is not this credential.
 fn offers(headers: &HeaderMap, scheme: &str) -> bool {
-    let mut challenges = headers
+    let offered = schemes(headers);
+    offered.is_empty()
+        || offered
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case(scheme))
+}
+
+/// The authentication schemes the `WWW-Authenticate` challenges in `headers` name, in order.
+fn schemes(headers: &HeaderMap) -> Vec<String> {
+    let values: Vec<String> = headers
         .get_all(WWW_AUTHENTICATE)
         .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
+        .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
+        .collect();
+    values
+        .iter()
+        .flat_map(|value| unquoted_elements(value))
         .filter_map(|element| element.split_whitespace().next())
         .filter(|token| !token.contains('='))
-        .peekable();
-    challenges.peek().is_none() || challenges.any(|token| token.eq_ignore_ascii_case(scheme))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// `value` split at every comma outside a quoted-string (RFC 9110 §5.6.4).
+fn unquoted_elements(value: &str) -> Vec<&str> {
+    let (mut elements, mut start, mut quoted, mut escaped) = (Vec::new(), 0, false, false);
+    for (at, ch) in value.char_indices() {
+        match ch {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                elements.push(&value[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    elements.push(&value[start..]);
+    elements
 }
 
 #[cfg(test)]

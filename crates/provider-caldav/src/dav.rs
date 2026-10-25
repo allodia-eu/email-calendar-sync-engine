@@ -25,6 +25,15 @@ pub(crate) struct MultiStatus {
     pub sync_token: Option<String>,
 }
 
+impl MultiStatus {
+    /// Whether any response named the requester `<DAV:unauthenticated/>` (RFC 5397 §3).
+    pub(crate) fn names_unauthenticated(&self) -> bool {
+        self.responses
+            .iter()
+            .any(|response| response.props.names_unauthenticated())
+    }
+}
+
 /// One `<response>`: its href(s), an optional response-level status (a `404`
 /// marks a `sync-collection` removal), and the properties from its `2xx`
 /// `propstat`s.
@@ -72,9 +81,18 @@ pub(crate) struct Props {
     /// order: empty for a property that holds none. A property that holds several hrefs
     /// (`calendar-user-address-set`) is read here, since `text` keeps only one.
     hrefs: BTreeMap<String, Vec<String>>,
+    /// Whether `current-user-principal` held the `<DAV:unauthenticated/>` pseudo-principal: the
+    /// server answered without knowing who asked (RFC 5397 §3).
+    unauthenticated: bool,
 }
 
 impl Props {
+    /// Whether the server named the requester `<DAV:unauthenticated/>` (RFC 5397 §3): it let an
+    /// anonymous request through rather than challenging it.
+    pub(crate) fn names_unauthenticated(&self) -> bool {
+        self.unauthenticated
+    }
+
     /// The value of the text (or inner-href) property `name`, if present.
     pub(crate) fn get(&self, name: &str) -> Option<&str> {
         self.text.get(name).map(String::as_str)
@@ -189,6 +207,7 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                 record_resourcetype_child(&path, &name, &mut propstat);
                 record_privilege(&path, &name, &mut propstat);
                 record_property(&path, &name, &mut propstat);
+                record_unauthenticated(&path, &name, &mut propstat);
                 path.push(name);
                 text.clear();
             }
@@ -202,6 +221,7 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                 record_resourcetype_child(&path, &name, &mut propstat);
                 record_privilege(&path, &name, &mut propstat);
                 record_property(&path, &name, &mut propstat);
+                record_unauthenticated(&path, &name, &mut propstat);
             }
             // A `Text` run is already the literal characters: the reader hands every
             // `&…;` back separately as `GeneralRef`, so the run itself can never hold
@@ -334,6 +354,20 @@ fn record_property(path: &[String], name: &str, propstat: &mut Option<(Option<u1
     }
 }
 
+/// Records `<DAV:unauthenticated/>` inside `current-user-principal` (RFC 5397 §3).
+fn record_unauthenticated(
+    path: &[String],
+    name: &str,
+    propstat: &mut Option<(Option<u16>, Props)>,
+) {
+    if name == "unauthenticated"
+        && path.last().map(String::as_str) == Some("current-user-principal")
+        && let Some((_, props)) = propstat.as_mut()
+    {
+        props.unauthenticated = true;
+    }
+}
+
 /// Records a `<resourcetype>` child (e.g. `calendar`) into the current propstat.
 fn record_resourcetype_child(
     path: &[String],
@@ -384,6 +418,7 @@ fn commit_propstat(
     if let (true, Some(response)) = (succeeded, response) {
         response.props.text.extend(props.text);
         response.props.resourcetype.extend(props.resourcetype);
+        response.props.unauthenticated |= props.unauthenticated;
         for (name, hrefs) in props.hrefs {
             response.props.hrefs.entry(name).or_default().extend(hrefs);
         }

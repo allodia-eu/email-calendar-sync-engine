@@ -46,6 +46,13 @@ pub enum CalDavError {
     #[error("malformed CalDAV response: {0}")]
     Protocol(String),
 
+    /// The server asked for credentials only in schemes this account's credential cannot answer:
+    /// a `401` whose challenges are all, say, `Digest` or `Negotiate` for a password, or `Basic`
+    /// for a token. The credential was never sent, so this says nothing about whether it is good,
+    /// and asking the person for it again would not help. Carries the schemes offered.
+    #[error("the server asks for an authentication method this account cannot use: {0}")]
+    UnsupportedAuthentication(String),
+
     /// A write that may have been applied: its request may have reached the server and no
     /// answer of the server's own came back. Becomes [`ProviderError::needs_confirmation`].
     #[error("{0}; the change may have been applied")]
@@ -118,7 +125,11 @@ impl CalDavError {
         let unknown = match &self {
             Self::Transport(err) => err.may_have_been_received(),
             Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
-            Self::Xml(_) | Self::Ical(_) | Self::Protocol(_) | Self::Unconfirmed(_) => false,
+            Self::Xml(_)
+            | Self::Ical(_)
+            | Self::Protocol(_)
+            | Self::UnsupportedAuthentication(_)
+            | Self::Unconfirmed(_) => false,
         };
         if unknown {
             Self::Unconfirmed(Box::new(self))
@@ -135,7 +146,12 @@ impl CalDavError {
             Self::Status { status, body, .. } => status_class(*status, body),
             // A malformed response/object is a protocol-level incompatibility:
             // retrying the same request will not fix it.
-            Self::Xml(_) | Self::Ical(_) | Self::Protocol(_) => FailureClass::Permanent,
+            // An authentication method the credential cannot answer is permanent too: neither
+            // a retry nor a new password changes what the server wants.
+            Self::Xml(_)
+            | Self::Ical(_)
+            | Self::Protocol(_)
+            | Self::UnsupportedAuthentication(_) => FailureClass::Permanent,
             // Never retried as it stands: the first attempt may have landed.
             Self::Unconfirmed(_) => FailureClass::InvalidState,
         }

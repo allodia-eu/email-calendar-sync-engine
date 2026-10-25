@@ -12,7 +12,7 @@ use engine_provider::{ConnectObserver, ConnectStep, ProviderResult};
 
 use crate::{
     dav::{DavResponse, MultiStatus},
-    discovery::follow,
+    discovery::{authenticate_before_reading, follow, trusted_start},
     error::CalDavError,
     href::redirect_href,
     request::{
@@ -41,23 +41,21 @@ pub(crate) async fn discover_home(
     // The same walk as CalDAV's (`discovery::discover_home`): the start is trusted like any
     // other origin, every href resolves against the request that returned it, and each origin
     // it leads to is trusted on the way.
-    let start = executor.absolute(start);
-    if !executor.trust_origin(&start) {
-        return Err(CalDavError::protocol(format!(
-            "the configured start {start:?} is a host the credential may not go to"
-        )));
-    }
+    let start = trusted_start(executor, start)?;
     let (first, at) = principal_props(executor, &start, observer).await?;
-    let principal = property(&first, "current-user-principal")
-        .map(|principal| follow(executor, &at, &principal))
-        .transpose()?;
+    let named = property(&first, "current-user-principal");
     if let Some(home) = property(&first, "addressbook-home-set") {
+        // As in the CalDAV walk, a principal the credential may not go to is dropped once the
+        // home is known.
         return Ok(AddressBookHome {
             href: follow(executor, &at, &home)?,
-            principal,
+            principal: named.and_then(|principal| follow(executor, &at, &principal).ok()),
         });
     }
-    let principal = principal.ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
+    let principal = named
+        .map(|principal| follow(executor, &at, &principal))
+        .transpose()?
+        .ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
     let (from_principal, at) = principal_props(executor, &principal, observer).await?;
     let home = property(&from_principal, "addressbook-home-set")
         .ok_or_else(|| CalDavError::protocol("CardDAV address-book home missing"))?;
@@ -99,7 +97,13 @@ async fn principal_props(
             href = next;
             continue;
         }
-        return Ok((response.into_multistatus()?, href));
+        let multistatus = response.into_multistatus()?;
+        // As in the CalDAV walk: an anonymous request let through is asked again once, with the
+        // credential (RFC 5397 §3).
+        if multistatus.names_unauthenticated() && executor.authenticate_unasked(&href) {
+            continue;
+        }
+        return Ok((multistatus, href));
     }
     Err(CalDavError::protocol(
         "too many CardDAV discovery redirects",
@@ -125,6 +129,7 @@ pub(crate) async fn advertised_classes(
     executor: &dyn DavExecutor,
     home: &str,
 ) -> Result<Vec<String>, CalDavError> {
+    authenticate_before_reading(executor, home).await;
     let response = executor.send_options(home).await?;
     let mut classes: Vec<String> = response
         .dav_classes()

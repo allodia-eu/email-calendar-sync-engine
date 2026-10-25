@@ -79,11 +79,13 @@ pub(crate) fn redirect_href(current: &str, location: &str) -> Option<String> {
 ///
 /// Returns [`CalDavError`] when `reference` cannot be resolved against `at`.
 pub(crate) fn resolve_reference(at: &str, reference: &str) -> Result<String, CalDavError> {
-    if reference.contains("://") || !at.contains("://") {
+    let Ok(base) = reqwest::Url::parse(at) else {
+        return Ok(reference.to_owned());
+    };
+    if reqwest::Url::parse(reference).is_ok() {
         return Ok(reference.to_owned());
     }
-    reqwest::Url::parse(at)
-        .and_then(|base| base.join(reference))
+    base.join(reference)
         .map(String::from)
         .map_err(|e| CalDavError::protocol(format!("bad href {reference:?}: {e}")))
 }

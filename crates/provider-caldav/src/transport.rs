@@ -144,6 +144,21 @@ pub(crate) trait DavExecutor: Send + Sync {
         true
     }
 
+    /// Whether a request to `href` carries the credential without being asked: its origin has
+    /// been authenticated on this connection. The default, for a fake, says yes.
+    fn sends_credential_to(&self, _href: &str) -> bool {
+        true
+    }
+
+    /// Sends the credential to `href`'s origin from now on, because it answered naming the
+    /// requester `<DAV:unauthenticated/>` (RFC 5397 §3) instead of challenging: a server that
+    /// lets anonymous requests through. Returns whether that changed anything, so the caller asks
+    /// again at most once; `false` for an origin that is not trusted. The default, for a fake,
+    /// changes nothing.
+    fn authenticate_unasked(&self, _href: &str) -> bool {
+        false
+    }
+
     /// Makes `home`'s origin the one later relative hrefs resolve against, and returns `home`
     /// in the form the provider keeps it: its path on that origin.
     ///

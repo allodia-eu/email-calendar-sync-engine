@@ -1354,6 +1354,7 @@ name = "provider-caldav"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "engine-core",
  "engine-http",
  "engine-ical",

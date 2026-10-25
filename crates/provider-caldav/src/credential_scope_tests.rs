@@ -43,6 +43,33 @@ fn a_challenge_is_found_in_either_shape_a_server_sends() {
 }
 
 #[test]
+fn a_comma_inside_a_quoted_value_separates_nothing() {
+    assert!(
+        !offers(
+            &challenges(&[
+                r#"Bearer realm="cal", error_description="expired, basic auth refused""#
+            ]),
+            "basic"
+        ),
+        "a word after a quoted comma is not a scheme"
+    );
+    assert!(!offers(
+        &challenges(&[r#"Digest realm="a \"q, Basic\" b", qop="auth""#]),
+        "basic"
+    ));
+}
+
+#[test]
+fn a_challenge_with_a_non_ascii_realm_is_still_read() {
+    let mut headers = challenges(&["Negotiate"]);
+    headers.append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_bytes("Basic realm=\"Kalender für alle\"".as_bytes()).unwrap(),
+    );
+    assert!(offers(&headers, "basic"));
+}
+
+#[test]
 fn a_401_without_any_challenge_still_asks() {
     // Yahoo's calendar server answers 401 with no `WWW-Authenticate` at all.
     assert!(offers(&HeaderMap::new(), "basic"));

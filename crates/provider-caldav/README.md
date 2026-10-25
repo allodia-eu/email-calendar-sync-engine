@@ -119,19 +119,32 @@ The transport follows that literally, with two sets of origins per connection:
   to from there (a redirect target, the principal, the home), each checked when it was added.
   Only these may ever receive the password.
 - **Answered**: trusted origins that get the password with every request. None starts here.
-  A trusted origin joins once it asks, with a `401` whose `WWW-Authenticate` offers the scheme
-  our credential is for (`Basic` for a password, `Bearer` for a token), and stays for as long
-  as the connection lasts: the reuse RFC 9110 §11.5 allows "if a prior request has been
-  authorized". A `401` with no challenge at all counts as asking too: RFC 9110 §15.5.2 says
-  a `401` MUST carry one, but Yahoo's calendar server sends none. A `401` whose challenges all
-  name another scheme is not answered, since that server has said what it wants.
+  A trusted origin joins once it asks, and stays for as long as the connection lasts: the
+  reuse RFC 9110 §11.5 allows "if a prior request has been authorized".
+
+A server asks in one of three ways, and each one is answered:
+
+| How it asks | Who answers this way | Proven against |
+|---|---|---|
+| `401` whose `WWW-Authenticate` offers our scheme (`Basic` for a password, `Bearer` for a token) | Stalwart, iCloud, Fastmail, GMX, mailbox.org, Nextcloud | the harnesses' default |
+| `401` with no `WWW-Authenticate` at all, although RFC 9110 §15.5.2 says it MUST carry one | Yahoo, Google, AOL | `docker/sabredav` `/bare/` |
+| `207` that lets the request through and names the requester `<DAV:unauthenticated/>` (RFC 5397 §3); asked again once, with the password | a SabreDAV deployment that allows anonymous reads | `docker/sabredav` `/open/` |
+
+A `401` whose challenges all name another scheme (`Digest`, `Negotiate`) is not answered: that
+server has said what it wants, and it is not this credential. It ends as
+`CalDavError::UnsupportedAuthentication`, never as a refused sign-in, since nothing was sent.
+
+A server that lets an anonymous request through may also answer an anonymous `OPTIONS` with
+less than the account has, so the DAV classes a home reports are read only once its origin has
+the password: a `PROPFIND` for the requester comes first, and draws whichever answer above it
+gives.
 
 ```mermaid
 flowchart TD
     A[Request to some URL] --> B{Is its origin answered?}
     B -- yes --> S[Send with the credential]
     B -- no --> N[Send without the credential]
-    N --> R{"Answer is 401 that asks for our<br/>credential's scheme, or names none?"}
+    N --> R{"Answer is 401 that asks for our<br/>credential's scheme, or names none,<br/>or 207 naming the requester unauthenticated?"}
     R -- no --> D[Use the answer as it is]
     R -- yes --> T{Is the origin trusted?}
     T -- no --> X[Keep the 401: never answered.<br/>Example: a photo URL inside a contact card]
@@ -204,6 +217,7 @@ flowchart TD
 | `429 Too Many Requests` | `RateLimited` | Nothing changes. Retry after the server's `Retry-After`. |
 | `404`, `410`, `403`, or a principal that names no home | `Permanent` | Bootstrap again ([RFC 6764] §6: "If a subsequent connection attempt fails … SHOULD retry the SRV lookup and account discovery"). |
 | `401` after the challenge was answered | `Authentication` | Bootstrap again once ("or authentication fails persistently"); if the same server still refuses, ask for the password. |
+| `401` asking only for a method the credential cannot use (`CalDavError::UnsupportedAuthentication`) | `Permanent` | Say the server needs a sign-in method this app does not support. The password was never sent, so never ask for it again. |
 
 A captive portal or a hotel network cannot pass for the account's server, because it cannot
 present the server's TLS certificate: what reaches the host is a `Retryable` TLS failure, not a

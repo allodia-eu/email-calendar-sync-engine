@@ -270,3 +270,34 @@ fn a_property_reported_empty_is_present_and_a_404_one_is_absent() {
     assert_eq!(props.hrefs("schedule-inbox-url"), None);
     assert_eq!(props.hrefs("never-asked"), None);
 }
+
+/// What SabreDAV answers an anonymous `PROPFIND` with when anonymous reads are allowed, verbatim
+/// in shape: the pseudo-principal of RFC 5397 §3 in place of an `<href>`.
+const UNAUTHENTICATED: &str = r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns"><d:response><d:href>/</d:href><d:propstat><d:prop><d:current-user-principal><d:unauthenticated/></d:current-user-principal></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+
+#[test]
+fn the_unauthenticated_pseudo_principal_is_read_and_is_not_a_principal() {
+    let parsed = parse_multistatus(UNAUTHENTICATED).unwrap();
+    assert!(parsed.names_unauthenticated());
+    assert_eq!(
+        parsed.responses[0].props.get("current-user-principal"),
+        None
+    );
+}
+
+#[test]
+fn a_named_principal_is_not_unauthenticated() {
+    let named = UNAUTHENTICATED.replace("<d:unauthenticated/>", "<d:href>/p/</d:href>");
+    let parsed = parse_multistatus(&named).unwrap();
+    assert!(!parsed.names_unauthenticated());
+    assert_eq!(
+        parsed.responses[0].props.get("current-user-principal"),
+        Some("/p/")
+    );
+}
+
+#[test]
+fn an_unauthenticated_property_in_a_failed_propstat_says_nothing() {
+    let failed = UNAUTHENTICATED.replace("HTTP/1.1 200 OK", "HTTP/1.1 404 Not Found");
+    assert!(!parse_multistatus(&failed).unwrap().names_unauthenticated());
+}
