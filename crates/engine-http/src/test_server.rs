@@ -54,6 +54,12 @@ pub fn hold_clock() -> HeldClock {
     HeldClock { _release: release }
 }
 
+/// The [`UserAgent`](crate::UserAgent) tests connect with, so a test names no product.
+#[must_use]
+pub fn user_agent() -> crate::UserAgent {
+    crate::UserAgent::new("engine-tests", "0").expect("a valid token")
+}
+
 /// Runs `work` with the paused clock held until `event` has happened, and moving from then on:
 /// the clock passes only the silence `work` meets after it.
 pub async fn held_until<T>(event: impl Future<Output = ()>, work: impl Future<Output = T>) -> T {
@@ -283,10 +289,4 @@ fn content_length(head: &[u8]) -> usize {
         .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
         .and_then(|(_, value)| value.trim().parse().ok())
         .unwrap_or(0)
-}
-
-/// The [`UserAgent`](crate::UserAgent) tests connect with, so a test names no product.
-#[must_use]
-pub fn user_agent() -> crate::UserAgent {
-    crate::UserAgent::new("engine-tests", "0").expect("a valid token")
 }
