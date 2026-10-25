@@ -215,7 +215,7 @@ pub(crate) fn json(fixture: &str) -> Value {
 /// without a live token. Routes are matched in order, so list the most specific
 /// first. The background thread serves connections for the test's lifetime.
 pub(crate) fn replay_server(routes: Vec<(&'static str, Value)>) -> String {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let routes: Vec<(String, String)> = routes
         .into_iter()
         .map(|(key, doc)| (key.to_owned(), doc.to_string()))
@@ -225,9 +225,8 @@ pub(crate) fn replay_server(routes: Vec<(&'static str, Value)>) -> String {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let mut buf = [0u8; 8192];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let request = String::from_utf8_lossy(&buf[..n]);
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            let request = String::from_utf8_lossy(&request);
             let path = request
                 .lines()
                 .next()
