@@ -58,16 +58,24 @@ impl Exchange<'_> {
 }
 
 /// The reqwest client builder every HTTP adapter starts from: the host's trust policy, as
-/// [`reqwest_builder`](engine_tls::TlsClientConfig::reqwest_builder) configures it, and the
-/// [`dial`](Deadlines::dial) bound on the connect and the TLS handshake.
+/// [`reqwest_builder`](engine_tls::TlsClientConfig::reqwest_builder) configures it, the
+/// [`dial`](Deadlines::dial) bound on the connect and the TLS handshake, and a `User-Agent`.
 ///
 /// reqwest's connect timeout covers the name lookup, the TCP connect and the TLS handshake
 /// together, and a failure there is a connect error, which [`SendError`] knows never reached
 /// the server.
+///
+/// reqwest sends no `User-Agent` of its own, and RFC 9110 §10.1.5 says a client SHOULD. Yahoo's
+/// address-book server answers an `addressbook-multiget` without one with a `500`
+/// (`docs/spec-deviations.md`, YAHOO-6).
 pub fn client(tls: &engine_tls::TlsClientConfig) -> reqwest::ClientBuilder {
     tls.reqwest_builder()
         .connect_timeout(Deadlines::STANDARD.dial())
+        .user_agent(USER_AGENT)
 }
+
+/// What every request names its client as: this engine and its version, never a product.
+const USER_AGENT: &str = concat!("email-calendar-sync-engine/", env!("CARGO_PKG_VERSION"));
 
 /// How large a piece of a request body reqwest is handed at a time.
 ///
@@ -343,3 +351,7 @@ fn armed() -> bool {
 #[cfg(test)]
 #[path = "deadline_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod client_tests;
