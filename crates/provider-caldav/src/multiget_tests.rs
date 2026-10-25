@@ -185,6 +185,26 @@ async fn a_card_the_multiget_returns_without_a_body_stays_present() {
     );
 }
 
+/// The multiget's answer for a member removed after the sync listed it.
+const GONE: &str = r#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>/dav/cal/alice/default/a.ics</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response></D:multistatus>"#;
+
+#[tokio::test]
+async fn a_member_the_multiget_answers_404_for_is_removed() {
+    let exec = Replay::new(vec![ok(BODILESS_SYNC), ok(GONE)]);
+    let calendar = CalendarId::try_from(CALENDAR).unwrap();
+
+    let result = sync_events(&exec, CALENDAR, &calendar, None).await.unwrap();
+
+    let SyncUpdate::Snapshot { objects, present } = &result.update else {
+        panic!("expected a snapshot");
+    };
+    assert!(objects.is_empty());
+    assert!(
+        present.is_empty(),
+        "the server said it is gone: {present:?}"
+    );
+}
+
 #[test]
 fn an_absolute_href_names_the_same_resource_as_its_path() {
     assert!(same_path(

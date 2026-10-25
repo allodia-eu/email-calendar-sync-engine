@@ -11,7 +11,7 @@
 use engine_core::sync::SyncState;
 
 use crate::{
-    dav::MultiStatus,
+    dav::{MultiStatus, has_precondition},
     error::CalDavError,
     multiget::fill_bodies,
     request::{CTAG_PROPFIND, MEMBER_ETAGS_PROPFIND},
@@ -27,13 +27,16 @@ pub(crate) fn is_ctag_cursor(cursor: Option<&SyncState>) -> bool {
 }
 
 /// Whether `err`, the answer to a `sync-collection` REPORT, says the server does not do the
-/// report: `405` or `501`, or a `400` to the first request of a collection. A `400` to a request
-/// carrying a token is not read that way, since a server that never did the report never issued
-/// one, and an expired token is answered with RFC 6578's own precondition.
+/// report: the `DAV:supported-report` precondition in a `403` or `409` (RFC 3253 §3.6), `405` or
+/// `501`, or a `400` to the first request of a collection. A `400` to a request carrying a token
+/// is not read that way, since a server that never did the report never issued one, and an
+/// expired token is answered with RFC 6578's own precondition.
 pub(crate) fn refuses_sync_collection(err: &CalDavError, first: bool) -> bool {
     match err {
-        CalDavError::Status { status, .. } => {
-            matches!(status, 405 | 501) || (first && *status == 400)
+        CalDavError::Status { status, body, .. } => {
+            matches!(status, 405 | 501)
+                || (first && *status == 400)
+                || (matches!(status, 403 | 409) && has_precondition(body, "supported-report"))
         }
         _ => false,
     }

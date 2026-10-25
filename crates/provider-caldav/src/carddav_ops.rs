@@ -19,7 +19,7 @@ use crate::{
     multiget::same_path,
     request::{
         ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND, address_book_sync_report,
-        addressbook_multiget_report,
+        addressbook_multiget_as_stored,
     },
     transport::{DavExecutor, DavMethod},
     vcard,
@@ -218,7 +218,7 @@ pub(crate) async fn fallback_contact_sync(
         collection,
         cursor,
         "address-data",
-        addressbook_multiget_report,
+        addressbook_multiget_as_stored,
     )
     .await?;
     Ok(match sync {

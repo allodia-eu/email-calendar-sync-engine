@@ -27,7 +27,7 @@ use crate::{
     ctag_sync::{is_ctag_cursor, refuses_sync_collection},
     error::CalDavError,
     multiget::fill_bodies,
-    request::addressbook_multiget_report,
+    request::{addressbook_multiget_as_stored, addressbook_multiget_report},
     transport::{DavClient, DavExecutor, DavMethod, Precondition, WriteRequest},
     vcard_write,
 };
@@ -329,7 +329,7 @@ impl ContactsProvider for CardDavProvider {
         _account: &AccountId,
         contact: &ContactId,
     ) -> ProviderResult<ContactCard> {
-        let body = addressbook_multiget_report(&[contact.as_str().to_owned()]);
+        let body = addressbook_multiget_as_stored(&[contact.as_str().to_owned()]);
         let report = self
             .executor
             .send(DavMethod::Report, self.href(), "1", body)

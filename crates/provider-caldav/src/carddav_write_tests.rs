@@ -51,6 +51,10 @@ async fn direct_fetch_patch_delete_and_photos_use_exact_guards() {
         .unwrap();
     let multiget = replay.reads().last().unwrap().3.clone();
     assert!(multiget.contains("<d:href>/dav/addressbooks/alice/default/ada.vcf</d:href>"));
+    assert!(
+        multiget.contains("<a:address-data/>"),
+        "the card is asked for as stored, never in a version the server may not convert to"
+    );
 
     let mut patch = ContactPatch::default();
     patch.fields.insert(

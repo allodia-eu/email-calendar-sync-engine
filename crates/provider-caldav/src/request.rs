@@ -127,6 +127,19 @@ pub(crate) fn addressbook_multiget_report(hrefs: &[String]) -> String {
     )
 }
 
+/// An `addressbook-multiget` REPORT for `hrefs` that asks for each card as the server stores it,
+/// with no `version`: the CTag fallback and a single card's refetch ask for nothing the server
+/// was not already asked for, and RFC 6352 requires a server to support vCard 3.0 only, so a
+/// server that cannot convert to 4.0 may refuse a request for it.
+pub(crate) fn addressbook_multiget_as_stored(hrefs: &[String]) -> String {
+    multiget(
+        r#"<a:addressbook-multiget xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
+        "<d:prop><d:getetag/><a:address-data/></d:prop>",
+        "</a:addressbook-multiget>",
+        hrefs,
+    )
+}
+
 fn multiget(open: &str, prop: &str, close: &str, hrefs: &[String]) -> String {
     let mut body = format!(r#"<?xml version="1.0" encoding="utf-8"?>{open}{prop}"#);
     for href in hrefs {

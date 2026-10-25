@@ -181,9 +181,14 @@ async fn an_address_book_refusing_sync_collection_with_a_400_is_read_through_its
     );
     assert_eq!(sync.next_cursor.as_str(), "ctag:b-1");
     let reads = replay.reads();
+    let multiget = &reads[reads.len() - 1].3;
     assert!(
-        reads[reads.len() - 1].3.contains("<a:addressbook-multiget"),
+        multiget.contains("<a:addressbook-multiget"),
         "the bodies come from a multiget"
+    );
+    assert!(
+        multiget.contains("<a:address-data/>"),
+        "the cards are asked for as stored: {multiget}"
     );
     assert!(
         !reads
@@ -215,4 +220,19 @@ fn only_a_first_request_reads_a_400_as_a_refusal() {
         &CalDavError::status(403, ""),
         true
     ));
+}
+
+#[test]
+fn an_unsupported_report_precondition_is_a_refusal() {
+    // RFC 3253 §3.6 and §1.6: a server that does not support a report answers `403` or `409`
+    // with the `DAV:supported-report` precondition, with or without a token.
+    let body = r#"<D:error xmlns:D="DAV:"><D:supported-report/></D:error>"#;
+    for status in [403, 409] {
+        for first in [true, false] {
+            assert!(refuses_sync_collection(
+                &CalDavError::status(status, body),
+                first
+            ));
+        }
+    }
 }

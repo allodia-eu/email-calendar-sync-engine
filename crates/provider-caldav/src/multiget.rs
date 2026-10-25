@@ -21,9 +21,10 @@ const BATCH: usize = 100;
 /// Fetches, with `multiget`, the body of every changed member of `report` that arrived without
 /// its `data` property, and puts each answer in place of the member it fetched.
 ///
-/// The collection's own entry is not a member and is left as it is. A member the multiget does
-/// not return with a body is left as it came, which is what the caller already makes of a body
-/// it cannot read.
+/// The collection's own entry is not a member and is left as it is. A member the multiget answers
+/// with a `404` was removed after the sync listed it, and becomes a removal. Any other member the
+/// multiget does not return with a body is left as it came, which is what the caller already
+/// makes of a body it cannot read.
 ///
 /// # Errors
 ///
@@ -60,6 +61,14 @@ pub(crate) async fn fill_bodies(
             .await?
             .into_multistatus()?;
         for found in fetched.responses {
+            if found.is_removed() {
+                for href in &found.hrefs {
+                    if let Some(&at) = slots.get(&path_key(href)) {
+                        report.responses[at].status = Some(404);
+                    }
+                }
+                continue;
+            }
             if found.props.get(data).is_none() {
                 continue;
             }

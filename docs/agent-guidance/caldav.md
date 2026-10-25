@@ -258,15 +258,17 @@ are split escape-aware so the writer and the parser agree.
   href is the key the store holds. The collection's own entry is not a member, and a
   member that is listed but cannot be read (no body even after the multiget, or iCalendar
   that does not parse) still counts as present, so a snapshot never deletes it locally.
-  CardDAV does the same with `addressbook-multiget`. A failed multiget fails the pass:
-  advancing the cursor without the bodies would never fetch them.
+  CardDAV does the same with `addressbook-multiget`. A member the multiget answers with a
+  `404` was removed after the sync listed it, and is a removal. A failed multiget fails the
+  pass: advancing the cursor without the bodies would never fetch them.
 - **A server without `sync-collection`** is read through its CTag (`ctag_sync`), for
-  calendars and address books alike. It counts as one when the report is refused with a
-  `405` or `501`, or with a `400` to the first request of a collection (one carrying a token
-  is not read that way: a server that never did the report never issued one), or when the
-  answer carries no sync-token. Yahoo does the last for a calendar, an empty `207`, and
-  answers an address book's report with a `400`; it refuses `addressbook-query` with a
-  `400` too (`docs/spec-deviations.md`). So the fallback uses only what every server
+  calendars and address books alike. It counts as one when the report is refused with the
+  `DAV:supported-report` precondition in a `403` or `409` (RFC 3253 §3.6, the answer the RFC
+  requires), with a `405` or `501`, or with a `400` to the first request of a collection (one
+  carrying a token is not read that way: a server that never did the report never issued
+  one), or when the answer carries no sync-token. Yahoo does the last for a calendar, an
+  empty `207`, and answers an address book's report with a `400`; it refuses
+  `addressbook-query` with a `400` too (`docs/spec-deviations.md`). So the fallback uses only what every server
   answers: a `PROPFIND` of the collection's `getctag`, which while unchanged ends the pass
   with an empty delta, and otherwise a Depth 1 `PROPFIND` listing each member's `getetag`,
   then a multiget for the bodies. The result is a snapshot, and the cursor is `ctag:` and the CTag. A collection
