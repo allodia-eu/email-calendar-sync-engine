@@ -76,7 +76,7 @@ async fn a_relative_redirect_after_an_origin_change_stays_on_the_new_origin() {
 }
 
 /// A `Replay` whose connection refuses to move — what the live client answers when
-/// the hop names a plaintext origin (`DavExecutor::adopt_origin`).
+/// the hop names a plaintext origin (`DavExecutor::trust_origin`).
 struct RefusesToMove(Replay);
 
 #[async_trait::async_trait]
@@ -98,7 +98,7 @@ impl DavExecutor for RefusesToMove {
         self.0.send_write(request).await
     }
 
-    fn adopt_origin(&self, _url: &str) -> bool {
+    fn trust_origin(&self, _url: &str) -> bool {
         false
     }
 }
@@ -405,5 +405,8 @@ async fn a_home_on_a_host_the_connection_may_not_move_to_fails_the_walk() {
     let err = discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("home"), "unexpected: {err}");
+    assert!(
+        err.to_string().contains("may not go to"),
+        "unexpected: {err}"
+    );
 }

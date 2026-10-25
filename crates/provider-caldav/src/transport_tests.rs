@@ -235,7 +235,7 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
     let recorded = std::sync::Arc::clone(&steps);
     let provider = crate::CalDavProvider::connect(
         crate::CalDavConfig::new(
-            base,
+            base.clone(),
             Credentials::Basic {
                 username: "alice".to_owned(),
                 password: "pw".to_owned(),
@@ -262,11 +262,13 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
     assert_eq!(
         *steps.lock().unwrap(),
         [
-            "redirected /.well-known/caldav -> /dav/cal",
+            // Each href absolute: discovery resolves what it reads against the request that
+            // returned it (RFC 4918 §8.3).
+            format!("redirected {base}/.well-known/caldav -> {base}/dav/cal"),
             // CalDAV emits no `Authenticated` (no discrete auth exchange) and no
             // `TlsEstablished` (an HTTP adapter learns its TLS version from a response,
             // after the connect phase).
-            "discovered /dav/cal/alice%40test.local/",
+            format!("discovered {base}/dav/cal/alice%40test.local/"),
         ]
     );
     assert_eq!(
@@ -325,17 +327,20 @@ async fn config_debug_shows_the_observer_without_leaking_the_password() {
     );
 }
 
-/// The counterpart of the foreign-photo rule: when the account's *own* server redirects
-/// discovery to another host, that host becomes the account's server. Credentials follow
-/// it, and the relative hrefs it then issues resolve onto it rather than onto the domain
-/// discovery started from.
-#[tokio::test]
-async fn credentials_follow_a_discovery_redirect_to_a_new_origin() {
-    let body = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_owned();
-    let (moved, moved_seen) = mock_server_capturing(vec![body.clone()]);
-    let (base, _base_seen) = mock_server_capturing(vec![body]);
-    let client = DavClient::new(
-        &base,
+/// A challenge in the credential's scheme, then an answer: what a server sends a request that
+/// arrives without credentials and then one that carries them.
+fn challenge() -> String {
+    "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"dav\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        .to_owned()
+}
+
+fn ok_body() -> String {
+    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_owned()
+}
+
+fn basic_client(base: &str) -> DavClient {
+    DavClient::new(
+        base,
         Credentials::Basic {
             username: "alice".to_owned(),
             password: "super-secret".to_owned(),
@@ -343,28 +348,80 @@ async fn credentials_follow_a_discovery_redirect_to_a_new_origin() {
         &engine_tls::TlsClientConfig::default(),
         &engine_http::RetryConfig::default(),
     )
-    .expect("client");
+    .expect("client")
+}
 
-    client.adopt_origin(&format!("{moved}/principals/u/"));
-    // A *relative* href now resolves onto the adopted origin, with credentials.
-    DavExecutor::get_bytes(&client, "/calendars/u/")
+/// The counterpart of the foreign-photo rule: an origin the account's own server led
+/// discovery to may receive the credential, but only once it asks for it (RFC 9110 §11.5:
+/// a protection space does not extend past its own server), and from then on unasked.
+#[tokio::test]
+async fn a_trusted_origin_is_sent_the_credential_only_once_it_asks() {
+    let (moved, moved_seen) = mock_server_capturing(vec![challenge(), ok_body(), ok_body()]);
+    let (base, _) = mock_server_capturing(vec![]);
+    let client = basic_client(&base);
+
+    assert!(client.trust_origin(&format!("{moved}/principals/u/")));
+    let photo = format!("{moved}/calendars/u/a.png");
+    DavExecutor::get_bytes(&client, &photo)
         .await
-        .expect("get after the move");
-    let sent = moved_seen.lock().expect("seen").join("\n").to_lowercase();
-    assert!(
-        sent.contains("get /calendars/u/ "),
-        "the request did not resolve onto the adopted origin: {sent}"
-    );
-    assert!(
-        sent.contains("authorization: basic"),
-        "credentials did not follow the server's own redirect: {sent}"
+        .expect("answered after the challenge");
+    DavExecutor::get_bytes(&client, &photo)
+        .await
+        .expect("answered again");
+
+    let seen = moved_seen.lock().expect("seen");
+    let carried: Vec<bool> = seen
+        .iter()
+        .map(|request| request.to_lowercase().contains("authorization: basic"))
+        .collect();
+    assert_eq!(
+        carried,
+        [false, true, true],
+        "unasked, answered, then sent: {seen:?}"
     );
 }
 
-/// `adopt_origin` moves the connection, so it must not be reachable by anything a
-/// server merely *mentions*. Only a resolvable, origin-bearing URL moves it.
+/// A foreign host that *asks* for the credential still does not get it: only an origin the
+/// account's server led discovery to may answer a challenge.
 #[tokio::test]
-async fn adopt_origin_ignores_a_url_that_names_no_origin() {
+async fn a_foreign_photo_host_that_asks_for_the_credential_is_not_sent_it() {
+    let (foreign, foreign_seen) = mock_server_capturing(vec![challenge(), ok_body()]);
+    let (base, _) = mock_server_capturing(vec![]);
+    let client = basic_client(&base);
+
+    let err = DavExecutor::get_bytes(&client, &format!("{foreign}/p.png"))
+        .await
+        .expect_err("the challenge stands");
+    assert!(err.to_string().contains("401"), "{err}");
+    let seen = foreign_seen.lock().expect("seen");
+    assert_eq!(seen.len(), 1, "asked once, never again with the password");
+    assert!(!seen[0].to_lowercase().contains("authorization"));
+}
+
+/// Settling on the home moves where relative hrefs resolve: every href a response from the
+/// home carries is relative to the home's origin (RFC 4918 §8.3).
+#[tokio::test]
+async fn settling_on_a_home_resolves_relative_hrefs_onto_its_origin() {
+    let (moved, moved_seen) = mock_server_capturing(vec![challenge(), ok_body()]);
+    let (base, _) = mock_server_capturing(vec![]);
+    let client = basic_client(&base);
+    let home = format!("{moved}/calendars/u/");
+
+    assert!(client.trust_origin(&home));
+    assert_eq!(client.settle_on(&home), "/calendars/u/");
+    DavExecutor::get_bytes(&client, "/calendars/u/a.png")
+        .await
+        .expect("get after settling");
+
+    let sent = moved_seen.lock().expect("seen").join("\n").to_lowercase();
+    assert!(sent.contains("get /calendars/u/a.png "), "{sent}");
+    assert!(sent.contains("authorization: basic"), "{sent}");
+}
+
+/// Only a resolvable, origin-bearing URL names anything to trust or settle on: a href a
+/// server merely mentions moves nothing.
+#[tokio::test]
+async fn a_url_that_names_no_origin_trusts_and_moves_nothing() {
     let (base, _) = mock_server_capturing(vec![]);
     let client = DavClient::new(
         &base,
@@ -375,35 +432,19 @@ async fn adopt_origin_ignores_a_url_that_names_no_origin() {
     .expect("client");
     let before = format!("{client:?}");
     for noise in ["/principals/u/", "not a url", "data:text/plain,hi", ""] {
-        assert!(client.adopt_origin(noise), "refused {noise:?}");
+        assert!(client.trust_origin(noise), "refused {noise:?}");
+        assert_eq!(client.settle_on(noise), noise);
         assert_eq!(format!("{client:?}"), before, "moved by {noise:?}");
     }
 }
 
-/// The other half of "credentials follow the server's own redirect": they follow it only
-/// while it stays on TLS. `href::redirect_href` cannot catch this hop — discovery starts
-/// at a bare well-known path, which names no scheme — so the connection is what refuses,
-/// and the walk fails rather than putting the account's password on the wire in the clear.
+/// An origin the server leads discovery to is trusted only while it stays on TLS.
+/// `href::redirect_href` cannot catch this hop, since discovery starts at a bare well-known
+/// path that names no scheme, so the connection is what refuses, and the walk fails rather
+/// than putting the account's password on the wire in the clear.
 #[tokio::test]
-async fn adopt_origin_refuses_a_hop_that_leaves_tls() {
-    let client = DavClient::new(
-        "https://dav.example.com",
-        Credentials::Basic {
-            username: "alice".to_owned(),
-            password: "super-secret".to_owned(),
-        },
-        &engine_tls::TlsClientConfig::default(),
-        &engine_http::RetryConfig::default(),
-    )
-    .expect("client");
-    let before = format!("{client:?}");
-    assert!(!client.adopt_origin("http://evil.test/principals/u/"));
-    assert_eq!(
-        format!("{client:?}"),
-        before,
-        "the downgrade moved the base"
-    );
-    // The same hop over TLS is the case the feature exists for.
-    assert!(client.adopt_origin("https://dav.example.net/principals/u/"));
-    assert!(format!("{client:?}").contains("dav.example.net"));
+async fn an_origin_that_leaves_tls_is_not_trusted() {
+    let client = basic_client("https://dav.example.com");
+    assert!(!client.trust_origin("http://evil.test/principals/u/"));
+    assert!(client.trust_origin("https://dav.example.net/principals/u/"));
 }

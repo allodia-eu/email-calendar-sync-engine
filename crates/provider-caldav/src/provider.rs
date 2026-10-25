@@ -253,10 +253,10 @@ impl CalDavProvider {
         observer: &dyn ConnectObserver,
     ) -> Result<Self, CalDavError> {
         let home = discovery::discover_home(executor.as_ref(), discovery_path, observer).await?;
-        let home_href = home.href;
-        // The calendar home is where every collection — including the bound one — is
-        // resolved from: the endpoint this connect settled on.
-        observer.step(&ConnectStep::discovered(&home_href));
+        observer.step(&ConnectStep::discovered(&home.href));
+        // The calendar home is where every collection, the bound one included, is resolved
+        // from: the endpoint this connect settles on, on whichever origin serves it.
+        let home_href = executor.settle_on(&home.href);
         // Whether the server schedules for itself is a property of *this* server, not of
         // CalDAV — RFC 4791 is calendar access and RFC 6638 a separate layer on top — so it
         // is asked rather than inferred from the fact that a PARTSTAT can be written

@@ -8,18 +8,10 @@
 //! XML body, and — like the JMAP transport — **does not auto-follow redirects**,
 //! so discovery can resolve the RFC 6764 well-known `307` itself.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
-use engine_http::{Exchange, ObservedConnection, RetryConfig, send_retrying};
 use engine_provider::{HttpVersion, TlsVersion};
-use engine_tls::TlsClientConfig;
-use reqwest::{Client, Method, redirect::Policy};
 
-use crate::{
-    credential_hosts::{self, CredentialHosts},
-    error::CalDavError,
-};
+use crate::error::CalDavError;
 
 /// How a host authenticates to the CalDAV server.
 #[derive(Clone)]
@@ -70,7 +62,7 @@ pub(crate) enum DavMethod {
 
 impl DavMethod {
     /// The HTTP method token.
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Get => "GET",
             Self::Options => "OPTIONS",
@@ -114,9 +106,9 @@ pub(crate) struct WriteRequest {
     pub body: String,
 }
 
-// The reply type and its two readings live next door; re-exported here because every
-// caller reaches them through the transport that produced them.
-pub(crate) use crate::response::HttpResponse;
+// The reply type and its two readings live next door, and so does the live client; both are
+// re-exported here because every caller reaches them through the transport.
+pub(crate) use crate::{dav_client::DavClient, response::HttpResponse};
 
 /// Executes one CalDAV request. Implemented by the live [`DavClient`] and, in
 /// tests, by a fake replaying canned response documents.
@@ -132,28 +124,36 @@ pub(crate) trait DavExecutor: Send + Sync {
         body: String,
     ) -> Result<HttpResponse, CalDavError>;
 
-    /// Adopts `url`'s origin as the connection's own, after a discovery redirect moved
-    /// the chain there.
+    /// `href` as an absolute URL, resolved against the connection's base: the form a
+    /// discovery step resolves the hrefs it reads against (RFC 4918 §8.3 resolves a relative
+    /// href against the URL of the request that returned it). The default, for a fake with
+    /// no origin, returns `href` unchanged.
+    fn absolute(&self, href: &str) -> String {
+        href.to_owned()
+    }
+
+    /// Lets `url`'s origin receive the credential once it asks for it: the account's own
+    /// server led discovery there, by a redirect or by naming the principal or the home
+    /// ([`crate::credential_scope`]).
     ///
-    /// The account's own server saying "the calendar home is over there" is not the case
-    /// [`engine_provider::same_origin`] guards against. That guard exists for a URL named
-    /// by remote *content* (a vCard `PHOTO;VALUE=uri` naming any host), which must never
-    /// receive the account's password. A well-known `30x` is the server we are already
-    /// authenticated to directing us, so credentials follow it and the server-issued
-    /// relative hrefs that come back resolve onto the new origin rather than the domain
-    /// discovery started from.
-    ///
-    /// A relative `url` names no origin and changes nothing. The default is a no-op:
-    /// only the live transport authenticates or resolves against an origin at all.
-    ///
-    /// Returns `false` only when the move is **refused** because it would leave TLS.
-    /// [`href::redirect_href`](crate::href::redirect_href) cannot decide that for the
-    /// first hop of a walk: discovery starts at a bare href, which names no scheme, so
-    /// the connection is the only thing that knows whether it is giving up TLS. Every
-    /// discovery request carries the account's credentials, so the caller must fail
-    /// rather than follow.
-    fn adopt_origin(&self, _url: &str) -> bool {
+    /// Returns `false` when the origin is **refused**: a plaintext origin on a connection
+    /// that started on TLS, or a host the [`CredentialHosts`] policy does not permit. The
+    /// caller fails discovery rather than going on without the credential. A relative `url`
+    /// names no origin and is accepted. The default, for a fake, accepts everything.
+    fn trust_origin(&self, _url: &str) -> bool {
         true
+    }
+
+    /// Makes `home`'s origin the one later relative hrefs resolve against, and returns `home`
+    /// in the form the provider keeps it: its path on that origin.
+    ///
+    /// Every href in a response from the home, and from the collections under it, is
+    /// relative to the home's origin (RFC 4918 §8.3), so that is where the connection has to
+    /// resolve them, whichever origin discovery started on. `home` must already be trusted
+    /// ([`trust_origin`](Self::trust_origin)). The default, for a fake, returns `home`
+    /// unchanged.
+    fn settle_on(&self, home: &str) -> String {
+        home.to_owned()
     }
 
     /// `OPTIONS` on `href`, so the response's `DAV` header can be read for the compliance
@@ -201,284 +201,6 @@ pub(crate) trait DavExecutor: Send + Sync {
         None
     }
 }
-
-/// The live `reqwest`-backed CalDAV transport.
-pub(crate) struct DavClient {
-    client: Client,
-    /// The origin every relative href resolves onto, and the only one credentials are
-    /// sent to. Behind a lock because RFC 6764 discovery may move it: a well-known that
-    /// redirects to another host makes *that* host the account's server for the rest of
-    /// the connection ([`DavExecutor::adopt_origin`]). Written at most once per hop
-    /// during `connect`, read once per request afterwards.
-    base: std::sync::RwLock<reqwest::Url>,
-    credentials: Credentials,
-    /// The host's say over which origins the credential may move to ([`CredentialHosts`]).
-    credential_hosts: Option<Arc<dyn CredentialHosts>>,
-    /// The HTTP and TLS versions most recently observed — the post-connect facts
-    /// `ConnectionInfo` reports. Every response funnels through
-    /// [`DavClient::collect`], and the discovery `PROPFIND` that
-    /// [`CalDavProvider::connect`](crate::CalDavProvider::connect) performs populates it
-    /// before a provider exists. It then keeps tracking: the RFC 6764 well-known `30x`
-    /// this client follows *itself* may be a different origin from the calendar home
-    /// that serves every real request, so the latest observation — not the first — is
-    /// the one that describes the working connection.
-    connection: ObservedConnection,
-    /// How a `429` is waited out. Note that `PROPFIND` and `REPORT` are extension methods
-    /// rather than ones `http` knows are idempotent, so a `503` on them is not retried even
-    /// though their own RFCs say it would be safe.
-    retry: RetryConfig,
-}
-
-impl core::fmt::Debug for DavClient {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("DavClient")
-            .field("base", &self.base().as_str())
-            .finish_non_exhaustive()
-    }
-}
-
-impl DavClient {
-    /// Builds a transport against `base_url` (the server origin), using the given
-    /// credentials. Redirect-following is disabled so discovery handles the
-    /// well-known `307` itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CalDavError`] if `base_url` is not a valid URL or the HTTP client
-    /// cannot be built.
-    ///
-    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`); the
-    /// library builds no trust store of its own.
-    pub(crate) fn new(
-        base_url: &str,
-        credentials: Credentials,
-        tls: &TlsClientConfig,
-        retry: &RetryConfig,
-    ) -> Result<Self, CalDavError> {
-        let base = reqwest::Url::parse(base_url)
-            .map_err(|e| CalDavError::protocol(format!("bad base URL {base_url:?}: {e}")))?;
-        let client = engine_http::client(tls).redirect(Policy::none()).build()?;
-        Ok(Self {
-            client,
-            base: std::sync::RwLock::new(base),
-            credentials,
-            credential_hosts: None,
-            connection: ObservedConnection::default(),
-            retry: retry.clone().labelled("caldav"),
-        })
-    }
-}
-
-impl DavClient {
-    /// Lets `policy` refuse an origin discovery would move the credential to.
-    #[must_use]
-    pub(crate) fn with_credential_hosts(
-        mut self,
-        policy: Option<Arc<dyn CredentialHosts>>,
-    ) -> Self {
-        self.credential_hosts = policy;
-        self
-    }
-
-    /// The connection's current origin. Cloned rather than borrowed so no request is
-    /// built while the lock is held.
-    fn base(&self) -> reqwest::Url {
-        self.base.read().expect("base lock").clone()
-    }
-
-    /// Reduces a finished reqwest response to an [`HttpResponse`], reading its body and
-    /// the `Location`/`ETag` headers — and recording the negotiated HTTP and TLS
-    /// versions on the way through. The one funnel every read and write response passes,
-    /// so no path can forget to observe them.
-    ///
-    /// On a `write` the status is the server's whole answer, so a body lost after it leaves
-    /// the reply as the status says rather than failing it.
-    async fn collect(
-        &self,
-        response: engine_http::Sent,
-        write: bool,
-    ) -> Result<HttpResponse, CalDavError> {
-        self.connection.record(&response);
-        let status = response.status().as_u16();
-        let header = |name: reqwest::header::HeaderName| {
-            response
-                .headers()
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned)
-        };
-        let location = header(reqwest::header::LOCATION);
-        let etag = header(reqwest::header::ETAG);
-        let dav = header(reqwest::header::HeaderName::from_static("dav"));
-        // Read before the body consumes the reply: this is the funnel's own note of what
-        // the server said about when, and it is the last place it exists.
-        let retry_after = response.stated_wait();
-        let body = match response.text().await {
-            Ok(body) => body,
-            Err(_) if write => String::new(),
-            Err(err) => return Err(err.into()),
-        };
-        Ok(HttpResponse {
-            status,
-            body,
-            location,
-            etag,
-            dav,
-            retry_after,
-        })
-    }
-
-    /// Resolves `href` against the connection origin and builds a request for
-    /// `method` — the shared head of every read and write.
-    ///
-    /// Credentials ride along **only when the resolved URL is same-origin with the
-    /// account's base**. Most hrefs are server-issued and relative, so they resolve
-    /// onto the base and authenticate as usual. But some come from remote *content* —
-    /// a vCard `PHOTO;VALUE=uri` naming any host — and `Url::join` returns an absolute
-    /// foreign URL unchanged. Authenticating those would send the account's Basic
-    /// password (or bearer token) to whoever the card names, so they are fetched
-    /// anonymously instead (`engine_provider::same_origin`).
-    fn request(
-        &self,
-        method: DavMethod,
-        href: &str,
-    ) -> Result<reqwest::RequestBuilder, CalDavError> {
-        let base = self.base();
-        let url = base
-            .join(href)
-            .map_err(|e| CalDavError::protocol(format!("bad href {href:?}: {e}")))?;
-        let method = Method::from_bytes(method.as_str().as_bytes())
-            .map_err(|e| CalDavError::protocol(format!("bad method: {e}")))?;
-        let authenticate = engine_provider::same_origin(url.as_str(), base.as_str());
-        let builder = self.client.request(method, url);
-        if !authenticate {
-            return Ok(builder);
-        }
-        Ok(match &self.credentials {
-            Credentials::Basic { username, password } => {
-                builder.basic_auth(username, Some(password))
-            }
-            Credentials::Bearer(token) => builder.bearer_auth(token),
-        })
-    }
-}
-
-#[async_trait]
-impl DavExecutor for DavClient {
-    fn http_version(&self) -> Option<HttpVersion> {
-        self.connection.http_version()
-    }
-
-    fn tls_version(&self) -> Option<TlsVersion> {
-        self.connection.tls_version()
-    }
-
-    fn adopt_origin(&self, url: &str) -> bool {
-        // A relative href, an opaque origin (`data:`, `blob:`) or an unparseable URL
-        // names no host to move to.
-        let Ok(next) = reqwest::Url::parse(url) else {
-            return true;
-        };
-        if !next.origin().is_tuple() {
-            return true;
-        }
-        let mut base = self.base.write().expect("base lock");
-        if engine_provider::same_origin(next.as_str(), base.as_str()) {
-            return true;
-        }
-        // Credentials ride every discovery request, so a connection that started on TLS
-        // never adopts a plaintext origin: doing so would put the account's password on
-        // the wire in cleartext, at a host the user never typed. A chain that began in
-        // plaintext (the loopback fixtures) is left alone.
-        if base.scheme() == "https" && next.scheme() != "https" {
-            return false;
-        }
-        if !credential_hosts::permitted(self.credential_hosts.as_ref(), next.as_str()) {
-            return false;
-        }
-        // The origin alone: a redirect names one resource, and every later href is
-        // resolved from the connection root, not from that resource's directory.
-        if let Ok(origin) = reqwest::Url::parse(&next.origin().ascii_serialization()) {
-            *base = origin;
-        }
-        true
-    }
-
-    async fn send(
-        &self,
-        method: DavMethod,
-        href: &str,
-        depth: &str,
-        body: String,
-    ) -> Result<HttpResponse, CalDavError> {
-        let request = self
-            .request(method, href)?
-            .header("Depth", depth)
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                "application/xml; charset=utf-8",
-            )
-            .body(body);
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
-        self.collect(response, false).await
-    }
-
-    async fn send_options(&self, href: &str) -> Result<HttpResponse, CalDavError> {
-        let request = self.request(DavMethod::Options, href)?;
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
-        self.collect(response, false).await
-    }
-
-    async fn get_bytes(&self, href: &str) -> Result<Vec<u8>, CalDavError> {
-        let request = self.request(DavMethod::Get, href)?;
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
-        self.connection.record(&response);
-        let status = response.status().as_u16();
-        let wait = response.stated_wait();
-        let bytes = response.bytes().await?;
-        if (200..300).contains(&status) {
-            Ok(bytes)
-        } else {
-            Err(
-                CalDavError::status(status, String::from_utf8_lossy(&bytes).into_owned())
-                    .with_retry_after(wait),
-            )
-        }
-    }
-
-    async fn send_write(&self, request: WriteRequest) -> Result<HttpResponse, CalDavError> {
-        let mut builder = self.request(request.method, &request.href)?;
-        if let Some(content_type) = request.content_type {
-            builder = builder.header(reqwest::header::CONTENT_TYPE, content_type);
-        }
-        builder = match request.precondition {
-            // RFC 7232: `If-None-Match: *` admits only a create; `If-Match` admits
-            // a replace/delete only while the entity tag is unchanged.
-            Precondition::IfNoneMatch => builder.header(reqwest::header::IF_NONE_MATCH, "*"),
-            Precondition::IfMatch(etag) => builder.header(reqwest::header::IF_MATCH, etag),
-            Precondition::IfScheduleTagMatch(tag) => builder.header("If-Schedule-Tag-Match", tag),
-            Precondition::None => builder,
-        };
-        // A write is ordinary, a scheduling one included: an iTIP message a `PUT` sends is the
-        // server's to send, and the precondition the write carries is what keeps a replay
-        // from sending it twice (`docs/agent-guidance/deadlines.md`).
-        let request = builder.body(request.body);
-        let response = send_retrying(request, &self.retry, Exchange::Ordinary)
-            .await
-            .map_err(|err| CalDavError::from(err).after_write())?;
-        self.collect(response, true).await
-    }
-}
-
-// The live `DavClient` tests need a mock HTTP server; they live in a sibling file so
-// this one stays under the line limit.
-#[cfg(test)]
-#[path = "transport_tests.rs"]
-mod http_transport_tests;
-
-#[cfg(test)]
-#[path = "deadline_tests.rs"]
-mod deadline_tests;
 
 #[cfg(test)]
 mod method_tests {

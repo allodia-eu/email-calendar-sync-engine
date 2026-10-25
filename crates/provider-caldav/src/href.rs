@@ -67,6 +67,27 @@ pub(crate) fn redirect_href(current: &str, location: &str) -> Option<String> {
     Some(location.to_owned())
 }
 
+/// Resolves `reference`, an href a response carried, against `at`, the URL of the request
+/// that returned it (RFC 4918 §8.3; RFC 3986 §5).
+///
+/// An absolute `reference` stands as it is. Against an absolute `at` a path resolves onto
+/// `at`'s origin, which is how a principal named as `/123/principal/` by one host stays on that
+/// host after discovery has moved on to another. Against a bare path (a replay fake, which has
+/// no origin) a path stays a path.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] when `reference` cannot be resolved against `at`.
+pub(crate) fn resolve_reference(at: &str, reference: &str) -> Result<String, CalDavError> {
+    if reference.contains("://") || !at.contains("://") {
+        return Ok(reference.to_owned());
+    }
+    reqwest::Url::parse(at)
+        .and_then(|base| base.join(reference))
+        .map(String::from)
+        .map_err(|e| CalDavError::protocol(format!("bad href {reference:?}: {e}")))
+}
+
 /// Resolves the bound collection href (see [`bind_collection`]).
 pub(crate) fn resolve_collection(home_href: &str, calendar: &str) -> String {
     if calendar.starts_with('/') || calendar.contains("://") {

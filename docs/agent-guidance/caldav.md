@@ -174,27 +174,30 @@ are split escape-aware so the writer and the parser agree.
   path is left for the executor to resolve onto the connection, but once a hop has moved
   to an absolute URL the next one belongs to *that* origin, and leaving it a path walks
   the chain silently back onto the connection base — a different server that answers
-  plausibly. When a hop does change origin the connection **follows** it
-  (`DavExecutor::adopt_origin`): the account's own server redirecting discovery is not the
-  case the `same_origin` credential guard exists for (`providers.md`), so credentials
-  travel to the new origin and the relative hrefs it then issues resolve there. A hop off
-  TLS is refused outright, since every one of these requests carries the credential, and
-  **that refusal lives in `adopt_origin`, not in `redirect_href`**: a walk starts at a bare
-  well-known path, which names no scheme, so on the first hop only the connection knows it
-  is being asked to give up TLS. A refusal fails the walk rather than continuing over it.
-  A collection home the principal names on another host is followed the same way, under the
-  same refusals (`discovery::adopt_home`, in the CalDAV and CardDAV walks alike): iCloud answers
-  the principal on `caldav.icloud.com` and names the home on `pNN-caldav.icloud.com`, and its
-  contacts server does the same, so a home left on the first origin is listed without the
-  credential and answered `401`.
+  plausibly. Every href a discovery step *reads* (a principal, a home) is resolved the same
+  way, against the request that returned it (RFC 4918 §8.3, `href::resolve_reference`), so
+  the principal keeps the host that named it after the walk has moved on. Each origin the walk
+  is led to (a redirect target, the principal, the home: `discovery::follow`, in the CalDAV
+  and CardDAV walks alike) is **trusted**, not handed the credential: per RFC 9110 §11.5 a
+  protection space does not extend past its own server, so a trusted origin receives the
+  credential only once it answers `401` with a challenge in the credential's scheme, and an
+  untrusted one (a vCard photo URL) never does (`credential_scope.rs`). The configured server
+  is the one exception, sent the credential unasked. A plaintext origin after TLS is refused
+  outright, and **that refusal lives in `DavExecutor::trust_origin`, not in
+  `redirect_href`**: a walk starts at a bare well-known path, which names no scheme, so on the
+  first hop only the connection knows it is being asked to give up TLS. A refusal fails the
+  walk rather than continuing over it. Once the home is found the connection settles on its
+  origin (`DavExecutor::settle_on`): iCloud answers the principal on `caldav.icloud.com` and
+  names the home on `pNN-caldav.icloud.com`, and every collection href the home returns is
+  relative to the latter. `crates/provider-caldav/README.md` draws the whole walk.
   A host may also confine the credential with a `CredentialHosts` policy
   (`CalDavConfig::with_credential_hosts`, the same on `CardDavConfig`): the configured base URL
-  and every origin a hop moves to must be a host it permits, or the connect fails before anything
-  is sent there. Which hosts qualify is the host's decision; for an OAuth token it is the token
+  and every origin discovery is led to must be a host it permits, or the connect fails before
+  anything is sent there. Which hosts qualify is the host's decision; for an OAuth token it is the token
   issuer's resources, which this adapter knows nothing of.
   CalDAV emits no `Authenticated` step —
-  credentials ride on every `PROPFIND`, so there is no discrete authentication
-  exchange to observe — and no `TlsEstablished`, because an HTTP adapter learns its TLS
+  credentials ride on every `PROPFIND` to an answered origin, so there is no discrete
+  authentication exchange to observe — and no `TlsEstablished`, because an HTTP adapter learns its TLS
   version from a *response*, too late for a connect-phase step; it lands in
   `ConnectionInfo::tls_version` instead (`tls.md`). Then `PROPFIND Depth:1` the home and keep the responses
   whose `resourcetype` marks them a `calendar`. Hrefs may be absolute paths or full

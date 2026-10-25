@@ -12,7 +12,7 @@ use engine_provider::{ConnectObserver, ConnectStep, ProviderResult};
 
 use crate::{
     dav::{DavResponse, MultiStatus},
-    discovery::adopt_home,
+    discovery::follow,
     error::CalDavError,
     href::redirect_href,
     request::{
@@ -28,27 +28,27 @@ pub(crate) async fn discover_home(
     start: &str,
     observer: &dyn ConnectObserver,
 ) -> Result<String, CalDavError> {
-    let first = principal_props(executor, start, observer).await?;
-    let home = if let Some(home) = property(&first, "addressbook-home-set") {
-        home
-    } else {
-        let principal = property(&first, "current-user-principal")
-            .ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
-        property(
-            &principal_props(executor, &principal, observer).await?,
-            "addressbook-home-set",
-        )
-        .ok_or_else(|| CalDavError::protocol("CardDAV address-book home missing"))?
-    };
-    adopt_home(executor, &home)?;
-    Ok(home)
+    // The same walk as CalDAV's (`discovery::discover_home`): every href resolves against the
+    // request that returned it, and each origin it leads to is trusted on the way.
+    let start = executor.absolute(start);
+    let (first, at) = principal_props(executor, &start, observer).await?;
+    if let Some(home) = property(&first, "addressbook-home-set") {
+        return follow(executor, &at, &home);
+    }
+    let principal = property(&first, "current-user-principal")
+        .ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
+    let principal = follow(executor, &at, &principal)?;
+    let (from_principal, at) = principal_props(executor, &principal, observer).await?;
+    let home = property(&from_principal, "addressbook-home-set")
+        .ok_or_else(|| CalDavError::protocol("CardDAV address-book home missing"))?;
+    follow(executor, &at, &home)
 }
 
 async fn principal_props(
     executor: &dyn DavExecutor,
     href: &str,
     observer: &dyn ConnectObserver,
-) -> Result<MultiStatus, CalDavError> {
+) -> Result<(MultiStatus, String), CalDavError> {
     let mut href = href.to_owned();
     for _ in 0..4 {
         let response = executor
@@ -68,15 +68,15 @@ async fn principal_props(
                 CalDavError::protocol(format!("unresolvable redirect to {location:?}"))
             })?;
             observer.step(&ConnectStep::redirected(&href, &next));
-            if !executor.adopt_origin(&next) {
+            if !executor.trust_origin(&next) {
                 return Err(CalDavError::protocol(
-                    "a discovery redirect left TLS; refusing to send the credential in the clear",
+                    "a discovery redirect left TLS or named a host the credential may not go to",
                 ));
             }
             href = next;
             continue;
         }
-        return response.into_multistatus();
+        return Ok((response.into_multistatus()?, href));
     }
     Err(CalDavError::protocol(
         "too many CardDAV discovery redirects",
