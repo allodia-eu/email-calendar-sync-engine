@@ -330,6 +330,50 @@ jobs:
         working-directory: docker/sabredav
         run: docker compose down -v
 
+  # The third DAV fixture: Nextcloud, a common self-hosted calendar and address book server.
+  # SabreDAV underneath, with its own authentication, principal layout, several
+  # collections per home, read-only address books and RFC 6638 scheduling switched on. It
+  # imports the same calendar seed. Like `sabredav`, it is the only job that sets
+  # `NEXTCLOUD_*`, so its gated tests execute only here; everywhere else they skip.
+  nextcloud:
+    name: Nextcloud DAV harness
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install the pinned Rust
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: ${{ needs.toolchain.outputs.channel }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: nextcloud
+          save-if: ${{ github.ref == 'refs/heads/main' }} # main-only; see the `verify` job
+
+      # The image is pinned by digest; its post-installation hook seeds the account and
+      # writes a marker, and the healthcheck waits for it, so `--wait` returns only when
+      # the fixture is ready.
+      - name: Start the Nextcloud fixture and seed it
+        working-directory: docker/nextcloud
+        run: docker compose up -d --wait
+
+      - name: Run the gated Nextcloud CalDAV and CardDAV integration tests (live)
+        env:
+          NEXTCLOUD_HTTP_ADDR: 127.0.0.1:18082
+        run: cargo test -p provider-caldav --test live_nextcloud --test live_nextcloud_contacts -- --nocapture
+
+      - name: Dump Nextcloud logs on failure
+        if: failure()
+        working-directory: docker/nextcloud
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        working-directory: docker/nextcloud
+        run: docker compose down -v
+
   # The second IMAP fixture: **two** Dovecot servers from one image, one per dialect. The
   # rev1 half is the dialect most real accounts speak — optional extensions that must be
   # negotiated rather than folded into the base protocol, modified-UTF-7 mailbox names, and
