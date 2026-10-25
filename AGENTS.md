@@ -113,6 +113,7 @@ stop and check whether the other providers have the same hole.
 - If a new decision supersedes a doc's wording, rewrite the wording and record the rationale when it is non-obvious. Treat the docs as authoritative for the next agent: code and docs disagreeing is a bug to fix, not a discrepancy to leave.
 - In the final summary, list which guidance docs you updated and why — or state explicitly that none needed changes.
 - If the change came from a provider-specific symptom, the final summary also carries the cross-provider survey required by "Provider-neutral by default".
+- A server departing from the RFC that governs it is recorded in [`docs/spec-deviations.md`](docs/spec-deviations.md), the one authoritative list, in the same change that copes with it; the code that copes cites the entry's id. The doc says how to add one.
 
 ## Test-Driven Workflow
 
