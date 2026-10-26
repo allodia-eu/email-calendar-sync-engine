@@ -29,6 +29,7 @@
 mod affiliation;
 mod base64url;
 mod cal_fetch;
+mod cal_id;
 mod cal_invite;
 mod cal_normalize;
 mod cal_override;

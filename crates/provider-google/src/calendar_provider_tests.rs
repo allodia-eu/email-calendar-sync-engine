@@ -78,7 +78,7 @@ async fn sync_events_snapshot_reconciles_with_a_sync_token() {
         panic!("expected a snapshot");
     };
     assert_eq!(objects.len(), 5);
-    assert_eq!(sync.next_cursor.as_str(), "events-sync-token-1");
+    assert_eq!(sync.next_cursor.as_str(), "v1;events-sync-token-1");
 }
 
 #[tokio::test]
@@ -87,7 +87,7 @@ async fn sync_events_delta_is_additive_with_a_tombstone() {
         .sync_events(
             &account(),
             &calendar(),
-            Some(&SyncState::new("events-sync-token-1")),
+            Some(&SyncState::new("v1;events-sync-token-1")),
         )
         .await
         .unwrap();
@@ -100,7 +100,7 @@ async fn sync_events_delta_is_additive_with_a_tombstone() {
     };
     assert_eq!(changed.len(), 1);
     assert_eq!(removed.len(), 1);
-    assert_eq!(sync.next_cursor.as_str(), "events-sync-token-2");
+    assert_eq!(sync.next_cursor.as_str(), "v1;events-sync-token-2");
 }
 
 #[test]
@@ -148,7 +148,7 @@ async fn create_patch_delete_route_through_the_provider() {
         stamp,
     );
     let receipt = p.create_event(&account(), &draft).await.unwrap();
-    assert_eq!(receipt.event.key().as_str(), "srv-1");
+    assert_eq!(receipt.event.key().as_str(), "primary/srv-1");
     // A server that answers only under another calendar proves the request went there.
     let other = provider(vec![(
         "/calendars/other/events",
@@ -163,7 +163,7 @@ async fn create_patch_delete_route_through_the_provider() {
         stamp,
     );
     let receipt = other.create_event(&account(), &elsewhere).await.unwrap();
-    assert_eq!(receipt.event.key().as_str(), "srv-2");
+    assert_eq!(receipt.event.key().as_str(), "other/srv-2");
     assert!(
         provider(vec![("/calendars/primary/events", serde_json::json!({}))])
             .create_event(&account(), &elsewhere)
@@ -174,7 +174,7 @@ async fn create_patch_delete_route_through_the_provider() {
 
     // Patch + delete route through too.
     let mut base = Event::new(
-        engine_core::ids::EventId::try_from("srv-1").unwrap(),
+        engine_core::ids::EventId::try_from("primary/srv-1").unwrap(),
         Uid::new("u@google.com").unwrap(),
         Memberships::of_one(calendar()),
         zoned,
@@ -191,6 +191,24 @@ async fn create_patch_delete_route_through_the_provider() {
             .await
             .is_ok()
     );
+
+    // A delete with no stored event reaches the calendar its id names, and only that one.
+    let gone = EventDeletion::unconditional(receipt.event, receipt.uid);
+    let in_other = provider(vec![(
+        "/calendars/other/events/srv-2",
+        serde_json::Value::Null,
+    )]);
+    assert!(in_other.delete_event(&account(), None, &gone).await.is_ok());
+    let in_primary = provider(vec![(
+        "/calendars/primary/events/srv-2",
+        serde_json::Value::Null,
+    )]);
+    assert!(
+        in_primary
+            .delete_event(&account(), None, &gone)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -199,10 +217,10 @@ async fn sync_events_restarts_as_a_snapshot_when_the_sync_token_expired() {
         vec![("syncToken=", Err((410, json(SYNC_GONE))))];
     routes.push(("/events?singleEvents=false", Ok(json(EVENTS))));
     let sync = GoogleCalendarProvider::new(fake_client_fallible(routes))
-        .sync_events(&account(), &calendar(), Some(&SyncState::new("old")))
+        .sync_events(&account(), &calendar(), Some(&SyncState::new("v1;old")))
         .await
         .unwrap();
     // Recovery yields a fresh snapshot, not an error.
     assert!(sync.is_snapshot());
-    assert_eq!(sync.next_cursor.as_str(), "events-sync-token-1");
+    assert_eq!(sync.next_cursor.as_str(), "v1;events-sync-token-1");
 }

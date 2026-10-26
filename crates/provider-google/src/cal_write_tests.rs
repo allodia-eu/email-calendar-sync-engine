@@ -51,7 +51,7 @@ pub(super) fn draft() -> EventDraft {
 
 pub(super) fn base_event() -> Event {
     let mut event = Event::new(
-        EventId::try_from("evt-1").unwrap(),
+        EventId::try_from("cal-1/evt-1").unwrap(),
         Uid::new("evt-1@test.local").unwrap(),
         Memberships::of_one(calendar()),
         zoned("2026-08-03T09:00:00"),
@@ -117,7 +117,7 @@ async fn create_event_returns_the_server_id_uid_and_etag() {
         Ok(stored("srv-id", "server-uid@google.com", "\"v1\"")),
     )]);
     let receipt = create_event(&client, "cal-1", &draft()).await.unwrap();
-    assert_eq!(receipt.event.key().as_str(), "srv-id");
+    assert_eq!(receipt.event.key().as_str(), "cal-1/srv-id");
     assert_eq!(receipt.uid.as_str(), "server-uid@google.com");
     assert_eq!(receipt.revisions.etag, Some(ETag::new("\"v1\"")));
 }
@@ -172,9 +172,7 @@ async fn patch_event_with_an_empty_patch_calls_nothing() {
     // An empty patch neither errors nor calls the server; it reports the base revision.
     let client = fake_client_fallible(vec![]);
     let edit = EventEdit::new(&base_event(), PatchTarget::Series, EventPatch::new(stamp()));
-    let receipt = patch_event(&client, "cal-1", &base_event(), &edit)
-        .await
-        .unwrap();
+    let receipt = patch_event(&client, &base_event(), &edit).await.unwrap();
     assert_eq!(receipt.revisions.etag, Some(ETag::new("\"v7\"")));
 }
 
@@ -189,17 +187,13 @@ async fn patch_event_returns_the_new_etag_or_falls_back_to_the_base() {
         PatchTarget::Series,
         EventPatch::new(stamp()).summary("Renamed"),
     );
-    let receipt = patch_event(&client, "cal-1", &base_event(), &edit)
-        .await
-        .unwrap();
+    let receipt = patch_event(&client, &base_event(), &edit).await.unwrap();
     assert_eq!(receipt.revisions.etag, Some(ETag::new("\"v8\"")));
 
     // A no-echoed-body patch still resolves to the base identity.
     let none = fake_client_fallible(vec![("/events/evt-1", Ok(serde_json::Value::Null))]);
-    let receipt = patch_event(&none, "cal-1", &base_event(), &edit)
-        .await
-        .unwrap();
-    assert_eq!(receipt.event.as_str(), "evt-1");
+    let receipt = patch_event(&none, &base_event(), &edit).await.unwrap();
+    assert_eq!(receipt.event.as_str(), "cal-1/evt-1");
     assert!(receipt.revisions.etag.is_none());
 }
 
@@ -208,20 +202,17 @@ async fn delete_event_is_idempotent_on_404_and_410_but_a_conflict_on_412() {
     let deletion = EventDeletion::of(&base_event());
     // Google signals "already gone" as 404 or 410 (a re-delete of a deleted event).
     let gone = fake_client_fallible(vec![("/events/evt-1", Err((404, sjson!({}))))]);
-    assert!(delete_event(&gone, "cal-1", &deletion).await.is_ok());
+    assert!(delete_event(&gone, &deletion).await.is_ok());
     let already = fake_client_fallible(vec![("/events/evt-1", Err((410, sjson!({}))))]);
-    assert!(delete_event(&already, "cal-1", &deletion).await.is_ok());
+    assert!(delete_event(&already, &deletion).await.is_ok());
     // A stale If-Match on an event that still exists → a conflict (refetch, then retry).
     let stale = fake_client_fallible(vec![("/events/evt-1", Err((412, sjson!({}))))]);
     assert_eq!(
-        delete_event(&stale, "cal-1", &deletion)
-            .await
-            .unwrap_err()
-            .class(),
+        delete_event(&stale, &deletion).await.unwrap_err().class(),
         FailureClass::Conflict
     );
     let ok = fake_client_fallible(vec![("/events/evt-1", Ok(serde_json::Value::Null))]);
-    assert!(delete_event(&ok, "cal-1", &deletion).await.is_ok());
+    assert!(delete_event(&ok, &deletion).await.is_ok());
 }
 
 #[tokio::test]
@@ -252,9 +243,7 @@ async fn patch_sends_if_match_and_only_the_changed_field() {
         PatchTarget::Series,
         EventPatch::new(stamp()).summary("Renamed"),
     );
-    patch_event(&client, "cal-1", &base_event(), &edit)
-        .await
-        .unwrap();
+    patch_event(&client, &base_event(), &edit).await.unwrap();
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
         request.starts_with("PATCH /calendar/v3/calendars/cal-1/events/evt-1?sendUpdates=all "),
@@ -306,7 +295,6 @@ async fn an_rsvp_patches_the_response_status_and_asks_google_to_notify() {
 
     rsvp_event(
         &client,
-        "cal-1",
         &base,
         &EventRsvp::to(&base, "info@example.com", RsvpResponse::Accepted),
     )
@@ -342,7 +330,6 @@ async fn declining_quietly_asks_google_to_tell_nobody() {
 
     rsvp_event(
         &client,
-        "cal-1",
         &base,
         &EventRsvp::to(&base, "me@example.com", RsvpResponse::Declined).quietly(),
     )
@@ -369,9 +356,7 @@ async fn the_rsvps_own_guard_decides_the_precondition() {
 
     let mut unconditional = EventRsvp::to(&base, "me@example.com", RsvpResponse::Accepted);
     unconditional.guard = None;
-    rsvp_event(&client, "cal-1", &base, &unconditional)
-        .await
-        .unwrap();
+    rsvp_event(&client, &base, &unconditional).await.unwrap();
 
     let request = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(

@@ -19,8 +19,8 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo, EventDeletion, EventDraft,
-    EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError,
-    ProviderResult, RsvpControls, ScopeSync, SyncKind, WriteGuard,
+    EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderResult,
+    RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
 
 /// What a Google RSVP can and cannot control.
@@ -211,16 +211,6 @@ impl Provider for GoogleCalendarProvider {
 }
 impl engine_provider::MailboxWrites for GoogleCalendarProvider {}
 
-/// The calendar a stored event lives in, as a path segment: the one its sync filed it under.
-fn calendar_of(event: &Event) -> ProviderResult<&str> {
-    event
-        .calendars
-        .iter()
-        .next()
-        .map(|calendar| calendar.key().as_str())
-        .ok_or_else(|| ProviderError::invalid_state("the event names no calendar"))
-}
-
 #[async_trait]
 impl CalendarWrites for GoogleCalendarProvider {
     async fn create_event(
@@ -237,7 +227,7 @@ impl CalendarWrites for GoogleCalendarProvider {
         base: &Event,
         edit: &EventEdit,
     ) -> ProviderResult<EventWriteReceipt> {
-        cal_write::patch_event(&self.client, calendar_of(base)?, base, edit).await
+        cal_write::patch_event(&self.client, base, edit).await
     }
 
     async fn rsvp_event(
@@ -247,21 +237,16 @@ impl CalendarWrites for GoogleCalendarProvider {
         rsvp: &EventRsvp,
     ) -> ProviderResult<EventWriteReceipt> {
         GOOGLE_RSVP.accept(rsvp)?;
-        cal_write::rsvp_event(&self.client, calendar_of(base)?, base, rsvp).await
+        cal_write::rsvp_event(&self.client, base, rsvp).await
     }
 
     async fn delete_event(
         &self,
         _account: &AccountId,
-        base: Option<&Event>,
+        _base: Option<&Event>,
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
-        let base = base.ok_or_else(|| {
-            ProviderError::invalid_state(
-                "a Google event is deleted from its calendar, which only the stored event names",
-            )
-        })?;
-        cal_write::delete_event(&self.client, calendar_of(base)?, deletion).await
+        cal_write::delete_event(&self.client, deletion).await
     }
 
     /// The account's primary calendar id, which is the address Google organises and answers
