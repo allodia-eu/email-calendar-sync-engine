@@ -49,7 +49,7 @@ const GOOGLE_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival {
 
 use crate::{
     cal_fetch::{self, CalendarWindow, EventsPage},
-    cal_override, cal_write,
+    cal_id, cal_override, cal_write,
     transport::GoogleClient,
 };
 
@@ -152,6 +152,7 @@ impl Provider for GoogleCalendarProvider {
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
+        cal_id::listed(calendar)?;
         // Drain every `events.list` page into one update. A snapshot reconciles (its
         // `present` set tombstones absent rows); a delta carries explicit removals.
         let mut cursor = cursor;
@@ -218,7 +219,7 @@ impl CalendarWrites for GoogleCalendarProvider {
         _account: &AccountId,
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
-        cal_write::create_event(&self.client, draft.calendar.key().as_str(), draft).await
+        cal_write::create_event(&self.client, cal_id::listed(&draft.calendar)?, draft).await
     }
 
     async fn patch_event(

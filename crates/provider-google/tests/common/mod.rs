@@ -12,6 +12,7 @@ use engine_core::{
     ids::{AccountId, CalendarId},
     time::{CalendarDateTime, LocalDateTime, TimeZoneId},
 };
+use engine_provider::CalendarWrites;
 use provider_google::{GoogleCalendarProvider, GoogleClient};
 
 pub(crate) fn account() -> AccountId {
@@ -38,9 +39,14 @@ pub(crate) fn calendar_provider(token: String) -> GoogleCalendarProvider {
     GoogleCalendarProvider::new(client)
 }
 
-/// Google's alias for the account's default calendar.
-pub(crate) fn primary() -> CalendarId {
-    CalendarId::try_from("primary").unwrap()
+/// The account's default calendar, by the id its listing gives it: the account's address.
+/// Google also answers to `primary`, which the adapter refuses as a second id for it.
+pub(crate) async fn primary(provider: &GoogleCalendarProvider) -> CalendarId {
+    let addresses = provider
+        .calendar_user_addresses(&account())
+        .await
+        .expect("the default calendar's address");
+    CalendarId::try_from(addresses.addresses()[0].as_str()).unwrap()
 }
 
 /// A zoned wall clock in the zone the probes author in.

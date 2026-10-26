@@ -299,7 +299,9 @@ One `GoogleCalendarProvider` serves every calendar of the account (like
 the per-account `GoogleCalendarList`. A Google event id is unique within its calendar only
 (one meeting has the same id in every calendar it shows in), so the engine's `EventId` is
 `<calendar>/<event>` (`cal_id`): a create goes to the draft's calendar, and a patch, RSVP or
-delete to the calendar its id names, with or without the stored event. It advertises calendar
+delete to the calendar its id names, with or without the stored event. A calendar is named by
+its listed id; the `primary` alias is refused, being a second id for the default calendar,
+whose listed id is the account's address. It advertises calendar
 read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
 
 - **IANA-native** (`cal_normalize`): event `start`/`end` are `{ dateTime, timeZone }` with

@@ -16,7 +16,7 @@ fn account() -> AccountId {
 }
 
 fn calendar() -> CalendarId {
-    CalendarId::try_from("primary").unwrap()
+    CalendarId::try_from("me@example.com").unwrap()
 }
 
 fn provider(routes: Vec<(&'static str, serde_json::Value)>) -> GoogleCalendarProvider {
@@ -65,6 +65,18 @@ async fn sync_calendars_snapshots_the_list() {
     };
     assert_eq!(objects.len(), 2);
     assert_eq!(present.len(), 2);
+}
+
+#[tokio::test]
+async fn the_default_calendar_syncs_under_its_address_not_the_alias() {
+    // Its events would be keyed `primary/…` beside the same events under the address.
+    let aliased = CalendarId::try_from("primary").unwrap();
+    assert!(
+        provider(vec![("/events?singleEvents=false", json(EVENTS))])
+            .sync_events(&account(), &aliased, None)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -148,7 +160,7 @@ async fn create_patch_delete_route_through_the_provider() {
         stamp,
     );
     let receipt = p.create_event(&account(), &draft).await.unwrap();
-    assert_eq!(receipt.event.key().as_str(), "primary/srv-1");
+    assert_eq!(receipt.event.key().as_str(), "me@example.com/srv-1");
     // A server that answers only under another calendar proves the request went there.
     let other = provider(vec![(
         "/calendars/other/events",
@@ -165,16 +177,29 @@ async fn create_patch_delete_route_through_the_provider() {
     let receipt = other.create_event(&account(), &elsewhere).await.unwrap();
     assert_eq!(receipt.event.key().as_str(), "other/srv-2");
     assert!(
-        provider(vec![("/calendars/primary/events", serde_json::json!({}))])
-            .create_event(&account(), &elsewhere)
-            .await
-            .is_err(),
-        "and never to the primary calendar",
+        provider(vec![(
+            "/calendars/me%40example.com/events",
+            serde_json::json!({})
+        )])
+        .create_event(&account(), &elsewhere)
+        .await
+        .is_err(),
+        "and never to the default calendar",
     );
+    // The default calendar is named by its address; the alias would be a second id for it.
+    let aliased = EventDraft::new(
+        CalendarId::try_from("primary").unwrap(),
+        Uid::new("a@test.local").unwrap(),
+        "Aliased",
+        zoned.clone(),
+        zoned.clone(),
+        stamp,
+    );
+    assert!(p.create_event(&account(), &aliased).await.is_err());
 
     // Patch + delete route through too.
     let mut base = Event::new(
-        engine_core::ids::EventId::try_from("primary/srv-1").unwrap(),
+        engine_core::ids::EventId::try_from("me@example.com/srv-1").unwrap(),
         Uid::new("u@google.com").unwrap(),
         Memberships::of_one(calendar()),
         zoned,
@@ -199,12 +224,12 @@ async fn create_patch_delete_route_through_the_provider() {
         serde_json::Value::Null,
     )]);
     assert!(in_other.delete_event(&account(), None, &gone).await.is_ok());
-    let in_primary = provider(vec![(
-        "/calendars/primary/events/srv-2",
+    let in_default = provider(vec![(
+        "/calendars/me%40example.com/events/srv-2",
         serde_json::Value::Null,
     )]);
     assert!(
-        in_primary
+        in_default
             .delete_event(&account(), None, &gone)
             .await
             .is_err()

@@ -7,7 +7,7 @@
 mod common;
 
 use common::*;
-use engine_core::{ids::CalendarId, sync::SyncUpdate};
+use engine_core::sync::SyncUpdate;
 use engine_provider::{CalendarWrites, Provider};
 #[tokio::test]
 async fn live_calendars_list() {
@@ -36,7 +36,7 @@ async fn live_calendar_snapshot_then_delta_cycle() {
     let provider = calendar_provider(token);
     // A first sync is a reconciling snapshot; capture the per-calendar syncToken.
     let snapshot = provider
-        .sync_events(&account(), &primary(), None)
+        .sync_events(&account(), &primary(&provider).await, None)
         .await
         .expect("snapshot");
     assert!(snapshot.is_snapshot());
@@ -46,7 +46,7 @@ async fn live_calendar_snapshot_then_delta_cycle() {
     // An immediate delta from that syncToken must not error and must not be a snapshot —
     // proving the real events.list?syncToken request shape is accepted.
     let delta = provider
-        .sync_events(&account(), &primary(), Some(&cursor))
+        .sync_events(&account(), &primary(&provider).await, Some(&cursor))
         .await
         .expect("delta");
     assert!(!delta.is_snapshot(), "a delta from a live syncToken");
@@ -70,7 +70,7 @@ async fn live_calendar_create_patch_delete() {
         return;
     };
     let provider = calendar_provider(token);
-    let cal = CalendarId::try_from("primary").unwrap();
+    let cal = primary(&provider).await;
     let calendars = provider
         .sync_calendars(&account(), None)
         .await
@@ -121,7 +121,7 @@ async fn live_calendar_create_patch_delete() {
     assert!(first_etag.is_some(), "the created event carries an ETag");
 
     let snapshot = provider
-        .sync_events(&account(), &primary(), None)
+        .sync_events(&account(), &primary(&provider).await, None)
         .await
         .expect("read create");
     let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {
@@ -155,7 +155,7 @@ async fn live_calendar_create_patch_delete() {
     );
 
     let snapshot = provider
-        .sync_events(&account(), &primary(), None)
+        .sync_events(&account(), &primary(&provider).await, None)
         .await
         .expect("read patch");
     let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {

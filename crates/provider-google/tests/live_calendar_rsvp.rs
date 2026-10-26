@@ -66,8 +66,9 @@ fn token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// The account's default calendar, by the id its listing gives it.
 fn calendar() -> CalendarId {
-    CalendarId::try_from("primary").unwrap()
+    CalendarId::try_from(SELF_ADDRESS).unwrap()
 }
 
 fn provider(token: String) -> GoogleCalendarProvider {
