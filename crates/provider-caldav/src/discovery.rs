@@ -303,7 +303,8 @@ pub(crate) async fn list_calendars(
     listing
         .responses
         .iter()
-        .filter(|response| response.props.is_calendar())
+        // A collection that cannot hold events (a task list) is not a calendar here.
+        .filter(|response| response.props.is_calendar() && response.props.holds_events())
         .map(calendar_from_response)
         .collect()
 }

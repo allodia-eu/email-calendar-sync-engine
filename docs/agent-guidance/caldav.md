@@ -103,6 +103,11 @@ are split escape-aware so the writer and the parser agree.
   home re-snapshots it each pass (no list cursor), applied before the per-collection events
   it parents (`store-and-sync.md` referential apply order), as IMAP's `ImapMailboxList`
   parents `ImapMailbox`.
+- **Only a collection that can hold events is a calendar.** The listing asks for each
+  collection's `supported-calendar-component-set` (RFC 4791 §5.2.3) and leaves out one that names
+  components but not `VEVENT`: iCloud lists its reminders as a calendar collection of `VTODO`
+  alone, which takes no event and would otherwise be offered as a place to put one. A collection
+  that names none holds any component, events included.
 - **The listing carries each calendar's collection tag.** The same `PROPFIND` reads every
   collection's `DAV:sync-token` (RFC 6578 §4) and CalendarServer `getctag`, and the
   calendar's `collection_tag` is the sync-token, or the CTag where the server has none. A

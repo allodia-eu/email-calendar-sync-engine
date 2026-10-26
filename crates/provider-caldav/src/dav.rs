@@ -15,6 +15,10 @@ use quick_xml::{Reader, escape::resolve_predefined_entity, events::Event, name::
 
 use crate::error::CalDavError;
 
+#[path = "dav_components.rs"]
+mod components;
+use components::record_component;
+
 /// A parsed `multistatus`: its member responses and the top-level `sync-token`
 /// (present on a `sync-collection` REPORT, RFC 6578).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -84,6 +88,9 @@ pub(crate) struct Props {
     /// Whether `current-user-principal` held the `<DAV:unauthenticated/>` pseudo-principal: the
     /// server answered without knowing who asked (RFC 5397 §3).
     unauthenticated: bool,
+    /// The component names in `supported-calendar-component-set` (RFC 4791 §5.2.3), uppercased,
+    /// or `None` when the server did not report it.
+    components: Option<BTreeSet<String>>,
 }
 
 impl Props {
@@ -206,6 +213,7 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                 }
                 record_resourcetype_child(&path, &name, &mut propstat);
                 record_privilege(&path, &name, &mut propstat);
+                record_component(&path, &name, &start, &mut propstat);
                 record_property(&path, &name, &mut propstat);
                 record_unauthenticated(&path, &name, &mut propstat);
                 path.push(name);
@@ -220,6 +228,7 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                 let name = local_name(empty.local_name());
                 record_resourcetype_child(&path, &name, &mut propstat);
                 record_privilege(&path, &name, &mut propstat);
+                record_component(&path, &name, &empty, &mut propstat);
                 record_property(&path, &name, &mut propstat);
                 record_unauthenticated(&path, &name, &mut propstat);
             }
@@ -419,6 +428,13 @@ fn commit_propstat(
         response.props.text.extend(props.text);
         response.props.resourcetype.extend(props.resourcetype);
         response.props.unauthenticated |= props.unauthenticated;
+        if let Some(components) = props.components {
+            response
+                .props
+                .components
+                .get_or_insert_with(BTreeSet::new)
+                .extend(components);
+        }
         for (name, hrefs) in props.hrefs {
             response.props.hrefs.entry(name).or_default().extend(hrefs);
         }
