@@ -177,9 +177,11 @@ fn page_url(
     page: Option<&PageToken>,
     window: Option<CalendarWindow>,
 ) -> String {
+    // Encoded: a subscribed calendar's id carries a `#` (a holiday calendar's does), which
+    // spliced raw would end the path and send the rest as a fragment.
     let base = format!(
         "{CALENDAR_BASE}/calendars/{}/events",
-        calendar.key().as_str()
+        encode_query_value(calendar.key().as_str())
     );
     if let Some(page) = page {
         return client.url(&format!(

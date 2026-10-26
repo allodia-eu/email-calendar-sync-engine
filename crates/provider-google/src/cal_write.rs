@@ -25,12 +25,16 @@ use crate::{
     cal_invite::{draft_attendees, merge_attendees},
     error::{GoogleError, unread_answer},
     json::opt_str,
-    transport::GoogleClient,
+    transport::{GoogleClient, encode_query_value},
 };
 
 /// The Google Calendar v3 events collection for a calendar.
+/// The id is encoded as a path segment, since a subscribed calendar's carries a `#`.
 fn events_path(calendar: &str) -> String {
-    format!("/calendar/v3/calendars/{calendar}/events")
+    format!(
+        "/calendar/v3/calendars/{}/events",
+        encode_query_value(calendar)
+    )
 }
 
 /// Creates `draft` in `calendar` (the bound calendar id) via `POST …/events`.

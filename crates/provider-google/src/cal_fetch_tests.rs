@@ -143,6 +143,18 @@ fn page_urls_carry_the_window_sync_and_page_tokens() {
     assert!(cont.contains("?pageToken=P2"));
 }
 
+#[test]
+fn a_calendar_id_is_one_path_segment_however_it_is_spelled() {
+    let client = fake_client(vec![]);
+    let holidays = CalendarId::try_from("nl.dutch#holiday@group.v.calendar.google.com").unwrap();
+    let url = page_url(&client, &holidays, None, None, None);
+    assert!(
+        url.contains("/calendars/nl.dutch%23holiday%40group.v.calendar.google.com/events?"),
+        "{url}"
+    );
+    assert!(!url.contains('#'), "{url}");
+}
+
 #[tokio::test]
 async fn a_captured_series_comes_back_with_its_overrides_folded_in() {
     // Captured from a real calendar: a weekly series, one occurrence moved to the afternoon
