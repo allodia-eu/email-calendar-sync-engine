@@ -7,9 +7,9 @@
 //! writes to the state columns of the rows it holds and ignores for any it does not. Everything
 //! the two halves returned is the page's `present` set, so the pass **reconciles**: a stored
 //! message the server no longer returned (expunged, or moved by this or another client) is
-//! tombstoned at the end of the pass. Yahoo takes this path although it confirms
-//! `ENABLE CONDSTORE`, because it then refuses `CHANGEDSINCE` (`docs/spec-deviations.md`,
-//! YAHOO-14).
+//! tombstoned at the end of the pass. Yahoo takes this path because it advertises no QRESYNC,
+//! and its CONDSTORE could not stand in: it confirms `ENABLE CONDSTORE` unadvertised, then
+//! refuses `CHANGEDSINCE` (`docs/spec-deviations.md`, YAHOO-14).
 //!
 //! A sync-depth window bounds both halves through `UID SEARCH SINCE`, so mail outside it is
 //! neither fetched nor counted present. Each `UID FETCH` names at most `limit` UIDs, because a
