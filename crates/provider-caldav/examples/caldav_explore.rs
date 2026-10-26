@@ -1,7 +1,8 @@
-//! Explore a live CalDAV account: list calendars and the bound calendar's events.
+//! Explore a live CalDAV account: list its calendars and one calendar's events.
 //!
 //! **Read-only by default** — it discovers the calendar home, lists the account's
-//! calendars, then syncs the bound collection's events and prints each one's start,
+//! calendars with their collection tags, then syncs one calendar's events and prints each
+//! one's start,
 //! kind, and title. It validates the `provider-caldav` client against a *real*
 //! CalDAV server (Fastmail/iCloud/Google over HTTPS, or a local server such as the
 //! Stalwart harness over plain HTTP). This is the calendar parallel to
@@ -9,7 +10,7 @@
 //! `north-star.md` step 7 anticipates, ahead of schedule.
 //!
 //! Set `CALDAV_WRITE=1` to additionally run a **write demo**: it creates a
-//! throwaway event in the bound calendar and immediately deletes it again, so the
+//! throwaway event in that calendar and immediately deletes it again, so the
 //! calendar is left exactly as it was (the opt-in parallel to `imap_explore`'s
 //! `IMAP_DRAFT`/`IMAP_SEND`).
 //!
@@ -19,7 +20,7 @@
 //! export CALDAV_URL=https://caldav.example.com CALDAV_USER=you@example.com
 //! read -rs CALDAV_PASS; export CALDAV_PASS   # type the password (no echo)
 //! cargo run -p provider-caldav --example caldav_explore
-//! # optional: CALDAV_CALENDAR=default            (the collection to bind events to)
+//! # optional: CALDAV_CALENDAR=default            (the calendar to read: href or last segment)
 //! # optional: CALDAV_DISCOVERY=/.well-known/caldav (discovery start path)
 //! # optional: CALDAV_WRITE=1                      (create + delete a throwaway event)
 //! #
@@ -32,7 +33,7 @@
 use std::env;
 
 use engine_core::{
-    ids::AccountId,
+    ids::{AccountId, CalendarId},
     sync::{SyncObject, SyncUpdate},
     time::CalendarDateTime,
 };
@@ -52,8 +53,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("  cargo run -p provider-caldav --example caldav_explore");
         return Ok(());
     };
-    // A pinned collection (CALDAV_CALENDAR) is respected as-is; otherwise the
-    // library default is "default", and we auto-select a real calendar below.
     let pinned = env::var("CALDAV_CALENDAR").ok();
     let mut config = CalDavConfig::new(
         url.clone(),
@@ -63,9 +62,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         provider_caldav::UserAgent::new("caldav-explore", env!("CARGO_PKG_VERSION"))?,
     );
-    if let Some(calendar) = pinned.clone() {
-        config = config.with_calendar(calendar);
-    }
     if let Ok(path) = env::var("CALDAV_DISCOVERY") {
         config = config.with_discovery_path(path);
     }
@@ -80,33 +76,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cals = objects(&calendars.update);
     println!("\n{} calendar(s) in the home:", cals.len());
     for cal in cals {
-        println!("  • {}  [{}]", cal.name, cal.id.as_str());
+        let tag = cal.collection_tag.as_ref().map_or("—", |tag| tag.as_str());
+        println!("  • {}  [{}]  tag {tag}", cal.name, cal.id.as_str());
     }
 
-    // Read events from the bound collection if it exists (or the user pinned one);
-    // otherwise fall back to the first discovered calendar, so the example works
-    // against a server whose collections are not named "default". The fallback
-    // `rebind`s without re-running discovery (the home is already known).
-    let bound_exists = cals
+    // The calendar CALDAV_CALENDAR names (its href or last segment), else one called
+    // "default", else the first listed.
+    let segment = |cal: &&engine_core::calendar::Calendar| {
+        cal.id
+            .as_str()
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .map(str::to_owned)
+    };
+    let wanted = pinned.as_deref().unwrap_or("default");
+    let Some(calendar) = cals
         .iter()
-        .any(|c| c.id.as_str() == provider.collection_href());
-    let provider = if pinned.is_some() || bound_exists {
-        provider
-    } else if let Some(first) = cals.first() {
-        let (target, name) = (first.id.as_str().to_owned(), first.name.clone());
-        println!(
-            "\n(The bound '{}' was not found; reading events from '{name}'.)",
-            provider.collection_href(),
-        );
-        provider.rebind(&target)?
-    } else {
-        println!("\nNo calendars in the home to read events from.");
+        .find(|cal| cal.id.as_str() == wanted || segment(cal).as_deref() == Some(wanted))
+        .or_else(|| pinned.is_none().then(|| cals.first()).flatten())
+    else {
+        println!("\nNo calendar {wanted:?} in the home to read events from.");
         return Ok(());
     };
-    println!("\nReading events from: {}", provider.collection_href());
+    let calendar: CalendarId = calendar.id.clone();
+    println!("\nReading events from: {}", calendar.as_str());
 
-    // Sync the bound calendar's events (a full snapshot — no prior cursor).
-    let events = provider.sync_events(&account, None).await?;
+    // Sync the calendar's events (a full snapshot — no prior cursor).
+    let events = provider.sync_events(&account, &calendar, None).await?;
     let evs = objects(&events.update);
     println!("\n{} event(s):", evs.len());
     for ev in evs.iter().take(25) {
@@ -129,12 +126,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Opt-in write demo: create a throwaway event, then delete it, leaving the
     // calendar untouched. Off by default so the example never mutates by accident.
     if env::var("CALDAV_WRITE").is_ok() {
-        write_demo(&provider, &account).await?;
+        write_demo(&provider, &account, &calendar).await?;
     }
     Ok(())
 }
 
-/// Creates a throwaway event in the bound calendar, then deletes it — a round trip that
+/// Creates a throwaway event in `calendar`, then deletes it — a round trip that
 /// leaves the calendar as it was.
 ///
 /// Written the way a host writes: state the event, let the adapter serialize it. No
@@ -143,6 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn write_demo(
     provider: &CalDavProvider,
     account: &AccountId,
+    calendar: &CalendarId,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use engine_core::{
         ids::Uid,
@@ -165,7 +163,7 @@ async fn write_demo(
         .delete_event(
             account,
             None,
-            &EventDeletion::unconditional(provider.event_href(&uid)?, uid.clone()),
+            &EventDeletion::unconditional(provider.event_href(calendar, &uid)?, uid.clone()),
         )
         .await;
 
@@ -173,7 +171,7 @@ async fn write_demo(
         .create_event(
             account,
             &EventDraft::new(
-                provider.calendar_id(),
+                calendar.clone(),
                 uid.clone(),
                 "caldav_explore demo (safe to delete)",
                 amsterdam("2026-06-01T10:00:00")?,

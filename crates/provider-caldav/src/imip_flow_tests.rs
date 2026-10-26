@@ -86,7 +86,6 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
     let provider = CalDavProvider::with_executor(
         Box::new(exec.clone()),
         "/.well-known/caldav",
-        "default",
         &IgnoreConnectSteps,
     )
     .await
@@ -95,7 +94,7 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
         SqliteStore::open_in_memory(ManualClock::new("2026-06-20T00:00:00Z".parse().unwrap()))
             .expect("store");
     let account = AccountId::try_from("caldav-acct").unwrap();
-    let href = provider.event_href(&uid).expect("href");
+    let href = provider.event_href(&seed_calendar(), &uid).expect("href");
 
     // My stored copy of the invite, as a sync would hand it back: the raw the RSVP was
     // patched from, and the revision it was read at (which becomes the write's guard).
@@ -205,7 +204,6 @@ async fn caldav_refuses_the_two_controls_it_cannot_honour_rather_than_dropping_t
     let provider = CalDavProvider::with_executor(
         Box::new(exec.clone()),
         "/.well-known/caldav",
-        "default",
         &IgnoreConnectSteps,
     )
     .await
@@ -214,7 +212,10 @@ async fn caldav_refuses_the_two_controls_it_cannot_honour_rather_than_dropping_t
     let mut stored = parse_calendar_object(
         STORED_INVITE,
         provider
-            .event_href(&engine_core::ids::Uid::new("meeting-7@test.local").unwrap())
+            .event_href(
+                &seed_calendar(),
+                &engine_core::ids::Uid::new("meeting-7@test.local").unwrap(),
+            )
             .unwrap(),
         CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap(),
     )
@@ -264,7 +265,6 @@ async fn answering_an_invitation_you_are_not_on_is_refused() {
     let provider = CalDavProvider::with_executor(
         Box::new(exec.clone()),
         "/.well-known/caldav",
-        "default",
         &IgnoreConnectSteps,
     )
     .await
@@ -273,7 +273,10 @@ async fn answering_an_invitation_you_are_not_on_is_refused() {
     let mut stored = parse_calendar_object(
         STORED_INVITE,
         provider
-            .event_href(&engine_core::ids::Uid::new("meeting-7@test.local").unwrap())
+            .event_href(
+                &seed_calendar(),
+                &engine_core::ids::Uid::new("meeting-7@test.local").unwrap(),
+            )
             .unwrap(),
         CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap(),
     )
@@ -326,14 +329,16 @@ async fn a_reported_delivery_failure_reaches_the_caller_on_the_receipt() {
     let provider = CalDavProvider::with_executor(
         Box::new(exec.clone()),
         "/.well-known/caldav",
-        "default",
         &IgnoreConnectSteps,
     )
     .await
     .expect("discovery");
     let account = AccountId::try_from("caldav-acct").unwrap();
     let href = provider
-        .event_href(&engine_core::ids::Uid::new("meeting-7@test.local").unwrap())
+        .event_href(
+            &seed_calendar(),
+            &engine_core::ids::Uid::new("meeting-7@test.local").unwrap(),
+        )
         .expect("href");
     let mut stored = parse_calendar_object(
         STORED_INVITE,
@@ -395,14 +400,16 @@ async fn a_server_that_does_not_schedule_is_not_asked_about_delivery() {
     let provider = CalDavProvider::with_executor(
         Box::new(exec.clone()),
         "/.well-known/caldav",
-        "default",
         &IgnoreConnectSteps,
     )
     .await
     .expect("discovery");
     let account = AccountId::try_from("caldav-acct").unwrap();
     let href = provider
-        .event_href(&engine_core::ids::Uid::new("meeting-7@test.local").unwrap())
+        .event_href(
+            &seed_calendar(),
+            &engine_core::ids::Uid::new("meeting-7@test.local").unwrap(),
+        )
         .expect("href");
     let mut stored = parse_calendar_object(
         STORED_INVITE,
@@ -431,4 +438,9 @@ async fn a_server_that_does_not_schedule_is_not_asked_about_delivery() {
     );
     // The replay queue was sized for exactly the requests this flow should make; an extra
     // GET would have panicked on an empty queue before reaching here.
+}
+
+/// The seed's one calendar, as the home listing names it.
+fn seed_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap()
 }

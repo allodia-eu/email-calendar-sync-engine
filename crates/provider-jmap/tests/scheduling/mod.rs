@@ -156,7 +156,7 @@ fn invitation_time(hour: u8) -> CalendarDateTime {
 /// Every event an account currently holds, over whichever protocol it speaks.
 pub(crate) async fn jmap_events(provider: &JmapProvider, account: &AccountId) -> Vec<Event> {
     let SyncUpdate::Snapshot { objects, .. } = provider
-        .sync_events(account, None)
+        .sync_events(account, &any_calendar(), None)
         .await
         .expect("sync events")
         .update
@@ -167,8 +167,10 @@ pub(crate) async fn jmap_events(provider: &JmapProvider, account: &AccountId) ->
 }
 
 pub(crate) async fn dav_events(provider: &CalDavProvider, account: &AccountId) -> Vec<Event> {
+    // The organizer's own calendar, named under its CalDAV home.
+    let default = engine_core::ids::CalendarId::try_from("default").unwrap();
     let SyncUpdate::Snapshot { objects, .. } = provider
-        .sync_events(account, None)
+        .sync_events(account, &default, None)
         .await
         .expect("sync events")
         .update
@@ -413,4 +415,9 @@ pub(crate) async fn clean_up(parties: &Parties) {
             let _ = parties.harness.dav_delete_as(who.auth(), &href);
         }
     }
+}
+
+/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+fn any_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("any").unwrap()
 }

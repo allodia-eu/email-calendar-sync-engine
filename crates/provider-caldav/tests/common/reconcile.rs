@@ -17,18 +17,15 @@ use engine_core::{
     ids::{AccountId, Uid},
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
-use engine_provider::{
-    CalendarWrites, EventDeletion, EventDraft, EventPatch, PatchTarget, Provider,
-};
+use engine_provider::{CalendarWrites, EventDeletion, EventDraft, EventPatch, PatchTarget};
 use engine_recurrence::Horizon;
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::{
     delete_calendar_event, patch_calendar_event, reconcile_calendar_events, sync_calendar,
 };
-use provider_caldav::CalDavProvider;
 use store_sqlite::SqliteStore;
 
-use super::pre_clean;
+use super::{OnCalendar, pre_clean};
 
 const UID: &str = "caldav-read-your-writes@test.local";
 
@@ -62,7 +59,7 @@ fn ttl() -> core::time::Duration {
 /// The event with [`UID`] as the **store** currently holds it.
 async fn stored(
     store: &SqliteStore<ManualClock>,
-    provider: &CalDavProvider,
+    provider: &OnCalendar,
     account: &AccountId,
 ) -> Option<Event> {
     let scope = provider.event_scope(account);
@@ -81,7 +78,7 @@ async fn stored(
 }
 
 /// Write → reconcile → re-read → write again, all through the store, against a real server.
-pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &AccountId) {
+pub(crate) async fn read_your_writes(provider: &OnCalendar, account: &AccountId) {
     let uid = Uid::new(UID).unwrap();
     pre_clean(provider, account, &uid).await;
     let store =
@@ -92,7 +89,7 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
     // A first sync, so the event scope holds a real sync-token — the cursor every
     // reconcile below takes its delta from.
     sync_calendar(
-        provider,
+        &provider.provider,
         &store,
         account,
         worker(),
@@ -118,9 +115,16 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
         )
         .await
         .expect("create the event");
-    reconcile_calendar_events(provider, &store, account, worker(), ttl())
-        .await
-        .expect("reconcile the create");
+    reconcile_calendar_events(
+        &provider.provider,
+        &store,
+        account,
+        &provider.calendar,
+        worker(),
+        ttl(),
+    )
+    .await
+    .expect("reconcile the create");
 
     let created = stored(&store, provider, account)
         .await
@@ -134,7 +138,7 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
 
     // ---- Edit it, through the store's copy, and reconcile. ----
     let first = patch_calendar_event(
-        provider,
+        &provider.provider,
         &store,
         account,
         worker(),
@@ -146,9 +150,16 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
     )
     .await
     .expect("the first edit lands");
-    reconcile_calendar_events(provider, &store, account, worker(), ttl())
-        .await
-        .expect("reconcile the first edit");
+    reconcile_calendar_events(
+        &provider.provider,
+        &store,
+        account,
+        &provider.calendar,
+        worker(),
+        ttl(),
+    )
+    .await
+    .expect("reconcile the first edit");
 
     let reread = stored(&store, provider, account)
         .await
@@ -166,7 +177,7 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
     // the *superseded* one, and this `If-Match` would come back `412 Precondition Failed`
     // on a write that should plainly have succeeded.
     patch_calendar_event(
-        provider,
+        &provider.provider,
         &store,
         account,
         worker(),
@@ -178,9 +189,16 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
     )
     .await
     .expect("a second edit built from the STORE must not be refused on a stale If-Match");
-    reconcile_calendar_events(provider, &store, account, worker(), ttl())
-        .await
-        .expect("reconcile the second edit");
+    reconcile_calendar_events(
+        &provider.provider,
+        &store,
+        account,
+        &provider.calendar,
+        worker(),
+        ttl(),
+    )
+    .await
+    .expect("reconcile the second edit");
     let twice = stored(&store, provider, account)
         .await
         .expect("still stored");
@@ -188,7 +206,7 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
 
     // ---- Delete: the reconcile must tombstone the local row, not merely the remote one. ----
     delete_calendar_event(
-        provider,
+        &provider.provider,
         &store,
         account,
         worker(),
@@ -199,9 +217,16 @@ pub(crate) async fn read_your_writes(provider: &CalDavProvider, account: &Accoun
     )
     .await
     .expect("the delete lands");
-    reconcile_calendar_events(provider, &store, account, worker(), ttl())
-        .await
-        .expect("reconcile the delete");
+    reconcile_calendar_events(
+        &provider.provider,
+        &store,
+        account,
+        &provider.calendar,
+        worker(),
+        ttl(),
+    )
+    .await
+    .expect("reconcile the delete");
     assert!(
         stored(&store, provider, account).await.is_none(),
         "the sync-collection delta reported the resource as removed (404), so the store \

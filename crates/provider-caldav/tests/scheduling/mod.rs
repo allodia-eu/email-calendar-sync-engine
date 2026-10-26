@@ -59,7 +59,7 @@ use engine_provider::{
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 use stalwart_harness::{Harness, ScratchAccount};
 
-use crate::common;
+use crate::common::{self, OnCalendar};
 
 /// How long a scenario waits for an asynchronous iTIP delivery to land.
 ///
@@ -73,11 +73,11 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) struct Parties {
     harness: Harness,
     /// The scratch account that receives the invitation (Carol).
-    attendee: CalDavProvider,
+    attendee: OnCalendar,
     attendee_account: AccountId,
     attendee_auth: ScratchAccount,
     /// The scratch account that sends it (Bob).
-    organizer: CalDavProvider,
+    organizer: OnCalendar,
     organizer_account: AccountId,
     organizer_auth: ScratchAccount,
 }
@@ -96,9 +96,9 @@ impl Parties {
 
 /// Connects both parties to the live harness, or `None` to skip (the offline gate).
 ///
-/// Each side gets a provider bound to its **own** default calendar by the adapter's real
-/// discovery, so the organizer writing "to my calendar" and the attendee reading "from
-/// mine" are the same operation against two principals.
+/// Each side drives its **own** default calendar, found by the adapter's real discovery, so the
+/// organizer writing "to my calendar" and the attendee reading "from mine" are the same operation
+/// against two principals.
 pub(crate) async fn parties(test: &str) -> Option<Parties> {
     let Some(harness) = Harness::from_env() else {
         eprintln!("skipping {test}: STALWART_HTTP_ADDR unset");
@@ -121,17 +121,25 @@ pub(crate) async fn parties(test: &str) -> Option<Parties> {
         .expect("connect + discover")
     };
 
-    let [organizer_account, attendee_account] = harness.scratch.clone();
-    let organizer = connect(&organizer_account).await;
-    let attendee = connect(&attendee_account).await;
+    let [organizer_auth, attendee_auth] = harness.scratch.clone();
+    let organizer_account = AccountId::try_from("caldav-schedule-organizer").unwrap();
+    let attendee_account = AccountId::try_from("caldav-schedule-attendee").unwrap();
+    let organizer = OnCalendar::named(
+        connect(&organizer_auth).await,
+        &organizer_account,
+        "default",
+    )
+    .await;
+    let attendee =
+        OnCalendar::named(connect(&attendee_auth).await, &attendee_account, "default").await;
     Some(Parties {
-        organizer_auth: organizer_account,
-        attendee_auth: attendee_account,
-        attendee,
-        organizer,
-        attendee_account: AccountId::try_from("caldav-schedule-attendee").unwrap(),
-        organizer_account: AccountId::try_from("caldav-schedule-organizer").unwrap(),
         harness,
+        attendee,
+        attendee_account,
+        attendee_auth,
+        organizer,
+        organizer_account,
+        organizer_auth,
     })
 }
 
@@ -256,7 +264,7 @@ async fn invite(parties: &Parties, uid: &Uid, summary: &str, tzid: &str) -> Even
 /// A poll, not a sleep: the condition is the server's actual state, so a fast server is
 /// not waited on and a slow one is not raced.
 async fn poll_until(
-    provider: &CalDavProvider,
+    provider: &OnCalendar,
     account: &AccountId,
     uid: &Uid,
     what: &str,

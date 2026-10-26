@@ -229,6 +229,7 @@ impl Provider for FakeProvider {
     async fn sync_events(
         &self,
         _account: &AccountId,
+        _calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         if cursor.is_some() {

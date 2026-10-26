@@ -46,7 +46,10 @@ pub(crate) fn amsterdam(local: &str) -> CalendarDateTime {
 
 /// Every event the account currently holds.
 pub(crate) async fn all_events(provider: &JmapProvider) -> Vec<Event> {
-    let events = provider.sync_events(&account(), None).await.unwrap();
+    let events = provider
+        .sync_events(&account(), &any_calendar(), None)
+        .await
+        .unwrap();
     let SyncUpdate::Snapshot { objects, .. } = events.update else {
         panic!("expected a snapshot");
     };
@@ -100,4 +103,9 @@ pub(crate) async fn setup(name: &str) -> Option<JmapProvider> {
         .wait_until_ready(std::time::Duration::from_secs(30))
         .expect("ready");
     Some(connect(&harness).await)
+}
+
+/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+fn any_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("any").unwrap()
 }

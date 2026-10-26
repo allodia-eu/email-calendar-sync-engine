@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use engine_core::{
     calendar::{Calendar, Event},
     contact::{AddressBook, ContactCard, ContactDraft, ContactPatch, ContactResource},
-    ids::{AccountId, ContactId, ProviderKey},
+    ids::{AccountId, CalendarId, ContactId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{SyncScope, SyncState, SyncWindow},
@@ -160,8 +160,8 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         (**self).calendar_scope(account)
     }
 
-    fn event_scope(&self, account: &AccountId) -> SyncScope {
-        (**self).event_scope(account)
+    fn event_scope(&self, account: &AccountId, calendar: &CalendarId) -> SyncScope {
+        (**self).event_scope(account, calendar)
     }
 
     async fn sync_calendars(
@@ -175,9 +175,10 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
     async fn sync_events(
         &self,
         account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
-        (**self).sync_events(account, cursor).await
+        (**self).sync_events(account, calendar, cursor).await
     }
 }
 

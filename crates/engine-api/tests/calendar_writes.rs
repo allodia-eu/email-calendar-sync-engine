@@ -246,6 +246,7 @@ impl Provider for CalendarServer {
     async fn sync_events(
         &self,
         _account: &AccountId,
+        _calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         let state = self.0.lock().unwrap();

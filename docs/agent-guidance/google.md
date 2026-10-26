@@ -293,9 +293,12 @@ is one sent to itself, and `SENT` is a placement.
 
 ## Google Calendar
 
-`GoogleCalendarProvider` is **bound to one calendar** (like `GraphCalendarProvider`): its
-`event_scope` names that calendar (`GoogleCalendar`) and syncs its `events.list`; the
-calendar list syncs under the per-account `GoogleCalendarList`. It advertises calendar
+One `GoogleCalendarProvider` serves every calendar of the account (like
+`GraphCalendarProvider`): `event_scope(account, calendar)` names that calendar
+(`GoogleCalendar`) and `sync_events` reads its `events.list`; the calendar list syncs under
+the per-account `GoogleCalendarList`. Google addresses an event inside its calendar, so a
+create goes to the draft's calendar and a patch, RSVP or delete to the calendar the stored
+event names. It advertises calendar
 read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
 
 - **IANA-native** (`cal_normalize`): event `start`/`end` are `{ dateTime, timeZone }` with

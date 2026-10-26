@@ -450,9 +450,11 @@ shared mailboxes; verification awaits a work/school account.)
 
 ## Calendar (implemented)
 
-`GraphCalendarProvider` implements the calendar read/sync **and** write spine, bound to
-one calendar (`SyncScope::GraphCalendar`), with the calendar list under the per-account
-`SyncScope::GraphCalendarList` — the same shape as the mail folder/folder-list split.
+`GraphCalendarProvider` implements the calendar read/sync **and** write spine for every
+calendar of the mailbox: each calendar's events under a `SyncScope::GraphCalendar` of their
+own, with the calendar list under the per-account `SyncScope::GraphCalendarList`, the same
+shape as the mail folder/folder-list split. A create goes to the draft's calendar; a patch or
+delete addresses the event by its mailbox-wide id.
 Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normalize`
 (event/calendar JSON → model) + `cal_recur` (`patternedRecurrence` → `Recurrence`) +
 `cal_override` (changed/removed occurrences → `Recurrence::overrides`), `windows_zones`

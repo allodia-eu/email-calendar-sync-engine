@@ -36,7 +36,7 @@ async fn live_calendar_snapshot_then_delta_cycle() {
     let provider = calendar_provider(token);
     // A first sync is a reconciling snapshot; capture the per-calendar syncToken.
     let snapshot = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &primary(), None)
         .await
         .expect("snapshot");
     assert!(snapshot.is_snapshot());
@@ -46,7 +46,7 @@ async fn live_calendar_snapshot_then_delta_cycle() {
     // An immediate delta from that syncToken must not error and must not be a snapshot —
     // proving the real events.list?syncToken request shape is accepted.
     let delta = provider
-        .sync_events(&account(), Some(&cursor))
+        .sync_events(&account(), &primary(), Some(&cursor))
         .await
         .expect("delta");
     assert!(!delta.is_snapshot(), "a delta from a live syncToken");
@@ -121,7 +121,7 @@ async fn live_calendar_create_patch_delete() {
     assert!(first_etag.is_some(), "the created event carries an ETag");
 
     let snapshot = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &primary(), None)
         .await
         .expect("read create");
     let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {
@@ -155,7 +155,7 @@ async fn live_calendar_create_patch_delete() {
     );
 
     let snapshot = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &primary(), None)
         .await
         .expect("read patch");
     let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {
@@ -172,7 +172,7 @@ async fn live_calendar_create_patch_delete() {
 
     // Delete it, guarded by the fresh ETag. Google sends the cancellation.
     provider
-        .delete_event(&account(), None, &EventDeletion::of(&base))
+        .delete_event(&account(), Some(&base), &EventDeletion::of(&base))
         .await
         .expect("delete");
     // NOTE: a *guarded* re-delete here returns 412 (conditionNotMet), not 404/410 — the

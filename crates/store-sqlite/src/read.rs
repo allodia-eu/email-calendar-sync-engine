@@ -9,6 +9,7 @@ use engine_core::{
     ids::{AccountId, ProviderKey},
     sync::SyncScope,
     time::{ExpansionWindow, Horizon},
+    version::CollectionTag,
     write::PendingOpId,
 };
 use engine_store::{
@@ -36,6 +37,12 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
     async fn expansion_window(&self, scope: &SyncScope) -> Result<Option<ExpansionWindow>> {
         let key = scope_key(scope);
         self.read(move |conn| crate::window_ops::expansion_window(conn, &key))
+            .await
+    }
+
+    async fn collection_tag(&self, scope: &SyncScope) -> Result<Option<CollectionTag>> {
+        let key = scope_key(scope);
+        self.read(move |conn| crate::window_ops::collection_tag(conn, &key))
             .await
     }
 

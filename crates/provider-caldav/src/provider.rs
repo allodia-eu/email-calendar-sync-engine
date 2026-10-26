@@ -1,15 +1,14 @@
 //! The [`Provider`] implementation, wiring CalDAV discovery and `sync-collection`
 //! into the engine's generic calendar sync.
 //!
-//! Like an [`ImapProvider`](provider_imap), a `CalDavProvider` is **bound to one
-//! calendar collection** for events ([`event_scope`](Provider::event_scope) is
-//! that collection's [`DavCollection`](engine_core::sync::SyncScope::DavCollection)),
-//! while [`sync_calendars`](Provider::sync_calendars) lists *all* of the account's
-//! calendars under the per-account
-//! [`DavCollectionList`](engine_core::sync::SyncScope::DavCollectionList) container
-//! scope. The collection list is re-snapshotted each pass (no list cursor),
-//! exactly as IMAP re-`LIST`s its folders. The cross-collection fan-out (drive
-//! every calendar) is the later orchestrator's job. The provider advertises
+//! One `CalDavProvider` serves **every calendar** under the calendar home its discovery
+//! found: [`sync_calendars`](Provider::sync_calendars) lists them under the per-account
+//! [`DavCollectionList`](engine_core::sync::SyncScope::DavCollectionList) container scope,
+//! each with the collection tag the same `PROPFIND` reads, and each calendar's events sync
+//! under its own [`DavCollection`](engine_core::sync::SyncScope::DavCollection) scope
+//! ([`event_scope`](Provider::event_scope)). The collection list is re-snapshotted each pass
+//! (no list cursor), exactly as IMAP re-`LIST`s its folders. A create lands in the calendar
+//! its draft names. The provider advertises
 //! [`Capabilities::calendars`] **and** [`Capabilities::calendar_writes`] — it both
 //! reads/syncs and writes (`PUT`/`DELETE`) over the same HTTP transport (`write`);
 //! the mail methods keep their unsupported defaults.
@@ -23,8 +22,8 @@ use engine_core::{
 use engine_provider::{
     CalendarUserAddresses, CalendarWrites, Capabilities, ConnectObserver, ConnectStep,
     ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
-    IgnoreConnectSteps, OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls,
-    ScopeSync, WriteGuard,
+    IgnoreConnectSteps, OverrideSurvival, Provider, ProviderResult, RsvpControls, ScopeSync,
+    WriteGuard,
 };
 
 use crate::{
@@ -32,7 +31,7 @@ use crate::{
     credential_hosts::refuse_unpermitted_base,
     discovery,
     error::CalDavError,
-    href::{bind_collection, encode_path_segment, ensure_bound_present},
+    href::{encode_path_segment, resolve_collection},
     transport::{DavClient, DavExecutor},
 };
 
@@ -64,16 +63,15 @@ const CALDAV_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival::kept();
 /// must not overload.
 const CALENDAR_LIST_CURSOR: &str = "caldav-calendar-list";
 
-/// The CalDAV provider adapter (calendar read/sync).
+/// The CalDAV provider adapter (calendar read/sync and writes) for every calendar under one
+/// calendar home.
 ///
-/// The bound collection is held once as a [`DavCollectionId`]; the membership
-/// [`CalendarId`] and the transport href are derived from it, so the three views
-/// of one href cannot drift.
+/// A calendar's [`CalendarId`] is its collection href as the listing gave it, and its event
+/// scope's [`DavCollectionId`] is the same key, so the two views of one href cannot drift.
 pub struct CalDavProvider {
     executor: Box<dyn DavExecutor>,
     capabilities: Capabilities,
     home_href: String,
-    collection: DavCollectionId,
     /// The `current-user-principal` discovery found, asked for the address set on demand.
     principal: Option<String>,
     /// The address set, when discovery already read it off the principal.
@@ -84,14 +82,12 @@ impl core::fmt::Debug for CalDavProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CalDavProvider")
             .field("home_href", &self.home_href)
-            .field("collection", &self.collection.as_str())
             .finish_non_exhaustive()
     }
 }
 
 impl CalDavProvider {
-    /// Connects to a CalDAV server, discovering the calendar home and binding to
-    /// the configured collection for events.
+    /// Connects to a CalDAV server, discovering the calendar home whose calendars it serves.
     ///
     /// # Errors
     ///
@@ -115,13 +111,7 @@ impl CalDavProvider {
             &config.user_agent,
         )?
         .with_credential_hosts(config.credential_hosts);
-        Self::with_executor(
-            Box::new(client),
-            &config.discovery_path,
-            &config.calendar,
-            observer,
-        )
-        .await
+        Self::with_executor(Box::new(client), &config.discovery_path, observer).await
     }
 
     /// Builds a provider over an arbitrary executor (the live client, or a fake in
@@ -129,20 +119,18 @@ impl CalDavProvider {
     pub(crate) async fn with_executor(
         executor: Box<dyn DavExecutor>,
         discovery_path: &str,
-        calendar: &str,
         observer: &dyn ConnectObserver,
     ) -> Result<Self, CalDavError> {
         let home = discovery::discover_home(executor.as_ref(), discovery_path, observer).await?;
         observer.step(&ConnectStep::discovered(&home.href));
-        // The calendar home is where every collection, the bound one included, is resolved
-        // from: the endpoint this connect settles on, on whichever origin serves it.
+        // The calendar home is where every collection is resolved from: the endpoint this
+        // connect settles on, on whichever origin serves it.
         let home_href = executor.settle_on(&home.href);
         // Whether the server schedules for itself is a property of *this* server, not of
         // CalDAV — RFC 4791 is calendar access and RFC 6638 a separate layer on top — so it
         // is asked rather than inferred from the fact that a PARTSTAT can be written
         // (`discovery.rs`).
         let scheduling = discovery::discover_scheduling(executor.as_ref(), &home_href).await?;
-        let collection = bind_collection(&home_href, calendar)?;
         // CalDAV *enforces* the lost-update guard: a stale `If-Match` is a `412` on
         // every server we have driven (proven live against both harness servers). It is
         // the transport that can actually promise it — contrast JMAP, which cannot.
@@ -158,23 +146,9 @@ impl CalDavProvider {
                 capabilities
             },
             home_href,
-            collection,
             principal: home.principal,
             addresses: home.addresses,
         })
-    }
-
-    /// Rebinds this provider to a different calendar collection **without** re-running
-    /// discovery — the calendar home is unchanged, only the bound collection moves.
-    /// Consumes `self` to reuse the existing executor (a host that lists calendars,
-    /// then picks one, avoids a second discovery round trip).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CalDavError`] if `calendar` does not form a valid collection href.
-    pub fn rebind(self, calendar: &str) -> Result<Self, CalDavError> {
-        let collection = bind_collection(&self.home_href, calendar)?;
-        Ok(Self { collection, ..self })
     }
 
     /// The principal URL the server named during discovery, absolute, when it named one: what a
@@ -185,15 +159,10 @@ impl CalDavProvider {
         self.principal.as_deref()
     }
 
-    /// The href of the calendar collection events are bound to.
-    #[must_use]
-    pub fn collection_href(&self) -> &str {
-        self.collection.as_str()
-    }
-
-    /// Mints the resource href for a **new** event in the bound collection:
+    /// Mints the resource href for a **new** event in `calendar`:
     /// `<collection>/<uid>.ics`, the universal CalDAV convention (RFC 4791 §5.3.2 lets the
-    /// client choose the resource name). The `uid` is percent-encoded as a single path
+    /// client choose the resource name). A calendar named relative to the home resolves
+    /// under it. The `uid` is percent-encoded as a single path
     /// segment, so an unusual `UID` still yields a valid href.
     ///
     /// [`create_event`](CalendarWrites::create_event) mints this itself, so a host does not need
@@ -206,27 +175,15 @@ impl CalDavProvider {
     /// # Errors
     ///
     /// Returns [`CalDavError`] if the resolved href is not a valid event key (the
-    /// bound collection href and the non-empty suffix make this unreachable in
-    /// practice, but the construction is fallible like the collection binding).
-    pub fn event_href(&self, uid: &Uid) -> Result<EventId, CalDavError> {
+    /// collection href and the non-empty suffix make this unreachable in practice).
+    pub fn event_href(&self, calendar: &CalendarId, uid: &Uid) -> Result<EventId, CalDavError> {
         let href = format!(
             "{}{}.ics",
-            self.collection.as_str(),
+            resolve_collection(&self.home_href, calendar.as_str()),
             encode_path_segment(uid.as_str())
         );
         EventId::try_from(href.as_str())
             .map_err(|e| CalDavError::protocol(format!("bad event href {href:?}: {e}")))
-    }
-
-    /// The [`CalendarId`] of the bound collection (same href as
-    /// [`collection_href`](Self::collection_href), a distinct id type).
-    ///
-    /// This is the calendar an [`EventDraft`] must name to be created here — a draft
-    /// targeting any other is refused rather than silently written to this one.
-    #[must_use]
-    pub fn calendar_id(&self) -> CalendarId {
-        // The collection href already validated as a provider key when bound.
-        CalendarId::new(self.collection.key().clone())
     }
 }
 
@@ -249,10 +206,10 @@ impl Provider for CalDavProvider {
         }
     }
 
-    fn event_scope(&self, account: &AccountId) -> SyncScope {
+    fn event_scope(&self, account: &AccountId, calendar: &CalendarId) -> SyncScope {
         SyncScope::DavCollection {
             account: account.clone(),
-            collection: self.collection.clone(),
+            collection: DavCollectionId::new(calendar.key().clone()),
         }
     }
 
@@ -263,12 +220,7 @@ impl Provider for CalDavProvider {
     ) -> ProviderResult<ScopeSync<Calendar>> {
         // The collection list is re-discovered as a snapshot each pass (no list
         // cursor), so the store tombstones any calendar that has disappeared.
-        let mut calendars =
-            discovery::list_calendars(self.executor.as_ref(), &self.home_href).await?;
-        // Guarantee the bound collection is represented, so events synced under it
-        // never reference a calendar the container snapshot omits (a collection
-        // bound outside the home would otherwise be absent here).
-        ensure_bound_present(&mut calendars, &self.calendar_id());
+        let calendars = discovery::list_calendars(self.executor.as_ref(), &self.home_href).await?;
         let present = calendars.iter().map(|c| c.id.key().clone()).collect();
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(calendars, present),
@@ -279,12 +231,13 @@ impl Provider for CalDavProvider {
     async fn sync_events(
         &self,
         _account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         Ok(crate::sync::sync_events(
             self.executor.as_ref(),
-            self.collection.as_str(),
-            &self.calendar_id(),
+            &resolve_collection(&self.home_href, calendar.as_str()),
+            calendar,
             cursor,
         )
         .await?)
@@ -294,25 +247,14 @@ impl engine_provider::MailboxWrites for CalDavProvider {}
 
 #[async_trait]
 impl CalendarWrites for CalDavProvider {
-    /// Mints the href from the draft's `UID` inside the **bound** collection, then `PUT`s
+    /// Mints the href from the draft's `UID` inside the calendar the draft names, then `PUT`s
     /// the built document there.
-    ///
-    /// A draft naming a different calendar is refused rather than silently written to the
-    /// bound one: this provider is collection-bound (`rebind` moves it), so honouring the
-    /// draft's calendar would mean writing the event where the host did not ask.
     async fn create_event(
         &self,
         _account: &AccountId,
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
-        if draft.calendar != self.calendar_id() {
-            return Err(ProviderError::invalid_state(format!(
-                "draft targets calendar {:?}, but this provider is bound to {:?}; rebind first",
-                draft.calendar.as_str(),
-                self.collection.as_str()
-            )));
-        }
-        let href = self.event_href(&draft.uid)?;
+        let href = self.event_href(&draft.calendar, &draft.uid)?;
         Ok(crate::write::create_event(self.executor.as_ref(), href, draft).await?)
     }
 

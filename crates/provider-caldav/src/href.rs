@@ -1,4 +1,4 @@
-//! Href arithmetic: binding a calendar argument to a collection id, and the canonical
+//! Href arithmetic: resolving a calendar argument to its collection href, and the canonical
 //! percent-encoding a minted resource href must use.
 //!
 //! Split out of `provider.rs` — these are pure string functions with no transport and no
@@ -6,45 +6,7 @@
 //! always ends in a slash, and a minted href must be encoded the way the server
 //! canonicalizes it or a later `If-Match`/`DELETE` misses the resource.
 
-use engine_core::{
-    calendar::Calendar,
-    ids::{CalendarId, DavCollectionId},
-};
-
 use crate::error::CalDavError;
-
-/// Binds a calendar argument to a collection id: an absolute path or full URL is
-/// used as-is (a discovered calendar href), otherwise a bare name is joined onto
-/// the calendar home. All end in a trailing slash (CalDAV collections are
-/// directories).
-///
-/// # Errors
-///
-/// Returns [`CalDavError`] if the resolved href is not a valid provider key.
-pub(crate) fn bind_collection(
-    home_href: &str,
-    calendar: &str,
-) -> Result<DavCollectionId, CalDavError> {
-    let href = resolve_collection(home_href, calendar);
-    DavCollectionId::try_from(href.as_str())
-        .map_err(|e| CalDavError::protocol(format!("bad collection href {href:?}: {e}")))
-}
-
-/// Adds a minimal [`Calendar`] for the bound collection when the home listing did
-/// not include it, so the container snapshot always covers the events' membership.
-pub(crate) fn ensure_bound_present(calendars: &mut Vec<Calendar>, bound: &CalendarId) {
-    if calendars.iter().any(|c| &c.id == bound) {
-        return;
-    }
-    let name = bound
-        .as_str()
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(bound.as_str())
-        .to_owned();
-    calendars.push(Calendar::new(bound.clone(), name));
-}
 
 /// Resolves a discovery redirect's `Location` against the href that issued it.
 ///
@@ -90,7 +52,9 @@ pub(crate) fn resolve_reference(at: &str, reference: &str) -> Result<String, Cal
         .map_err(|e| CalDavError::protocol(format!("bad href {reference:?}: {e}")))
 }
 
-/// Resolves the bound collection href (see [`bind_collection`]).
+/// Resolves a calendar argument to its collection href: an absolute path or full URL is
+/// used as-is (a discovered calendar href), otherwise a bare name is joined onto the
+/// calendar home. All end in a trailing slash (CalDAV collections are directories).
 pub(crate) fn resolve_collection(home_href: &str, calendar: &str) -> String {
     if calendar.starts_with('/') || calendar.contains("://") {
         return with_trailing_slash(calendar);

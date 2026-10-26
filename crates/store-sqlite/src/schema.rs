@@ -279,21 +279,6 @@ CREATE TRIGGER message_body_au AFTER UPDATE ON message_body BEGIN
 END;
 ";
 
-/// Migration v6: the per-scope **expansion window** — the horizon an event scope's
-/// occurrence rows are materialized over, and the zone they were resolved through.
-///
-/// Nullable, and only ever set for event scopes: the rows were always *relative to* a
-/// window, but the window itself was implicit, so a pass that re-derived one changed event
-/// over whatever horizon its caller happened to hold deleted that event's rows outside it
-/// and re-materialized only its own — silently dropping occurrences the host had already
-/// expanded. Recording it lets a sync (and a post-write reconcile) re-expand a changed
-/// event over the window the store actually holds.
-pub(crate) const V6: &str = "\
-ALTER TABLE sync_scope ADD COLUMN horizon_start TEXT;
-ALTER TABLE sync_scope ADD COLUMN horizon_end   TEXT;
-ALTER TABLE sync_scope ADD COLUMN expansion_zone TEXT;
-";
-
 /// Migration v7: contacts, unified people, photos, and recipient observations.
 ///
 /// Provider contacts continue to live in `object`; `contact_state.generation`
@@ -496,5 +481,7 @@ UPDATE pending_op SET handed_over = token WHERE state = 'InFlight' AND kind = 'M
 ";
 
 mod mail;
+mod scope;
 
 pub(crate) use mail::{V8, V9, V10, V17, V18};
+pub(crate) use scope::{V6, V19};

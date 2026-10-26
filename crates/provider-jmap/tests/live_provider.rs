@@ -194,7 +194,10 @@ async fn live_calendar_fetch() {
             .unwrap()
             .is_snapshot()
     );
-    let events = provider.sync_events(&account(), None).await.unwrap();
+    let events = provider
+        .sync_events(&account(), &any_calendar(), None)
+        .await
+        .unwrap();
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
         panic!("expected snapshot");
     };
@@ -206,6 +209,8 @@ async fn live_calendar_fetch() {
         "virtual-2004@test.local",
         "allday-2005@test.local",
         "floating-2006@test.local",
+        "work-2101@test.local",
+        "work-2102@test.local",
     ] {
         assert!(uids.contains(uid), "seed event uid missing: {uid}");
     }
@@ -440,4 +445,9 @@ async fn live_watch_sees_a_change_over_event_source() {
             .await
             .expect("cleanup delete");
     }
+}
+
+/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+fn any_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("any").unwrap()
 }

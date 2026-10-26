@@ -1,13 +1,11 @@
-//! The calendar [`Provider`] implementation: a Microsoft Graph client bound to one
-//! calendar for events, with the calendar list synced at the account level.
+//! The calendar [`Provider`] implementation: one Microsoft Graph client serving every
+//! calendar of the mailbox.
 //!
-//! Like [`GraphProvider`](crate::GraphProvider) for mail (and `CalDavProvider` for
-//! CalDAV), a [`GraphCalendarProvider`] is **bound to one calendar**: its
-//! [`event_scope`](Provider::event_scope) names that calendar
-//! ([`SyncScope::GraphCalendar`]) and syncs its `calendarView/delta`, while the calendar
-//! list syncs under the per-account [`SyncScope::GraphCalendarList`]. The cross-calendar
-//! fan-out is the orchestrator's job. It advertises calendar read/sync **and** writes
-//! guarded by `If-Match` ([`WriteGuard::Enforced`]).
+//! The calendar list syncs under the per-account [`SyncScope::GraphCalendarList`], and each
+//! calendar's events under a [`SyncScope::GraphCalendar`] of its own
+//! ([`event_scope`](Provider::event_scope)), through that calendar's `calendarView/delta`.
+//! A create lands in the calendar its draft names. It advertises calendar read/sync **and**
+//! writes guarded by `If-Match` ([`WriteGuard::Enforced`]).
 
 use std::collections::BTreeSet;
 
@@ -21,8 +19,8 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo, EventDeletion, EventDraft,
-    EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError,
-    ProviderResult, RsvpControls, ScopeSync, SyncKind, WriteGuard,
+    EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderResult,
+    RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
 
 use crate::{
@@ -59,16 +57,15 @@ const GRAPH_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival {
     clobbers_own_fields: false,
 };
 
-/// A Microsoft Graph calendar read/sync/write provider bound to one calendar.
+/// A Microsoft Graph calendar read/sync/write provider for every calendar of one mailbox.
 ///
 /// Construct one with [`GraphCalendarProvider::new`] from a connected
-/// [`GraphClient`](crate::GraphClient), the calendar to bind, and the date [`window`]
-/// its `calendarView` covers (Graph calendar sync is inherently time-windowed).
+/// [`GraphClient`](crate::GraphClient) and the date [`window`] each calendar's
+/// `calendarView` covers (Graph calendar sync is inherently time-windowed).
 ///
 /// [`window`]: CalendarWindow
 pub struct GraphCalendarProvider {
     client: GraphClient,
-    calendar: CalendarId,
     window: CalendarWindow,
     display_zone: TimeZoneId,
     capabilities: Capabilities,
@@ -77,7 +74,6 @@ pub struct GraphCalendarProvider {
 impl core::fmt::Debug for GraphCalendarProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GraphCalendarProvider")
-            .field("calendar", &self.calendar.key().as_str())
             .field("window", &self.window)
             .field("display_zone", &self.display_zone.as_str())
             .finish_non_exhaustive()
@@ -85,8 +81,8 @@ impl core::fmt::Debug for GraphCalendarProvider {
 }
 
 impl GraphCalendarProvider {
-    /// Binds a connected client to one calendar for events, covering the date `window`
-    /// and reading event times in `display_zone` (the host's IANA display/home zone —
+    /// Serves a connected client's calendars, covering the date `window` and reading event
+    /// times in `display_zone` (the host's IANA display/home zone —
     /// Graph returns UTC otherwise, which would expand a recurring series
     /// DST-incorrectly; `calendar-semantics.md`).
     ///
@@ -99,15 +95,9 @@ impl GraphCalendarProvider {
     /// *organizer* is told, not whether the server is the one telling them. Unlike CalDAV
     /// there is nothing to discover: it is a property of the service, not of the tenant.
     #[must_use]
-    pub fn new(
-        client: GraphClient,
-        calendar: CalendarId,
-        window: CalendarWindow,
-        display_zone: TimeZoneId,
-    ) -> Self {
+    pub fn new(client: GraphClient, window: CalendarWindow, display_zone: TimeZoneId) -> Self {
         Self {
             client,
-            calendar,
             window,
             display_zone,
             capabilities: Capabilities::none()
@@ -118,10 +108,10 @@ impl GraphCalendarProvider {
         }
     }
 
-    /// The bound calendar's home-relative path (`/calendars/{id}`), rooted at the
-    /// principal by [`GraphClient::url`].
-    fn calendar_path(&self) -> String {
-        format!("/calendars/{}", self.calendar.key().as_str())
+    /// A calendar's home-relative path (`/calendars/{id}`), rooted at the principal by
+    /// [`GraphClient::url`].
+    fn calendar_path(calendar: &CalendarId) -> String {
+        format!("/calendars/{}", calendar.key().as_str())
     }
 }
 
@@ -141,10 +131,10 @@ impl Provider for GraphCalendarProvider {
         }
     }
 
-    fn event_scope(&self, account: &AccountId) -> SyncScope {
+    fn event_scope(&self, account: &AccountId, calendar: &CalendarId) -> SyncScope {
         SyncScope::GraphCalendar {
             account: account.clone(),
-            calendar: self.calendar.clone(),
+            calendar: calendar.clone(),
         }
     }
 
@@ -165,6 +155,7 @@ impl Provider for GraphCalendarProvider {
     async fn sync_events(
         &self,
         _account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         // Drain every `calendarView/delta` page into one update. A snapshot reconciles
@@ -179,7 +170,7 @@ impl Provider for GraphCalendarProvider {
         let next_cursor = loop {
             let page = match cal_fetch::events_page(
                 &self.client,
-                &self.calendar,
+                calendar,
                 cursor,
                 page_token.as_ref(),
                 self.window,
@@ -234,16 +225,7 @@ impl CalendarWrites for GraphCalendarProvider {
         _account: &AccountId,
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
-        // A draft naming a different calendar is refused rather than silently written to
-        // the bound one — this provider is calendar-bound, like `CalDavProvider`.
-        if draft.calendar != self.calendar {
-            return Err(ProviderError::invalid_state(format!(
-                "draft targets calendar {:?}, but this provider is bound to {:?}",
-                draft.calendar.key().as_str(),
-                self.calendar.key().as_str()
-            )));
-        }
-        cal_write::create_event(&self.client, &self.calendar_path(), draft).await
+        cal_write::create_event(&self.client, &Self::calendar_path(&draft.calendar), draft).await
     }
 
     async fn patch_event(

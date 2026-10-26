@@ -136,7 +136,12 @@ async fn sabredav_calendar_sync_loop() {
         "the default calendar synced"
     );
 
-    let event_scope = provider.event_scope(&account);
+    common::many_calendars::the_second_calendar_syncs_under_its_own_scope(
+        &provider, &store, &account, &report,
+    )
+    .await;
+    let default = common::OnCalendar::named(provider, &account, "default").await;
+    let event_scope = default.event_scope(&account);
     let event_keys = store.object_keys(&event_scope).await.unwrap();
     assert_eq!(event_keys.len(), 6, "six seed calendar resources stored");
 
@@ -172,9 +177,9 @@ async fn sabredav_calendar_sync_loop() {
     );
     assert_eq!(total, 12);
 
-    // A second sync reuses the SabreDAV sync-token: an idempotent empty delta.
+    // A second sync with nothing changed: every calendar's listing tag is as recorded.
     let second = sync_calendar(
-        &provider,
+        &default.provider,
         &store,
         &account,
         WorkerId::new("live"),
@@ -184,26 +189,20 @@ async fn sabredav_calendar_sync_loop() {
     )
     .await
     .expect("second sync_calendar");
-    assert_eq!(
-        second.events.applied.upserted, 0,
-        "no event changes on a re-sync"
-    );
-    assert_eq!(
-        second.events.applied.tombstoned, 0,
-        "nothing tombstoned on a re-sync"
-    );
+    common::many_calendars::a_quiet_resync_asks_no_calendar(&second);
 }
 
 /// Connects to the SabreDAV harness, or `None` to skip (offline gate).
-async fn write_provider(test: &str) -> Option<(CalDavProvider, AccountId)> {
+async fn write_provider(test: &str) -> Option<(common::OnCalendar, AccountId)> {
     let Some((addr, user, pass)) = harness() else {
         eprintln!("skipping {test}: SABREDAV_HTTP_ADDR unset");
         return None;
     };
+    let account = AccountId::try_from("sabredav-write-live").unwrap();
     let provider = connect(&addr, &user, &pass).await;
     Some((
-        provider,
-        AccountId::try_from("sabredav-write-live").unwrap(),
+        common::OnCalendar::named(provider, &account, "default").await,
+        account,
     ))
 }
 

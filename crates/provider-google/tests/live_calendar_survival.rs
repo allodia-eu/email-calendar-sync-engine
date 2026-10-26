@@ -242,7 +242,7 @@ async fn overrides_of(
     id: &EventId,
 ) -> BTreeMap<LocalDateTime, RecurrenceOverride> {
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &primary(), None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {

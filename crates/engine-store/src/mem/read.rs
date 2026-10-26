@@ -10,6 +10,7 @@ use engine_core::{
     search_index::MembershipKind,
     sync::SyncScope,
     time::{ExpansionWindow, Horizon},
+    version::CollectionTag,
     write::PendingOpId,
 };
 use serde_json::Value;
@@ -62,6 +63,14 @@ impl<C: Clock> StoreRead for MemStore<C> {
             .scopes
             .get(scope)
             .and_then(|cell| cell.window.clone()))
+    }
+
+    async fn collection_tag(&self, scope: &SyncScope) -> Result<Option<CollectionTag>> {
+        Ok(self
+            .lock()
+            .scopes
+            .get(scope)
+            .and_then(|cell| cell.collection_tag.clone()))
     }
 
     async fn object_keys(&self, scope: &SyncScope) -> Result<Vec<ProviderKey>> {

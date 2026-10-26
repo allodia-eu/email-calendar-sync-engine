@@ -188,7 +188,7 @@ pub(crate) fn apply(
     reconcile: &[PendingReconciliation],
     observations: &[RecipientObservation],
     contact_scope: bool,
-    next_state: Option<&str>,
+    next_state: Option<(&str, Option<&str>)>,
     observed_from: Option<UtcDateTime>,
     now: UtcDateTime,
 ) -> Result<SyncApplied> {
@@ -246,11 +246,11 @@ pub(crate) fn apply(
 
     // A streaming page (`next_state == None`) leaves the cursor unchanged so a
     // crash mid-stream re-syncs from the prior cursor rather than skipping pages.
-    if let Some(next_state) = next_state {
+    if let Some((next_state, collection_tag)) = next_state {
         sql::execute(
             &tx,
-            "UPDATE sync_scope SET cursor = ?1 WHERE scope_key = ?2",
-            (next_state, scope_key),
+            "UPDATE sync_scope SET cursor = ?1, collection_tag = ?2 WHERE scope_key = ?3",
+            (next_state, collection_tag, scope_key),
         )?;
     }
     tx.commit().map_err(convert::backend)?;

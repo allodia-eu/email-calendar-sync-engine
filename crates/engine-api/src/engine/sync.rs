@@ -2,7 +2,7 @@
 //! per-folder sync methods on `Engine`.
 
 use engine_core::{
-    ids::AccountId,
+    ids::{AccountId, CalendarId},
     sync::{SearchDomain, SyncWindow},
     time::TimeZoneId,
 };
@@ -319,16 +319,21 @@ impl Engine {
         Ok(self.store.sweep_unreferenced_blobs().await?)
     }
 
-    /// Syncs one account's calendars from `provider`: calendar containers first,
-    /// then events, expanding each event's occurrences over `horizon` (resolving
-    /// floating times through `host_zone`) before the commit
-    /// (`calendar-semantics.md`).
+    /// Syncs one account's calendars from `provider`, which serves every one of them: the
+    /// calendar list first, then each calendar's events, concurrently, expanding each event's
+    /// occurrences before the commit (`calendar-semantics.md`). `horizon` and `host_zone` seed
+    /// the expansion window only on the account's first sync; after that the window the store
+    /// holds wins ([`expand_horizon`](Engine::expand_horizon) moves it).
+    ///
+    /// A calendar whose listing tag has not moved since its last sync is skipped without a
+    /// request. Each event scope's outcome is reported on its own in
+    /// [`CalendarSyncReport::scopes`]: one calendar failing, or held by another pass, leaves
+    /// the rest synced.
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Busy`] if another sync already holds this account's
-    /// calendar scope, or [`ApiError::Sync`] if the provider fetch fails or the
-    /// store rejects the apply.
+    /// Returns [`ApiError::Busy`] if another sync already holds this account's calendar
+    /// list, or [`ApiError::Sync`] if the list cannot be fetched or applied.
     pub async fn sync_calendar<P: Provider>(
         &self,
         provider: &P,
@@ -349,8 +354,9 @@ impl Engine {
         .map_err(map_sync_error)
     }
 
-    /// Re-reads one account's **events** through the provider's delta and commits the
-    /// result: the calendar containers are neither fetched nor claimed.
+    /// Re-reads the **events** of `calendar`'s scope through the provider's delta and commits
+    /// the result: the calendar list is neither fetched nor claimed, and no other calendar's
+    /// scope is touched.
     ///
     /// It re-expands whatever it changed over the window the store already holds, so — like
     /// a write — it can neither widen nor narrow what the host has expanded.
@@ -368,18 +374,26 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Busy`] if another sync already holds this account's event
-    /// scope, or [`ApiError::Sync`] if the provider fetch fails, the store rejects the
-    /// apply, or the account's calendars have never been synced (there is then no window to
-    /// expand over — [`sync_calendar`](Engine::sync_calendar) first).
+    /// Returns [`ApiError::Busy`] if another sync already holds the calendar's event scope,
+    /// or [`ApiError::Sync`] if the provider fetch fails, the store rejects the apply, or the
+    /// calendar has never been synced (there is then no window to expand over —
+    /// [`sync_calendar`](Engine::sync_calendar) first).
     pub async fn reconcile_calendar_events<P: Provider>(
         &self,
         provider: &P,
         account: &AccountId,
+        calendar: &CalendarId,
     ) -> Result<EventSyncReport, ApiError> {
-        reconcile_calendar_events(provider, &self.store, account, worker(), LEASE_TTL)
-            .await
-            .map_err(map_sync_error)
+        reconcile_calendar_events(
+            provider,
+            &self.store,
+            account,
+            calendar,
+            worker(),
+            LEASE_TTL,
+        )
+        .await
+        .map_err(map_sync_error)
     }
 
     /// Re-expands one account's **already-synced** events over `horizon`, resolving

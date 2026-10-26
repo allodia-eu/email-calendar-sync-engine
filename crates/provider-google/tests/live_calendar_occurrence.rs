@@ -62,7 +62,7 @@ async fn live_calendar_removes_one_occurrence() {
 
     // The cursor is taken *after* the create, so the delta below carries the cancellation.
     let cursor = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &primary(), None)
         .await
         .expect("sync events")
         .next_cursor;
@@ -93,7 +93,7 @@ async fn live_calendar_removes_one_occurrence() {
         .expect("remove one occurrence");
 
     let delta = provider
-        .sync_events(&account(), Some(&cursor))
+        .sync_events(&account(), &primary(), Some(&cursor))
         .await
         .expect("sync the change");
     let SyncUpdate::Delta {
@@ -224,7 +224,7 @@ async fn live_calendar_reads_a_moved_and_a_removed_occurrence_off_the_series() {
         .expect("remove one occurrence");
 
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &primary(), None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {

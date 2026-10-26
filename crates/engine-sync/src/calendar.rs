@@ -1,5 +1,17 @@
-//! The calendar sync path: the container and event scopes, the whole-calendar sync, and
-//! the event-only delta a completed write reconciles through.
+//! The calendar sync path: the account's calendar list, every calendar's events, and the
+//! event-only delta a completed write reconciles through.
+//!
+//! # One provider, every calendar
+//!
+//! A provider serves every calendar of the account it signed in to, and [`sync_calendar`]
+//! owns the fan-out: it reads the calendar list once, groups the calendars by the event scope
+//! each answers ([`Provider::event_scope`]), and syncs those scopes concurrently. Where a
+//! protocol's event delta is per calendar (CalDAV, Graph, Google) that is one scope per
+//! calendar; where it is account-wide (JMAP) every calendar shares one, synced once.
+//!
+//! A calendar whose listing carries a [`CollectionTag`] equal to the one its scope recorded at
+//! its last sync has not changed, and is skipped without a request. On a CalDAV account that
+//! makes a quiet refresh one `PROPFIND` of the calendar home, however many calendars it has.
 //!
 //! # Why a write reconciles through the *read* primitive
 //!
@@ -30,34 +42,93 @@
 //! pass. It needs no new provider verb.
 
 use core::time::Duration;
-use std::sync::Mutex;
+use std::collections::BTreeSet;
 
 use engine_core::{
-    calendar::{Calendar, Event},
-    ids::AccountId,
-    search_index::{OwnerAddresses, project_event},
-    sync::{SyncScope, SyncState},
+    calendar::Calendar,
+    ids::{AccountId, CalendarId},
+    sync::{ObjectKind, SyncScope},
     time::{ExpansionWindow, TimeZoneId},
+    version::CollectionTag,
 };
-use engine_provider::{Provider, ProviderError, ScopeSync};
-use engine_recurrence::{Horizon, expand};
-use engine_store::{DerivedWrite, LeaseRequest, Store, StoreRead, SyncApplied, WorkerId};
+use engine_provider::Provider;
+use engine_recurrence::Horizon;
+use engine_store::{LeaseRequest, Store, StoreRead, SyncApplied, WorkerId};
+use futures_util::{StreamExt, stream};
 
-use crate::{ScopeSyncer, SyncError, UnexpandableEvent, changed_objects, run_scope};
+use crate::{
+    SyncError, UnexpandableEvent,
+    calendar_scopes::{CalendarScope, EventScope},
+    run_scope, vanished,
+};
 
-/// What one `sync_calendar` run applied, per scope.
-// Not `Copy`: `unexpandable` carries the events the expander refused, and losing that
-// list to an implicit copy is exactly the silence this field exists to end.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// How many of an account's event scopes sync at once.
+///
+/// A store figure, like [`sync_mail`](crate::sync_mail)'s folder bound: what it limits is how
+/// many scopes contend for the store's single write connection. The requests themselves share
+/// one HTTP client per provider, so they reuse its connections whatever this is.
+const MAX_CONCURRENT_EVENT_SCOPES: usize = 4;
+
+/// What one [`sync_calendar`] run did: the calendar list, then each event scope.
+#[derive(Debug)]
 pub struct CalendarSyncReport {
     /// The calendar-container apply result.
     pub calendars: SyncApplied,
-    /// The event-member apply result, and what it could not expand.
+    /// The event scopes that synced, summed: every scope's applied counts and everything the
+    /// expander refused. A scope that failed or was unchanged adds nothing; see
+    /// [`scopes`](Self::scopes) and [`failures`](Self::failures).
     pub events: EventSyncReport,
+    /// Each event scope's outcome, one per scope the account's calendars answer.
+    pub scopes: Vec<EventScopeSync>,
+    /// How many event scopes were dropped because no listed calendar answers them any more.
+    pub forgotten: usize,
 }
 
-/// What one event-delta pass applied: the event half of [`sync_calendar`], and the whole
-/// of [`reconcile_calendar_events`].
+impl CalendarSyncReport {
+    /// The event scopes that failed, with why. A pass that reports any is incomplete: the
+    /// other calendars synced, these did not.
+    pub fn failures(&self) -> impl Iterator<Item = (&SyncScope, &SyncError)> {
+        self.scopes
+            .iter()
+            .filter_map(|scope| scope.result.as_ref().err().map(|err| (&scope.scope, err)))
+    }
+
+    /// How many event scopes were skipped because their calendar had not changed.
+    #[must_use]
+    pub fn unchanged(&self) -> usize {
+        self.scopes
+            .iter()
+            .filter(|scope| matches!(scope.result, Ok(EventScopePass::Unchanged)))
+            .count()
+    }
+}
+
+/// One event scope's outcome in a [`CalendarSyncReport`].
+#[derive(Debug)]
+pub struct EventScopeSync {
+    /// The scope.
+    pub scope: SyncScope,
+    /// The calendars whose events it holds: one, except where a protocol's event delta is
+    /// account-wide.
+    pub calendars: Vec<CalendarId>,
+    /// What the pass did with it. A scope another worker holds is
+    /// [`StoreError::ScopeHeld`](engine_store::StoreError::ScopeHeld) ([`SyncError::is_busy`]):
+    /// that worker brings the same changes.
+    pub result: Result<EventScopePass, SyncError>,
+}
+
+/// What a pass did with one event scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventScopePass {
+    /// The calendar's listing tag equals the one recorded at its last sync, so nothing was
+    /// asked of it.
+    Unchanged,
+    /// The scope was fetched and applied.
+    Synced(EventSyncReport),
+}
+
+/// What one event-delta pass applied: one scope's half of [`sync_calendar`], and the whole of
+/// [`reconcile_calendar_events`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EventSyncReport {
     /// The event-member apply result.
@@ -71,15 +142,30 @@ pub struct EventSyncReport {
     pub unexpandable: Vec<UnexpandableEvent>,
 }
 
-/// Syncs one account's calendars: calendar containers first, then events.
+impl EventSyncReport {
+    fn absorb(&mut self, other: &Self) {
+        self.applied.upserted += other.applied.upserted;
+        self.applied.tombstoned += other.applied.tombstoned;
+        self.applied.reconciled += other.applied.reconciled;
+        self.unexpandable.extend(other.unexpandable.iter().cloned());
+    }
+}
+
+/// Syncs one account's calendars: the calendar list first, then every calendar's events.
+///
+/// The event scopes sync concurrently, each under its own lease, and each reports its own
+/// outcome: a calendar the server refuses (a share withdrawn, a feed gone) fails alone, and
+/// the others still sync. An event scope no listed calendar answers any more is forgotten
+/// whole, as a vanished mail folder is.
 ///
 /// A changed event is projected for search and **expanded into occurrences** before the
 /// store commit. It expands over the window the **store** already holds
 /// ([`ExpansionWindow`]) — not over `horizon`/`host_zone`, which only *seed* that window on
-/// the very first sync of the scope, when there is nothing materialized yet. That is what
+/// the very first sync of the account, when there is nothing materialized yet. That is what
 /// keeps a sync from silently narrowing what the host has expanded: a routine delta on a
 /// one-week horizon must not delete a changed event's occurrences for the rest of the year
-/// and leave every unchanged event's in place. Moving the window is
+/// and leave every unchanged event's in place. A calendar that appears later starts from the
+/// window the account's other calendars already hold. Moving the window is
 /// [`expand_calendar_horizon`](crate::expand_calendar_horizon)'s job, and it re-expands
 /// *every* event to match.
 ///
@@ -89,8 +175,8 @@ pub struct EventSyncReport {
 ///
 /// # Errors
 ///
-/// Returns [`SyncError`] if the provider fetch fails or the store rejects the apply for a
-/// reason other than a recoverable `StaleLease`.
+/// Returns [`SyncError`] if the calendar list cannot be fetched or applied, or the stored
+/// list cannot be read back. Everything after that is reported per scope.
 pub async fn sync_calendar<P, S>(
     provider: &P,
     store: &S,
@@ -108,20 +194,166 @@ where
     let (calendars, ()) = run_scope(store, account, &CalendarScope(provider), &req)
         .await?
         .into_applied();
+    let listed = stored_calendars(provider, store, account).await?;
+    let groups = event_scopes(provider, account, &listed);
 
-    // The store's window wins. `horizon`/`host_zone` seed it only when the scope has never
-    // been expanded, so a first sync still materializes something without the host having
-    // to call `expand_calendar_horizon` first.
-    let scope = provider.event_scope(account);
-    let window = if let Some(window) = store.expansion_window(&scope).await? {
+    // Before the fan-out, so a calendar that has just left the list is not synced once more.
+    // An empty list judges nothing: it is far more likely a list that failed to arrive.
+    let forgotten = if listed.is_empty() {
+        0
+    } else {
+        let keep: BTreeSet<&SyncScope> = groups.iter().map(|group| &group.scope).collect();
+        let stale = store
+            .account_scopes(account.clone())
+            .await?
+            .into_iter()
+            .filter(|scope| scope.object_kind() == Some(ObjectKind::Event) && !keep.contains(scope))
+            .collect::<Vec<_>>();
+        vanished::forget_scopes(store, account, &req, &stale).await?
+    };
+
+    let seed = account_window(store, &groups)
+        .await?
+        .unwrap_or_else(|| ExpansionWindow::new(horizon, host_zone.clone()));
+    let scopes: Vec<EventScopeSync> = stream::iter(groups.into_iter().map(|group| {
+        let (req, seed) = (&req, &seed);
+        async move {
+            let result = sync_group(provider, store, account, req, seed, &group).await;
+            EventScopeSync {
+                scope: group.scope,
+                calendars: group.calendars.into_iter().map(|c| c.id).collect(),
+                result,
+            }
+        }
+    }))
+    .buffer_unordered(MAX_CONCURRENT_EVENT_SCOPES)
+    .collect()
+    .await;
+
+    let mut events = EventSyncReport::default();
+    for scope in &scopes {
+        if let Ok(EventScopePass::Synced(report)) = &scope.result {
+            events.absorb(report);
+        }
+    }
+    Ok(CalendarSyncReport {
+        calendars,
+        events,
+        scopes,
+        forgotten,
+    })
+}
+
+/// The calendars one event scope holds.
+struct ScopeGroup {
+    scope: SyncScope,
+    calendars: Vec<Calendar>,
+}
+
+impl ScopeGroup {
+    /// The tag the scope is gated on: its calendar's, when it holds exactly one. A scope
+    /// several calendars share has no single listing tag to compare.
+    fn tag(&self) -> Option<&CollectionTag> {
+        match self.calendars.as_slice() {
+            [only] => only.collection_tag.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+/// The account's calendars as the list scope now stores them, the default one first.
+async fn stored_calendars<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+) -> Result<Vec<Calendar>, SyncError>
+where
+    P: Provider,
+    S: StoreRead,
+{
+    let mut calendars = Vec::new();
+    for (_key, payload) in store
+        .scope_objects(&provider.calendar_scope(account))
+        .await?
+    {
+        calendars
+            .push(serde_json::from_value::<Calendar>(payload).map_err(|e| SyncError::decode(&e))?);
+    }
+    // Stable, so the rest keep the provider's sort hint and then the store's order.
+    calendars.sort_by_key(|calendar| (!calendar.is_default, calendar.sort_order));
+    Ok(calendars)
+}
+
+/// Groups `calendars` by the event scope each answers, in the order the first of each appears.
+fn event_scopes<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    calendars: &[Calendar],
+) -> Vec<ScopeGroup> {
+    let mut groups: Vec<ScopeGroup> = Vec::new();
+    for calendar in calendars {
+        let scope = provider.event_scope(account, &calendar.id);
+        match groups.iter_mut().find(|group| group.scope == scope) {
+            Some(group) => group.calendars.push(calendar.clone()),
+            None => groups.push(ScopeGroup {
+                scope,
+                calendars: vec![calendar.clone()],
+            }),
+        }
+    }
+    groups
+}
+
+/// The window the account's event scopes are already expanded over, if any is.
+async fn account_window<S: StoreRead>(
+    store: &S,
+    groups: &[ScopeGroup],
+) -> Result<Option<ExpansionWindow>, SyncError> {
+    for group in groups {
+        if let Some(window) = store.expansion_window(&group.scope).await? {
+            return Ok(Some(window));
+        }
+    }
+    Ok(None)
+}
+
+/// Syncs one event scope, or skips it when its calendar's tag has not moved.
+async fn sync_group<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    req: &LeaseRequest,
+    seed: &ExpansionWindow,
+    group: &ScopeGroup,
+) -> Result<EventScopePass, SyncError>
+where
+    P: Provider,
+    S: Store + StoreRead,
+{
+    let tag = group.tag();
+    // A lease-free read: a tag is only ever recorded with a cursor, so a match means a pass
+    // has already applied everything up to this state of the calendar.
+    if tag.is_some() && store.collection_tag(&group.scope).await?.as_ref() == tag {
+        return Ok(EventScopePass::Unchanged);
+    }
+    let window = if let Some(window) = store.expansion_window(&group.scope).await? {
         window
     } else {
-        let seeded = ExpansionWindow::new(horizon, host_zone.clone());
-        seed_window(store, account, &scope, &req, &seeded).await?;
-        seeded
+        seed_window(store, account, &group.scope, req, seed).await?;
+        seed.clone()
     };
-    let events = sync_event_scope(provider, store, account, &req, &window).await?;
-    Ok(CalendarSyncReport { calendars, events })
+    let calendar = group.calendars[0].id.clone();
+    let report = sync_event_scope(
+        provider,
+        store,
+        account,
+        req,
+        calendar,
+        window,
+        tag.cloned(),
+    )
+    .await?;
+    Ok(EventScopePass::Synced(report))
 }
 
 /// Records the window a first sync will expand over, before it expands.
@@ -146,24 +378,25 @@ where
     Ok(result?)
 }
 
-/// Re-reads one account's events through the provider's **delta** and commits the result:
-/// the read-your-writes step a completed calendar write runs (see the module docs).
+/// Re-reads the events of `calendar`'s scope through the provider's **delta** and commits the
+/// result: the read-your-writes step a completed calendar write runs (see the module docs).
 ///
 /// The event scope only — an event write cannot change the calendar *list*, so the
-/// container scope is not fetched and not claimed.
+/// container scope is not fetched and not claimed — and only the scope of the calendar the
+/// write touched, so a write to one calendar costs one delta however many the account has.
 ///
-/// One round trip on both transports **once the scope has a cursor**, which it does from its
+/// One round trip on every transport **once the scope has a cursor**, which it does from its
 /// first sync onward. With no cursor it is a full snapshot instead (CalDAV re-`REPORT`s every
 /// resource with its `calendar-data` inline; JMAP queries and `/get`s every id) — correct,
 /// but not cheap. In practice a host has synced the calendar before it can name one to write
 /// to, and reconciling before *any* sync is refused outright
 /// ([`SyncError::NoExpansionWindow`]).
 ///
-/// It is also the batch path: a host that writes many events runs one reconcile after the
-/// last of them rather than one per write.
+/// It records no collection tag, which clears the scope's: the write moved the calendar's
+/// tag, and the next pass reads the new one with the listing.
 ///
-/// Occurrences are re-expanded over `horizon` through `host_zone`, exactly as a sync does
-/// — so an edit that **moves** an event moves the rows a calendar grid reads, instead of
+/// Occurrences are re-expanded over the window the store holds, exactly as a sync does —
+/// so an edit that **moves** an event moves the rows a calendar grid reads, instead of
 /// leaving the old instant beside the new one.
 ///
 /// # Errors
@@ -176,6 +409,7 @@ pub async fn reconcile_calendar_events<P, S>(
     provider: &P,
     store: &S,
     account: &AccountId,
+    calendar: &CalendarId,
     worker: WorkerId,
     ttl: Duration,
 ) -> Result<EventSyncReport, SyncError>
@@ -183,140 +417,42 @@ where
     P: Provider,
     S: Store + StoreRead,
 {
-    let scope = provider.event_scope(account);
+    let scope = provider.event_scope(account, calendar);
     let window = store
         .expansion_window(&scope)
         .await?
         .ok_or(SyncError::NoExpansionWindow)?;
     let req = LeaseRequest::new(worker, ttl);
-    sync_event_scope(provider, store, account, &req, &window).await
+    sync_event_scope(
+        provider,
+        store,
+        account,
+        &req,
+        calendar.clone(),
+        window,
+        None,
+    )
+    .await
 }
 
-/// Runs the event scope once, collecting what the expander refused.
+/// Runs one event scope once, collecting what the expander refused.
 async fn sync_event_scope<P, S>(
     provider: &P,
     store: &S,
     account: &AccountId,
     req: &LeaseRequest,
-    window: &ExpansionWindow,
+    calendar: CalendarId,
+    window: ExpansionWindow,
+    tag: Option<CollectionTag>,
 ) -> Result<EventSyncReport, SyncError>
 where
     P: Provider,
     S: Store + StoreRead,
 {
-    let scope = EventScope {
-        provider,
-        window: window.clone(),
-        unexpandable: Mutex::default(),
-    };
+    let scope = EventScope::new(provider, calendar, window, tag);
     let (applied, ()) = run_scope(store, account, &scope, req).await?.into_applied();
     Ok(EventSyncReport {
         applied,
-        unexpandable: scope
-            .unexpandable
-            .into_inner()
-            .expect("unexpandable mutex poisoned"),
+        unexpandable: scope.into_unexpandable(),
     })
-}
-
-/// The calendar-container scope syncer.
-struct CalendarScope<'p, P>(&'p P);
-
-#[async_trait::async_trait]
-impl<P: Provider> ScopeSyncer for CalendarScope<'_, P> {
-    type Halt = core::convert::Infallible;
-    type Meta = ();
-    type Object = Calendar;
-
-    fn scope(&self, account: &AccountId) -> SyncScope {
-        self.0.calendar_scope(account)
-    }
-
-    async fn fetch(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> Result<crate::ScopeFetch<Calendar, (), Self::Halt>, ProviderError> {
-        self.0
-            .sync_calendars(account, cursor)
-            .await
-            .map(|sync| crate::ScopeFetch::Proceed { sync, meta: () })
-    }
-
-    fn derive(&self, _sync: &ScopeSync<Calendar>) -> DerivedWrite {
-        DerivedWrite::empty()
-    }
-}
-
-/// The event-member scope syncer: projects each event and expands its occurrences over
-/// the horizon.
-///
-/// `derive` cannot fail (its signature returns the rows, not a `Result`), but an event the
-/// expander refuses materializes **no occurrences** — it is stored, yet renders nowhere on
-/// a grid. Collecting those here rather than discarding them lets the caller report them,
-/// so the absence is visible instead of silent.
-struct EventScope<'p, P> {
-    provider: &'p P,
-    /// The window the store holds — never one a caller passed. See [`sync_calendar`].
-    window: ExpansionWindow,
-    unexpandable: Mutex<Vec<UnexpandableEvent>>,
-}
-
-#[async_trait::async_trait]
-impl<P: Provider> ScopeSyncer for EventScope<'_, P> {
-    type Halt = core::convert::Infallible;
-    type Meta = ();
-    type Object = Event;
-
-    fn scope(&self, account: &AccountId) -> SyncScope {
-        self.provider.event_scope(account)
-    }
-
-    async fn fetch(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> Result<crate::ScopeFetch<Event, (), Self::Halt>, ProviderError> {
-        self.provider
-            .sync_events(account, cursor)
-            .await
-            .map(|sync| crate::ScopeFetch::Proceed { sync, meta: () })
-    }
-
-    fn derive(&self, sync: &ScopeSync<Event>) -> DerivedWrite {
-        let mut derived = DerivedWrite::empty();
-        let mut unexpandable = Vec::new();
-        for event in changed_objects(&sync.update) {
-            // Clear this event's occurrence rows before rewriting them. They are keyed by
-            // `(scope, event, start, recurrence-id)` and *upserted*, so an event whose start
-            // moved — or whose recurrence shrank — would otherwise keep its old rows beside
-            // the new ones and render at both times. The store applies the reset before the
-            // upserts in one transaction.
-            //
-            // The clear is unwindowed (every row for the event), which is only safe because
-            // the re-expansion below covers the **store's** whole window rather than some
-            // caller's horizon — otherwise it would delete occurrences outside that horizon
-            // and never put them back.
-            derived.reset_occurrences.push(event.id.key().clone());
-            derived.push_event(project_event(event, &OwnerAddresses::default()));
-            // An unsupported recurrence stores the event with no occurrences, never
-            // failing the sync (`calendar-semantics.md`) — but it is then invisible to
-            // every range read, so the reason travels out on the report rather than being
-            // dropped here.
-            match expand(event, &self.window.horizon, &self.window.zone) {
-                Ok(occurrences) => derived.occurrences.extend(occurrences),
-                Err(reason) => unexpandable.push(UnexpandableEvent {
-                    event: event.id.key().clone(),
-                    reason: reason.to_string(),
-                }),
-            }
-        }
-        // `run_scope` re-derives on a stale-lease reclaim, so replace rather than append:
-        // a retry must not report the same event twice.
-        *self
-            .unexpandable
-            .lock()
-            .expect("unexpandable mutex poisoned") = unexpandable;
-        derived
-    }
 }

@@ -9,9 +9,8 @@ use engine_provider::{
     CalendarAddress, CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, Invitee,
     InviteePatch, MeetingDraft, PatchTarget, SchedulingIdentity,
 };
-use provider_caldav::CalDavProvider;
 
-use crate::common::{lines_without, pre_clean, require, server_ical};
+use crate::common::{OnCalendar, lines_without, pre_clean, require, server_ical};
 
 const UID: &str = "caldav-meeting-roundtrip@test.local";
 
@@ -28,7 +27,7 @@ fn at(hour: u8) -> CalendarDateTime {
 /// This proves that a server accepts and preserves the RFC 5545 organiser and attendee
 /// properties emitted by the neutral API. It deliberately proves no delivery: without
 /// RFC 6638 scheduling, the caller must send iTIP messages by another route.
-pub(crate) async fn storage_round_trip(provider: &CalDavProvider, account: &AccountId) {
+pub(crate) async fn storage_round_trip(provider: &OnCalendar, account: &AccountId) {
     let uid = Uid::new(UID).unwrap();
     pre_clean(provider, account, &uid).await;
 

@@ -36,6 +36,7 @@ impl Provider for BlockingSync {
     async fn sync_events(
         &self,
         account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         if let Some(started) = self.started.lock().unwrap().take() {
@@ -47,7 +48,7 @@ impl Provider for BlockingSync {
             // sync leaves open.
             let _ = release.await;
         }
-        self.inner.sync_events(account, cursor).await
+        self.inner.sync_events(account, calendar, cursor).await
     }
 }
 
@@ -75,6 +76,7 @@ impl Provider for UnreadableEvents {
     async fn sync_events(
         &self,
         _account: &AccountId,
+        _calendar: &CalendarId,
         _cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         Err(ProviderError::retryable("the event fetch is down"))

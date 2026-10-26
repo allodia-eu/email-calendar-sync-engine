@@ -43,17 +43,13 @@ pub(crate) fn amsterdam() -> TimeZoneId {
     TimeZoneId::iana("Europe/Amsterdam").unwrap()
 }
 
-/// A calendar provider bound to `calendar`, reading times in Europe/Amsterdam.
-pub(crate) fn calendar_provider(token: &str, calendar: CalendarId) -> GraphCalendarProvider {
-    calendar_provider_with_window(token, calendar, calendar_window())
+/// A calendar provider for the account's calendars, reading times in Europe/Amsterdam.
+pub(crate) fn calendar_provider(token: &str) -> GraphCalendarProvider {
+    calendar_provider_with_window(token, calendar_window())
 }
 
 /// A calendar provider whose read window contains a generated live-test date.
-pub(crate) fn calendar_provider_around(
-    token: &str,
-    calendar: CalendarId,
-    date: time::Date,
-) -> GraphCalendarProvider {
+pub(crate) fn calendar_provider_around(token: &str, date: time::Date) -> GraphCalendarProvider {
     let window = CalendarWindow::new(
         (date - time::Duration::days(1))
             .to_string()
@@ -64,14 +60,10 @@ pub(crate) fn calendar_provider_around(
             .parse()
             .unwrap(),
     );
-    calendar_provider_with_window(token, calendar, window)
+    calendar_provider_with_window(token, window)
 }
 
-fn calendar_provider_with_window(
-    token: &str,
-    calendar: CalendarId,
-    window: CalendarWindow,
-) -> GraphCalendarProvider {
+fn calendar_provider_with_window(token: &str, window: CalendarWindow) -> GraphCalendarProvider {
     let client = GraphClient::connect(
         token,
         &engine_tls::TlsClientConfig::bundled(),
@@ -79,7 +71,7 @@ fn calendar_provider_with_window(
         &engine_http::test_server::user_agent(),
     )
     .expect("client");
-    GraphCalendarProvider::new(client, calendar, window, amsterdam())
+    GraphCalendarProvider::new(client, window, amsterdam())
 }
 
 pub(crate) fn zoned(local: &str) -> CalendarDateTime {

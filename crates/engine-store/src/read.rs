@@ -11,6 +11,7 @@ use engine_core::{
     search_index::MailRow,
     sync::SyncScope,
     time::{ExpansionWindow, Horizon},
+    version::CollectionTag,
     write::PendingOpId,
 };
 use serde::{Deserialize, Serialize};
@@ -199,6 +200,17 @@ pub trait StoreRead: Send + Sync {
     ///
     /// Returns `StoreError::Backend` on a backend failure.
     async fn expansion_window(&self, scope: &SyncScope) -> Result<Option<ExpansionWindow>>;
+
+    /// The [`CollectionTag`] recorded with the scope's cursor, or `None` if none was.
+    ///
+    /// A lease-free read: a pass compares it with the collection listing's tag before claiming
+    /// the scope, and skips a collection whose members have not moved
+    /// ([`ApplyBatch::collection_tag`](crate::ApplyBatch::collection_tag)).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn collection_tag(&self, scope: &SyncScope) -> Result<Option<CollectionTag>>;
 
     /// The provider keys of live (non-tombstoned) objects in a scope.
     ///

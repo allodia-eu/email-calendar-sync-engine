@@ -24,9 +24,8 @@ use engine_provider::{
     CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence,
     PatchTarget, Provider,
 };
-use provider_caldav::CalDavProvider;
 
-use super::{pre_clean, require};
+use super::{OnCalendar, pre_clean, require};
 
 const SURVIVAL_UID: &str = "live-caldav-survival@test.local";
 const SERIES_START: &str = "2026-06-01T09:30:00";
@@ -46,7 +45,7 @@ fn amsterdam(local: &str) -> CalendarDateTime {
 
 /// Runs the three experiments and asserts each against what the adapter advertises.
 pub(crate) async fn survival_is_what_the_adapter_advertises(
-    provider: &CalDavProvider,
+    provider: &OnCalendar,
     account: &AccountId,
 ) {
     let declared = provider
@@ -111,7 +110,7 @@ struct Outcome {
 }
 
 /// Builds a series with an override, applies `edit` to the master, and reads it back.
-async fn measure<F>(provider: &CalDavProvider, account: &AccountId, edit: F) -> Outcome
+async fn measure<F>(provider: &OnCalendar, account: &AccountId, edit: F) -> Outcome
 where
     F: FnOnce(EventPatch) -> EventPatch,
 {
@@ -148,7 +147,7 @@ where
 }
 
 /// A fresh weekly series whose second occurrence has its own title, at its own time.
-async fn series_with_an_override(provider: &CalDavProvider, account: &AccountId) -> Event {
+async fn series_with_an_override(provider: &OnCalendar, account: &AccountId) -> Event {
     let uid = Uid::new(SURVIVAL_UID).unwrap();
     pre_clean(provider, account, &uid).await;
 

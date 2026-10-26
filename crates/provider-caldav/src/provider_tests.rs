@@ -9,9 +9,10 @@ use core::time::Duration;
 
 use engine_core::{
     calendar::{Calendar, Event},
-    ids::{AccountId, ProviderKey},
+    ids::{AccountId, CalendarId, ProviderKey},
     sync::SyncScope,
     time::TimeZoneId,
+    version::CollectionTag,
 };
 use engine_provider::{IgnoreConnectSteps, Provider};
 use engine_recurrence::Horizon;
@@ -45,14 +46,14 @@ const HOME: &str = include_str!("../tests/fixtures/calendar-home.xml");
 const SYNC_INITIAL: &str = include_str!("../tests/fixtures/sync-initial.xml");
 
 async fn connect(exec: Replay) -> CalDavProvider {
-    CalDavProvider::with_executor(
-        Box::new(exec),
-        "/.well-known/caldav",
-        "default",
-        &IgnoreConnectSteps,
-    )
-    .await
-    .expect("discovery")
+    CalDavProvider::with_executor(Box::new(exec), "/.well-known/caldav", &IgnoreConnectSteps)
+        .await
+        .expect("discovery")
+}
+
+/// The seed's one calendar, as the home listing names it.
+fn default_calendar() -> CalendarId {
+    CalendarId::try_from("/dav/cal/alice%40test.local/default/").unwrap()
 }
 
 async fn load<T: DeserializeOwned>(
@@ -121,16 +122,16 @@ async fn exposes_dav_scopes_and_the_calendar_capabilities() {
             account: account.clone()
         }
     );
-    match provider.event_scope(&account) {
-        SyncScope::DavCollection { collection, .. } => {
-            assert_eq!(collection.as_str(), "/dav/cal/alice%40test.local/default/");
+    // Each calendar's events sync under a scope keyed by that calendar's href.
+    for href in [
+        "/dav/cal/alice%40test.local/default/",
+        "/dav/cal/alice%40test.local/work/",
+    ] {
+        match provider.event_scope(&account, &CalendarId::try_from(href).unwrap()) {
+            SyncScope::DavCollection { collection, .. } => assert_eq!(collection.as_str(), href),
+            other => panic!("expected a DavCollection scope, got {other:?}"),
         }
-        other => panic!("expected a DavCollection scope, got {other:?}"),
     }
-    assert_eq!(
-        provider.collection_href(),
-        "/dav/cal/alice%40test.local/default/"
-    );
 }
 
 #[tokio::test]
@@ -201,8 +202,14 @@ async fn calendar_sync_loop_normalizes_folds_and_expands_the_seed() {
     let calendar: Calendar = load(&store, &calendar_scope, &calendar_keys[0]).await;
     assert_eq!(calendar.name, "Stalwart Calendar (alice@test.local)");
 
-    // ---- Events: six seed resources, each a member of the bound calendar. ----
-    let event_scope = provider.event_scope(&account);
+    assert_eq!(
+        calendar.collection_tag.as_ref().map(CollectionTag::as_str),
+        Some("urn:stalwart:davsync:16"),
+        "the listing's sync-token is the calendar's tag",
+    );
+
+    // ---- Events: six seed resources, each a member of the listed calendar. ----
+    let event_scope = provider.event_scope(&account, &calendar.id);
     let event_keys = store.object_keys(&event_scope).await.unwrap();
     assert_eq!(event_keys.len(), 6, "six seed resources stored");
 
@@ -212,7 +219,7 @@ async fn calendar_sync_loop_normalizes_folds_and_expands_the_seed() {
     }
     assert!(
         events.iter().all(|e| e.calendars.contains(&calendar.id)),
-        "every event references the bound calendar (referential integrity)"
+        "every event references the listed calendar (referential integrity)"
     );
 
     // The meeting normalized its merged participants and the virtual location.
@@ -266,65 +273,15 @@ async fn calendar_sync_loop_normalizes_folds_and_expands_the_seed() {
 }
 
 #[tokio::test]
-async fn calendar_list_includes_a_bound_collection_outside_the_home() {
-    // A provider bound to an absolute collection NOT under the discovered home:
-    // sync_calendars must still represent it, so events synced under it never
-    // reference a calendar the container snapshot omits.
-    // PRINCIPAL drives discovery; HOME is the calendar-list response (it lists only
-    // the default collection, NOT /shared/team-calendar/).
-    let provider = CalDavProvider::with_executor(
-        Box::new(replay(&[PRINCIPAL, HOME])),
-        "/.well-known/caldav",
-        "/shared/team-calendar/",
-        &IgnoreConnectSteps,
-    )
-    .await
-    .expect("discovery");
-    let account = AccountId::try_from("acct").unwrap();
-
-    let listed = provider
-        .sync_calendars(&account, None)
-        .await
-        .expect("sync_calendars");
-    let objects = match &listed.update {
-        SyncUpdate::Snapshot { objects, .. } => objects,
-        SyncUpdate::Delta { .. } => panic!("calendar list is a snapshot"),
-    };
-    assert!(
-        objects
-            .iter()
-            .any(|c| c.id.as_str() == "/shared/team-calendar/"),
-        "the bound out-of-home collection is represented in the container snapshot"
-    );
-    // The list cursor is the named sentinel, never the empty string.
-    assert_eq!(listed.next_cursor.as_str(), "caldav-calendar-list");
-}
-
-#[tokio::test]
-async fn rebind_switches_collection_without_rediscovery() {
-    // connect runs discovery once; rebind reuses the home + executor with no extra
-    // PROPFIND, only moving the bound collection.
+async fn mints_a_resource_href_under_the_calendar_it_is_given() {
     let provider = connect(replay(&[PRINCIPAL])).await;
-    let account = AccountId::try_from("acct").unwrap();
-    let rebound = provider.rebind("/calendars/other/").expect("rebind");
-    match rebound.event_scope(&account) {
-        SyncScope::DavCollection { collection, .. } => {
-            assert_eq!(collection.as_str(), "/calendars/other/");
-        }
-        other => panic!("expected a DavCollection scope, got {other:?}"),
-    }
-    assert_eq!(rebound.collection_href(), "/calendars/other/");
-}
-
-#[tokio::test]
-async fn mints_a_resource_href_under_the_bound_collection() {
-    let provider = connect(replay(&[PRINCIPAL])).await;
+    let calendar = default_calendar();
     // The conventional `<collection>/<uid>.ics`, with the UID canonically encoded:
     // `@` → `%40` (the form servers store and report — verified live against
     // Stalwart), so the minted href matches the server's resource href for a later
     // If-Match/DELETE.
     let href = provider
-        .event_href(&Uid::new("oneoff-2001@test.local").unwrap())
+        .event_href(&calendar, &Uid::new("oneoff-2001@test.local").unwrap())
         .unwrap();
     assert_eq!(
         href.as_str(),
@@ -332,11 +289,63 @@ async fn mints_a_resource_href_under_the_bound_collection() {
     );
     // A path-unsafe UID (space, slash) is percent-encoded into one segment, so the
     // href stays a single valid resource name.
-    let odd = provider.event_href(&Uid::new("a b/c").unwrap()).unwrap();
+    let odd = provider
+        .event_href(&calendar, &Uid::new("a b/c").unwrap())
+        .unwrap();
     assert_eq!(
         odd.as_str(),
         "/dav/cal/alice%40test.local/default/a%20b%2Fc.ics"
     );
+    // Another calendar of the same home, by href or by its name under the home.
+    let uid = Uid::new("x@test.local").unwrap();
+    for named in ["/dav/cal/alice%40test.local/work/", "work"] {
+        let href = provider
+            .event_href(&CalendarId::try_from(named).unwrap(), &uid)
+            .unwrap();
+        assert_eq!(
+            href.as_str(),
+            "/dav/cal/alice%40test.local/work/x%40test.local.ics"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_create_is_written_into_the_calendar_its_draft_names() {
+    let replay = std::sync::Arc::new(Replay::new(vec![
+        ok(PRINCIPAL),
+        options(Some("1, 3, calendar-access")),
+        crate::test_support::wrote(201, Some("\"e1\"")),
+    ]));
+    let provider = CalDavProvider::with_executor(
+        Box::new(std::sync::Arc::clone(&replay)),
+        "/.well-known/caldav",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .expect("discovery");
+    let work = CalendarId::try_from("/dav/cal/alice%40test.local/work/").unwrap();
+    let stamp = "2026-06-20T00:00:00Z".parse().unwrap();
+    let start =
+        engine_core::time::CalendarDateTime::Floating("2026-06-22T09:00:00".parse().unwrap());
+    let draft = EventDraft::new(
+        work,
+        Uid::new("new@test.local").unwrap(),
+        "Planning",
+        start.clone(),
+        start,
+        stamp,
+    );
+
+    let receipt = provider
+        .create_event(&AccountId::try_from("a").unwrap(), &draft)
+        .await
+        .expect("create");
+
+    assert_eq!(
+        receipt.event.as_str(),
+        "/dav/cal/alice%40test.local/work/new%40test.local.ics"
+    );
+    assert_eq!(replay.writes()[0].href, receipt.event.as_str());
 }
 
 // The model invariant (`calendar-semantics.md`, `modeling.md`): a CalDAV event carrying
@@ -384,7 +393,6 @@ async fn a_patch_round_trips_raw_ical_preserving_non_jscalendar_properties() {
     let provider = CalDavProvider::with_executor(
         Box::new(exec.clone()),
         "/.well-known/caldav",
-        "default",
         &IgnoreConnectSteps,
     )
     .await
