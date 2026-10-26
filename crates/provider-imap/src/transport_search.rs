@@ -7,7 +7,8 @@
 //! starting at 1) reaches the rest. A search that returns as many matches as the limit, or
 //! that is refused with `NO [LIMIT]`, is therefore read as cut off, and the window is decided from
 //! each message's own `INTERNALDATE`, fetched no more than the limit at a time. A window under the
-//! limit, or a server stating none, keeps the single search.
+//! limit, or a server stating none, keeps the single search (`docs/spec-deviations.md`,
+//! YAHOO-12 and YAHOO-13).
 //!
 //! The dates are paged with `PARTIAL` (RFC 9394) where the server offers it: each
 //! `UID FETCH <low>:* … (PARTIAL 1:<limit>)` returns the next `limit` messages, so the pages
