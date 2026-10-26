@@ -268,7 +268,12 @@ where
                 }
                 // A correction whose first copy has not gone out yet takes its place, so one chunk
                 // never names a message twice.
-                match buf.iter_mut().find(|held| !first_seen && held.id == message.id) {
+                let held = if first_seen {
+                    None
+                } else {
+                    buf.iter_mut().find(|held| held.id == message.id)
+                };
+                match held {
                     Some(held) => *held = message,
                     None => buf.push(message),
                 }

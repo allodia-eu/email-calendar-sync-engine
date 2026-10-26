@@ -24,6 +24,8 @@ struct ChunkedMail {
     clock: ManualClock,
     steal_before: Option<usize>,
     stolen: AtomicBool,
+    /// The messages the pass covers, where a chunk sends one again.
+    messages: Option<usize>,
 }
 
 impl ChunkedMail {
@@ -42,7 +44,14 @@ impl ChunkedMail {
             clock,
             steal_before: None,
             stolen: AtomicBool::new(false),
+            messages: None,
         }
+    }
+
+    /// Reports `messages` as the pass's total, for chunks that send a message again.
+    fn covering(mut self, messages: usize) -> Self {
+        self.messages = Some(messages);
+        self
     }
 
     fn stealing_before(mut self, index: usize) -> Self {
@@ -51,7 +60,8 @@ impl ChunkedMail {
     }
 
     fn total(&self) -> usize {
-        self.chunks.iter().map(Vec::len).sum()
+        self.messages
+            .unwrap_or_else(|| self.chunks.iter().map(Vec::len).sum())
     }
 }
 
@@ -432,4 +442,47 @@ async fn an_account_pass_repairs_mail_the_migration_left_ungrouped() {
         "the reply belongs with its original"
     );
     assert_eq!(thread_of("m1").unwrap().as_str(), "reply@h");
+}
+
+/// An IMAP backfill sends a message again once its attachment flag is settled. The repeat is
+/// written, but the pass counts each message once, so progress never runs past its total.
+#[tokio::test]
+async fn a_message_sent_again_is_counted_once() {
+    let store = Arc::new(SqliteStore::open_in_memory(clock()).unwrap());
+    let provider = ChunkedMail::new(
+        vec![mailbox("a", "Inbox", Some(MailboxRole::Inbox))],
+        vec![
+            vec![message("m1", "a", "One"), message("m2", "a", "Two")],
+            vec![message("m3", "a", "Three")],
+            vec![message("m1", "a", "One, corrected")],
+        ],
+        Arc::clone(&store),
+        clock(),
+    )
+    .covering(3);
+    let recorded: Commits = Mutex::new(Vec::new());
+    let observer = |commit: &SyncCommit<'_>| {
+        recorded
+            .lock()
+            .unwrap()
+            .push((commit.fetched, commit.total, Vec::new()));
+    };
+
+    let report = sync_mail(
+        core::slice::from_ref(&provider),
+        &*store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        StreamTuning::responsive(),
+        &observer,
+    )
+    .await;
+
+    let seq = recorded.lock().unwrap();
+    assert_eq!(
+        seq.iter().map(|(f, ..)| *f).collect::<Vec<_>>(),
+        vec![2, 3, 3]
+    );
+    assert_eq!(report.upserted(), 3);
 }

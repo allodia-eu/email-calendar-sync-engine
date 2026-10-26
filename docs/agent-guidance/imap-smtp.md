@@ -312,8 +312,9 @@ is authoritative for the `provider-caldav` calendar client.
   one. Yahoo builds
   `BODYSTRUCTURE` at about 25 ms a message, single-part ones included, against under 3 ms for
   the rest of the metadata together, and about half of a typical inbox is one text body. The
-  streamed backfill commits a settled row as it arrives, and a batch's open rows together once
-  their structure is in. Those sets are shared out over up to three **spare** pooled
+  streamed backfill commits every row as it arrives, an open one as having no attachment, and
+  once a batch's structure is in sends again only the open rows it shows carry one, before the
+  batch's checkpoint. Those sets are shared out over up to three **spare** pooled
   connections (`ImapPool::try_acquire_for` lends only a free permit and never waits), one per 20
   open rows beyond the first 20; a helper that fails is discarded and its share asked again on
   the pass's own connection. On Yahoo this took a 2577-message cold pass from about 45 s to about

@@ -156,6 +156,9 @@ where
         // it per additive checkpoint, or only on the final reconcile chunk.
         let pass_cursor = claim.state;
         let mut present: BTreeSet<ProviderKey> = BTreeSet::new();
+        // A message a chunk sends again (an IMAP backfill's settled attachment flag) is written,
+        // but counted once, so progress never runs past its total.
+        let mut counted: BTreeSet<ProviderKey> = BTreeSet::new();
         let mut totals = RunningApplied::default();
         let mut fetched = 0usize;
         let mut stream = provider.stream_email(
@@ -182,7 +185,12 @@ where
                     return Err(other.into());
                 }
             };
-            let count = chunk.changed.len();
+            let count = chunk
+                .changed
+                .iter()
+                .filter(|message| counted.insert(message.id.key().clone()))
+                .count();
+            let repeats = chunk.changed.len() - count;
             let total = chunk.total;
             let is_reconcile_final = chunk.is_reconcile_final();
             let projected = Instant::now();
@@ -215,7 +223,8 @@ where
             let applied_result = store.apply_sync_update(&lease, batch).await;
             timing.add_storing(stored);
             match applied_result {
-                Ok(applied) => {
+                Ok(mut applied) => {
+                    applied.upserted = applied.upserted.saturating_sub(repeats);
                     totals.add(applied);
                     fetched += count;
                     observer.committed(&SyncCommit {
