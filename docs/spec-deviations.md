@@ -25,7 +25,9 @@ response), so the claim can be checked without trusting this page.
 ## Yahoo
 
 Yahoo serves CalDAV at `caldav.calendar.yahoo.com` and CardDAV at `carddav.address.yahoo.com`, two
-servers that behave differently. Last observed October 2026.
+servers that behave differently, and IMAP at `imap.mail.yahoo.com`, which advertises
+`MESSAGELIMIT=1000`, `PARTIAL` and `UIDONLY` but neither CONDSTORE nor QRESYNC. Last observed
+October 2026.
 
 | Id | What the server does | What the RFC requires | How the engine copes | Reported |
 |---|---|---|---|---|
@@ -40,6 +42,9 @@ servers that behave differently. Last observed October 2026.
 | YAHOO-9 | Both servers: perform a `DELETE` whose `If-Match` names an ETag the resource no longer has, and answer `204`. A `PUT` with the same stale `If-Match` is refused with `412`. | RFC 9110 §13.1.1: an origin server MUST NOT perform the requested method if a received `If-Match` condition evaluates to false. | Before every guarded delete, on every server, the resource's current ETag (or `schedule-tag`, for a delete guarded by one) is read, and a different one is answered `412` without sending the delete (`delete_guard.rs`). A change landing between the read and the delete still goes on such a server. | Not yet |
 | YAHOO-10 | CalDAV: adds an `ORGANIZER` (the account itself, with `SENT-BY`) to an event created without one and with no attendees. | RFC 5545 §3.8.4.3: `ORGANIZER` MUST NOT be specified in a component that is not group-scheduled but only on a single user's calendar. | Read as stored: the account appears as the organiser of its own appointments. | Not yet |
 | YAHOO-11 | CalDAV: stores the event with `STATUS:CONFIRMED` twice in one `VEVENT`. | RFC 5545 §3.6.1: `status` is among the event properties that MUST NOT occur more than once. | The parser reads the event; both values are the same. | Not yet |
+| YAHOO-12 | IMAP: answers a `UID SEARCH SINCE` matching more messages than its `MESSAGELIMIT` with the 1000 newest by date and a plain `OK`, with no response code. On an inbox of 2578, `SINCE` 183 days, 365 days and ten years back each return exactly 1000. | RFC 9738 §3.1: when a `SEARCH` would operate on more messages than the limit, the server MUST return the `MESSAGELIMIT` response code, so the client can repeat the operation for the rest. | A search returning exactly as many matches as the limit is read as cut off, and the window is decided from each message's `INTERNALDATE` instead, fetched a limit at a time (`transport_search.rs`). | Not yet |
+| YAHOO-13 | IMAP: ignores `UID SEARCH RETURN (PARTIAL 1:10)`, answering a plain `SEARCH` with every match up to the limit, and refuses any partial range not starting at 1 with `BAD [CLIENTBUG]` ("Valid partial range starts with 1 and is below MESSAGELIMIT"). It honours `PARTIAL` on `FETCH`. | RFC 9394 §3.1: the `PARTIAL` return option causes the server to provide the results in an `ESEARCH` response; §4 makes a range such as `1001:1010` valid, and the server returns the results that are in it. | A search is never paged. The `INTERNALDATE` reads of YAHOO-12 are paged with `PARTIAL` on `UID FETCH` (`transport_search.rs`). | Not yet |
+| YAHOO-14 | IMAP: answers `ENABLE CONDSTORE` with `* ENABLED CONDSTORE`, though `CONDSTORE` is not advertised, and then refuses `UID FETCH … (CHANGEDSINCE 1)` with `NO [CANNOT]`. | RFC 7162 §3.1: CONDSTORE adds the `CHANGEDSINCE` `FETCH` modifier, and after a CONDSTORE enabling command the server MUST include mod-sequence data in all subsequent untagged `FETCH` responses. | CONDSTORE is only used through QRESYNC, which Yahoo does not advertise, so its folders are reconciled by reading every held message's flags (`resync.rs`). | Not yet |
 
 ## Google
 
