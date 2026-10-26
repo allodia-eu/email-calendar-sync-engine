@@ -66,7 +66,9 @@ pub enum SyncError {
     /// A calendar reconcile was asked for on an event scope that has never been expanded,
     /// so there is no window to re-expand a changed event over.
     ///
-    /// Only reachable by reconciling before the account's calendars have ever synced. It is
+    /// Only reachable by reconciling a calendar no [`sync_calendar`] pass has reached: before
+    /// the account's first, or one its listing does not name. A listed calendar's window is
+    /// recorded before its first fetch, so a pass that then fails still leaves one. It is
     /// an error rather than a silent no-op because expanding nothing would store the events
     /// with **zero** occurrence rows *and* advance the cursor — so the next sync would see
     /// no changes and the grid would stay empty forever. Sync the calendar first.

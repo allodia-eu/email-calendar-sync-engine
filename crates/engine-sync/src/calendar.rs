@@ -390,7 +390,7 @@ where
 /// first sync onward. With no cursor it is a full snapshot instead (CalDAV re-`REPORT`s every
 /// resource with its `calendar-data` inline; JMAP queries and `/get`s every id) — correct,
 /// but not cheap. In practice a host has synced the calendar before it can name one to write
-/// to, and reconciling before *any* sync is refused outright
+/// to, and reconciling a calendar no pass has reached is refused outright
 /// ([`SyncError::NoExpansionWindow`]).
 ///
 /// It records no collection tag, which clears the scope's: the write moved the calendar's

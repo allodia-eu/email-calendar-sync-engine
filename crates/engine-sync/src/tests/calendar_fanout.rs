@@ -296,6 +296,33 @@ async fn a_calendar_the_server_refuses_fails_alone() {
 }
 
 #[tokio::test]
+async fn a_write_to_a_calendar_whose_first_pass_failed_still_reconciles() {
+    // The window is recorded before the first fetch, so the failed pass left one to expand
+    // the written event over.
+    let provider = FakeDav::with(&[
+        ("home", "h1", &[("evt-home", 2)]),
+        ("shared", "s1", &[("evt-shared", 3)]),
+    ]);
+    provider.fail("shared");
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    sync(&provider, &store).await;
+
+    provider.put("shared", "s2", &[("evt-shared", 3), ("evt-written", 6)]);
+    let report = reconcile_calendar_events(
+        &provider,
+        &store,
+        &account(),
+        &cal("shared"),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.applied.upserted, 2);
+}
+
+#[tokio::test]
 async fn a_calendar_added_later_expands_over_the_window_the_account_already_has() {
     let provider = FakeDav::with(&[("home", "h1", &[("evt-home", 2)])]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
