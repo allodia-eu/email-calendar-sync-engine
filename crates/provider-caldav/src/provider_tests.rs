@@ -23,7 +23,7 @@ use store_sqlite::SqliteStore;
 
 use super::*;
 use crate::{
-    href::{redirect_href, resolve_collection, resolve_reference},
+    href::{collection_href, redirect_href, resolve_reference},
     test_support::{Replay, ok, options},
 };
 
@@ -70,22 +70,16 @@ async fn load<T: DeserializeOwned>(
 }
 
 #[test]
-fn resolves_relative_and_absolute_collections() {
-    assert_eq!(
-        resolve_collection("/dav/cal/u/", "default"),
-        "/dav/cal/u/default/"
-    );
-    assert_eq!(resolve_collection("/dav/cal/u", "work"), "/dav/cal/u/work/");
-    // An absolute collection path is used verbatim (with a trailing slash).
-    assert_eq!(
-        resolve_collection("/dav/cal/u/", "/shared/team/"),
-        "/shared/team/"
-    );
+fn a_calendar_is_named_by_its_collection_href_alone() {
+    // An absolute collection path is used verbatim, with its trailing slash.
+    assert_eq!(collection_href("/shared/team").unwrap(), "/shared/team/");
     // A full-URL href (as some servers return) passes through unchanged.
     assert_eq!(
-        resolve_collection("/dav/cal/u/", "https://dav.example.com/cal/x/"),
+        collection_href("https://dav.example.com/cal/x/").unwrap(),
         "https://dav.example.com/cal/x/"
     );
+    // A bare name would be a second spelling of a listed calendar, with a scope of its own.
+    assert!(collection_href("work").is_err());
 }
 
 /// Stalwart names its principal at `/dav/cal/` but answers the address set only on the
@@ -296,17 +290,18 @@ async fn mints_a_resource_href_under_the_calendar_it_is_given() {
         odd.as_str(),
         "/dav/cal/alice%40test.local/default/a%20b%2Fc.ics"
     );
-    // Another calendar of the same home, by href or by its name under the home.
+    // Another calendar of the same home, by its href; never by a bare name.
     let uid = Uid::new("x@test.local").unwrap();
-    for named in ["/dav/cal/alice%40test.local/work/", "work"] {
-        let href = provider
-            .event_href(&CalendarId::try_from(named).unwrap(), &uid)
-            .unwrap();
-        assert_eq!(
-            href.as_str(),
-            "/dav/cal/alice%40test.local/work/x%40test.local.ics"
-        );
-    }
+    let work = CalendarId::try_from("/dav/cal/alice%40test.local/work/").unwrap();
+    assert_eq!(
+        provider.event_href(&work, &uid).unwrap().as_str(),
+        "/dav/cal/alice%40test.local/work/x%40test.local.ics"
+    );
+    assert!(
+        provider
+            .event_href(&CalendarId::try_from("work").unwrap(), &uid)
+            .is_err()
+    );
 }
 
 #[tokio::test]

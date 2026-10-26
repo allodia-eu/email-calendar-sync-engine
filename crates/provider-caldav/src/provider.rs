@@ -31,7 +31,7 @@ use crate::{
     credential_hosts::refuse_unpermitted_base,
     discovery,
     error::CalDavError,
-    href::{encode_path_segment, resolve_collection},
+    href::{collection_href, encode_path_segment},
     transport::{DavClient, DavExecutor},
 };
 
@@ -161,9 +161,9 @@ impl CalDavProvider {
 
     /// Mints the resource href for a **new** event in `calendar`:
     /// `<collection>/<uid>.ics`, the universal CalDAV convention (RFC 4791 §5.3.2 lets the
-    /// client choose the resource name). A calendar named relative to the home resolves
-    /// under it. The `uid` is percent-encoded as a single path
-    /// segment, so an unusual `UID` still yields a valid href.
+    /// client choose the resource name). `calendar` is the href the listing gave it. The
+    /// `uid` is percent-encoded as a single path segment, so an unusual `UID` still yields a
+    /// valid href.
     ///
     /// [`create_event`](CalendarWrites::create_event) mints this itself, so a host does not need
     /// it — a create states an [`EventDraft`] and learns the resulting id from the receipt.
@@ -174,12 +174,11 @@ impl CalDavProvider {
     ///
     /// # Errors
     ///
-    /// Returns [`CalDavError`] if the resolved href is not a valid event key (the
-    /// collection href and the non-empty suffix make this unreachable in practice).
+    /// Returns [`CalDavError`] if `calendar` is not a calendar's href.
     pub fn event_href(&self, calendar: &CalendarId, uid: &Uid) -> Result<EventId, CalDavError> {
         let href = format!(
             "{}{}.ics",
-            resolve_collection(&self.home_href, calendar.as_str()),
+            collection_href(calendar.as_str())?,
             encode_path_segment(uid.as_str())
         );
         EventId::try_from(href.as_str())
@@ -236,7 +235,7 @@ impl Provider for CalDavProvider {
     ) -> ProviderResult<ScopeSync<Event>> {
         Ok(crate::sync::sync_events(
             self.executor.as_ref(),
-            &resolve_collection(&self.home_href, calendar.as_str()),
+            &collection_href(calendar.as_str())?,
             calendar,
             cursor,
         )

@@ -1,4 +1,4 @@
-//! Href arithmetic: resolving a calendar argument to its collection href, and the canonical
+//! Href arithmetic: the collection href a calendar id names, and the canonical
 //! percent-encoding a minted resource href must use.
 //!
 //! Split out of `provider.rs` — these are pure string functions with no transport and no
@@ -52,18 +52,22 @@ pub(crate) fn resolve_reference(at: &str, reference: &str) -> Result<String, Cal
         .map_err(|e| CalDavError::protocol(format!("bad href {reference:?}: {e}")))
 }
 
-/// Resolves a calendar argument to its collection href: an absolute path or full URL is
-/// used as-is (a discovered calendar href), otherwise a bare name is joined onto the
-/// calendar home. All end in a trailing slash (CalDAV collections are directories).
-pub(crate) fn resolve_collection(home_href: &str, calendar: &str) -> String {
+/// The collection href a calendar id names: the href the listing gave the calendar, ending in
+/// the slash every collection path ends in.
+///
+/// A calendar is named by that href alone, because its event scope and its events are keyed on
+/// the id: a second spelling of one calendar would sync it twice. A bare name is refused.
+///
+/// # Errors
+///
+/// Returns [`CalDavError::Protocol`] when `calendar` is neither an absolute path nor a URL.
+pub(crate) fn collection_href(calendar: &str) -> Result<String, CalDavError> {
     if calendar.starts_with('/') || calendar.contains("://") {
-        return with_trailing_slash(calendar);
+        return Ok(with_trailing_slash(calendar));
     }
-    format!(
-        "{}{}/",
-        with_trailing_slash(home_href),
-        calendar.trim_matches('/')
-    )
+    Err(CalDavError::protocol(format!(
+        "{calendar:?} is not a calendar's href"
+    )))
 }
 
 /// Ensures `href` ends with a single trailing slash.

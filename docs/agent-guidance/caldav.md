@@ -460,8 +460,9 @@ are split escape-aware so the writer and the parser agree.
 
   `CalDavProvider::event_href` mints the conventional `<collection>/<uid>.ics` resource href
   for a create (percent-encoding the `UID` as one path segment) from the draft's `UID`; a
-  patch/delete reuses the stored `EventId`. A create lands in the calendar its draft names: a
-  listed href, or a name the provider resolves under the home.
+  patch/delete reuses the stored `EventId`. A create lands in the calendar its draft names,
+  by the href the listing gave it; a bare name is refused, since it would be a second id for
+  a listed calendar, keyed to a scope of its own.
 - **The new `ETag` is read back where the server supplies it.** A successful PUT returns the
   resource's new entity tag in the `ETag` response header (RFC 4791 §5.3.4), surfaced on the
   receipt as `revisions`; when the server omits it the receipt carries an empty

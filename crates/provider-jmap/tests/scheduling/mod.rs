@@ -167,8 +167,28 @@ pub(crate) async fn jmap_events(provider: &JmapProvider, account: &AccountId) ->
 }
 
 pub(crate) async fn dav_events(provider: &CalDavProvider, account: &AccountId) -> Vec<Event> {
-    // The organizer's own calendar, named under its CalDAV home.
-    let default = engine_core::ids::CalendarId::try_from("default").unwrap();
+    // The organizer's own calendar, named by the href its CalDAV home lists.
+    let SyncUpdate::Snapshot {
+        objects: calendars, ..
+    } = provider
+        .sync_calendars(account, None)
+        .await
+        .expect("sync calendars")
+        .update
+    else {
+        panic!("expected a calendar snapshot");
+    };
+    let default = calendars
+        .into_iter()
+        .find(|calendar| {
+            calendar
+                .id
+                .as_str()
+                .trim_end_matches('/')
+                .ends_with("/default")
+        })
+        .expect("the organiser lists a default calendar")
+        .id;
     let SyncUpdate::Snapshot { objects, .. } = provider
         .sync_events(account, &default, None)
         .await
