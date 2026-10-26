@@ -28,6 +28,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+futures-util = { workspace = true }
 
 [features]
 # Exposes `fuzz_parse` for a cargo-fuzz target driving the iCalendar parser; off

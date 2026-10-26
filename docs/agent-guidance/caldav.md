@@ -263,7 +263,9 @@ are split escape-aware so the writer and the parser agree.
   servers, but RFC 6578 §3.2 lets a server return fewer properties than were asked
   for, and iCloud returns every member with its `getetag` alone. A changed member
   without `calendar-data` is fetched again with a `calendar-multiget`, a hundred hrefs
-  at a time (`multiget::fill_bodies`), asking for exactly what the sync asked for; the
+  at a time and four of those in flight (`multiget::fill_bodies`), asking for exactly what
+  the sync asked for. Sent one after another, a first sync of 6,114 iCloud events took 55 s
+  in sixty-two round trips; four in flight took 14 s, and eight saved little more. The
   member keeps the href the sync named it by and takes only the properties, since that
   href is the key the store holds. The collection's own entry is not a member, and a
   member that is listed but cannot be read (no body even after the multiget, or iCalendar

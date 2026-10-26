@@ -213,3 +213,75 @@ fn an_absolute_href_names_the_same_resource_as_its_path() {
     ));
     assert!(!same_path("/u/calendars/work/a.ics", "/u/calendars/work/"));
 }
+
+/// Counts how many requests are in flight at once.
+#[derive(Default)]
+struct Overlapping {
+    in_flight: std::sync::atomic::AtomicUsize,
+    most: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::transport::DavExecutor for Overlapping {
+    async fn send(
+        &self,
+        _method: DavMethod,
+        _href: &str,
+        _depth: &str,
+        _body: String,
+    ) -> Result<crate::transport::HttpResponse, crate::error::CalDavError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+        self.most.fetch_max(now, SeqCst);
+        // Give the other requests the chance to start while this one is still out.
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        self.in_flight.fetch_sub(1, SeqCst);
+        Ok(ok(r#"<D:multistatus xmlns:D="DAV:"/>"#))
+    }
+
+    async fn send_write(
+        &self,
+        _request: crate::transport::WriteRequest,
+    ) -> Result<crate::transport::HttpResponse, crate::error::CalDavError> {
+        unreachable!("a multiget writes nothing")
+    }
+}
+
+#[tokio::test]
+async fn the_multigets_of_a_large_collection_are_in_flight_together() {
+    // Five hundred bodiless members: five multigets of a hundred.
+    let mut members = String::new();
+    for n in 0..500 {
+        use std::fmt::Write as _;
+        write!(
+            members,
+            "<D:response><D:href>/dav/cal/alice/default/{n}.ics</D:href><D:propstat><D:prop>\
+             <D:getetag>\"e{n}\"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status>\
+             </D:propstat></D:response>"
+        )
+        .unwrap();
+    }
+    let mut report = crate::dav::parse_multistatus(&format!(
+        r#"<D:multistatus xmlns:D="DAV:">{members}</D:multistatus>"#
+    ))
+    .unwrap();
+    let exec = Overlapping::default();
+
+    super::fill_bodies(
+        &exec,
+        CALENDAR,
+        &mut report,
+        "calendar-data",
+        crate::request::calendar_multiget_report,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        exec.most.load(std::sync::atomic::Ordering::SeqCst),
+        super::IN_FLIGHT,
+        "as many multigets out at once as the bound allows, and no more"
+    );
+}

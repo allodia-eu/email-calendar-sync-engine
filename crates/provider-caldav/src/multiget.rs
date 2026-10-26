@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+use futures_util::{StreamExt, stream};
+
 use crate::{
     dav::MultiStatus,
     error::CalDavError,
@@ -17,6 +19,11 @@ use crate::{
 /// How many members one multiget names: enough that a collection of thousands costs tens of
 /// requests on its first sync, few enough that no answer is unreasonably large.
 const BATCH: usize = 100;
+
+/// How many multigets are in flight at once. They are independent, and each answer is put back
+/// by href, so the order they land in does not matter. Sent one after another, a first sync of
+/// six thousand iCloud events waited out sixty round trips of most of a second each.
+const IN_FLIGHT: usize = 4;
 
 /// Fetches, with `multiget`, the body of every changed member of `report` that arrived without
 /// its `data` property, and puts each answer in place of the member it fetched.
@@ -55,12 +62,13 @@ pub(crate) async fn fill_bodies(
         .enumerate()
         .map(|(at, response)| (path_key(response.href()), at))
         .collect();
-    for batch in missing.chunks(BATCH) {
-        let fetched = exec
-            .send(DavMethod::Report, collection, "1", multiget(batch))
-            .await?
-            .into_multistatus()?;
-        for found in fetched.responses {
+    let requests: Vec<_> = missing
+        .chunks(BATCH)
+        .map(|batch| fetch(exec, collection, multiget(batch)))
+        .collect();
+    let mut answers = stream::iter(requests).buffer_unordered(IN_FLIGHT);
+    while let Some(fetched) = answers.next().await {
+        for found in fetched?.responses {
             if found.is_removed() {
                 for href in &found.hrefs {
                     if let Some(&at) = slots.get(&path_key(href)) {
@@ -80,6 +88,18 @@ pub(crate) async fn fill_bodies(
         }
     }
     Ok(())
+}
+
+/// One multiget. A named function rather than an `async` closure: a closure over the executor
+/// is not `Send` for every lifetime the trait's boxed future would need.
+async fn fetch(
+    exec: &dyn DavExecutor,
+    collection: &str,
+    body: String,
+) -> Result<MultiStatus, CalDavError> {
+    exec.send(DavMethod::Report, collection, "1", body)
+        .await?
+        .into_multistatus()
 }
 
 /// Whether two hrefs name the same resource: compared by path, since a server may answer with a
