@@ -9,12 +9,13 @@ use super::Props;
 
 impl Props {
     /// Whether the collection can hold events: its `supported-calendar-component-set` names
-    /// `VEVENT`, or it reported none, which RFC 4791 §5.2.3 reads as every component type. A
-    /// collection of tasks alone (iCloud's reminders) answers `false`.
+    /// `VEVENT`, or it named none, which RFC 4791 §5.2.3 reads as every component type. An
+    /// element present but empty names none too. A collection of tasks alone (iCloud's
+    /// reminders) answers `false`.
     pub(crate) fn holds_events(&self) -> bool {
         self.components
             .as_ref()
-            .is_none_or(|components| components.contains("VEVENT"))
+            .is_none_or(|components| components.is_empty() || components.contains("VEVENT"))
     }
 }
 
