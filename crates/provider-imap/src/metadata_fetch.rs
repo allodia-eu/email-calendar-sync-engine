@@ -100,6 +100,10 @@ pub(crate) fn structure_sets(mut uids: Vec<u32>, per_set: usize) -> Vec<String> 
 
 /// Spare connections, at most one for every [`MIN_SHARE`] of `open` rows, each with `mailbox`
 /// open at `uid_validity`. Only what the pool has free right now; none for a pass without a pool.
+///
+/// Asked for at once rather than in turn: a connection the pool has to dial signs in first,
+/// which on Yahoo takes about a second and a half, and three in turn held the first rows of a
+/// pass back by five seconds.
 pub(crate) async fn spare_helpers<S>(
     pool: Option<&Arc<ImapPool<S>>>,
     mailbox: &str,
@@ -109,28 +113,29 @@ pub(crate) async fn spare_helpers<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
-    let mut helpers = Vec::new();
     let Some(pool) = pool else {
-        return helpers;
+        return Vec::new();
     };
     let wanted = (open / MIN_SHARE).saturating_sub(1).min(MAX_HELPERS);
-    while helpers.len() < wanted {
-        let Some(mut helper) = pool.try_acquire_for(mailbox).await else {
-            break;
-        };
+    let helpers = (0..wanted).map(|_| async {
+        let mut helper = pool.try_acquire_for(mailbox).await?;
         if helper.open_validity(mailbox) != Some(uid_validity) {
             match helper.examine(mailbox).await {
                 Ok(select) if select.uid_validity == uid_validity => {}
-                Ok(_) => break,
+                Ok(_) => return None,
                 Err(_) => {
                     helper.discard();
-                    break;
+                    return None;
                 }
             }
         }
-        helpers.push(helper);
-    }
-    helpers
+        Some(helper)
+    });
+    futures_util::future::join_all(helpers)
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// Settles `open` with one [`STRUCTURE_ITEMS`] fetch per connection, `conn` and each of
